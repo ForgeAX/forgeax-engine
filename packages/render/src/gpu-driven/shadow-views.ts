@@ -1326,6 +1326,15 @@ export class ShadowViewStatePool {
     });
   }
 
+  sourceLayerPlan(
+    identity: ShadowViewIdentity,
+    source: SubmissionPlan,
+    scene: GpuScene,
+  ): SubmissionPlan | undefined {
+    const projection = this.preparedLayer({ identity, sourcePlan: source, scene });
+    return projection === undefined ? undefined : this.projectedPlan(projection, undefined);
+  }
+
   /** Private pure layer roots held by the same physical preparation lease. */
   private readonly sourceLayers = new Map<
     string,
@@ -1371,6 +1380,8 @@ export class ShadowViewStatePool {
   /** One plan object per projection; a replaced view takes a fresh one. */
   private planByProjection = new WeakMap<ShadowLayerProjection, SubmissionPlan>();
   private readonly activeKeys = new Set<string>();
+  private readonly requestedKeys = new Set<string>();
+  private requestedStaticDepth: number | undefined;
   private readonly retiring = new Map<string, ShadowViewRecord>();
   private readonly pendingPublication = new Set<string>();
   /** Depth behind every static layer; it outlives compiled graphs with the pool. */
@@ -1518,7 +1529,9 @@ export class ShadowViewStatePool {
    * Patch the record's own projection, or share an equal one another view of
    * this source already holds: projections are pure in source and selection.
    */
-  private preparedLayer(input: ShadowViewUpdateInput): ShadowLayerProjection | undefined {
+  private preparedLayer(
+    input: Pick<ShadowViewUpdateInput, 'identity' | 'sourcePlan' | 'scene'>,
+  ): ShadowLayerProjection | undefined {
     let prepared: ShadowLayerProjection | undefined;
     for (const held of this.sourceLayers.get(identityKey(input.identity)) ?? []) {
       if (held.scene !== input.scene) continue;
@@ -2138,6 +2151,31 @@ export class ShadowViewStatePool {
     return record.submission;
   }
 
+  /** Borrow only this submission's prepared kernels. A retained shadow's visible and
+   * indirect buffers already contain its submitted selection. Aborted views re-enter
+   * pendingPublication on the producer's next update. */
+  collectSelectionViews(
+    directionalCount: number,
+    views: GpuDrivenView[],
+    readbacks: GpuDrivenView[],
+  ): void {
+    for (const key of this.pendingPublication) {
+      if (!this.activeKeys.has(key)) continue;
+      const record = this.records.get(key);
+      if (record === undefined) continue;
+      const { identity, view } = record.submission;
+      if (identity.kind === 'directional' && identity.index >= directionalCount) {
+        // Preparation may precede the fitted cascade count. Only submitted work
+        // may publish its indirect addresses or start a counter readback.
+        this.pendingPublication.delete(key);
+        record.published = false;
+        continue;
+      }
+      views.push(view);
+      if (record.cullingReadback) readbacks.push(view);
+    }
+  }
+
   /** Only active view/pass-list facts shape the compiled graph. */
   topologySignature(): string {
     const views = new Map<string, GpuDrivenView>();
@@ -2175,13 +2213,23 @@ export class ShadowViewStatePool {
    * of remaining in inspection or changing the compiled topology forever.
    */
   retain(identities: readonly ShadowViewIdentity[]): void {
-    const active = new Set(identities.map(identityKey));
+    const active = this.requestedKeys;
+    active.clear();
+    let staticDepth = 0;
+    for (const identity of identities) {
+      active.add(identityKey(identity));
+      if (identity.layer === 'static')
+        staticDepth |= identity.kind === 'directional' ? 1 : identity.kind === 'point' ? 2 : 4;
+    }
+    this.staticLayers.beginReplacement();
+    this.requestedStaticDepth = staticDepth;
     for (const [key, record] of this.records) {
       if (active.has(key)) continue;
       this.activeKeys.delete(key);
       record.frameInput = undefined;
       this.retiring.set(key, record);
     }
+    active.clear();
   }
 
   /** End the current preparation without retaining its global mapping/read domain. */
@@ -2214,6 +2262,12 @@ export class ShadowViewStatePool {
           record.graphGeneration = submittedGraphGeneration;
       }
     }
+    if (this.requestedStaticDepth !== undefined) {
+      if (!(this.requestedStaticDepth & 1)) this.staticLayers.retire('directional-shadow-static');
+      if (!(this.requestedStaticDepth & 2)) this.staticLayers.retire('point-shadow-static');
+      if (!(this.requestedStaticDepth & 4)) this.staticLayers.retire('spot-shadow-static');
+      this.requestedStaticDepth = undefined;
+    }
     this.staticLayers._commit();
     for (const [key, record] of this.retiring) {
       record.submission.view.dispose();
@@ -2237,6 +2291,7 @@ export class ShadowViewStatePool {
       invalidateRecord(record, 'submit-aborted');
     }
     this.pendingPublication.clear();
+    this.requestedStaticDepth = undefined;
     this.staticLayers._abort();
   }
 

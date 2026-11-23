@@ -45,10 +45,8 @@ import {
   type StandardSceneSurfaceAdmission,
 } from '../temporal/scene-data';
 
-import { createSceneDataCatalog, type SceneDataCatalog } from '../temporal/scene-data-catalog';
-
+import type { SceneDataCatalog } from '../temporal/scene-data-catalog';
 import { releaseSharedFeatureGraphHistory } from '../world/feature-graph-systems';
-
 import {
   addRenderFeatureSystem,
   bindRenderFeatureFrame,
@@ -57,15 +55,12 @@ import {
   renderFeaturePlanProfileWork,
   renderFeatureProfileWorkNames,
 } from '../world/feature-systems';
-
 import { createRenderWorld } from '../world/render-world';
-
 import {
   type FeatureGraphConformanceTraceState,
   isFeatureGraphConformanceEnabled,
   recordFeatureGraphConformanceEvent,
 } from './feature-graph-conformance-trace';
-
 import {
   type FeatureWorkResources,
   featureResourceAllocationScope,
@@ -73,21 +68,15 @@ import {
   NativeFeatureWorkRouting,
   resolveFeatureWorkResources,
 } from './frame-plan';
-
 import { fullscreenRenderFeatureDeclaration } from './fullscreen';
-
 import { isOwnedHiddenEntityReports, NO_HIDDEN_ENTITY_REPORTS } from './hidden-entity-reports';
-
 import { sameRenderFeatureNativeExecutionTopology } from './native-execution-topology';
-
 import { coalesceNativeReadOnlyDepthPasses } from './native-read-only-depth-passes';
-
 import {
   createNativeResourceAdmission,
   createPreparedResourceMaps,
   type PreparedPlanResources,
 } from './native-resource-admission';
-
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
   isRenderFeatureSceneResource,
@@ -106,7 +95,6 @@ import {
   renderFeaturePlanSignature,
   validateRenderFeaturePlan,
 } from './plan';
-
 import {
   consumeRenderFeatureNativePlan,
   createRenderFeatureNativePlanBuilder,
@@ -119,17 +107,16 @@ import {
   renderFeatureNativeDepthBatchPermission,
   renderFeatureNativeResourceAdmission,
 } from './prepared-gpu-work';
-
 import type {
   RenderFeatureGraphicsPassDescriptor,
   RenderFeatureGraphicsPrepare,
   RenderFeaturePreparedGraphicsState,
 } from './prepared-graphics';
-
 import {
   createPreparedGraphicsStore,
   type PreparedGraphicsTransaction,
 } from './prepared-graphics-store';
+import { FeatureSceneDataViews } from './scene-data-views';
 
 import {
   captureRenderFeatureSource,
@@ -241,6 +228,7 @@ export interface RenderFeatureFrameInput {
     work: string,
   ) => import('@forgeax/engine-ecs').ScheduleWorkScope | undefined;
   readonly resolveAsset?: import('./plan').RenderFeaturePlanContext['resolveAsset'];
+  readonly resolveMaterialTemplate?: RenderFeaturePlanContext['resolveMaterialTemplate'];
   readonly sourceFeatures?: readonly RenderFeatureSource[];
   readonly publishedFeatures?: import('../publication/contract').RenderPublication['features'];
   readonly onFeatureSourceSubmitted?: (
@@ -467,8 +455,6 @@ function createFeatureSlot(feature: RenderFeature<unknown>, order: number): Feat
     planSignatures: new Map(),
     nativeSignatures: new Map(),
     signatureInspection: undefined,
-    sceneData: new Map(),
-    sceneDataAdmissionRevisions: new Map(),
     nativeRouting: new NativeFeatureWorkRouting(),
     stageEvents: {},
   };
@@ -1529,6 +1515,7 @@ function invokeStage<T, Owner, Input>(
 }
 
 class FeatureHostImpl implements RenderFeatureHost {
+  readonly sceneDataViews = new FeatureSceneDataViews();
   private depthBatchInspection:
     | {
         frameNumber: number;
@@ -2111,6 +2098,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     if (this.disposed) return ok(undefined);
     this.depthBatchInspection = undefined;
     this.disposed = true;
+    this.sceneDataViews.clear();
     releaseSharedFeatureGraphHistory(this.world);
 
     const retired = this.retirePreparedGraphics();
@@ -2192,7 +2180,9 @@ class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
   readonly extractViews: readonly ReturnType<typeof extractView>[];
   readonly materialContext: ReturnType<typeof renderMaterialContext>;
   /** Feature-independent part of each view's plan context. */
-  readonly planViews: readonly Omit<RenderFeaturePlanView, 'sceneData'>[];
+  readonly planViews: readonly (Omit<RenderFeaturePlanView, 'sceneData'> & {
+    readonly surface: ReturnType<FeatureSceneDataViews['admit']>;
+  })[];
   private readonly heldResourcePrefixes: readonly string[];
   private preparationPendingFeatureIdentity: string | undefined;
   private preparationPendingReason: FramePresentationPendingReason | undefined;
@@ -2212,6 +2202,12 @@ class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
     this.materialContext = renderMaterialContext(input.caps, input.limits);
     this.planViews = inputs.map((view) =>
       Object.freeze({
+        surface: host.sceneDataViews.admit(
+          view.identity,
+          view.surfaceAdmission,
+          view.deviceGeneration ?? 0,
+          input.caps.rgba16floatRenderable === true,
+        ),
         identity: view.identity,
         render: view.render,
         ...(view.graphResources === undefined ? {} : { graphResources: view.graphResources }),
@@ -2228,6 +2224,7 @@ class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
         ...(view.motionBlur === undefined ? {} : { motionBlur: view.motionBlur }),
       }),
     );
+    host.sceneDataViews.retainViews(this.views);
     this.heldResourcePrefixes = inputs
       .filter((view) => !view.render)
       .map((view) => `${JSON.stringify([featureScopeKey({ view: view.identity })]).slice(0, -1)},`);
@@ -2284,7 +2281,20 @@ class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
     const detail = error instanceof RenderFeaturePreparationFailedError ? error.detail : undefined;
     const resource = detail?.resourceName ?? context?.resource;
     const operation = detail?.operation ?? context?.operation;
-    const reason = detail?.reason ?? context?.reason;
+    const planCause =
+      preparationStage === 'source-plan'
+        ? error instanceof RenderFeatureStageFailedError
+          ? error.detail.cause
+          : error
+        : undefined;
+    const planCode =
+      typeof planCause === 'string'
+        ? planCause
+        : planCause !== null && typeof planCause === 'object'
+          ? Object.getOwnPropertyDescriptor(planCause, 'code')?.value
+          : undefined;
+    const reason =
+      detail?.reason ?? context?.reason ?? (typeof planCode === 'string' ? planCode : undefined);
     this.preparationPendingReason = Object.freeze({
       code: 'feature-preparation',
       featureIdentity: identity.slice(0, 256),
@@ -2699,19 +2709,32 @@ class FeatureFramePreparation {
 
   private admittedViews<V>(views: readonly V[]): readonly V[] {
     const inputs = this.batch.inputs;
-    return views.filter((_, index) => this.admitsView(inputs[index] as RenderFeatureFrameInput));
+    for (let index = 0; index < inputs.length; index++) {
+      if (!this.admitsView(inputs[index] as RenderFeatureFrameInput)) {
+        const admitted = views.slice(0, index);
+        for (let next = index + 1; next < inputs.length; next++)
+          if (this.admitsView(inputs[next] as RenderFeatureFrameInput))
+            admitted.push(views[next] as V);
+        return admitted;
+      }
+    }
+    return views;
   }
 
   private planViews(): RenderFeaturePlanContext['views'] {
     const inputs = this.batch.inputs;
     const views = this.batch.planViews;
     const planned: RenderFeaturePlanView[] = [];
+    const feature = this.feature;
+    const generation = this.transaction.generation;
     const scenePlacement = this.feature.placement === 'scene';
     for (let index = 0; index < views.length; index++) {
       // The batch constructs plan views from these same indexed input rows.
       const input = inputs[index] as RenderFeatureFrameInput;
       if (!this.admitsView(input)) continue;
       const view = views[index] as (typeof views)[number];
+      const provided = input.sceneData;
+      const surface = view.surface;
       const row: {
         -readonly [Field in keyof RenderFeaturePlanView]: RenderFeaturePlanView[Field];
       } = {
@@ -2719,8 +2742,9 @@ class FeatureFramePreparation {
         render: view.render && (scenePlacement || input.selectedCamera?.postProcessing !== false),
         frame: view.frame,
         targets: view.targets,
-        sceneData:
-          input.sceneData ?? this.sceneData(view, input.surfaceAdmission, input.deviceGeneration),
+        get sceneData() {
+          return provided ?? surface.catalog(feature, generation);
+        },
       };
       if (view.graphResources !== undefined) row.graphResources = view.graphResources;
       if (view.selectedView !== undefined) row.selectedView = view.selectedView;
@@ -2751,50 +2775,6 @@ class FeatureFramePreparation {
           ? []
           : [{ scope: row.scope, waterView: row.waterView, resources: [], passes: [] }],
     );
-  }
-
-  /** The view's catalog is fixed for one prepared generation; recreate it only after a cut. */
-  private sceneData(
-    view: { readonly identity: string },
-    surfaceAdmission: StandardSceneSurfaceAdmission | undefined,
-    deviceGeneration: number | undefined,
-  ): SceneDataCatalog {
-    const generation = this.transaction.generation;
-    const cache = this.slot.sceneData;
-    const cached = cache.get(view.identity);
-    if (
-      cached?.generation === generation &&
-      cached.surfaceAdmissionIdentity === surfaceAdmission?.identity &&
-      cached.deviceGeneration === (deviceGeneration ?? 0)
-    )
-      return cached;
-    if (cache.size >= this.batch.inputs.length) cache.clear();
-    const previousAdmission = this.slot.sceneDataAdmissionRevisions.get(view.identity);
-    const admissionIdentity = surfaceAdmission?.identity;
-    const revision =
-      previousAdmission === undefined
-        ? admissionIdentity === undefined
-          ? 0
-          : 1
-        : previousAdmission.identity === admissionIdentity
-          ? previousAdmission.revision
-          : previousAdmission.revision + 1;
-    this.slot.sceneDataAdmissionRevisions.set(view.identity, {
-      identity: admissionIdentity,
-      revision,
-    });
-    const created = createSceneDataCatalog({
-      featureIdentity: this.identity,
-      viewIdentity: view.identity,
-      deviceGeneration: deviceGeneration ?? 0,
-      generation,
-      planIdentity: `${this.identity}:${view.identity}:${generation}`,
-      rgba16floatRenderable: this.input.caps.rgba16floatRenderable === true,
-      ...(surfaceAdmission === undefined ? {} : { surfaceAdmission }),
-      ...(surfaceAdmission === undefined ? {} : { surfaceAdmissionRevision: revision }),
-    });
-    cache.set(view.identity, created);
-    return created;
   }
 
   private static readonly abortResourceActions = [
@@ -2962,6 +2942,9 @@ class FeatureFramePreparation {
     const input = this.input;
     return this.feature.plan(this.source, {
       getFeatureShaderSource: input.getFeatureShaderSource,
+      ...(input.resolveMaterialTemplate === undefined
+        ? {}
+        : { resolveMaterialTemplate: input.resolveMaterialTemplate }),
       resolveAsset: (handle, revision) => {
         const captured =
           revision === undefined ? undefined : this.assetVersions.get(`0:${handle}:${revision}`);

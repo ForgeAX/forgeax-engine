@@ -1,6 +1,6 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
-import type { MaterialPass } from '@forgeax/engine-types';
-import { freezeJson, isDeepFrozenJson } from '@forgeax/engine-types';
+import { freezeJson, isDeepFrozenJson, type MaterialPass } from '@forgeax/engine-types';
+import { prepareMaterialLayoutIdentity } from './material-layout-facts';
 import type { MaterialSnapshot } from './render-system-extract';
 import type { StandardSceneDataContributorProgramFact } from './temporal/scene-data';
 
@@ -20,12 +20,86 @@ type SnapshotEntry =
   | {
       resource: MaterialResource | undefined;
       readonly valuesOwned: boolean;
+      temporalDisplacement?: boolean;
+      readonly programDataCaptured?: true;
       programs?: ProgramObservations;
     };
 const resources = new WeakMap<MaterialSnapshot, SnapshotEntry>();
+// Only detached, frozen metadata is compared as the previous value. Retain its
+// key order on first comparison so value edits do not enumerate it again.
+const previousProgramKeys = new WeakMap<object, readonly string[]>();
 
-export function captureMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSnapshot {
-  const programs = {
+/** Attach the exact program data to a fresh preparation before it can escape. */
+export function prepareMaterialProgramSnapshot(
+  snapshot: MaterialSnapshot,
+  previous?: MaterialSnapshot,
+): MaterialSnapshot {
+  const entry = previous === undefined ? undefined : resources.get(previous);
+  const unchanged =
+    previous !== undefined &&
+    entry !== undefined &&
+    !(entry instanceof MaterialResource) &&
+    entry.programDataCaptured === true &&
+    sameProgramData(snapshot, previous);
+  const prepared = Object.freeze(
+    Object.assign(snapshot, unchanged ? programData(previous) : captureProgramData(snapshot)),
+  );
+  prepareMaterialLayoutIdentity(
+    prepared.materialShaderId ?? 'forgeax::default-standard-pbr',
+    prepared.materialParamSchema,
+  );
+  resources.set(prepared, {
+    resource: undefined,
+    valuesOwned: false,
+    programDataCaptured: true,
+    programs: (unchanged ? entry.programs : undefined) ?? new Map(),
+  });
+  return prepared;
+}
+
+export function captureMaterialSnapshot(
+  snapshot: MaterialSnapshot,
+  sourceAssets = snapshot.sourceAssets,
+): MaterialSnapshot {
+  const entry = resources.get(snapshot);
+  const programs =
+    entry !== undefined &&
+    !(entry instanceof MaterialResource) &&
+    entry.programDataCaptured === true
+      ? undefined
+      : captureProgramData(snapshot);
+  return recordOwnedMaterialSnapshot(
+    { ...snapshot, ...programs, ...(sourceAssets === undefined ? {} : { sourceAssets }) },
+    programs === undefined && !(entry instanceof MaterialResource) ? entry?.programs : undefined,
+  );
+}
+
+/** Takes a fresh snapshot record whose value and program data are already detached. */
+export function ownDetachedMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSnapshot {
+  freezeProgramData(snapshot.passes);
+  freezeProgramData(snapshot.materialContext);
+  freezeProgramData(snapshot.materialProgramKeys);
+  freezeProgramData(snapshot.materialProgramInputs);
+  freezeProgramData(snapshot.materialPublication);
+  return recordOwnedMaterialSnapshot(snapshot);
+}
+
+function recordOwnedMaterialSnapshot(
+  snapshot: MaterialSnapshot,
+  programs: ProgramObservations = new Map(),
+): MaterialSnapshot {
+  const captured = Object.freeze(Object.assign(snapshot, { immutableValues: true as const }));
+  resources.set(captured, {
+    resource: undefined,
+    valuesOwned: true,
+    programDataCaptured: true,
+    programs,
+  });
+  return captured;
+}
+
+function programData(snapshot: MaterialSnapshot) {
+  return {
     passes: snapshot.passes,
     ...(snapshot.materialContext === undefined
       ? {}
@@ -40,27 +114,63 @@ export function captureMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSna
       ? {}
       : { materialPublication: snapshot.materialPublication }),
   };
-  // Prepared program facts are often shared by several material snapshots.
-  // Only accept a shared graph when its entire contents are immutable.
-  const fixed = Object.values(programs).every(
-    (value) => value === undefined || isDeepFrozenJson(value),
-  );
-  return ownDetachedMaterialSnapshot({
-    ...snapshot,
-    ...(fixed ? programs : structuredClone(programs)),
-  });
 }
 
-/** Takes a fresh snapshot record whose value and program data are already detached. */
-export function ownDetachedMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSnapshot {
-  freezeProgramData(snapshot.passes);
-  freezeProgramData(snapshot.materialContext);
-  freezeProgramData(snapshot.materialProgramKeys);
-  freezeProgramData(snapshot.materialProgramInputs);
-  freezeProgramData(snapshot.materialPublication);
-  const captured = Object.freeze(Object.assign(snapshot, { immutableValues: true as const }));
-  resources.set(captured, { resource: undefined, valuesOwned: true, programs: new Map() });
-  return captured;
+function captureProgramData(snapshot: MaterialSnapshot) {
+  const programs = programData(snapshot);
+  if (!isDeepFrozenJson(programs.passes)) return freezeJson(structuredClone(programs));
+  // A fresh context or key table must not trigger a copy of already frozen passes.
+  const { passes, ...facts } = programs;
+  if (Object.values(facts).every((value) => value === undefined || isDeepFrozenJson(value)))
+    return programs;
+  return { passes, ...freezeJson(structuredClone(facts)) };
+}
+
+function sameProgramData(current: MaterialSnapshot, previous: MaterialSnapshot): boolean {
+  return (
+    sameProgramValue(current.passes, previous.passes) &&
+    sameProgramValue(current.materialContext, previous.materialContext) &&
+    sameProgramValue(current.materialProgramKeys, previous.materialProgramKeys) &&
+    sameProgramValue(current.materialProgramInputs, previous.materialProgramInputs) &&
+    sameProgramValue(current.materialPublication, previous.materialPublication)
+  );
+}
+
+/** Compare renderer-prepared program metadata against its detached JSON data. */
+function sameProgramValue(current: unknown, previous: unknown): boolean {
+  if (Object.is(current, previous)) return true;
+  if (
+    current === null ||
+    previous === null ||
+    typeof current !== 'object' ||
+    typeof previous !== 'object'
+  )
+    return false;
+  if (Array.isArray(current)) {
+    if (!Array.isArray(previous) || current.length !== previous.length) return false;
+  } else {
+    const currentPrototype: unknown = Object.getPrototypeOf(current);
+    const previousPrototype: unknown = Object.getPrototypeOf(previous);
+    if (
+      (currentPrototype !== Object.prototype && currentPrototype !== null) ||
+      (previousPrototype !== Object.prototype && previousPrototype !== null)
+    )
+      return false;
+  }
+  const keys = Object.keys(current);
+  let before = previousProgramKeys.get(previous);
+  if (before === undefined) {
+    before = Object.keys(previous);
+    previousProgramKeys.set(previous, before);
+  }
+  if (keys.length !== before.length) return false;
+  const nextValues = current as Record<string, unknown>;
+  const previousValues = previous as Record<string, unknown>;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i] as string;
+    if (key !== before[i] || !sameProgramValue(nextValues[key], previousValues[key])) return false;
+  }
+  return true;
 }
 
 function freezeProgramData(value: unknown): void {
@@ -153,6 +263,11 @@ export class MaterialResource {
     const cached = this.fixedPrograms?.get(pass);
     if (cached !== undefined) return cached;
     const snapshot = this.current;
+    // Callers can also supply a borrowed Pass. Only captured members belong to this program.
+    const owner =
+      this.fixedPrograms !== undefined && snapshot.passes.includes(pass)
+        ? this.fixedPrograms
+        : undefined;
     const selectedProgramKey = snapshot.materialProgramKeys?.[pass.name];
     const program = snapshot.materialPublication?.programs.find(
       (entry) => entry.pass === pass.name,
@@ -190,9 +305,9 @@ export class MaterialResource {
           : selectedProgramKey,
       ]),
       selectedProgram: JSON.stringify(fact.program ?? null),
-      identity: this.fixedPrograms,
+      identity: owner,
     });
-    this.fixedPrograms?.set(pass, observation);
+    owner?.set(pass, observation);
     return observation;
   }
 
@@ -255,6 +370,22 @@ function captureParameterValues(
     captured[key] = Array.isArray(value) ? (Object.freeze([...value]) as number[]) : value;
   }
   return Object.freeze(captured);
+}
+
+/** Temporal reactivity belongs to the chosen material version, including its texture bindings. */
+export function materialHasTemporalDisplacement(snapshot: MaterialSnapshot): boolean {
+  const entry = resources.get(snapshot);
+  const owned =
+    entry !== undefined && !(entry instanceof MaterialResource) && entry.valuesOwned
+      ? entry
+      : undefined;
+  if (owned?.temporalDisplacement !== undefined) return owned.temporalDisplacement;
+  const active =
+    (snapshot.paramSnapshot?.displacementScale ?? 0) !== 0 &&
+    (snapshot.textureSources?.has('displacementTexture') === true ||
+      snapshot.videoTextureFields?.has('displacementTexture') === true);
+  if (owned !== undefined) owned.temporalDisplacement = active;
+  return active;
 }
 
 export function materialResource(snapshot: MaterialSnapshot): MaterialResource | undefined {

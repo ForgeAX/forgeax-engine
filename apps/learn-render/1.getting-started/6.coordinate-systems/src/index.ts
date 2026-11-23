@@ -32,7 +32,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 // AC-06 three-section marker convention:
 //   `// 1. engine usage`            -> public engine API consumed.
 //   `// 2. example-specific glue`   -> the LO 1.6 cubePositions array
-//                                       + GUID literals + perspective
+//                                       + material binding + perspective
 //                                       camera config.
 //   `// 3. bootstrap`               -> entry point that wires (1)+(2).
 //
@@ -40,15 +40,11 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 // `cubePositions[]` array idiom), each pointing at the same wood-
 // container `MaterialAsset` (sRGB JPG decoded by @forgeax/engine-image
 // via the pluginPack pack-index pipeline). `MeshFilter.assetHandle`
-// binds `cubeHandleRes.value` (GUID-derived user-handle); the engine
-// `pipelineState.meshes` alias map upload path covers the user-handle
-// id (>=1024) so the V-3 deferred punt is gone (the previous deferred
-// concern marker + recipe-only loadByGuid both removed).
+// binds the shared procedural cube handle.
 //
 // AC-15 (c) regression carried from M8 / M9: this file does NOT import
 // `@forgeax/engine-image` and does NOT call any low-level decode /
-// upload helper -- the cube enters the world via `loadByGuid<MeshAsset>`
-// alone (charter P4 + P5).
+// upload helper. The catalog resolves the material texture.
 //
 // charter mapping:
 //   - F1 (limited context):  three-section markers double as grep
@@ -62,7 +58,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 //     nate-systems.png) is verification only.
 //   - P1 (progressive disclosure):  the README top callout points at
 //     this file; AI users read the 3 sections + the cubePositions
-//     array + the GUID literals + the perspective Camera config and
+//     array + the material binding + the perspective Camera config and
 //     have the full LO 1.6 -> forgeax picture in one directory.
 //   - P3 (explicit failure):  `EngineEnvironmentError` surfaces the
 //     "no usable backend" path; createApp returns a `Result` whose
@@ -75,9 +71,8 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 //     across every learn-render example; LO 1.6 just adds the multi-
 //     entity spawn loop + perspective Camera projection field atop
 //     the LO 1.5 textured cube baseline.
-//   - P5 (producer / consumer split):  `loadByGuid<MeshAsset>` returns
-//     the user-handle the spawn path consumes; the producer / consumer
-//     responsibilities never interleave (charter F3 instrumentation).
+//   - P5 (producer / consumer split): the spawn loop shares one procedural
+//     cube mesh and one material across all instances.
 
 // 1. engine usage - the public createApp + ECS World facade + Asset
 // Registry namespace + AssetGuid parser + MaterialAsset / TextureAsset /
@@ -101,28 +96,8 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-wood.pack.json';
 
-// 2. example-specific glue - LO 1.6 cubePositions[] + perspective
-// projection mapped onto forgeax. Three GUID literals form the disk-
-// schema -> runtime bridge (AI users grep them via `rg "WOOD_TEXTURE_
-// GUID" apps/`):
-//
-//   WOOD_TEXTURE_GUID  -> forgeax-engine-assets/learn-opengl/textures/
-//                          container.jpg.meta.json subAssets[0].guid
-//                          (sRGB JPG decoded by @forgeax/engine-image
-//                          at build time / runtime fetch through
-//                          pluginPack pack-index path).
-//   CUBE_MESH_GUID     -> forgeax-engine-assets/learn-opengl/meshes/
-//                          cube-mesh.stub.meta.json subAssets[0].guid
-//                          (engine-builtin procedural cube; the GUID
-//                          is the disk identifier, the runtime aliases
-//                          the same logical mesh as HANDLE_CUBE).
-//   CUBE_MATERIAL_GUID -> assets/material-wood.pack.json assets[0].guid
-//                          (UnlitMaterialAsset whose baseColorTexture
-//                          slot references WOOD_TEXTURE_GUID -- the LO
-//                          §1.4 sampler2D bind point in WGSL terms).
-const WOOD_TEXTURE_GUID = '019e3969-1d46-773e-988c-a10e305ff2a4';
-const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e4906-23e9-771c-afd1-1896daeaa11e';
+// 2. example-specific glue - the authored material references container.jpg by GUID.
+const materialValues = materialPackJson.assets['material/material-wood'].payload.values;
 // Dev uses the binding's scoped catalog route; build emits the static
 // `/pack-index.json` file. `configureRuntimeAssetCatalog` selects the route
 // for the current Vite mode.
@@ -170,23 +145,6 @@ const CAMERA_PROJECTION_PERSPECTIVE = 0;
 const CUBE_AXIS = vec3.normalize(vec3.create(), [1.0, 0.3, 0.5]);
 const CUBE_TILT_RADIANS_PER_INDEX = (20 * Math.PI) / 180;
 
-interface MaterialPackEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly payload: {
-    readonly kind: string;
-    readonly passes: ReadonlyArray<{ readonly name: string; readonly program: { readonly module: string } }>;
-    readonly values: {
-      readonly baseColor: readonly [number, number, number, number];
-      readonly baseColorTexture?: string;
-    };
-  };
-}
-
-interface MaterialPackFile {
-  readonly assets: ReadonlyArray<MaterialPackEntry>;
-}
-
 // 3. bootstrap - locate the canvas, hand it to createApp (engine-app
 // shell wires the rAF frame-loop + Time resource + auto input attach),
 // wire the AssetRegistry through the loadByGuid recipe, spawn 10
@@ -224,23 +182,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (assets === undefined) throw new Error('[learn-render 1.6 coordinate-systems] asset host is unavailable');
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  // Parse the 3 GUID literals once (charter F1 single-grep entry).
-  const woodGuidRes = AssetGuid.parse(WOOD_TEXTURE_GUID);
-  const cubeGuidRes = AssetGuid.parse(CUBE_MESH_GUID);
-  const matGuidRes = AssetGuid.parse(CUBE_MATERIAL_GUID);
-  if (!woodGuidRes.ok || !cubeGuidRes.ok || !matGuidRes.ok) {
-    console.error(
-      '[learn-render 1.6 coordinate-systems] GUID parse failed for one of the 3 fixtures',
-    );
+  const woodGuidRes = AssetGuid.parse(materialValues.baseColorTexture);
+  if (!woodGuidRes.ok) {
+    console.error('[learn-render 1.6 coordinate-systems] invalid baseColorTexture GUID:', woodGuidRes.error);
     return;
   }
 
-  // The texture handle resolves through the production fetch chain
-  // (catalog configuration -> container.jpg ->
-  // parseImage -> uploadTexture); the cube handle resolves through the
-  // Map fast-path seeded by registerWithGuid below (alias to engine-
-  // builtin HANDLE_CUBE); the material handle resolves through the
-  // same Map fast-path after we register the reconstructed POD.
   const woodHandleRes = await assets.load(woodGuidRes.value, 'texture');
   if (!woodHandleRes.ok) {
     console.error(
@@ -256,23 +203,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-
-  const matPack = materialPackJson as unknown as MaterialPackFile;
-  const matEntry = matPack.assets.find((a) => a.kind === 'material');
-  if (matEntry === undefined) {
-    console.error(
-      '[learn-render 1.6 coordinate-systems] material-wood.pack.json missing material entry',
-    );
-    return;
-  }
-  // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
-  // handle so the baseColorTexture slot carries a resolved numeric Handle.
   const woodTexHandle = Number(woodHandleRes.value);
   const cubeMaterial: MaterialAsset = {
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
     values: {
-      baseColor: matEntry.payload.values.baseColor,
+      baseColor: materialValues.baseColor,
       baseColorTexture: woodTexHandle,
     },
   };
@@ -299,9 +235,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // engine RenderSystem can compose `worldFromLocal: mat4` from the
   // SoA columns without further per-frame work (the LO 1.6 chapter
   // does not animate; the rotation is static per-cube).
-  // `MeshFilter.assetHandle: cubeHandleRes.value` binds the GUID-
-  // derived user-handle directly -- the engine pipelineState.meshes
-  // alias map handles user-handle (>=1024) ids (V-3 punt removed).
   const cubeQuat = quat.create();
   for (let i = 0; i < CUBE_POSITIONS.length; i++) {
     const pos = CUBE_POSITIONS[i];

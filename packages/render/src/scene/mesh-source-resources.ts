@@ -272,80 +272,7 @@ export class MeshSourceResources {
           throw new MeshSourceResourceError({ reason: 'version' });
         yield* this.awaitWork(item.fence as Wait);
       } else if (asset.kind === 'texture' || asset.kind === 'gpu-texture') {
-        let item: Held | undefined;
-        const prepared = this.native.store
-          .prepareTextureResidencyForGraph(
-            handle as AssetHandle<'texture' | 'gpu-texture'>,
-            asset,
-            input.source,
-            (captured) => {
-              item = {
-                lease: captured.lease,
-                current: captured.current,
-                commit: captured.commit,
-                resources: [captured.entry.texture],
-                fence: undefined,
-                mips: undefined,
-                released: undefined,
-              };
-              this.held.push(item);
-              this.textures++;
-            },
-            version,
-            () => !input.referenced(handle),
-          )
-          .unwrap();
-        if (item === undefined) throw new MeshSourceResourceError({ reason: 'source' });
-        this.fence(item);
-        if (prepared.entry.receipt.sourceRevision !== version)
-          throw new MeshSourceResourceError({ reason: 'version' });
-        if (prepared.needsMipmaps) {
-          yield* this.awaitWork(
-            observe(
-              this.native.store
-                .prewarmMipmapPipeline(this.native.device, [prepared.entry.receipt.format])
-                .then((result) => {
-                  result.unwrap();
-                }),
-            ),
-          );
-          const receipt = prepared.entry.receipt;
-          const mipItem = item;
-          item.mips = prepareMipmaps(
-            this.native.device,
-            prepared.entry.texture.handle,
-            {
-              width: receipt.extent.width,
-              height: receipt.extent.height,
-              format: receipt.format,
-              levels: receipt.mipLevelCount,
-              arrayLayerCount: receipt.extent.depthOrArrayLayers,
-            },
-            (work) => {
-              mipItem.mips = work;
-            },
-          ).unwrap();
-          const command = item.mips.finish().unwrap();
-          let submissionFailure: { readonly cause: unknown } | undefined;
-          try {
-            if (command !== undefined) this.native.device.queue.submit([command]).unwrap();
-          } catch (cause) {
-            submissionFailure = { cause };
-          }
-          try {
-            this.fence(item);
-          } catch (cause) {
-            throw submissionFailure === undefined
-              ? cause
-              : new AggregateError(
-                  [submissionFailure.cause, cause],
-                  'mipmap submit and completion observation failed',
-                );
-          }
-          if (submissionFailure !== undefined) throw submissionFailure.cause;
-        }
-        yield* this.awaitWork(item.fence as Wait);
-        this.discardMips(item);
+        yield* this.prepareTexture(input, handle, asset, version);
       }
       // Material/sampler descriptors are consumed by the later native binding phase.
       yield;
@@ -357,6 +284,112 @@ export class MeshSourceResources {
     yield* this.prepareCapacity();
     this.phase = 'data';
     this.assertCurrent();
+  }
+  private *prepareTexture(
+    input: MeshSourceResourceInputs,
+    handle: AssetHandle,
+    asset: Extract<Asset, { kind: 'texture' | 'gpu-texture' }>,
+    version: number,
+  ): Generator<void> {
+    let item: Held | undefined;
+    const store = this.native.store;
+    const prepare = () =>
+      store.prepareTextureResidencyForGraph(
+        handle as AssetHandle<'texture' | 'gpu-texture'>,
+        asset,
+        input.source,
+        (captured) => {
+          item = {
+            lease: captured.lease,
+            current: captured.current,
+            commit: captured.commit,
+            resources: [captured.entry.texture],
+            fence: undefined,
+            mips: undefined,
+            released: undefined,
+          };
+          this.held.push(item);
+          this.textures++;
+        },
+        version,
+        () => !input.referenced(handle),
+      );
+    const release = store.holdGraphTexture(handle);
+    let texture: ReturnType<typeof prepare>;
+    try {
+      texture = prepare();
+      while (
+        !texture.ok &&
+        texture.error.code === 'asset-not-ready' &&
+        store.isTexturePreparing(handle, input.source)
+      ) {
+        yield* this.awaitWork(observe(store.waitTextureData(handle, input.source)));
+        texture = prepare();
+      }
+    } finally {
+      release();
+    }
+    const prepared = texture.unwrap();
+    if (item === undefined) throw new MeshSourceResourceError({ reason: 'source' });
+    if (prepared.accepted !== undefined) {
+      yield* this.awaitWork(
+        observe(
+          prepared.accepted.then((accepted) => {
+            if (!accepted) throw new MeshSourceResourceError({ reason: 'source' });
+          }),
+        ),
+      );
+    }
+    this.fence(item);
+    if (prepared.entry.receipt.sourceRevision !== version)
+      throw new MeshSourceResourceError({ reason: 'version' });
+    if (prepared.needsMipmaps) {
+      yield* this.awaitWork(
+        observe(
+          this.native.store
+            .prewarmMipmapPipeline(this.native.device, [prepared.entry.receipt.format])
+            .then((result) => {
+              result.unwrap();
+            }),
+        ),
+      );
+      const receipt = prepared.entry.receipt;
+      const mipItem = item;
+      item.mips = prepareMipmaps(
+        this.native.device,
+        prepared.entry.texture.handle,
+        {
+          width: receipt.extent.width,
+          height: receipt.extent.height,
+          format: receipt.format,
+          levels: receipt.mipLevelCount,
+          arrayLayerCount: receipt.extent.depthOrArrayLayers,
+        },
+        (work) => {
+          mipItem.mips = work;
+        },
+      ).unwrap();
+      const command = item.mips.finish().unwrap();
+      let submissionFailure: { readonly cause: unknown } | undefined;
+      try {
+        if (command !== undefined) this.native.device.queue.submit([command]).unwrap();
+      } catch (cause) {
+        submissionFailure = { cause };
+      }
+      try {
+        this.fence(item);
+      } catch (cause) {
+        throw submissionFailure === undefined
+          ? cause
+          : new AggregateError(
+              [submissionFailure.cause, cause],
+              'mipmap submit and completion observation failed',
+            );
+      }
+      if (submissionFailure !== undefined) throw submissionFailure.cause;
+    }
+    yield* this.awaitWork(item.fence as Wait);
+    this.discardMips(item);
   }
   private *prepareCapacity(): Generator<void> {
     if (this.native.prepareCapacity !== undefined) {
@@ -409,20 +442,7 @@ export class MeshSourceResources {
         this.settleViews = settle;
       },
     );
-    const input = yield* scene.prepareSourceInputs(
-      capacity,
-      (value) => {
-        this.bindingInput = value;
-      },
-      () => this.physicalCurrent(),
-    );
-    // These commands include the private rows/descriptors, after the physical
-    // fences above. Ordinary baseline catch-up remains separate live work.
-    for (;;) {
-      if (input.isCurrent()) break;
-      input.step(64 * 1024).unwrap();
-      yield;
-    }
+    let input = yield* this.copySourceInputs(scene, capacity);
     yield* this.awaitWork(observe(this.native.device.queue.onSubmittedWorkDone()));
     for (const item of this.held) {
       this.assertCurrent();
@@ -432,6 +452,7 @@ export class MeshSourceResources {
     for (;;) {
       this.assertCurrent();
       if (!capacity.isCurrent()) capacity.step().unwrap();
+      if (input.superseded()) input = yield* this.copySourceInputs(scene, capacity, input);
       if (!input.isCurrent()) input.step(64 * 1024).unwrap();
       if (capacity.isCurrent() && input.isCurrent()) break;
       yield;
@@ -447,6 +468,49 @@ export class MeshSourceResources {
     } finally {
       this.bindingPreparation?.release();
       this.bindingPreparation = undefined;
+    }
+  }
+
+  private *copySourceInputs(
+    scene: GpuScene,
+    capacity: GpuSceneCapacityPreparation,
+    stale?: GpuSceneInputPreparation,
+  ): Generator<void, GpuSceneInputPreparation> {
+    for (;;) {
+      if (stale !== undefined) yield* this.retireSourceInputs(stale);
+      this.assertCurrent();
+      try {
+        const input = yield* scene.prepareSourceInputs(
+          capacity,
+          (value) => {
+            this.bindingInput = value;
+          },
+          () => this.physicalCurrent(),
+          stale,
+        );
+        // Ordinary recording can grow the live Inputs while this copy yields.
+        // Retire the superseded copy, preserving the sealed Source's rows.
+        while (!input.isCurrent() && !input.superseded()) {
+          input.step(64 * 1024).unwrap();
+          yield;
+        }
+        if (input.isCurrent()) return input;
+        stale = input;
+      } catch (cause) {
+        const input = this.bindingInput;
+        if (input === undefined || input === stale || !input.superseded()) throw cause;
+        stale = input;
+      }
+    }
+  }
+
+  private *retireSourceInputs(input: GpuSceneInputPreparation): Generator<void> {
+    input.release();
+    for (;;) {
+      const progress = input.retirement().unwrap();
+      if (progress.done) return;
+      if (progress.pending === undefined) yield;
+      else yield* this.awaitWork(observe(progress.pending));
     }
   }
 

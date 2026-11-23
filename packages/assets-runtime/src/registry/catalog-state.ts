@@ -69,6 +69,22 @@ function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** An edit can age an accepted dependency without changing its delivered bytes. */
+function retainsCurrentPublication(
+  stale: CatalogEntry | undefined,
+  current: CatalogEntry | undefined,
+): stale is CatalogEntry {
+  if (
+    stale?.lifecycle !== 'stale' ||
+    current?.lifecycle !== 'current' ||
+    current.publication === undefined
+  )
+    return false;
+  const { lifecycle: _stale, projection: _staleProjection, ...retained } = stale;
+  const { lifecycle: _current, projection: _currentProjection, ...accepted } = current;
+  return sameValue(retained, accepted);
+}
+
 function diagnosticForGap(): CatalogDiagnostic {
   return {
     code: 'catalog-gap',
@@ -93,6 +109,18 @@ function hasIdentityChanges(delta: CatalogDelta): boolean {
   return delta.added.length > 0 || delta.changed.length > 0 || delta.removed.length > 0;
 }
 
+function samePublicationTuple(
+  prior: AssetPublicationEnvelope,
+  entry: AssetPublicationEnvelope,
+): boolean {
+  return (
+    prior.sourcePath === entry.sourcePath &&
+    prior.sourceRevision === entry.sourceRevision &&
+    prior.digest === entry.digest &&
+    prior.outputSetDigest === entry.outputSetDigest
+  );
+}
+
 function rowRevisionDiagnostic(
   entries: ReadonlyMap<string, CatalogEntry>,
   delta: CatalogDelta,
@@ -100,8 +128,8 @@ function rowRevisionDiagnostic(
 ): CatalogDiagnostic | undefined {
   for (const entry of [...delta.added, ...delta.changed]) {
     const prior = entries.get(guidKey(entry.guid));
-    if (prior !== undefined && sameValue(prior, entry)) continue;
-    const previous = prior?.publication;
+    if (prior === undefined || sameValue(prior, entry)) continue;
+    const previous = prior.publication;
     const incoming = entry.publication;
     if (previous !== undefined) {
       const stale = !ordered && incoming !== undefined && incoming.generation < previous.generation;
@@ -109,11 +137,7 @@ function rowRevisionDiagnostic(
         incoming === undefined ||
         stale ||
         (incoming.generation === previous.generation &&
-          (incoming.sourcePath !== previous.sourcePath ||
-            incoming.sourceRevision !== previous.sourceRevision ||
-            incoming.digest !== previous.digest ||
-            incoming.outputSetDigest !== previous.outputSetDigest ||
-            entry.packageUrl !== prior?.packageUrl))
+          (!samePublicationTuple(previous, incoming) || entry.packageUrl !== prior.packageUrl))
       )
         return {
           code: stale ? 'catalog-revision-stale' : 'catalog-revision-conflict',
@@ -124,9 +148,14 @@ function rowRevisionDiagnostic(
           authority: 'catalog',
         };
       // A dependency-only rebuild can leave the author file timestamp unchanged.
-      if (ordered || incoming.generation > previous.generation) continue;
+      if (
+        ordered ||
+        incoming.generation > previous.generation ||
+        retainsCurrentPublication(entry, prior)
+      )
+        continue;
     }
-    if (prior?.revision === undefined) continue;
+    if (prior.revision === undefined) continue;
     if (
       incoming !== undefined &&
       previous === undefined &&
@@ -333,10 +362,13 @@ export class CatalogReplica {
         if (!imported.ok) return imported;
         const rows: RuntimeCatalogRow[] = [];
         for (const candidate of imported.value) {
-          const checked = validateRuntimeRow(this.resolveRow(candidate));
-          if (!checked.ok) return checked;
           const key = guidKey(candidate.guid);
           const current = this.get(key);
+          const resolved = this.resolveRow(candidate);
+          const checked = validateRuntimeRow(
+            retainsCurrentPublication(current, resolved) ? current : resolved,
+          );
+          if (!checked.ok) return checked;
           if (
             (this.changedAt.get(key) ?? 0) > startedAt &&
             (current === undefined || !sameValue(current, checked.value))
@@ -420,32 +452,15 @@ export class CatalogReplica {
     };
   }
 
-  /**
-   * Adopt an already accepted baseline without reading the source again.
-   *
-   * AssetRegistry uses this when a URL-backed pack index was loaded before a
-   * CatalogSource was attached. The replica still subscribes before exposing
-   * the baseline, so later deltas retain the same ordering and validation
-   * semantics as a normal `start()`.
-   */
-  seed(entries: readonly CatalogEntry[]): void {
-    if (this.startPromise !== undefined || this.baselineReady) return;
-    if (this.unsubscribe === undefined) {
-      this.unsubscribe = this.source.subscribe((delta) => this.receive(delta));
-    }
-    this.entries.clear();
-    this.revisions.clear();
-    const publications: PublicationCopies = new Map();
-    for (const entry of entries)
-      this.entries.set(guidKey(entry.guid), freezeEntry(entry, publications));
-    this.stale = false;
-    this.diagnostics = [];
-    this.baselineReady = true;
-    const pending = this.pendingBeforeBaseline;
+  private subscribeToSource(): void {
+    this.unsubscribe ??= this.source.subscribe((delta) => this.receive(delta));
+  }
+
+  private drainPending(reconcile = false): CatalogDelta[] {
+    const pending = reconcile ? (this.pendingDuringReconcile ?? []) : this.pendingBeforeBaseline;
     this.pendingBeforeBaseline = [];
     this.pendingDuringReconcile = undefined;
-    for (const delta of pending) this.fold(delta, false);
-    this.currentSnapshot = this.makeSnapshot();
+    return pending;
   }
 
   dispose(): void {
@@ -481,9 +496,7 @@ export class CatalogReplica {
     if (this.baselineReady && this.unsubscribe !== undefined) {
       return Promise.resolve(ok(this.snapshot()));
     }
-    if (this.unsubscribe === undefined) {
-      this.unsubscribe = this.source.subscribe((delta) => this.receive(delta));
-    }
+    this.subscribeToSource();
     const promise = this.loadBaseline(false);
     this.startPromise = promise;
     void promise.then((result) => {
@@ -495,9 +508,7 @@ export class CatalogReplica {
   async reconcile(): Promise<SnapshotResult> {
     if (this.disposed) return this.retired();
     if (this.reconcilePromise) return this.reconcilePromise;
-    if (this.unsubscribe === undefined) {
-      this.unsubscribe = this.source.subscribe((delta) => this.receive(delta));
-    }
+    this.subscribeToSource();
     this.pendingDuringReconcile = [];
     this.reads.clear();
     this.changedAt.clear();
@@ -559,9 +570,7 @@ export class CatalogReplica {
     this.stale = false;
     this.diagnostics = [];
     this.baselineReady = true;
-    const pending = isReconcile ? (this.pendingDuringReconcile ?? []) : this.pendingBeforeBaseline;
-    this.pendingBeforeBaseline = [];
-    this.pendingDuringReconcile = undefined;
+    const pending = this.drainPending(isReconcile);
     const baselineRevisions = new Map(this.revisions);
     const reconciledGuids = new Set([
       ...changed.map((entry) => guidKey(entry.guid)),
@@ -617,13 +626,10 @@ export class CatalogReplica {
 
   private receive(delta: CatalogDelta): void {
     if (this.disposed) return;
-    if (!this.baselineReady) {
-      if (this.pendingDuringReconcile !== undefined) this.pendingDuringReconcile.push(delta);
-      else this.pendingBeforeBaseline.push(delta);
-      return;
-    }
-    if (this.pendingDuringReconcile !== undefined) {
-      this.pendingDuringReconcile.push(delta);
+    const pending =
+      this.pendingDuringReconcile ?? (this.baselineReady ? undefined : this.pendingBeforeBaseline);
+    if (pending !== undefined) {
+      pending.push(delta);
       return;
     }
     this.fold(delta, true);

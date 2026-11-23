@@ -52,7 +52,7 @@ export class FilteredTaskHeaders {
     previous?: FilteredTaskHeaders,
   ): void {
     const guard = this.inputs.captureGuard();
-    const cursor = this.scene.contentCursor;
+    const revision = this.scene.syncRevision;
     let read: GpuInputReadFrame | undefined;
     let failure: unknown;
     try {
@@ -97,7 +97,7 @@ export class FilteredTaskHeaders {
       !this.scene.live ||
       this.scene.inputs !== this.inputs ||
       !guard() ||
-      this.scene.contentCursor !== cursor
+      this.scene.syncRevision !== revision
     )
       throw new RhiError({
         code: 'rhi-descriptor-invalid',

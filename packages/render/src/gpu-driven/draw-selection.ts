@@ -59,10 +59,14 @@ const MASK_DRAWS_ALL = 0x7fffffff;
 /** Shared execution membership, queried by the draw that is about to consume it. */
 export class GpuDrawSelection {
   #fixedCoverage = false;
+  static #empty: GpuDrawSelection | undefined;
   /** Producer-only admission of immutable execution/binding routes. */
   static fixed(batches: FrameList<GpuDrivenBatch>): GpuDrawSelection {
+    if (batches.length === 0 && GpuDrawSelection.#empty !== undefined)
+      return GpuDrawSelection.#empty;
     const selection = new GpuDrawSelection(batches);
     selection.#fixedCoverage = true;
+    if (selection.#byBinding.size === 0) GpuDrawSelection.#empty = selection;
     return selection;
   }
   static isFixedCoverage(selection: GpuDrawSelection): boolean {
@@ -287,6 +291,7 @@ export class GpuDrawSelection {
     compactIndex: number,
     passKind: PassKind = 'forward',
   ): boolean {
+    if (this.#byBinding.size === 0) return false;
     const memoized =
       compactIndex >= 0 &&
       compactIndex < MASK_DRAWS &&
@@ -306,7 +311,7 @@ export class GpuDrawSelection {
     slot: number,
     generation: number,
   ): boolean {
-    if (!gpuDrivenGeometryEligible(source)) return false;
+    if (this.#byBinding.size === 0 || !gpuDrivenGeometryEligible(source)) return false;
     const compactIndex = source.gpuDrivenDraws?.findIndex(
       (draw, index) => gpuDrivenSourceDrawItemIndex(draw, index) === sourceDrawIndex,
     );

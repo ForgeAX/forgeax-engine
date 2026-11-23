@@ -14,6 +14,8 @@ import { constructRendererHost } from '../../../render/src/construct-renderer';
 import { MorphGeometry } from '../../../render/src/device/morph-geometry';
 import {
   Camera,
+  ClippingPlanes,
+  clippingPlanesData,
   DirectionalLight,
   Materials,
   MeshFilter,
@@ -89,7 +91,7 @@ function bakedMesh(source: MeshAsset, weights: readonly number[]): MeshAsset {
   };
 }
 
-async function harness() {
+async function harness(options?: { readonly clipOutsideScene?: true }) {
   let target: GPUTexture | undefined;
   const canvas = {
     width: SIZE,
@@ -162,7 +164,7 @@ async function harness() {
 
   // One World and lease; each scene replaces only the subject entity.
   const world = new World({ assets });
-  world
+  const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 7] } },
       {
@@ -179,6 +181,14 @@ async function harness() {
       },
     )
     .unwrap();
+  if (options?.clipOutsideScene) {
+    world
+      .addComponent(camera, {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 100]] }),
+      })
+      .unwrap();
+  }
   world
     .spawn({
       component: DirectionalLight,
@@ -390,7 +400,8 @@ it('batches morphed rows sharing a Mesh with per-row weights and exact CPU-lane 
 it('composes per-row morph with GPU skinning in one skinned batch', {
   timeout: 180_000,
 }, async () => {
-  const { renderer, assets, scene, errors } = await harness();
+  // Keep the same native receiver for the skinned and rigid oracle draws.
+  const { renderer, assets, scene, errors } = await harness({ clipOutsideScene: true });
   const source = morphMesh(true);
   const handle = assets.create(source).unwrap();
   const weights = [

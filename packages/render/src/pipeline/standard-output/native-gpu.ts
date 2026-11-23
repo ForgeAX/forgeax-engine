@@ -26,11 +26,16 @@ import { OUTPUT_GAMUT_CODE } from '../../output-color-space';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { registerScenePipelinePreparation } from '../../record/scene-pipeline-preparation';
 import { STANDARD_OUTPUT_V2_FEATURE_ID } from '../../render-contract';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import {
+  frameOutputDither,
+  type OutputDither,
+  type RenderPipelineFrame,
+  type RenderPipelineTarget,
+} from '../../render-pipeline';
 import { markPipelinePreparationPending } from '../../render-system-presentation';
 import { recordContext } from '../../world/view-record-context';
 import type { StandardLutGraphProjection } from './lut-gpu';
-import { createStandardOutputV2ParameterWriter } from './native-params';
+import { createStandardOutputV2ParameterWriter, type GradeParameters } from './native-params';
 import { ensureStandardOutputParameters } from './resources';
 
 interface NativeOutputProgram {
@@ -103,14 +108,9 @@ export type NativeOutputStage =
   | { readonly kind: 'final'; readonly fxaa: boolean }
   | { readonly kind: 'encode' };
 
-export interface NativeOutputParameterPolicy {
-  readonly bloom: boolean;
-  readonly lutStrength: number;
-  readonly sharpen: number;
-  readonly dither: boolean;
-  readonly finishInGrade: boolean;
-  readonly linearGrade?: boolean | undefined;
-  readonly chromaticAberration?: boolean | undefined;
+export interface NativeOutputParameterPolicy extends GradeParameters {
+  readonly lut?: StandardLutGraphProjection | undefined;
+  readonly dither: OutputDither;
 }
 
 /** One upload node per graph imports its view-owned Grade/Final parameter buffer. */
@@ -130,29 +130,17 @@ export function addNativeOutputParameters(
     },
   );
   if (!parameters.ok) return parameters;
-  const write = createStandardOutputV2ParameterWriter();
+  const write = createStandardOutputV2ParameterWriter(policy);
   const uploaded = graph.addCopyPass('standard-output-prepare', {
     accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
     encodeDirect: (_encoder, frame, resources) => {
       const c = frame as _InternalRenderPipelineContext;
-      const output = c.camera.output;
-      const bytes = write({
-        camera: c.camera,
-        outputGamut:
-          OUTPUT_GAMUT_CODE[recordContext(c.runtime).outputColorSpace?.report.effective ?? 'srgb'],
-        lens: c.camera.lensEffects,
-        whiteBalance: { temperature: output?.temperature ?? 6504, tint: output?.tint ?? 0 },
-        bloom: policy.bloom
-          ? { intensity: c.camera.bloomIntensity, radius: c.camera.bloomRadius }
-          : undefined,
-        lutStrength: policy.lutStrength,
-        sharpen: policy.sharpen,
-        elapsedSeconds: c.camera.temporal?.sampleTimeSeconds ?? 0,
-        dither: policy.dither,
-        finishInGrade: policy.finishInGrade,
-        linearGrade: policy.linearGrade,
-        chromaticAberration: policy.chromaticAberration,
-      });
+      const bytes = write(
+        c.camera,
+        OUTPUT_GAMUT_CODE[recordContext(c.runtime).outputColorSpace?.report.effective ?? 'srgb'],
+        policy.lut?.bind(frame).strength ?? policy.lut?.strength ?? 0,
+        frameOutputDither(policy.dither, frame),
+      );
       c.runtime.device.queue
         .writeBuffer(resources.buffer(parameters.value).unwrap(), 0, bytes)
         .unwrap();

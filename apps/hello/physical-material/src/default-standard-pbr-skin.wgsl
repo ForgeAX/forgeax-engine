@@ -1,0 +1,1 @@
+../../../../packages/shader/src/default-standard-pbr-skin.wgsl

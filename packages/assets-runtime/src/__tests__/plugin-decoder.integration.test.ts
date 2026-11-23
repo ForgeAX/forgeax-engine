@@ -1,4 +1,3 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { Context } from '@forgeax/engine-plugin';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -6,26 +5,22 @@ import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { assetDecoderPlugin, assetsPlugin } from '../plugin';
+import { catalogPack } from './fixtures/catalog-pack';
 
 it('Cordis Fibers lease the real decoder and keep accepted content alive after retirement', async () => {
   const kind = defineAssetKind<{ kind: 'test-dialogue'; lines: string[] }>('test-dialogue');
   const guids = ['00000000-0000-7000-8000-000000000001', '00000000-0000-7000-8000-000000000002'];
   const packageUrl = 'https://decoder.invalid/pack.json';
-  const published = createRuntimePackPublication({
-    scopeId: 'decoder',
-    packageUrl,
-    sourcePath: 'dialogue',
-    sourceRevision: '1',
-    pack: {
-      assets: guids.map((guid) => ({
-        guid,
-        kind: kind.kind,
-        refs: [],
-        artifacts: {},
-        payload: { kind: kind.kind, lines: ['hello'] },
-      })),
-    },
-  });
+  const published = catalogPack(
+    guids.map((guid) => ({
+      guid,
+      kind: kind.kind,
+      refs: [],
+      artifacts: {},
+      payload: { kind: kind.kind, lines: ['hello'] },
+    })),
+    { scopeId: 'decoder', packageUrl, sourcePath: 'dialogue' },
+  );
   const assets = new AssetRegistry({ scopeId: 'decoder' });
   assets.setCatalogSource(
     createCatalogSource({

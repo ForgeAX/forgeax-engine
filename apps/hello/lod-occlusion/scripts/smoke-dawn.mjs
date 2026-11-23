@@ -466,10 +466,11 @@ try {
       `renderer did not submit the main GPU-driven lane: ${JSON.stringify(mainGpuChannel)}`,
     );
   }
-  if (!inspection.output.graphPassNames.includes('gpu-driven.view-selection')) {
-    throw new Error('renderer did not include the GPU-driven LOD graph passes');
+  // Camera selection may record native commands inside a parent graph pass.
+  const passNames = inspection.perFramePassNames;
+  if (!passNames.includes('gpu-driven.view-selection')) {
+    throw new Error(`renderer did not submit GPU-driven LOD selection: ${JSON.stringify(passNames)}`);
   }
-  const passNames = inspection.output.graphPassNames;
   // Forward resolves the late phase in its depth prepass when one runs; main
   // then draws the early + late union, so `main-late` only exists without it.
   const lateOcclusion =

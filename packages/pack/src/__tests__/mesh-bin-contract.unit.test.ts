@@ -5,9 +5,9 @@ import {
   MESH_BIN_VERSION,
 } from '../mesh-bin-contract.js';
 
-describe('mesh-bin v6 wire contract', () => {
-  it('owns a fixed header and rejects legacy versions at the contract boundary', () => {
-    expect(MESH_BIN_VERSION).toBe(6);
+describe('mesh-bin wire contract', () => {
+  it('owns a fixed header and rejects unknown versions at the contract boundary', () => {
+    expect(MESH_BIN_VERSION).toBe(8);
     expect(MESH_BIN_HEADER_BYTES).toBeGreaterThan(28);
     expect(decodeMeshBinHeader(new Uint8Array(MESH_BIN_HEADER_BYTES))).toMatchObject({
       ok: false,

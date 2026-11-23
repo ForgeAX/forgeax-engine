@@ -1,20 +1,27 @@
 import { stagePublicationShaders } from '@forgeax/engine-runtime/internal/shader-publication';
+import type { BrowserRenderWorkerControl } from './render-worker-browser-channel';
+import {
+  adoptBrowserRenderPort,
+  postRenderWorkerMessage,
+  setBrowserRenderVisibility,
+} from './render-worker-presentation';
 import type { RenderWorkerInput, RenderWorkerOutput } from './render-worker-protocol';
 import type { adoptStagedRenderShaders } from './render-worker-runtime';
 import { rendererInspectionFailure, sendRendererInspection } from './renderer-inspection';
 
 const scope = globalThis as unknown as {
-  postMessage(message: RenderWorkerOutput): void;
   onmessage: ((event: MessageEvent<RenderWorkerInput>) => void) | null;
 };
+const output = { postMessage: (message: RenderWorkerOutput) => postRenderWorkerMessage(message) };
 const pending: MessageEvent<RenderWorkerInput>[] = [];
 let loading = false;
+let hosted = false;
 let staged: Parameters<typeof adoptStagedRenderShaders>[0] | undefined;
 
-scope.onmessage = (event) => {
+let receive = (event: MessageEvent<RenderWorkerInput>) => {
   const message = event.data;
   if (message.kind === 'inspect' && !pending.some((input) => input.data.kind === 'init')) {
-    sendRendererInspection(scope, message, rendererInspectionFailure('stale-session'));
+    sendRendererInspection(output, message, rendererInspectionFailure('stale-session'));
     return;
   }
   if (message.kind === 'stage-shader-manifest' && pending.length === 0) {
@@ -38,7 +45,8 @@ scope.onmessage = (event) => {
       staged = undefined;
       for (const input of pending) receiveRenderWorkerInput(input);
       pending.length = 0;
-      scope.onmessage = receiveRenderWorkerInput;
+      receive = receiveRenderWorkerInput;
+      if (!hosted) scope.onmessage = receiveRenderWorkerInput;
     })
     .catch((cause) => {
       // Use the same Worker error event as a failing static module import.
@@ -46,4 +54,15 @@ scope.onmessage = (event) => {
         throw cause;
       });
     });
+};
+
+scope.onmessage = (event: MessageEvent<RenderWorkerInput | BrowserRenderWorkerControl>) => {
+  const message = event.data;
+  if (message.kind === 'browser-render-connect') {
+    hosted = true;
+    adoptBrowserRenderPort(message.port, message.visible);
+    message.port.onmessage = (input: MessageEvent<RenderWorkerInput>) => receive(input);
+  } else if (message.kind === 'browser-render-visibility') {
+    setBrowserRenderVisibility(message.visible);
+  } else receive(event as MessageEvent<RenderWorkerInput>);
 };

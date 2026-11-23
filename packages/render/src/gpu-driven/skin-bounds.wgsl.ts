@@ -91,4 +91,25 @@ fn skinEnvelopeBounds(geometry: u32, paletteBase: u32, jointCount: u32, displace
   if (all(abs(result.minimum) <= vec3<f32>(maximumFloat)) && all(abs(result.maximum) <= vec3<f32>(maximumFloat))) { result.valid = 1u; }
   return result;
 }
+
+fn skinEnvelopeAffinePoint(bounds: SkinEnvelopeBounds, geometry: u32, translation: vec4<f32>) -> SkinEnvelopeBounds {
+  var result = bounds;
+  result.valid = 0u;
+  if (skinEnvelopeUnstable(bitcast<vec4<u32>>(translation))) { return result; }
+  let header = skinEnvelopeInput(geometry);
+  let a = (1.0 - header.x) * translation.xyz;
+  let b = (1.0 - header.y) * translation.xyz;
+  let low = bounds.minimum + min(a, b);
+  let high = bounds.maximum + max(a, b);
+  let padding = 0.00000011920928955078125 *
+    (64.0 * (1.0 + header.y) * abs(translation.xyz) + 4.0 * max(abs(low), abs(high))) +
+    vec3<f32>(64.0 * bitcast<f32>(0x00800000u));
+  result.minimum = low - padding;
+  result.maximum = high + padding;
+  if (all((bitcast<vec3<u32>>(result.minimum) & vec3<u32>(0x7fffffffu)) <= vec3<u32>(0x7f7fffffu)) &&
+    all((bitcast<vec3<u32>>(result.maximum) & vec3<u32>(0x7fffffffu)) <= vec3<u32>(0x7f7fffffu))) {
+    result.valid = 1u;
+  }
+  return result;
+}
 `;

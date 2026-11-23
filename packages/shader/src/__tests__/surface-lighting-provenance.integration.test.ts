@@ -41,7 +41,10 @@ describe('Standard Surface lighting provenance', () => {
     expect(pbr).toContain('evalPoint');
     expect(pbr).toContain('evalSpot');
     expect(pbr).toContain('fs_gbuffer');
-    expect(pbr).toContain('sampleIbl');
+    expect(pbr).toContain(
+      'sampleStandardDiffuseIrradiance(viewSkylight, physicalNormal, transmissionAlbedo, skySh)',
+    );
+    expect(pbr).toContain('evaluateStandardEnvironment(standardPositionWS');
     expect(pbr).toContain('evaluateStandardSurface');
     expect(pbr).toContain('alphaClipThreshold');
     // Volume integration is a post-lighting producer. Standard must not

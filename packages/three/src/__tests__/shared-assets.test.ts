@@ -105,6 +105,8 @@ it('reuses all pass leases until an output boundary and then sweeps unused sourc
       expect(cache.read(a, [0])?.handle).toBe(first.handle);
       cache.commit(false);
       cache.begin();
+      cache.abort(true); // An async texture import interrupts the next pass before commit.
+      cache.begin();
       expect(cache.read(b, [0])?.handle).toBe(second.handle);
       cache.commit();
     }
@@ -117,6 +119,66 @@ it('reuses all pass leases until an output boundary and then sweeps unused sourc
     cache.begin();
     cache.commit(false);
     expect(runtimeAssets(assets).borrow(second.handle).ok).toBe(false);
+  } finally {
+    cache.dispose();
+    assets.dispose();
+  }
+});
+
+it('keeps a revised shared asset until both mounted consumers release their pins', () => {
+  const assets = new AssetRegistry();
+  const cache = new SharedAssets<DataTexture, TextureAsset>(assets);
+  const texture = new DataTexture(new Uint8Array(4), 1, 1);
+  try {
+    cache.begin();
+    cache.write(texture, [0], projectTexture(texture).unwrap());
+    cache.commit();
+    const first = cache.pin(texture, '');
+    const second = cache.pin(texture, '');
+    if (!first || !second) throw new Error('Missing shared asset pins');
+    texture.dispose();
+    cache.begin();
+    const revised = cache.write(texture, [1], projectTexture(texture).unwrap());
+    cache.commit();
+    first();
+    cache.begin();
+    cache.commit();
+    expect(runtimeAssets(assets).borrow(revised.handle).ok).toBe(true);
+    second();
+    cache.begin();
+    cache.commit();
+    expect(runtimeAssets(assets).borrow(revised.handle).ok).toBe(false);
+  } finally {
+    cache.dispose();
+    assets.dispose();
+  }
+});
+
+it('isolates a fresh lease from late unmounts after the original address was retired', () => {
+  const assets = new AssetRegistry();
+  const cache = new SharedAssets<DataTexture, TextureAsset>(assets);
+  const texture = new DataTexture(new Uint8Array(4), 1, 1);
+  try {
+    cache.begin();
+    cache.write(texture, [0], projectTexture(texture).unwrap());
+    cache.commit();
+    const old = cache.pin(texture, '');
+    texture.dispose();
+    cache.begin();
+    cache.commit();
+    cache.begin();
+    const fresh = cache.write(texture, [1], projectTexture(texture).unwrap());
+    cache.commit();
+    const current = cache.pin(texture, '');
+    if (!old || !current) throw new Error('Missing asset pins');
+    old();
+    cache.begin();
+    cache.commit();
+    expect(runtimeAssets(assets).borrow(fresh.handle).ok).toBe(true);
+    current();
+    cache.begin();
+    cache.commit();
+    expect(runtimeAssets(assets).borrow(fresh.handle).ok).toBe(false);
   } finally {
     cache.dispose();
     assets.dispose();

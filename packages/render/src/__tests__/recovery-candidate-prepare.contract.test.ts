@@ -36,12 +36,12 @@ describe('recovery generation contract', () => {
       ).toContain('disposeTargetCaptures(cubeCaptureState)');
     }
   });
-  it('drops the lost device SSR history and builds SSR with the replacement pipeline', () => {
+  it('drops the lost device SSR admission and builds SSR with the replacement pipeline', () => {
     const start = renderSystemSource.indexOf(
       'resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {',
     );
     const reset = renderSystemSource.slice(start, renderSystemSource.indexOf('\n    },', start));
-    for (const field of ['ssrHistoryOwner', 'ssrSpatialAdmission', 'ssrFallbackGeneration']) {
+    for (const field of ['ssrSpatialAdmission', 'ssrFallbackGeneration']) {
       expect(reset).toContain(`frameState.${field} = undefined`);
     }
     // Initial readiness and recovery await the same pipeline preparation owner.

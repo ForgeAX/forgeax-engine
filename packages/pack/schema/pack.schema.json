@@ -1,25 +1,21 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/ForgeAX/forgeax-engine/packages/pack/schema/pack.schema.json",
-  "title": "InternalTextPackage",
-  "description": "Schema for authored and cooked internal text packages.",
+  "title": "RuntimePackV2",
+  "description": "Schema for internal Runtime Pack v2 transport.",
   "$comment": "The ordinary durable consumer matrix is SCRIPTABLE_PACK_ASSET_KINDS in @forgeax/engine-pack/source. Pack kind fields remain open for registered producer extensions.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schemaVersion"
+    "schemaVersion",
+    "kind",
+    "assets"
   ],
   "properties": {
     "schemaVersion": {
-      "type": "string",
-      "enum": [
-        "1.0.0",
-        "2.0.0",
-        "3.0.0"
-      ]
+      "const": "2.0.0"
     },
     "kind": {
-      "type": "string",
       "const": "internal-text-package"
     },
     "packageId": {
@@ -40,95 +36,12 @@
       }
     },
     "assets": {
-      "oneOf": [
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/asset"
-          }
-        },
-        {
-          "$ref": "#/$defs/authoringAssets"
-        }
-      ]
-    },
-    "parent": {
-      "$ref": "#/$defs/guid36",
-      "description": "Parent ScriptablePack packageId for one v3 instance; the source may declare Pack parameters."
-    },
-    "values": {
-      "type": "object",
-      "additionalProperties": true,
-      "description": "Sparse shallow parameter overrides for one v3 instance."
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
     }
   },
-  "oneOf": [
-    {
-      "required": [
-        "kind",
-        "assets"
-      ],
-      "properties": {
-        "schemaVersion": {
-          "enum": [
-            "1.0.0",
-            "2.0.0"
-          ]
-        },
-        "kind": {
-          "const": "internal-text-package"
-        },
-        "assets": {
-          "type": "array"
-        },
-        "parent": false,
-        "values": false
-      }
-    },
-    {
-      "required": [
-        "packageId",
-        "assets"
-      ],
-      "properties": {
-        "schemaVersion": {
-          "const": "3.0.0"
-        },
-        "kind": false,
-        "packageId": {
-          "$ref": "#/$defs/guid36"
-        },
-        "assets": {
-          "$ref": "#/$defs/authoringAssets"
-        },
-        "parent": false,
-        "values": false
-      }
-    },
-    {
-      "required": [
-        "packageId",
-        "parent",
-        "values"
-      ],
-      "properties": {
-        "schemaVersion": {
-          "const": "3.0.0"
-        },
-        "kind": false,
-        "packageId": {
-          "$ref": "#/$defs/guid36"
-        },
-        "parent": {
-          "$ref": "#/$defs/guid36"
-        },
-        "values": {
-          "type": "object"
-        },
-        "assets": false
-      }
-    }
-  ],
   "allOf": [
     {
       "if": {
@@ -136,10 +49,7 @@
           "packageId"
         ],
         "properties": {
-          "packageId": {},
-          "schemaVersion": {
-            "const": "2.0.0"
-          }
+          "packageId": {}
         }
       },
       "then": {
@@ -247,68 +157,6 @@
           }
         }
       ]
-    },
-    "authoringAssets": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {
-        "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$": {
-          "$ref": "#/$defs/authoringAsset"
-        }
-      }
-    },
-    "authoringAsset": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "payload"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string",
-          "minLength": 1
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "payload": {
-          "type": "object"
-        },
-        "refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/guid36"
-          }
-        },
-        "artifacts": {
-          "$ref": "#/$defs/artifacts"
-        }
-      },
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "plugin"
-          }
-        },
-        "required": [
-          "kind"
-        ]
-      },
-      "then": {
-        "properties": {
-          "refs": false
-        }
-      },
-      "else": {
-        "properties": {
-          "refs": {}
-        },
-        "required": [
-          "refs"
-        ]
-      }
     },
     "artifacts": {
       "type": "object",

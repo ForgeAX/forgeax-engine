@@ -2,24 +2,28 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { GraphTextureView } from '@forgeax/engine-render-graph';
 import { ok, RhiError, type TextureView } from '@forgeax/engine-rhi';
 import { atmosphereVolumeViews } from '../environment/luts';
+import { currentAtmosphereStorage, prepareAtmosphereStorage } from '../environment/storage';
 import type { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import type { SourceRasterPassBindings } from '../gpu-driven/source-raster-bundles';
+import type {
+  SourceRasterMaterialBinding,
+  SourceRasterMaterialResolver,
+  SourceRasterPassBindings,
+} from '../gpu-driven/source-raster-bundles';
 import { getOrCreateHdrpBuffers } from '../hdrp-buffers';
 import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { clusterMeshBindingCurrent } from '../record/cluster-mesh-binding-preparation';
 import {
   buildPerFrameBindGroups,
   buildViewBindGroup,
   captureGlobalMeshBindingsCurrent,
 } from '../record/frame-lighting';
 import type { InstalledFrameGraph } from '../record/frame-snapshot';
+import { createPerSubmeshMaterialBgDeps, materialBindingByteOffset } from '../record/main-pass';
 import {
-  createPerSubmeshMaterialBgDeps,
-  materialBindingByteOffset,
-  resolveClusterMeshBinding,
-} from '../record/main-pass';
-import { buildPerSubmeshMaterialBg, prepareMaterialSkylight } from '../record/main-pass-material';
+  buildPerSubmeshMaterialBg,
+  prepareMaterialSkylight,
+  resolveMaterialReflection,
+} from '../record/main-pass-material';
 import { materialMatchesPass } from '../record/material-pass-selection';
 import { MaterialUniformRecording } from '../record/material-uniforms';
 import { viewReflectionProbesOf } from '../world/reflection-systems';
@@ -197,14 +201,16 @@ function passTargets(scope: MainScope, bindings: BindingDemand) {
     directionalShadow:
       bindings.directionalShadow === undefined ? undefined : targetView(bindings.directionalShadow),
     spotShadow: bindings.spotShadow === undefined ? undefined : targetView(bindings.spotShadow),
-    shadowMoments:
-      bindings.shadowMoments === undefined ? undefined : targetView(bindings.shadowMoments),
     cloudShadow: bindings.cloudShadow === undefined ? undefined : targetView(bindings.cloudShadow),
+    forwardScreenSurface: bindings.ssao === undefined ? undefined : targetView(bindings.ssao),
+    hiZ: bindings.ssrSource === undefined ? undefined : resolve(bindings.ssrSource.hiZ),
+    ssrColor: bindings.ssrSource === undefined ? undefined : resolve(bindings.ssrSource.color),
     atmosphere:
       bindings.environment?.atmosphere?.execution === 'compute-volume'
         ? atmosphereVolumeViews(
             { textureView: (port: GraphTextureView) => ok(resolve(port)) },
             bindings.environment.atmosphere,
+            bindings.atmosphereReads,
           )
         : undefined,
   };
@@ -215,8 +221,7 @@ function* preparePassBindings(
   demand: import('../record/scene-pipeline-preparation').ScenePipelineDemand,
   bindings: BindingDemand,
 ): Generator<void> {
-  const { internals, frameState, pipeline, counts, receipts, live, hdrp, graph, native, resolve } =
-    scope;
+  const { internals, frameState, pipeline, counts, receipts, live, hdrp, native } = scope;
   const selected = native.materialBindings.filter((binding) => {
     const material = native.materials.get(binding.material);
     return (
@@ -238,54 +243,29 @@ function* preparePassBindings(
     bindings.surfaceNearestDepth !== undefined
   )
     throw invalid('prepared opaque Source Pass binding domain');
-  const targets = passTargets(scope, bindings);
+  const { materials, sky } = yield* preparePassMaterials(scope, bindings, selected);
+  const targets = { ...passTargets(scope, bindings), cluster: hdrp ?? undefined, sky };
   const view = buildViewBindGroup(internals, frameState, pipeline, counts, targets, false, live);
   if (view === null) throw invalid('actual Pass View binding');
   receipts.push(
     () => buildViewBindGroup(internals, frameState, pipeline, counts, targets, true) === view,
   );
   yield;
-  const ssao = bindings.ssao === undefined ? undefined : resolve(bindings.ssao.view);
-  let cluster: import('@forgeax/engine-rhi').BindGroup | undefined;
-  if (hdrp !== null) {
-    const group = resolveClusterMeshBinding(
-      {
-        runtime: internals,
-        cache: frameState.meshBindGroupCache,
-        hdrp,
-        ssaoView: ssao,
-        counts,
-        graph,
-        graphViews:
-          ssao === undefined || bindings.ssao === undefined
-            ? undefined
-            : { graph, views: [['ssao', bindings.ssao.view, ssao]] },
-        current: live,
-      },
-      native.meshBinding.buffer,
-      native.meshBinding.bytes,
-    );
-    if (group === undefined) throw invalid('actual Source clustered mesh binding');
-    cluster = group;
-    receipts.push(() => clusterMeshBindingCurrent(frameState.meshBindGroupCache, group));
-    yield;
-  }
-  const materials = yield* preparePassMaterials(scope, bindings, selected);
-  (yield* native.prepareBundles({ demand, view, materials, cluster })).unwrap();
+  (yield* native.prepareBundles({ demand, view, materials })).unwrap();
 }
 
 function* preparePassMaterials(
   scope: MainScope,
   bindings: BindingDemand,
   selected: NativeMain['materialBindings'],
-): Generator<void, SourceRasterPassBindings['materials']> {
-  const prepared = new Map<
-    MaterialResource,
-    Map<
-      string,
-      { readonly group: import('@forgeax/engine-rhi').BindGroup; readonly byteOffset: number }
-    >
-  >();
+): Generator<
+  void,
+  {
+    readonly materials: SourceRasterPassBindings['materials'];
+    readonly sky: ReturnType<typeof prepareMaterialSkylight>['skylightResources'];
+  }
+> {
+  const prepared = new Map<MaterialResource, Map<string, SourceRasterMaterialResolver>>();
   const {
     internals,
     frameState,
@@ -297,16 +277,19 @@ function* preparePassMaterials(
     receipts,
     source,
     native,
-    resolve,
     live,
   } = scope;
-  const environmentIbl =
-    bindings.environment === undefined
+  const environment = frameState.environmentFrame;
+  const atmosphere =
+    bindings.environment === undefined || environment === undefined
       ? undefined
-      : {
-          irradiance: resolve(bindings.environment.irradiance),
-          prefilter: resolve(bindings.environment.prefilter),
-        };
+      : prepareAtmosphereStorage(internals, environment);
+  const environmentIbl =
+    atmosphere === undefined
+      ? undefined
+      : { skySh: atmosphere.skySh, prefilter: atmosphere.prefilterView };
+  if (atmosphere !== undefined)
+    receipts.push(() => currentAtmosphereStorage(internals) === atmosphere);
   const materialInputs = {
     runtime: internals,
     pipelineState: pipeline,
@@ -332,32 +315,59 @@ function* preparePassMaterials(
     if (!live()) throw invalid('current Source material binding');
     const accepted = native.materials.get(binding.material);
     if (accepted === undefined) throw invalid('actual accepted Source material');
-    const group = scope.uniforms.runPrepared(() =>
-      buildPerSubmeshMaterialBg(
+    const prepare = (
+      standardMaterialLayoutIndex: number,
+      program: string | undefined,
+    ): SourceRasterMaterialBinding => {
+      if (!live()) throw invalid('current Source material binding');
+      const reflection = resolveMaterialReflection(
         deps,
         accepted.snapshot,
-        undefined,
         source,
-        accepted.snapshot.materialShaderId,
-        0,
+        undefined,
         binding.resourceClass,
-      ),
-    );
-    const bindingCurrent = frameState.materialBgAssemblyCache.captureBindingCurrent(group);
-    if (bindingCurrent === undefined || !live() || !bindingCurrent())
-      throw invalid('actual current material binding receipt');
-    receipts.push(bindingCurrent);
-    scope.uniforms.hold(internals, accepted.snapshot);
+      );
+      const group = scope.uniforms.runPrepared(() =>
+        buildPerSubmeshMaterialBg(
+          deps,
+          accepted.snapshot,
+          undefined,
+          source,
+          program,
+          0,
+          binding.resourceClass,
+          standardMaterialLayoutIndex,
+          reflection ?? null,
+        ),
+      );
+      const bindingCurrent = frameState.materialBgAssemblyCache.captureBindingCurrent(group);
+      if (bindingCurrent === undefined || !live() || !bindingCurrent())
+        throw invalid('actual current material binding receipt');
+      receipts.push(bindingCurrent);
+      scope.uniforms.hold(internals, accepted.snapshot);
+      return {
+        group,
+        byteOffset: materialBindingByteOffset(materialInputs, accepted.snapshot),
+        reflection: reflection?.resources ?? resources,
+      };
+    };
     let classes = prepared.get(binding.material);
     if (classes === undefined) {
       classes = new Map();
       prepared.set(binding.material, classes);
     }
-    classes.set(binding.resourceClass, {
-      group,
-      byteOffset: materialBindingByteOffset(materialInputs, accepted.snapshot),
+    let selected: SourceRasterMaterialBinding | undefined;
+    let selectedProgram: string | undefined;
+    let selectedLayout: number | undefined;
+    classes.set(binding.resourceClass, (layout, program) => {
+      if (selected === undefined || selectedProgram !== program || selectedLayout !== layout) {
+        selected = prepare(layout, program);
+        selectedProgram = program;
+        selectedLayout = layout;
+      }
+      return selected;
     });
     yield;
   }
-  return prepared;
+  return { materials: prepared, sky: resources };
 }

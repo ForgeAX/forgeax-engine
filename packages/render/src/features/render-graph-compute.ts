@@ -6,6 +6,7 @@
   RenderGraphBuilder,
   RenderGraphError,
   RenderGraphFrame,
+  RenderGraphNativePass,
 } from '@forgeax/engine-render-graph';
 import type { Buffer, Texture } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -84,60 +85,79 @@ class RenderFeatureGraphTargetUnavailableError extends Error {
   }
 }
 
-/** Preserve physical usage scopes and copy barriers for graph and native command consumers. */
+const computeAccessBit: Readonly<Record<GraphBufferAccess, number>> = {
+  'uniform-read': 1,
+  'storage-read': 2,
+  'storage-write': 4,
+  'storage-read-write': 8,
+  'indirect-read': 16,
+  'vertex-read': 32,
+  'index-read': 64,
+  'copy-src': 128,
+  'copy-dst': 256,
+};
+
+function bufferOnlyDispatch(pass: RenderFeaturePlanExecutionPass): boolean {
+  const work = pass.resolvedGpuCompute;
+  return (
+    pass.gpuCompute !== undefined &&
+    work !== undefined &&
+    (work.textures?.length ?? 0) === 0 &&
+    (work.sampledTargets?.length ?? 0) === 0 &&
+    (work.storageTargets?.length ?? 0) === 0
+  );
+}
+
+function rememberBufferAccesses(
+  uses: Map<Buffer, number>,
+  work: RenderFeatureResolvedGpuComputePass,
+): void {
+  for (const resource of work.buffers) {
+    uses.set(resource.buffer, (uses.get(resource.buffer) ?? 0) | computeAccessBit[resource.access]);
+  }
+}
+
+/** Visit native usage scopes in the supplied range. Independent copies are issued before
+ * their compute scope; consumers read dispatches directly from the original range. */
 export function visitRenderFeatureComputeSequence(
   passes: readonly RenderFeaturePlanExecutionPass[],
   actions: {
     copy: (pass: RenderFeaturePlanExecutionPass) => Result<void, RenderGraphError | RenderError>;
     compute: (
       passes: readonly RenderFeaturePlanExecutionPass[],
+      start: number,
+      end: number,
     ) => Result<void, RenderGraphError | RenderError>;
   },
+  start = 0,
+  limit = passes.length,
 ): Result<void, RenderGraphError | RenderError> {
-  const bufferOnly = (pass: RenderFeaturePlanExecutionPass): boolean =>
-    pass.gpuCompute !== undefined &&
-    pass.resolvedGpuCompute !== undefined &&
-    (pass.resolvedGpuCompute.textures?.length ?? 0) === 0 &&
-    (pass.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
-    (pass.resolvedGpuCompute.storageTargets?.length ?? 0) === 0;
-  for (let start = 0; start < passes.length; ) {
+  let uses: Map<Buffer, number> | undefined;
+  while (start < limit) {
     const first = passes[start];
     if (first === undefined) {
       start++;
       continue;
     }
     if (first.resolvedGpuCopies !== undefined) {
-      const added = actions.copy(first);
-      if (!added.ok) return added;
+      const result = actions.copy(first);
+      if (!result.ok) return result;
       start++;
       continue;
     }
-    if (first.resolvedGpuCompute === undefined)
+    const firstWork = first.resolvedGpuCompute;
+    if (firstWork === undefined)
       return err(
         new RenderFeatureStageFailedError(first.featureIdentity, first.order, 'plan', 'next-frame'),
       );
-    const firstWork = first.resolvedGpuCompute;
     let end = start + 1;
-    const logicalPasses = [first];
-    const earlyCopies: RenderFeaturePlanExecutionPass[] = [];
-    const program = first.gpuCompute?.program;
-    const collectBufferDispatches = (): void => {
-      if (program === undefined || !bufferOnly(first)) return;
-      const uses = new Map<Buffer, Set<GraphBufferAccess>>();
-      const remember = (work: RenderFeatureResolvedGpuComputePass): void => {
-        for (const resource of work.buffers) {
-          let accesses = uses.get(resource.buffer);
-          if (accesses === undefined) {
-            accesses = new Set();
-            uses.set(resource.buffer, accesses);
-          }
-          accesses.add(resource.access);
-        }
-      };
-      remember(firstWork);
-      while (end < passes.length) {
+    let hasCopies = false;
+    if (end < limit && first.gpuCompute?.program !== undefined && bufferOnlyDispatch(first)) {
+      uses ??= new Map();
+      uses.clear();
+      rememberBufferAccesses(uses, firstWork);
+      for (; end < limit; end++) {
         const next = passes[end];
-        const nextWork = next?.resolvedGpuCompute;
         if (
           next === undefined ||
           next.featureIdentity !== first.featureIdentity ||
@@ -145,43 +165,119 @@ export function visitRenderFeatureComputeSequence(
         )
           break;
         if (next.resolvedGpuCopies !== undefined) {
-          // Copies may cross prior dispatches only with disjoint physical
-          // buffers. Names, byte ranges and the current enabled bit are not proof.
-          if (
-            (next.textureReadbacks?.length ?? 0) > 0 ||
-            next.resolvedGpuCopies.some(
-              (copy) => uses.has(copy.source.buffer) || uses.has(copy.destination.buffer),
-            )
-          )
-            break;
-          earlyCopies.push(next);
-          end++;
+          if ((next.textureReadbacks?.length ?? 0) > 0) break;
+          let dependent = false;
+          for (const copy of next.resolvedGpuCopies) {
+            if (uses.has(copy.source.buffer) || uses.has(copy.destination.buffer)) {
+              dependent = true;
+              break;
+            }
+          }
+          if (dependent) break;
+          hasCopies = true;
           continue;
         }
-        if (
-          nextWork === undefined ||
-          !bufferOnly(next) ||
-          nextWork.buffers.some((resource) => {
-            const accesses = uses.get(resource.buffer);
-            return accesses !== undefined && !accesses.has(resource.access);
-          })
-        )
-          break;
-        remember(nextWork);
-        logicalPasses.push(next);
-        end++;
+        const work = next.resolvedGpuCompute;
+        if (work === undefined || !bufferOnlyDispatch(next)) break;
+        let conflict = false;
+        for (const resource of work.buffers) {
+          const previous = uses.get(resource.buffer);
+          if (previous !== undefined && (previous & computeAccessBit[resource.access]) === 0) {
+            conflict = true;
+            break;
+          }
+        }
+        if (conflict) break;
+        rememberBufferAccesses(uses, work);
       }
-    };
-    collectBufferDispatches();
-    for (const copy of earlyCopies) {
-      const added = actions.copy(copy);
-      if (!added.ok) return added;
     }
-    const added = actions.compute(logicalPasses);
-    if (!added.ok) return added;
+    if (hasCopies)
+      for (let i = start + 1; i < end; i++) {
+        const pass = passes[i];
+        if (pass?.resolvedGpuCopies === undefined) continue;
+        const result = actions.copy(pass);
+        if (!result.ok) return result;
+      }
+    const result = actions.compute(passes, start, end);
+    if (!result.ok) return result;
     start = end;
   }
   return ok(undefined);
+}
+
+/**
+ * Issue a contiguous run of actual Feature commands. Its graphics boundary and
+ * visibility filter are selected by the caller; the physical hazard rules are
+ * shared with graph-authored passes. The borrowed range ends when this returns.
+ */
+export function issueFeatureComputeCommands(
+  passes: readonly RenderFeaturePlanExecutionPass[],
+  start: number,
+  end: number,
+  execute: (work: RenderGraphNativePass) => void,
+  reportError: ((error: RenderError) => void) | undefined,
+): void {
+  const visited = visitRenderFeatureComputeSequence(
+    passes,
+    {
+      copy(pass) {
+        if (pass.enabled !== false)
+          execute({
+            kind: 'copy',
+            name: pass.name,
+            encode(encoder) {
+              for (const copy of pass.resolvedGpuCopies ?? []) {
+                if (copy.enabled !== false)
+                  encoder.copyBufferToBuffer(
+                    copy.source.buffer,
+                    copy.sourceOffset,
+                    copy.destination.buffer,
+                    copy.destinationOffset,
+                    copy.size,
+                  );
+              }
+            },
+          });
+        return ok(undefined);
+      },
+      compute(source, from, to) {
+        let firstActive = from;
+        while (firstActive < to) {
+          const pass = source[firstActive];
+          if (pass?.resolvedGpuCompute !== undefined && pass.enabled !== false) break;
+          firstActive++;
+        }
+        const first = source[from];
+        if (first === undefined || firstActive === to) return ok(undefined);
+        execute({
+          kind: 'compute',
+          name: first.name,
+          encode(encoder) {
+            for (let i = firstActive; i < to; i++) {
+              const pass = source[i];
+              if (pass?.resolvedGpuCompute === undefined || pass.enabled === false) continue;
+              try {
+                encodeRenderFeatureGpuComputePass(encoder, pass.resolvedGpuCompute);
+              } catch (cause) {
+                throwFeatureRecordingFailure(
+                  cause,
+                  pass.featureIdentity,
+                  pass.order,
+                  pass.name,
+                  'bindings',
+                  reportError,
+                );
+              }
+            }
+          },
+        });
+        return ok(undefined);
+      },
+    },
+    start,
+    end,
+  );
+  if (!visited.ok) throw visited.error;
 }
 
 /** One physical identity table per frame graph, shared across producer and consumer projections. */
@@ -224,7 +320,16 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
           this.passNamePrefix + pass.name,
           this.resolveTarget,
         ),
-      compute: (group) => this.addPass(group, scope),
+      compute: (source, start, end) => {
+        // A compiled graph owns its declaration beyond this call. Native issuers
+        // consume the original range synchronously and need no detached array.
+        const group: RenderFeaturePlanExecutionPass[] = [];
+        for (let i = start; i < end; i++) {
+          const pass = source[i];
+          if (pass !== undefined && pass.resolvedGpuCopies === undefined) group.push(pass);
+        }
+        return this.addPass(group, scope);
+      },
     });
   }
 

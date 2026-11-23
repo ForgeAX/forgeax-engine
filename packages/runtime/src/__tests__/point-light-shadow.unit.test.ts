@@ -44,7 +44,7 @@ function spawnValidatedPointShadow(
   // ─── T-M1-2: PointLightShadow component schema (AC-01) ───
   describe('point-light-shadow.unit.test.ts', () => {
     describe('PointLightShadow component schema (T-M1-2 / AC-01)', () => {
-      it('exposes 14 fields with correct default values', () => {
+      it('exposes 15 fields with correct default values', () => {
         const pls = PointLightShadow;
 
         expect(pls.name).toBe('PointLightShadow');
@@ -55,14 +55,15 @@ function spawnValidatedPointShadow(
 
         // AC-01 field defaults (requirements §5.1)
         expect(defaults.mapSize).toBe(512);
+        expect(defaults.staticShadowCache).toBe(false);
         expect(defaults.depthBias).toBeCloseTo(0.08, 5);
         expect(defaults.normalBias).toBeCloseTo(0.6, 5);
         expect(defaults.nearPlane).toBeCloseTo(0.5, 5);
         expect(defaults.farPlane).toBeCloseTo(500, 5);
         expect(defaults.pcfKernelSize).toBe(3); // u32-like, exact for small integers
 
-        // All 14 fields are in the schema
-        expect(Object.keys(componentSchema(pls)).length).toBe(14);
+        // All 15 fields are in the schema
+        expect(Object.keys(componentSchema(pls)).length).toBe(15);
         expect('mapSize' in componentSchema(pls)).toBe(true);
         expect('depthBias' in componentSchema(pls)).toBe(true);
         expect('normalBias' in componentSchema(pls)).toBe(true);

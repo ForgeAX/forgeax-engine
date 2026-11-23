@@ -1,5 +1,5 @@
+import { importPackArtifactPaths } from '@forgeax/engine-import';
 import { expect, it } from 'vitest';
-import { persistedArtifactPaths } from '../plugin-pack.js';
 
 it('reads the artifact closure from material-program wire transport', () => {
   const pack = {
@@ -8,7 +8,7 @@ it('reads the artifact closure from material-program wire transport', () => {
     assets: [{ artifacts: { body: { path: 'mesh/body.bin' } } }],
   };
   expect(
-    persistedArtifactPaths({
+    importPackArtifactPaths({
       schemaVersion: 'pack-material-programs/2',
       pack,
       programs: [],
@@ -16,7 +16,7 @@ it('reads the artifact closure from material-program wire transport', () => {
     }),
   ).toEqual(['mesh/body.bin']);
   expect(
-    persistedArtifactPaths({
+    importPackArtifactPaths({
       schemaVersion: 'pack-material-programs/2',
       pack,
       programs: [{}],

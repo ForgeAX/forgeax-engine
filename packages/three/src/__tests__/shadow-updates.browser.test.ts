@@ -17,14 +17,12 @@ import {
 const rendererFor = browserRendererFixture();
 
 it.each([
-  { kind: 'directional', variance: false },
-  { kind: 'point', variance: false },
-  { kind: 'spot', variance: false },
-  { kind: 'directional', variance: true },
-  { kind: 'spot', variance: true },
-] as const)('retains $kind shadow depth (variance=$variance) until an explicit update', {
+  { kind: 'directional' },
+  { kind: 'point' },
+  { kind: 'spot' },
+] as const)('retains $kind shadow depth until an explicit update', {
   timeout: 240000,
-}, async ({ kind, variance }) => {
+}, async ({ kind }) => {
   const make = (reference: boolean) => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x405060);
@@ -49,14 +47,14 @@ it.each([
     scene.add(ground, cube, sun);
     return { scene, camera, material, cube, sun };
   };
-  const native = make(false),
-    reference = make(true);
+  const stopTracking = THREE.enableThreeSourceTracking();
+  const native = make(false);
+  stopTracking();
+  const reference = make(true);
   const renderer = rendererFor();
   const original = new OriginalRenderer();
   renderer.shadowMap.enabled = original.shadowMap.enabled = true;
-  renderer.shadowMap.type = original.shadowMap.type = variance
-    ? THREE.VSMShadowMap
-    : THREE.PCFShadowMap;
+  renderer.shadowMap.type = original.shadowMap.type = THREE.PCFShadowMap;
   original.setSize(SIZE, SIZE);
   const target = new RenderTarget(SIZE, SIZE);
   original.setOutputRenderTarget(target);
@@ -79,11 +77,7 @@ it.each([
       const pixels = new Uint8Array(
         await original.readRenderTargetPixelsAsync(target, 0, 0, SIZE, SIZE),
       );
-      await saveBrowserEvidence(
-        `shadow-update-${kind}${variance ? '-variance' : ''}-${name}`,
-        capture,
-        pixels,
-      );
+      await saveBrowserEvidence(`shadow-update-${kind}-${name}`, capture, pixels);
       comparePixels(displayPixels(capture), pixels);
       if (name.startsWith('frozen')) {
         const works = buildFrameModel(decodeTape(capture.tape.bytes).unwrap()).works;

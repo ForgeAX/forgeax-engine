@@ -175,6 +175,30 @@ describe('RenderScene temporal retry boundary', () => {
     expect(temporal?.reactiveReasons).toEqual(reactive ? ['displacement-source'] : []);
   });
 
+  it('requires one identity per physical instance before accepting submitted motion', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    const source = {
+      ...snapshot(7, 1),
+      instances: {
+        transforms: matrices(2, 5),
+        generations: new Uint32Array([17]),
+        instanceCount: 2,
+        archVersion: 1,
+        cacheKey: 7,
+      },
+    };
+    scene.apply([updateSnapshot(source)]);
+    submit(scene, 7);
+    scene.apply([
+      updateInstances({
+        ...source,
+        instances: { ...source.instances, transforms: matrices(2, 15) },
+      }),
+    ]);
+    expect(scene.temporalSnapshotBySlot(0)?.motionValid).toBe(false);
+  });
+
   it('keeps the last committed root transform across a failed root-only frame and retry', () => {
     const scene = new RenderScene();
     scene.setTemporalTracking(true);

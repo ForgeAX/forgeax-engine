@@ -221,9 +221,10 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 For PR preflight, inspect the selected archive profile and the exact consumer
 receipts before diagnosing missing work. Compact ZIP proof requires 60
-completed ready frames from Empty. The installed npm consumer exercises Game
-3D. Expanded qualification requires an independent source result and both
-template seeds. Follow the
+completed ready frames from Empty, and the single npm lane installs and runs
+Game 3D. Expanded qualification additionally checks the installed diagnostics
+and live and cold JavaScript View paths, the independent source result, and
+both template seeds. Follow the
 [Core validation policy](../../scripts/ci/README.md#core-validation-policy)
 for compact admission, full fallback and release boundaries.
 
@@ -232,7 +233,13 @@ The same-head Core compiler admission runs before the unchanged 30-minute seed
 window. Verify the original WASM/glue pair and its source provenance before
 the clean JS rebuild. Candidate and installed SDK consumers carry Engine
 templates and the portable compiler. Keep the 40-minute independent source job
-and its browser assertions in expanded preflight.
+and its clean build and real source template launch in expanded preflight.
+Release verification owns the separate full CLI lifecycle.
+
+Material example shader links are resolved from the selected commit inside
+the SDK source archive. Preserve the contributor checkout's source link and
+validate that the packaged copy has the exact archived shader bytes as a
+regular file. Archive checks continue to reject other symbolic links.
 
 When seed preparation changes, run its complete source-export contract. The
 public policy verifies source acceptance, Core compiler adoption, provenance
@@ -261,6 +268,11 @@ Archive and post-consumer integrity stages reread byte counts and SHA-256 throug
 the existing bounded file-I/O owner. A canceled integrity tail is unverified;
 retain every artifact and the SQLite-only mutable-store exclusion. See
 [SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
+
+The Empty project verifier reads its authored scene through the installed
+SDK's Pack v3 source parser and direct projection. Verify the scene owner's
+GUID, empty entities and empty references there. Keep the published Runtime
+Pack and browser checks on their existing routes.
 
 When changing shared transport imports, keep the Candidate consumer and seal
 on their single trusted sparse checkout list. Validate its actual module closure

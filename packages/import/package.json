@@ -13,10 +13,6 @@
       "import": "./dist/index.mjs"
     },
     "./package.json": "./package.json",
-    "./mesh-bin": {
-      "types": "./dist/mesh-bin.d.ts",
-      "import": "./dist/mesh-bin.mjs"
-    },
     "./mesh-lod-generator": {
       "types": "./dist/mesh-lod-generator.d.ts",
       "import": "./dist/mesh-lod-generator.mjs"

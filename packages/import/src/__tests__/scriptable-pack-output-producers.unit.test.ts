@@ -154,7 +154,7 @@ describe('ScriptablePack standard output producers', () => {
     ]);
     expect(result.value.artifacts.body).toMatchObject({
       mediaType: 'application/x-forgeax-mesh',
-      assetCodec: { name: 'mesh-binary', version: '5' },
+      assetCodec: { name: 'mesh-binary', version: '7' },
     });
     expect(result.value.artifacts.body?.bytes.byteLength).toBeGreaterThan(28);
   });

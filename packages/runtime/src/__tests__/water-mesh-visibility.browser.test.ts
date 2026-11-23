@@ -34,6 +34,19 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
   return result.value;
 }
 
+function waterVisibilitySetup(compact: boolean) {
+  if (!compact) return { renderBackend: 'webgpu' as const };
+  return {
+    renderBackend: 'webgpu' as const,
+    ssrIdentity: {
+      sourceHead: 'fixture:water-mesh',
+      sourceTree: 'fixture:water-mesh',
+      lockSha256: 'fixture:water-mesh',
+      buildSha256: 'fixture:water-mesh',
+    },
+  };
+}
+
 it.each([
   { mode: 'cpu', lane: 'forward', label: 'cpu' },
   { mode: 'gpu', lane: 'forward', label: 'gpu' },
@@ -54,26 +67,10 @@ it.each([
   let unsubscribe: (() => void) | undefined;
   try {
     host = value(
-      await constructRuntimeRendererHost(
-        canvas,
-        {
-          renderBackend: 'webgpu',
-          ...(compact
-            ? {
-                ssrIdentity: {
-                  sourceHead: 'fixture:water-mesh',
-                  sourceTree: 'fixture:water-mesh',
-                  lockSha256: 'fixture:water-mesh',
-                  buildSha256: 'fixture:water-mesh',
-                },
-              }
-            : {}),
-        },
-        {
-          ...forgeaxBundlerAdapter(),
-          importTransport: createRuntimeAssetImportTransport(runtimeBinding),
-        },
-      ),
+      await constructRuntimeRendererHost(canvas, waterVisibilitySetup(compact), {
+        ...forgeaxBundlerAdapter(),
+        importTransport: createRuntimeAssetImportTransport(runtimeBinding),
+      }),
     );
     const { renderer, assets } = host;
     assets.configureRuntimeBinding(runtimeBinding);
@@ -226,22 +223,33 @@ it.each([
     const inspection = renderer.inspect({
       fields: ['frame', 'waterGraph', 'meshMaterialBindings', 'featureGraph', 'ssr'],
     });
-    if (compact) {
-      const key = inspection.featureGraph?.last.topologyKey;
-      expect(key === undefined ? undefined : JSON.parse(key).topology?.compactGbuffer).toBe(
-        'standard-gbuffer/4',
+    const waterPasses = inspection.waterGraph?.passes.map(({ name }) => name);
+    expect(waterPasses).toContain('water-slw-inner-color');
+    if (compact) expect(waterPasses).toContain('water-reflection-composite');
+    else {
+      expect(waterPasses).not.toContain('water-reflection-composite');
+      expect(inspection.waterGraph?.resources.map(({ label }) => label)).not.toContain(
+        'water-normal-roughness',
       );
+    }
+    const key = inspection.featureGraph?.last.topologyKey;
+    const topology = key === undefined ? undefined : JSON.parse(key).topology;
+    expect(topology?.opaque?.lane).toBe(lane);
+    if (compact) {
+      expect(topology?.compactGbuffer).toBe('standard-gbuffer/4');
       expect(inspection.ssr?.status, JSON.stringify(inspection.ssr?.failure)).toBe('admitted');
-      expect(inspection.waterGraph?.passes.map(({ name }) => name)).toContain('water-ssr-trace');
+      expect(waterPasses).toContain('water-ssr-trace');
+    } else {
+      expect(waterPasses).not.toContain('water-ssr-trace');
+      expect(waterPasses).not.toContain('water-slw-current-scene');
     }
     if (msaa) {
-      const passes = inspection.waterGraph?.passes.map(({ name }) => name);
-      expect(passes).toContain('water-opaque-msaa-surface-resolve');
-      expect(passes).not.toContain('water-opaque-normal-msaa');
+      expect(waterPasses).toContain('water-opaque-msaa-surface-resolve');
+      expect(waterPasses).not.toContain('water-opaque-normal-msaa');
       const resources = inspection.waterGraph?.resources.map(({ label }) => label);
       expect(resources).not.toContain('water-opaque-normal');
       expect(resources).not.toContain('water-opaque-temporal-msaa');
-      expect(passes).not.toContain('water-scene-temporal');
+      expect(waterPasses).not.toContain('water-scene-temporal');
     }
     const state = waterSceneSnapshot(world, water);
     world.despawn(water).unwrap();

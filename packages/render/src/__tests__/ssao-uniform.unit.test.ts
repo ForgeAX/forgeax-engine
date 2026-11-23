@@ -1,9 +1,10 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
-import { describe, expect, it } from 'vitest';
+import { rhi } from '@forgeax/engine-rhi-null';
+import { describe, expect, it, vi } from 'vitest';
 import { jitterCameraProjection } from '../camera-projection';
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
-import { buildSsaoUniformPayload } from '../ssao-uniform';
+import { buildSsaoUniformPayload, SsaoUniformPage } from '../ssao-uniform';
 
 function camera(): CameraSnapshot {
   return {
@@ -44,22 +45,6 @@ function matrixPayload(source: CameraSnapshot): Float32Array {
 }
 
 describe('SSAO matrix scratch ownership', () => {
-  it('publishes the spiral estimator budget and scale without changing Cluster offsets', () => {
-    const config = { enabled: true, method: 'spiral-ssao' as const, resolutionScale: 0.5 };
-    const payload = buildSsaoUniformPayload(camera(), config, {
-      originX: 7,
-      originY: 9,
-      textureWidth: 64,
-      packedWidth: 16,
-    });
-    expect(payload[51]).toBe(12);
-    expect(payload[52]).toBe(2);
-    expect(payload[60]).toBe(0.5);
-    expect([...new Uint32Array(payload.buffer).slice(56, 60)]).toEqual([7, 9, 64, 16]);
-    expect([...payload.slice(61)]).toEqual([0, 0, 0]);
-    expect(buildSsaoUniformPayload(camera(), { ...config, sampleCount: 16 })[51]).toBe(16);
-  });
-
   it.each([
     'perspective',
     'orthographic',
@@ -109,36 +94,50 @@ describe('SSAO matrix scratch ownership', () => {
   });
 });
 
-it('carries manual/auto scene-AO exposure metadata without sampling a CPU result', () => {
-  const source = { ...camera(), exposure: 0.4 };
+it('keeps the AO uniform independent of exposure', () => {
+  const source = camera();
+  expect(buildSsaoUniformPayload({ ...source, exposure: 0.4 }, undefined)).toEqual(
+    buildSsaoUniformPayload({ ...source, exposure: 4 }, undefined),
+  );
+});
+
+it('uploads moving views from one page and isolates a nested queue write', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const buffer = device.createBuffer({ size: 256, usage: 8 | 64 }).unwrap();
+  const queue = device.queue;
+  const write = queue.writeBuffer.bind(queue);
+  const upload = vi.spyOn(queue, 'writeBuffer');
+  const page = new SsaoUniformPage();
+  const source = camera();
   const config = {
     enabled: true,
-    application: 'scene-color' as const,
-    resolutionScale: 0.5,
-    sceneColorStrength: 0.8,
+    method: 'gtao' as const,
+    radius: 1.5,
   };
-  expect([...buildSsaoUniformPayload(source, config).slice(60)]).toEqual([
-    0.5,
-    Math.fround(0.8),
-    Math.fround(0.4),
-    0,
-  ]);
-  const auto = {
-    ...source,
-    output: {
-      exposure: {
-        kind: 'auto' as const,
-        compensationEv: 0,
-        rangeEv: [-2, 2] as const,
-        rates: [1, 1] as const,
-        fallback: 0.6,
-      },
-      temperature: 6504,
-      tint: 0,
-      colorLut: 0,
-      colorLutStrength: 0,
-    },
-  };
-  expect(buildSsaoUniformPayload(auto, config)[63]).toBe(Math.fround(0.6));
-  expect(buildSsaoUniformPayload({ ...auto, postProcessing: false }, config)[63]).toBe(0);
+  let staged: unknown;
+  try {
+    for (let i = 0; i < 60; i++) {
+      const current = { ...source, aspect: (i + 1) / 7 };
+      const ao = i % 2 === 0 ? config : undefined;
+      page.upload(queue, buffer, current, ao).unwrap();
+      const bytes = upload.mock.lastCall?.[2];
+      staged ??= bytes;
+      expect(bytes).toBe(staged);
+      expect(bytes).toEqual(buildSsaoUniformPayload(current, ao));
+    }
+    const outer = buildSsaoUniformPayload(source, config);
+    let checked = false;
+    upload.mockImplementationOnce((target, offset, data) => {
+      page.upload(queue, target, { ...source, aspect: 7 }, undefined).unwrap();
+      expect(data).toEqual(outer);
+      expect(upload.mock.lastCall?.[2]).not.toBe(data);
+      checked = true;
+      return write(target, offset, data);
+    });
+    page.upload(queue, buffer, source, config).unwrap();
+    expect(checked).toBe(true);
+  } finally {
+    upload.mockRestore();
+    device.destroyBuffer(buffer).unwrap();
+  }
 });

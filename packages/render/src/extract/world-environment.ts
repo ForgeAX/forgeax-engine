@@ -118,7 +118,10 @@ type RgbTuple = readonly [number, number, number];
 /** Produces light, camera and atmosphere facts once, before renderable projection. */
 export function extractWorldEnvironment(
   world: World,
-  context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'view'> & {
+  context: Pick<
+    PreparedExtractContext,
+    'assets' | 'cameraEntityKey' | 'view' | 'environmentLightingOnly' | 'cameraSource'
+  > & {
     readonly environmentGate?: EnvironmentLightingReader;
   },
   worldInternal: WorldInternalView,
@@ -143,7 +146,7 @@ export function extractWorldEnvironment(
     world,
     context.cameraEntityKey,
     context.view,
-    context.environmentGate,
+    context.cameraSource ?? (context.environmentLightingOnly ? undefined : context.environmentGate),
   );
   const cameras = [...cameraRoles.display];
   const auxiliaryCameras = cameraRoles.auxiliary;
@@ -446,11 +449,6 @@ function directionalShadowFieldsOf(world: World, entity: EntityHandle) {
       DirectionalLight,
       'shadowIntensity',
     ) as number,
-    shadowBlurSamples: world[worldRead].getFieldValue(
-      entity,
-      DirectionalLight,
-      'shadowBlurSamples',
-    ) as number,
   };
 }
 
@@ -506,6 +504,12 @@ function extractDirectionalLights(world: World, worldInternal: WorldInternalView
       ),
       color: scaledLightColor(world, row.entity, DirectionalLight, lIntensity),
       intensity: lIntensity,
+      perPixelAtmosphereTransmittance:
+        world[worldRead].getFieldValue(
+          row.entity,
+          DirectionalLight,
+          'perPixelAtmosphereTransmittance',
+        ) === 1,
       contactShadowLength: lContactShadowLength,
       sourceAngle: lSourceAngle,
     };
@@ -979,11 +983,6 @@ function extractSpotLights(
       SpotLight,
       'shadowIntensity',
     ) as number;
-    const sShadowBlurSamples = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowBlurSamples',
-    ) as number;
     const sDepthBias = world[worldRead].getFieldValue(row.entity, SpotLight, 'depthBias') as number;
     const sNormalBias = world[worldRead].getFieldValue(
       row.entity,
@@ -1096,18 +1095,21 @@ function extractSpotLights(
       castShadow,
       lightViewProj:
         sShadowProjection === 1 ? new Float32Array(sShadowViewProjection) : lightViewProj,
+      ...(sShadowProjection === 1 ? { authoredShadowMatrix: true as const } : {}),
       mapSize: sMapSize,
       nearPlane: sNearPlane,
       farPlane: sFarPlane,
       // The Render World assigns each casting spot a stable tile.
       shadowAtlasTile: -1,
       shadowIntensity: sShadowIntensity,
-      shadowBlurSamples: sShadowBlurSamples,
       depthBias: sDepthBias,
       normalBias: sNormalBias,
       shadowMapAspect: sShadowMapAspect,
       shadowCasterChannels: sShadowCasterChannels,
       shadowAutoUpdate: sShadowAutoUpdate,
+      ...(world[worldRead].getFieldValue(row.entity, SpotLight, 'staticShadowCache') === 1
+        ? { staticShadowCache: true as const }
+        : {}),
       shadowRevision: sShadowRevision,
       pcfKernelSize: sPcfKernelSize,
       shadowFilter: sShadowFilter,
@@ -1311,7 +1313,6 @@ function directionalCsmConfigOf(
     shadowBiasMode: sf.shadowBiasMode,
     shadowRadius: sf.shadowRadius,
     shadowIntensity: sf.shadowIntensity,
-    shadowBlurSamples: sf.shadowBlurSamples,
     cascadeCount: sf.cascadeCount,
     splitLambda: sf.splitLambda,
     cascadeBlend: sf.cascadeBlend,
@@ -1525,6 +1526,9 @@ function extractPointShadows(
       normalBias: psNormalBias,
       shadowCasterChannels: psShadowCasterChannels,
       shadowAutoUpdate: psShadowAutoUpdate,
+      ...(world[worldRead].getFieldValue(row.entity, PointLightShadow, 'staticShadowCache') === 1
+        ? { staticShadowCache: true as const }
+        : {}),
       shadowRevision: psShadowRevision,
       shadowFilter: psShadowFilter,
       shadowBiasMode: psShadowBiasMode,
@@ -1566,6 +1570,7 @@ function joinPointShadowLayers(
     pointSnapshots[i] = {
       ...(pointSnapshots[i] as PointLightSnapshot),
       shadowAtlasLayer: ps.shadowAtlasLayer,
+      ...(ps.shadowIntensity === undefined ? {} : { shadowIntensity: ps.shadowIntensity }),
       shadowNear: ps.nearPlane,
       shadowFar: ps.farPlane,
       pcfKernelSize: ps.pcfKernelSize ?? 3,
@@ -1582,19 +1587,23 @@ function joinPointShadowLayers(
  */
 function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapshot {
   const captureWorld = readEnvironmentPose(world, entity);
-  const targetEnvironment = world.get(entity, RenderTargetEnvironment);
-  const featureEnvironment = world.get(entity, RenderFeatureEnvironment);
+  const targetEnvironment = world.hasComponent(entity, RenderTargetEnvironment)
+    ? world.get(entity, RenderTargetEnvironment).unwrap()
+    : undefined;
+  const featureEnvironment = world.hasComponent(entity, RenderFeatureEnvironment)
+    ? world.get(entity, RenderFeatureEnvironment).unwrap()
+    : undefined;
   return {
-    ...(targetEnvironment.ok
+    ...(targetEnvironment !== undefined
       ? {
           targetEnvironment: world.sharedRefs
             .resolve<'RenderTargetEnvironmentSource', RenderTargetEnvironmentSource>(
-              targetEnvironment.value.source,
+              targetEnvironment.source,
             )
             .unwrap(),
         }
       : {}),
-    ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
+    ...(featureEnvironment === undefined ? {} : { featureEnvironment }),
     ...(captureWorld === undefined
       ? {}
       : {
@@ -1646,9 +1655,14 @@ function extractSkylight(world: World) {
   return { skylight, skylightCount };
 }
 
-function extractLightProbes(world: World, worldInternal: WorldInternalView): LightProbeSnapshot[] {
+const NO_LIGHT_PROBES: readonly LightProbeSnapshot[] = Object.freeze([]);
+
+function extractLightProbes(
+  world: World,
+  worldInternal: WorldInternalView,
+): readonly LightProbeSnapshot[] {
   const lightProbeQuery = extractLightProbesQuery(world).unwrap();
-  const lightProbes: LightProbeSnapshot[] = [];
+  let lightProbes: LightProbeSnapshot[] | undefined;
   lightProbeQuery.forEach((row) => {
     const probeIrradiance = readRenderArrayView(
       world,
@@ -1667,6 +1681,7 @@ function extractLightProbes(world: World, worldInternal: WorldInternalView): Lig
     }
     const transform = readEnvironmentPose(world, row.entity);
     if (transform === undefined) return;
+    lightProbes ??= [];
     lightProbes.push({
       identity: String(row.entity),
       position: [transform[12] ?? 0, transform[13] ?? 0, transform[14] ?? 0],
@@ -1675,7 +1690,7 @@ function extractLightProbes(world: World, worldInternal: WorldInternalView): Lig
       admitted: true,
     });
   });
-  return lightProbes;
+  return lightProbes ?? NO_LIGHT_PROBES;
 }
 
 /**
@@ -1694,14 +1709,14 @@ function extractSkybox(world: World) {
     const sEquirect = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'equirect');
     const sMode = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'mode') as number;
     skyboxCount += 1;
-    const featureEnvironment = world.get(row.entity, RenderFeatureEnvironment);
-    if (
-      skybox === undefined &&
-      (generatedEquirect || sEquirect !== undefined || featureEnvironment.ok)
-    ) {
+    if (skybox !== undefined) return;
+    const featureEnvironment = world.hasComponent(row.entity, RenderFeatureEnvironment)
+      ? world.get(row.entity, RenderFeatureEnvironment).unwrap()
+      : undefined;
+    if (generatedEquirect || sEquirect !== undefined || featureEnvironment !== undefined) {
       skybox = {
         equirectHandle: generatedEquirect || Number(sEquirect) || 0,
-        ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
+        ...(featureEnvironment === undefined ? {} : { featureEnvironment }),
         mode: sMode,
         rotation: quaternionOf(world, row.entity, SkyboxBackground),
         // w19: winning entity handle for the multi-SkyboxBackground warn (F-8).
@@ -1757,6 +1772,11 @@ function atmosphereParametersOf(
       entity,
       Atmosphere,
       'multipleScattering',
+    ) as number,
+    transmittanceMinLightElevationDegrees: world[worldRead].getFieldValue(
+      entity,
+      Atmosphere,
+      'transmittanceMinLightElevationDegrees',
     ) as number,
     sunAngularRadius: world[worldRead].getFieldValue(
       entity,

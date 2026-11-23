@@ -208,6 +208,10 @@ export interface PipelineLibrary {
     | Result<ComputePipeline | undefined, RhiError>
     | Promise<Result<ComputePipeline | undefined, RhiError>>;
   inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection;
+  /** Optional diagnostic correlation with a recorded device-local recipe. */
+  inspectRenderPipelineIdentity?(
+    pipeline: RenderPipeline,
+  ): { readonly localIdentity: number; readonly identity: string | null } | undefined;
   export(
     limits?: PipelineLibraryLimits,
     options?: PipelineLibraryExportOptions,

@@ -211,8 +211,11 @@ export interface CreateAppOptions extends InputAttachOptions {
    * Omission keeps the hardware-based default; raise it only when the lane is too slow.
    */
   readonly backgroundPipelineLibraryConcurrency?: number;
+  /** Warm visible GPU picking pipelines in this viewport after first presentation. Default off. */
+  readonly viewportHitWarmup?: boolean;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  readonly staticShadowBudgetBytes?: number;
   /** Explicit aggregate budget for receipt-bound feature texture readbacks. */
   readonly featureTextureReadbackBudgetBytes?: number;
   /**
@@ -332,6 +335,8 @@ export interface AppHostAdapter extends BundlerOptions {
  * machine + idempotent transitions land in M2 (plan-strategy section 7).
  */
 export interface App {
+  /** Level instances are managed in the same realm as this World. */
+  readonly levels: import('./levels/level-service').LevelService;
   /** Immutable constructor intent; domain inspection proves actual adoption. */
   readonly configuration?: import('./configuration-control').EngineConfigurationControl;
   /** Caller-owned Renderer (reference equality with the assemble input). */

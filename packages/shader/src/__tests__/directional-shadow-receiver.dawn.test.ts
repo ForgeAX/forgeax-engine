@@ -42,7 +42,11 @@ function receiverClause(file: (typeof files)[number]): string {
   const text = source(file);
   const start = text.search(/(?:let|var) directionalShadow =/);
   const endMarker =
-    file === 'standard-surface.wgsl' ? '  let directionalBase' : '  var directRadiance';
+    file === 'standard-surface.wgsl'
+      ? '  let directionalBase'
+      : file === 'default-standard-pbr.wgsl'
+        ? '  return directionalShadow;'
+        : '  var directRadiance';
   const end = text.indexOf(endMarker, start);
   if (start < 0 || end < 0) throw new Error(`Missing directional receiver in ${file}`);
   // Observe the real call site without changing the sampled shadow function.

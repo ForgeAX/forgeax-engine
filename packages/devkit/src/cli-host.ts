@@ -1,6 +1,7 @@
 import type { Context, Plugin } from '@forgeax/engine-plugin';
 import type { ToolApi, ToolRunOptions, ToolTerminal } from '@forgeax/engine-tool-runtime';
 import { createToolClient, type ToolClient, type ToolClientOptions } from './tools/client.js';
+import { failToolRun } from './types.js';
 
 /** The DevKit command surface is a Host capability, not a second CLI runtime. */
 interface DevkitCliService {
@@ -35,16 +36,16 @@ export function createDevkitCliStartup(
   let toolApi: ToolApi | undefined;
   let ownerContext: Context | undefined;
 
-  const closedTerminal = (): ToolTerminal<never> => ({
-    outcome: 'failed',
-    failure: {
-      code: 'tool-capability-unavailable',
-      expected: 'the DevKit CLI Host to remain mounted for the duration of a command',
-      hint: 'Start a new Host before issuing another command.',
-      detail: { capability: 'host:devkit-cli', realm: 'build' },
-    },
-    artifacts: [],
-  });
+  const closedTerminal = (): ToolTerminal<never> =>
+    failToolRun(
+      {
+        code: 'tool-capability-unavailable',
+        expected: 'the DevKit CLI Host to remain mounted for the duration of a command',
+        hint: 'Start a new Host before issuing another command.',
+        detail: { capability: 'host:devkit-cli', realm: 'build' },
+      },
+      [],
+    );
 
   const signalFor = (caller: AbortSignal | undefined): AbortSignal => {
     if (caller === undefined) return lifecycle.signal;
@@ -58,7 +59,12 @@ export function createDevkitCliStartup(
     return controller.signal;
   };
 
-  const track = <T>(operation: Promise<T>): Promise<T> => {
+  const invoke = <TResult>(
+    options: ToolRunOptions | undefined,
+    run: (options: ToolRunOptions) => Promise<ToolTerminal<TResult>>,
+  ): Promise<ToolTerminal<TResult>> => {
+    if (closed) return Promise.resolve(closedTerminal());
+    const operation = run({ ...options, signal: signalFor(options?.signal) });
     active.add(operation);
     void operation.then(
       () => active.delete(operation),
@@ -76,28 +82,14 @@ export function createDevkitCliStartup(
       path: readonly string[] | string,
       args: unknown,
       options?: ToolRunOptions,
-    ): Promise<ToolTerminal<TResult>> => {
-      if (closed) return Promise.resolve(closedTerminal() as ToolTerminal<TResult>);
-      return track(
-        base.runPath<TResult>(path, args, {
-          ...options,
-          signal: signalFor(options?.signal),
-        }),
-      );
-    },
+    ): Promise<ToolTerminal<TResult>> =>
+      invoke<TResult>(options, (resolved) => base.runPath<TResult>(path, args, resolved)),
     run: <TResult = unknown>(
       id: string,
       args: unknown,
       options?: ToolRunOptions,
-    ): Promise<ToolTerminal<TResult>> => {
-      if (closed) return Promise.resolve(closedTerminal() as ToolTerminal<TResult>);
-      return track(
-        base.run<TResult>(id, args, {
-          ...options,
-          signal: signalFor(options?.signal),
-        }),
-      );
-    },
+    ): Promise<ToolTerminal<TResult>> =>
+      invoke<TResult>(options, (resolved) => base.run<TResult>(id, args, resolved)),
     dispose: async () => {
       await base.dispose?.();
     },

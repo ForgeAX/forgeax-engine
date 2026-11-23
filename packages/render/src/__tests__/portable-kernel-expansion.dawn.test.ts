@@ -58,10 +58,8 @@ beforeAll(async () => {
   ssrSources = {
     ...sources,
     trace: await utility('ssr-trace', false),
-    temporal: await utility('ssr-temporal', false),
     compose: await utility('ssr-compose', false),
     traceFragment: await utility('ssr-trace', true),
-    temporalFragment: await utility('ssr-temporal', true),
     composeFragment: await utility('ssr-compose', true),
   };
 });
@@ -168,7 +166,7 @@ it.each([
   }
 });
 
-it('runs the full SSR graph for 60 completed frames with compute and raster trace/temporal plans', async () => {
+it('runs the full SSR graph for 60 completed frames with compute and raster spatial plans', async () => {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (
     await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
@@ -189,7 +187,7 @@ it('runs the full SSR graph for 60 completed frames with compute and raster trac
 it.each([
   'compute',
   'fragment',
-] as const)('preserves compact Deferred SSR trace, surface history and composition in %s', async (execution) => {
+] as const)('preserves compact Deferred SSR trace and composition in %s', async (execution) => {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (
     await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
@@ -211,7 +209,6 @@ it.each([
   });
   expect(compact.resourceNames).toContain('gbuffer-b');
   expect(compact.tracePixels).toEqual(full.tracePixels);
-  expect(compact.surfacePixels).toEqual(full.surfacePixels);
   expect(compact.composedPixels).toEqual(full.composedPixels);
   const trace = compact.tracePixels.at(-1) ?? [];
   expect(trace.filter((value, index) => index % 4 === 3 && value >= 0x3400).length).toBeGreaterThan(

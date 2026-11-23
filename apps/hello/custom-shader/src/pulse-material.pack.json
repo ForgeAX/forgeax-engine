@@ -1,0 +1,194 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "ba318fa4-3ed8-5176-91c4-16208e324f9f",
+  "assets": {
+    "pulse-material.wgsl": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "fragmentEntry": "fs_main",
+              "module": "my-game::pulse-material",
+              "vertexEntry": "vs_main"
+            },
+            "renderState": {
+              "queue": 2000,
+              "tags": {
+                "LightMode": "Forward"
+              }
+            }
+          }
+        ],
+        "parameters": [
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "time",
+            "type": "f32"
+          },
+          {
+            "name": "speed",
+            "type": "f32"
+          },
+          {
+            "name": "baseColorUvTransform",
+            "type": "vec4"
+          },
+          {
+            "name": "normalUvTransform",
+            "type": "vec4"
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          },
+          {
+            "name": "normalTexture",
+            "type": "texture"
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.95,
+            0.45,
+            0.2,
+            1
+          ],
+          "time": 0,
+          "speed": 2,
+          "baseColorUvTransform": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "normalUvTransform": [
+            0.125,
+            0.25,
+            2,
+            2
+          ],
+          "baseColorTexture": "3acd39d8-0434-5941-8ee5-385cb024d91d",
+          "normalTexture": {
+            "texture": "2382ad16-6ed8-5602-8d9e-74a0f8fea0cb",
+            "coordinates": {
+              "set": 1,
+              "transform": {
+                "offset": [
+                  0.125,
+                  0.25
+                ],
+                "scale": [
+                  2,
+                  2
+                ],
+                "rotation": 0.1
+              }
+            }
+          }
+        }
+      },
+      "refs": [
+        "3acd39d8-0434-5941-8ee5-385cb024d91d",
+        "2382ad16-6ed8-5602-8d9e-74a0f8fea0cb"
+      ]
+    },
+    "material/derived": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "parent": "330a8d22-5e43-5aab-8cd4-5d920045f7a8",
+        "values": {
+          "baseColor": [
+            0.2,
+            0.55,
+            0.95,
+            1
+          ]
+        }
+      },
+      "refs": [
+        "330a8d22-5e43-5aab-8cd4-5d920045f7a8"
+      ]
+    },
+    "texture/base-color": {
+      "kind": "texture",
+      "payload": {
+        "kind": "texture",
+        "shape": {
+          "viewDimension": "2d",
+          "extent": {
+            "width": 2,
+            "height": 2
+          }
+        },
+        "format": "rgba8unorm-srgb",
+        "colorSpace": "srgb",
+        "mips": {
+          "kind": "none"
+        },
+        "data": [
+          255,
+          96,
+          32,
+          255,
+          32,
+          96,
+          255,
+          255,
+          32,
+          96,
+          255,
+          255,
+          255,
+          96,
+          32,
+          255
+        ]
+      },
+      "refs": []
+    },
+    "texture/normal": {
+      "kind": "texture",
+      "payload": {
+        "kind": "texture",
+        "shape": {
+          "viewDimension": "2d",
+          "extent": {
+            "width": 2,
+            "height": 2
+          }
+        },
+        "format": "rgba8unorm-srgb",
+        "colorSpace": "srgb",
+        "mips": {
+          "kind": "none"
+        },
+        "data": [
+          32,
+          224,
+          32,
+          255,
+          224,
+          32,
+          32,
+          255,
+          224,
+          32,
+          32,
+          255,
+          32,
+          224,
+          32,
+          255
+        ]
+      },
+      "refs": []
+    }
+  }
+}

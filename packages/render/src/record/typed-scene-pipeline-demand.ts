@@ -56,6 +56,9 @@ export function prepareTypedScenePipelineDemand(
   const gpuDraws = new Map<ValidatedRenderable, Set<number>>();
   const factory = context.runtime.prepareMaterialShaderPipelineEntry;
   if (
+    // The installed pass may serve both camera lanes. A direct request records
+    // the mesh vertex entry even when this pass can also issue indexed Scene draws.
+    context.gpuDrivenGeometryLane !== 'direct' &&
     (pass.gpu ||
       (pass.gpuFilter !== undefined &&
         context.gpuDrivenGeometryLane === 'automatic' &&

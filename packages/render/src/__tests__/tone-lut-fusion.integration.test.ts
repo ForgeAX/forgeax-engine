@@ -202,7 +202,7 @@ async function fixture() {
         input,
         depth,
         { storage: output },
-        temporal,
+        { sceneTemporal: temporal },
       ).unwrap();
     } else addStandardToneLutPass(graph, input, output, lut, false).unwrap();
     const compiled = graph

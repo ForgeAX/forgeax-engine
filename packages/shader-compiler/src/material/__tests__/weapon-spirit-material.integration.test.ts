@@ -69,8 +69,8 @@ describe('ai-weapon-spirit frozen Toon material', () => {
       { pass: 'Forward', context: { pass: 'forward' } },
       { pass: 'ShadowCaster', context: { pass: 'shadow' } },
     ]);
-    // Extended lighting now includes the optional VSM receiver resource.
-    expect(Object.values(cooked.artifacts)).toHaveLength(3);
+    // Each physical transport shares its shader bytes across the admitted profiles.
+    expect(Object.values(cooked.artifacts)).toHaveLength(2);
     const wgsl = new TextDecoder().decode(record.programs[0]?.artifact.bytes);
     expect(wgsl).toContain('fn vs_shadow');
     expect(wgsl).toContain('fn fs_shadow');

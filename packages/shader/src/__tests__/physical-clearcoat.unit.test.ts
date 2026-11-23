@@ -36,7 +36,10 @@ describe('clearcoat physical shader layer', () => {
     for (const root of roots) {
       expect(root).toMatch(/let clearcoatDirect = directionalShadow \* evalDirectionalNoShadow\(/);
       expect(root).toContain('clearcoatRoughnessValue * clearcoatRoughnessValue');
-      expect(root).toContain('clearcoatIbl * specularEnvironmentScale * ao');
+      expect(root).toContain('evaluateStandardClearcoatReflection(');
+      expect(root).toContain(
+        'standardSpecularOcclusion(clearcoatNoV, ao * screenAo, clearcoatRoughnessValue)',
+      );
       expect(root).not.toContain('clearcoatIbl * skylight.colorR');
     }
   });
@@ -55,17 +58,19 @@ describe('clearcoat physical shader layer', () => {
       expect(root).toContain(
         'physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow',
       );
-      expect(root).toContain(
-        'directRadiance *= mix(1.0, screenAo, get_ssao_direct_lighting_strength());',
-      );
+      expect(root).not.toMatch(/directRadiance\s*\*=.*screenAo/);
       expect(root).toContain('color += directRadiance;');
       expect(root).toContain('let safeIor = max(finiteScalar(material.ior, 1.5), 1.0);');
       expect(root).toContain('transmissionBackdropTexture');
       expect(root).toContain('let transmittedEnergy = select(');
     }
-    expect(skin).toContain(
+    const physicalInputs = readFileSync(
+      new URL('../material/standard-physical-inputs.wgsl', import.meta.url),
+      'utf8',
+    );
+    expect(physicalInputs).toContain(
       'var anisotropyStrength = finiteScalar(material.anisotropyStrength, 0.0);',
     );
-    expect(skin).toContain('var anisotropyDirection = vec2<f32>(1.0, 0.0);');
+    expect(physicalInputs).toContain('var anisotropyDirection = vec2<f32>(1.0, 0.0);');
   });
 });

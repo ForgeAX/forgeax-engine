@@ -56,9 +56,30 @@ export function runtimeGeneratorDefinition(
   source: RuntimeScriptablePackSource,
   build: unknown,
 ): AnyScriptablePackDefinition {
-  const { kind: _kind, source: _source, program: _program, packageId, ...definition } = source;
+  const {
+    kind: _kind,
+    source: _source,
+    program: _program,
+    packageId,
+    runtime,
+    ...definition
+  } = source;
+  let runtimeMetadata = runtime;
+  // Older saved source records include the former build option. Preserve
+  // their serialized identity and omit that option from the runtime capability.
+  if (
+    runtime &&
+    typeof runtime === 'object' &&
+    typeof runtime.export === 'string' &&
+    'fallback' in runtime &&
+    runtime.fallback === 'build'
+  ) {
+    const { fallback: _obsolete, ...capability } = runtime;
+    runtimeMetadata = capability;
+  }
   return validatePackDefinition({
     ...definition,
+    runtime: runtimeMetadata,
     packageId: definePackageId(packageId),
     build,
   }).unwrap();
@@ -169,6 +190,23 @@ export function parseRuntimePackInstance(value: unknown): PackInstanceJson {
   instance(copy);
   return copy as PackInstanceJson;
 }
+
+function validateRecipeOutputs(value: unknown): void {
+  const outputs = list(value);
+  if (outputs.length === 0) throw new TypeError('recipe requires outputs');
+  const seen = new Set<unknown>();
+  for (const item of outputs) {
+    const output = fields(item, ['guid', 'sourceKey', 'kind', 'digest', 'refs']);
+    guid(output.guid);
+    text(output.sourceKey);
+    text(output.kind);
+    digest(output.digest);
+    for (const ref of list(output.refs)) guid(ref);
+    if (seen.has(output.guid)) throw new TypeError('duplicate recipe output');
+    seen.add(output.guid);
+  }
+}
+
 /** Structural validation precedes dependency recovery or any current publication. */
 export function parseRuntimePackSnapshot(value: unknown): RuntimePackSnapshot {
   const copy = fields(decodePackData(copyPackData(value) as object), [
@@ -178,7 +216,9 @@ export function parseRuntimePackSnapshot(value: unknown): RuntimePackSnapshot {
     'recipeRoots',
     'closure',
   ]);
-  if (copy.schemaVersion !== 'runtime-pack-source/2') throw new TypeError('unsupported snapshot');
+  const legacy = copy.schemaVersion === 'runtime-pack-source/2';
+  if (!legacy && copy.schemaVersion !== 'runtime-pack-source/3')
+    throw new TypeError('unsupported snapshot');
   for (const pack of list(copy.packs)) content(pack);
   for (const item of list(copy.instances)) instance(item);
   for (const root of copy.recipeRoots === undefined ? [] : list(copy.recipeRoots)) digest(root);
@@ -199,19 +239,8 @@ export function parseRuntimePackSnapshot(value: unknown): RuntimePackSnapshot {
         digest(recipe.content);
         if (recipe.instance !== undefined) instance(recipe.instance);
       }
-      const outputs = list(recipe.outputs);
-      if (!outputs.length) throw new TypeError('fixed recipes require outputs');
-      const seen = new Set<string>();
-      for (const item of outputs) {
-        const output = fields(item, ['guid', 'sourceKey', 'kind', 'digest', 'refs']);
-        guid(output.guid);
-        text(output.sourceKey);
-        text(output.kind);
-        digest(output.digest);
-        for (const ref of list(output.refs)) guid(ref);
-        if (seen.has(String(output.guid))) throw new TypeError('duplicate recipe output');
-        seen.add(String(output.guid));
-      }
+      if (legacy || !('fixed' in recipe) || recipe.outputs !== undefined)
+        validateRecipeOutputs(recipe.outputs);
       for (const [id, recipeId] of Object.entries(record(recipe.dependencies))) {
         guid(id);
         digest(recipeId);

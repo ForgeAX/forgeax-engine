@@ -14,6 +14,8 @@ import type {
   PipelineLayout,
   RenderBundle,
   Result,
+  RhiCommandEncoder,
+  RhiComputePassEncoder,
   RhiDevice,
   RhiRenderPassEncoder,
   ShaderModule,
@@ -48,8 +50,7 @@ import type {
   SurfaceGpuReadbackSnapshot,
   SurfaceSubmissionCandidate,
 } from '../surface/submission-observation';
-import { decodeSurfaceIndirectParameters } from '../surface/submission-observation';
-import { batchLevelStride, batchLodLevelCount } from './batch-layout';
+import { batchLodLevelCount } from './batch-layout';
 import { planDrawsSkin, type SubmissionPlan } from './batch-topology';
 import { type LodViewCamera, writeLodViewConstants } from './lod-projection.wgsl';
 import {
@@ -59,7 +60,6 @@ import {
   PreparedRasterPass,
 } from './prepared-raster-bundle';
 import { invertLightViewProjection } from './production-raster-camera';
-import { admittedRasterBatchCount } from './production-raster-lod';
 import { suppressionPatchOf } from './production-raster-prepare';
 import {
   GpuResourceAllocationLedger,
@@ -101,31 +101,23 @@ export { invertLightViewProjection } from './production-raster-camera';
 import { GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL, GPU_DRIVEN_VIEW_WGSL } from './view.wgsl';
 import {
   BATCH_STRIDE,
-  CAMERA_CULLED_COUNTER_OFFSET,
   COUNTER_STRIDE,
   COUNTER_WORDS,
   EARLY_VISIBLE_COUNTER_OFFSET,
-  FRUSTUM_CULLED_COUNTER_OFFSET,
-  GEOMETRY_WORK_COUNTER_OFFSET,
   INDIRECT_COMMAND_BYTES,
-  LEVEL_VISIBLE_COUNTER_OFFSET,
   LOD_CONSTANTS_OFFSET,
-  LOD_COUNTER_OFFSET,
-  LOD_ROW_CAPACITY,
   OCCLUSION_CONSTANTS_OFFSET,
-  OCCLUSION_CULLED_COUNTER_OFFSET,
   OCCLUSION_STATE_BYTES,
   OCCLUSION_STATE_OFFSET,
   orderScratchWords,
-  ROOT_GEOMETRY_WORK_COUNTER_OFFSET,
   SHADOW_CAMERA_CULL_OFFSET,
   SKIN_CONSTANTS_OFFSET,
   SKIN_RASTER_OFFSET,
-  TEXEL_CULLED_COUNTER_OFFSET,
   VIEW_BYTES,
   WORKGROUP_SIZE,
 } from './view-layout';
 import { prepareViewModule } from './view-native-module';
+import { decodeCullingCounts, decodeLodSelection } from './view-telemetry';
 
 export { GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL, GPU_DRIVEN_VIEW_WGSL } from './view.wgsl';
 export { GPU_DRIVEN_BATCH_STRIDE } from './view-layout';
@@ -188,8 +180,6 @@ interface ViewAddressPreparation {
   readonly words: number;
   readonly oldWords: number;
   readonly facts: InputBindingFacts;
-  readonly plan: SubmissionPlan;
-  readonly topology: EncodedViewTopology | undefined;
   readonly skinLayout: SkinDemandLayout | undefined;
   readonly batchCapacity: number;
   readonly orderCapacity: number;
@@ -203,7 +193,7 @@ interface ViewAddressPreparation {
 
 type MutableViewBuffers = { -readonly [Name in keyof ViewBuffers]: ViewBuffers[Name] };
 
-type LodTelemetryCopy = {
+export type LodTelemetryCopy = {
   readonly buffers: ViewBuffers;
   readonly plan: SubmissionPlan;
   readonly resourceGeneration: number;
@@ -1201,7 +1191,7 @@ export class GpuDrivenView {
   prepareResidentHeaders(plan: SubmissionPlan, scene: GpuScene): Result<void, RhiError> {
     const owner = scene.inputs;
     const guard = owner.captureGuard();
-    const cursor = scene.contentCursor;
+    const revision = scene.syncRevision;
     let inputs: GpuInputReadFrame | undefined;
     let failure: { readonly cause: unknown } | undefined;
     try {
@@ -1233,7 +1223,7 @@ export class GpuDrivenView {
     }
     try {
       this.memberResidency.assertLive(owner);
-      if (!guard() || scene.inputs !== owner || !scene.live || scene.contentCursor !== cursor)
+      if (!guard() || scene.inputs !== owner || !scene.live || scene.syncRevision !== revision)
         return err(
           new RhiError({
             code: 'rhi-descriptor-invalid',
@@ -1943,8 +1933,6 @@ export class GpuDrivenView {
       words,
       oldWords: this.suppressionWordCapacity,
       facts: this.inputBindingFacts(scene, this.buffers),
-      plan: this.plan,
-      topology: this.encodedTopology,
       skinLayout: this.skinLayout,
       batchCapacity: this.batchCapacity,
       orderCapacity: this.orderCandidateCapacity,
@@ -2013,6 +2001,8 @@ export class GpuDrivenView {
   }
 
   private assertAddressPreparation(role: ViewAddressPreparation): void {
+    // Frames may change the accepted plan while private address buffers are
+    // prepared. Publication copies the latest bytes from the same storage.
     if (
       this.addressPreparation !== role ||
       role.closed ||
@@ -2021,9 +2011,8 @@ export class GpuDrivenView {
       role.closed ||
       this.sceneRef !== role.scene ||
       !this.inputBindingFactsMatch(role.facts) ||
-      this.plan !== role.plan ||
-      this.encodedTopology !== role.topology ||
-      this.skinLayout !== role.skinLayout ||
+      this.plan === undefined ||
+      this.skinLayout?.counterWords !== role.skinLayout?.counterWords ||
       this.batchCapacity !== role.batchCapacity ||
       this.orderCandidateCapacity !== role.orderCapacity ||
       this.suppressionWordCapacity !== role.oldWords ||
@@ -2547,46 +2536,9 @@ export class GpuDrivenView {
     // Counters lead the readback; mapping the visible-member and indirect
     // tail would cost bytes proportional to the candidate capacity per view.
     const counterBytes = Math.max(4, copy.plan.batches.length * COUNTER_STRIDE);
-    return this.readTelemetryCopy(copy, counterBytes, (values) => {
-      let texelCulled = 0;
-      let cameraCulled = 0;
-      for (let batchIndex = 0; batchIndex < copy.plan.batches.length; batchIndex += 1) {
-        const offset = batchIndex * COUNTER_STRIDE;
-        texelCulled += values.getUint32(offset + TEXEL_CULLED_COUNTER_OFFSET * 4, true);
-        cameraCulled += values.getUint32(offset + CAMERA_CULLED_COUNTER_OFFSET * 4, true);
-      }
-      const producer = copy.submit?.cullingProducer;
-      if (producer === undefined) return { texelCulled, cameraCulled };
-      let visible = 0;
-      let overflow = false;
-      for (let batchIndex = 0; batchIndex < copy.plan.batches.length; batchIndex += 1) {
-        const offset = batchIndex * COUNTER_STRIDE;
-        const batchOverflow = values.getUint32(offset + 4, true) !== 0;
-        overflow ||= batchOverflow;
-        if (!batchOverflow) {
-          visible += Math.min(
-            values.getUint32(offset, true),
-            copy.plan.batches.at(batchIndex)?.visibleCapacity ?? 0,
-          );
-        }
-      }
-      return {
-        texelCulled,
-        cameraCulled,
-        observation: Object.freeze({
-          producer,
-          resourceGeneration: copy.resourceGeneration,
-          indirectBufferIdentity: copy.indirectBufferIdentity,
-          planRevision: copy.plan.revision,
-          candidateCount: copy.plan.candidateCount,
-          batchCount: copy.plan.batches.length,
-          visible,
-          overflow,
-          texelCulled,
-          cameraCulled,
-        }),
-      };
-    });
+    return this.readTelemetryCopy(copy, counterBytes, (values) =>
+      decodeCullingCounts(copy, values),
+    );
   }
 
   private readableTelemetryCopy(): LodTelemetryCopy | undefined {
@@ -2643,168 +2595,9 @@ export class GpuDrivenView {
     copy: LodTelemetryCopy,
   ): Promise<GpuDrivenLodSelectionInspection | undefined> {
     return this.readTelemetryCopy(copy, undefined, (values) => {
-      const plan = copy.plan;
-      let visible = 0;
-      let overflow = false;
-      let geometryWork = 0;
-      let rootGeometryWork = 0;
-      let texelCulled = 0;
-      let cameraCulled = 0;
-      let frustumCulled = 0;
-      let occlusionCulled = 0;
-      let lateVisible = 0;
-      const actualMembers: Array<{
-        readonly batchId: number;
-        readonly primitiveIndex: number;
-        readonly generation: number;
-        readonly drawItemIndex: number;
-        readonly instanceOrdinal: number;
-      }> = [];
-      const histogram = new Map<number, number>();
-      let batchIndex = 0;
-      let firstCandidate = 0;
-      for (const batch of plan.batches) {
-        const offset = batchIndex++ * COUNTER_STRIDE;
-        const batchOverflow = values.getUint32(offset + 4, true) !== 0;
-        const batchVisible = batchOverflow
-          ? 0
-          : Math.min(values.getUint32(offset, true), batch?.visibleCapacity ?? 0);
-        // Visible items carry their candidate row (z) in the submitted plan, so
-        // each record names the (slot, generation) encoded with this copy and
-        // never consults the current allocation; joins drop stale generations.
-        const batchFirst = firstCandidate;
-        firstCandidate += batch.candidates.length;
-        const levels = batch === undefined || batchOverflow ? 0 : batchLodLevelCount(batch);
-        for (let level = 0; level < levels; level += 1) {
-          if (batch === undefined) break;
-          const segmentBase = batch.visibleBase + level * batchLevelStride(batch);
-          const segmentVisible = Math.min(
-            values.getUint32(offset + (LEVEL_VISIBLE_COUNTER_OFFSET + level) * 4, true),
-            batch.visibleCapacity,
-          );
-          for (let visibleIndex = 0; visibleIndex < segmentVisible; visibleIndex += 1) {
-            const visibleOffset =
-              this.batchCapacity * COUNTER_STRIDE + (segmentBase + visibleIndex) * 16;
-            const ordinal = values.getUint32(visibleOffset + 8, true) - batchFirst;
-            const candidate =
-              ordinal >= 0 && ordinal < batch.candidates.length
-                ? batch.candidates.at(ordinal)
-                : undefined;
-            if (candidate !== undefined) {
-              actualMembers.push({
-                batchId: batch.batchId,
-                primitiveIndex: candidate.primitiveIndex,
-                generation: candidate.generation,
-                drawItemIndex: batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
-                instanceOrdinal: candidate.instanceOrdinal,
-              });
-            }
-          }
-        }
-        visible += batchVisible;
-        overflow ||= batchOverflow;
-        geometryWork += values.getUint32(offset + GEOMETRY_WORK_COUNTER_OFFSET * 4, true);
-        rootGeometryWork += values.getUint32(offset + ROOT_GEOMETRY_WORK_COUNTER_OFFSET * 4, true);
-        texelCulled += values.getUint32(offset + TEXEL_CULLED_COUNTER_OFFSET * 4, true);
-        cameraCulled += values.getUint32(offset + CAMERA_CULLED_COUNTER_OFFSET * 4, true);
-        frustumCulled += values.getUint32(offset + FRUSTUM_CULLED_COUNTER_OFFSET * 4, true);
-        if (copy.occlusion && !batchOverflow && batch !== undefined) {
-          occlusionCulled += values.getUint32(offset + OCCLUSION_CULLED_COUNTER_OFFSET * 4, true);
-          for (let level = 0; level < batchLodLevelCount(batch); level += 1) {
-            const total = Math.min(
-              values.getUint32(offset + (LEVEL_VISIBLE_COUNTER_OFFSET + level) * 4, true),
-              batch.visibleCapacity,
-            );
-            const early = values.getUint32(
-              offset + (EARLY_VISIBLE_COUNTER_OFFSET + level) * 4,
-              true,
-            );
-            lateVisible += Math.max(0, total - early);
-          }
-        }
-        for (let level = 0; level < LOD_ROW_CAPACITY; level += 1) {
-          const count = values.getUint32(offset + (LOD_COUNTER_OFFSET + level) * 4, true);
-          if (count > 0) histogram.set(level, (histogram.get(level) ?? 0) + count);
-        }
-      }
-      const candidateCount = plan.candidateCount;
-      const surfaceReadback = copy.surfaceReadbackSnapshot?.();
-      const surfaceIndirectReadback =
-        surfaceReadback === undefined
-          ? undefined
-          : decodeSurfaceIndirectParameters({
-              bytes: values.buffer,
-              byteOffset: copy.indirectReadbackOffset,
-              byteLength: this.indirectCapacity * INDIRECT_COMMAND_BYTES,
-              indirectBufferIdentity: copy.indirectBufferIdentity,
-              recording: surfaceReadback,
-            });
-      this.lodSelection = Object.freeze({
-        resourceGeneration: copy.resourceGeneration,
-        candidateCount,
-        batchCount: plan.batches.length,
-        // Selector-only batches remain in the plan/readback but the production
-        // raster skips them. Report the actual nonzero-admission command count
-        // (one per LOD level) so a benchmark cannot mistake selector batches
-        // for raster draws.
-        indirectDrawCount: admittedRasterBatchCount(plan),
-        visible,
-        // A LOD histogram counts candidates that reached the selector, while
-        // `visible` is the actual compacted submission count. Occlusion is the
-        // difference between those candidate/visibility totals; using the
-        // histogram here would mislabel a visible candidate dropped only by an
-        // indirect-capacity overflow as occluded.
-        occluded: Math.max(0, candidateCount - visible),
-        overflow,
-        lodHistogram: Object.freeze(
-          [...histogram.entries()]
-            .sort(([left], [right]) => left - right)
-            .map(([level, count]) => Object.freeze({ level, count })),
-        ),
-        batches: Object.freeze(
-          plan.batches.map((batch, batchIndex) => {
-            const offset = batchIndex * COUNTER_STRIDE;
-            const batchHistogram = new Map<number, number>();
-            for (let level = 0; level < LOD_ROW_CAPACITY; level += 1) {
-              const count = values.getUint32(offset + (LOD_COUNTER_OFFSET + level) * 4, true);
-              if (count > 0) batchHistogram.set(level, count);
-            }
-            const batchOverflow = values.getUint32(offset + 4, true) !== 0;
-            const batchVisible = batchOverflow
-              ? 0
-              : Math.min(values.getUint32(offset, true), batch.visibleCapacity);
-            return Object.freeze({
-              batchId: batch.batchId,
-              candidateCount: batch.candidates.length,
-              visible: batchVisible,
-              occluded: Math.max(0, batch.candidates.length - batchVisible),
-              overflow: batchOverflow,
-              lodHistogram: Object.freeze(
-                [...batchHistogram.entries()]
-                  .sort(([left], [right]) => left - right)
-                  .map(([level, count]) => Object.freeze({ level, count })),
-              ),
-            });
-          }),
-        ),
-        geometryWork,
-        rootGeometryWork,
-        texelCulled,
-        cameraCulled,
-        frustumCulled,
-        ...(copy.occlusion
-          ? { occlusion: Object.freeze({ culled: occlusionCulled, late: lateVisible }) }
-          : {}),
-        actualMembers: Object.freeze(actualMembers),
-        ...(surfaceReadback === undefined ? {} : { surfaceReadback }),
-        ...(surfaceIndirectReadback === undefined
-          ? {}
-          : surfaceIndirectReadback.ok
-            ? { surfaceIndirectParameters: surfaceIndirectReadback.value }
-            : { surfaceIndirectReadbackError: surfaceIndirectReadback.error }),
-        ...(copy.submit === undefined ? {} : { submit: copy.submit }),
-      });
-      return this.lodSelection;
+      const selection = decodeLodSelection(copy, values, this.batchCapacity, this.indirectCapacity);
+      this.lodSelection = selection;
+      return selection;
     });
   }
 
@@ -2850,6 +2643,217 @@ export class GpuDrivenView {
       visibleSurfaceRows = imported.value;
     }
     return ok(visibleSurfaceRows);
+  }
+
+  /** Physical kernels shared by camera and light views. View.update owns all buffer generations. */
+  get hasSkinDemand(): boolean {
+    return this.skinActive && this.skinLayout !== undefined;
+  }
+
+  get cameraLateIndirectOffset(): number {
+    return this.indirectCapacity * INDIRECT_COMMAND_BYTES;
+  }
+
+  get cameraLateVisibleBase(): number {
+    return this.lateVisibleBase();
+  }
+
+  recordSkinDemand(pass: RhiComputePassEncoder): void {
+    const buffers = this.buffers;
+    if (buffers?.skinIndirect === undefined || this.sceneInputs === undefined)
+      throw viewCreationInvalid();
+    const task = this.preparedSkinTask().unwrap();
+    this.inputBufferForExecution(this.sceneInputs, true);
+    for (let stage = 0; stage < 4; stage++)
+      this.dispatchSkinStage(
+        pass,
+        stage,
+        task.pipelines,
+        stage === 3 ? task.finalizeBinding : task.taskBinding,
+        buffers.skinIndirect,
+        this.plan?.candidateCount ?? 0,
+      );
+  }
+
+  recordViewSelection(
+    pass: RhiComputePassEncoder,
+    late: boolean,
+    receiverDepth?: TextureView,
+  ): void {
+    const group = this.bindGroup;
+    const plan = this.plan;
+    if (plan === undefined || group === undefined || this.sceneInputs === undefined)
+      throw viewCreationInvalid();
+    this.inputBufferForExecution(this.sceneInputs, true);
+    if (this.hasSkinDemand) {
+      const args = this.buffers?.skinIndirect;
+      if (args === undefined) throw viewCreationInvalid();
+      const task = this.preparedSkinTask().unwrap();
+      this.dispatchSkinStage(pass, 4, task.pipelines, task.taskBinding, args, plan.candidateCount);
+    }
+    this.cameraCullBound = receiverDepth !== undefined && this.shadowCameraCullEligible;
+    const receiver = this.cameraCullBound ? this.shadowCameraCullPipeline : undefined;
+    if (late) this.writeOcclusionState();
+    this.dispatchSelection(pass, this.resetPipeline, group, plan.batches.length);
+    this.compactSelection(
+      pass,
+      receiver ?? this.cullPipeline,
+      group,
+      receiver !== undefined && receiverDepth !== undefined
+        ? this.pyramidBindGroup(receiverDepth)
+        : undefined,
+      plan.candidateCount,
+      false,
+    );
+    this.dispatchSelection(pass, this.finalizePipeline, group, plan.batches.length);
+  }
+
+  recordCameraLateCull(pass: RhiComputePassEncoder, pyramid: TextureView): void {
+    const group = this.bindGroup;
+    const plan = this.plan;
+    if (plan === undefined || group === undefined || this.sceneInputs === undefined)
+      throw viewCreationInvalid();
+    this.inputBufferForExecution(this.sceneInputs, true);
+    this.compactSelection(
+      pass,
+      this.lateCullPipeline,
+      group,
+      this.pyramidBindGroup(pyramid),
+      plan.candidateCount,
+      true,
+    );
+    this.finishLateSelection();
+  }
+
+  recordCameraLateFinalize(pass: RhiComputePassEncoder): void {
+    const group = this.bindGroup;
+    const plan = this.plan;
+    if (plan === undefined || group === undefined || this.sceneInputs === undefined)
+      throw viewCreationInvalid();
+    this.inputBufferForExecution(this.sceneInputs, true);
+    this.dispatchSelection(pass, this.lateFinalizePipeline, group, plan.batches.length);
+  }
+
+  recordSelectionReadback(
+    encoder: RhiCommandEncoder,
+    late: boolean,
+    surfaceObservation?: () => SurfaceSubmissionCandidate | undefined,
+  ): void {
+    const buffers = this.buffers;
+    if (buffers === undefined) throw viewCreationInvalid();
+    if (!this.cullingReadbackSkipped() && this.readbackAvailable(buffers))
+      this.writeSelectionReadback(encoder, buffers, late, surfaceObservation);
+  }
+
+  private dispatchSkinStage(
+    pass: RhiComputePassEncoder,
+    stage: number,
+    pipelines: readonly ComputePipeline[],
+    group: BindGroup,
+    args: Buffer,
+    candidates: number,
+  ): void {
+    pass.setPipeline(pipelines[stage] as ComputePipeline);
+    pass.setBindGroup(0, group);
+    if (stage === 4) pass.dispatchWorkgroupsIndirect(args, 0);
+    else if (stage === 1 || stage === 3) pass.dispatchWorkgroups(1);
+    else {
+      const count = stage === 0 ? (this.skinLayout?.rosterCapacity ?? 0) : candidates;
+      const groups = Math.max(1, Math.ceil(count / WORKGROUP_SIZE));
+      const limit = Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535;
+      pass.dispatchWorkgroups(Math.min(groups, limit), Math.ceil(groups / limit));
+    }
+  }
+
+  private dispatchSelection(
+    pass: RhiComputePassEncoder,
+    pipeline: ComputePipeline,
+    group: BindGroup,
+    count: number,
+  ): void {
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(Math.ceil(Math.max(1, count) / WORKGROUP_SIZE));
+  }
+
+  private compactSelection(
+    pass: RhiComputePassEncoder,
+    pipeline: ComputePipeline,
+    group: BindGroup,
+    pyramid: BindGroup | undefined,
+    candidateCount: number,
+    late: boolean,
+  ): void {
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    if (pyramid !== undefined) pass.setBindGroup(1, pyramid);
+    const groups = Math.ceil(Math.max(1, candidateCount) / WORKGROUP_SIZE);
+    pass.dispatchWorkgroups(groups);
+    pass.setPipeline(this.orderScanPipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(1);
+    pass.setPipeline(late ? this.lateOrderPlacePipeline : this.orderPlacePipeline);
+    pass.dispatchWorkgroups(groups);
+  }
+
+  private finishLateSelection(): void {
+    this.visibilityParity ^= 1;
+    this.visibilityHistoryKey = this.occlusionCamera?.historyKey;
+    this.visibilityHistoryReady = true;
+  }
+
+  private readbackAvailable(buffers: ViewBuffers): boolean {
+    const mapped = buffers.lodReadback.mapState;
+    return mapped === undefined || mapped === 'unmapped';
+  }
+
+  private writeSelectionReadback(
+    encoder: RhiCommandEncoder,
+    buffers: ViewBuffers,
+    occlusion: boolean,
+    surfaceSubmissionObservation?: () => SurfaceSubmissionCandidate | undefined,
+    counters = buffers.counters,
+    destination = buffers.lodReadback,
+    visible = buffers.visible,
+    indirect = buffers.indirect,
+  ): void {
+    const indirectReadbackOffset =
+      this.batchCapacity * COUNTER_STRIDE + this.visibleBufferCapacity * 16;
+    encoder.copyBufferToBuffer(counters, destination, this.batchCapacity * COUNTER_STRIDE);
+    if (this.readback === 'complete') {
+      encoder.copyBufferToBuffer(
+        visible,
+        0,
+        destination,
+        this.batchCapacity * COUNTER_STRIDE,
+        this.visibleBufferCapacity * 16,
+      );
+      encoder.copyBufferToBuffer(
+        indirect,
+        0,
+        destination,
+        indirectReadbackOffset,
+        this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+      );
+    }
+    const submittedPlan = this.plan;
+    if (this.buffers === buffers && submittedPlan !== undefined) {
+      const submittedObservation = surfaceSubmissionObservation?.();
+      this.telemetryPending = {
+        buffers,
+        plan: submittedPlan,
+        resourceGeneration: this.resourceGeneration,
+        indirectBufferIdentity: getOpaqueResourceIdentity(buffers.indirect as object),
+        indirectReadbackOffset,
+        ...(submittedObservation === undefined
+          ? {}
+          : {
+              surfaceReadbackSnapshot: () => submittedObservation.gpuReadbackSnapshot(),
+            }),
+        ...(this.telemetrySubmit === undefined ? {} : { submit: this.telemetrySubmit }),
+        occlusion,
+      };
+    }
   }
 
   addPasses<FrameCtx extends RenderGraphFrame>(
@@ -3040,19 +3044,14 @@ export class GpuDrivenView {
           liveTaskGroup === undefined ? capturedInputs : (this.sceneInputs ?? capturedInputs),
           true,
         );
-        pass.setPipeline(pipelines[stage] as ComputePipeline);
-        pass.setBindGroup(0, taskGroup);
-        if (stage === 4) {
-          pass.dispatchWorkgroupsIndirect(currentBuffers().skinIndirect ?? argumentBuffer, 0);
-        } else if (stage === 1 || stage === 3) {
-          pass.dispatchWorkgroups(1);
-        } else {
-          const count =
-            stage === 0 ? (this.skinLayout?.rosterCapacity ?? 0) : submitted().candidateCount;
-          const groups = Math.max(1, Math.ceil(count / WORKGROUP_SIZE));
-          const limit = Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535;
-          pass.dispatchWorkgroups(Math.min(groups, limit), Math.ceil(groups / limit));
-        }
+        this.dispatchSkinStage(
+          pass,
+          stage,
+          pipelines,
+          taskGroup,
+          currentBuffers().skinIndirect ?? argumentBuffer,
+          submitted().candidateCount,
+        );
       };
       const skinPass = (
         name: string,
@@ -3060,25 +3059,29 @@ export class GpuDrivenView {
         end: number,
         indirectUsage: 'storage-read-write' | 'indirect-read' | undefined,
       ) =>
-        builder.addComputePass(`${labelPrefix}.skin-${name}`, {
-          accesses: [
-            { resource: primitive.value, usage: 'storage-read' },
-            { resource: instance.value, usage: 'storage-read' },
-            { resource: transform.value, usage: 'storage-read' },
-            { resource: candidates.value, usage: 'storage-read' },
-            { resource: batches.value, usage: 'storage-read' },
-            { resource: view.value, usage: 'uniform-read' },
-            { resource: counters.value, usage: 'storage-read-write' },
-            { resource: visible.value, usage: 'storage-read-write' },
-            ...(indirectUsage === undefined
-              ? []
-              : [{ resource: importedArgs.value, usage: indirectUsage }]),
-          ],
-          executeIf: taskEnabled,
-          encodeDirect: (pass, _graphframe, _graphresources) => {
-            for (let stage = first; stage < end; stage++) encodeSkinStage(pass, stage);
+        builder.addComputePass(
+          `${labelPrefix}.skin-${name}`,
+          {
+            accesses: [
+              { resource: primitive.value, usage: 'storage-read' },
+              { resource: instance.value, usage: 'storage-read' },
+              { resource: transform.value, usage: 'storage-read' },
+              { resource: candidates.value, usage: 'storage-read' },
+              { resource: batches.value, usage: 'storage-read' },
+              { resource: view.value, usage: 'uniform-read' },
+              { resource: counters.value, usage: 'storage-read-write' },
+              { resource: visible.value, usage: 'storage-read-write' },
+              ...(indirectUsage === undefined
+                ? []
+                : [{ resource: importedArgs.value, usage: indirectUsage }]),
+            ],
+            executeIf: taskEnabled,
+            encodeDirect: (pass, _graphframe, _graphresources) => {
+              for (let stage = first; stage < end; stage++) encodeSkinStage(pass, stage);
+            },
           },
-        });
+          'transfer',
+        );
       const declareSkin = (): Result<void, RenderGraphError> => {
         if (computePassMode === 'combined') {
           // Dedicated Skin arguments stay read-only while selection writes its
@@ -3109,47 +3112,36 @@ export class GpuDrivenView {
     let lateRecorded = false;
     const cameraCull = this.shadowCameraCullEligible ? shadowCameraPyramid : undefined;
     this.cameraCullBound = cameraCull !== undefined;
-    // Place the cull's admitted candidates at their candidate-order ranks.
-    const encodeVisibleOrder = (
-      pass: Parameters<NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']>>[0],
-      place: ComputePipeline,
-    ): void => {
-      pass.setPipeline(this.orderScanPipeline);
-      pass.setBindGroup(0, liveBindGroup());
-      pass.dispatchWorkgroups(1);
-      pass.setPipeline(place);
-      pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE));
-    };
-    const resetSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) => {
-      pass.setPipeline(this.resetPipeline);
-      pass.setBindGroup(0, liveBindGroup());
-      pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE));
-    };
+    const resetSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) =>
+      this.dispatchSelection(pass, this.resetPipeline, liveBindGroup(), submitted().batches.length);
     const compactSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (
       pass,
       _frame,
       graphResources,
     ) => {
       if (lateRecorded) this.writeOcclusionState();
-      // update() compiles the camera cull with its first input; until then
-      // the frustum cull is what the disabled camera cull would draw.
       const cameraPipeline = cameraCull === undefined ? undefined : this.shadowCameraCullPipeline;
-      pass.setPipeline(cameraPipeline ?? this.cullPipeline);
-      pass.setBindGroup(0, liveBindGroup());
-      if (cameraCull !== undefined && cameraPipeline !== undefined) {
-        pass.setBindGroup(
-          1,
-          this.pyramidBindGroup(graphResources.textureView(cameraCull).unwrap()),
-        );
-      }
-      pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE));
-      encodeVisibleOrder(pass, this.orderPlacePipeline);
+      const group = liveBindGroup();
+      const pyramid =
+        cameraCull !== undefined && cameraPipeline !== undefined
+          ? this.pyramidBindGroup(graphResources.textureView(cameraCull).unwrap())
+          : undefined;
+      this.compactSelection(
+        pass,
+        cameraPipeline ?? this.cullPipeline,
+        group,
+        pyramid,
+        submitted().candidateCount,
+        false,
+      );
     };
-    const finalizeSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) => {
-      pass.setPipeline(this.finalizePipeline);
-      pass.setBindGroup(0, liveBindGroup());
-      pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE));
-    };
+    const finalizeSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) =>
+      this.dispatchSelection(
+        pass,
+        this.finalizePipeline,
+        liveBindGroup(),
+        submitted().batches.length,
+      );
     const compactAccesses: ComputeGraphPass<FrameCtx>['accesses'] = [
       { resource: primitive.value, usage: 'storage-read' },
       { resource: instance.value, usage: 'storage-read' },
@@ -3195,14 +3187,18 @@ export class GpuDrivenView {
         const selection = addSelectionWorkPass(builder, work);
         if (!selection.ok) return selection;
       } else {
-        const reset = builder.addComputePass(`${labelPrefix}.view-reset`, {
-          accesses: [
-            { resource: view.value, usage: 'uniform-read' },
-            { resource: counters.value, usage: 'storage-read-write' },
-          ],
-          ...(executeIf === undefined ? {} : { executeIf }),
-          encodeDirect: resetSelection,
-        });
+        const reset = builder.addComputePass(
+          `${labelPrefix}.view-reset`,
+          {
+            accesses: [
+              { resource: view.value, usage: 'uniform-read' },
+              { resource: counters.value, usage: 'storage-read-write' },
+            ],
+            ...(executeIf === undefined ? {} : { executeIf }),
+            encodeDirect: resetSelection,
+          },
+          'transfer',
+        );
         if (!reset.ok) return reset;
         const cull = builder.addComputePass(`${labelPrefix}.frustum-compact`, {
           accesses: compactAccesses,
@@ -3210,17 +3206,21 @@ export class GpuDrivenView {
           encodeDirect: compactSelection,
         });
         if (!cull.ok) return cull;
-        const finalize = builder.addComputePass(`${labelPrefix}.finalize-indirect`, {
-          accesses: [
-            { resource: batches.value, usage: 'storage-read' },
-            { resource: view.value, usage: 'uniform-read' },
-            // Read-write: the finalize snapshots the early per-level counts.
-            { resource: counters.value, usage: 'storage-read-write' },
-            { resource: indirect.value, usage: 'storage-read-write' },
-          ],
-          ...(executeIf === undefined ? {} : { executeIf }),
-          encodeDirect: finalizeSelection,
-        });
+        const finalize = builder.addComputePass(
+          `${labelPrefix}.finalize-indirect`,
+          {
+            accesses: [
+              { resource: batches.value, usage: 'storage-read' },
+              { resource: view.value, usage: 'uniform-read' },
+              // Read-write: the finalize snapshots the early per-level counts.
+              { resource: counters.value, usage: 'storage-read-write' },
+              { resource: indirect.value, usage: 'storage-read-write' },
+            ],
+            ...(executeIf === undefined ? {} : { executeIf }),
+            encodeDirect: finalizeSelection,
+          },
+          'transfer',
+        );
         if (!finalize.ok) return finalize;
       }
       return ok(undefined);
@@ -3228,77 +3228,41 @@ export class GpuDrivenView {
     const declaredSelection = declareSelection();
     if (!declaredSelection.ok) return declaredSelection;
     const addReadback = (occlusion: boolean) =>
-      builder.addCopyPass(`${labelPrefix}.lod-selection-readback`, {
-        accesses: [
-          { resource: counters.value, usage: 'copy-src' },
-          ...(this.readback === 'complete'
-            ? [
-                { resource: visible.value, usage: 'copy-src' as const },
-                { resource: indirect.value, usage: 'copy-src' as const },
-              ]
-            : []),
-          { resource: lodReadback.value, usage: 'copy-dst' },
-        ],
-        ...(executeIf === undefined ? {} : { executeIf }),
-        encodeDirect: (encoder, _graphframe, resources) => {
-          // A cached graph may run while an observer is awaiting mapAsync on the
-          // previous copy. WebGPU forbids submitting a copy into a
-          // pending/mapped buffer; skip only this telemetry copy and keep the
-          // raster/indirect work intact. RhiNull has no runtime mapState, so its
-          // undefined value remains structurally executable.
-          if (this.cullingReadbackSkipped()) return;
-          const current = currentBuffers();
-          const mapState = current.lodReadback.mapState;
-          if (mapState !== undefined && mapState !== 'unmapped') return;
-          const indirectReadbackOffset =
-            this.batchCapacity * COUNTER_STRIDE + this.visibleBufferCapacity * 16;
-          encoder.copyBufferToBuffer(
-            resources.buffer(counters.value).unwrap(),
-            resources.buffer(lodReadback.value).unwrap(),
-            this.batchCapacity * COUNTER_STRIDE,
-          );
-          if (this.readback === 'complete') {
-            encoder.copyBufferToBuffer(
-              resources.buffer(visible.value).unwrap(),
-              0,
-              resources.buffer(lodReadback.value).unwrap(),
-              this.batchCapacity * COUNTER_STRIDE,
-              this.visibleBufferCapacity * 16,
-            );
-            encoder.copyBufferToBuffer(
-              resources.buffer(indirect.value).unwrap(),
-              0,
-              resources.buffer(lodReadback.value).unwrap(),
-              indirectReadbackOffset,
-              this.indirectCapacity * INDIRECT_COMMAND_BYTES,
-            );
-          }
-          // The render graph is cached across camera-only LOD projection
-          // changes. The pass closure therefore retains the graph-generation
-          // plan while `this.plan` carries the plan uploaded for the frame that
-          // is actually being submitted. Counters belong to that current plan;
-          // retaining the stale closure plan would make every observation fail
-          // the identity fence and silently leave the CPU level-0 placeholder.
-          const submittedPlan = this.plan;
-          if (this.buffers === current && submittedPlan !== undefined) {
-            const submittedObservation = surfaceSubmissionObservation?.();
-            this.telemetryPending = {
-              buffers: current,
-              plan: submittedPlan,
-              resourceGeneration: this.resourceGeneration,
-              indirectBufferIdentity: getOpaqueResourceIdentity(current.indirect as object),
-              indirectReadbackOffset,
-              ...(submittedObservation === undefined
-                ? {}
-                : {
-                    surfaceReadbackSnapshot: () => submittedObservation.gpuReadbackSnapshot(),
-                  }),
-              ...(this.telemetrySubmit === undefined ? {} : { submit: this.telemetrySubmit }),
+      builder.addCopyPass(
+        `${labelPrefix}.lod-selection-readback`,
+        {
+          accesses: [
+            { resource: counters.value, usage: 'copy-src' },
+            ...(this.readback === 'complete'
+              ? [
+                  { resource: visible.value, usage: 'copy-src' as const },
+                  { resource: indirect.value, usage: 'copy-src' as const },
+                ]
+              : []),
+            { resource: lodReadback.value, usage: 'copy-dst' },
+          ],
+          ...(executeIf === undefined ? {} : { executeIf }),
+          encodeDirect: (encoder, _graphframe, resources) => {
+            const current = currentBuffers();
+            if (this.cullingReadbackSkipped() || !this.readbackAvailable(current)) return;
+            this.writeSelectionReadback(
+              encoder,
+              current,
               occlusion,
-            };
-          }
+              surfaceSubmissionObservation,
+              resources.buffer(counters.value).unwrap(),
+              resources.buffer(lodReadback.value).unwrap(),
+              this.readback === 'complete'
+                ? resources.buffer(visible.value).unwrap()
+                : current.visible,
+              this.readback === 'complete'
+                ? resources.buffer(indirect.value).unwrap()
+                : current.indirect,
+            );
+          },
         },
-      });
+        'transfer',
+      );
     const resources = {
       ...(visibleSurfaceRows === undefined ? {} : { visibleSurfaceRows }),
       visible: visible.value,
@@ -3319,62 +3283,69 @@ export class GpuDrivenView {
       pyramid: GraphTextureView,
     ): Result<GpuDrivenLateOcclusionGraph, RenderGraphError> => {
       let preparedPyramid: { readonly view: TextureView; readonly group: BindGroup } | undefined;
-      const lateCull = builder.addComputePass(`${labelPrefix}.occlusion-cull`, {
-        accesses: [
-          { resource: primitive.value, usage: 'storage-read' },
-          { resource: instance.value, usage: 'storage-read' },
-          { resource: transform.value, usage: 'storage-read' },
-          { resource: candidates.value, usage: 'storage-read' },
-          { resource: batches.value, usage: 'storage-read' },
-          { resource: view.value, usage: 'uniform-read' },
-          { resource: counters.value, usage: 'storage-read-write' },
-          { resource: visible.value, usage: 'storage-read-write' },
-          { resource: pyramid, usage: 'sampled-read' },
-        ],
-        ...(executeIf === undefined ? {} : { executeIf }),
-        preparedResourcesCurrent: () =>
-          owner.buffers !== undefined &&
-          preparedPyramid !== undefined &&
-          owner.pyramidBindGroups.get(preparedPyramid.view) === preparedPyramid.group,
-        *prepareResources(resources, current) {
-          const view = resources.createdTextureView(pyramid);
-          if (view === undefined || !current()) throw viewCreationInvalid();
-          const group = owner.pyramidBindGroup(view, current);
-          if (!current()) throw viewCreationInvalid();
-          preparedPyramid = { view, group };
-          yield;
+      const lateCull = builder.addComputePass(
+        `${labelPrefix}.occlusion-cull`,
+        {
+          accesses: [
+            { resource: primitive.value, usage: 'storage-read' },
+            { resource: instance.value, usage: 'storage-read' },
+            { resource: transform.value, usage: 'storage-read' },
+            { resource: candidates.value, usage: 'storage-read' },
+            { resource: batches.value, usage: 'storage-read' },
+            { resource: view.value, usage: 'uniform-read' },
+            { resource: counters.value, usage: 'storage-read-write' },
+            { resource: visible.value, usage: 'storage-read-write' },
+            { resource: pyramid, usage: 'sampled-read' },
+          ],
+          ...(executeIf === undefined ? {} : { executeIf }),
+          preparedResourcesCurrent: () =>
+            owner.buffers !== undefined &&
+            preparedPyramid !== undefined &&
+            owner.pyramidBindGroups.get(preparedPyramid.view) === preparedPyramid.group,
+          *prepareResources(resources, current) {
+            const view = resources.createdTextureView(pyramid);
+            if (view === undefined || !current()) throw viewCreationInvalid();
+            const group = owner.pyramidBindGroup(view, current);
+            if (!current()) throw viewCreationInvalid();
+            preparedPyramid = { view, group };
+            yield;
+          },
+          encodeDirect: (pass, _graphframe, graphResources) => {
+            this.compactSelection(
+              pass,
+              this.lateCullPipeline,
+              liveBindGroup(),
+              this.pyramidBindGroup(graphResources.textureView(pyramid).unwrap()),
+              submitted().candidateCount,
+              true,
+            );
+            this.finishLateSelection();
+          },
         },
-        encodeDirect: (pass, _graphframe, graphResources) => {
-          pass.setPipeline(this.lateCullPipeline);
-          pass.setBindGroup(0, liveBindGroup());
-          pass.setBindGroup(1, this.pyramidBindGroup(graphResources.textureView(pyramid).unwrap()));
-          pass.dispatchWorkgroups(
-            Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE),
-          );
-          encodeVisibleOrder(pass, this.lateOrderPlacePipeline);
-          // The region this phase writes becomes next frame's history.
-          this.visibilityParity ^= 1;
-          this.visibilityHistoryKey = this.occlusionCamera?.historyKey;
-          this.visibilityHistoryReady = true;
-        },
-      });
+        'transfer',
+      );
       if (!lateCull.ok) return lateCull;
-      const lateFinalize = builder.addComputePass(`${labelPrefix}.occlusion-finalize-indirect`, {
-        accesses: [
-          { resource: batches.value, usage: 'storage-read' },
-          { resource: view.value, usage: 'uniform-read' },
-          { resource: counters.value, usage: 'storage-read-write' },
-          { resource: indirect.value, usage: 'storage-read-write' },
-        ],
-        ...(executeIf === undefined ? {} : { executeIf }),
-        encodeDirect: (pass, _graphframe, _graphresources) => {
-          pass.setPipeline(this.lateFinalizePipeline);
-          pass.setBindGroup(0, liveBindGroup());
-          pass.dispatchWorkgroups(
-            Math.ceil(Math.max(1, submitted().batches.length) / WORKGROUP_SIZE),
-          );
+      const lateFinalize = builder.addComputePass(
+        `${labelPrefix}.occlusion-finalize-indirect`,
+        {
+          accesses: [
+            { resource: batches.value, usage: 'storage-read' },
+            { resource: view.value, usage: 'uniform-read' },
+            { resource: counters.value, usage: 'storage-read-write' },
+            { resource: indirect.value, usage: 'storage-read-write' },
+          ],
+          ...(executeIf === undefined ? {} : { executeIf }),
+          encodeDirect: (pass, _graphframe, _graphresources) => {
+            this.dispatchSelection(
+              pass,
+              this.lateFinalizePipeline,
+              liveBindGroup(),
+              submitted().batches.length,
+            );
+          },
         },
-      });
+        'transfer',
+      );
       if (!lateFinalize.ok) return lateFinalize;
       const readback = addReadback(true);
       if (!readback.ok) return readback;

@@ -1,5 +1,11 @@
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { MaterialAsset, MaterialPass, MaterialRootAsset } from '@forgeax/engine-types';
+import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
+import {
+  type MaterialAsset,
+  type MaterialPass,
+  type MaterialRootAsset,
+  selectMaterialStaticContract,
+} from '@forgeax/engine-types';
 import scalar from './standard-clearcoat.pack.json' with { type: 'json' };
 import factor from './standard-clearcoat-factor-r.pack.json' with { type: 'json' };
 import roughness from './standard-clearcoat-roughness-g.pack.json' with { type: 'json' };
@@ -13,11 +19,17 @@ import skinFull from './skin-full-physical.pack.json' with { type: 'json' };
 export const physicalMaterialRoots =
   [scalar, factor, roughness, normal, full, skinFactor, skinRoughness, skinNormal, skinFull].map(
     (pack) => {
-      const material = pack.assets[0]!.payload as unknown as MaterialRootAsset;
-      if (material.passes === undefined) throw new Error('Physical shader package has no passes');
-      const parent = AssetGuid.parse(pack.assets[0]!.guid);
-      if (!parent.ok) throw parent.error;
-      return { guid: pack.assets[0]!.guid, parent: parent.value, module: material.passes[0]!.program.module, material };
+      const source = parsePackSourceJson(pack).unwrap();
+      if (source.format !== 'direct') throw new Error('Physical shader package must be direct');
+      const entry = projectDirectPackJson(source).assets[0];
+      if (entry === undefined) throw new Error('Physical shader package has no assets');
+      const material = entry.payload as unknown as MaterialRootAsset;
+      const pass = material.passes?.[0];
+      if (pass === undefined) throw new Error('Physical shader package has no passes');
+      const parent = AssetGuid.parse(entry.guid);
+      if (!parent.ok) throw new Error('Physical shader package has invalid GUID');
+      const activeParameters = selectMaterialStaticContract(material, true).parameters;
+      return { guid: entry.guid, parent: parent.value, module: pass.program.module, material, activeParameters };
     },
   );
 const contracts = new Map(physicalMaterialRoots.map((root) => [root.module, root]));
@@ -31,7 +43,7 @@ export function physicalMaterialChild(material: MaterialAsset, module: string): 
     parent: root.guid,
     values: Object.fromEntries(
       Object.entries(material.values ?? {}).filter(([name]) =>
-        root.material.parameters?.some((parameter) => parameter.name === name),
+        root.activeParameters?.some((parameter) => parameter.name === name),
       ),
     ),
   };

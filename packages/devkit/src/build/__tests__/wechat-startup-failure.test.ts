@@ -242,6 +242,7 @@ async function host(
       },
       enginePrograms: () => ({}),
       runtimeBinding: { scopeId: 'native-test' },
+      authored: [],
       imports: {},
       programHost: {},
       inputBackendPlugin: () => ({ name: 'test-input-backend', apply() {} }),

@@ -17,7 +17,10 @@ describe('standard Surface nested discard guard', () => {
     // (nested-discard-pixels.dawn.test.ts) shows it keeps clipped pixels.
     expect(surface).not.toMatch(/\bdiscard\b/);
     expect(surface).not.toMatch(/\balphaCoverage\b/);
-    expect(surface).toContain('alphaCoverageClipThreshold(');
+    expect(surface).toContain('resolveStandardCoverage(');
+    const coverage = code(read('material/standard-surface-maps.wgsl'));
+    expect(coverage).not.toMatch(/\bdiscard\b|\balphaCoverage\b/);
+    expect(coverage).toContain('alphaCoverageClipThreshold(');
   });
 
   it('keeps the non-discarding coverage helpers free of discard', () => {

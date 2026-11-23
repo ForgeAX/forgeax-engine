@@ -10,7 +10,7 @@ import type { RendererError } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { renderSubmission, renderWorldFor } from '../world/render-world';
 import { recordContext } from '../world/view-record-context';
-import { frameGraphChangedDependencies, frameGraphChangedValues } from './frame-graph-identity';
+import { type FrameGraphIdentity, frameGraphCompileAttribution } from './frame-graph-identity';
 import type { InstalledFrameGraph, RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 import {
@@ -169,10 +169,13 @@ export const FEATURE_GRAPH_COUNTERS = [
 export type FeatureGraphMetricsDelta = Record<(typeof FEATURE_GRAPH_COUNTERS)[number], number> & {
   /** The next plan revision, only when the validated plan set changed. */
   planRevision: RenderFeaturePlanRevisionState | undefined;
-  lastTopologyKey: string | undefined;
+  lastTopologyKey: FrameGraphIdentity | undefined;
   /** A build reached compile; adoption records which topology inputs changed. */
   compileCause:
-    | { readonly installedTopologyKey: string | undefined; readonly key: string }
+    | {
+        readonly installedTopologyKey: FrameGraphIdentity | undefined;
+        readonly key: FrameGraphIdentity;
+      }
     | undefined;
 };
 
@@ -188,8 +191,11 @@ export type GraphEffectError =
  */
 export interface GraphEffects {
   readonly metrics: FeatureGraphMetricsDelta;
+  /** App request whose inputs produced this compile outcome. */
+  readonly configurationRevision?: number | undefined;
   /** Applied on `reused`, `promoted` and `compiled`. */
   readonly lightingSignature: string;
+  readonly forwardDisplayReceiver?: InstalledFrameGraph['forwardDirectionalShadow'];
   /** Applied on `reused`, `promoted` and `compiled`. */
   readonly cloudHistoryActive: boolean;
   readonly cloudHistoryFormat?: import('../cloud/reconstruction/history').CloudTransportFormat;
@@ -244,22 +250,18 @@ export type ViewGraphCompileOutcome =
 function recordCompileCauses(
   featureMetrics: MutableRenderFeatureGraphInspection,
   frame: number,
-  installedTopologyKey: string | undefined,
-  key: string,
+  installedTopologyKey: FrameGraphIdentity | undefined,
+  key: FrameGraphIdentity,
 ): void {
-  const changedDependencies = frameGraphChangedDependencies(installedTopologyKey, key);
-  const primaryCause = changedDependencies[0] ?? 'cold';
+  const { dependencies, changes } = frameGraphCompileAttribution(installedTopologyKey, key);
+  const primaryCause = dependencies[0] ?? 'cold';
   featureMetrics.compilePrimaryCauses[primaryCause] =
     (featureMetrics.compilePrimaryCauses[primaryCause] ?? 0) + 1;
-  for (const dependency of changedDependencies) {
+  for (const dependency of dependencies) {
     featureMetrics.compileChangedDependencies[dependency] =
       (featureMetrics.compileChangedDependencies[dependency] ?? 0) + 1;
   }
-  // Bounded detached evidence of what changed; compiles are already rare and costly.
-  featureMetrics.recentCompileChanges.push({
-    frame,
-    changes: frameGraphChangedValues(installedTopologyKey, key, changedDependencies),
-  });
+  featureMetrics.recentCompileChanges.push({ frame, changes });
   if (featureMetrics.recentCompileChanges.length > 32) featureMetrics.recentCompileChanges.shift();
 }
 
@@ -412,6 +414,7 @@ export function adoptViewGraph(
   }
   frameState.barrelDistortionGraphResolution = 'accepted';
   frameState.standardLightingGraphSignature = effects.lightingSignature;
+  frameState.forwardDisplayReceiver = effects.forwardDisplayReceiver;
   settleFeatureCandidate(internals, effects);
   if (!effects.postPending && effects.featureCandidate !== undefined) {
     frameState.featureGraphReceipt = {

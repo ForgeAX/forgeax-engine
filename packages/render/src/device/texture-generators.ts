@@ -104,6 +104,8 @@ interface Group {
   readonly graph: CompiledRenderGraph<RenderGraphFrame>;
   bytes: number;
   readonly generation: number;
+  readonly accepted: Promise<boolean>;
+  settle(accepted: boolean): void;
   initialized: boolean;
   submitted: boolean;
   disposed: boolean;
@@ -374,6 +376,19 @@ export class TextureGenerators {
     return this.handles.get(handle, namespace)?.current?.generation === generation;
   }
 
+  /** The fixed-source path needs the current recipe's GPU completion, including its mips. */
+  acceptance(
+    handle: number,
+    namespace: GpuResourceNamespace,
+    generation: number,
+  ): Result<Promise<boolean>, AssetError> {
+    const state = this.handles.get(handle, namespace);
+    const group = state?.candidate ?? state?.current;
+    if (group !== undefined && group.generation === generation && group.key === state?.key)
+      return ok(group.accepted);
+    return state?.error === undefined ? pending() : err(state.error);
+  }
+
   /** The physical-frame owner calls this before scene command buffers, then supplies its submit result. */
   encode(encoder: () => RhiCommandEncoder): { complete(submitted: boolean): void } | undefined {
     const device = this.device;
@@ -442,6 +457,7 @@ export class TextureGenerators {
                   if (previous !== undefined) this.retireGroup(previous);
                 }
               this.releaseTransient(group);
+              group.settle(true);
             }
           },
           (cause) => {
@@ -480,11 +496,13 @@ export class TextureGenerators {
     void group.graph.retire();
   }
   private retireGroup(group: Group): void {
+    group.settle(false);
     if (!group.disposed) group.lifetime.retire();
   }
   private disposeGroup(group: Group): void {
     if (group.disposed) return;
     group.disposed = true;
+    group.settle(false);
     this.queued.delete(group);
     this.owned.delete(group);
     this.bytes -= group.bytes;
@@ -579,6 +597,10 @@ export class TextureGenerators {
         );
       }
       const graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      let settle: Group['settle'] = () => {};
+      const accepted = new Promise<boolean>((resolve) => {
+        settle = resolve;
+      });
       const group: Group = {
         device,
         key,
@@ -590,6 +612,8 @@ export class TextureGenerators {
         graph,
         bytes,
         generation,
+        accepted,
+        settle,
         initialized: false,
         submitted: false,
         disposed: false,

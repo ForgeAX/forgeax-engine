@@ -162,6 +162,7 @@ it.each([
         sampler,
         intensityBuffer: identity,
         irradianceView: colorView,
+        skySh: identity,
         prefilterView: colorView,
         brdfLutView: colorView,
       },
@@ -198,7 +199,7 @@ it.each([
   const creates = vi.spyOn(device, 'createBuffer');
   const groups = vi.spyOn(device, 'createBindGroup');
   const writes = vi.spyOn(device.queue, 'writeBuffer');
-  const draw = c.validatedOrdered[0];
+  const draw = c.validatedOrdered.at(0);
   if (draw === undefined) throw new Error('missing draw');
   const record = (
     context: _InternalRenderPipelineContext,
@@ -413,7 +414,7 @@ it.each([
       },
     });
     recordShadowCasterDraws(c, pass, pipeline, materialGroup, undefined, false);
-    const other = c.validatedOrdered[1];
+    const other = c.validatedOrdered.at(1);
     if (other === undefined) throw new Error('missing second entity draw');
     const secondBuffer = resolveGeometryInstanceBuffer(c, other, [], false)?.[0]?.instanceBuffer;
     expect(firstBuffer).toBeDefined();

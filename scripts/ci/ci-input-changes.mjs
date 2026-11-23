@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
+const require = createRequire(import.meta.url);
 const sha = /^[0-9a-f]{40}$/;
 
 export function comparedCiInputs(root, environment = process.env) {
@@ -76,14 +78,65 @@ export function internalSourceOwners(files) {
   return owners;
 }
 
-export function engineWithoutViewRequired(comparison) {
+// A changed import/export route can make a cold or native consumer newly
+// reachable. The narrowed plans only admit modified files with stable edges.
+export function unchangedModuleEdges(root, comparison, path) {
+  if (!sha.test(comparison.base) || !sha.test(comparison.target)) return false;
+  try {
+    const git = ciInputGit(root);
+    const ts = require('typescript');
+    const edges = (source) => {
+      const syntax = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+      if (syntax.parseDiagnostics.length > 0) throw new Error('invalid TypeScript');
+      const result = [];
+      const visit = (node) => {
+        if (
+          ts.isImportDeclaration(node) ||
+          ts.isExportDeclaration(node) ||
+          ts.isImportEqualsDeclaration(node) ||
+          ts.isImportTypeNode(node) ||
+          (ts.isCallExpression(node) &&
+            (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+              ['require', 'require.resolve', 'import.meta.resolve'].includes(
+                node.expression.getText(syntax),
+              )))
+        ) {
+          result.push(node.getText(syntax));
+          return;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(syntax);
+      const { referencedFiles, typeReferenceDirectives, libReferenceDirectives } =
+        ts.preProcessFile(source, false);
+      return JSON.stringify([
+        result,
+        ...[referencedFiles, typeReferenceDirectives, libReferenceDirectives].map((rows) =>
+          rows.map(({ fileName }) => fileName),
+        ),
+      ]);
+    };
+    return (
+      edges(git('show', `${comparison.base}:${path}`)) ===
+      edges(git('show', `${comparison.target}:${path}`))
+    );
+  } catch {
+    return false;
+  }
+}
+
+const withoutViewImplementation =
+  /^packages\/(?:animation|audio|ecs|geometry|math|navigation|path|picking|skinning|state)\/src\/(?!(?:.*\/)?(?:__tests__\/|index\.ts$))(?!.*(?:\.test\.|\.d\.ts$)).+\.ts$/;
+
+export function engineWithoutViewRequired(comparison, keepsModuleEdges = () => false) {
   return (
     !comparison ||
-    comparison.files.some(
-      ({ path }) =>
-        !/^(?:tools\/view$|skills\/.*\.md$|(?:packages\/[^/]+\/)?README(?:\.[^.]+)?\.md$)/.test(
-          path,
-        ),
-    )
+    comparison.files.some(({ path, status }) => {
+      if (
+        /^(?:tools\/view$|skills\/.*\.md$|(?:packages\/[^/]+\/)?README(?:\.[^.]+)?\.md$)/.test(path)
+      )
+        return false;
+      return status !== 'M' || !withoutViewImplementation.test(path) || !keepsModuleEdges(path);
+    })
   );
 }

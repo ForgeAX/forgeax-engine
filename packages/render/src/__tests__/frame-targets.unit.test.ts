@@ -12,7 +12,6 @@ describe('graph execution phase classification', () => {
       'record/graph-execute/depth-pyramid',
     );
     expect(graphExecutionPhase('ssr-trace')).toBe('record/graph-execute/ssr-trace');
-    expect(graphExecutionPhase('ssr-temporal')).toBe('record/graph-execute/ssr-temporal');
     expect(graphExecutionPhase('ssr-reflection-mip-1')).toBe(
       'record/graph-execute/ssr-reflection-mip',
     );

@@ -9,6 +9,7 @@ export {
   type AssetPublicationInput,
   assetPublicationGeneration,
   assetPublicationOutputSetDigest,
+  assetPublicationReceiptMatches,
   createAssetPublication,
 } from './asset-publication.js';
 export { encodeBase64 } from './base64.js';

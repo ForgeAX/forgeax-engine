@@ -17,6 +17,7 @@ import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   createIrradianceFieldHarness,
   type FieldImage,
+  IRRADIANCE_FIELD_CARD_PASSES,
   irradianceFieldGi,
   SIZE,
 } from './renderer-irradiance-field.fixture';
@@ -33,8 +34,6 @@ const save = (name: string, value: unknown) =>
   );
 
 const FIELD_PASSES = [
-  'irradiance-field.card-surface',
-  'irradiance-field.card-lighting',
   'irradiance-field.trace-probes',
   'irradiance-field.update-probes',
   'irradiance-field.radiosity',
@@ -154,7 +153,9 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     for (let i = 0; i < 4; i++) await h.draw();
     const dark = await h.image();
     h.setGi(screenProbeGi());
-    await h.settle();
+    const enablingPasses = new Set<string>();
+    await h.settle(12, enablingPasses);
+    expect([...enablingPasses]).toEqual(expect.arrayContaining(IRRADIANCE_FIELD_CARD_PASSES));
     const off = await h.image();
     expect(h.errors).toEqual([]);
     expect(equalBytes(off.bytes, dark.bytes)).toBe(true);
@@ -324,7 +325,8 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     const composite = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
-          shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_diffuse_reconstructed',
+          shader.stage === 'fragment' &&
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
       ),
     );
     assert(composite, 'frame contains the shared diffuse composite');

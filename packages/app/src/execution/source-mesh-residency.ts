@@ -254,6 +254,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       else {
         const mesh = input.deferredMesh.capture();
         postMesh(mesh, meshTransfers(mesh));
+        input.deferredMesh.sent?.();
       }
     };
     let resolve!: (result: Prepared) => void;

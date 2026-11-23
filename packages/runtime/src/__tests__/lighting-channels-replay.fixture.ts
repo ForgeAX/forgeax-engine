@@ -16,6 +16,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { CLUSTER_LIGHT_VIEW_SLOT } from '../../../render/src/environment/bindings';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
 
@@ -138,7 +139,7 @@ export async function verifyChannelReplay(
       (binding) => binding.groupIndex === 0 && binding.binding === 0,
     );
     const lightTable = lighting.bindings.find(
-      (binding) => binding.groupIndex === 2 && binding.binding === 3,
+      (binding) => binding.groupIndex === 0 && binding.binding === CLUSTER_LIGHT_VIEW_SLOT,
     );
     const primitive = geometry.bindings.find(
       (binding) => binding.groupIndex === 3 && binding.binding === 6,

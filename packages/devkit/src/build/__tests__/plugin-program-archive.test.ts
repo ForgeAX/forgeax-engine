@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { verifyPackProgram } from '@forgeax/engine-pack/runtime';
 import { build, normalizePath } from 'vite';
 import { expect, it } from 'vitest';
 import { BrowserPluginProgramArchive } from '../plugin-programs-browser.js';
@@ -132,8 +133,10 @@ it('groups static closures without evaluating a sibling plugin or a lazy import'
             order: 'post',
             handler(_output, bundle) {
               files = archive.entryFiles(this);
-              const programs = archive.capture(this, bundle, 'engine');
+              const { graph, programs } = archive.capture(this, bundle, 'engine');
               expect(Object.keys(programs)).toEqual(['a', 'b']);
+              for (const selection of Object.values(programs))
+                expect(verifyPackProgram({ ...graph, ...selection }).ok).toBe(true);
               const grouped = Object.values(bundle).filter(
                 (chunk) => chunk.type === 'chunk' && Object.keys(chunk.modules).length > 1,
               );

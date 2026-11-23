@@ -1,4 +1,8 @@
 import type { MaterialShaderProgram } from '@forgeax/engine-shader';
+import {
+  FORWARD_SHADOW_COLOR_ENTRY,
+  isForwardShadowColorEntry,
+} from '../pipeline/forward-shadow-admission';
 
 /**
  * Forward fragment entry for Standard draws bound to the unfogged View slot.
@@ -18,10 +22,15 @@ import type { MaterialShaderProgram } from '@forgeax/engine-shader';
 export const STANDARD_OPAQUE_FRAGMENT_ENTRY = 'fs_opaque';
 
 export const STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY = 'fs_forward_screen';
+const standardForwardEntryBits: Readonly<Record<string, number>> = {
+  [STANDARD_OPAQUE_FRAGMENT_ENTRY]: 1,
+  [STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY]: 2,
+  [FORWARD_SHADOW_COLOR_ENTRY]: 4,
+};
 const declaredByProgram = new WeakMap<MaterialShaderProgram, number>();
 function declaresStandardForwardEntry(
   source: string | MaterialShaderProgram | undefined,
-  entry: typeof STANDARD_OPAQUE_FRAGMENT_ENTRY | typeof STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY,
+  entry: string,
 ): boolean {
   if (source === undefined) return false;
   if (typeof source === 'string') return source.includes(`fn ${entry}(`);
@@ -29,13 +38,13 @@ function declaresStandardForwardEntry(
     return source.entryPoints.some((candidate) => candidate.name === entry);
   let mask = declaredByProgram.get(source);
   if (mask === undefined) {
-    const text = source.source;
-    mask =
-      Number(text.includes(`fn ${STANDARD_OPAQUE_FRAGMENT_ENTRY}(`)) |
-      (Number(text.includes(`fn ${STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY}(`)) << 1);
+    mask = 0;
+    for (const [name, bit] of Object.entries(standardForwardEntryBits)) {
+      if (source.source.includes(`fn ${name}(`)) mask |= bit;
+    }
     declaredByProgram.set(source, mask);
   }
-  return (mask & (entry === STANDARD_OPAQUE_FRAGMENT_ENTRY ? 1 : 2)) !== 0;
+  return (mask & (standardForwardEntryBits[entry] ?? 0)) !== 0;
 }
 /** Whether the program declares the unfogged Forward entry. */
 export function declaresStandardOpaqueEntry(
@@ -45,16 +54,18 @@ export function declaresStandardOpaqueEntry(
 }
 
 /**
- * The entry a program can actually serve: `fs_opaque` falls back to the
- * default forward entry (`undefined`) on programs that do not declare it --
+ * An undeclared Standard fragment entry falls back to the program's
+ * default Forward entry (`undefined`) --
  * sprite, hand-written WGSL, or Surfaces cooked before the entry existed.
  */
 export function declaredFragmentEntry(
   fragmentEntry: string | undefined,
   source: string | MaterialShaderProgram | undefined,
 ): string | undefined {
-  return (fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
-    fragmentEntry === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY) &&
+  return fragmentEntry !== undefined &&
+    (fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
+      fragmentEntry === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY ||
+      isForwardShadowColorEntry(fragmentEntry)) &&
     !declaresStandardForwardEntry(source, fragmentEntry)
     ? undefined
     : fragmentEntry;

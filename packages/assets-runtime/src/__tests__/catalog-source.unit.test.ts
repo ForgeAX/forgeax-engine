@@ -1,6 +1,10 @@
 import type { CatalogEntry } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { type CatalogListener, createCatalogSource } from '../catalog-source';
+import {
+  type CatalogListener,
+  createCatalogHotSubscription,
+  createCatalogSource,
+} from '../catalog-source';
 import { parseCatalog } from '../registry/catalog';
 
 const entry: CatalogEntry = {
@@ -125,5 +129,42 @@ describe('CatalogSource', () => {
     const delta = { added: [], changed: [], removed: [] };
     subscribe.mock.calls[0]?.[0](delta);
     expect(listener).toHaveBeenCalledWith(delta);
+  });
+});
+
+describe('Catalog hot subscription', () => {
+  it('requests recovery for malformed deltas, forwards each valid delta once, and unsubscribes', () => {
+    let receive: ((data: unknown) => void) | undefined;
+    const recover = vi.fn();
+    const listener = vi.fn();
+    const stop = createCatalogHotSubscription(
+      {
+        on(event, callback) {
+          expect(event).toBe('forgeax:catalog-delta');
+          receive = callback;
+        },
+        off(event, callback) {
+          expect(event).toBe('forgeax:catalog-delta');
+          expect(callback).toBe(receive);
+          receive = undefined;
+        },
+      },
+      recover,
+    )(listener);
+    receive?.({ added: [entry], changed: [], removed: [7] });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(listener).not.toHaveBeenCalled();
+    const delta = { added: [entry], changed: [], removed: [], scopeId: 'game', generation: 2 };
+    receive?.(delta);
+    receive?.({
+      removed: [],
+      changed: [],
+      added: [{ ...entry, guid: entry.guid }],
+      generation: 2,
+      scopeId: 'game',
+    });
+    expect(listener).toHaveBeenCalledExactlyOnceWith(delta);
+    stop();
+    expect(receive).toBeUndefined();
   });
 });

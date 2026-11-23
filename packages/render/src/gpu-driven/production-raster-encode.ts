@@ -11,15 +11,21 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { MeshGpuHandles } from '../device/gpu-residency';
-import { pbrSkinMeshDynamicOffsets } from '../pbr-pipeline';
+import { bindMeshVertexStreams, meshVertexStreamsForPipeline } from '../device/mesh-vertex-streams';
+import { viewForPipeline } from '../environment/bindings';
+import { materialLayoutSlotKey, standardPipelineMaterialLayoutIndex } from '../pbr-pipeline';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import {
+  type PrimitiveReflection,
+  samePrimitiveReflection,
+} from '../reflection/primitive-bindings';
 import type {
   GpuDrivenDrawPhase,
   GpuDrivenStandardPbrFrameResources,
   RenderPipelineGpuDrivenFilter,
 } from '../render-pipeline';
 import { batchLevelStride, batchLodLevelCount } from './batch-layout';
-import type { LiveRasterBatch } from './live-raster';
+import type { LiveRasterBatch, LiveRasterCache } from './live-raster';
 import {
   type PreparedRasterBindings,
   type PreparedRasterBundleCache,
@@ -34,6 +40,7 @@ import {
 import type { ProjectedRasterGraph } from './production-raster-frame';
 import type { RasterMeshBinding } from './raster-mesh-bindings';
 import type {
+  FixedRasterInputs,
   RasterRunRecording,
   RetainedPassEncode,
   RetainedRasterBlock,
@@ -52,10 +59,10 @@ function requireViewSkinTask(view: GpuDrivenView) {
   return task;
 }
 
+const ZERO_OFFSET = Object.freeze([0]);
+
 function meshDynamicOffsets(deformation: 'rigid' | 'skin', view: GpuDrivenView): readonly number[] {
-  return deformation === 'skin'
-    ? pbrSkinMeshDynamicOffsets(0, requireViewSkinTask(view), true)
-    : [0];
+  return deformation === 'skin' ? [requireViewSkinTask(view).auxiliaryOffset] : [];
 }
 
 /**
@@ -69,6 +76,7 @@ export class IndirectPassBindings {
   private boundPipeline: RenderPipeline | undefined;
   private material: BindGroup | undefined;
   private materialOffset = -1;
+  private dynamicMaterialOffset?: Uint32Array;
   private mesh: BindGroup | undefined;
   private deformation: 'rigid' | 'skin' | undefined;
   private visible: BindGroup | undefined;
@@ -76,12 +84,12 @@ export class IndirectPassBindings {
   private indexKey: GraphBuffer | Buffer | undefined;
   private indexFormat: MeshGpuHandles['indexFormat'] | undefined;
   private physicalVertex: Buffer | undefined;
+  private physicalVertexStreams: MeshGpuHandles['vertexStreams'];
   private physicalIndex: Buffer | undefined;
   /** The current batch's index binding; undefined for a non-indexed mesh. */
   private drawIndex: Buffer | undefined;
   private drawIndexFormat: MeshGpuHandles['indexFormat'] = 'uint32';
   /** Stock recording resolves the rigid cluster group once per encode. */
-  rigidClusterGroup: BindGroup | undefined;
   private indirectBuffer: Buffer | undefined;
   private readonly bundles: RenderBundle[] = [];
   private bundleBlock = -1;
@@ -137,15 +145,31 @@ export class IndirectPassBindings {
     this.indirectBuffer = buffer;
   }
 
-  bindPipeline(pipeline: RenderPipeline): void {
+  private projectedView?: BindGroup;
+
+  bindPipeline(pipeline: RenderPipeline, device: RhiDevice): void {
     if (this.boundPipeline === pipeline) return;
-    if (this.direct) this.pass.setPipeline(pipeline);
+    const previous = this.projectedView ?? this.viewBindGroup;
+    this.projectedView = viewForPipeline(device, pipeline, this.viewBindGroup);
+    if (this.direct) {
+      this.pass.setPipeline(pipeline);
+      if (previous !== this.projectedView)
+        this.pass.setBindGroup(0, this.projectedView, [this.viewOffset, 0]);
+    }
     this.boundPipeline = pipeline;
   }
 
   bindMaterial(group: BindGroup, offset: number): void {
     if (this.material === group && this.materialOffset === offset) return;
-    if (this.direct) this.pass.setBindGroup(1, group, [offset]);
+    if (this.direct) {
+      if (offset === 0) this.pass.setBindGroup(1, group, ZERO_OFFSET);
+      else {
+        this.dynamicMaterialOffset ??= new Uint32Array(1);
+        const offsets = this.dynamicMaterialOffset;
+        offsets[0] = offset;
+        this.pass.setBindGroup(1, group, offsets, 0, 1);
+      }
+    }
     this.material = group;
     this.materialOffset = offset;
   }
@@ -175,8 +199,25 @@ export class IndirectPassBindings {
   }
 
   /** The material slot owner the recorded run resolved. */
-  observeRunMaterial(slot: number, group: BindGroup, offset: number): void {
-    this.run?.materials.set(slot, { group, offset });
+  observeRunMaterial(
+    slot: number,
+    group: BindGroup,
+    offset: number,
+    program: string,
+    reflection: PrimitiveReflection | undefined,
+  ): void {
+    const run = this.run;
+    if (run === undefined) return;
+    const prior = run.materials.get(slot);
+    if (
+      prior !== undefined &&
+      (prior.program !== program ||
+        prior.group !== group ||
+        prior.offset !== offset ||
+        !samePrimitiveReflection(prior.reflection, reflection))
+    )
+      run.materialConflict = true;
+    run.materials.set(slot, { group, offset, program, reflection });
   }
 
   /** Current pass identities already witness Skin buffers, ranges and offsets. */
@@ -207,7 +248,12 @@ export class IndirectPassBindings {
     indexFormat: MeshGpuHandles['indexFormat'],
   ): void {
     const vertex = binding.vertex;
-    if (vertex !== undefined && this.vertexKey !== vertex) this.setVertex(vertex, vertex);
+    const streams = meshVertexStreamsForPipeline(this.pipeline, binding.mesh.vertexStreams);
+    if (
+      vertex !== undefined &&
+      (this.vertexKey !== vertex || this.physicalVertexStreams !== streams)
+    )
+      this.setVertex(vertex, vertex, streams);
     const index = binding.index;
     if (index !== undefined && (this.indexKey !== index || this.indexFormat !== indexFormat))
       this.setIndex(index, index, indexFormat);
@@ -221,18 +267,28 @@ export class IndirectPassBindings {
     index: GraphBuffer | undefined,
     indexFormat: MeshGpuHandles['indexFormat'],
     resources: GraphResourceResolver,
+    meshStreams: MeshGpuHandles['vertexStreams'],
   ): void {
-    if (vertex !== undefined && this.vertexKey !== vertex)
-      this.setVertex(vertex, resources.buffer(vertex).unwrap());
+    const streams = meshVertexStreamsForPipeline(this.pipeline, meshStreams);
+    if (
+      vertex !== undefined &&
+      (this.vertexKey !== vertex || this.physicalVertexStreams !== streams)
+    )
+      this.setVertex(vertex, resources.buffer(vertex).unwrap(), streams);
     if (index !== undefined && this.indexKey !== index)
       this.setIndex(index, resources.buffer(index).unwrap(), indexFormat);
     this.drawIndex = index === undefined ? undefined : this.physicalIndex;
     this.drawIndexFormat = indexFormat;
   }
 
-  private setVertex(key: GraphBuffer | Buffer, vertex: Buffer): void {
+  private setVertex(
+    key: GraphBuffer | Buffer,
+    vertex: Buffer,
+    streams: MeshGpuHandles['vertexStreams'],
+  ): void {
     this.physicalVertex = vertex;
-    if (this.direct) this.pass.setVertexBuffer(0, vertex);
+    this.physicalVertexStreams = streams;
+    if (this.direct) bindMeshVertexStreams(this.pass, vertex, streams);
     this.vertexKey = key;
   }
 
@@ -303,13 +359,14 @@ export class IndirectPassBindings {
     if (material === undefined || mesh === undefined || deformation === undefined)
       throw new Error('Missing prepared material or mesh binding');
     observed.pipeline = this.pipeline;
-    observed.view = this.viewBindGroup;
+    observed.view = this.projectedView ?? this.viewBindGroup;
     observed.viewOffset = this.viewOffset;
     observed.material = material;
     observed.materialOffset = this.materialOffset;
     observed.mesh = mesh;
     observed.meshOffsets = meshDynamicOffsets(deformation, view);
     observed.vertex = vertex;
+    observed.vertexStreams = this.physicalVertexStreams;
     observed.index = this.drawIndex;
     observed.indexFormat = this.drawIndexFormat;
     observed.indirect = this.indirect;
@@ -466,6 +523,43 @@ export interface RetainedEncode {
   readonly identities: readonly unknown[];
   readonly runs: RetainedPassEncode;
   readonly facts: ReturnType<typeof runFacts>;
+  readonly fixed: FixedRasterInputs | undefined;
+  readonly lateClassesFailed: number;
+}
+
+export function captureFixedRasterInputs(
+  live: LiveRasterCache | undefined,
+  projected: ProjectedRasterGraph,
+  call: RasterEncodeCall,
+): FixedRasterInputs | undefined {
+  if (live === undefined) return undefined;
+  const { frameResources } = call;
+  const slotsByBinding = frameResources.materialSlotIndicesByBinding;
+  // The retained live owner proves every command and physical geometry input.
+  // The per-pass slot tables can be rewritten in place, so capture distinct
+  // bindings and classes as values. Material/group identities are still
+  // re-resolved immediately before each retained run executes.
+  const bindingFacts: unknown[] = [
+    live,
+    call.filter,
+    call.phase,
+    call.fragmentEntryPoint,
+    call.coverageOnly,
+    call.seededDepth,
+    call.sampleCount,
+    frameResources.opaqueDepthPrimed,
+    projected.rasterClasses.size,
+  ];
+  for (const [name, cls] of projected.rasterClasses) bindingFacts.push(name, cls);
+  bindingFacts.push(slotsByBinding.size);
+  for (const [material, classes] of slotsByBinding) {
+    bindingFacts.push(material, classes.size);
+    for (const [resourceClass, slot] of classes) bindingFacts.push(resourceClass, slot);
+  }
+  const selected = frameResources.selectedMaterialSlots;
+  bindingFacts.push(selected?.size);
+  if (selected !== undefined) for (const slot of selected) bindingFacts.push(slot);
+  return { lives: live.value, bindings: bindingFacts };
 }
 
 /** End of the contiguous stable-ID block starting at `start`. */
@@ -501,13 +595,35 @@ export function requireLateRegion(
  * slot must not invalidate those commands. Full-custom programs that
  * reference the uniform retain its offset.
  */
+export function recordRetainedMaterialPipelineBinding(
+  block: RetainedRasterBlock,
+  batch: ProjectedRasterClass,
+  slot: number,
+  frameResources: GpuDrivenStandardPbrFrameResources,
+): void {
+  const selected = block.classes.get(batch);
+  if (selected === undefined || frameResources.recordMaterialPipelineBinding === undefined) return;
+  const pipeline = selected.pipeline as RenderPipeline;
+  const material = block.materials.get(
+    materialLayoutSlotKey(slot, standardPipelineMaterialLayoutIndex(pipeline)),
+  );
+  if (material !== undefined)
+    frameResources.recordMaterialPipelineBinding(slot, pipeline, material.group as BindGroup);
+}
+
 export function bindMaterialSlot(
   bindings: IndirectPassBindings,
   batch: ProjectedRasterClass,
   frameResources: GpuDrivenStandardPbrFrameResources,
   globalMaterialSlot: number,
-): { readonly group: BindGroup; readonly byteOffset: number } {
-  const prepared = frameResources.prepareMaterialBinding(globalMaterialSlot);
+  standardMaterialLayoutIndex: number,
+): NonNullable<ReturnType<GpuDrivenStandardPbrFrameResources['prepareMaterialBinding']>> {
+  const program = batch.artifact.specializationKey ?? batch.artifact.material;
+  const prepared = frameResources.prepareMaterialBinding(
+    globalMaterialSlot,
+    standardMaterialLayoutIndex,
+    program,
+  );
   if (prepared === undefined) {
     throw new RhiError({
       code: 'rhi-not-available',
@@ -515,7 +631,13 @@ export function bindMaterialSlot(
       hint: 'keep GPU-driven material selection on the main-pass producer contract',
     });
   }
-  bindings.observeRunMaterial(globalMaterialSlot, prepared.group, prepared.byteOffset);
+  bindings.observeRunMaterial(
+    materialLayoutSlotKey(globalMaterialSlot, standardMaterialLayoutIndex),
+    prepared.group,
+    prepared.byteOffset,
+    program,
+    prepared.reflection,
+  );
   const offset = rasterMaterialOffset(batch, prepared.byteOffset);
   bindings.bindMaterial(prepared.group, offset);
   return prepared;

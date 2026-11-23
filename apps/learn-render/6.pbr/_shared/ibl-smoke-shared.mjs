@@ -43,7 +43,6 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 // (browser Read(image)) is the final arbiter -- smoke serves as a regression
 // baseline only (dawn-smoke-loose-threshold lesson).
 
-import { readCatalogRows } from '@forgeax/engine-types';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -272,16 +271,14 @@ async function readNewportCatalog(distDir) {
   const packIndexPath = resolve(distDir, 'pack-index.json');
 
   let packIndexWire;
-  let packIndexJson;
+  let packIndexRows;
   try {
     packIndexWire = JSON.parse(await readFile(packIndexPath, 'utf8'));
-    packIndexJson = decodeCatalogWire(packIndexWire).unwrap();
+    packIndexRows = decodeCatalogWire(packIndexWire).unwrap();
   } catch (err) {
     fail(`pack-index.json unreadable at ${packIndexPath}: ${errorMessage(err)}; run 'pnpm build' for this demo first.`);
   }
 
-  const packIndexRows = readCatalogRows(packIndexJson);
-  if (packIndexRows === undefined) throw new Error('Invalid published Catalog');
   const hdrEntry = packIndexRows.find((e) => e.guid === NEWPORT_LOFT_GUID);
   if (!hdrEntry) fail(`newport_loft.hdr GUID ${NEWPORT_LOFT_GUID} not found in pack-index at ${packIndexPath}`);
   return { packIndexWire, hdrEntry };

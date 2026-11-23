@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { MeshRenderer, samplerContribution } from '@forgeax/engine-render';
+import { Camera, Layer, MeshRenderer, samplerContribution } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import {
   BoxGeometry,
@@ -31,7 +31,7 @@ function fixture() {
   const first = new Mesh(geometry, material),
     second = new Mesh(geometry, material);
   scene.add(first, second);
-  const buffers = {
+  const buffers: NonNullable<Parameters<typeof projection.sync>[3]> = {
     depth: true,
     stencil: false,
     sortObjects: true,
@@ -51,6 +51,16 @@ function fixture() {
   const data = (mesh: Mesh) => assets.read(handle(mesh)).unwrap() as MaterialAsset;
   const queue = (mesh: Mesh) =>
     data(mesh).passes?.find((pass) => pass.name !== 'shadow-caster')?.renderState?.queue;
+  const rank = (mesh: Mesh) => {
+    const entity = projection.entityFor(mesh);
+    if (entity === undefined) throw new Error('missing mesh');
+    return projection.world.get(entity, Layer).unwrap().value;
+  };
+  const orderedView = () => {
+    const entity = projection.entityFor(camera);
+    if (entity === undefined) throw new Error('missing camera');
+    return projection.world.get(entity, Camera).unwrap().orderOpaqueByLayer;
+  };
   owned.push(() => {
     projection.dispose();
     assets.dispose();
@@ -71,46 +81,67 @@ function fixture() {
     handle,
     data,
     queue,
+    rank,
+    orderedView,
   };
 }
 
-it('shares default materials and keeps ordered handles, programs and idle asset versions stable', () => {
+it('keeps per-object transparent order for meshes sharing one plan', () => {
+  const f = fixture();
+  f.material.transparent = true;
+  f.second.position.z = -1;
+  f.sync();
+  expect(f.handle(f.first)).toBe(f.handle(f.second));
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
+
+  f.second.position.z = 1;
+  f.sync();
+  expect(f.rank(f.first)).toBeLessThan(f.rank(f.second));
+
+  f.buffers.transparentSort = (a, b) => (b.id ?? 0) - (a.id ?? 0);
+  f.sync();
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
+
+  f.buffers.sortObjects = false;
+  f.sync();
+  expect(f.rank(f.first)).toBeLessThan(f.rank(f.second));
+});
+
+it('orders opaque draws in the view without changing shared materials or programs', () => {
   const f = fixture();
   f.sync();
-  expect(f.handle(f.first)).toBe(f.handle(f.second));
+  const handle = f.handle(f.first);
+  expect(f.handle(f.second)).toBe(handle);
+  expect(f.orderedView()).toBe(false);
   const defaultProgram = f.data(f.first).passes?.[0]?.program;
+
+  const changes = f.assets.observe().unwrap();
   f.first.renderOrder = 2;
   f.sync();
-  const first = f.handle(f.first),
-    second = f.handle(f.second);
-  expect(first).not.toBe(second);
-  expect(f.queue(f.first)).toBe(2001);
-  expect(f.queue(f.second)).toBe(2000);
+  expect(f.orderedView()).toBe(true);
+  expect(f.handle(f.first)).toBe(f.handle(f.second));
+  expect(f.queue(f.first)).toBe(2000);
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
   expect(f.data(f.first).passes?.[0]?.program).toEqual(defaultProgram);
-  const changes = f.assets.observe().unwrap();
   for (let i = 0; i < 20; i++) f.sync();
   expect(changes.read().unwrap().changes).toEqual([]);
+
   f.second.renderOrder = 3;
   f.sync();
-  expect(f.handle(f.first)).toBe(first);
-  expect(f.handle(f.second)).toBe(second);
-  expect([f.queue(f.first), f.queue(f.second)]).toEqual([2000, 2001]);
-  expect(
-    changes
-      .read()
-      .unwrap()
-      .changes.map((change) => change.handle)
-      .sort(),
-  ).toEqual([first, second].sort());
+  expect(f.rank(f.first)).toBeLessThan(f.rank(f.second));
+  expect(f.handle(f.first)).toBe(handle);
+  expect(f.handle(f.second)).toBe(handle);
+  expect(changes.read().unwrap().changes).toEqual([]);
+
   f.first.renderOrder = f.second.renderOrder = 0;
   f.sync();
-  expect(f.handle(f.first)).toBe(f.handle(f.second));
-  expect(f.assets.validate(first).ok).toBe(false);
-  expect(f.assets.validate(second).ok).toBe(false);
+  expect(f.orderedView()).toBe(false);
+  expect(f.handle(f.first)).toBe(handle);
+  expect(f.assets.validate(handle).ok).toBe(true);
   changes.dispose();
 });
 
-it('uses group order before object order, preserves traversal when sorting is disabled and rejects unsupported combinations atomically', () => {
+it('uses group order before object order, preserves traversal when sorting is disabled and rejects unsupported draw combinations without rebinding existing materials', () => {
   const f = fixture(),
     group = new Group();
   group.renderOrder = 2;
@@ -118,16 +149,18 @@ it('uses group order before object order, preserves traversal when sorting is di
   group.add(f.first);
   f.scene.add(group);
   f.sync();
-  expect([f.queue(f.first), f.queue(f.second)]).toEqual([2001, 2000]);
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
   f.buffers.sortObjects = false;
   f.sync();
-  expect([f.queue(f.first), f.queue(f.second)]).toEqual([2001, 2000]);
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
   const instances = new InstancedMesh(f.geometry, f.material, 1);
   instances.frustumCulled = false;
   f.scene.add(instances);
   const previous = f.handle(f.first);
   expect(f.sync).toThrow('single-material, unclipped ordinary meshes');
-  expect(f.projection.entityFor(instances)).toBeUndefined();
+  const pending = f.projection.entityFor(instances);
+  if (pending === undefined) throw new Error('expected a projected pose');
+  expect(f.projection.world.hasComponent(pending, MeshRenderer)).toBe(false);
   expect(f.handle(f.first)).toBe(previous);
   f.scene.remove(instances);
   instances.dispose();
@@ -135,7 +168,7 @@ it('uses group order before object order, preserves traversal when sorting is di
   expect(f.sync).toThrow('renderer-owned ordering');
 });
 
-it('bounds explicit opaque ordering below the transparent queue without limiting default scenes', () => {
+it('orders more than one thousand opaque draws without allocating material queues', () => {
   const f = fixture();
   for (let i = 2; i < 1001; i++) {
     const mesh = new Mesh(f.geometry, f.material);
@@ -143,6 +176,11 @@ it('bounds explicit opaque ordering below the transparent queue without limiting
     f.scene.add(mesh);
   }
   f.sync();
+  const handle = f.handle(f.first);
   f.first.renderOrder = 1;
-  expect(f.sync).toThrow('at most 1000 objects');
+  f.sync();
+  expect(f.orderedView()).toBe(true);
+  expect(f.rank(f.second)).toBeLessThan(f.rank(f.first));
+  expect(f.handle(f.first)).toBe(handle);
+  expect(f.queue(f.first)).toBe(2000);
 });

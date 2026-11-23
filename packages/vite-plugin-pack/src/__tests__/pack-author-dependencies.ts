@@ -30,3 +30,34 @@ export async function installPackAuthorDependencies(root: string): Promise<void>
     }),
   );
 }
+
+export async function writeFilterPack(assets: string, packageId: string, instanceId: string) {
+  await writeFile(
+    join(assets, 'filter.pack.ts'),
+    `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
+import { ok } from '@forgeax/engine-types';
+
+export default definePack({
+  schemaVersion: '2.0.0',
+  packageId: definePackageId('${packageId}'),
+  parameters: [{ name: 'filter', type: 'enum', values: ['linear', 'nearest'], default: 'linear' }],
+  build({ values }) {
+    return ok({ 'sampler/main': { kind: 'sampler', magFilter: values.filter } });
+  },
+});
+`,
+  );
+  await writeFilterInstance(assets, instanceId, packageId, 'nearest');
+}
+
+export function writeFilterInstance(
+  assets: string,
+  packageId: string,
+  parent: string,
+  filter: 'linear' | 'nearest',
+) {
+  return writeFile(
+    join(assets, 'nearest.pack.json'),
+    JSON.stringify({ schemaVersion: '3.0.0', packageId, parent, values: { filter } }),
+  );
+}

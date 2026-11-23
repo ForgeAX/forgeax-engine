@@ -41,7 +41,7 @@ import {
   ok,
   type SceneAsset,
 } from '@forgeax/engine-types';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import {
   LEVEL_STREAMING_SOURCE_COMPONENTS,
   preflightLevelRosterSteps,
@@ -150,7 +150,8 @@ function fixture(extra: SourceComponents = {}, override?: SourceComponents) {
       },
     })
     .unwrap();
-  const lease = runtimeAssets(assets).captureContent(root).unwrap();
+  const lease = runtimeAssets(assets).beginContentCapture(root).unwrap().step(1000).unwrap();
+  assert.isDefined(lease);
   cleanups.push(() => {
     const task = lease.retire().unwrap();
     while (!task.inspect().done) task.step(1).unwrap();

@@ -6,6 +6,7 @@ import { directMorphGeometry } from '../device/morph-geometry';
 import { capturedGpuMaterialLayout } from '../gpu-driven/captured-material-bindings';
 import type { GpuDrivenMaterialBinding } from '../gpu-driven/production-raster';
 import {
+  disposeInstanceBuffers,
   disposeTransientInstanceBuffers,
   type InstanceBufferCacheKey,
 } from '../instance-buffer-cache';
@@ -23,6 +24,7 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from '../systems/transparent-sort-config';
 import { captureDispatchOverlays, type DispatchOverlays } from './dispatch-overlays';
+import type { DrawRows } from './frame-snapshot';
 import {
   getOpaqueResourceIdentity,
   instanceCollectionCacheKey,
@@ -39,7 +41,6 @@ import { materialGeometry } from './material-geometry';
 import { prepareMaterialUniformFrame } from './material-uniforms';
 import {
   buildFoldDispatchPlan,
-  cleanPerEntityCache,
   ensureMeshSsboCapacity,
   FOLD_UNIFORM_INSTANCE_CAP,
   type FoldBucket,
@@ -53,6 +54,7 @@ import {
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from './render-context';
+import type { ScenePassPreparation } from './scene-pass-work';
 
 function unacceptedGeometryMaterial(
   input: RenderableSnapshot,
@@ -101,7 +103,7 @@ export interface MaterialBinding {
 /** A retained phase proves the exact row roster whose relations it publishes. */
 interface RetainedMaterialRows {
   readonly owner: MaterialBindingIndex;
-  readonly renderables: readonly ValidatedRenderable[];
+  readonly renderables: DrawRows;
   readonly rows: readonly MaterialRelationFrame[] | undefined;
 }
 
@@ -219,7 +221,10 @@ function prepareMeshResidency(
     r.lods?.map((lod) => renderAsset<MeshAsset>(renderableWorld, lod.mesh)),
   );
   const resolvedLodMeshes = lodMeshes?.map((lod) => (lod?.kind === 'mesh' ? lod : undefined));
-  if (meshHandles === undefined) {
+  const needsLodResidency = resolvedLodMeshes?.some(
+    (mesh, level) => mesh !== undefined && (meshHandles?.lodRanges?.[level + 1]?.length ?? 0) === 0,
+  );
+  if (meshHandles === undefined || needsLodResidency) {
     const residentRes = runRecordProfilePhase(profilePhase, 'record/validation/residency', () =>
       r.generatedMesh !== undefined
         ? internals.gpuStore.ensureGeneratedMesh(r.generatedMesh)
@@ -264,6 +269,7 @@ export function validateRenderables(
   retainedOverlays?: DispatchOverlays,
   materials?: import('../scene/material-dispatch').MaterialFrame,
   meshes?: MeshFrame,
+  rows?: Pick<import('../scene/scene-slots').SceneSlotFrame, 'lookup'>,
 ): ValidatedRenderable[] {
   // One captured overlay per index preserves last-dispatch authority for all
   // three fields. Capture before residency callbacks can edit borrowed entries.
@@ -275,7 +281,8 @@ export function validateRenderables(
   for (let rIdx = 0; rIdx < renderables.length; rIdx++) {
     const input = renderables.at(rIdx);
     if (input === undefined) continue;
-    const r = meshes === undefined ? input : meshDrawSnapshot(input, meshes);
+    const r =
+      meshes === undefined ? input : meshDrawSnapshot(input, meshes, rows?.lookup(input.entityKey));
     if (excludedEntityKeys.has(r.entityKey)) continue;
     // The CPU shadow path reads the complete persistent projection. Ordinary
     // hidden rows own no geometry work once their explicit preparation retires.
@@ -354,20 +361,23 @@ export function validateRenderables(
  */
 export function buildDispatchPlan(
   internals: RenderSystemInternals,
-  validated: readonly ValidatedRenderable[],
+  validated: DrawRows,
   transparentDispatch: DispatchList,
   foldBuckets: readonly FoldBucket[],
-  shadowValidated: readonly ValidatedRenderable[] = [],
+  shadowValidated: DrawRows = [],
   materialBindingClasses?: ReadonlyMap<string, string>,
   shadowGeometryGpuOwned = false,
   sharedMaterials?: SharedMaterialFrame,
   meshDraws?: MeshDrawRoster,
-  /** The primary rows are this submission's fresh projections; address them in place. */
+  /** The primary rows are immutable native Phase output. */
   ownedRows = false,
   retainedMaterials?: RetainedMaterialRows,
+  phase?: Pick<ScenePassPreparation, 'rows' | 'dispatchOrdered' | 'nativeStart' | 'nativeEnd'>,
 ): {
-  validatedOrdered: readonly ValidatedRenderable[];
-  shadowValidatedOrdered: readonly ValidatedRenderable[];
+  /** The actual submitted rows when addressing preserved the native phase order. */
+  phaseOrderedRows?: DrawRows | undefined;
+  validatedOrdered: DrawRows;
+  shadowValidatedOrdered: DrawRows;
   foldDispatchPlan: FoldDispatchPlan | null;
   materialSlotIndices: FrameList<readonly number[]>;
   materialSlots: readonly MaterialSnapshot[];
@@ -375,7 +385,16 @@ export function buildDispatchPlan(
   materialBindingSlots: MaterialBindingSlots;
   materialSlotCount: number;
 } {
-  if (meshDraws !== undefined) {
+  const capturedPhase = phase?.rows === validated ? phase : undefined;
+  const phaseOrdered = capturedPhase?.dispatchOrdered === true;
+  if (ownedRows && meshDraws !== undefined)
+    meshDraws.beginOwnedMeshDrawFrame(
+      validated,
+      shadowValidated,
+      capturedPhase?.nativeStart,
+      capturedPhase?.nativeEnd,
+    );
+  else if (meshDraws !== undefined) {
     // Validation already selected the output rows. Consume them directly;
     // the view retains only detached native membership facts across frames.
     const sources = function* () {
@@ -407,7 +426,9 @@ export function buildDispatchPlan(
       materialSlotCount: 0,
     };
   }
-  let validatedOrdered = dispatchOrderedRenderables(validated, transparentDispatch);
+  let validatedOrdered = phaseOrdered
+    ? validated
+    : dispatchOrderedRenderables(validated, transparentDispatch, ownedRows);
   // Shadow-only/off-camera CPU residuals consume the same material UBO as
   // visible draws. Their preparation must not depend on main-view visibility.
   const materials = buildFrameMaterialTable(
@@ -484,6 +505,7 @@ export function buildDispatchPlan(
 
   return {
     validatedOrdered,
+    phaseOrderedRows: phaseOrdered ? validatedOrdered : undefined,
     shadowValidatedOrdered,
     foldDispatchPlan,
     materialSlotIndices: materials.slotIndices,
@@ -531,11 +553,28 @@ function physicalDrawCapacityError(): RhiError {
  * sorted view entries.
  */
 function dispatchOrderedRenderables(
-  validated: readonly ValidatedRenderable[],
+  validated: DrawRows,
   transparentDispatch: DispatchList,
-): readonly ValidatedRenderable[] {
-  if (dispatchOrderMatches(validated, transparentDispatch)) return validated;
-  if (transparentDispatch.length === 0) return [...validated];
+  ownedRows: boolean,
+): DrawRows {
+  if (validated.length === 0) return validated;
+  const retained = ownedRows ? nativeDispatchOrders.get(validated) : undefined;
+  if (retained?.dispatch === transparentDispatch) return retained.rows;
+  const rows =
+    dispatchOrderMatches(validated, transparentDispatch) || transparentDispatch.length === 0
+      ? validated
+      : orderDrawRows(validated, transparentDispatch);
+  if (ownedRows) nativeDispatchOrders.set(validated, { dispatch: transparentDispatch, rows });
+  return rows;
+}
+
+/** Native phase output replaces both operands when the submitted order changes. */
+const nativeDispatchOrders = new WeakMap<
+  DrawRows,
+  { readonly dispatch: DispatchList; readonly rows: DrawRows }
+>();
+
+function orderDrawRows(validated: DrawRows, transparentDispatch: DispatchList): DrawRows {
   const validatedByRenderableIdx = new Map<number, ValidatedRenderable>();
   const seen = new Set<number>();
   for (const v of validated) {
@@ -560,15 +599,12 @@ function dispatchOrderedRenderables(
 }
 
 /** Whether the view entries of the dispatch list already follow `validated`. */
-function dispatchOrderMatches(
-  validated: readonly ValidatedRenderable[],
-  transparentDispatch: DispatchList,
-): boolean {
+function dispatchOrderMatches(validated: DrawRows, transparentDispatch: DispatchList): boolean {
   if (validated.length === 0) return true;
   let viewEntries = 0;
   for (const de of transparentDispatch) {
     if (de.tags.LightMode === 'ShadowCaster') continue;
-    if (de.renderableIndex !== validated[viewEntries]?.renderableIndex) return false;
+    if (de.renderableIndex !== validated.at(viewEntries)?.renderableIndex) return false;
     viewEntries += 1;
   }
   return viewEntries === validated.length;
@@ -590,24 +626,24 @@ function materialGroupOf(
 
 /** Intern the material rows of every CPU draw, then append shared GPU-driven bindings. */
 function buildMaterialTable(
-  materialRows: readonly ValidatedRenderable[],
+  materialRows: DrawRows,
   materialBindingClasses: ReadonlyMap<string, string> | undefined,
   sharedMaterials: SharedMaterialFrame | undefined,
 ): MaterialTable {
   const materialGroups = materialRows.map((entry) => materialGroupOf(entry, sharedMaterials));
   const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (_material, owner) => {
-    const source = materialRows[owner]?.source;
+    const source = materialRows.at(owner)?.source;
     return source === undefined ? '' : (materialBindingClasses?.get(`${source.entityKey}`) ?? '');
   });
   const slots = materialSlotPlan.slots.map((material, slot) =>
     acceptedMaterialSnapshot(
       material,
       sharedMaterials?.frame,
-      materialRows[materialSlotPlan.slotOwners[slot] ?? -1]?.source,
+      materialRows.at(materialSlotPlan.slotOwners[slot] ?? -1)?.source,
     ),
   );
   const bindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
-    const owner = materialRows[materialSlotPlan.slotOwners[slot] ?? -1];
+    const owner = materialRows.at(materialSlotPlan.slotOwners[slot] ?? -1);
     if (owner === undefined) throw new Error('material binding has no resource scope');
     return {
       material,
@@ -623,15 +659,16 @@ function buildMaterialTable(
     bindings,
     slotCount: slots.length,
   };
-  if (sharedMaterials !== undefined) appendSharedMaterialBindings(table, sharedMaterials);
+  if (sharedMaterials !== undefined)
+    appendSharedMaterialBindings(table, sharedMaterials, table.bindingSlots);
   return table;
 }
 
 /** The retained Scene membership and borrowed live preparation meet at this boundary. */
 function buildFrameMaterialTable(
-  validated: readonly ValidatedRenderable[],
-  validatedOrdered: readonly ValidatedRenderable[],
-  shadowValidated: readonly ValidatedRenderable[],
+  validated: DrawRows,
+  validatedOrdered: DrawRows,
+  shadowValidated: DrawRows,
   materialBindingClasses: ReadonlyMap<string, string> | undefined,
   sharedMaterials: SharedMaterialFrame | undefined,
   retainedMaterials: RetainedMaterialRows | undefined,
@@ -693,6 +730,7 @@ export function materialSlotsByClass(
 function appendSharedMaterialBindings(
   table: MaterialTable,
   sharedMaterials: SharedMaterialFrame,
+  writable?: Map<MaterialResource, Map<string, number>>,
 ): void {
   const captured =
     table.slotCount === 0 ? capturedGpuMaterialLayout(sharedMaterials.bindings) : undefined;
@@ -703,35 +741,31 @@ function appendSharedMaterialBindings(
     table.slotCount = table.slots.length;
     return;
   }
-  const slots = table.bindingSlots as Map<MaterialResource, Map<string, number>>;
-  const snapshots = table.slots as MaterialSnapshot[];
-  const bindings = table.bindings as MaterialBinding[];
+  const base = table.bindingSlots;
+  let slots: Map<MaterialResource, ReadonlyMap<string, number>> | undefined = writable;
   for (const binding of sharedMaterials.bindings) {
-    let classes = slots.get(binding.material);
-    if (classes?.has(binding.resourceClass)) continue;
-    if (classes === undefined) {
-      classes = new Map();
-      slots.set(binding.material, classes);
-    }
-    const world = sharedMaterials.sourceScope;
-    if (world === undefined)
-      throw new RhiError({
-        code: 'rhi-descriptor-invalid',
-        expected: 'the asset scope for every shared material',
-        hint: 'keep prepared World indices aligned with the frame resource scopes',
-      });
+    const existing = (slots ?? base).get(binding.material);
+    if (existing?.has(binding.resourceClass)) continue;
+    slots ??= new Map(base);
+    // An accepted CPU layout may also belong to other views and earlier frames.
+    // Detach only the class map extended by this submission.
+    const classes =
+      existing === undefined || (writable === undefined && existing === base.get(binding.material))
+        ? new Map(existing)
+        : (existing as Map<string, number>);
     classes.set(binding.resourceClass, table.slots.length);
-    snapshots.push(acceptedMaterialSnapshot(binding.material, sharedMaterials.frame));
-    bindings.push({
-      material: binding.material,
-      resourceClass: binding.resourceClass,
-      world,
-    });
+    slots.set(binding.material, classes);
+    appendSharedMaterialValue(table, sharedMaterials, binding);
   }
+  table.bindingSlots = slots ?? base;
   if (captured !== undefined) {
     captured.layout = {
-      unique: uniqueSharedMaterialBindings(sharedMaterials.bindings, slots, snapshots.length),
-      slots,
+      unique: uniqueSharedMaterialBindings(
+        sharedMaterials.bindings,
+        table.bindingSlots,
+        table.slots.length,
+      ),
+      slots: table.bindingSlots,
     };
   }
   table.slotCount = table.slots.length;
@@ -841,12 +875,12 @@ function truncateToDegradedCapacity(
 function buildUniformCappedFoldPlan(
   internals: RenderSystemInternals,
   foldBuckets: readonly FoldBucket[],
-  validatedOrdered: readonly ValidatedRenderable[],
+  validatedOrdered: DrawRows,
 ): FoldDispatchPlan | null {
   if (foldBuckets.length === 0) return null;
   const renderableToValidatedIdx = new Map<number, number>();
   for (let i = 0; i < validatedOrdered.length; i++) {
-    const e = validatedOrdered[i];
+    const e = validatedOrdered.at(i);
     if (e === undefined) continue;
     renderableToValidatedIdx.set(e.renderableIndex, i);
   }
@@ -865,15 +899,15 @@ function buildUniformCappedFoldPlan(
  * the ordinary addresses needed by independent captures.
  */
 function addressPhysicalRows(
-  validatedOrdered: readonly ValidatedRenderable[],
-  shadowValidatedOrdered: readonly ValidatedRenderable[],
+  validatedOrdered: DrawRows,
+  shadowValidatedOrdered: DrawRows,
   foldDispatchPlan: FoldDispatchPlan | null,
   meshDraws: MeshDrawRoster | undefined,
   ownedRows: boolean,
 ): {
-  readonly validatedOrdered: readonly ValidatedRenderable[];
-  readonly shadowValidatedOrdered: readonly ValidatedRenderable[];
-  readonly ordinaryOrdered: readonly ValidatedRenderable[];
+  readonly validatedOrdered: DrawRows;
+  readonly shadowValidatedOrdered: DrawRows;
+  readonly ordinaryOrdered: DrawRows;
   readonly sourceCapacity: number;
   readonly physicalDemand: number;
 } {
@@ -884,18 +918,17 @@ function addressPhysicalRows(
       meshDraws?.meshDrawSlot(entry.source, false, entry.sceneSlot) ?? transientSlot++;
     sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
     if (entry.meshSlot === meshSlot && entry.foldedMeshSlot === undefined) return entry;
+    if (entry.foldedMeshSlot === undefined) return { ...entry, meshSlot };
     const { foldedMeshSlot: _previousFold, ...source } = entry;
-    return { ...source, meshSlot };
+    source.meshSlot = meshSlot;
+    return source;
   };
-  const ownedAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
-    if (entry.foldedMeshSlot !== undefined) return sourceAddress(entry);
-    const meshSlot =
-      meshDraws?.meshDrawSlot(entry.source, false, entry.sceneSlot) ?? transientSlot++;
-    sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
-    (entry as { meshSlot: number }).meshSlot = meshSlot;
-    return entry;
-  };
-  const ordinaryOrdered = validatedOrdered.map(ownedRows ? ownedAddress : sourceAddress);
+  const retained =
+    ownedRows && meshDraws !== undefined
+      ? meshDraws.addressOwnedMeshDrawRows(validatedOrdered)
+      : undefined;
+  if (retained !== undefined) sourceCapacity = retained.capacity;
+  const ordinaryOrdered = retained?.rows ?? validatedOrdered.map(sourceAddress);
   const shadowOrdered = shadowValidatedOrdered.map(sourceAddress);
   let physicalDemand = sourceCapacity;
   let foldedOrdered = ordinaryOrdered;
@@ -917,21 +950,8 @@ function addressPhysicalRows(
   };
 }
 
-/**
- * feat-20260704 M3/w18: per-frame cache clean-up (despawn eviction), extracted
- * verbatim from `recordFrame`.
- *
- * feat-20260531-per-frame-bind-group-cache M4 / w14 (D-5): drop per-entity BG
- * cache entries (materialBgPerEntity / instancesBgPerEntity) + instance buffers
- * whose outer-Map entityKey (packed Entity u32) is absent from the current
- * validated set, preventing unbounded growth after entity despawn. view + mesh
- * caches are frame-shared (keyed by GPU resource handle objects, WeakMap chains
- * naturally bounded) and are not touched. feat-20260619 M4 / F11: destroy the
- * GPU instance buffer before Map.delete (D-6 symmetric release); failure fires
- * errorRegistry + continues the sweep.
- *
- * @internal
- */
+/** Retire GPU owners absent from this submission. Temporary membership is bounded
+ * by resident resources even when a much larger scene changes every frame. */
 export function cleanPerFrameCaches(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -939,93 +959,65 @@ export function cleanPerFrameCaches(
   retainedEntityKeys?: ReadonlySet<number>,
   retainedFoldKeys?: Iterable<number>,
 ): void {
-  if (frameState.transientInstanceBuffers !== undefined) {
-    disposeTransientInstanceBuffers(frameState.transientInstanceBuffers, internals.errorRegistry);
+  const { errorRegistry } = internals;
+  const {
+    instanceBuffers,
+    instanceBufferChunks,
+    transientInstanceBuffers,
+    materialBgPerEntity,
+    instancesBgPerEntity,
+  } = frameState;
+  if (transientInstanceBuffers !== undefined)
+    disposeTransientInstanceBuffers(transientInstanceBuffers, errorRegistry);
+  let absentEntities: Set<number> | undefined;
+  if (materialBgPerEntity.size !== 0 || instancesBgPerEntity.size !== 0) {
+    absentEntities = new Set(materialBgPerEntity.keys());
+    for (const key of instancesBgPerEntity.keys()) absentEntities.add(key);
   }
-  // Without resource owners there is nothing to retain or retire. In
-  // particular, do not enumerate a lazy row roster just to build an unused Set.
-  if (
-    frameState.materialBgPerEntity.size === 0 &&
-    frameState.instancesBgPerEntity.size === 0 &&
-    frameState.instanceBuffers.size === 0 &&
-    (frameState.instanceBufferChunks?.size ?? 0) === 0
-  )
-    return;
-  // Retain exactly the validated source entity handles.
-  const validatedEntityKeys = new Set<number>(retainedEntityKeys);
-  let instanceCollectionKeys: Set<InstanceBufferCacheKey> | undefined;
-  for (const v of validated) {
-    const entityKey = v.source.entityKey;
-    validatedEntityKeys.add(entityKey);
-    instanceCollectionKeys?.add(entityKey);
-    if (v.source.instances !== undefined) {
-      const collection = instanceCollectionCacheKey(v.source.instances);
-      if (!instanceCollectionKeys?.has(collection)) {
-        instanceCollectionKeys ??= new Set(validatedEntityKeys);
-        instanceCollectionKeys.add(collection);
-      }
+  let absentBuffers: Set<InstanceBufferCacheKey> | undefined;
+  if (instanceBuffers.size !== 0 || (instanceBufferChunks?.size ?? 0) !== 0) {
+    absentBuffers = new Set(instanceBuffers.keys());
+    if (instanceBufferChunks !== undefined)
+      for (const key of instanceBufferChunks.keys()) absentBuffers.add(key);
+    if (retainedFoldKeys !== undefined)
+      for (const key of retainedFoldKeys) absentBuffers.delete(key);
+  }
+  if (absentEntities === undefined && absentBuffers === undefined) return;
+  if (retainedEntityKeys !== undefined)
+    for (const key of retainedEntityKeys) {
+      absentEntities?.delete(key);
+      absentBuffers?.delete(key);
     }
+  if ((absentEntities?.size ?? 0) + (absentBuffers?.size ?? 0) === 0) return;
+  for (const { source } of validated) {
+    absentEntities?.delete(source.entityKey);
+    if (absentBuffers !== undefined && absentBuffers.size !== 0) {
+      absentBuffers.delete(source.entityKey);
+      if (source.instances !== undefined && absentBuffers.size !== 0)
+        absentBuffers.delete(instanceCollectionCacheKey(source.instances));
+    }
+    if ((absentEntities?.size ?? 0) + (absentBuffers?.size ?? 0) === 0) return;
   }
-
-  const validatedInstanceKeys: Set<InstanceBufferCacheKey> =
-    instanceCollectionKeys ?? new Set<InstanceBufferCacheKey>(validatedEntityKeys);
-
-  // Clean per-entity material BG cache: drop outer-Map entries whose
-  // entityKey is absent from the current validated set. The shared and
-  // singleton material caches have no entityKey and are not touched here.
-  cleanPerEntityCache(frameState.materialBgPerEntity, validatedEntityKeys);
-
-  // Clean per-entity instances BG cache.
-  cleanPerEntityCache(frameState.instancesBgPerEntity, validatedEntityKeys);
-
-  // Fold draw slots are not entity keys. Retain only this plan's actual heads,
-  // after entity caches have consumed their independent membership domain.
-  if (retainedFoldKeys !== undefined) {
-    for (const key of retainedFoldKeys) validatedInstanceKeys.add(key);
-  }
-  // D-5 retrofit: instanceBuffers clean-up. The instanceBuffers Map is
-  // keyed by cacheKey (packed Entity u32, same as entityKey on
-  // RenderableSnapshot). Drop entries whose key is no longer in the
-  // validated set (OQ-3 / R-4). feat-20260619 M4 / F11: destroy the GPU
-  // buffer before Map.delete so despawned entities release their
-  // instance-buffer backing memory symmetrically (D-6).
-  //
-  // Entity and collection owners use numeric or string keys; fold draw slots
-  // add their own keys after entity membership is established above.
-  for (const [key, entry] of frameState.instanceBuffers.entries()) {
-    if (!validatedInstanceKeys.has(key)) {
+  if (absentEntities !== undefined)
+    for (const key of absentEntities) {
+      materialBgPerEntity.delete(key);
+      instancesBgPerEntity.delete(key);
+    }
+  if (absentBuffers === undefined) return;
+  for (const key of absentBuffers) {
+    const entry = instanceBuffers.get(key);
+    if (entry !== undefined) {
       if (!entry.buffer.isDestroyed) {
-        const r = entry.buffer.destroy();
-        if (!r.ok) internals.errorRegistry.fire(r.error);
+        const result = entry.buffer.destroy();
+        if (!result.ok) errorRegistry.fire(result.error);
       }
-      frameState.instanceBuffers.delete(key);
+      instanceBuffers.delete(key);
     }
-  }
-
-  retireAbsentInstanceChunks(
-    frameState.instanceBufferChunks,
-    validatedInstanceKeys,
-    internals.errorRegistry,
-  );
-}
-
-/** Chunk starts retire with their collection owner, independently of other caches. */
-function retireAbsentInstanceChunks(
-  chunksByOwner: RenderFrameState['instanceBufferChunks'],
-  validatedInstanceKeys: ReadonlySet<InstanceBufferCacheKey>,
-  errorRegistry: RenderSystemInternals['errorRegistry'],
-): void {
-  if (chunksByOwner === undefined) return;
-  for (const [ownerKey, chunks] of chunksByOwner) {
-    if (validatedInstanceKeys.has(ownerKey)) continue;
-    for (const [start, entry] of chunks) {
-      if (!entry.buffer.isDestroyed) {
-        const r = entry.buffer.destroy();
-        if (!r.ok) errorRegistry.fire(r.error);
-      }
-      chunks.delete(start);
+    const chunks = instanceBufferChunks?.get(key);
+    if (chunks !== undefined) {
+      disposeInstanceBuffers(chunks, errorRegistry);
+      instanceBufferChunks?.delete(key);
     }
-    chunksByOwner.delete(ownerKey);
   }
 }
 

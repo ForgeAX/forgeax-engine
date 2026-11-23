@@ -1,5 +1,6 @@
 import * as PUBLIC from '@forgeax/engine/three';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { MeshRenderer } from '@forgeax/engine-render';
 import {
   BufferGeometry,
   Line,
@@ -149,7 +150,7 @@ it('projects NodeMaterial dashOffset with positive, negative and constant source
   }
 });
 
-it('rejects NodeMaterial topology changes before publishing native entities', () => {
+it('rejects invalid NodeMaterial topology before binding native draws', () => {
   const assets = new AssetRegistry(),
     projection = new SceneProjection(assets);
   const scene = new Scene(),
@@ -173,7 +174,9 @@ it('rejects NodeMaterial topology changes before publishing native entities', ()
           ? 'PointsNodeMaterial requires Points'
           : 'SpriteNodeMaterial requires a Sprite',
       );
-      expect(projection.entityFor(object)).toBeUndefined();
+      const pending = projection.entityFor(object);
+      if (pending === undefined) throw new Error('expected a projected pose');
+      expect(projection.world.hasComponent(pending, MeshRenderer)).toBe(false);
       scene.remove(object);
     }
   } finally {

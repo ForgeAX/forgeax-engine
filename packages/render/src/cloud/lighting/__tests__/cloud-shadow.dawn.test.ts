@@ -23,6 +23,11 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
     );
   }
   const device = await adapter.requestDevice();
+  const directMap = device.createTexture({
+    size: [1, 1],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
   const output = device.createBuffer({
     size: 64,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
@@ -36,6 +41,7 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
       `
       #import forgeax_cloud::shadow::{cloud_bsm_trace_interval, cloud_shadow_accumulate, cloud_shadow_finish, cloud_shadow_optical_depth, cloud_shadow_segment, cloud_shadow_ray_octave_tau, cloud_shadow_map_octave_tau}
       #import forgeax_cloud::lighting::{cloud_henyey_greenstein}
+      #import forgeax_cloud::layer::{cloud_direct_solar_factor}
       @group(0) @binding(0) var<storage, read_write> output: array<f32>;
       @compute @workgroup_size(1) fn main() {
         var acc = vec4f(200.0, 0.0, 0.0, 0.0);
@@ -65,6 +71,15 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
         output[8] = integral * 6.28318530718 / 4096.0;
         let skipped = cloud_bsm_trace_interval(vec3f(0.0,6360000.0,0.0),vec3f(1.0,0.0,0.0),6360000.0,5000.0,10000.0);
         output[9] = skipped.x; output[10] = skipped.y;
+        let origin = vec3f(0.0);
+        let right = vec3f(1.0, 0.0, 0.0);
+        let up = vec3f(0.0, 1.0, 0.0);
+        let receiver = vec3f(0.0, 0.0, -1.5);
+        output[11] = cloud_direct_solar_factor(receiver, origin, right, up, vec4f(100.0, 1.0, 0.0, 0.0));
+        output[12] = cloud_direct_solar_factor(receiver, origin, right, up, vec4f(100.0, 1.0, 0.0, 1.0));
+        output[13] = cloud_direct_solar_factor(receiver, origin, right, up, vec4f(100.0, 0.0, 0.0, 0.0));
+        output[14] = cloud_direct_solar_factor(receiver, origin, right, up, vec4f(100.0, 1.0, 1.0, 1.0));
+        output[15] = cloud_direct_solar_factor(vec3f(100.0, 0.0, -1.5), origin, right, up, vec4f(100.0, 1.0, 0.0, 1.0));
       }`,
       { id: 'cloud-shadow-kernel-test.wgsl', imports: engine.imports },
     );
@@ -77,6 +92,12 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
       layout: 'auto',
       compute: { module, entryPoint: 'main' },
     });
+    device.queue.writeTexture(
+      { texture: directMap },
+      new Uint8Array([128, 64, 192, 255]),
+      {},
+      [1, 1],
+    );
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(pipeline);
@@ -84,7 +105,10 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
       0,
       device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: output } }],
+        entries: [
+          { binding: 0, resource: { buffer: output } },
+          { binding: 16, resource: directMap.createView() },
+        ],
       }),
     );
     pass.dispatchWorkgroups(1);
@@ -106,6 +130,11 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
       1,
       0,
       0,
+      128 / 255,
+      Math.exp((-64 / 255) * (1.5 - 128 / 255)),
+      1,
+      1,
+      1,
     ];
     for (let index = 0; index < expected.length; index++) {
       expect(
@@ -115,6 +144,7 @@ it('reads actual shadow WGSL encoding, secondary integration and distinct octave
   } finally {
     readback.destroy();
     output.destroy();
+    directMap.destroy();
     device.destroy();
   }
 });

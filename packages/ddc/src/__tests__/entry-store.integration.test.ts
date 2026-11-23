@@ -1,8 +1,9 @@
-import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type DdcEntry, DdcEntryStore, ddcOutputDigest } from '../entry-store.js';
+import { ddcEntryFixture } from './entry-fixture.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const native = await importOriginal<typeof import('node:fs/promises')>();
@@ -13,55 +14,53 @@ const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
 const KEY = 'a'.repeat(64);
 
 const entry = (): DdcEntry => {
-  const value = {
-    key: KEY,
-    guid: GUID,
-    payload: { kind: 'texture', width: 2, height: 1 },
-    refs: ['019e3969-1d48-7c3b-ac24-6d68f457065e'],
-    artifacts: {
-      payload: { mediaType: 'application/octet-stream', bytes: new Uint8Array([1, 2, 3]) },
-    },
-    receipt: {
-      guid: GUID,
+  return ddcEntryFixture(
+    {
       key: KEY,
-      producer: 'image-importer@4',
-      inputFingerprint: 'input-a',
-      outputDigest: '',
+      guid: GUID,
+      payload: { kind: 'texture', width: 2, height: 1 },
+      refs: ['019e3969-1d48-7c3b-ac24-6d68f457065e'],
+      artifacts: {
+        payload: { mediaType: 'application/octet-stream', bytes: new Uint8Array([1, 2, 3]) },
+      },
     },
-  } satisfies DdcEntry;
-  return { ...value, receipt: { ...value.receipt, outputDigest: ddcOutputDigest(value) } };
+    'image-importer@4',
+    'input-a',
+  );
 };
 
 describe('immutable DDC entry store', () => {
-  const roots: string[] = [];
+  let scratch: string;
+  let root: string;
+  let store: DdcEntryStore;
+
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), 'forgeax-ddc-entry-'));
+    root = join(scratch, 'ddc');
+    store = new DdcEntryStore(root);
+  });
 
   afterEach(async () => {
     vi.mocked(rename).mockReset();
     vi.mocked(readFile).mockReset();
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await rm(scratch, { recursive: true, force: true });
   });
 
   it('derives an omitted output digest from the captured publication', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const expected = entry();
     const { outputDigest: _digest, ...receipt } = expected.receipt;
-    const store = new DdcEntryStore(root);
     const staged = await store.stage({ ...expected, receipt });
     await store.publish(staged);
     await expect(store.read(KEY)).resolves.toEqual(expected);
   });
 
   it('derives the receipt from the captured bytes despite edits while hashing yields', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const expected = entry();
     const { outputDigest: _digest, ...receipt } = expected.receipt;
     const input = {
       ...expected,
       receipt: { ...receipt } as typeof receipt & { outputDigest?: string },
     };
-    const store = new DdcEntryStore(root);
     const staging = store.stage(input);
     input.receipt.outputDigest = 'changed-after-capture';
     const artifact = input.artifacts.payload;
@@ -78,28 +77,23 @@ describe('immutable DDC entry store', () => {
     'explicit',
     'derived',
   ] as const)('keeps noncanonical author callbacks off the capture fast path (%s digest)', async (mode) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const value = { ...entry(), payload: { toJSON: () => ({ z: 1, a: 2 }) } };
     const { outputDigest: _digest, ...receipt } = value.receipt;
     const candidate = {
       ...value,
       receipt: mode === 'explicit' ? { ...receipt, outputDigest: ddcOutputDigest(value) } : receipt,
     };
-    await expect(new DdcEntryStore(root).stage(candidate)).rejects.toMatchObject({
+    await expect(store.stage(candidate)).rejects.toMatchObject({
       code: 'ddc-entry-invalid',
     });
   });
 
   it('keeps staged data invisible until an atomic publish', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const staged = await store.stage(entry());
 
     expect(await store.read(KEY)).toBeNull();
     expect(await readdir(join(staged.path, 'artifacts'))).toEqual(['payload.bin']);
-    expect(JSON.parse(await readFile(join(staged.path, 'refs.json'), 'utf8'))).toEqual([
+    expect(JSON.parse(await readFile(join(staged.path, 'entry.json'), 'utf8')).refs).toEqual([
       '019e3969-1d48-7c3b-ac24-6d68f457065e',
     ]);
 
@@ -112,8 +106,6 @@ describe('immutable DDC entry store', () => {
     3,
     512 * 1024,
   ])('returns isolated Uint8Array semantics for a %i-byte artifact', async (length) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const value = entry();
     const candidate = {
       ...value,
@@ -121,7 +113,6 @@ describe('immutable DDC entry store', () => {
         payload: { mediaType: 'application/octet-stream', bytes: new Uint8Array(length).fill(7) },
       },
     };
-    const store = new DdcEntryStore(root);
     await store.publish(
       await store.stage({
         ...candidate,
@@ -144,9 +135,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('captures the complete caller entry before asynchronous integrity hashing', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const backing = new Uint8Array([99, 1, 2, 3, 99]);
     const source = {
       ...entry(),
@@ -192,8 +180,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('cannot repair an invalid initial artifact after staging has started', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const source = { ...entry(), receipt: { ...entry().receipt } };
     const replacement = {
       ...source,
@@ -202,43 +188,34 @@ describe('immutable DDC entry store', () => {
       },
     };
     source.receipt.outputDigest = ddcOutputDigest(replacement);
-    const staging = new DdcEntryStore(root).stage(source);
+    const staging = store.stage(source);
     Object.assign(source.artifacts, replacement.artifacts);
     await expect(staging).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
     await expect(readdir(root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects key-dependent payload serialization before sealing a stage', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const source = {
       ...entry(),
       payload: { toJSON: (key: string) => ({ key }) },
       receipt: { ...entry().receipt },
     };
     source.receipt.outputDigest = ddcOutputDigest(source);
-    const store = new DdcEntryStore(root);
     await expect(store.stage(source)).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
     await expect(store.read(KEY)).resolves.toBeNull();
   });
 
   it('validates the captured receipt identity after serialization callbacks', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
     const source = entry();
     const receipt = { ...source.receipt };
     Object.assign(source.receipt, {
       toJSON: () => ({ ...receipt, key: 'b'.repeat(64) }),
     });
-    const store = new DdcEntryStore(root);
     await expect(store.stage(source)).rejects.toMatchObject({ code: 'ddc-entry-invalid' });
     await expect(store.read(KEY)).resolves.toBeNull();
   });
 
   it('does not expose a partial entry when a required artifact is missing', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const staged = await store.stage(entry());
     await rm(join(staged.path, 'artifacts', 'payload.bin'));
     await expect(store.publish(staged)).rejects.toMatchObject({ code: 'ddc-entry-incomplete' });
@@ -246,64 +223,78 @@ describe('immutable DDC entry store', () => {
   });
 
   it('rejects a receipt or integrity mismatch on reread', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await store.write(entry());
-    await writeFile(
-      join(root, 'entries', KEY, 'receipt.json'),
-      JSON.stringify({ ...entry().receipt, key: 'b'.repeat(64) }),
-    );
+    const path = join(root, 'entries', KEY, 'entry.json');
+    const metadata = JSON.parse(await readFile(path, 'utf8'));
+    metadata.receipt.key = 'b'.repeat(64);
+    await writeFile(path, JSON.stringify(metadata));
     await expect(store.read(KEY)).resolves.toBeNull();
   });
 
-  it('accepts equivalent noncanonical payload JSON without trusting its raw bytes', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
+  it('reuses an entry written with separate metadata files', async () => {
     await store.write(entry());
-    await writeFile(
-      join(root, 'entries', KEY, 'payload.json'),
-      JSON.stringify(entry().payload, null, 2),
-    );
+    const target = join(root, 'entries', KEY);
+    const path = join(target, 'entry.json');
+    const { refs, receipt, integrity } = JSON.parse(await readFile(path, 'utf8'));
+    for (const [file, value] of Object.entries({
+      'refs.json': refs,
+      'receipt.json': receipt,
+      'integrity.json': integrity,
+      'artifacts.json': {
+        payload: { mediaType: entry().artifacts.payload?.mediaType, file: 'payload' },
+      },
+    }))
+      await writeFile(join(target, file), JSON.stringify(value));
+    await rm(path);
     await expect(store.read(KEY)).resolves.toEqual(entry());
+    await expect(store.write(entry())).resolves.toEqual({ result: 'existing', key: KEY });
   });
 
-  it.each([
-    'payload.json',
-    'refs.json',
-    'receipt.json',
-    'integrity.json',
-  ])('rejects changed %s with a reusable canonical payload', async (file) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
-    await store.write(entry());
-    const path = join(root, 'entries', KEY, file);
-    const value = JSON.parse(await readFile(path, 'utf8'));
-    if (file === 'payload.json') value.width++;
-    else if (file === 'refs.json') value.push('changed');
-    else if (file === 'receipt.json') value.producer = 'changed';
-    else value.entry = '0'.repeat(64);
-    await writeFile(path, JSON.stringify(value));
-    await expect(store.readChecked(KEY)).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'ddc-entry-invalid' },
+  it('accepts full and candidate reads of equivalent noncanonical payload JSON', async () => {
+    const expected = entry();
+    await store.write(expected);
+    await writeFile(
+      join(root, 'entries', KEY, 'payload.json'),
+      JSON.stringify(expected.payload, null, 2),
+    );
+    await expect(store.read(KEY)).resolves.toEqual(expected);
+    await expect(store.readPayloadCandidate(KEY)).resolves.toEqual({
+      guid: expected.guid,
+      payload: expected.payload,
+      receipt: expected.receipt,
     });
   });
 
+  it.each([
+    'payload',
+    'refs',
+    'receipt',
+    'entry digest',
+    'payload digest',
+  ])('rejects changed %s under the applicable integrity checks', async (field) => {
+    await store.write(entry());
+    const path = join(root, 'entries', KEY, field === 'payload' ? 'payload.json' : 'entry.json');
+    const value = JSON.parse(await readFile(path, 'utf8'));
+    if (field === 'payload') value.width++;
+    else if (field === 'refs') value.refs.push('changed');
+    else if (field === 'receipt') value.receipt.producer = 'changed';
+    else value.integrity[field === 'entry digest' ? 'entry' : 'payload'] = '0'.repeat(64);
+    await writeFile(path, JSON.stringify(value));
+    if (field !== 'payload digest')
+      await expect(store.readChecked(KEY)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'ddc-entry-invalid' },
+      });
+    if (field !== 'refs' && field !== 'entry digest')
+      await expect(store.readPayloadCandidate(KEY)).resolves.toBeNull();
+  });
+
   it('returns an existing immutable entry instead of replacing it', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await expect(store.write(entry())).resolves.toEqual({ result: 'published', key: KEY });
     await expect(store.write(entry())).resolves.toEqual({ result: 'existing', key: KEY });
   });
 
   it('reads only payload candidate metadata while leaving full artifact verification to publication', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await store.write(entry());
     await writeFile(join(root, 'entries', KEY, 'artifacts/payload.bin'), 'corrupt');
     vi.mocked(readFile).mockClear();
@@ -312,7 +303,7 @@ describe('immutable DDC entry store', () => {
       payload: entry().payload,
       receipt: entry().receipt,
     });
-    expect(vi.mocked(readFile).mock.calls).toHaveLength(3);
+    expect(vi.mocked(readFile).mock.calls).toHaveLength(2);
     expect(
       vi.mocked(readFile).mock.calls.some(([path]) => String(path).includes('/artifacts/')),
     ).toBe(false);
@@ -322,44 +313,7 @@ describe('immutable DDC entry store', () => {
     await store.discard(staged);
   });
 
-  it.each([
-    'payload.json',
-    'receipt.json',
-    'integrity.json',
-  ])('rejects changed payload candidate metadata in %s', async (file) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
-    await store.write(entry());
-    const path = join(root, 'entries', KEY, file);
-    const value = JSON.parse(await readFile(path, 'utf8'));
-    if (file === 'payload.json') value.width++;
-    else if (file === 'receipt.json') value.producer = 'changed';
-    else value.payload = '0'.repeat(64);
-    await writeFile(path, JSON.stringify(value));
-    await expect(store.readPayloadCandidate(KEY)).resolves.toBeNull();
-  });
-
-  it('accepts equivalent noncanonical candidate payload text through semantic validation', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
-    await store.write(entry());
-    await writeFile(
-      join(root, 'entries', KEY, 'payload.json'),
-      JSON.stringify(entry().payload, null, 2),
-    );
-    await expect(store.readPayloadCandidate(KEY)).resolves.toEqual({
-      guid: GUID,
-      payload: entry().payload,
-      receipt: entry().receipt,
-    });
-  });
-
   it('reuses matching content without staging another payload and never discards the accepted entry', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await store.write(entry());
     const original = entry();
     const value = { ...original, receipt: { ...original.receipt, publicationGeneration: 2 } };
@@ -376,12 +330,8 @@ describe('immutable DDC entry store', () => {
   it.each([
     'payload.json',
     'artifacts/payload.bin',
-    'receipt.json',
-    'integrity.json',
+    'entry.json',
   ])('revalidates matching content when %s changes after staging', async (file) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await store.write(entry());
     const staged = await store.stage(entry());
     await writeFile(join(root, 'entries', KEY, file), 'corrupt');
@@ -391,9 +341,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('rejects a different valid destination that replaces a reusable entry before publish', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     await store.write(entry());
     const staged = await store.stage(entry());
     const replacement = entry();
@@ -409,9 +356,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('accepts concurrent publications of the same immutable entry', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const staged = await Promise.all(Array.from({ length: 8 }, () => store.stage(entry())));
 
     const publications = await Promise.allSettled(
@@ -429,9 +373,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('keeps one immutable winner when concurrent publications supply conflicting bytes', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const candidates = Array.from({ length: 8 }, (_, index) => {
       const value = {
         ...entry(),
@@ -461,9 +402,6 @@ describe('immutable DDC entry store', () => {
     'missing',
     'file',
   ])('preserves rename permission failure when destination is %s', async (kind) => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const staged = await store.stage(entry());
     const permission = Object.assign(new Error('permission denied'), { code: 'EPERM' });
     vi.mocked(rename).mockImplementationOnce(async () => {
@@ -479,9 +417,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('keeps the accepted entry when the same key supplies different artifact bytes', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const accepted = entry();
     const changed = {
       ...accepted,
@@ -499,9 +434,6 @@ describe('immutable DDC entry store', () => {
   });
 
   it('ignores publication generation metadata when comparing immutable content', async () => {
-    const root = join(tmpdir(), `forgeax-ddc-entry-${Date.now()}-${Math.random()}`);
-    roots.push(root);
-    const store = new DdcEntryStore(root);
     const first = entry();
     const second = {
       ...first,

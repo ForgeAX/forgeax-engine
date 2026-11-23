@@ -4,9 +4,9 @@
 // module was only exercised through the compiled dist by runtime-project
 // tests, which are excluded from the coverage denominator).
 
+import { withMeshAabb } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { withMeshAabb } from '../aabb';
 
 const EMPTY_BOX = [0, 0, 0, 0, 0, 0];
 

@@ -1,6 +1,7 @@
 import type { RenderPublicationIdentity } from '@forgeax/engine-render';
 import type {
   ClosedLevelAssetPublication,
+  RenderPublication,
   RenderPublicationRows,
 } from '@forgeax/engine-render/internal';
 
@@ -34,6 +35,7 @@ export type ClosedLevelRowOperation =
       readonly assets: number;
       readonly chunks: number;
       readonly rows: number;
+      readonly programs?: RenderPublication['programs'];
     }
   | { readonly kind: 'prepare' }
   | { readonly kind: 'retire' };
@@ -69,6 +71,10 @@ export interface ClosedLevelFrameSelection {
   readonly id: ClosedLevelRowIdentity;
   readonly active: boolean;
 }
+
+export type ClosedLevelFrameChanges =
+  | ClosedLevelFrameSelection
+  | { readonly changes: readonly ClosedLevelFrameSelection[] };
 
 export interface ClosedLevelFrameSelectionReceipt extends ClosedLevelFrameSelection {
   readonly kind: 'closed-level-selection-result';

@@ -567,7 +567,7 @@ async function main() {
       },
       {
         component: ScreenSpaceReflection,
-        data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65, waterTemporal: 1 },
+        data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65 },
       },
     )
     .unwrap();
@@ -1424,7 +1424,7 @@ async function main() {
         world
           .addComponent(camera, {
             component: ScreenSpaceReflection,
-            data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65, waterTemporal: 1 },
+            data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65 },
           })
           .unwrap();
       buoyancy().asyncEnabled = mode === 'R5';
@@ -3391,7 +3391,6 @@ async function main() {
         .unwrap();
       markCustom();
     },
-    { waterTemporal: ['0', '1', '2'] },
   );
   const readSsrFields = ssrFields.readFields;
   ssrFields.readFields = () =>

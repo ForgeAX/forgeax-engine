@@ -1,5 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import { MaterialResource } from '../material-resource';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
 import {
   createMainPassMaterialSelectionOwner,
   hasSsrSceneInputs,
@@ -25,10 +26,7 @@ function material(handle: number, options: Partial<MaterialSnapshot> = {}): Mate
   return { ...defaultMaterialSnapshot(handle), materialShaderId: `cooked:${handle}`, ...options };
 }
 
-function row(
-  index: number,
-  materials: readonly MaterialSnapshot[],
-): SelectionContext['validatedOrdered'][number] {
+function row(index: number, materials: readonly MaterialSnapshot[]): ValidatedRenderable {
   const first = materials[0];
   assert(first);
   return {
@@ -37,7 +35,7 @@ function row(
       material: new MaterialResource(first),
       materials: materials.map((value) => new MaterialResource(value)),
     },
-  } as unknown as SelectionContext['validatedOrdered'][number];
+  } as unknown as ValidatedRenderable;
 }
 
 function pass(index: number, handle: number, lightMode: string): DispatchEntry {

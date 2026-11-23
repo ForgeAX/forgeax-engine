@@ -7,6 +7,7 @@ import { Camera } from '../components/camera';
 import { CAMERA_VIEW_DEFAULTS, CameraView } from '../components/camera-view';
 import { StereoCamera } from '../components/stereo-camera';
 import { DynamicGeometryError, type DynamicGeometryRecordStageLane } from '../dynamic-geometry';
+import { SubmissionCameras } from '../extract/cameras';
 import {
   createFeatureGraphConformanceTrace,
   readFeatureGraphConformanceTrace,
@@ -43,7 +44,7 @@ import { configureViewStandard, prepareViewCandidatePipelines } from '../view-co
 import {
   viewBloom,
   viewDiffuseGi,
-  viewGraphInfo,
+  viewGraphGeneration,
   viewPassNames,
   viewSsr,
   viewTemporal,
@@ -91,18 +92,25 @@ import { prepareInitialSourceViews } from './source-view-preparation';
 import { createViewCompositor } from './view-compositor';
 
 /** Open this frame's GPU timing capture, recording why it could not begin. */
-function beginGpuTimingFrame(internals: RenderSystemInternals, graphGeneration: number): void {
+function beginGpuTimingFrame(
+  internals: RenderSystemInternals,
+  primary: ViewSettlementOwner,
+  compositorGeneration: number | undefined,
+): void {
   internals.gpuPassTimingCapture = undefined;
   internals.gpuPassTimingSubmittedWork = undefined;
   internals.gpuPassTimingBeginReason = undefined;
-  const timingIdentity = internals.gpuPassTimingFrameIdentity;
-  if (timingIdentity === undefined) return;
-  const started = internals.gpuPassTimingSession?.beginFrame({
-    ...timingIdentity,
-    graphGeneration,
+  const session = internals.gpuPassTimingSession;
+  const frameId = internals.observationFrameId;
+  const deviceGeneration = internals.gpuPassTimingDeviceGeneration;
+  if (session === undefined || frameId === undefined || deviceGeneration === undefined) return;
+  const started = session.beginFrame({
+    frameId,
+    deviceGeneration,
+    graphGeneration: compositorGeneration ?? viewGraphGeneration(primary),
   });
-  if (started?.ok === true) internals.gpuPassTimingCapture = started.value;
-  else if (started?.ok === false) internals.gpuPassTimingBeginReason = started.error;
+  if (started.ok) internals.gpuPassTimingCapture = started.value;
+  else internals.gpuPassTimingBeginReason = started.error;
 }
 
 /** Every view consumes the same precise accepted asset changes. */
@@ -162,12 +170,13 @@ function captureCameras(
   publication: PreparedRenderPublication | undefined,
   world: World | undefined,
   cameraEntityKey: number | undefined,
+  source: SubmissionCameras | undefined,
 ): readonly CameraSnapshot[] {
   let auxiliary = publication?.frame.auxiliaryCameras;
   if (auxiliary === undefined) {
     if (world === undefined || !declaresTargetCamera(world)) return [];
     try {
-      auxiliary = selectCameraRoles(world, cameraEntityKey).auxiliary;
+      auxiliary = selectCameraRoles(world, cameraEntityKey, undefined, source).auxiliary;
     } catch {
       // Invalid camera facts belong to the primary extraction, which reports
       // the same structured failure for this frame.
@@ -652,10 +661,13 @@ export function createCameraViews(
     ): FramePreparation {
       frame += 1;
       internals.rendererFrameNumber = frame;
+      const cameraSource =
+        source === undefined && world !== undefined ? new SubmissionCameras() : undefined;
       let frameSubmitted = false;
       beginGpuTimingFrame(
         internals,
-        active() ? owner.compositor.generation : (viewGraphInfo(primaryOwner)?.generation ?? 0),
+        primaryOwner,
+        active() ? owner.compositor.generation : undefined,
       );
       try {
         const publication = source?.publication;
@@ -675,11 +687,11 @@ export function createCameraViews(
             : (publication?.frame.cameras ??
               ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
                 ? []
-                : selectCameraRoles(world, opts.cameraEntityKey).display));
+                : selectCameraRoles(world, opts.cameraEntityKey, undefined, cameraSource).display));
         const captures =
           opts.targetWrite !== undefined
             ? []
-            : captureCameras(publication, world, opts.cameraEntityKey);
+            : captureCameras(publication, world, opts.cameraEntityKey, cameraSource);
         assertViewCameras(cameras, cap > 0);
         const profileSession = activeRenderProfileSession(internals);
         const displayCameras =
@@ -702,6 +714,7 @@ export function createCameraViews(
           publication,
           source?.receiver,
           cap,
+          cameraSource,
         );
         stageRenderScene(
           renderWorld,
@@ -728,6 +741,8 @@ export function createCameraViews(
         return frameSubmitted;
       } finally {
         if (!frameSubmitted) internals.gpuPassTimingCapture?.abort({ code: 'frame-aborted' });
+        cameraSource?.release();
+        if (viewSource.cameraSource === cameraSource) viewSource.cameraSource = undefined;
         endRenderFrame(renderWorld);
       }
     },

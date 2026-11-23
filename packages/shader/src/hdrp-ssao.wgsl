@@ -11,7 +11,6 @@
 //
 // intensityPad carries the raw visibility exponent plus the calc radius/bias.
 // Raw intensity is applied before the spatial filter, once.
-// clusterPack is used only by the no-storage integer-texture AO packer.
 
 struct SsaoUniform {
   view              : mat4x4<f32>,  // world -> view
@@ -19,8 +18,7 @@ struct SsaoUniform {
   inverseProjection : mat4x4<f32>,  // NDC -> view
   intensityPad      : vec4<f32>,    // intensity, radius, bias, sample budget
   algorithmPad      : vec4<f32>,    // algorithm, thickness, radial exponent, distance falloff
-  clusterPack       : vec4<u32>,   // physical base origin, Cluster width, packed AO row width
-  viewportPad       : vec4<f32>,  // resolution scale, scene strength, manual exposure, auto fallback
+  reserved          : array<vec4<u32>, 2>,
 };
 
 // ── SSAO binding declarations (@group(2)) ───────────────────────────────────
@@ -459,228 +457,512 @@ fn fs_ssao_blur(in: SsaoVsOut) -> @location(0) f32 {
   return total / max(weight, 0.00001);
 }
 
-// Pack four adjacent normalized AO values into the spare Cluster texture
-// region on no-storage devices. The viewport restricts writes to that region;
-// this pass never samples its Cluster destination.
+// Desktop Standard SSAO. Depth inputs use positive view distance in meters.
+struct ScreenSsaoUniform {
+  view: mat4x4f,
+  projection: mat4x4f,
+  inverseProjection: mat4x4f,
+  shape: vec4f, // intensity, power, fade end, fade radius
+  kernel: vec4f, // radius, world-space radius flag, normalized bias, quality permutation
+  mip: vec4f, // blend, scale, setup similarity threshold, level
+  phase: vec4f, // SSAO pattern phase and source-to-setup width ratio
+};
+
+@group(0) @binding(14) var<uniform> screenSsao: ScreenSsaoUniform;
+@group(0) @binding(15) var ssaoSetup: texture_2d<f32>;
+@group(0) @binding(16) var ssaoFurthestDepth: texture_2d<f32>;
+@group(0) @binding(17) var ssaoCoarseSetup: texture_2d<f32>;
+@group(0) @binding(18) var ssaoCoarseVisibility: texture_2d<f32>;
+
+fn screenSsaoPosition(uv: vec2f, deviceDepth: f32) -> vec3f {
+  let h = screenSsao.inverseProjection * vec4f(uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), deviceDepth, 1.0);
+  return h.xyz / h.w;
+}
+
+fn screenSsaoPositionAtDistance(uv: vec2f, distance: f32) -> vec3f {
+  // The Standard lens has diagonal XY scale and can offset its projection
+  // center for stereo and jitter. This avoids device-Z round trips in the taps.
+  let projection = screenSsao.projection;
+  let z = -distance;
+  let clipW = projection[2].w * z + projection[3].w;
+  let ndc = uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0);
+  let xy = (ndc * clipW - projection[2].xy * z - projection[3].xy) /
+    vec2f(projection[0].x, projection[1].y);
+  return vec3f(xy, z);
+}
+
+fn screenSsaoSafeNormal(n: vec3f) -> vec3f {
+  return select(vec3f(0.0, 0.0, 1.0), n * inverseSqrt(max(dot(n, n), 1e-12)), dot(n, n) > 1e-12);
+}
+
+fn screenSsaoDepthData(pixel: vec2i, depth: f32) -> vec4f {
+  let size = vec2i(textureDimensions(hdr_depth));
+  let uv = (vec2f(pixel) + 0.5) / vec2f(size);
+  let center = screenSsaoPosition(uv, depth);
+  let left = max(pixel - vec2i(1, 0), vec2i(0));
+  let right = min(pixel + vec2i(1, 0), size - 1);
+  let top = max(pixel - vec2i(0, 1), vec2i(0));
+  let bottom = min(pixel + vec2i(0, 1), size - 1);
+  let dx0 = center - screenSsaoPosition(
+    (vec2f(left) + 0.5) / vec2f(size), textureLoad(hdr_depth, left, 0));
+  let dx1 = screenSsaoPosition(
+    (vec2f(right) + 0.5) / vec2f(size), textureLoad(hdr_depth, right, 0)) - center;
+  let dy0 = center - screenSsaoPosition(
+    (vec2f(top) + 0.5) / vec2f(size), textureLoad(hdr_depth, top, 0));
+  let dy1 = screenSsaoPosition(
+    (vec2f(bottom) + 0.5) / vec2f(size), textureLoad(hdr_depth, bottom, 0)) - center;
+  let dx = select(dx1, dx0, (pixel.x > 0 && abs(dx0.z) <= abs(dx1.z)) || pixel.x == size.x - 1);
+  let dy = select(dy1, dy0, (pixel.y > 0 && abs(dy0.z) <= abs(dy1.z)) || pixel.y == size.y - 1);
+  return vec4f(screenSsaoSafeNormal(cross(dy, dx)), -center.z);
+}
+
+fn screenSsaoNormalData(pixel: vec2i) -> vec4f {
+  let uv = (vec2f(pixel) + 0.5) / vec2f(textureDimensions(hdr_depth));
+  let worldNormal = loadStandardSceneNormal(gbuffer_normal, pixel);
+  let normal = screenSsaoSafeNormal((screenSsao.view * vec4f(worldNormal, 0.0)).xyz);
+  let depth = textureLoad(hdr_depth, pixel, 0);
+  return vec4f(normal, max(0.0, -screenSsaoPosition(uv, depth).z));
+}
+
+fn screenSsaoDownsample(taps: array<vec4f, 4>) -> vec4f {
+  let z = max(max(taps[0].w, taps[1].w), max(taps[2].w, taps[3].w));
+  // UE setup scales the inverse threshold by output width divided by scene width.
+  let inverseThreshold = 100.0 * screenSsao.mip.z * screenSsao.phase.z;
+  var weighted = vec3f(0.0001);
+  var weight = 0.0001;
+  for (var i = 0u; i < 4u; i++) {
+    let similarity = clamp(1.0 - abs(taps[i].w - z) * inverseThreshold, 0.0, 1.0);
+    weighted += (taps[i].xyz * 0.5 + 0.5) * similarity;
+    weight += similarity;
+  }
+  return vec4f(weighted / weight * 2.0 - 1.0, z);
+}
+
 @fragment
-fn fs_ssao_cluster_pack(
-  @builtin(position) position : vec4<f32>,
-) -> @location(0) vec4<u32> {
-  let origin = ssao_uniform.clusterPack.xy;
-  let textureWidth = ssao_uniform.clusterPack.z;
-  let packedWidth = ssao_uniform.clusterPack.w;
-  let logicalSize = textureDimensions(ssaoRaw);
-  let physicalPixel = vec2<u32>(u32(position.x), u32(position.y)) - origin;
-  let packedIndex = physicalPixel.y * textureWidth + physicalPixel.x;
-  let sourceRow = packedIndex / packedWidth;
-  let sourceX = (packedIndex % packedWidth) * 4u;
-  // Out-of-range lanes remain the neutral AO value and every packed texel is initialized.
-  var result = vec4<u32>(0xffffffffu);
-  for (var lane = 0u; lane < 4u; lane += 1u) {
-    let x = sourceX + lane;
-    if (x < logicalSize.x && sourceRow < logicalSize.y) {
-      let ao = clamp(textureLoad(ssaoRaw, vec2<i32>(i32(x), i32(sourceRow)), 0).r, 0.0, 1.0);
-      // The filter target is UNORM8. Recover its byte before integer expansion:
-      // f32 texture decoders can differ by an ULP for the same normalized byte.
-      let aoByte = u32(round(ao * 255.0));
-      result[lane] = select(aoByte * 0x01010100u, 0xffffffffu, aoByte == 255u);
+fn fs_ssao_setup(in: SsaoVsOut) -> @location(0) vec4f {
+  let maxPixel = vec2i(textureDimensions(hdr_depth)) - 1;
+  let base = vec2i(in.position.xy) * 2;
+  return screenSsaoDownsample(array(
+    screenSsaoNormalData(min(base, maxPixel)),
+    screenSsaoNormalData(min(base + vec2i(1, 0), maxPixel)),
+    screenSsaoNormalData(min(base + vec2i(0, 1), maxPixel)),
+    screenSsaoNormalData(min(base + vec2i(1, 1), maxPixel)),
+  ));
+}
+
+@fragment
+fn fs_ssao_setup_coarse(in: SsaoVsOut) -> @location(0) vec4f {
+  let maxPixel = vec2i(textureDimensions(ssaoSetup)) - 1;
+  let base = vec2i(in.position.xy) * 2;
+  return screenSsaoDownsample(array(
+    textureLoad(ssaoSetup, min(base, maxPixel), 0),
+    textureLoad(ssaoSetup, min(base + vec2i(1, 0), maxPixel), 0),
+    textureLoad(ssaoSetup, min(base + vec2i(0, 1), maxPixel), 0),
+    textureLoad(ssaoSetup, min(base + vec2i(1, 1), maxPixel), 0),
+  ));
+}
+
+fn screenSsaoPattern(position: vec2f) -> vec2f {
+  // The 64x64 source RG8 texture repeats this 4x4 point-sampled pattern.
+  let pattern = array<u32, 16>(
+    0x80f0u, 0xdb43u, 0xe093u, 0xc1e1u,
+    0xdd59u, 0xc5c5u, 0x9803u, 0xd926u,
+    0xf0aeu, 0xf280u, 0x93e1u, 0xa81eu,
+    0xba29u, 0xaff2u, 0xfa67u, 0xe3c2u,
+  );
+  let texel = vec2u(position + screenSsao.phase.xy) & vec2u(3u);
+  let rg = pattern[texel.x + texel.y * 4u];
+  return vec2f(f32(rg & 255u), f32(rg >> 8u)) * (2.0 / 255.0) - 1.0;
+}
+
+fn screenSsaoWedge(uv: vec2f, center: vec3f, weightedNormal: vec3f) -> f32 {
+  let size = vec2i(textureDimensions(ssaoFurthestDepth));
+  let pixel = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
+  // The stock mip factor of 0.5 always selects the first reduced level.
+  let distance = textureLoad(ssaoFurthestDepth, pixel, 0).r;
+  if (distance <= 0.0) { return 0.0; }
+  let delta = screenSsaoPositionAtDistance(uv, distance) - center;
+  return clamp(dot(delta, weightedNormal) / max(dot(delta, delta), 1e-12), 0.0, 1.0);
+}
+
+fn screenSsaoVisibility(in: SsaoVsOut, surface: vec4f, coarse: bool) -> f32 {
+  let depth = surface.w;
+  if (depth <= 0.0 || depth >= screenSsao.shape.z) { return 1.0; }
+  let normal = screenSsaoSafeNormal(surface.xyz);
+  let level = screenSsao.mip.w;
+  let center = screenSsaoPositionAtDistance(in.uv, depth) +
+    screenSsao.kernel.z * depth * exp2(level) * normal;
+  let centerClip = screenSsao.projection * vec4f(center, 1.0);
+  let centerUv = centerClip.xy / centerClip.w * vec2f(0.5, -0.5) + 0.5;
+  let worldSpace = screenSsao.kernel.y > 0.5;
+  let radius = screenSsao.kernel.x * select(depth / 4.0, 1.0, worldSpace) *
+    pow(screenSsao.mip.y, level) * 0.25;
+  let projectionScale = vec2f(screenSsao.projection[0].x, -screenSsao.projection[1].y);
+  let screenRadius = projectionScale * radius * (0.5 / centerClip.w);
+  let noise = screenSsaoPattern(in.position.xy);
+  let weightedNormal = normal * (0.08 * select(depth, 10.0, worldSpace));
+  let smallDisk = array<vec2f, 3>(vec2f(0.0, -0.43), vec2f(0.406, 0.5698), vec2f(-0.58, 0.814));
+  let largeDisk = array<vec2f, 6>(
+    vec2f(0.0, 0.2), vec2f(0.325, 0.101), vec2f(0.272, -0.396),
+    vec2f(-0.385, -0.488), vec2f(-0.711, 0.274), vec2f(0.06, 0.9));
+  let quality = u32(screenSsao.kernel.w);
+  let large = coarse || quality == 4u;
+  let steps = max(1u, min(quality, 3u));
+  let directions = select(3u, 6u, large);
+  var visibility = 0.0001;
+  for (var axis = 0u; axis < directions; axis++) {
+    var disk = largeDisk[axis];
+    if (!large) { disk = smallDisk[axis]; }
+    let direction = (disk.x * noise + disk.y * vec2f(-noise.y, noise.x)) * screenRadius;
+    var peak = vec2f(0.0);
+    for (var step = 1u; step <= steps; step++) {
+      let offset = direction * (f32(step) / f32(steps));
+      peak = max(peak, vec2f(screenSsaoWedge(centerUv + offset, center, weightedNormal),
+                            screenSsaoWedge(centerUv - offset, center, weightedNormal)));
     }
+    let open = 1.0 - peak;
+    visibility += dot(open, open);
   }
-  return result;
+  return visibility / (f32(directions * 2u) + 0.0001);
 }
 
-// Spiral SSAO uses the original game's depth-only estimator and two seven-tap
-// bilateral filters. It shares the AO owner and 256-byte uniform, not a PBR variant.
-@group(0) @binding(12) var ssaoLinearDepth: texture_2d<f32>;
-@group(0) @binding(13) var ssaoMsaaDepth: texture_depth_multisampled_2d;
-
-fn spiralAoSize() -> vec2<i32> {
-  return vec2<i32>(textureDimensions(ssaoLinearDepth));
-}
-
-fn spiralSnappedUv(uv: vec2<f32>, sourceSize: vec2<u32>) -> vec2<f32> {
-  let size = max(vec2<i32>(1), vec2<i32>(floor(vec2<f32>(sourceSize) * ssao_uniform.viewportPad.x + 0.5)));
-  let pixel = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
-  return (vec2<f32>(pixel) + 0.5) / vec2<f32>(size);
-}
-
-fn spiralLinearDistance(uv: vec2<f32>, depth: f32) -> f32 {
-  if (depth <= 0.0) { return 300.1; }
-  return min(-ssaoViewZ(uv, depth), 300.1);
-}
-
-fn spiralDeviceDepth(uv: vec2<f32>) -> f32 {
-  let snapped = spiralSnappedUv(uv, textureDimensions(hdr_depth));
-  return spiralLinearDistance(snapped, ssaoDepth(snapped));
-}
-
-// Read the same nearest-covered Reverse-Z sample as the standalone resolver.
-// The half-depth producer and full-resolution composite need no intermediate image.
-fn ssaoNearestMsaaDepth(uv: vec2<f32>) -> f32 {
-  let size = vec2<i32>(textureDimensions(ssaoMsaaDepth));
-  let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
-  var nearest = 0.0;
-  for (var sample = 0u; sample < textureNumSamples(ssaoMsaaDepth); sample++) {
-    nearest = max(nearest, textureLoad(ssaoMsaaDepth, pixel, i32(sample)));
-  }
-  return nearest;
-}
-
-@fragment
-fn fs_ssao_linear_depth(in: SsaoVsOut) -> @location(0) f32 {
-  return spiralDeviceDepth(in.uv);
-}
-
-@fragment
-fn fs_ssao_linear_depth_msaa(in: SsaoVsOut) -> @location(0) f32 {
-  let uv = spiralSnappedUv(in.uv, textureDimensions(ssaoMsaaDepth));
-  return spiralLinearDistance(uv, ssaoNearestMsaaDepth(uv));
-}
-
-fn spiralDepth(uv: vec2<f32>) -> f32 {
-  let size = spiralAoSize();
-  let pixel = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
-  return textureLoad(ssaoLinearDepth, pixel, 0).r;
-}
-
-fn spiralPosition(uv: vec2<f32>, distance: f32) -> vec3<f32> {
-  // Solve homogeneous view Z directly: one inverse-projection product supports
-  // perspective, orthographic and jittered lenses without two ray endpoints.
-  let base = ssao_uniform.inverseProjection * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
-  let axis = ssao_uniform.inverseProjection[2];
-  let deviceDepth = (-distance * base.w - base.z) / (axis.z + distance * axis.w);
-  let point = base + axis * deviceDepth;
-  return point.xyz / point.w;
-}
-
-@fragment
-fn fs_ssao_spiral(in: SsaoVsOut) -> @location(0) f32 {
-  let z = spiralDepth(in.uv);
-  if (z > 140.0 || z < 0.0 || ssao_uniform.intensityPad.x == 0.0) { return 1.0; }
-  let position = spiralPosition(in.uv, z);
-  let texel = 1.0 / vec2<f32>(spiralAoSize());
-  let ox = vec2<f32>(texel.x, 0.0);
-  let oy = vec2<f32>(0.0, texel.y);
-  let zl = spiralDepth(in.uv - ox);
-  let zr = spiralDepth(in.uv + ox);
-  let zu = spiralDepth(in.uv - oy);
-  let zd = spiralDepth(in.uv + oy);
-  let dx = select(spiralPosition(in.uv + ox, zr) - position, position - spiralPosition(in.uv - ox, zl), abs(zl - z) < abs(zr - z));
-  let dy = select(spiralPosition(in.uv + oy, zd) - position, position - spiralPosition(in.uv - oy, zu), abs(zu - z) < abs(zd - z));
-  let normal = normalize(cross(dy, dx));
-  let radius = ssao_uniform.intensityPad.y * (0.6 + 0.4 * clamp(z / 12.0, 0.0, 1.0));
-  let radius2 = radius * radius;
-  let perspective = abs(ssao_uniform.projection[3][3]) < 0.5;
-  let projectedRadius = radius * abs(ssao_uniform.projection[1][1]) * 0.5 / select(1.0, z, perspective);
-  let radiusUv = clamp(projectedRadius, 3.0 * texel.y, 0.14);
-  let aspect = abs(ssao_uniform.projection[1][1] / ssao_uniform.projection[0][0]);
-  let rotation = fract(52.9829189 * fract(dot(in.position.xy, vec2<f32>(0.06711056, 0.00583715)))) * 6.2831853;
-  let count = u32(ssao_uniform.intensityPad.w);
-  var sum = 0.0;
-  for (var i = 0u; i < count; i++) {
-    let a = (f32(i) + 0.5) / f32(count);
-    let angle = a * 18.8495559 + rotation;
-    let uv = in.uv + vec2<f32>(cos(angle) / aspect, sin(angle)) * a * radiusUv;
-    let delta = spiralPosition(uv, spiralDepth(uv)) - position;
-    let distance2 = dot(delta, delta);
-    let falloff = max(radius2 - distance2, 0.0);
-    sum += falloff * falloff * falloff * max((dot(delta, normal) - (0.015 + 0.004 * z + ssao_uniform.intensityPad.z)) / (distance2 + 0.004), 0.0);
-  }
-  let visibility = max(0.0, 1.0 - ssao_uniform.intensityPad.x * sum * 5.0 / (radius2 * radius2 * radius2 * f32(count)));
-  return mix(visibility, 1.0, smoothstep(70.0, 140.0, z));
-}
-
-fn spiralBilateral(uv: vec2<f32>, axis: vec2<f32>) -> f32 {
-  let direction = axis / vec2<f32>(textureDimensions(ssaoRaw));
-  let z = min(spiralDepth(uv), 300.0);
-  var total = 0.0;
-  var weight = 0.0;
-  for (var i = -3; i <= 3; i++) {
-    let tap = uv + direction * f32(i);
-    let tapZ = min(spiralDepth(tap), 300.0);
-    let w = (1.0 - abs(f32(i)) * 0.22) * max(0.0, 1.0 - abs(tapZ - z) / (0.04 * z + 0.02));
-    total += textureSampleLevel(ssaoRaw, ssao_depth_sampler, tap, 0.0).r * w;
+fn screenSsaoCombine(in: SsaoVsOut, surface: vec4f, fine: f32, coarse: bool) -> f32 {
+  let size = vec2i(textureDimensions(ssaoCoarseVisibility));
+  let texel = in.uv * vec2f(size);
+  let centerNormal = screenSsaoSafeNormal(surface.xyz);
+  var sum = 0.0001;
+  var weight = 0.0001;
+  let taps = select(4, 9, coarse);
+  for (var i = 0; i < taps; i++) {
+    let offset = select(vec2f(vec2i(i & 1, i >> 1)) - 0.5,
+                        vec2f(vec2i(i % 3, i / 3)) - 1.0, coarse);
+    let pixel = clamp(vec2i(floor(texel + offset)), vec2i(0), size - 1);
+    let tap = textureLoad(ssaoCoarseSetup, pixel, 0);
+    let similar = clamp(1.0 - abs(tap.w - surface.w) * 0.3, 0.0, 1.0);
+    let w = similar * clamp(dot(centerNormal, tap.xyz), 0.0, 1.0);
+    sum += textureLoad(ssaoCoarseVisibility, pixel, 0).r * w;
     weight += w;
   }
-  return total / max(weight, 1e-4);
+  return mix(fine, sum / weight, screenSsao.mip.x);
+}
+
+fn screenSsaoQuad(in: SsaoVsOut, normal: vec3f, visibility: f32) -> f32 {
+  let center = vec4f(normal, visibility);
+  let parity = vec2f(vec2u(in.position.xy) & vec2u(1u)) * 2.0 - 1.0;
+  let horizontal = center - dpdxFine(center) * parity.x;
+  let vertical = center - dpdyFine(center) * parity.y;
+  let alignment = clamp(vec2f(dot(normal, horizontal.xyz), dot(normal, vertical.xyz)), vec2f(0.0), vec2f(1.0));
+  let squared = alignment * alignment;
+  let weight = squared * squared;
+  let filtered = (visibility + dot(vec2f(horizontal.w, vertical.w), weight)) / (1.0 + weight.x + weight.y);
+  let quality = u32(screenSsao.kernel.w);
+  return select(visibility, filtered, quality == 1u || quality == 2u);
+}
+
+fn screenSsaoFinish(in: SsaoVsOut, surface: vec4f, visibility: f32, valid: bool) -> f32 {
+  let fade = clamp(1.0 - (screenSsao.shape.z - surface.w) / screenSsao.shape.w, 0.0, 1.0);
+  let faded = mix(visibility, 1.0, fade);
+  let shaped = 1.0 - (1.0 - pow(abs(faded), screenSsao.shape.y)) * screenSsao.shape.x;
+  let normal = select(vec3f(0.0), screenSsaoSafeNormal(surface.xyz), valid);
+  let filtered = screenSsaoQuad(in, normal, select(1.0, shaped, valid));
+  return select(1.0, filtered, valid && surface.w < screenSsao.shape.z);
 }
 
 @fragment
-fn fs_ssao_spiral_blur_x(in: SsaoVsOut) -> @location(0) f32 {
-  return spiralBilateral(in.uv, vec2<f32>(1.0, 0.0));
+fn fs_ssao_full_depth(in: SsaoVsOut) -> @location(0) f32 {
+  let pixel = vec2i(in.position.xy);
+  let depth = textureLoad(hdr_depth, pixel, 0);
+  let surface = screenSsaoDepthData(pixel, depth);
+  return screenSsaoFinish(in, surface, screenSsaoVisibility(in, surface, false), depth > 0.0);
 }
 
 @fragment
-fn fs_ssao_spiral_blur_y(in: SsaoVsOut) -> @location(0) f32 {
-  return spiralBilateral(in.uv, vec2<f32>(0.0, 1.0));
+fn fs_ssao_full_normal(in: SsaoVsOut) -> @location(0) f32 {
+  let pixel = vec2i(in.position.xy);
+  let surface = screenSsaoNormalData(pixel);
+  let visibility = screenSsaoVisibility(in, surface, false);
+  return screenSsaoFinish(in, surface, visibility, loadStandardSceneSurfaceValid(gbuffer_normal, pixel));
 }
 
-
-// Scene-color application reads the accepted previous exposure, before this
-// frame meters the occluded scene. No exposure copy or CPU readback is needed.
-@group(0) @binding(10) var ssaoScene: texture_2d<f32>;
-@group(0) @binding(11) var<uniform> ssaoPreviousExposure: vec4<f32>;
-
-fn ssaoSceneTapUv(uv: vec2<f32>, index: i32) -> vec2<f32> {
-  let size = vec2<i32>(textureDimensions(ssaoRaw));
-  let base = vec2<i32>(floor(uv * vec2<f32>(size) - 0.5));
-  let tap = clamp(base + vec2<i32>(index & 1, index >> 1), vec2<i32>(0), size - 1);
-  return (vec2<f32>(tap) + 0.5) / vec2<f32>(size);
+@fragment
+fn fs_ssao_full_normal_upsample(in: SsaoVsOut) -> @location(0) f32 {
+  let pixel = vec2i(in.position.xy);
+  let surface = screenSsaoNormalData(pixel);
+  let visibility = screenSsaoCombine(in, surface, screenSsaoVisibility(in, surface, false), false);
+  return screenSsaoFinish(in, surface, visibility, loadStandardSceneSurfaceValid(gbuffer_normal, pixel));
 }
 
-fn ssaoApplySceneColor(in: SsaoVsOut, depth: f32, tapDepths: vec4<f32>) -> vec4<f32> {
-  let sceneSize = vec2<i32>(textureDimensions(ssaoScene));
-  let pixel = clamp(vec2<i32>(in.position.xy), vec2<i32>(0), sceneSize - 1);
-  let source = textureLoad(ssaoScene, pixel, 0);
-  var color = max(source.rgb, vec3<f32>(0.0));
-  if (depth > 0.0 && ssao_uniform.viewportPad.y > 0.0) {
-    let z = min(-ssaoViewZ(in.uv, depth), 300.0);
-    let aoSize = vec2<i32>(textureDimensions(ssaoRaw));
-    let hp = in.uv * vec2<f32>(aoSize) - 0.5;
-    let f = fract(hp);
-    let base = vec2<i32>(floor(hp));
-    var total = 0.0;
-    var weight = 0.0;
-    for (var k = 0; k < 4; k++) {
-      let offset = vec2<i32>(k & 1, k >> 1);
-      let tap = clamp(base + offset, vec2<i32>(0), aoSize - 1);
-      let tapZ = min(tapDepths[k], 300.0);
-      let bilinear = select(1.0 - f, f, offset == vec2<i32>(1));
-      let w = max(1e-5, bilinear.x * bilinear.y / (0.015 + abs(tapZ - z) / max(z, 1e-6)));
-      total += textureLoad(ssaoRaw, tap, 0).r * w;
+@fragment
+fn fs_ssao_coarse(in: SsaoVsOut) -> @location(0) f32 {
+  let surface = textureLoad(ssaoSetup, vec2i(in.position.xy), 0);
+  return screenSsaoQuad(in, screenSsaoSafeNormal(surface.xyz), screenSsaoVisibility(in, surface, true));
+}
+
+@fragment
+fn fs_ssao_coarse_upsample(in: SsaoVsOut) -> @location(0) f32 {
+  let surface = textureLoad(ssaoSetup, vec2i(in.position.xy), 0);
+  let visibility = screenSsaoCombine(in, surface, screenSsaoVisibility(in, surface, true), true);
+  return screenSsaoQuad(in, screenSsaoSafeNormal(surface.xyz), visibility);
+}
+
+// GTAO uses the same scene depth and representative far-depth bounds as SSAO.
+// The raw and spatial images intentionally differ: distance fade precedes the
+// spatial normalization and visibility shaping, as in the desktop renderer.
+@group(0) @binding(19) var gtaoPrevious: texture_2d<f32>;
+@group(0) @binding(20) var gtaoVelocity: texture_2d<u32>;
+@group(0) @binding(21) var gtaoSceneData: texture_2d<f32>;
+
+fn screenAoPixel(uv: vec2f, size: vec2u) -> vec2i {
+  return clamp(vec2i(uv * vec2f(size)), vec2i(0), vec2i(size) - 1);
+}
+
+fn screenGtaoHorizon(uv: vec2f, center: vec3f, viewRay: vec3f, horizon: f32, lod: u32) -> f32 {
+  if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return horizon; }
+  let mip = min(lod, textureNumLevels(ssaoFurthestDepth) - 1u);
+  let size = max(textureDimensions(ssaoFurthestDepth, 0) >> vec2u(mip), vec2u(1u));
+  let px = screenAoPixel(uv, size);
+  let distance = textureLoad(ssaoFurthestDepth, px, i32(mip)).r;
+  if (distance <= 0.0) { return horizon; }
+  let delta = screenSsaoPositionAtDistance(uv, distance) - center;
+  let lengthSquared = dot(delta, delta);
+  let radius = screenSsao.kernel.x;
+  let falloff = min(1.0, 2.0 * lengthSquared / (radius * radius));
+  let candidate = dot(delta, viewRay) * inverseSqrt(lengthSquared + 1e-8);
+  let limited = mix(candidate, horizon, falloff);
+  return select(mix(limited, horizon, screenSsao.kernel.y), limited, limited > horizon);
+}
+
+fn screenGtaoSliceOcclusion(horizons: vec2f, direction: vec2f, viewRay: vec3f, normal: vec3f) -> f32 {
+  let halfPi = 1.57079632679;
+  let axis = normalize(cross(vec3f(direction, 0.0), viewRay));
+  let tangent = cross(viewRay, axis);
+  let projected = normal - axis * dot(normal, axis);
+  let normalLength = length(projected) + 1e-6;
+  let normalTangent = clamp(dot(projected, tangent) / normalLength, -1.0, 1.0);
+  let gamma = acos(normalTangent) - halfPi;
+  let horizonAngles = acos(clamp(horizons, vec2f(-1.0), vec2f(1.0)));
+  let angle = vec2f(
+    max(-horizonAngles.x, gamma - halfPi),
+    min( horizonAngles.y, gamma + halfPi),
+  );
+  let cosGamma = dot(projected, viewRay) / normalLength;
+  let primitive = angle * (-2.0 * normalTangent) + cosGamma - cos(2.0 * angle - gamma);
+  let visible = normalLength * 0.25 * (primitive.x + primitive.y);
+  // With a finite set of screen-space directions, the open slice integral
+  // depends on the view ray and the projected normal. Subtract the integral
+  // with both horizons open before averaging to isolate actual occlusion.
+  let open = normalLength * (0.5 * (cosGamma + cos(gamma)) - gamma * normalTangent);
+  return max(open - visible, 0.0);
+}
+
+fn screenGtaoRaw(in: SsaoVsOut, uv: vec2f, surface: vec4f, sceneSize: vec2u) -> f32 {
+  if (surface.w <= 0.0 || surface.w >= screenSsao.shape.z) { return 1.0; }
+  let pi = 3.14159265359;
+  let center = screenSsaoPositionAtDistance(uv, surface.w);
+  let perspective = abs(screenSsao.projection[2].w) > 0.5;
+  let viewRay = select(vec3f(0.0, 0.0, 1.0), normalize(-center), perspective);
+  let falloffRadius = screenSsao.kernel.x;
+  let steps = u32(screenSsao.kernel.z);
+  let baseMip = u32(screenSsao.kernel.w);
+  let fovScale = abs(screenSsao.projection[0].x) * f32(sceneSize.y);
+  let pixelRadius = clamp(falloffRadius * fovScale / select(1.0, surface.w, perspective), f32(steps), 256.0);
+  let stepRadius = pixelRadius / f32(steps + 1u);
+  let pixel = vec2i(in.position.xy);
+  let noise = fract(52.9829189 * fract(dot(vec2f(pixel), vec2f(0.06711056, 0.00583715))));
+  let startAngle = noise * pi + screenSsao.phase.x;
+  var startOffset = fract(f32((pixel.y - pixel.x) & 3) * 0.25 + screenSsao.phase.y);
+  let angles = u32(screenSsao.phase.z);
+  var occlusion = 0.0;
+  for (var slice = 0u; slice < angles; slice++) {
+    let angle = startAngle + f32(slice) * pi / f32(angles);
+    let direction = vec2f(cos(angle), sin(angle));
+    var horizon = vec2f(-1.0);
+    for (var i = 1u; i <= steps; i++) {
+      let lod = baseMip + select(0u, 1u, i == 2u) + select(0u, 2u, i >= 4u);
+      let step = max(stepRadius * (f32(i) + startOffset), f32(i + 1u));
+      let delta = direction * vec2f(step, -step) / vec2f(sceneSize);
+      horizon = vec2f(
+        screenGtaoHorizon(uv + delta, center, viewRay, horizon.x, lod),
+        screenGtaoHorizon(uv - delta, center, viewRay, horizon.y, lod),
+      );
+    }
+    occlusion += screenGtaoSliceOcclusion(horizon, direction, viewRay, surface.xyz);
+    startOffset = fract(startOffset + 0.617);
+  }
+  let fade = clamp(1.0 - (screenSsao.shape.z - surface.w) / screenSsao.shape.w, 0.0, 1.0);
+  let visibility = 1.0 - clamp(occlusion / f32(angles), 0.0, 1.0);
+  // The spatial pass consumes the integral convention and restores pi/2.
+  // The bypass instead publishes visibility directly to temporal/resolve.
+  let raw = select(visibility, visibility * (2.0 / pi), screenSsao.mip.x > 0.5);
+  return mix(raw, 1.0, fade);
+}
+
+fn screenGtaoDepth(in: SsaoVsOut) -> f32 {
+  let sceneSize = textureDimensions(hdr_depth);
+  let uv = in.uv + 0.125 / vec2f(sceneSize);
+  let pixel = screenAoPixel(uv, sceneSize);
+  let depth = textureLoad(hdr_depth, pixel, 0);
+  if (depth <= 0.0) { return 1.0; }
+  return screenGtaoRaw(in, uv, screenSsaoDepthData(pixel, depth), sceneSize);
+}
+
+fn screenGtaoNormal(in: SsaoVsOut) -> f32 {
+  let sceneSize = textureDimensions(hdr_depth);
+  let uv = in.uv + 0.125 / vec2f(sceneSize);
+  let pixel = screenAoPixel(uv, sceneSize);
+  if (!loadStandardSceneSurfaceValid(gbuffer_normal, pixel)) { return 1.0; }
+  return screenGtaoRaw(in, uv, screenSsaoNormalData(pixel), sceneSize);
+}
+
+fn screenGtaoDepthAt(pixel: vec2i, aoSize: vec2i) -> f32 {
+  let point = (vec2f(clamp(pixel, vec2i(0), aoSize - 1)) + 0.5) / vec2f(aoSize);
+  return textureLoad(hdr_depth, screenAoPixel(point, textureDimensions(hdr_depth)), 0);
+}
+
+@fragment
+fn fs_gtao_spatial(in: SsaoVsOut) -> @location(0) f32 {
+  let size = vec2i(textureDimensions(ssaoCoarseVisibility));
+  let center = vec2i(in.position.xy);
+  let z = screenGtaoDepthAt(center, size);
+  if (z <= 0.0 || -screenSsaoPosition(in.uv, z).z >= screenSsao.shape.z) { return 1.0; }
+  let left = screenGtaoDepthAt(center - vec2i(1, 0), size);
+  let right = screenGtaoDepthAt(center + vec2i(1, 0), size);
+  let top = screenGtaoDepthAt(center - vec2i(0, 1), size);
+  let bottom = screenGtaoDepthAt(center + vec2i(0, 1), size);
+  let dx0 = left - screenGtaoDepthAt(center - vec2i(2, 0), size);
+  let dx1 = screenGtaoDepthAt(center + vec2i(2, 0), size) - right;
+  let dy0 = top - screenGtaoDepthAt(center - vec2i(0, 2), size);
+  let dy1 = screenGtaoDepthAt(center + vec2i(0, 2), size) - bottom;
+  let slope = vec2f(
+    select(dx1, dx0, abs(left + dx0 - z) < abs(right - dx1 - z)),
+    select(dy1, dy0, abs(top + dy0 - z) < abs(bottom - dy1 - z)),
+  );
+  let width = i32(screenSsao.phase.w);
+  var sum = 0.0;
+  var weight = 0.0;
+  let first = select(-1, -2, width == 5);
+  for (var y = first; y < width + first; y++) {
+    for (var x = first; x < width + first; x++) {
+      let offset = vec2i(x, y);
+      let pos = clamp(center + offset, vec2i(0), size - 1);
+      let predicted = z + dot(vec2f(pos - center), slope);
+      let tapDepth = screenGtaoDepthAt(pos, size);
+      let w = select(0.0, clamp(1.0 - abs(tapDepth - predicted) * 20000.0, 0.0, 1.0), tapDepth > 0.0);
+      sum += textureLoad(ssaoCoarseVisibility, pos, 0).r * w;
       weight += w;
     }
-    var exposure = ssao_uniform.viewportPad.z;
-    if (ssao_uniform.viewportPad.w > 0.0) {
-      exposure = select(ssao_uniform.viewportPad.w, ssaoPreviousExposure.x, ssaoPreviousExposure.y > 0.5 && ssaoPreviousExposure.x > 0.0);
-    }
-    let lit = smoothstep(0.16, 0.85, dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure);
-    let a = mix(1.0, total / max(weight, 1e-6), ssao_uniform.viewportPad.y * (1.0 - 0.8 * lit));
-    color *= mix(vec3<f32>(a), vec3<f32>(1.0), vec3<f32>(0.0, 0.03, 0.07));
   }
-  return vec4<f32>(color, source.a);
+  let raw = clamp(sum / max(weight, 1e-6) * 1.57079632679, 0.0, 1.0);
+  return 1.0 - (1.0 - pow(raw, screenSsao.shape.y * 0.5)) * screenSsao.shape.x;
+}
+
+fn screenAoBilinear(tex: texture_2d<f32>, uv: vec2f, limits: vec2f) -> f32 {
+  let size = vec2i(textureDimensions(tex));
+  let coord = uv * vec2f(size) - 0.5;
+  let p = vec2i(floor(coord));
+  let f = fract(coord);
+  let a = clamp(textureLoad(tex, clamp(p, vec2i(0), size - 1), 0).r, limits.x, limits.y);
+  let b = clamp(textureLoad(tex, clamp(p + vec2i(1, 0), vec2i(0), size - 1), 0).r, limits.x, limits.y);
+  let c = clamp(textureLoad(tex, clamp(p + vec2i(0, 1), vec2i(0), size - 1), 0).r, limits.x, limits.y);
+  let d = clamp(textureLoad(tex, clamp(p + vec2i(1, 1), vec2i(0), size - 1), 0).r, limits.x, limits.y);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+fn screenGtaoCameraMotion(uv: vec2f) -> vec3f {
+  let pixel = screenAoPixel(uv, textureDimensions(hdr_depth));
+  let deviceDepth = textureLoad(hdr_depth, pixel, 0);
+  let current = screenSsaoPosition(uv, deviceDepth);
+  let clip = screenSsao.view * vec4f(current, 1.0);
+  let previousUv = clip.xy / max(clip.w, 1e-8) * vec2f(0.5, -0.5) + 0.5;
+  return vec3f(uv - previousUv, select(0.0, 1.0, deviceDepth > 0.0 && clip.w > 0.0));
+}
+
+fn screenGtaoTemporal(in: SsaoVsOut, motion: vec3f, previousMotion: vec2f) -> f32 {
+  let current = textureLoad(ssaoCoarseVisibility, vec2i(in.position.xy), 0).r;
+  let previousUv = in.uv - motion.xy;
+  if (screenSsao.phase.x < 0.5 || motion.z <= 0.0 ||
+      any(previousUv < vec2f(0.0)) || any(previousUv >= vec2f(1.0))) { return current; }
+  let window = 0.1 * (1.0 - clamp(length(motion.xy) * 100.0, 0.0, 1.0));
+  let bounds = clamp(vec2f(current - window, current + window), vec2f(0.0), vec2f(1.0));
+  let reprojected = screenAoBilinear(gtaoPrevious, previousUv, bounds);
+  let stationary = screenAoBilinear(gtaoPrevious, in.uv, bounds);
+  let mismatch = abs((motion.x - previousMotion.x) + (motion.y - previousMotion.y));
+  let previous = mix(reprojected, stationary, clamp(mismatch * 100.0, 0.0, 1.0));
+  return mix(previous, current, screenSsao.phase.y);
 }
 
 @fragment
-fn fs_ssao_scene_color(in: SsaoVsOut) -> @location(0) vec4<f32> {
-  let depth = ssaoDepth(in.uv);
-  var taps = vec4<f32>(300.1);
-  if (depth > 0.0 && ssao_uniform.viewportPad.y > 0.0) {
-    for (var k = 0; k < 4; k++) {
-      let uv = ssaoSceneTapUv(in.uv, k);
-      if (ssao_uniform.algorithmPad.x == 2.0) { taps[k] = spiralDepth(uv); }
-      else { taps[k] = spiralDeviceDepth(uv); }
-    }
-  }
-  return ssaoApplySceneColor(in, depth, taps);
+fn fs_gtao_temporal(in: SsaoVsOut) -> @location(0) f32 {
+  let motion = screenGtaoCameraMotion(in.uv);
+  return screenGtaoTemporal(in, motion, screenGtaoCameraMotion(in.uv - motion.xy).xy);
+}
+
+fn screenGtaoPackedMotion(uv: vec2f) -> vec3f {
+  let camera = screenGtaoCameraMotion(uv);
+  let word = textureLoad(gtaoVelocity, screenAoPixel(uv, textureDimensions(gtaoVelocity)), 0).r;
+  if ((word & 65535u) == 0u) { return camera; }
+  let packed = vec2f(f32(word & 65535u), f32(word >> 16u));
+  let curved = ((packed - 32767.0) / 65535.0) / 0.2495;
+  return vec3f(curved * abs(curved) * vec2f(0.25, -0.25) + screenSsao.phase.zw, 1.0);
 }
 
 @fragment
-fn fs_ssao_scene_color_msaa(in: SsaoVsOut) -> @location(0) vec4<f32> {
-  let depth = ssaoNearestMsaaDepth(in.uv);
-  var taps = vec4<f32>(300.1);
-  if (depth > 0.0 && ssao_uniform.viewportPad.y > 0.0) {
-    for (var k = 0; k < 4; k++) { taps[k] = spiralDepth(ssaoSceneTapUv(in.uv, k)); }
-  }
-  return ssaoApplySceneColor(in, depth, taps);
+fn fs_gtao_temporal_velocity(in: SsaoVsOut) -> @location(0) f32 {
+  let motion = screenGtaoPackedMotion(in.uv);
+  return screenGtaoTemporal(in, motion, screenGtaoPackedMotion(in.uv - motion.xy).xy);
 }
+
+fn screenGtaoSceneDataMotion(uv: vec2f) -> vec3f {
+  let camera = screenGtaoCameraMotion(uv);
+  let sampled = textureLoad(gtaoSceneData, screenAoPixel(uv, textureDimensions(gtaoSceneData)), 0);
+  if (sampled.w >= 2.0 || sampled.z <= 0.0) { return camera; }
+  return vec3f(sampled.xy + screenSsao.phase.zw, 1.0);
+}
+
+@fragment
+fn fs_gtao_temporal_scene_data(in: SsaoVsOut) -> @location(0) f32 {
+  let motion = screenGtaoSceneDataMotion(in.uv);
+  return screenGtaoTemporal(in, motion, screenGtaoSceneDataMotion(in.uv - motion.xy).xy);
+}
+
+@fragment
+fn fs_gtao_resolve(in: SsaoVsOut) -> @location(0) f32 {
+  let offset = 0.25 / vec2f(textureDimensions(ssaoCoarseVisibility));
+  let fullRange = vec2f(0.0, 1.0);
+  return min(
+    min(screenAoBilinear(ssaoCoarseVisibility, in.uv - offset, fullRange),
+        screenAoBilinear(ssaoCoarseVisibility, in.uv + offset, fullRange)),
+    min(screenAoBilinear(ssaoCoarseVisibility, in.uv + vec2f(-offset.x, offset.y), fullRange),
+        screenAoBilinear(ssaoCoarseVisibility, in.uv + vec2f(offset.x, -offset.y), fullRange)),
+  );
+}
+
+@fragment
+fn fs_gtao_depth(in: SsaoVsOut) -> @location(0) f32 {
+  return screenGtaoDepth(in);
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_gtao_depth(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(gtaoRawOutput);
+  if (any(id.xy >= size)) { return; }
+  let position = vec2f(id.xy) + 0.5;
+  let value = screenGtaoDepth(SsaoVsOut(vec4f(position, 0.0, 1.0), position / vec2f(size)));
+  textureStore(gtaoRawOutput, vec2i(id.xy), vec4f(value, 0.0, 0.0, 1.0));
+}
+
+@fragment
+fn fs_gtao_normal(in: SsaoVsOut) -> @location(0) f32 {
+  return screenGtaoNormal(in);
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_gtao_normal(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(gtaoRawOutput);
+  if (any(id.xy >= size)) { return; }
+  let position = vec2f(id.xy) + 0.5;
+  let value = screenGtaoNormal(SsaoVsOut(vec4f(position, 0.0, 1.0), position / vec2f(size)));
+  textureStore(gtaoRawOutput, vec2i(id.xy), vec4f(value, 0.0, 0.0, 1.0));
+}
+
+@group(0) @binding(22) var gtaoRawOutput: texture_storage_2d<rgba8unorm, write>;

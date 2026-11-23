@@ -25,7 +25,6 @@ export default definePack({
   name: 'Game 3D / Geometry',
   runtime: {
     export: 'generateIronSphere',
-    fallback: 'build',
     outputs: { 'mesh/iron-sphere': 'mesh' },
     dependencies: [guidText(RUSTED_IRON_MATERIAL_GUID)],
   },

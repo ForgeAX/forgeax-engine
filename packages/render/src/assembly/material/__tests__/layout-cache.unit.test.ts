@@ -1,18 +1,25 @@
-import { type BindGroupLayoutEntry, ok } from '@forgeax/engine-rhi';
+import { type BindGroupLayout, type BindGroupLayoutEntry, ok } from '@forgeax/engine-rhi';
+import { PARTICLE_MESH_SURFACE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import {
+  derive,
   MATERIAL_POST_PROCESS_SCENE_LAYOUT,
   type MaterialProgramBindingContract,
   type MaterialProgramSystemInputs,
+  type MaterialSurfaceModel,
   type ParamSchemaEntry,
   type ShaderEntryPointReads,
   type ShaderReflection,
 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { FORWARD_SCREEN_SURFACE_VIEW_SLOT, retainViewLayout } from '../../../environment/bindings';
 import {
   assembleLitMaterialEntries,
   type SkylightBindGroupResources,
 } from '../../../ibl/skylight-bind-group';
-import { projectSurfaceMaterialBindings } from '../../../pbr-pipeline';
+import {
+  projectMaterialLayoutEntries,
+  projectSurfaceMaterialBindings,
+} from '../../../pbr-pipeline';
 import type { RendererPipelineCacheState } from '../../recovery/renderer-recover';
 import { createMaterialLayoutCache } from '../layout-cache';
 
@@ -20,7 +27,8 @@ function setup() {
   let source = '';
   let bindings: MaterialProgramBindingContract = 'render-material';
   let schema: readonly ParamSchemaEntry[] | undefined;
-  let surface: { model: 'single-layer-water' } | undefined;
+  let surface: { model: MaterialSurfaceModel } | undefined;
+  let layoutIdentity: string | undefined;
   let systemInputs: MaterialProgramSystemInputs | undefined;
   let entryPoints: readonly ShaderEntryPointReads[] | undefined;
   let materialBindings: readonly number[] | undefined;
@@ -39,7 +47,7 @@ function setup() {
   const lookup = vi.fn(() =>
     ok({
       source,
-      receipt: { bindings, surface, systemInputs, entryPoints },
+      receipt: { bindings, surface, systemInputs, entryPoints, reflection: { layoutIdentity } },
       paramSchema: schema,
       program: { identity: source, materialBindings, entryPoints },
     }),
@@ -50,22 +58,22 @@ function setup() {
       variants.length === 0 && reflection === undefined ? undefined : { variants, reflection },
     materialProgram: () => ({ probeBlendRecordRequired: false }),
   };
+  const pipelineState = {
+    viewBindGroupLayout: view,
+    materialBindGroupLayout: material,
+    meshBindGroupLayout: mesh,
+    instancesBindGroupLayout: instances,
+  } as never;
+  const device = {
+    createBindGroupLayout,
+    createPipelineLayout,
+    caps: { storageBuffer: true },
+    limits: {},
+  } as never;
   const cache = createMaterialLayoutCache({
     currentPipelineCacheState: () => state,
-    currentPipelineState: () =>
-      ({
-        viewBindGroupLayout: view,
-        materialBindGroupLayout: material,
-        meshBindGroupLayout: mesh,
-        instancesBindGroupLayout: instances,
-      }) as never,
-    currentBuildDevice: () =>
-      ({
-        createBindGroupLayout,
-        createPipelineLayout,
-        caps: { storageBuffer: true },
-        limits: {},
-      }) as never,
+    currentPipelineState: () => pipelineState,
+    currentBuildDevice: () => device,
     getShader: () => shader as never,
     viewAndSceneDepthLayoutEntries: () => [
       { binding: 0, visibility: 3, buffer: { type: 'uniform' } },
@@ -99,11 +107,18 @@ function setup() {
     setEntryPoints(value: readonly ShaderEntryPointReads[]) {
       entryPoints = value;
     },
+    setLayoutIdentity(value: string) {
+      layoutIdentity = value;
+    },
     setSchema(value: readonly ParamSchemaEntry[]) {
       schema = value;
     },
-    setSurfaceReads(reads: readonly ShaderEntryPointReads[], declarations: readonly number[]) {
-      surface = { model: 'single-layer-water' };
+    setSurfaceReads(
+      reads: readonly ShaderEntryPointReads[],
+      declarations: readonly number[],
+      model: MaterialSurfaceModel = 'single-layer-water',
+    ) {
+      surface = { model };
       entryPoints = reads;
       materialBindings = declarations;
     },
@@ -194,6 +209,31 @@ it('reuses prepared layouts while still observing lookup and invalidates source 
   );
 });
 
+it('keys prepared clustered graphics by the selected entry View bindings', () => {
+  const owner = setup();
+  owner.setEntryPoints([
+    { name: 'vs_main', stage: 'vertex', bindings: [] },
+    { name: 'fs_main', stage: 'fragment', bindings: [] },
+  ]);
+  owner.lookup.mockReturnValue(owner.lookup());
+  retainViewLayout(owner.view as unknown as BindGroupLayout, [], true);
+  const request = (reads: ReadonlyMap<number, number>) =>
+    owner.cache.getOrBuildPreparedMaterialPipelineLayout('game::effect', true, undefined, reads);
+
+  const unlit = request(new Map());
+  const lightingReads = new Map([[FORWARD_SCREEN_SURFACE_VIEW_SLOT, 2]]);
+  const lit = request(lightingReads);
+  expect(lit).not.toBe(unlit);
+  expect(request(new Map(lightingReads))).toBe(lit);
+  expect(request(new Map())).toBe(unlit);
+  expect(owner.createBindGroupLayout).toHaveBeenCalledWith(
+    expect.objectContaining({
+      entries: [expect.objectContaining({ binding: FORWARD_SCREEN_SURFACE_VIEW_SLOT })],
+    }),
+  );
+  expect(owner.createPipelineLayout).toHaveBeenCalledTimes(2);
+});
+
 it('selects resource meaning from the receipt even when source names suggest another layout', () => {
   const owner = setup();
   owner.setSource('@group(0) @binding(0) var misleading_depth: texture_depth_2d;');
@@ -224,7 +264,7 @@ it('keeps the complete Standard material prefix for explicit Standard particle s
   });
   expect(entries.find((entry) => entry.binding === 17)).toMatchObject({
     binding: 17,
-    texture: { viewDimension: 'cube' },
+    buffer: { type: 'uniform', minBindingSize: 112 },
   });
   expect(entries.find((entry) => entry.binding === 20)).toMatchObject({
     binding: 20,
@@ -234,10 +274,7 @@ it('keeps the complete Standard material prefix for explicit Standard particle s
     binding: 22,
     buffer: { type: 'uniform' },
   });
-  expect(entries.find((entry) => entry.binding === 47)).toMatchObject({
-    binding: 47,
-    texture: { viewDimension: '2d' },
-  });
+  expect(entries.some((entry) => entry.binding === 47)).toBe(false);
 });
 
 it.each([
@@ -366,6 +403,63 @@ it('projects the medium layout from canonical entry reads while retaining foam a
   ).toEqual(readBindings);
 });
 
+it.each([
+  false,
+  true,
+])('shares a sparse Standard Surface layout with prepared draws (ORM=%s)', (orm) => {
+  const owner = setup();
+  owner.setSchema([
+    { name: 'roughness', type: 'f32' },
+    ...(orm ? [{ name: 'orm', type: 'texture2d' as const }] : []),
+    { name: 'unused', type: 'texture2d' },
+  ]);
+  const slots = orm ? [0, 1, 2] : [0];
+  owner.setSurfaceReads(
+    [
+      { name: 'vs_main', stage: 'vertex', bindings: [] },
+      {
+        name: 'fs_main',
+        stage: 'fragment',
+        bindings: slots.map((binding) => ({ group: 1, binding })),
+      },
+    ],
+    orm ? [0, 1, 2, 3, 4] : [0, 1, 2],
+    'standard',
+  );
+  const shader = 'sha256:sparse-standard';
+  const layout = owner.cache.getOrBuildPerShaderMaterialLayout(shader)?.materialBgl;
+  if (layout === undefined) throw new Error('Expected a projected material layout');
+  const entries = Array.from(
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries as BindGroupLayoutEntry[],
+  );
+  expect(entries.map(({ binding }) => binding)).toEqual(slots);
+  expect(entries.filter((entry) => entry.texture !== undefined)).toHaveLength(orm ? 1 : 0);
+
+  owner.cache.getOrBuildPreparedMaterialPipelineLayout(shader);
+  expect(owner.createPipelineLayout.mock.calls[1]?.[0].bindGroupLayouts[1]).toBe(layout);
+  expect(
+    projectMaterialLayoutEntries(layout, [0, { binding: 1 }, { binding: 2 }, { binding: 3 }]),
+  ).toEqual(orm ? [0, { binding: 1 }, { binding: 2 }] : [0]);
+});
+
+it('projects a prepared Particle Mesh from its published schema and entry reads', () => {
+  const owner = setup();
+  owner.setSchema(PARTICLE_MESH_SURFACE_PARAM_SCHEMA);
+  owner.setLayoutIdentity(derive(PARTICLE_MESH_SURFACE_PARAM_SCHEMA).layoutIdentity);
+  owner.setEntryPoints([
+    { name: 'vs_main', stage: 'vertex', bindings: [] },
+    {
+      name: 'fs_main',
+      stage: 'fragment',
+      bindings: [0, 1, 2].map((binding) => ({ group: 1, binding })),
+    },
+  ]);
+  const shader = 'forgeax::vfx-render.particles.mesh-unlit';
+  expect(owner.cache.getOrBuildPreparedMaterialPipelineLayout(shader)).not.toBeNull();
+  const entries = owner.createBindGroupLayout.mock.calls[0]?.[0].entries as BindGroupLayoutEntry[];
+  expect(entries.map(({ binding }) => binding)).toEqual([0, 1, 2]);
+});
+
 it('retains reads from every shared Surface variant and stays conservative for missing facts', () => {
   const owner = setup();
   owner.setSchema([
@@ -432,38 +526,39 @@ it('keeps custom lit parameters and native IBL slots without Standard tails', ()
   owner.cache.getOrBuildPerShaderMaterialLayout('game::wet-hull', undefined, 'pbr', true);
   const entries: readonly GPUBindGroupLayoutEntry[] =
     owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
-  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35]);
-  expect(entries.find((entry) => entry.binding === 5)?.texture?.viewDimension).toBe('cube');
-  expect(entries.find((entry) => entry.binding === 35)?.texture?.viewDimension).toBe('2d');
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(entries.find((entry) => entry.binding === 5)?.buffer).toMatchObject({
+    type: 'uniform',
+    minBindingSize: 112,
+  });
+  expect(entries.find((entry) => entry.binding === 7)?.texture?.viewDimension).toBe('2d');
   expect(entries.some((entry) => entry.binding === 46 || entry.binding === 47)).toBe(false);
 });
 
 it('binds custom material IBL from the native Skylight resource owner', () => {
   const skylight = {
-    irradianceView: {},
+    skySh: {},
     irradianceSampler: {},
     prefilterView: {},
     prefilterSampler: {},
     brdfLutView: {},
     intensityBuffer: {},
-    skylightPrefilterView: {},
   } as unknown as SkylightBindGroupResources;
   const entries = assembleLitMaterialEntries([], skylight, 5);
-  expect(entries.map((entry) => entry.binding)).toEqual([5, 6, 7, 8, 9, 10, 35]);
+  expect(entries.map((entry) => entry.binding)).toEqual([5, 6, 7, 8, 9, 10]);
   expect(entries.map((entry) => entry.resource.value)).toEqual([
-    skylight.irradianceView,
+    { buffer: skylight.skySh, size: 112 },
     skylight.irradianceSampler,
     skylight.prefilterView,
     skylight.prefilterSampler,
     skylight.brdfLutView,
     { buffer: skylight.intensityBuffer },
-    skylight.skylightPrefilterView,
   ]);
   expect(
     assembleLitMaterialEntries(
       [],
       {
-        irradianceView: skylight.irradianceView,
+        skySh: skylight.skySh,
         irradianceSampler: skylight.irradianceSampler,
         prefilterView: skylight.prefilterView,
         prefilterSampler: skylight.prefilterSampler,
@@ -471,7 +566,7 @@ it('binds custom material IBL from the native Skylight resource owner', () => {
         intensityBuffer: skylight.intensityBuffer,
       },
       1,
-    ).at(-1)?.resource.value,
+    ).find((entry) => entry.binding === 3)?.resource.value,
   ).toBe(skylight.prefilterView);
 });
 
@@ -482,8 +577,8 @@ it('keeps an empty lit schema free of a user UBO and permits vertex IBL reads', 
   owner.cache.getOrBuildPerShaderMaterialLayout('game::empty-lit', undefined, 'pbr', true);
   const entries: readonly GPUBindGroupLayoutEntry[] =
     owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
-  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 30]);
-  expect(entries[0]?.texture?.viewDimension).toBe('cube');
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5]);
+  expect(entries[0]?.buffer).toMatchObject({ type: 'uniform', minBindingSize: 112 });
   expect(entries.every((entry) => entry.visibility === 3)).toBe(true);
   const layouts = owner.createPipelineLayout.mock.lastCall?.[0].bindGroupLayouts;
   expect(layouts?.[0]).not.toBe(owner.view);

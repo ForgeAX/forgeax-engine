@@ -1,34 +1,51 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "7a0e0000-0000-7000-8000-000000000001",
+  "schemaVersion": "3.0.0",
+  "packageId": "34b0bd04-5635-55a0-91f0-e60b32ec969d",
+  "assets": {
+    "particle-effect/surface-water-splash": {
       "kind": "particle-effect",
-      "execution": "cooked",
       "payload": {
         "schemaVersion": 3,
         "emitters": [
           {
             "id": "surface-water-splash",
             "capacity": 32,
-            "backend": { "required": "gpu" },
+            "backend": {
+              "required": "gpu"
+            },
             "space": "local",
-            "bounds": { "kind": "sphere", "center": [0, 0.18, 0], "radius": 0.8 },
-            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 8 }] },
-            "program": { "module": "surface-water-splash.vfx.wgsl" },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0.18,
+                0
+              ],
+              "radius": 0.8
+            },
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 8
+                }
+              ]
+            },
+            "program": {
+              "module": "surface-water-splash.vfx.wgsl"
+            },
             "renderers": [
               {
                 "kind": "billboard",
-                "material": "7a0e0000-0000-7000-8000-000000000002",
+                "material": "b4976cfe-02c9-5aea-903a-615c7356b62b",
                 "blend": "additive"
               }
             ]
           }
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

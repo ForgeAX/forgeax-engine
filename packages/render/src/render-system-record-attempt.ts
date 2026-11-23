@@ -5,6 +5,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { ShaderError } from '@forgeax/engine-shader';
 import { cloudMode0TransportFormat } from './cloud/reconstruction/history';
 import { runtimeFailureDetails } from './errors/runtime-failure-details';
+import { depthOfFieldGraphForParams } from './features/depth-of-field/depth-of-field-inspection';
 import { resolveDepthOfFieldFrameParams } from './features/depth-of-field/depth-of-field-params';
 import type { RenderFeatureFrameResult } from './features/host';
 import { resolveStandardRenderFeatureTargets } from './features/targets';
@@ -60,6 +61,7 @@ export interface RecordOutcome {
   readonly lights: ViewLights;
   readonly cameraCount: number;
   readonly presentation: FramePresentationCandidate;
+  readonly captureAdmits?: import('./record/frame').FrameRecordingAttempt['captureAdmits'];
   readonly presentationRenderables: FrameList<RenderableSnapshot>;
   readonly draws: RecordDraws;
 }
@@ -177,11 +179,11 @@ export function acceptSubmittedDepthOfField(
           camera.depthOfFieldError,
           frameState.depthOfFieldAccepted?.params,
         );
-  const submittedDepthOfFieldGraph = frameState.compiledFrameGraph?.graph.inspect();
-  if (submittedDepthOfField !== undefined && submittedDepthOfFieldGraph !== undefined) {
+  const installed = frameState.compiledFrameGraph;
+  if (submittedDepthOfField !== undefined && installed != null) {
     frameState.depthOfFieldAccepted = {
       params: submittedDepthOfField,
-      graph: submittedDepthOfFieldGraph,
+      graph: depthOfFieldGraphForParams(installed, submittedDepthOfField),
       deviceGeneration: recordContext(internals).deviceScope.generation,
     };
     frameState.depthOfFieldLastSubmitFailed = false;

@@ -19,7 +19,7 @@ import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderQueue, renderSubmission } from './render-world';
 import { recordsCaptures, viewShadowCastersOf } from './shadow-caster-systems';
 
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState, viewFrameOf } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import {
@@ -131,10 +131,8 @@ export function viewSkinDemandOf(
   world: World,
   entity: EntityHandle | undefined,
 ): SkinDemandResult | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewSkinDemand)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewSkinDemandState>(requireViewField(world, entity, ViewSkinDemand, 'state'))
-    .unwrap();
+  const state = readViewState<ViewSkinDemandState>(world, entity, ViewSkinDemand);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.result : undefined;
 }
 

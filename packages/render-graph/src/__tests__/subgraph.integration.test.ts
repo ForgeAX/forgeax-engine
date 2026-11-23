@@ -6,6 +6,7 @@ import type {
   CompiledRenderGraph,
   GraphResourceResolver,
   RenderGraphFrame,
+  RenderGraphNativeIssue,
   RenderGraphNativePass,
   SubgraphPass,
 } from '../types.js';
@@ -110,6 +111,30 @@ function fixture(gpu: RhiDevice) {
 }
 
 describe('graph-native subgraph ports', () => {
+  it('retains physical profiler identities when snapshotting a command domain', async () => {
+    const builder = new RenderGraphBuilder<Frame>();
+    const copy = {
+      kind: 'copy',
+      name: 'copy-row-3',
+      profileName: 'copy-row',
+      encode() {},
+    } as const;
+    builder
+      .addSubgraphPass('rows', {
+        accesses: [],
+        profilePasses: () => [copy],
+        commandsDirect(_frame, _resources, issue, recording) {
+          issue(recording, copy);
+        },
+      })
+      .unwrap();
+    const graph = compile(builder, await device());
+    const pass = graph.inspect().passes.find(({ name }) => name === 'rows');
+    expect(pass?.nativeProfilePasses).toEqual([
+      { kind: 'copy', name: 'copy-row-3', profileName: 'copy-row' },
+    ]);
+  });
+
   it('commits persistent texture content from child writes, not parent write declarations', async () => {
     const gpu = await device();
     const makeWriter = (childWrites: boolean, skipped = false) => {
@@ -641,17 +666,67 @@ it('captures a native command callback once and keeps actual pass instrumentatio
   builder.addSubgraphPass('slot', descriptor).unwrap();
   const graph = compile(builder, gpu);
   const observed: string[] = [];
+  const nativePassNames = ['prior-view'];
   graph
-    .execute(frame(gpu), undefined, {
+    .execute({ ...frame(gpu), nativePassNames }, undefined, {
       begin: (pass) => {
         observed.push(`${pass.executionIndex}:${pass.kind}:${pass.name}`);
         return undefined;
       },
     })
     .unwrap();
+  expect(nativePassNames).toEqual(['prior-view', 'current-compute']);
   expect(reads).toBe(1);
   expect(calls).toBe(1);
   expect(observed).toEqual(['0:compute:current-compute']);
   expect(() => required(escaped)({ kind: 'copy', name: 'escaped', encode: () => {} })).toThrow();
   await graph.retire();
+});
+
+it('issues changing pass lists with one writer and rejects stale and recursive commands', async () => {
+  const gpu = await device();
+  const builder = new RenderGraphBuilder<Frame>();
+  let half = false;
+  let current: RenderGraphNativeIssue | undefined;
+  let previous = 0;
+  let nested = false;
+  const first: RenderGraphNativePass = { kind: 'copy', name: 'first', encode() {} };
+  const second: RenderGraphNativePass = {
+    kind: 'copy',
+    name: 'second',
+    encode() {
+      if (nested) required(current)(previous, first);
+    },
+  };
+  builder
+    .addSubgraphPass('current-stage', {
+      accesses: [],
+      commandsDirect(_frame, _resources, issue, recording) {
+        if (current !== undefined) {
+          expect(current).toBe(issue);
+          expect(() => issue(previous, first)).toThrow();
+        }
+        current = issue;
+        previous = recording;
+        issue(recording, first);
+        if (half) issue(recording, second);
+      },
+    })
+    .unwrap();
+  const graph = compile(builder, gpu);
+  try {
+    for (let i = 0; i < 60; i++) {
+      half = (i & 1) !== 0;
+      const nativePassNames: string[] = [];
+      graph.execute({ ...frame(gpu), nativePassNames }).unwrap();
+      expect(nativePassNames).toEqual(half ? ['first', 'second'] : ['first']);
+      expect(() => required(current)(previous, first)).toThrow();
+    }
+    nested = true;
+    expect(graph.execute(frame(gpu)).ok).toBe(false);
+    nested = false;
+    expect(graph.execute(frame(gpu)).ok).toBe(true);
+  } finally {
+    await graph.retire();
+  }
 });

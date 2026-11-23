@@ -44,7 +44,7 @@ describe('Standard template alias publication', () => {
     const low = variants.filter((variant) => variant.defines.STORAGE_BUFFER_AVAILABLE === false);
     expect(low.length).toBeGreaterThan(0);
     for (const variant of low) {
-      expect(variant.composedWgsl).not.toMatch(/var\s+transmissionSampler\b/);
+      expect(variant.composedWgsl).not.toMatch(/var\s+transmissionTexture_sampler\b/);
       expect(variant.composedWgsl).not.toMatch(/var\s+transmissionTexture\b/);
       expect(variant.composedWgsl).not.toMatch(/var\s+thicknessTexture\b/);
       expect(variant.composedWgsl).not.toMatch(/var\s+transmissionBackdropTexture\b/);

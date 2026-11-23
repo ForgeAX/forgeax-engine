@@ -17,6 +17,7 @@ import type {
   BindGroup,
   BindGroupLayout,
   Buffer,
+  RenderPipeline,
   RhiDevice,
   RhiError,
   RhiRenderPassEncoder,
@@ -26,7 +27,7 @@ import type {
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import type { BglKind } from './pipeline-spec';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from './pipeline-spec';
-import { bindGroupChainLeaf } from './record/mesh-ssbo';
+import { bindGroupChainLeaf, bindGroupChainLeaf6 } from './record/mesh-ssbo';
 import { GenerationalWeakMap } from './scene/generational-weak-map';
 
 // Default fullscreen-post spec stub. The dispatcher's 'fullscreen-post' arm
@@ -471,35 +472,7 @@ export function entryUsesPrimaryDepth(entry: PostProcessShaderEntry): boolean {
 
 // ─── Public: register / build a fullscreen post-process pass ─────────────
 
-/**
- * State of a registered fullscreen post-process pass.
- *
- * Created by the typed fullscreen feature graph and stored per-pass in the render system.
- * The `draw` method is called by the per-frame execute closure.
- */
-export interface FullscreenPostProcessPassHandle {
-  /** The pass name (same as the `color` target key). */
-  readonly name: string;
-  /** Execute one fullscreen draw: bind input texture, set pipeline, draw 3 vertices. */
-  draw(encoder: RhiRenderPassEncoder, inputView: TextureView): void;
-  /**
-   * The per-frame params UBO this pass binds at group(1) binding(2), or null
-   * when `entry.params === undefined` (param-less consumer, 2-entry BGL). The
-   * dispatcher writes the snapshot bytes into it before draw and composes it
-   * into the bind group via {@link createFullscreenBindGroup}.
-   */
-  readonly paramsBuffer: Buffer | null;
-}
-
-/**
- * Build a fullscreen post-process pass primitive.
- *
- * Creates BGL, sampler, and pipeline state from the registered shader entry.
- * Returns the pass handle + the BGL + the sampler so the caller can compose
- * bind groups. The BGL + sampler are shared across instances of the same shader.
- *
- * @returns The BGL, sampler, and a factory to create pass handles.
- */
+/** The device and shader declaration own the physical fullscreen binding layout. */
 export function buildFullscreenPostProcessPass(
   ctx: FullscreenPostProcessDeviceContext,
   entry: PostProcessShaderEntry,
@@ -537,13 +510,11 @@ export interface BuiltFullscreenPostProcessPass {
   readonly bindGroupLayout: BindGroupLayout;
   readonly sampler: Sampler | null;
   readonly depthSampler: Sampler | null;
-  readonly extraColorBindings: readonly number[];
+  readonly extraColorBindings: readonly { readonly binding: number; readonly key: string }[];
   readonly extraStorageBindings: readonly number[];
-  readonly createHandle: (
-    name: string,
-    pipeline: unknown,
-    paramsBuffer: Buffer | null,
-  ) => FullscreenPostProcessPassHandle;
+  readonly primaryDepth: boolean;
+  readonly depthKey: string | undefined;
+  draw(encoder: RhiRenderPassEncoder, pipeline: RenderPipeline): void;
 }
 
 const builtFullscreenPasses = new WeakMap<
@@ -680,28 +651,29 @@ function createFullscreenPostProcessPass(
         ),
       );
 
+  const depthRead = entry.reads?.find(
+    (read) => typeof read !== 'string' && read.sampleType === 'depth',
+  );
   return {
     bindGroupLayout: bglRes.value,
     sampler,
     depthSampler,
+    primaryDepth,
+    depthKey: typeof depthRead === 'string' ? undefined : depthRead?.key,
     extraColorBindings: Object.freeze(
-      Array.from({ length: extraColorCount }, (_, index) => firstExtraBinding + index),
+      colorReads.slice(1).map((read, index) => ({
+        binding: firstExtraBinding + index,
+        key: typeof read === 'string' ? read : read.key,
+      })),
     ),
     extraStorageBindings: Object.freeze(
       (entry.storageBindings ?? []).map((binding, index) => binding ?? firstStorageBinding + index),
     ),
-    createHandle: (name, pipeline, paramsBuffer) => ({
-      name,
-      paramsBuffer,
-      draw(encoder, _inputView) {
-        encoder.setPipeline(pipeline as never);
-        if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
-        // The bind group is composed per-frame by the record stage (mirrors
-        // recordFxaaPass's lazy bindgroup compose in render-system-record.ts).
-        // The caller owns group one and any declared View binding at group zero.
-        encoder.draw(3, 1, 0, 0);
-      },
-    }),
+    draw(encoder, pipeline) {
+      encoder.setPipeline(pipeline);
+      if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
+      encoder.draw(3, 1, 0, 0);
+    },
   };
 }
 
@@ -742,6 +714,7 @@ const fullscreenBindGroups = new WeakMap<object, unknown>();
 const fullscreenChainKeys: object[] = [];
 const ABSENT_BINDING: object = {};
 const BUFFER_BINDINGS: object = {};
+const NO_EXTRA_BINDINGS = Object.freeze([]);
 
 export function createFullscreenBindGroup(
   device: RhiDevice,
@@ -751,26 +724,46 @@ export function createFullscreenBindGroup(
   paramsBuffer?: Buffer | null,
   depthTexView?: TextureView | null,
   depthSampler?: Sampler | null,
-  additionalViews: readonly { readonly binding: number; readonly view: TextureView }[] = [],
-  additionalBuffers: readonly { readonly binding: number; readonly buffer: Buffer }[] = [],
+  additionalViews: readonly {
+    readonly binding: number;
+    readonly view: TextureView;
+  }[] = NO_EXTRA_BINDINGS,
+  additionalBuffers: readonly {
+    readonly binding: number;
+    readonly buffer: Buffer;
+  }[] = NO_EXTRA_BINDINGS,
 ): BindGroup | null {
   const depthBound = depthTexView && depthSampler;
-  const keys = fullscreenChainKeys;
-  keys.length = 0;
-  keys.push(
-    bgl,
-    inputView,
-    sampler ?? ABSENT_BINDING,
-    paramsBuffer ?? ABSENT_BINDING,
-    depthBound ? depthTexView : ABSENT_BINDING,
-    depthBound ? depthSampler : ABSENT_BINDING,
-  );
-  for (let index = 0; index < additionalViews.length; index++)
-    keys.push((additionalViews[index] as { readonly view: TextureView }).view);
-  keys.push(BUFFER_BINDINGS);
-  for (let index = 0; index < additionalBuffers.length; index++)
-    keys.push((additionalBuffers[index] as { readonly buffer: Buffer }).buffer);
-  const leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+  let leaf: Map<string, BindGroup>;
+  if (additionalViews.length === 0 && additionalBuffers.length === 0) {
+    leaf = bindGroupChainLeaf6(
+      fullscreenBindGroups,
+      bgl,
+      inputView,
+      sampler ?? ABSENT_BINDING,
+      paramsBuffer ?? ABSENT_BINDING,
+      depthBound ? depthTexView : ABSENT_BINDING,
+      depthBound ? depthSampler : ABSENT_BINDING,
+    );
+  } else {
+    const keys = fullscreenChainKeys;
+    try {
+      keys.push(
+        bgl,
+        inputView,
+        sampler ?? ABSENT_BINDING,
+        paramsBuffer ?? ABSENT_BINDING,
+        depthBound ? depthTexView : ABSENT_BINDING,
+        depthBound ? depthSampler : ABSENT_BINDING,
+      );
+      for (const additional of additionalViews) keys.push(additional.view);
+      keys.push(BUFFER_BINDINGS);
+      for (const additional of additionalBuffers) keys.push(additional.buffer);
+      leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+    } finally {
+      keys.length = 0;
+    }
+  }
   const cached = leaf.get('fullscreen');
   if (cached !== undefined) return cached;
   const entries: { binding: number; resource: { kind: string; value: unknown } }[] = [

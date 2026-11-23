@@ -34,7 +34,7 @@ import {
 } from '../system-order';
 import { viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewState, requireViewField } from './view-field';
 
 /*
  * Installed RenderFeatures prepare in RenderPrepare, once per Renderer frame:
@@ -153,12 +153,8 @@ export function viewFeatureInputOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewFeatureInputOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewFeatureInput)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewFeatureInputState>(
-      requireViewField(world, entity, ViewFeatureInput, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewFeatureInputState>(world, entity, ViewFeatureInput);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

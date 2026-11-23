@@ -14,7 +14,11 @@ export async function runtimePacksModuleSource(
   packs: readonly AuthoredRuntimePack[],
   generatedRoot: string,
 ): Promise<string> {
-  if (!staticPrograms) return runtimePacksModule(authoredRuntimePackDeclarations(packs));
+  if (!staticPrograms)
+    return runtimePacksModule(
+      authoredRuntimePackDeclarations(packs),
+      packs.length ? facts.id : undefined,
+    );
   return `${await staticPackProgramsSource(facts, sourceInventory, { packs, generatedRoot })}
 import type { RuntimePackOptions } from '@forgeax/engine/app';
 export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
@@ -23,9 +27,10 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
 `;
 }
 
-export function runtimePacksModule(declarations: string): string {
+export function runtimePacksModule(declarations: string, projectId?: string): string {
   return `${declarations}
 import type { RuntimePackOptions } from '@forgeax/engine/app';
+${projectId === undefined ? '' : "import { createBrowserRuntimePackCache } from '@forgeax/engine/platform-browser';"}
 import { createBrowserPackProgramHost, prepareBrowserPackProgramScope } from '@forgeax/engine/pack/runtime-browser';
 import type { PackProgramHostFactory } from '@forgeax/engine/pack/runtime';
 import imports, { loadImport } from 'virtual:forgeax/pack-program-imports';
@@ -47,6 +52,11 @@ export function prepareRuntimePackDelivery(): Promise<Delivery> {
   return preparing;
 }
 
+function listenDelivery(channel: BroadcastChannel, receive: (event: MessageEvent) => void) {
+  channel.addEventListener('message', receive);
+  return () => { channel.removeEventListener('message', receive); channel.close(); };
+}
+
 /** This private channel leaves the game's borrowed MessagePort queue untouched. */
 export function serveRuntimePackDelivery(name: string): () => void {
   let channel: BroadcastChannel;
@@ -60,8 +70,8 @@ export function serveRuntimePackDelivery(name: string): () => void {
       if (active) channel.postMessage({ kind: 'forgeax:pack-program-delivery', id, delivery });
     });
   };
-  channel.addEventListener('message', receive);
-  return () => { active = false; channel.removeEventListener('message', receive); channel.close(); };
+  const close = listenDelivery(channel, receive);
+  return () => { active = false; close(); };
 }
 
 /** Each World owns its waiting request; late replies cannot reach its replacement. */
@@ -81,8 +91,7 @@ export function createRuntimePackDeliveryClient(name: string | undefined, signal
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        channel.removeEventListener('message', receive);
-        channel.close();
+        close();
         signal.removeEventListener('abort', aborted);
         resolve(delivery);
       };
@@ -94,7 +103,7 @@ export function createRuntimePackDeliveryClient(name: string | undefined, signal
       };
       const aborted = () => finish({ error: 'Runtime Pack delivery owner is disposed' });
       const timer = setTimeout(() => finish({ error: 'Runtime Pack page delivery timed out' }), 15000);
-      channel.addEventListener('message', receive);
+      const close = listenDelivery(channel, receive);
       signal.addEventListener('abort', aborted, { once: true });
       try { channel.postMessage({ kind: 'forgeax:prepare-pack-programs', id }); }
       catch (cause) { finish({ error: String(cause) }); }
@@ -106,11 +115,12 @@ export function createRuntimePackDeliveryClient(name: string | undefined, signal
 }
 
 export async function createRuntimePackOptions(scopeId: string, prepared?: Delivery | (() => Promise<Delivery>), nativeHost?: PackProgramHostFactory): Promise<RuntimePackOptions> {
-  if (nativeHost) return { scopeId, imports, authored, programHost: nativeHost(imports, loadImport) };
+  const options = { scopeId, imports, authored${projectId === undefined ? '' : `, cache: createBrowserRuntimePackCache(${JSON.stringify(projectId)})`} };
+  if (nativeHost) return { ...options, programHost: nativeHost(imports, loadImport) };
   const delivery = prepared;
   let host: ReturnType<typeof createBrowserPackProgramHost> | undefined;
   return {
-    scopeId, imports, authored,
+    ...options,
     programHost: { async publish(program, bindings) {
       const ready = typeof delivery === 'function' ? await delivery() : delivery ?? await prepareRuntimePackDelivery();
       if ('error' in ready) throw new Error(ready.error);

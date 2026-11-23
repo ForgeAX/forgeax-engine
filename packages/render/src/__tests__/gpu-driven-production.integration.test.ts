@@ -40,10 +40,7 @@ import { DeviceScope } from '../device/device-scope';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import {
-  MaterialAbiRasterAdapter,
-  resolveGpuDrivenMeshGroup,
-} from '../gpu-driven/production-raster-material';
+import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GPU_TASK_HEADER_PREFIX_BYTES } from '../gpu-driven/task-header';
 import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
@@ -56,6 +53,7 @@ import {
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
+import { createStandardForwardPipeline } from '../pipeline/standard-forward-output';
 import { createRenderPublisher } from '../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
@@ -70,6 +68,7 @@ import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
+import { addTypedOutputTransformPass } from '../typed-render-graph-primitives';
 import type { ViewLights } from '../world/render-lights';
 import { publishRenderSubmission, renderWorldFor } from '../world/render-world';
 import { drawWorld } from './draw-world';
@@ -137,72 +136,6 @@ function expectSceneIndexedMaterialAbi(projection: MaterialRenderProjection): vo
   expect(shadow?.abi?.receiptIdentity).not.toBe(forward?.abi?.receiptIdentity);
   expect(shadow.artifactHash).not.toBe(forward.artifactHash);
 }
-
-describe('GPU-driven scene-index mesh address selection', () => {
-  it('keeps direct batches on their local group and rebuilds clustered group(2) around the same projection buffer', () => {
-    const directGroup = {} as BindGroup;
-    const clusteredGroup = {} as BindGroup;
-    const legacyClusterGroup = {} as BindGroup;
-    const transformBuffer = {} as Buffer;
-    const clusterBindGroupForMesh = vi.fn(() => clusteredGroup);
-    const frameResources = { clusterBindGroup: legacyClusterGroup, clusterBindGroupForMesh };
-
-    expect(
-      resolveGpuDrivenMeshGroup({
-        clustered: false,
-        deformation: 'rigid',
-        meshBindGroup: directGroup,
-        sceneTransformBuffer: transformBuffer,
-        sceneTransformBytes: 256,
-        frameResources,
-      }),
-    ).toBe(directGroup);
-    expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-
-    expect(
-      resolveGpuDrivenMeshGroup({
-        clustered: true,
-        deformation: 'rigid',
-        meshBindGroup: directGroup,
-        sceneTransformBuffer: transformBuffer,
-        sceneTransformBytes: 512,
-        frameResources,
-      }),
-    ).toBe(clusteredGroup);
-    expect(clusterBindGroupForMesh).toHaveBeenCalledExactlyOnceWith(transformBuffer, 512);
-  });
-
-  it('rebuilds clustered skin group(2) from the matching scene-index mesh and palette pages', () => {
-    const directSkinGroup = {} as BindGroup;
-    const clusteredSkinGroup = {} as BindGroup;
-    const transformBuffer = {} as Buffer;
-    const paletteBuffer = {} as Buffer;
-    const task = {
-      data: paletteBuffer,
-      auxiliary: {} as Buffer,
-      dataOffset: 0,
-      auxiliaryOffset: 768,
-      dataSize: 1024,
-      auxiliarySize: 16,
-      jointCount: 0,
-      flags: 0,
-    };
-    const clusterBindGroupForSkin = vi.fn(() => clusteredSkinGroup);
-
-    expect(
-      resolveGpuDrivenMeshGroup({
-        clustered: true,
-        deformation: 'skin',
-        meshBindGroup: directSkinGroup,
-        sceneTransformBuffer: transformBuffer,
-        sceneTransformBytes: 768,
-        skinTaskBinding: task,
-        frameResources: { clusterBindGroupForSkin },
-      }),
-    ).toBe(clusteredSkinGroup);
-    expect(clusterBindGroupForSkin).toHaveBeenCalledExactlyOnceWith(transformBuffer, 768, task);
-  });
-});
 
 interface BufferWrite {
   readonly buffer: Buffer;
@@ -340,6 +273,7 @@ describe('GPU-driven production projection', () => {
       } as unknown as HTMLCanvasElement,
       {
         rhi,
+        retainIndirectBundles: true,
         features: [
           {
             identity: 'prepared-bundle-failure-source',
@@ -478,7 +412,19 @@ describe('GPU-driven production projection', () => {
     }
   });
 
-  it('never replays a retained raster run that names a visible window from before a ProbeBlend buffer replacement', async () => {
+  it.each([
+    'standard',
+    'forward-output',
+  ] as const)('rebinds retained %s raster runs after a ProbeBlend buffer replacement', async (pipelineKind) => {
+    const pipeline =
+      pipelineKind === 'standard'
+        ? undefined
+        : createStandardForwardPipeline({
+            format: 'rgba16float',
+            domain: 'linear-hdr',
+            build: ({ graph }, _topology, color, _depth, surface) =>
+              addTypedOutputTransformPass(graph, color, surface.storage, { outputOnly: true }),
+          });
     const renderer = await constructRenderer(
       {
         width: 16,
@@ -487,7 +433,7 @@ describe('GPU-driven production projection', () => {
         addEventListener: () => undefined,
         removeEventListener: () => undefined,
       } as unknown as HTMLCanvasElement,
-      { rhi },
+      { rhi, retainIndirectBundles: true, ...(pipeline === undefined ? {} : { pipeline }) },
       { shaderManifestUrl: manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true) },
     );
     // Visible-window bind groups the material adapter hands out, and the ones a
@@ -2140,7 +2086,10 @@ describe('GPU-driven production projection', () => {
       });
       availability.scene.sync(projection.apply(rows)).unwrap();
       topology.rebuild(projection.slotsSnapshot());
-      for (const source of ['synthetic', '@group(2) @binding(3) var<uniform> cluster: vec4f;']) {
+      for (const source of [
+        'synthetic',
+        '@group(0) @binding(33) var<uniform> cluster_uniform: vec4f;',
+      ]) {
         const program = createMaterialShaderProgram(source);
         layout.mockClear();
         const prepared = production
@@ -2410,6 +2359,16 @@ describe('GPU-driven production projection', () => {
     topology.rebuild(projection.slotsSnapshot());
     const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
     const sharedMesh = mesh(device);
+    const sceneGroupTransforms = new WeakMap<BindGroup, Buffer>();
+    const createBindGroup = device.createBindGroup.bind(device);
+    const groupCreation = vi.spyOn(device, 'createBindGroup').mockImplementation((descriptor) => {
+      const result = createBindGroup(descriptor);
+      const resource = descriptor.entries.find(({ binding }) => binding === 9)?.resource;
+      if (result.ok && resource?.kind === 'buffer')
+        sceneGroupTransforms.set(result.value, resource.value.buffer);
+      return result;
+    });
+    onTestFinished(() => groupCreation.mockRestore());
     const prepared = production
       .prepare(
         admitGpuFixture({
@@ -2485,8 +2444,11 @@ describe('GPU-driven production projection', () => {
                 group: slot === 2 ? otherMaterial : sharedMaterial,
                 offsets: [(slot ?? 0) * 256],
               });
-              expect(bound.get(2)?.offsets).toEqual([0]);
-              expect(bound.get(3)).toBeDefined();
+              expect(bound.get(2)?.offsets).toEqual([]);
+              const sceneGroup = bound.get(3)?.group;
+              expect(sceneGroup && sceneGroupTransforms.get(sceneGroup)).toBe(
+                availability.scene.transformBuffer,
+              );
               originalDraw(buffer, offset);
             });
           const buffer = vi.fn(resources.buffer.bind(resources));

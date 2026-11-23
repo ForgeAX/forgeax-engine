@@ -16,3 +16,9 @@ export const TERRAIN_MATERIAL_PARAMETERS: readonly MaterialParameter[] = standar
   { name: 'terrainShadowFamily', type: 'f32', default: 0 },
   { name: 'terrainLayerModes', type: 'vec4', default: [0, 3, 3, 3] },
 ]);
+
+export const TERRAIN_WEIGHT_DETAIL_PARAMETERS: readonly MaterialParameter[] = [
+  ...TERRAIN_MATERIAL_PARAMETERS,
+  { name: 'terrainWeightDetail', type: 'texture' },
+  { name: 'terrainWeightDetailParams', type: 'vec2', default: [1, 0] },
+];

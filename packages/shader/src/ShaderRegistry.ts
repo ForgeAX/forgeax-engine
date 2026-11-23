@@ -20,6 +20,7 @@ import {
   withMaterialShaderEntryPoints,
   withMaterialShaderForwardFog,
 } from './material/program.js';
+import { standardSurfaceResourceDefines } from './material-schemas.js';
 // @forgeax/engine-shader/ShaderRegistry — runtime shader registry, instance-per-engine shape.
 //
 // Shape rules (plan-strategy §S-10 / D-R10 / OQ-5 close + AC-03):
@@ -103,6 +104,7 @@ import {
 import {
   findVariantByKey,
   type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
   sealMaterialShaderVariants,
 } from './types.js';
 
@@ -310,7 +312,6 @@ export const DEPTH_PYRAMID_SHADER_MODULES = Object.freeze({
 /** Stable build-time module ids for the M1 spatial SSR artifact set. */
 export const SSR_SHADER_MODULES = Object.freeze({
   trace: 'forgeax_ssr::trace',
-  temporal: 'forgeax_ssr::temporal',
 } as const);
 
 /**
@@ -484,6 +485,14 @@ interface TemplatePreparation {
   error?: ShaderError;
 }
 
+interface MaterialAddressCompilation {
+  requests: number;
+  completed: number;
+  unavailable: number;
+  failures: number;
+  compileMs: number;
+}
+
 export class ShaderRegistry {
   readonly #device: ShaderRegistryDevice | undefined;
   #programCompiler: ShaderProgramCompiler | undefined;
@@ -498,6 +507,9 @@ export class ShaderRegistry {
   #templateRequests = 0;
   #templateCacheHits = 0;
   #templateCompileMs = 0;
+  readonly #sourceMaterialCompiles: Partial<
+    Record<import('@forgeax/engine-types').MaterialProgramAddress, MaterialAddressCompilation>
+  > = {};
   readonly #manifestUrl: string | undefined;
   readonly #readText: ((url: string) => Promise<string>) | undefined;
   // hash → ShaderModule cache (populated lazily on first get()).
@@ -662,7 +674,30 @@ export class ShaderRegistry {
           hint: 'use the material compiler supplied by the current runtime host',
         }),
       );
-    return this.#programCompiler.prepareMaterial(template);
+    const prepared = this.#programCompiler.prepareMaterial(template);
+    if (!prepared.ok || prepared.value.selectAddress === undefined) return prepared;
+    const selectAddress = prepared.value.selectAddress.bind(prepared.value);
+    return ok({
+      select: prepared.value.select.bind(prepared.value),
+      selectAddress: (request, address) => {
+        this.#sourceMaterialCompiles[address] ??= {
+          requests: 0,
+          completed: 0,
+          unavailable: 0,
+          failures: 0,
+          compileMs: 0,
+        };
+        const counts = this.#sourceMaterialCompiles[address];
+        counts.requests++;
+        const started = performance.now();
+        const selected = selectAddress(request, address);
+        counts.compileMs += performance.now() - started;
+        if (!selected.ok) counts.failures++;
+        else if (selected.value === undefined) counts.unavailable++;
+        else counts.completed++;
+        return selected;
+      },
+    });
   }
 
   async #admitTemplateManifest(
@@ -1005,6 +1040,11 @@ export class ShaderRegistry {
     };
   }
 
+  /** Read an admitted template's fixed publication options without selecting a variant. */
+  programTemplate(identifier: string): AdmittedShaderProgramTemplate['template'] | undefined {
+    return this.#templates.get(identifier)?.template;
+  }
+
   /** Admit a native source recipe without composing or reflecting any selection. */
   installProgramTemplate(identifier: string, input: unknown): ShaderResult<void, ShaderError> {
     if (identifier.length === 0)
@@ -1049,7 +1089,12 @@ export class ShaderRegistry {
     return ok(undefined);
   }
 
-  #templateProgramRequest(identifier: string, selection: Readonly<Record<string, boolean>>) {
+  #templateProgramRequest(
+    identifier: string,
+    selection: Readonly<Record<string, boolean>>,
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
+  ) {
     const admitted = this.#templates.get(identifier);
     if (admitted === undefined)
       return err(
@@ -1072,11 +1117,27 @@ export class ShaderRegistry {
         }),
       );
     }
+    const surface =
+      standardSurfaceMask === undefined
+        ? undefined
+        : standardSurfaceResourceDefines(
+            standardSurfaceMask,
+            admitted.template.engine?.paramSchema ?? [],
+          );
+    const defines =
+      forwardScreenShadow === true
+        ? { ...selected.value.defines, ...surface, FORWARD_SCREEN_SHADOW_RECEIVER: true }
+        : surface === undefined
+          ? selected.value.defines
+          : { ...selected.value.defines, ...surface };
+    const surfaceKey =
+      surface === undefined ? '' : `:surface:${Object.values(surface).map(Number).join('')}`;
+    const receiverKey = forwardScreenShadow === true ? ':forward-screen-shadow' : '';
     return ok({
       admitted,
       compiler,
-      selected: selected.value,
-      key: `${admitted.identity}:${selected.value.key}`,
+      selected: { ...selected.value, defines },
+      key: `${admitted.identity}:${selected.value.key}${surfaceKey}${receiverKey}`,
     });
   }
 
@@ -1084,15 +1145,26 @@ export class ShaderRegistry {
   prepareProgramTemplate(
     identifier: string,
     selection: Readonly<Record<string, boolean>>,
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
+    onPending?: (completion: Promise<ShaderResult<void, ShaderError>>) => void,
   ): ShaderResult<boolean, ShaderError> {
-    const request = this.#templateProgramRequest(identifier, selection);
+    const request = this.#templateProgramRequest(
+      identifier,
+      selection,
+      standardSurfaceMask,
+      forwardScreenShadow,
+    );
     if (!request.ok) return request;
     const { admitted, compiler, selected, key } = request.value;
     const compile = compiler.compileAsync;
     if (compile === undefined || this.#templatePrograms.has(key)) return ok(true);
     const existing = this.#templatePreparations.get(key);
-    if (existing !== undefined)
-      return existing.error === undefined ? ok(false) : err(existing.error);
+    if (existing !== undefined) {
+      if (existing.error !== undefined) return err(existing.error);
+      onPending?.(existing.completion);
+      return ok(false);
+    }
     // Start the worker request now so it can overlap the rest of this frame's
     // preparation. Normalizing through an async function also catches a host throw.
     const submit = async () => compile.call(compiler, admitted.template, selected.defines);
@@ -1120,6 +1192,7 @@ export class ShaderRegistry {
         }),
     };
     this.#templatePreparations.set(key, preparation);
+    onPending?.(preparation.completion);
     return ok(false);
   }
 
@@ -1138,9 +1211,16 @@ export class ShaderRegistry {
   resolveProgramTemplate(
     identifier: string,
     selection: Readonly<Record<string, boolean>>,
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
   ): ShaderResult<ResolvedShaderTemplateProgram, ShaderError> {
     this.#templateRequests++;
-    const request = this.#templateProgramRequest(identifier, selection);
+    const request = this.#templateProgramRequest(
+      identifier,
+      selection,
+      standardSurfaceMask,
+      forwardScreenShadow,
+    );
     if (!request.ok) return request;
     const { admitted, compiler, selected, key } = request.value;
     const cached = this.#templatePrograms.get(key);
@@ -1174,6 +1254,38 @@ export class ShaderRegistry {
     return compiled.ok ? ok(this.#storeTemplateProgram(key, compiled.value)) : compiled;
   }
 
+  /** Project one used stock Surface contract through the already admitted program template. */
+  selectStandardSurfaceProgram(
+    identifier: string,
+    variantKey: string,
+    mask: number | undefined,
+    forwardScreenShadow?: true,
+    onPending?: (completion: Promise<ShaderResult<void, ShaderError>>) => void,
+  ): ShaderResult<ResolvedShaderTemplateProgram | 'pending' | undefined, ShaderError> {
+    const manifest = this.#admitted;
+    const family = manifest?.materials.get(identifier);
+    const declaration = manifest?.template?.wire.materialShaders.find(
+      (row) => row.identifier === identifier,
+    );
+    const selected = family === undefined ? undefined : findVariantByKey(family, variantKey);
+    if (declaration === undefined || selected === undefined) return ok(undefined);
+    const prepared = this.prepareProgramTemplate(
+      declaration.program,
+      selected.defines,
+      mask,
+      forwardScreenShadow,
+      onPending,
+    );
+    if (!prepared.ok) return prepared;
+    if (!prepared.value) return ok('pending');
+    return this.resolveProgramTemplate(
+      declaration.program,
+      selected.defines,
+      mask,
+      forwardScreenShadow,
+    );
+  }
+
   #storeTemplateProgram(
     key: string,
     result: ShaderProgramCompilation,
@@ -1199,12 +1311,52 @@ export class ShaderRegistry {
     return resolved;
   }
 
+  /** Inspect previously compiled Surface rows for the exact captured WGSL. */
+  preparedSurfaceSourceRows(
+    identifier: string,
+    source: string,
+  ): readonly MaterialShaderManifestVariant[] {
+    const declaration = this.#admitted?.template?.wire.materialShaders.find(
+      (row) => row.identifier === identifier,
+    );
+    const template =
+      declaration === undefined ? undefined : this.#templates.get(declaration.program);
+    if (template === undefined) return [];
+    const prefix = `${template.identity}:`;
+    const rows: MaterialShaderManifestVariant[] = [];
+    for (const [key, compiled] of this.#templatePrograms) {
+      if (!key.startsWith(prefix)) continue;
+      const definesKey = key.slice(prefix.length);
+      if (!definesKey.includes(':surface:') && !definesKey.endsWith(':forward-screen-shadow'))
+        continue;
+      if (!compiled.program.sourceReference.matches(source)) continue;
+      const { wgsl, defines, bindings: _bindings, glsl: _glsl, ...facts } = compiled.manifestEntry;
+      rows.push({
+        ...facts,
+        definesKey,
+        defines: { ...defines },
+        composedWgsl: wgsl,
+        sourceDigest: compiled.program.sourceReference.identity,
+        ...(compiled.receipt === undefined ? {} : { receipt: compiled.receipt }),
+      });
+    }
+    return rows;
+  }
+
   programTemplateInspection(options?: { readonly includePrograms?: true }): {
     readonly templates: number;
     readonly selections: number;
     readonly requests: number;
     readonly cacheHits: number;
     readonly compileMs: number;
+    readonly sourceMaterialCompiles: Readonly<
+      Partial<
+        Record<
+          import('@forgeax/engine-types').MaterialProgramAddress,
+          Readonly<MaterialAddressCompilation>
+        >
+      >
+    >;
     readonly programs?: readonly { readonly identifier: string; readonly definesKey: string }[];
   } {
     const names = options?.includePrograms
@@ -1218,6 +1370,12 @@ export class ShaderRegistry {
       requests: this.#templateRequests,
       cacheHits: this.#templateCacheHits,
       compileMs: this.#templateCompileMs,
+      sourceMaterialCompiles: Object.fromEntries(
+        Object.entries(this.#sourceMaterialCompiles).map(([address, counts]) => [
+          address,
+          { ...counts },
+        ]),
+      ),
       ...(names === undefined
         ? {}
         : {

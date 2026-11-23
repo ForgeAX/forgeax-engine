@@ -25,7 +25,7 @@ import {
   resolveKernelBinding,
 } from './kernel-graph-access';
 import { addCardAtlasPasses } from './probe-card-graph';
-import { addRayDiffuseCompositePass } from './ray-graph-shared';
+import { addRayDiffuseCompositePass, snapshotRayReflectionFallback } from './ray-graph-shared';
 import type { IrradianceFieldExtent, PreparedIrradianceField } from './renderer-irradiance-field';
 import type { PreparedWorldAcceleration } from './renderer-world-acceleration';
 
@@ -315,9 +315,6 @@ export function addIrradianceFieldPasses(
       ? addFieldGatherPasses({
           ...scope,
           label: 'irradiance-field',
-          ...(extent.reflection === undefined || target.reflection === undefined
-            ? {}
-            : { reflectionResponse: target.reflection.response.view }),
         })
       : consume(handles);
   if (!gathered.ok) return gathered;
@@ -496,7 +493,6 @@ export interface FieldGatherExtent {
   readonly upsampled: Buffer | undefined;
 }
 interface FieldGatherScope<E extends FieldGatherExtent> {
-  readonly reflectionResponse?: GraphTextureView;
   /** Pass label prefix, the lane's inspection identity. */
   readonly label: string;
   readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
@@ -514,7 +510,6 @@ interface FieldGatherScope<E extends FieldGatherExtent> {
 
 /** Per-pixel gather (-> upsample) -> the shared additive diffuse composite. */
 export function addFieldGatherPasses<E extends FieldGatherExtent>({
-  reflectionResponse,
   label,
   graph,
   current,
@@ -601,9 +596,7 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
     () => current().composite,
     target,
     signal,
-    view,
     pixelCount,
-    reflectionResponse,
   );
   if (!composited.ok) return composited;
   return ok(undefined);
@@ -758,6 +751,12 @@ function addFieldReflectionPasses({
         .unwrap(),
   });
   if (!filtered.ok) return filtered;
+  const fallbackBeforeComposite = snapshotRayReflectionFallback(
+    graph,
+    'irradiance-field.previous-fallback',
+    reflection.fallback,
+  );
+  if (!fallbackBeforeComposite.ok) return fallbackBeforeComposite;
   const composited = graph.addRasterPass('irradiance-field.reflection-composite', {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
@@ -766,6 +765,7 @@ function addFieldReflectionPasses({
       { resource: target.depth, usage: 'sampled-read' },
       { resource: target.normal.view, usage: 'sampled-read' },
       { resource: reflection.response.view, usage: 'sampled-read' },
+      { resource: fallbackBeforeComposite.value, usage: 'sampled-read' },
     ],
     colorAttachments: [
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
@@ -780,6 +780,7 @@ function addFieldReflectionPasses({
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             response: resources.textureView(reflection.response.view).unwrap(),
+            previous: resources.textureView(fallbackBeforeComposite.value).unwrap(),
           },
           pixelCount,
         )

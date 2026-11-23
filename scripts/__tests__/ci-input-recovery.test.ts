@@ -73,13 +73,17 @@ function recoveryFixture({ staleShared = false, failShard = false, corruptCore =
       case 'scripts/ci/unpack-shared-app-inputs.mjs':
         shared(option(args, '--root'), staleShared ? 'stale' : 'current');
         break;
-      case 'scripts/ci/verify-build-artifact-input.mjs':
-        if (corruptCore && option(args, '--root') !== root)
+      case 'scripts/ci/verify-build-artifact-input.mjs': {
+        const inputRoot = option(args, '--root');
+        const transfer = args.includes('--transfer-artifact')
+          ? option(args, '--transfer-artifact')
+          : undefined;
+        if (corruptCore && inputRoot !== root && transfer !== 'shared-app-inputs')
           return { status: 1, failure: 'corrupt core artifact' };
-        expect(existsSync(join(option(args, '--root'), 'shared-app-inputs/manifest.json'))).toBe(
-          true,
-        );
+        if (transfer !== 'core-build')
+          expect(existsSync(join(inputRoot, 'shared-app-inputs/manifest.json'))).toBe(true);
         break;
+      }
       case 'scripts/ci/build-shared-app-inputs.mjs':
         shared(root);
         break;
@@ -192,7 +196,7 @@ test.each([
 test.each([
   { staleShared: true },
   { corruptCore: true },
-])('invalid shared/core admission rebuilds before app recovery: %j', async (scenario) => {
+])('app recovery rebuilds only the rejected input family: %j', async (scenario) => {
   const { root, calls, run } = recoveryFixture(scenario);
   await run();
   expect(existsSync(join(root, 'packages/core/dist/index.js'))).toBe(!scenario.corruptCore);
@@ -205,11 +209,19 @@ test.each([
       option(args, '--transfer-artifact') === 'core-build',
   );
   const base = calls.findIndex(([script]) => script === 'scripts/build.mjs');
-  expect(coreAdmission).toBeGreaterThan(-1);
-  expect(base).toBeGreaterThan(coreAdmission);
+  const shared = calls.findIndex(([script]) => script === 'scripts/ci/build-shared-app-inputs.mjs');
   const app = calls.findIndex(([script]) => script === 'scripts/ci/build-app-shard.mjs');
-  expect(base).toBeGreaterThan(-1);
-  expect(app).toBeGreaterThan(base);
+  expect(coreAdmission).toBeGreaterThan(-1);
+  if (scenario.staleShared) {
+    expect(base).toBe(-1);
+    expect(calls.filter(([script]) => script.endsWith('/ensure-wasm.mjs'))).toHaveLength(0);
+    expect(shared).toBeGreaterThan(coreAdmission);
+    expect(app).toBeGreaterThan(shared);
+  } else {
+    expect(shared).toBe(-1);
+    expect(base).toBeGreaterThan(coreAdmission);
+    expect(app).toBeGreaterThan(base);
+  }
   expect(
     calls.some(([script]) => script === 'scripts/ci/materialize-app-shader-manifests.mjs'),
   ).toBe(false);

@@ -1,64 +1,172 @@
-import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
-import type { Buffer } from '@forgeax/engine-rhi';
+import type {
+  GraphResourceResolver,
+  GraphTextureView,
+  RenderGraphBuilder,
+  RenderGraphError,
+  RenderGraphNativePass,
+} from '@forgeax/engine-render-graph';
+import type { TextureView } from '@forgeax/engine-rhi';
 import type { Result } from '@forgeax/engine-types';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RayDiffuseTargets } from './diffuse-graph';
-import { addFieldGatherPasses, viewUniform } from './irradiance-field-graph';
+import type { IrradianceFieldViewResource } from './irradiance-field';
+import { viewUniform } from './irradiance-field-graph';
 import type { BakedFieldExtent, PreparedBakedField } from './renderer-baked-field';
 
-/** Graph identity: the volume generation and the view extent. */
-export function bakedFieldGraphShape(prepared: PreparedBakedField) {
-  const extent = prepared.extent();
-  return [prepared.generation, extent.width, extent.height, extent.upsampled !== undefined];
+function bound<T>(input: T | undefined): T {
+  if (input === undefined) throw new Error('baked GI requires an active view recording');
+  return input;
 }
 
-/** Baked diffuse GI: view gather (-> upsample) of the resident Catalog volume
- * -> the shared additive diffuse composite. No pass traces or updates probes. */
+function frameVolume(frame: RenderPipelineFrame) {
+  return (frame as _InternalRenderPipelineContext).bakedField;
+}
+
+/** The parent supplies its deferred lighting and surface ports. The volume owns
+ * the probe storage, sampler, gather grid and optional upsample for this issue. */
 export function addBakedFieldPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  prepared: PreparedBakedField,
   target: RayDiffuseTargets,
 ): Result<void, RenderGraphError> {
-  const current = () => {
-    if (prepared.fence.currentGeneration() !== prepared.generation)
-      throw new Error('stale baked field graph; prepare the current volume');
-    return prepared;
-  };
-  const b = prepared.buffers;
-  const imported = (name: keyof typeof b, uniform = false) =>
-    graph
-      .importBuffer(
-        `baked-field.${name}`,
-        { size: b[name].size, usage: (uniform ? 64 : 128) | 12 },
-        () => current().buffers[name].buffer,
-      )
-      .unwrap();
-  const extentBuffer = (
-    name: string,
-    size: number,
-    pick: (value: BakedFieldExtent) => Buffer | undefined,
-  ) =>
-    graph
-      .importBuffer(`baked-field.${name}`, { size, usage: 128 | 12 }, () => {
-        const value = pick(current().extent());
-        if (value === undefined) throw new Error(`baked field lost its ${name} buffer`);
-        return value;
-      })
-      .unwrap();
-  return addFieldGatherPasses({
-    label: 'baked-field',
-    graph,
-    current,
-    target,
-    extent: prepared.extent(),
-    handles: {
-      frame: imported('frame', true),
-      field: imported('field', true),
-      irradiance: imported('irradiance'),
-      moments: imported('moments'),
-      meta: imported('meta'),
+  const view = viewUniform(graph, 'baked-field');
+  const {
+    scene: { view: scene },
+    normal: { view: normalPort },
+    depth: depthPort,
+    subsurfaceDiffuse: subsurface,
+    diffuseGiBaseline: baseline,
+    compactGbuffer,
+  } = target;
+  let volume: PreparedBakedField | undefined;
+  let extent: BakedFieldExtent | undefined;
+  let resources: GraphResourceResolver | undefined;
+  let depth: TextureView | undefined;
+  let normal: TextureView | undefined;
+  const bindings: IrradianceFieldViewResource[] = [];
+  const viewBinding = {
+    get buffer() {
+      return bound(resources).buffer(view).unwrap();
     },
-    extentBuffer,
-    view: viewUniform(graph, 'baked-field'),
+    size: VIEW_UNIFORM_BYTES,
+  };
+  const gathered = {
+    get buffer() {
+      return bound(extent).gathered;
+    },
+  };
+  const upsampled = {
+    get buffer() {
+      return bound(bound(extent).upsampled);
+    },
+  };
+  const gather: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'baked-field.gather',
+    encode(pass) {
+      const field = bound(volume),
+        grid = bound(extent);
+      field.source.view.gatherField
+        .record(pass, bindings, field.source.sample, grid.gatherWidth * grid.gatherHeight)
+        .unwrap();
+    },
+  };
+  const upsample: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'baked-field.upsample',
+    encode(pass) {
+      const field = bound(volume),
+        grid = bound(extent);
+      field.source.view.upsampleField
+        .record(pass, bindings, field.source.sample, grid.width * grid.height)
+        .unwrap();
+    },
+  };
+  const color = (handle: GraphTextureView) => ({
+    get view() {
+      return bound(resources).textureView(handle).unwrap();
+    },
+    loadOp: 'load' as const,
+    storeOp: 'store' as const,
+  });
+  const input = {
+    get irradiance() {
+      const grid = bound(extent);
+      return grid.upsampled ?? grid.gathered;
+    },
+    get baseline() {
+      return bound(resources).buffer(baseline).unwrap();
+    },
+    get depth() {
+      return bound(depth);
+    },
+    get normal() {
+      return bound(normal);
+    },
+    subsurface: subsurface !== undefined,
+    ...(compactGbuffer === true ? { compactGbuffer: true as const } : {}),
+  };
+  const composite: RenderGraphNativePass = {
+    kind: 'raster',
+    name: 'baked-field.composite',
+    descriptor: {
+      label: 'baked-field.composite',
+      colorAttachments:
+        subsurface === undefined ? [color(scene)] : [color(scene), color(subsurface.view)],
+    },
+    encode(pass) {
+      const grid = bound(extent);
+      bound(volume)
+        .source.composite.record(pass, input, grid.width * grid.height)
+        .unwrap();
+    },
+  };
+  return graph.addSubgraphPass('baked-field', {
+    profilePasses: () => [gather, upsample, composite],
+    accesses: [
+      { resource: view, usage: 'uniform-read' },
+      { resource: depthPort, usage: 'sampled-read' },
+      { resource: normalPort, usage: 'sampled-read' },
+      { resource: baseline, usage: 'storage-read' },
+      { resource: scene, usage: 'color-attachment' },
+      ...(subsurface === undefined
+        ? []
+        : [{ resource: subsurface.view, usage: 'color-attachment' as const }]),
+    ],
+    appendPassNames(frame, names) {
+      const field = frameVolume(frame);
+      if (field === undefined) return;
+      names.push(gather.name);
+      if (field.extent.upsampled !== undefined) names.push(upsample.name);
+      names.push(composite.name);
+    },
+    commandsDirect(frame, resolved, issue, recording) {
+      const field = frameVolume(frame);
+      if (field === undefined) return;
+      if (field.fence.currentGeneration() !== field.generation)
+        throw new Error('baked GI cannot issue a retired volume');
+      const grid = field.extent;
+      const size = resolved.textureViewExtent(scene).unwrap();
+      if (grid.width !== size.width || grid.height !== size.height)
+        throw new Error('baked GI gather extent differs from the lighting target');
+      try {
+        volume = field;
+        extent = grid;
+        resources = resolved;
+        depth = resolved.textureView(depthPort).unwrap();
+        normal = resolved.textureView(normalPort).unwrap();
+        bindings.push(grid.frame, depth, normal, viewBinding, gathered);
+        issue(recording, gather);
+        if (grid.upsampled !== undefined) {
+          bindings.push(upsampled);
+          issue(recording, upsample);
+        }
+        issue(recording, composite);
+      } finally {
+        bindings.length = 0;
+        volume = extent = resources = depth = normal = undefined;
+      }
+    },
   });
 }

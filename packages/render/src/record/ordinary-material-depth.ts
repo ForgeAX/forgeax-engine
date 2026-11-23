@@ -14,14 +14,15 @@ import { buildViewBindGroup } from './frame-lighting';
 import { selectMainPassMaterials } from './main-pass';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 import { addBeforePassDepthSnapshot } from './scene-depth-snapshot';
-import { type ScenePassRequest, scenePassContext } from './scene-pass-work';
+import { type ScenePassRequest, scenePassMaterialRows } from './scene-pass-work';
 
 /** The actual selected ordinary Pass roster is the depth-demand authority. */
 export function ordinaryMaterialDepthDemand(
   frame: RenderPipelineFrame,
   request: ScenePassRequest,
 ): boolean {
-  const c = scenePassContext(frame as _InternalRenderPipelineContext, request);
+  const internal = frame as _InternalRenderPipelineContext;
+  const c = scenePassMaterialRows(internal, request);
   const selected = selectMainPassMaterials(
     c,
     request.selector,
@@ -33,7 +34,7 @@ export function ordinaryMaterialDepthDemand(
       (selected === null ||
         selected.get(pass.renderableIndex)?.has(pass.materialHandle) === true) &&
       (request.selector === undefined || matchPass(pass.tags, request.selector)) &&
-      materialUsesLitSceneInputs(c.runtime.shaderRegistry, pass.materialShaderId),
+      materialUsesLitSceneInputs(internal.runtime.shaderRegistry, pass.materialShaderId),
   );
 }
 

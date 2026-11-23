@@ -16,9 +16,9 @@ const mocks = vi.hoisted(() => {
       capabilities: { backendKind: 'webgpu' },
       frame: { frameId: 7 },
     })),
-    attach: vi.fn(() => ({ ok: true, value: {} })),
+    attach: vi.fn(() => ({ ok: true, value: { dispose: vi.fn() } })),
     draw: vi.fn(
-      (_request: unknown): ReturnType<Renderer['draw']> => ({
+      (_request: Parameters<Renderer['draw']>[0]): ReturnType<Renderer['draw']> => ({
         ok: true,
         value: {
           frameId: 1,
@@ -61,10 +61,6 @@ vi.mock('../assets-runtime-assembly', () => ({
   })),
 }));
 vi.mock('../renderer-plugin', () => ({ createRenderFeatureHost: vi.fn(() => ({})) }));
-vi.mock('../execution/attached-world-swap', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../execution/attached-world-swap')>()),
-  commitAttachedWorld: vi.fn(async () => true),
-}));
 vi.mock('../internal/worker-engine-profile', () => ({ workerEngineProfile: vi.fn(() => ({})) }));
 vi.mock('@forgeax/engine-ecs', async (importOriginal) => {
   const original = await importOriginal<typeof import('@forgeax/engine-ecs')>();
@@ -80,6 +76,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
   const pendingAdmissionListeners = new Set<RendererEventListener>();
   let bootstrapMessages: unknown[] = [];
   let bootstrapDrawCalls = 0;
+  let sourceLease: ReturnType<typeof mocks.renderer.attach>['value'];
 
   beforeAll(async () => {
     globalThis.postMessage = vi.fn();
@@ -125,6 +122,8 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
       ([message]) => message,
     );
     bootstrapDrawCalls = mocks.renderer.draw.mock.calls.length;
+    expect(mocks.renderer.attach).toHaveBeenCalledOnce();
+    sourceLease = mocks.renderer.attach.mock.results[0]?.value.value;
   });
 
   beforeEach(() => {
@@ -390,8 +389,11 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
     );
     expect(update).toHaveBeenCalledTimes(1);
     expect(mocks.renderer.draw).toHaveBeenCalledTimes(2);
-    for (const call of mocks.renderer.draw.mock.calls)
-      expect(call[0]).toHaveProperty('geometryLane', 'direct');
+    expect(mocks.renderer.attach).not.toHaveBeenCalled();
+    for (const [request] of mocks.renderer.draw.mock.calls) {
+      expect(request).toHaveProperty('geometryLane', 'direct');
+      expect('source' in request && request.source).toBe(sourceLease);
+    }
     expect(listeners.size).toBe(0);
     update.mockRestore();
   });
@@ -733,6 +735,12 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
       .map(([message]) => message)
       .find((message) => message.kind === 'rebuilt').worldIdentity;
     expect(worldIdentity).not.toBe(oldIdentity);
+    expect(mocks.renderer.attach).toHaveBeenCalledOnce();
+    const replacement = mocks.renderer.attach.mock.results[0]?.value.value;
+    expect(replacement).not.toBe(sourceLease);
+    expect(sourceLease.dispose).toHaveBeenCalledOnce();
+    expect(replacement.dispose).not.toHaveBeenCalled();
+    sourceLease = replacement;
     await vi.waitFor(() =>
       expect(globalThis.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -835,6 +843,7 @@ describe('M4 / m4_t1 — Engine Worker frame admission fences device loss', () =
       ),
     );
     await vi.waitFor(() => expect(globalThis.close).toHaveBeenCalledOnce());
+    expect(sourceLease.dispose).toHaveBeenCalledOnce();
     expect(mocks.renderer.draw).not.toHaveBeenCalled();
   });
 });

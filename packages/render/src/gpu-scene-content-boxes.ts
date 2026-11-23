@@ -1,3 +1,5 @@
+import { box3 } from '@forgeax/engine-math';
+import { slotContent } from './scene/mesh-draw';
 import type {
   RenderSceneApplyResult,
   RenderSceneBounds,
@@ -11,7 +13,10 @@ import {
   type RowChangeLog,
 } from './scene/row-change-log';
 
-export type GpuSceneSlotBounds = (slot: RenderSceneSlot) => RenderSceneBounds | undefined;
+/** The scene writes its six coordinates directly. Borrowed sources may supply an owned box. */
+export type GpuSceneSlotBounds =
+  | { writeCullingWorldBoundsAt(slot: RenderSceneSlot, out: box3.Box3): boolean }
+  | ((slot: RenderSceneSlot) => RenderSceneBounds | undefined);
 
 /** Changed world bounds since a cursor, or `'unbounded'` when a change has no proven box. */
 export type GpuSceneChangedBounds = Float32Array | 'unbounded';
@@ -31,7 +36,17 @@ type Membership = { has(slot: number): boolean };
 const EMPTY = new Float32Array(0);
 const BOXED = 1;
 const UNBOUNDED = 2;
-const box = new Float32Array(6);
+const PAGE_ROWS = 64;
+const boxOffset = (slot: number) => (slot & (PAGE_ROWS - 1)) * 6;
+interface BoundsPage {
+  readonly state: Uint8Array;
+  live: number;
+  boxed: number;
+  visit: number;
+  low: number;
+  high: number;
+  values: Float32Array | undefined;
+}
 
 function writeBox(out: Float32Array, at: number, bounds: RenderSceneBounds): void {
   out[at] = bounds.min[0] as number;
@@ -66,18 +81,14 @@ function pushBox(out: number[], boxes: Float32Array, offset: number): void {
  * journal no longer holds reports `'unbounded'`.
  */
 export class GpuSceneContentBoxes {
-  private state = new Uint8Array(0);
-  private values = new Float32Array(0);
-  private readonly seen = new Set<number>();
-  private cached:
-    | {
-        readonly since: SceneContentCursor;
-        readonly current: SceneContentCursor;
-        readonly ignored: ReadonlySet<number> | undefined;
-        readonly observed: Membership | undefined;
-        readonly value: GpuSceneChangedBounds;
-      }
-    | undefined;
+  private readonly pages = new Map<number, BoundsPage>();
+  private visit = 0;
+  private boundsScratch: box3.Box3 | undefined = box3.create();
+
+  clear(): void {
+    this.pages.clear();
+    this.visit = 0;
+  }
 
   /** Append one synced delta's content entries to `journal`. */
   record(
@@ -85,18 +96,42 @@ export class GpuSceneContentBoxes {
     delta: RenderSceneApplyResult,
     boundsOf?: GpuSceneSlotBounds,
   ): void {
-    this.cached = undefined;
     if (delta.resynced > 0) {
-      this.state.fill(0);
+      this.clear();
       journal.appendContent(-1, CONTENT_WHOLE);
     }
     for (const record of delta.removedSlots) {
-      const changed = this.appendOld(journal, record.slot, CONTENT_CHANGED);
+      const changed = this.appendOld(
+        journal,
+        record.slot,
+        CONTENT_CHANGED,
+        this.pages.get(Math.floor(record.slot / PAGE_ROWS)),
+      );
       if (changed !== 0) journal.appendContent(record.slot, CONTENT_CHANGED);
-      this.delete(record.slot);
+      this.setState(record.slot, 0);
     }
-    const seen = this.seen;
-    seen.clear();
+    // A nested writer gets its own output until the outer sync has copied its box.
+    const scratch = this.boundsScratch;
+    this.boundsScratch = undefined;
+    try {
+      this.recordRows(journal, delta, boundsOf, scratch ?? box3.create());
+    } finally {
+      this.boundsScratch = scratch;
+    }
+  }
+
+  private recordRows(
+    journal: RowChangeLog,
+    delta: RenderSceneApplyResult,
+    boundsOf: GpuSceneSlotBounds | undefined,
+    scratch: box3.Box3,
+  ): void {
+    if (this.visit === Number.MAX_SAFE_INTEGER) {
+      for (const page of this.pages.values()) page.visit = 0;
+      this.visit = 0;
+    }
+    const visit = ++this.visit;
+    let absent: Set<number> | undefined;
     for (const records of [
       delta.createdSlots,
       delta.recreatedSlots,
@@ -105,9 +140,28 @@ export class GpuSceneContentBoxes {
       delta.instanceUpdatedSlots,
     ]) {
       for (const record of records) {
-        if (seen.has(record.slot)) continue;
-        seen.add(record.slot);
-        this.recordSlot(journal, record, boundsOf);
+        const slot = record.slot;
+        const before = this.pages.get(Math.floor(slot / PAGE_ROWS));
+        const high = (slot & 32) !== 0;
+        const bit = 1 << (slot & 31);
+        if (
+          (before?.visit === visit && ((high ? before.high : before.low) & bit) !== 0) ||
+          absent?.has(slot)
+        )
+          continue;
+        const page = this.recordSlot(journal, record, boundsOf, scratch, before);
+        if (page === undefined) {
+          // A zero-instance row owns no bounds storage to carry the duplicate mark.
+          absent ??= new Set();
+          absent.add(slot);
+          continue;
+        }
+        if (page.visit !== visit) {
+          page.visit = visit;
+          page.low = page.high = 0;
+        }
+        if (high) page.high |= bit;
+        else page.low |= bit;
       }
     }
   }
@@ -116,37 +170,51 @@ export class GpuSceneContentBoxes {
     journal: RowChangeLog,
     record: RenderSceneSlot,
     boundsOf: GpuSceneSlotBounds | undefined,
-  ): void {
+    scratch: box3.Box3,
+    before: BoundsPage | undefined,
+  ): BoundsPage | undefined {
     const slot = record.slot;
-    const snapshot = record.snapshot;
-    let changed = this.appendOld(journal, slot, CONTENT_CHANGED);
+    const snapshot = slotContent(record);
+    const changed = this.appendOld(journal, slot, CONTENT_CHANGED, before);
     // Skinned and sprite casters deform beyond their bind-pose box.
-    const bounds =
-      snapshot.skinBinding !== undefined || snapshot.spriteInstances !== undefined
-        ? undefined
-        : boundsOf?.(record);
-    if (bounds !== undefined) {
-      this.write(slot, bounds);
-      journal.appendContent(slot, CONTENT_BOX | changed, this.values, slot * 6);
-      return;
+    let borrowed: RenderSceneBounds | undefined;
+    let written = false;
+    if (snapshot.skinBinding === undefined && snapshot.spriteInstances === undefined) {
+      if (typeof boundsOf === 'function') borrowed = boundsOf(record);
+      else written = boundsOf?.writeCullingWorldBoundsAt(record, scratch) === true;
+    }
+    if (written || borrowed !== undefined) {
+      const page = this.setState(slot, BOXED) as BoundsPage;
+      page.values ??= new Float32Array(PAGE_ROWS * 6);
+      const offset = boxOffset(slot);
+      if (borrowed === undefined) page.values.set(scratch, offset);
+      else writeBox(page.values, offset, borrowed);
+      journal.appendContent(slot, CONTENT_BOX | changed, page.values, offset);
+      return page;
     }
     if (snapshot.instances?.instanceCount === 0) {
-      this.delete(slot);
-    } else {
-      this.markUnbounded(slot);
-      journal.appendContent(slot, CONTENT_UNBOUNDED | changed);
-      changed = 0;
+      this.setState(slot, 0);
+      if (changed !== 0) journal.appendContent(slot, changed);
+      return undefined;
     }
-    if (changed !== 0) journal.appendContent(slot, changed);
+    const page = this.setState(slot, UNBOUNDED);
+    journal.appendContent(slot, CONTENT_UNBOUNDED | changed);
+    return page;
   }
 
   /** Log the slot's retained box (or unbounded mark); returns the still-unlogged changed flag. */
-  private appendOld(journal: RowChangeLog, slot: number, changed: number): number {
-    if (this.hasBox(slot)) {
-      journal.appendContent(slot, CONTENT_BOX | changed, this.values, slot * 6);
+  private appendOld(
+    journal: RowChangeLog,
+    slot: number,
+    changed: number,
+    page: BoundsPage | undefined,
+  ): number {
+    const state = page?.state[slot & (PAGE_ROWS - 1)];
+    if (state === BOXED) {
+      journal.appendContent(slot, CONTENT_BOX | changed, page?.values, boxOffset(slot));
       return 0;
     }
-    if (!this.unbounded(slot)) return changed;
+    if (state !== UNBOUNDED) return changed;
     journal.appendContent(slot, CONTENT_UNBOUNDED | changed);
     return 0;
   }
@@ -163,14 +231,6 @@ export class GpuSceneContentBoxes {
     observed?: Membership,
   ): GpuSceneChangedBounds {
     if (since === current) return EMPTY;
-    const cached = this.cached;
-    if (
-      cached?.since === since &&
-      cached.current === current &&
-      cached.ignored === ignored &&
-      cached.observed === observed
-    )
-      return cached.value;
     const merged: number[] = [];
     let unbounded = since.journal !== current.journal;
     if (!unbounded) {
@@ -187,9 +247,7 @@ export class GpuSceneContentBoxes {
       );
       unbounded = visited !== 'done';
     }
-    const value: GpuSceneChangedBounds = unbounded ? 'unbounded' : new Float32Array(merged);
-    this.cached = { since, current, ignored, observed, value };
-    return value;
+    return unbounded ? 'unbounded' : merged.length === 0 ? EMPTY : new Float32Array(merged);
   }
 
   /**
@@ -298,9 +356,11 @@ export class GpuSceneContentBoxes {
           );
     if (visited !== 'done') return 'unbounded';
     for (const slot of wanted) {
-      if (this.unbounded(slot)) return 'unbounded';
-      if (this.hasBox(slot)) {
-        pushBox(merged, this.values, slot * 6);
+      const page = this.pages.get(Math.floor(slot / PAGE_ROWS));
+      const state = page?.state[slot & (PAGE_ROWS - 1)];
+      if (state === UNBOUNDED) return 'unbounded';
+      if (state === BOXED && page?.values !== undefined) {
+        pushBox(merged, page.values, boxOffset(slot));
       } else if (!found.has(slot)) {
         return 'unbounded';
       }
@@ -308,39 +368,31 @@ export class GpuSceneContentBoxes {
     return new Float32Array(merged);
   }
 
-  private hasBox(slot: number): boolean {
-    return this.state[slot] === BOXED;
-  }
-
-  private unbounded(slot: number): boolean {
-    return this.state[slot] === UNBOUNDED;
-  }
-
-  private write(slot: number, bounds: RenderSceneBounds): void {
-    this.ensure(slot);
-    this.state[slot] = BOXED;
-    writeBox(box, 0, bounds);
-    this.values.set(box, slot * 6);
-  }
-
-  private markUnbounded(slot: number): void {
-    this.ensure(slot);
-    this.state[slot] = UNBOUNDED;
-  }
-
-  private delete(slot: number): void {
-    if (slot < this.state.length) this.state[slot] = 0;
-  }
-
-  private ensure(slot: number): void {
-    if (slot < this.state.length) return;
-    let capacity = Math.max(64, this.state.length);
-    while (capacity <= slot) capacity *= 2;
-    const state = new Uint8Array(capacity);
-    state.set(this.state);
-    const values = new Float32Array(capacity * 6);
-    values.set(this.values);
-    this.state = state;
-    this.values = values;
+  /** Allocate the six-float column only while this page has bounded casters. */
+  private setState(slot: number, next: number): BoundsPage | undefined {
+    const key = Math.floor(slot / PAGE_ROWS);
+    const lane = slot & (PAGE_ROWS - 1);
+    let page = this.pages.get(key);
+    if (page === undefined) {
+      if (next === 0) return undefined;
+      page = {
+        state: new Uint8Array(PAGE_ROWS),
+        live: 0,
+        boxed: 0,
+        values: undefined,
+        visit: 0,
+        low: 0,
+        high: 0,
+      };
+      this.pages.set(key, page);
+    }
+    const before = page.state[lane];
+    if (before === next) return page;
+    page.state[lane] = next;
+    if (before === 0) page.live++;
+    if (next === BOXED) page.boxed++;
+    if (before === BOXED && --page.boxed === 0) page.values = undefined;
+    if (next === 0 && --page.live === 0) this.pages.delete(key);
+    return page;
   }
 }

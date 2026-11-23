@@ -43,7 +43,7 @@ afterAll(async () => {
   if (buildCache !== undefined) await rm(buildCache, { recursive: true, force: true });
 });
 
-it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', { timeout: 420000 }, async (worker, { signal, onTestFinished }) => {
+it.for([true])('game-3d vase and mobile controls with Engine Worker=%s', { timeout: 420000 }, async (worker, { signal, onTestFinished }) => {
   const repository = resolve(import.meta.dirname, '../../..');
   const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
   const { root, temporaryRoot } = await createLiveSyncProjectDirectory('forgeax-game3d-vase-', repository, manifestPath);

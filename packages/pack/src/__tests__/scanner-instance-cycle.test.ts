@@ -4,21 +4,27 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { AssetGuid, PackageId } from '../guid.js';
 import { scan } from '../scanner.js';
 
-const GUID_A = 'aa000000-0000-4000-8000-000000000aaa';
-const GUID_B = 'bb000000-0000-4000-8000-000000000bbb';
-const GUID_C = 'cc000000-0000-4000-8000-000000000ccc';
+const PACKAGE_A = 'aa000000-0000-4000-8000-000000000aaa';
+const PACKAGE_B = 'bb000000-0000-4000-8000-000000000bbb';
+const PACKAGE_C = 'cc000000-0000-4000-8000-000000000ccc';
 
-function sceneAssetPack(guid: string, source?: string): unknown {
+function sceneGuid(packageId: string): string {
+  const parsed = PackageId.parse(packageId);
+  if (!parsed.ok) throw parsed.error;
+  return AssetGuid.format(AssetGuid.derive(parsed.value, 'scene'));
+}
+
+function sceneAssetPack(packageId: string, source?: string): unknown {
   return {
-    schemaVersion: '1.0.0',
-    kind: 'internal-text-package',
-    assets: [
-      {
-        guid,
+    schemaVersion: '3.0.0',
+    packageId,
+    assets: {
+      scene: {
         kind: 'scene',
-        refs: source === undefined ? [] : [source],
+        refs: source === undefined ? [] : [sceneGuid(source)],
         payload: {
           kind: 'scene',
           entities:
@@ -27,7 +33,7 @@ function sceneAssetPack(guid: string, source?: string): unknown {
               : { child: { components: {}, instance: { source: 0 } } },
         },
       },
-    ],
+    },
   };
 }
 
@@ -45,21 +51,21 @@ describe('scanner keyed SceneAsset instance cycle detection', () => {
   it('accepts an acyclic instance chain A -> B -> C', async () => {
     await writeFile(
       join(dir, 'a.pack.json'),
-      JSON.stringify(sceneAssetPack(GUID_A, GUID_B)),
+      JSON.stringify(sceneAssetPack(PACKAGE_A, PACKAGE_B)),
       'utf8',
     );
     await writeFile(
       join(dir, 'b.pack.json'),
-      JSON.stringify(sceneAssetPack(GUID_B, GUID_C)),
+      JSON.stringify(sceneAssetPack(PACKAGE_B, PACKAGE_C)),
       'utf8',
     );
-    await writeFile(join(dir, 'c.pack.json'), JSON.stringify(sceneAssetPack(GUID_C)), 'utf8');
+    await writeFile(join(dir, 'c.pack.json'), JSON.stringify(sceneAssetPack(PACKAGE_C)), 'utf8');
     expect((await scan([dir])).ok).toBe(true);
   });
 
   it.each([
-    ['two', [GUID_A, GUID_B]],
-    ['three', [GUID_A, GUID_B, GUID_C]],
+    ['two', [PACKAGE_A, PACKAGE_B]],
+    ['three', [PACKAGE_A, PACKAGE_B, PACKAGE_C]],
   ])('rejects a %s-asset source instance create cycle', async (_name, cycle) => {
     const [a, b, c] = cycle;
     await writeFile(join(dir, 'a.pack.json'), JSON.stringify(sceneAssetPack(a, b)), 'utf8');
@@ -74,13 +80,13 @@ describe('scanner keyed SceneAsset instance cycle detection', () => {
     expect(detail.kind).toBe('mount-asset');
     const found = detail.cycle ?? [];
     expect(found[0]).toBe(found[found.length - 1]);
-    for (const guid of cycle) expect(found).toContain(guid);
+    for (const guid of cycle) expect(found).toContain(sceneGuid(guid));
   });
 
   it('rejects a self-instance', async () => {
     await writeFile(
       join(dir, 'a.pack.json'),
-      JSON.stringify(sceneAssetPack(GUID_A, GUID_A)),
+      JSON.stringify(sceneAssetPack(PACKAGE_A, PACKAGE_A)),
       'utf8',
     );
     const result = await scan([dir]);

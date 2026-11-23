@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { EngineConfigurationError, withEngineSettings } from '@forgeax/engine-app';
+import {
+  createBrowserGameSaves,
+  EngineConfigurationError,
+  withEngineSettings,
+} from '@forgeax/engine-app';
 import { createBrowserConfigurationHost } from '@forgeax/engine-app/browser';
 import { transformWithOxc } from 'vite';
 import { expect, it, vi } from 'vitest';
@@ -164,6 +168,8 @@ it('connects isolated frontend/source ports through the generated App options an
         const frontend = await evaluate(
           `${gameProjectionSource}\n${generated.slice(frontendStart, frontendEnd)} host;`,
           {
+            createBrowserGameSaves,
+            createBrowserFileStore: () => ({}),
             document: { querySelector: () => ({}), body: {} },
             HTMLElement: class {},
             ctx: { provide: (key: string, value: unknown) => provided.set(key, value) },
@@ -182,6 +188,8 @@ it('connects isolated frontend/source ports through the generated App options an
         const source = await evaluate(
           `(${bootstrap.slice(sourceStart + sourceMarker.length, sourceEnd)})`,
           {
+            createBrowserGameSaves,
+            createBrowserFileStore: () => ({}),
             ctx: {
               world: {},
               executionBootstrapHost: {

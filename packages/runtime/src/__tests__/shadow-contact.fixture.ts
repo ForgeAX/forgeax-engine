@@ -25,11 +25,12 @@ export function registerShadowContactCases(
   scene: 'column' | 'centimeter',
   mapSize: 1024 | 2048,
   backend?: Parameters<typeof browserRendererFixture>[1],
+  selected: readonly (typeof filters)[number][] = filters,
 ) {
   const canvasSize = 640;
   const rendererFor = browserRendererFixture(canvasSize, backend);
   it.each(
-    filters.map((filter) => ({ filter, scene, mapSize })),
+    selected.map((filter) => ({ filter, scene, mapSize })),
   )('keeps $scene $filter/$mapSize shadows attached without shadowing unobstructed ground', async ({
     filter,
     scene,

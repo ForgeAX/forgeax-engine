@@ -1,13 +1,10 @@
 import { defineComponent, World } from '@forgeax/engine-ecs';
-import { textureContribution } from '@forgeax/engine-image';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import { materialContribution } from '@forgeax/engine-render';
-import type { Asset, MaterialAsset, MaterialRootAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, MaterialRootAsset } from '@forgeax/engine-types';
 import { describe, expect, test } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
-import { createCatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
+import { publishRuntimeAssets } from './fixtures/runtime-publication';
 
 const Binding = defineComponent('RuntimeMaterialBinding', { material: 'asset<material>' });
 const material = (roughness = 1): MaterialRootAsset => ({
@@ -16,45 +13,6 @@ const material = (roughness = 1): MaterialRootAsset => ({
   values: { roughness, metallic: 0 },
 });
 const guid = '630f7c5c-1c41-4979-9bed-4e6b6045f680';
-
-function publish(
-  assets: AssetRegistry,
-  entries: readonly { guid: string; asset: Asset; refs?: readonly string[] }[],
-) {
-  assets.installDecoder(materialContribution.kind, materialContribution.decoder);
-  assets.installDecoder(textureContribution.kind, textureContribution.decoder);
-  const packageUrl = 'https://runtime-assets.invalid/pack.json';
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    sourcePath: 'assets.pack',
-    sourceRevision: 'fixture',
-    packageUrl,
-    pack: {
-      assets: entries.map(({ guid, asset, refs }) => ({
-        guid,
-        kind: asset.kind,
-        payload: asset,
-        refs: refs ?? [],
-        artifacts: {},
-      })),
-    },
-  });
-  const body = JSON.stringify(publication.pack, (_key, value) =>
-    ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
-  );
-  assets.setCatalogSource(
-    createCatalogSource({
-      entries: entries.map(({ guid, asset }) => ({
-        guid,
-        kind: asset.kind,
-        packageUrl,
-        sourcePath: 'assets.pack',
-        publication: publication.publication,
-      })),
-      fetch: async () => new Response(body),
-    }),
-  );
-}
 
 describe('runtime Registry content', () => {
   test('rejects a second World attachment and closed-owner attachment', () => {
@@ -123,10 +81,10 @@ describe('runtime Registry content', () => {
 
   test('repeated source loads preserve runtime identity and edits', async () => {
     const assets = new AssetRegistry();
-    publish(assets, [{ guid, asset: material() }]);
+    publishRuntimeAssets(assets, [{ guid, asset: material() }]);
     const first = (await assets.load(guid, 'material')).unwrap();
     assets.update(first, { values: { roughness: 0.3 } }).unwrap();
-    publish(assets, [{ guid, asset: material(0.9) }]);
+    publishRuntimeAssets(assets, [{ guid, asset: material(0.9) }]);
     const second = (await assets.load(guid, 'material')).unwrap();
     expect(second).toBe(first);
     expect(assets.read(second).unwrap().values?.roughness).toBe(0.3);
@@ -259,9 +217,63 @@ describe('runtime Registry content', () => {
     assets.dispose();
   });
 
+  test('patches existing material bindings inside an adoption and rolls their holds back on failure', () => {
+    const assets = new AssetRegistry();
+    const createTexture = (red: number) =>
+      assets
+        .create({
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+          data: Uint8Array.of(red, 0, 0, 255),
+        })
+        .unwrap();
+    const first = createTexture(64);
+    const next = createTexture(192);
+    const reference = assets
+      .create({ ...material(), values: { albedo: { texture: first } } })
+      .unwrap();
+    assets.release(first).unwrap();
+    const fixed = assets.snapshot(reference).unwrap();
+    const observer = assets.observe().unwrap();
+    const patch = () => assets.update(reference, { values: { albedo: { texture: next } } });
+    try {
+      expect(() =>
+        runtimeAssets(assets).adoptClosure(() => {
+          patch().unwrap();
+          expect(assets.read(reference).unwrap().values?.albedo).toEqual({ texture: next });
+          throw new Error('reject sibling');
+        }),
+      ).toThrow('reject sibling');
+      expect(assets.read(reference).unwrap().values?.albedo).toEqual({ texture: first });
+      expect(assets.validate(first).ok).toBe(true);
+      expect(observer.read().unwrap().changes).toEqual([]);
+      runtimeAssets(assets).adoptClosure(patch).unwrap();
+      assets.release(next).unwrap();
+      expect(assets.validate(next).ok).toBe(true);
+      expect(assets.validate(first).ok).toBe(false);
+      expect(assets.read(reference).unwrap().values?.albedo).toEqual({ texture: next });
+      expect(fixed.read<MaterialAsset>(reference).unwrap().values?.albedo).toEqual({
+        texture: first,
+      });
+      expect(
+        observer
+          .read()
+          .unwrap()
+          .changes.find((change) => change.handle === reference)?.fields,
+      ).toEqual(['values']);
+    } finally {
+      observer.dispose();
+      fixed.dispose();
+      assets.dispose();
+    }
+  });
+
   test('adopts complete material inheritance and never consults it during runtime reads', async () => {
     const assets = new AssetRegistry();
-    publish(assets, [{ guid, asset: material() }]);
+    publishRuntimeAssets(assets, [{ guid, asset: material() }]);
     (await assets.load(guid, 'material')).unwrap();
     const parsed = AssetGuid.parse(guid);
     if (!parsed.ok) throw parsed.error;
@@ -270,7 +282,7 @@ describe('runtime Registry content', () => {
       .unwrap();
     expect(assets.read(child).unwrap().parent).toBeUndefined();
     expect(assets.read(child).unwrap().values).toEqual({ roughness: 0.2, metallic: 0 });
-    publish(assets, [{ guid, asset: material(0.8) }]);
+    publishRuntimeAssets(assets, [{ guid, asset: material(0.8) }]);
     const before = runtimeAssets(assets).version(child).unwrap();
     expect(assets.read(child).unwrap().values?.roughness).toBe(0.2);
     expect(runtimeAssets(assets).version(child).unwrap()).toBe(before);
@@ -279,7 +291,7 @@ describe('runtime Registry content', () => {
   test('source adoption captures the versions of resource dependencies', async () => {
     const assets = new AssetRegistry();
     const textureGuid = '00000000-0000-4000-8000-000000000001';
-    publish(assets, [
+    publishRuntimeAssets(assets, [
       {
         guid: textureGuid,
         asset: {

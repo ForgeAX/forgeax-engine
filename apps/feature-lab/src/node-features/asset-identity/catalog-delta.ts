@@ -1,10 +1,10 @@
-import { buildCatalogResult } from '@forgeax/engine/import';
-import { calculateCatalogDelta } from '@forgeax/engine/pack/build';
+import { catalogImporterPolicyFor } from '@forgeax/engine/import';
+import { buildCatalogProjection, calculateCatalogDelta } from '@forgeax/engine/pack/build';
 import { defineFeature } from '../../lab/feature';
 import { withFixture } from './support/fixture';
 
 const PACKAGE = '0190a1b2-0000-7000-8000-00000000b101';
-type Rows = Awaited<ReturnType<typeof buildCatalogResult>>['entries'];
+type Rows = Awaited<ReturnType<typeof buildCatalogProjection>>['entries'];
 
 const pack = (assets: Readonly<Record<string, unknown>>) =>
   JSON.stringify({ schemaVersion: '3.0.0', packageId: PACKAGE, assets });
@@ -13,7 +13,9 @@ const sampler = (magFilter: string) => ({ kind: 'sampler', payload: { magFilter 
 async function rows(assets: Readonly<Record<string, unknown>>): Promise<Rows> {
   return withFixture(
     { 'lab.pack.json': pack(assets) },
-    async (root) => (await buildCatalogResult([root])).entries,
+    async (root) =>
+      (await buildCatalogProjection([root], { importerPolicy: catalogImporterPolicyFor() }))
+        .entries,
   );
 }
 

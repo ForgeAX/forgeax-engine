@@ -608,7 +608,7 @@ import { makeCorruptPng, makeJpg, makePng } from './make-fixture.js';
         const registry = new ImporterRegistry();
         registry.register(imageImporter);
 
-        const { runImport } = await import('@forgeax/engine-import');
+        const { projectImportPack, runImport } = await import('@forgeax/engine-import');
 
         const result = await runImport(
           {
@@ -627,7 +627,7 @@ import { makeCorruptPng, makeJpg, makePng } from './make-fixture.js';
           throw new Error('expected ok RunImportOk');
         }
 
-        const { pack } = result.value;
+        const pack = projectImportPack(result.value.product);
 
         const packAsset = pack.assets.find((a) => a.guid === BINS_GUID);
         expect(packAsset).toBeDefined();

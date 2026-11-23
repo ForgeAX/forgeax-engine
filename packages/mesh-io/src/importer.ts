@@ -1,4 +1,4 @@
-import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
+import { packMeshBin } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   type AssetError,

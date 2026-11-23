@@ -22,7 +22,7 @@ const sources = buildMaterialSourceCatalog({
       path: 'static-shadow-custom.wgsl',
       source: standard.source
         .replace('forgeax_material::default_standard_surface', 'static_shadow_test::custom')
-        .replace('var baseSample =', 'if (input.uv0.x < 0.5) { discard; }\n  var baseSample ='),
+        .replace('let baseSample =', 'if (input.uv0.x < 0.5) { discard; }\n  let baseSample ='),
     },
   ],
 }).unwrap();
@@ -33,13 +33,16 @@ export const OPAQUE_SWITCHES = {
   displacement: false,
 } as const satisfies MaterialStaticSwitches;
 
-export async function cookStaticShadow(
-  options: {
-    readonly staticSwitches?: MaterialStaticSwitches;
-    readonly custom?: boolean;
-    readonly normalMapped?: boolean;
-    readonly context?: Partial<MaterialVariantContext>;
-  } = {},
+interface StaticShadowOptions {
+  readonly staticSwitches?: MaterialStaticSwitches;
+  readonly custom?: boolean;
+  readonly normalMapped?: boolean;
+  readonly context?: Partial<MaterialVariantContext>;
+}
+
+async function cookStaticShadowMaterial(
+  options: StaticShadowOptions,
+  selectedPasses?: readonly string[],
 ) {
   const surface = options.custom
     ? 'static_shadow_test::custom'
@@ -76,15 +79,29 @@ export async function cookStaticShadow(
     ],
   };
   const cooked = (
-    await cookMaterialAsset({
-      material: 'static-shadow-test',
-      table: { 'static-shadow-test': asset },
-      sources,
-      context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, ...options.context },
-    })
+    await cookMaterialAsset(
+      {
+        material: 'static-shadow-test',
+        table: { 'static-shadow-test': asset },
+        sources,
+        context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, ...options.context },
+      },
+      undefined,
+      selectedPasses,
+    )
   ).unwrap();
   const shadow = cooked.passes.find((pass) => pass.pass === 'shadow-caster');
+  if (shadow === undefined) throw new Error('missing shadow-caster pass');
+  return { ...cooked, shadow };
+}
+
+export async function cookStaticShadow(options: StaticShadowOptions = {}) {
+  const cooked = await cookStaticShadowMaterial(options);
   const forward = cooked.passes.find((pass) => pass.pass === 'forward');
-  if (shadow === undefined || forward === undefined) throw new Error('missing raster pass');
-  return { ...cooked, shadow, forward };
+  if (forward === undefined) throw new Error('missing forward pass');
+  return { ...cooked, forward };
+}
+
+export async function cookStaticShadowCoverage(options: StaticShadowOptions = {}) {
+  return (await cookStaticShadowMaterial(options, ['shadow-caster'])).shadow;
 }

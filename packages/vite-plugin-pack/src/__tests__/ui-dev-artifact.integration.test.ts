@@ -1,21 +1,20 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { projectImportProductForBuild } from '@forgeax/engine-import';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   AssetRegistry,
   createCatalogSource,
   defineAssetKind,
 } from '../../../assets-runtime/src/index.js';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import type { UiAsset } from '../../../ui/src/asset.js';
 import { createUiImporter } from '../../../ui/src/importer/index.js';
 import { createUiLoader } from '../../../ui/src/loader.js';
-import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { packHttpFixture } from './vite-fixtures.js';
 
 describe('UI Pack v2 artifact transport', () => {
   it('loads an ordinary absolute-path UI import through its served publication', async () => {
@@ -35,63 +34,23 @@ describe('UI Pack v2 artifact transport', () => {
     await writeFile(join(root, 'guide.ui.i18n.json'), JSON.stringify(localization));
     await writeFile(
       join(root, 'guide.ui.html.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'ui',
-        source: 'guide.ui.html',
-        importSettings: { localization: 'guide.ui.i18n.json' },
-        subAssets: [{ guid, sourceIndex: 0, sourceKey: 'ui/guide', kind: 'ui' }],
-      }),
+      metaFixture(
+        'guide.ui.html',
+        'ui',
+        [{ guid, sourceIndex: 0, sourceKey: 'ui/guide', kind: 'ui' }],
+        { localization: 'guide.ui.i18n.json' },
+      ),
     );
-    const middlewares: DispatcherHandler[] = [];
     const plugin = createPluginPackInternal({
       roots: [root],
       watch: false,
       ddc: { projectDdcRoot: join(root, 'ddc') },
       importers: [createUiImporter()],
     });
-    const server = createServer((request, response) => {
-      let index = 0;
-      const next = (error?: unknown): void => {
-        if (error !== undefined) {
-          response.statusCode = 500;
-          response.end(String(error));
-          return;
-        }
-        const middleware = middlewares[index++];
-        if (middleware === undefined) {
-          response.statusCode = 404;
-          response.end('missing');
-          return;
-        }
-        Promise.resolve(middleware(request, response, next)).catch(next);
-      };
-      next();
-    });
+    const http = packHttpFixture(plugin);
     let registry: AssetRegistry | undefined;
     try {
-      plugin.configResolved({ root, command: 'serve', base: '/' });
-      plugin.configureServer({
-        middlewares: { use: (middleware) => middlewares.push(middleware) },
-        ws: { send: () => {} },
-      });
-      const binding: RuntimeAssetBinding = {
-        schemaVersion: 'runtime-asset-binding-v1',
-        gameId: 'dev-ui-transport',
-        scopeId: 'dev-ui-transport',
-        generation: 1,
-        status: 'unbound',
-        catalogUrl: '/__pack/scopes/dev-ui-transport/1/catalog.json',
-        importUrlBase: '/__pack/scopes/dev-ui-transport/1/import',
-        packageUrlBase: '/__pack/scopes/dev-ui-transport/1/asset',
-      };
-      const accepted = await plugin.rebind(binding, [root], join(root, 'ddc'));
-      await plugin.ready();
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const address = server.address();
-      if (address === null || typeof address === 'string') throw new Error('missing HTTP address');
-      const base = `http://127.0.0.1:${address.port}`;
+      const { base, accepted } = await http.listen(root, 'dev-ui-transport');
       const response = await fetch(new URL(accepted.catalogUrl, base));
       expect(response.status).toBe(200);
       const catalog = decodeCatalogWire(await response.json()).unwrap();
@@ -127,11 +86,7 @@ describe('UI Pack v2 artifact transport', () => {
       );
     } finally {
       registry?.dispose();
-      if (server.listening)
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-      await plugin.closeBundle();
+      await http.close();
       await rm(root, { recursive: true, force: true });
     }
   });

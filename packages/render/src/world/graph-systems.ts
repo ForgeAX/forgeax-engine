@@ -187,6 +187,7 @@ function settleViewGraph(
     internals.errorRegistry.fire(recordFailureError(cause));
     return { frame, kind: 'failed', cause };
   } finally {
+    delete frameState.iblDrawBinding;
     frameState.frameNumber += 1;
   }
 }

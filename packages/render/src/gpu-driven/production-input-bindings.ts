@@ -2,7 +2,6 @@ import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { GpuScene, GpuSceneResourceFrame, GpuSceneTableBindingTarget } from '../gpu-scene';
 import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
-import type { ClusterMeshBindingPreparation } from '../record/cluster-mesh-binding-preparation';
 import type { MaterialTableBindingPreparation } from '../record/material-bg-assembly-cache';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import {
@@ -50,7 +49,6 @@ export function prepareProductionInputBindings(
     shadows: ProductionRasterInputs['shadows'],
   ) => void,
   tables?: GpuSceneTableBindingTarget,
-  clusters?: ClusterMeshBindingPreparation,
   materialTables?: MaterialTableBindingPreparation,
 ): Result<GpuViewInputPreparation, RhiError> {
   const target = scene.inputs.preparationTarget(preparation);
@@ -115,7 +113,6 @@ export function prepareProductionInputBindings(
       acceptRaster,
       current,
       tables,
-      clusters,
       materialTables,
     );
     if (!preparedRaster.ok) return preparedRaster;
@@ -155,6 +152,8 @@ export function bindSceneTables(
 ): void {
   const rowCapacity = scene.scene.rowCapacity;
   raster.ensureSceneTables(
+    scene.scene.transformBuffer,
+    scene.scene.transformByteLength,
     scene.scene.instanceBuffer,
     rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
     scene.scene.primitiveBuffer,

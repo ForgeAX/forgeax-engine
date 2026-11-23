@@ -19,6 +19,7 @@ import type {
 } from '@forgeax/engine-types';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import { materialArtifactProgramIdentity } from '../assembly/material/artifact-program-identity';
+import { toGpuVertexBufferLayouts } from '../assembly/webgpu-vertex-layouts';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import type { GpuSceneTableBindingTarget } from '../gpu-scene';
@@ -36,14 +37,12 @@ import {
   materialAbiRasterConstants,
   materialVertexConstants,
 } from '../material-stage-constants';
-import {
-  createPbrSkinMeshBindGroupEntries,
-  isCanonicalStandardPbrMaterialShader,
-} from '../pbr-pipeline';
+import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
 import { INSTANCE_STORAGE_STRIDE_FLOATS, packInstanceStorageBuffer } from '../record/mesh-ssbo';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
+import { createPrimitiveBindGroup } from '../reflection/primitive-bindings';
 import type { GpuDrivenStandardPbrFrameResources } from '../render-pipeline';
 import { PROBE_BLEND_RECORD_BYTE_SIZE } from '../scene/probe-blend-record';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
@@ -70,41 +69,12 @@ import {
   rasterInputTarget,
   remapRasterWindowBase,
 } from './raster-input-bindings';
+import { isVelocityRasterEntry } from './raster-selection';
 import { gpuDrivenReflectionFallbackRenderState } from './reflection-fallback-output';
 import {
   GpuResourceAllocationLedger,
   type GpuResourceAllocationToken,
 } from './resource-allocation';
-
-/** Bind the whole GPU Scene transform table at group(2) binding(0) for every scene-index draw. */
-export function resolveGpuDrivenMeshGroup(input: {
-  readonly clustered: boolean;
-  readonly deformation: 'rigid' | 'skin';
-  readonly meshBindGroup: BindGroup;
-  readonly sceneTransformBuffer: Buffer;
-  readonly sceneTransformBytes: number;
-  readonly frameResources: Pick<
-    GpuDrivenStandardPbrFrameResources,
-    'clusterBindGroup' | 'clusterBindGroupForMesh' | 'clusterBindGroupForSkin'
-  >;
-  readonly skinTaskBinding?: SkinTaskBinding | undefined;
-}): BindGroup | undefined {
-  if (!input.clustered) return input.meshBindGroup;
-  if (input.deformation === 'skin') {
-    const task = input.skinTaskBinding;
-    return task === undefined
-      ? undefined
-      : input.frameResources.clusterBindGroupForSkin?.(
-          input.sceneTransformBuffer,
-          input.sceneTransformBytes,
-          task,
-        );
-  }
-  return input.frameResources.clusterBindGroupForMesh?.(
-    input.sceneTransformBuffer,
-    input.sceneTransformBytes,
-  );
-}
 
 const SURFACE_FRAME_RECORD_BYTES = 48;
 const SURFACE_SHARED_FRAME_BYTES = 16;
@@ -118,6 +88,106 @@ interface SurfaceFrameRange {
     readonly drawItemIndex: number;
     readonly instanceOrdinal: number;
   };
+}
+
+interface SurfaceDrawRun {
+  readonly entity: number;
+  readonly draw: number;
+  readonly frameBase: number;
+  count: number;
+  start: number;
+}
+
+/** One physical range per draw. Local ordinals address both GPU parameters and the
+ * published member directly, including when the input arrives in arbitrary order. */
+interface SurfaceDrawAddresses<T extends SurfaceFrameRange> {
+  readonly layout: SurfaceDrawLayout;
+  readonly members: readonly T[];
+}
+
+class SurfaceDrawLayout {
+  readonly runs: SurfaceDrawRun[] = [];
+  private readonly byEntity = new Map<number, SurfaceDrawRun | Map<number, SurfaceDrawRun>>();
+
+  get(entity: number, draw: number): SurfaceDrawRun | undefined {
+    const held = this.byEntity.get(entity);
+    return held instanceof Map ? held.get(draw) : held?.draw === draw ? held : undefined;
+  }
+
+  static build<T extends SurfaceFrameRange>(
+    rows: readonly T[],
+  ): Result<SurfaceDrawAddresses<T>, RhiError> {
+    const result = new SurfaceDrawLayout();
+    for (const row of rows) {
+      const member = row.directMember;
+      if (member === undefined) continue;
+      const { entityKey, drawItemIndex, instanceOrdinal } = member;
+      const base = row.frameIndex - instanceOrdinal;
+      let run = result.get(entityKey, drawItemIndex);
+      if (run === undefined) {
+        run = { entity: entityKey, draw: drawItemIndex, frameBase: base, count: 0, start: 0 };
+        const held = result.byEntity.get(entityKey);
+        if (held === undefined) result.byEntity.set(entityKey, run);
+        else if (held instanceof Map) held.set(drawItemIndex, run);
+        else
+          result.byEntity.set(
+            entityKey,
+            new Map([
+              [held.draw, held],
+              [drawItemIndex, run],
+            ]),
+          );
+        result.runs.push(run);
+      }
+      if (
+        run.frameBase !== base ||
+        base < 0 ||
+        !Number.isSafeInteger(instanceOrdinal) ||
+        instanceOrdinal < 0
+      )
+        return err(invalidSurfaceDrawAddress(entityKey, drawItemIndex));
+      run.count++;
+    }
+    let size = 0;
+    for (const run of result.runs) {
+      run.start = size;
+      size += run.count;
+    }
+    const members = new Array<T>(size);
+    for (const row of rows) {
+      const member = row.directMember;
+      if (member === undefined) continue;
+      const run = result.get(member.entityKey, member.drawItemIndex) as SurfaceDrawRun;
+      const offset = run.start + member.instanceOrdinal;
+      if (member.instanceOrdinal >= run.count || members[offset] !== undefined)
+        return err(invalidSurfaceDrawAddress(member.entityKey, member.drawItemIndex));
+      members[offset] = row;
+    }
+    return ok({ layout: result, members });
+  }
+
+  sameLayout(other: SurfaceDrawLayout): boolean {
+    if (this.runs.length !== other.runs.length) return false;
+    for (let i = 0; i < this.runs.length; i++) {
+      const a = this.runs[i] as SurfaceDrawRun,
+        b = other.runs[i] as SurfaceDrawRun;
+      if (
+        a.entity !== b.entity ||
+        a.draw !== b.draw ||
+        a.count !== b.count ||
+        a.frameBase !== b.frameBase
+      )
+        return false;
+    }
+    return true;
+  }
+}
+
+function invalidSurfaceDrawAddress(entity: number, draw: number) {
+  return surfaceDynamicInputError(
+    'each direct Surface draw has contiguous local instance ordinals and one frame-row base',
+    `rebuild the retained member projection for draw [${entity},${draw}]`,
+  );
 }
 
 interface SurfaceFrameRow {
@@ -422,8 +492,9 @@ export function requestMaterialAbiRasterPipeline(
 ) {
   const artifact = input.artifact,
     receipt = artifact.receipt;
-  const sceneEntry =
-    artifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : receipt?.sceneIndexEntry;
+  const sceneEntry = isVelocityRasterEntry(artifact.fragmentEntry)
+    ? 'vs_temporal'
+    : receipt?.sceneIndexEntry;
   if (sceneEntry === undefined) return null;
   const clustered =
     artifact.program.group2 === 'cluster' || artifact.program.group2 === 'skin-cluster';
@@ -494,13 +565,18 @@ export class MaterialAbiRasterAdapter {
   }
 
   private readonly pipelines = new Map<string, RenderPipeline>();
-  private sceneMeshBinding:
-    | {
-        readonly transformBuffer: Buffer;
-        readonly transformBytes: number;
+  private rigidPrimitive: BindGroup | undefined;
+  private readonly skinPrimitives = new WeakMap<
+    Buffer,
+    WeakMap<
+      Buffer,
+      {
+        readonly dataBytes: number;
+        readonly auxiliaryBytes: number;
         readonly result: ResultOk<BindGroup>;
       }
-    | undefined;
+    >
+  >();
   private readonly pendingRetirements = new Set<Buffer>();
   private readonly destroyedBuffers = new WeakSet<Buffer>();
   private disposed = false;
@@ -530,12 +606,9 @@ export class MaterialAbiRasterAdapter {
   private readonly dynamicSharedFrame: SurfaceSharedFrameState;
   private directAddressBuffer: Buffer;
   private directAddressBufferSize: number;
-  private readonly directAddresses = new Map<
-    string,
-    { readonly frameBase: number; readonly instanceCount: number; readonly byteOffset: number }
-  >();
+  private directAddresses = new SurfaceDrawLayout();
   private readonly directBindGroups = new Map<
-    string,
+    number,
     {
       readonly instanceBuffer: Buffer;
       readonly probeBuffer: Buffer;
@@ -700,9 +773,9 @@ export class MaterialAbiRasterAdapter {
     }
     const meshLayout =
       deformation === 'skin'
-        ? input.pipelineState.pbrSkinMeshBindGroupLayout
-        : input.pipelineState.meshBindGroupLayout;
-    if (meshLayout === null) {
+        ? input.pipelineState.gpuDrivenSkinPrimitiveBindGroupLayout
+        : input.pipelineState.gpuDrivenPrimitiveBindGroupLayout;
+    if (meshLayout == null) {
       return err(
         new RhiError({
           code: 'rhi-not-available',
@@ -843,6 +916,7 @@ export class MaterialAbiRasterAdapter {
         },
         { binding: 7, resource: bufferBinding(input.visibleBuffer) },
         { binding: 8, resource: bufferBinding(input.visibleBuffer) },
+        { binding: 9, resource: bufferBinding(instanceBuffer.value) },
       ],
     });
     if (!instancesBindGroup.ok) {
@@ -885,7 +959,10 @@ export class MaterialAbiRasterAdapter {
     return ok(undefined);
   }
 
-  private createVisibleBufferBinding(visibleBuffer: Buffer): Result<BindGroup, RhiError> {
+  private createVisibleBufferBinding(
+    visibleBuffer: Buffer,
+    tables = this.sceneTables,
+  ): Result<BindGroup, RhiError> {
     return this.device.createBindGroup({
       label: 'standard-pbr-gpu-driven-visible-instances-bg',
       layout: this.instancesBindGroupLayout,
@@ -902,9 +979,17 @@ export class MaterialAbiRasterAdapter {
         { binding: 6, resource: bufferBinding(this.instanceBuffer, 0, this.instanceBufferSize) },
         {
           binding: 7,
-          resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? visibleBuffer),
+          resource: bufferBinding(tables?.visibleSurfaceRows ?? visibleBuffer),
         },
-        { binding: 8, resource: bufferBinding(this.sceneTables?.sceneInputs ?? visibleBuffer) },
+        { binding: 8, resource: bufferBinding(tables?.sceneInputs ?? visibleBuffer) },
+        {
+          binding: 9,
+          resource: bufferBinding(
+            tables?.transformBuffer ?? this.instanceBuffer,
+            0,
+            tables?.transformBytes,
+          ),
+        },
       ],
     });
   }
@@ -920,11 +1005,12 @@ export class MaterialAbiRasterAdapter {
   }
 
   /**
-   * Bind the GPU Scene instance and primitive tables that scene-index vertex
-   * stages resolve `visibleItems.x` against. Cached visible windows are
-   * rebuilt only when either table buffer is replaced.
+   * Keep the resident transform, instance, and primitive tables with the
+   * visible index windows. Rebind the windows when a table handle or range changes.
    */
   ensureSceneTables(
+    transformBuffer: Buffer,
+    transformBytes: number,
     instanceBuffer: Buffer,
     instanceBytes: number,
     primitiveBuffer: Buffer,
@@ -935,7 +1021,9 @@ export class MaterialAbiRasterAdapter {
   ): void {
     const current = this.sceneTables;
     if (
-      current?.instanceBuffer === instanceBuffer &&
+      current?.transformBuffer === transformBuffer &&
+      current.transformBytes === transformBytes &&
+      current.instanceBuffer === instanceBuffer &&
       current.instanceBytes === instanceBytes &&
       current.primitiveBuffer === primitiveBuffer &&
       current.primitiveBytes === primitiveBytes &&
@@ -946,6 +1034,8 @@ export class MaterialAbiRasterAdapter {
       return;
     }
     this.sceneTables = {
+      transformBuffer,
+      transformBytes,
       instanceBuffer,
       instanceBytes,
       primitiveBuffer,
@@ -976,6 +1066,7 @@ export class MaterialAbiRasterAdapter {
       )
         return 'stale';
       if (
+        tables.transformBuffer !== target.owner.transformBuffer ||
         tables.instanceBuffer !== target.owner.instanceBuffer ||
         tables.primitiveBuffer !== target.owner.primitiveBuffer
       )
@@ -1132,7 +1223,6 @@ export class MaterialAbiRasterAdapter {
     visibleBuffers: readonly Buffer[],
     ownerCurrent?: () => boolean,
     tableTarget?: GpuSceneTableBindingTarget,
-    skinTasks: readonly SkinTaskBinding[] = [],
   ): Result<GpuRasterInputPreparation, RhiError> {
     const tables = this.sceneTables;
     const target = rasterInputTarget(inputs, demand);
@@ -1163,6 +1253,8 @@ export class MaterialAbiRasterAdapter {
         ...(tableTarget === undefined
           ? {}
           : {
+              transformBuffer: tableTarget.transformBuffer,
+              transformBytes: tableTarget.transformBytes,
               primitiveBuffer: tableTarget.primitiveBuffer,
               primitiveBytes: tableTarget.rowCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
               instanceBuffer: tableTarget.instanceBuffer,
@@ -1175,14 +1267,18 @@ export class MaterialAbiRasterAdapter {
     this.preparingInputBindings = role;
     let accepted = false;
     try {
-      if (tableTarget !== undefined) this.prepareMeshInputs(role, tableTarget, skinTasks);
+      if (tableTarget !== undefined)
+        role.sceneTablesCurrent = () => tableTarget.owner.capacityTargetMatches(tableTarget);
       for (const buffer of new Set([this.visibleBuffer, ...visibleBuffers])) {
         const groups = this.visibleWindowBindGroups.get(buffer);
         role.snapshots.push({ buffer, groups, rows: groups === undefined ? [] : [...groups] });
       }
       if (demand.kind === 'current' && this.visibleBuffer === demand.storage.before.visible) {
         role.nextVisible = demand.storage.after.visible;
-        role.nextInstances = this.createVisibleBufferBinding(role.nextVisible).unwrap();
+        role.nextInstances = this.createVisibleBufferBinding(
+          role.nextVisible,
+          role.nextTables,
+        ).unwrap();
       }
       const created = this.createInputWindows(role, ownerCurrent);
       if (!created.ok) return created;
@@ -1228,10 +1324,6 @@ export class MaterialAbiRasterAdapter {
       isCurrent: current,
       bindingIdentity: () => (current() ? role.next : undefined),
       replacement: (window: BindGroup) => (current() ? role.replacements.get(window) : undefined),
-      prepareMesh: (previous: BindGroup) => {
-        if (!current()) return err(rasterInputBindingError());
-        return role.prepareMesh?.(previous) ?? ok(undefined);
-      },
       publish: () => {
         const active = owner;
         if (active === undefined) return err(rasterInputBindingError());
@@ -1324,7 +1416,7 @@ export class MaterialAbiRasterAdapter {
       this.visibleWindowBindGroups !== facts.cache ||
       this.visibleBuffer !== facts.visible ||
       this.device.caps.firstInstanceIndirect !== facts.whole ||
-      role.meshCurrent?.() === false ||
+      role.sceneTablesCurrent?.() === false ||
       this.probeBlendRecordBuffer !== storage.probe ||
       this.dynamicInputBuffer !== storage.dynamicInput ||
       this.dynamicFrameBuffer !== storage.dynamicFrame ||
@@ -1362,7 +1454,6 @@ export class MaterialAbiRasterAdapter {
       !facts.inputs.isCurrentBuffer(facts.target.buffer)
     )
       return err(rasterInputBindingError());
-    role.publishMesh?.();
     this.sceneTables = role.nextTables;
     this.visibleWindowBindGroups = role.next;
     if (role.nextVisible !== undefined && role.nextInstances !== undefined) {
@@ -1384,9 +1475,7 @@ export class MaterialAbiRasterAdapter {
     role.nextVisible = undefined;
     role.nextInstances = undefined;
     role.ready = false;
-    role.meshCurrent = undefined;
-    role.prepareMesh = undefined;
-    role.publishMesh = undefined;
+    role.sceneTablesCurrent = undefined;
     if (this.preparingInputBindings === role) this.preparingInputBindings = undefined;
     closeOwner?.();
   }
@@ -1401,58 +1490,22 @@ export class MaterialAbiRasterAdapter {
 
   private ensureDirectSurfaceAddresses(
     frameRanges: readonly SurfaceFrameRange[],
+    prepared?: SurfaceDrawAddresses<SurfaceFrameRange>,
   ): Result<void, RhiError> {
-    const members = new Map<string, SurfaceFrameRange[]>();
-    for (const entry of frameRanges) {
-      const member = entry.directMember;
-      if (member === undefined) continue;
-      const key = JSON.stringify([member.entityKey, member.drawItemIndex]);
-      const group = members.get(key);
-      if (group === undefined) members.set(key, [entry]);
-      else group.push(entry);
-    }
-    const addresses: typeof this.directAddresses = new Map();
-    let addressIndex = 0;
-    for (const [key, group] of members) {
-      group.sort(
-        (left, right) =>
-          (left.directMember?.instanceOrdinal ?? 0) - (right.directMember?.instanceOrdinal ?? 0),
-      );
-      const first = group[0];
-      const firstMember = first?.directMember;
-      if (first === undefined || firstMember === undefined) continue;
-      const frameBase = first.frameIndex - firstMember.instanceOrdinal;
-      if (
-        frameBase < 0 ||
-        group.some(
-          (entry, ordinal) =>
-            entry.directMember?.instanceOrdinal !== ordinal ||
-            entry.frameIndex !== frameBase + ordinal,
-        )
-      ) {
-        return err(
-          surfaceDynamicInputError(
-            'each direct Surface draw has contiguous local instance ordinals and one frame-row base',
-            `rebuild the retained member projection for draw ${key}`,
-          ),
-        );
-      }
-      for (let ordinal = 0; ordinal < group.length; ordinal += 1) {
-        const byteOffset = addressIndex * SURFACE_DIRECT_ADDRESS_STRIDE;
-        addresses.set(`${key}:${ordinal}`, {
-          frameBase: frameBase + ordinal,
-          instanceCount: group.length - ordinal,
-          byteOffset,
-        });
-        addressIndex += 1;
-      }
-    }
-    if (this.sameDirectSurfaceAddresses(addresses)) return ok(undefined);
-    const payload = new Uint8Array(Math.max(1, addresses.size) * SURFACE_DIRECT_ADDRESS_STRIDE);
+    const collected = prepared === undefined ? SurfaceDrawLayout.build(frameRanges) : ok(prepared);
+    if (!collected.ok) return collected;
+    const addresses = collected.value;
+    if (this.directAddresses.sameLayout(addresses.layout)) return ok(undefined);
+    const payload = new Uint8Array(
+      Math.max(1, addresses.members.length) * SURFACE_DIRECT_ADDRESS_STRIDE,
+    );
     const view = new DataView(payload.buffer);
-    for (const address of addresses.values()) {
-      view.setUint32(address.byteOffset, address.frameBase, true);
-      view.setUint32(address.byteOffset + 4, address.instanceCount, true);
+    for (const run of addresses.layout.runs) {
+      for (let ordinal = 0; ordinal < run.count; ordinal++) {
+        const offset = (run.start + ordinal) * SURFACE_DIRECT_ADDRESS_STRIDE;
+        view.setUint32(offset, run.frameBase + ordinal, true);
+        view.setUint32(offset + 4, run.count - ordinal, true);
+      }
     }
     const replacementSize = Math.max(this.directAddressBufferSize, payload.byteLength);
     const replacement = this.device.createBuffer({
@@ -1470,29 +1523,12 @@ export class MaterialAbiRasterAdapter {
     const previous = this.directAddressBuffer;
     this.directAddressBuffer = replacement.value;
     this.directAddressBufferSize = replacementSize;
-    this.directAddresses.clear();
-    for (const [key, address] of addresses) this.directAddresses.set(key, address);
+    this.directAddresses = addresses.layout;
     this.directBindGroups.clear();
     this.surfaceInputBuffers.add(replacement.value);
     this.surfaceInputBuffers.delete(previous);
     this.retireOwnedBuffer(previous);
     return ok(undefined);
-  }
-
-  /** Equal native mapping preserves buffer identity and every binding's byte offset. */
-  private sameDirectSurfaceAddresses(addresses: typeof this.directAddresses): boolean {
-    if (addresses.size !== this.directAddresses.size) return false;
-    for (const [key, address] of addresses) {
-      const before = this.directAddresses.get(key);
-      if (
-        before === undefined ||
-        before.frameBase !== address.frameBase ||
-        before.instanceCount !== address.instanceCount ||
-        before.byteOffset !== address.byteOffset
-      )
-        return false;
-    }
-    return true;
   }
 
   directSurfaceInstances(input: {
@@ -1520,18 +1556,26 @@ export class MaterialAbiRasterAdapter {
         ),
       );
     }
-    const drawKey = JSON.stringify([input.entityKey, input.drawItemIndex]);
-    const firstInstanceOrdinal = input.firstInstanceOrdinal ?? 0;
-    const key = `${drawKey}:${firstInstanceOrdinal}`;
-    const address = this.directAddresses.get(key);
-    if (address === undefined || address.instanceCount < input.instanceCount) {
+    const ordinal = input.firstInstanceOrdinal ?? 0;
+    const run = this.directAddresses.get(input.entityKey, input.drawItemIndex);
+    if (
+      run === undefined ||
+      !Number.isSafeInteger(input.instanceCount) ||
+      input.instanceCount < 0 ||
+      !Number.isSafeInteger(ordinal) ||
+      ordinal < 0 ||
+      ordinal >= run.count ||
+      run.count - ordinal < input.instanceCount
+    ) {
       return err(
         surfaceDynamicInputError(
           'the direct Surface draw resolves one retained frame base with the same instance count',
-          `rebuild the producer projection for draw ${drawKey} at ordinal ${firstInstanceOrdinal} (instances=${input.instanceCount})`,
+          `rebuild the producer projection for draw [${input.entityKey},${input.drawItemIndex}] at ordinal ${ordinal} (instances=${input.instanceCount})`,
         ),
       );
     }
+    const key = run.start + ordinal;
+    const frameBase = run.frameBase + ordinal;
     const probeOffset = input.probeOffset ?? 0;
     if (!Number.isSafeInteger(probeOffset) || probeOffset < 0) {
       return err(
@@ -1561,7 +1605,7 @@ export class MaterialAbiRasterAdapter {
       return ok({
         bindGroup: cached.bindGroup,
         dynamicOffsets: [probeOffset],
-        frameBase: address.frameBase,
+        frameBase,
       });
     }
     const created = this.device.createBindGroup({
@@ -1584,7 +1628,7 @@ export class MaterialAbiRasterAdapter {
           binding: 6,
           resource: bufferBinding(
             this.directAddressBuffer,
-            address.byteOffset,
+            key * SURFACE_DIRECT_ADDRESS_STRIDE,
             SURFACE_SHARED_FRAME_BYTES,
           ),
         },
@@ -1600,7 +1644,7 @@ export class MaterialAbiRasterAdapter {
     return ok({
       bindGroup: created.value,
       dynamicOffsets: [probeOffset],
-      frameBase: address.frameBase,
+      frameBase,
     });
   }
 
@@ -1615,6 +1659,7 @@ export class MaterialAbiRasterAdapter {
     expectedLayout?: MaterialDynamicInputLayout,
     expectedDeviceGeneration?: number,
     frameRanges?: readonly SurfaceFrameRange[],
+    addresses?: SurfaceDrawAddresses<SurfaceFrameRange>,
   ): Result<void, RhiError> {
     this.pendingDynamicInputUpload = undefined;
     const page = frame?.page;
@@ -1639,6 +1684,7 @@ export class MaterialAbiRasterAdapter {
         page,
         expectedDeviceGeneration,
         compactFrameRanges,
+        addresses,
       );
       if (!admitted.ok) return admitted;
     }
@@ -1689,6 +1735,7 @@ export class MaterialAbiRasterAdapter {
     page: ReadonlyDynamicInputPage | undefined,
     expectedDeviceGeneration: number | undefined,
     compactFrameRanges: readonly SurfaceFrameRange[],
+    addresses?: SurfaceDrawAddresses<SurfaceFrameRange>,
   ): Result<void, RhiError> {
     const rangeAddresses = new Set<number>();
     for (const range of ranges) {
@@ -1719,7 +1766,7 @@ export class MaterialAbiRasterAdapter {
       }
       rangeAddresses.add(range.instanceIndex);
     }
-    return this.ensureDirectSurfaceAddresses(compactFrameRanges);
+    return this.ensureDirectSurfaceAddresses(compactFrameRanges, addresses);
   }
 
   /** Replace the page buffer on growth or page identity change; otherwise write dirty ranges. */
@@ -1954,30 +2001,7 @@ export class MaterialAbiRasterAdapter {
   }
 
   private rebuildInstancesBindGroup(): Result<void, RhiError> {
-    const created = this.device.createBindGroup({
-      label: 'standard-pbr-gpu-driven-visible-instances-bg',
-      layout: this.instancesBindGroupLayout,
-      entries: [
-        { binding: 0, resource: bufferBinding(this.instanceBuffer, 0, this.instanceBufferSize) },
-        {
-          binding: 1,
-          resource: bufferBinding(this.probeBlendRecordBuffer ?? this.visibleBuffer),
-        },
-        { binding: 2, resource: bufferBinding(this.visibleBuffer) },
-        { binding: 3, resource: bufferBinding(this.dynamicInputBuffer) },
-        { binding: 4, resource: bufferBinding(this.dynamicFrameBuffer) },
-        { binding: 5, resource: bufferBinding(this.dynamicSharedFrame.buffer) },
-        { binding: 6, resource: bufferBinding(this.instanceBuffer, 0, this.instanceBufferSize) },
-        {
-          binding: 7,
-          resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? this.visibleBuffer),
-        },
-        {
-          binding: 8,
-          resource: bufferBinding(this.sceneTables?.sceneInputs ?? this.visibleBuffer),
-        },
-      ],
-    });
+    const created = this.createVisibleBufferBinding(this.visibleBuffer);
     if (!created.ok) return created;
     this.instancesBindGroup = created.value;
     return ok(undefined);
@@ -2065,8 +2089,9 @@ export class MaterialAbiRasterAdapter {
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.
     const key = `${String(format)}:${additionalColorFormats.join(',')}|${sampleCount}|${layoutProjection.arrayStride}|${topology}|${stripIndexFormat ?? ''}|${JSON.stringify(pipelineRenderState ?? null)}|${selectedArtifact.material}|${selectedArtifact.layoutIdentity}|${receipt.receiptIdentity}|${receipt.generation}|${selectedArtifact.variantSet ?? ''}|${materialArtifactProgramIdentity(selectedArtifact)}|${selectedArtifact.vertexEntry ?? receipt.sceneIndexEntry}|${legacyFragmentKey(fragmentEntry)}|${layoutProjection.digest}|uv${pipelineUvSetCount}|textures=${standardTextureMask ?? ''}|discards=${surfaceDiscards ?? ''}`;
-    const sceneEntry =
-      selectedArtifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : receipt.sceneIndexEntry;
+    const sceneEntry = isVelocityRasterEntry(selectedArtifact.fragmentEntry)
+      ? 'vs_temporal'
+      : receipt.sceneIndexEntry;
     if (sceneEntry === undefined)
       return err(
         new RhiError({
@@ -2143,10 +2168,9 @@ export class MaterialAbiRasterAdapter {
     }
     // The factory above consumes the original projection; only this legacy
     // cache miss needs the geometry-owned descriptor (including UV aliases).
-    // biome-ignore lint/style/noNonNullAssertion: a non-empty projection emits one layout, checked before cache lookup
-    const vertexLayout = deriveVertexBufferLayoutFromProjection(layoutProjection, {
+    const vertexLayouts = deriveVertexBufferLayoutFromProjection(layoutProjection, {
       shaderUvSetCount: pipelineUvSetCount,
-    })[0]!;
+    });
     const vertexConstants = materialVertexConstants(constants);
     const pipeline = this.device.createRenderPipeline({
       label: `standard-pbr-gpu-driven.${key}`,
@@ -2155,17 +2179,7 @@ export class MaterialAbiRasterAdapter {
         module: program.module,
         entryPoint: selectedArtifact.vertexEntry ?? sceneEntry,
         ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
-        buffers: [
-          {
-            arrayStride: vertexLayout.arrayStride,
-            stepMode: 'vertex',
-            attributes: vertexLayout.attributes.map(({ shaderLocation, offset, format }) => ({
-              shaderLocation,
-              offset,
-              format: format as GPUVertexFormat,
-            })),
-          },
-        ],
+        buffers: [...toGpuVertexBufferLayouts(vertexLayouts)],
       },
       ...legacyFragmentState(
         program.module,
@@ -2197,165 +2211,59 @@ export class MaterialAbiRasterAdapter {
     this.pipelines.clear();
   }
 
-  private readonly meshBindingFacts = new WeakMap<
-    BindGroup,
-    {
-      readonly transform: Buffer;
-      readonly bytes: number;
-      readonly task?: Readonly<SkinTaskBinding>;
-    }
-  >();
-  private readonly skinMeshBindings = new WeakMap<
-    Buffer,
-    WeakMap<Buffer, WeakMap<Buffer, ResultOk<BindGroup>>>
-  >();
-
-  private createSceneMeshBinding(
-    transform: Buffer,
-    bytes: number,
-    task?: Readonly<SkinTaskBinding>,
-  ): Result<BindGroup, RhiError> {
-    const fixedTask = task === undefined ? undefined : { ...task };
-    const created = this.device.createBindGroup({
-      label:
-        fixedTask === undefined
-          ? 'standard-pbr-gpu-driven-scene-mesh-bg'
-          : 'standard-pbr-gpu-driven-skin-task-bg',
-      layout: this.meshLayout,
-      entries:
-        fixedTask === undefined
-          ? [{ binding: 0, resource: bufferBinding(transform, 0, bytes) }]
-          : createPbrSkinMeshBindGroupEntries(transform, bytes, fixedTask),
-    });
-    if (created.ok)
-      this.meshBindingFacts.set(created.value, {
-        transform,
-        bytes,
-        ...(fixedTask === undefined ? {} : { task: fixedTask }),
+  /** Primitive geometry bindings survive resident Scene table replacement. */
+  primitiveBindGroup(task?: SkinTaskBinding): Result<BindGroup, RhiError> {
+    if (this.deformation === 'rigid') {
+      if (this.rigidPrimitive !== undefined) return ok(this.rigidPrimitive);
+      const result = createPrimitiveBindGroup(this.device, {
+        label: 'gpu-scene-primitive',
+        layout: this.meshLayout,
+        entries: [],
       });
-    return created;
-  }
-
-  private prepareMeshInputs(
-    role: PreparingRasterInputBindings,
-    target: GpuSceneTableBindingTarget,
-    skinTasks: readonly SkinTaskBinding[],
-  ): void {
-    const previous = this.sceneMeshBinding;
-    const originalTransform = target.owner.transformBuffer;
-    let next = previous;
-    const skins = new WeakMap<Buffer, WeakMap<Buffer, ResultOk<BindGroup>>>();
-    role.meshCurrent = () =>
-      this.sceneMeshBinding === previous && target.owner.capacityTargetMatches(target);
-    role.prepareMesh = (binding) => {
-      const cached = role.replacements.get(binding);
-      if (cached !== undefined) return ok(cached);
-      const facts = this.meshBindingFacts.get(binding);
-      if (facts === undefined) return ok(undefined);
-      if (role.meshCurrent?.() !== true) return err(rasterInputBindingError());
-      if (facts.transform === target.transformBuffer && facts.bytes === target.transformBytes) {
-        role.replacements.set(binding, binding);
-        return ok(binding);
-      }
-      const created = this.createSceneMeshBinding(
-        target.transformBuffer,
-        target.transformBytes,
-        facts.task,
-      );
-      if (!created.ok) return created;
-      if (role.meshCurrent?.() !== true) return err(rasterInputBindingError());
-      role.replacements.set(binding, created.value);
-      if (facts.task === undefined)
-        next = {
-          transformBuffer: target.transformBuffer,
-          transformBytes: target.transformBytes,
-          result: Object.freeze(ok(created.value)),
-        };
-      else {
-        let auxiliary = skins.get(facts.task.data);
-        if (auxiliary === undefined) {
-          auxiliary = new WeakMap();
-          skins.set(facts.task.data, auxiliary);
-        }
-        auxiliary.set(facts.task.auxiliary, Object.freeze(ok(created.value)));
-      }
-      return created;
-    };
-    if (previous !== undefined) role.prepareMesh(previous.result.value).unwrap();
-    if (this.deformation === 'skin')
-      for (const task of skinTasks) {
-        const cached = this.skinMeshBindings
-          .get(originalTransform)
-          ?.get(task.data)
-          ?.get(task.auxiliary);
-        if (cached !== undefined) role.prepareMesh(cached.value).unwrap();
-      }
-    role.publishMesh = () => {
-      this.sceneMeshBinding = next;
-      if (this.deformation === 'skin' && target.transformBuffer !== originalTransform)
-        this.skinMeshBindings.set(target.transformBuffer, skins);
-    };
-  }
-
-  /** Actual view task output is borrowed; neither a palette cache nor a pose revision. */
-  sceneMeshBindGroup(
-    transformBuffer: Buffer,
-    transformBytes: number,
-    task?: SkinTaskBinding,
-  ): Result<BindGroup, RhiError> {
-    if (this.deformation === 'skin') {
-      if (task === undefined)
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'the selected view physical Skin task buffers',
-            hint: 'prepare Skin demand before binding this view for raster',
-          }),
-        );
-      // Capture the same physical keys before any cache mutation or factory reads.
-      const data = task.data;
-      const auxiliary = task.auxiliary;
-      let dataBindings = this.skinMeshBindings.get(transformBuffer);
-      if (dataBindings === undefined) {
-        dataBindings = new WeakMap();
-        this.skinMeshBindings.set(transformBuffer, dataBindings);
-      }
-      let auxiliaryBindings = dataBindings.get(data);
-      if (auxiliaryBindings === undefined) {
-        auxiliaryBindings = new WeakMap();
-        dataBindings.set(data, auxiliaryBindings);
-      }
-      const cached = auxiliaryBindings.get(auxiliary);
-      if (cached !== undefined) return cached;
-      const created = this.createSceneMeshBinding(transformBuffer, transformBytes, task);
-      if (created.ok) auxiliaryBindings.set(auxiliary, Object.freeze(ok(created.value)));
-      return created;
+      if (result.ok) this.rigidPrimitive = result.value;
+      return result;
     }
-    const cached = this.sceneMeshBinding;
-    if (
-      cached !== undefined &&
-      cached.transformBuffer === transformBuffer &&
-      cached.transformBytes === transformBytes
-    )
-      return cached.result;
-    const bindGroup = this.createSceneMeshBinding(transformBuffer, transformBytes);
-    if (!bindGroup.ok) return bindGroup;
-    this.sceneMeshBinding = {
-      transformBuffer,
-      transformBytes,
-      result: Object.freeze(ok(bindGroup.value)),
-    };
-    return ok(bindGroup.value);
+    if (task === undefined)
+      return err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'the selected view physical Skin task buffers',
+          hint: 'prepare Skin demand before binding this view for raster',
+        }),
+      );
+    const { data, auxiliary } = task;
+    let byAuxiliary = this.skinPrimitives.get(data);
+    if (byAuxiliary === undefined) {
+      byAuxiliary = new WeakMap();
+      this.skinPrimitives.set(data, byAuxiliary);
+    }
+    const hit = byAuxiliary.get(auxiliary);
+    const { dataSize, auxiliarySize } = task;
+    if (hit !== undefined && hit.dataBytes === dataSize && hit.auxiliaryBytes === auxiliarySize)
+      return hit.result;
+    const result = createPrimitiveBindGroup(this.device, {
+      label: 'gpu-scene-skin-primitive',
+      layout: this.meshLayout,
+      entries: [
+        { binding: 1, resource: bufferBinding(data, 0, dataSize) },
+        { binding: 2, resource: bufferBinding(auxiliary, 0, auxiliarySize) },
+      ],
+    });
+    if (result.ok)
+      byAuxiliary.set(auxiliary, { dataBytes: dataSize, auxiliaryBytes: auxiliarySize, result });
+    return result;
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.directAddresses = new SurfaceDrawLayout();
+    this.directBindGroups.clear();
     if (this.preparingInputBindings !== undefined)
       this.releaseInputBindings(this.preparingInputBindings);
     for (const buffer of this.pendingRetirements) this.destroyOwnedBuffer(buffer);
     this.pendingRetirements.clear();
-    this.sceneMeshBinding = undefined;
+    this.rigidPrimitive = undefined;
     this.sceneTables = undefined;
     this.dynamicFrameRows.clear();
     this.dynamicFrameRangeSource = undefined;
@@ -2483,7 +2391,38 @@ interface ProjectedSurfaceFrameRange {
   };
 }
 
+function publicSurfaceMemberId(member: DynamicInputRange['member']): string {
+  return JSON.stringify([
+    member.worldIdentity,
+    member.entityKey,
+    member.drawItemIndex,
+    member.instanceOrdinal,
+  ]);
+}
+
+function sameSurfaceMembers(
+  previous: readonly DynamicInputRange['member'][],
+  ranges: readonly DynamicInputRange[],
+): boolean {
+  if (previous.length !== ranges.length) return false;
+  for (let i = 0; i < previous.length; i++) {
+    const a = previous[i] as DynamicInputRange['member'];
+    const b = (ranges[i] as DynamicInputRange).member;
+    if (
+      a.worldIdentity !== b.worldIdentity ||
+      a.entityKey !== b.entityKey ||
+      a.drawItemIndex !== b.drawItemIndex ||
+      a.instanceOrdinal !== b.instanceOrdinal
+    )
+      return false;
+  }
+  return true;
+}
+
+const EMPTY_MEMBER_IDS: readonly string[] = Object.freeze([]);
+
 interface SurfaceFrameProjection {
+  readonly addresses: SurfaceDrawAddresses<ProjectedSurfaceFrameRange>;
   readonly ranges: readonly ProjectedSurfaceFrameRange[];
   readonly consumptionRanges: readonly DynamicInputRange[];
   readonly capacity: number;
@@ -2504,11 +2443,7 @@ function buildProjectedSurfaceFrameRanges(
   scene: PersistentGpuDrivenState,
   directRanges: readonly DynamicInputRange[],
 ): Result<readonly ProjectedSurfaceFrameRange[], RhiError> {
-  const surfaceMembers: Array<{
-    readonly frameIndex: number;
-    readonly identity: string;
-    readonly directMember: ProjectedSurfaceFrameRange['directMember'];
-  }> = [];
+  const surfaceMembers: ProjectedSurfaceFrameRange[] = [];
   // Candidate rows follow the encoded plan: batches in order, then candidates.
   let candidateRow = 0;
   for (const prepared of filtered.batches) {
@@ -2539,30 +2474,13 @@ function buildProjectedSurfaceFrameRanges(
           drawItemIndex: prepared.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
           instanceOrdinal: candidate.instanceOrdinal,
         },
-        identity: JSON.stringify([
-          worldIdentity,
-          slot.entityKey,
-          prepared.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
-          candidate.instanceOrdinal,
-        ]),
       });
     }
   }
-  if (ranges.length === 0) {
-    return ok(
-      Object.freeze(
-        surfaceMembers.map(({ frameIndex, directMember }) => ({ frameIndex, directMember })),
-      ),
-    );
-  }
+  if (ranges.length === 0) return ok(Object.freeze(surfaceMembers));
   const rangeByIdentity = new Map<string, DynamicInputRange>();
   for (const range of ranges) {
-    const identity = JSON.stringify([
-      range.member.worldIdentity,
-      range.member.entityKey,
-      range.member.drawItemIndex,
-      range.member.instanceOrdinal,
-    ]);
+    const identity = publicSurfaceMemberId(range.member);
     if (rangeByIdentity.has(identity)) {
       return err(
         new RhiError({
@@ -2576,17 +2494,18 @@ function buildProjectedSurfaceFrameRanges(
   }
   const frameRanges: ProjectedSurfaceFrameRange[] = [];
   for (const member of surfaceMembers) {
-    const range = rangeByIdentity.get(member.identity);
+    const identity = publicSurfaceMemberId(member.directMember);
+    const range = rangeByIdentity.get(identity);
     if (range === undefined) {
       return err(
         new RhiError({
           code: 'rhi-descriptor-invalid',
           expected: 'every admitted medium draw member resolves one stable-identity Surface range',
-          hint: `publish the missing producer range for member ${member.identity}`,
+          hint: `publish the missing producer range for member ${identity}`,
         }),
       );
     }
-    rangeByIdentity.delete(member.identity);
+    rangeByIdentity.delete(identity);
     frameRanges.push({ frameIndex: member.frameIndex, range, directMember: member.directMember });
   }
   const direct = new Set(directRanges);
@@ -2616,7 +2535,7 @@ export class SurfaceFrameProjectionOwner {
         readonly allocationRevision: number;
         readonly page: ReadonlyDynamicInputPage | undefined;
         readonly projectionRevision: number;
-        readonly directKey: string;
+        readonly directMembers: readonly DynamicInputRange['member'][];
         readonly value: SurfaceFrameProjection;
       }
     | undefined;
@@ -2655,7 +2574,7 @@ export class SurfaceFrameProjectionOwner {
       cached.allocationRevision === scene.scene.allocationRevision &&
       cached.page === frame?.page &&
       cached.projectionRevision === projectionRevision &&
-      cached.directKey === JSON.stringify(directRanges.map((range) => range.member))
+      sameSurfaceMembers(cached.directMembers, directRanges)
     ) {
       return ok(cached.value);
     }
@@ -2672,7 +2591,10 @@ export class SurfaceFrameProjectionOwner {
       capacity = Math.max(capacity, entry.frameIndex + 1);
       if (entry.range !== undefined) consumptionRanges.push(entry.range);
     }
+    const addresses = SurfaceDrawLayout.build(built.value);
+    if (!addresses.ok) return addresses;
     const value = {
+      addresses: addresses.value,
       ranges: built.value,
       consumptionRanges: Object.freeze(consumptionRanges),
       capacity,
@@ -2687,13 +2609,14 @@ export class SurfaceFrameProjectionOwner {
     value: SurfaceFrameProjection,
     directRanges: readonly DynamicInputRange[] = [],
   ): void {
+    if (this.surfaceFrameRangeCache?.value === value) return;
     this.surfaceFrameRangeCache = {
       filtered,
       slots: scene.slots,
       allocationRevision: scene.scene.allocationRevision,
       page: frame?.page,
       projectionRevision: frame?.projectionRevision ?? 0,
-      directKey: JSON.stringify(directRanges.map((range) => range.member)),
+      directMembers: directRanges.map((range) => ({ ...range.member })),
       value,
     };
   }
@@ -2737,30 +2660,35 @@ export class SurfaceFrameProjectionOwner {
 
   directInstances(
     materialRaster: MaterialAbiRasterAdapter,
-    directInput: Parameters<MaterialAbiRasterAdapter['directSurfaceInstances']>[0],
+    directInput: Parameters<
+      NonNullable<GpuDrivenStandardPbrFrameResources['surfaceDirectInstances']>
+    >[0],
   ): ReturnType<NonNullable<GpuDrivenStandardPbrFrameResources['surfaceDirectInstances']>> {
     const resolved = materialRaster.directSurfaceInstances(directInput);
     if (!resolved.ok) return resolved;
-    const firstInstanceOrdinal = directInput.firstInstanceOrdinal ?? 0;
-    const memberIds: string[] = [];
-    for (let index = 0; index < directInput.instanceCount; index += 1) {
-      const instanceOrdinal = firstInstanceOrdinal + index;
-      const memberId = this.memberId(
-        directInput.entityKey,
-        directInput.drawItemIndex,
-        instanceOrdinal,
+    const first = directInput.firstInstanceOrdinal ?? 0;
+    const count = directInput.instanceCount;
+    const addresses = this.surfaceFrameRangeCache?.value.addresses;
+    const run = addresses?.layout.get(directInput.entityKey, directInput.drawItemIndex);
+    if (addresses === undefined || run === undefined || first < 0 || first + count > run.count) {
+      return err(
+        surfaceDynamicInputError(
+          'every direct Surface command resolves the retained public member identity',
+          `rebuild the Surface projection for entity=${directInput.entityKey}, draw=${directInput.drawItemIndex}, instance=${first}`,
+        ),
       );
-      if (memberId === undefined) {
-        return err(
-          surfaceDynamicInputError(
-            'every direct Surface command resolves the retained public member identity',
-            `rebuild the Surface projection for world=, entity=${directInput.entityKey}, draw=${directInput.drawItemIndex}, instance=${instanceOrdinal}`,
-          ),
+    }
+    let memberIds = EMPTY_MEMBER_IDS;
+    if (directInput.includeMemberIds !== false) {
+      const ids: string[] = [];
+      for (let i = run.start + first, end = i + count; i < end; i++) {
+        ids.push(
+          publicSurfaceMemberId((addresses.members[i] as ProjectedSurfaceFrameRange).directMember),
         );
       }
-      memberIds.push(memberId);
+      memberIds = Object.freeze(ids);
     }
-    return ok({ ...resolved.value, memberIds: Object.freeze(memberIds) });
+    return ok({ ...resolved.value, memberIds });
   }
 
   consumer(
@@ -2785,20 +2713,15 @@ export class SurfaceFrameProjectionOwner {
           );
   }
 
-  memberId(entityKey: number, drawItemIndex: number, instanceOrdinal: number): string | undefined {
-    const frameRange = this.surfaceFrameRangeCache?.value.ranges.find(
-      ({ directMember }) =>
-        directMember.entityKey === entityKey &&
-        directMember.drawItemIndex === drawItemIndex &&
-        directMember.instanceOrdinal === instanceOrdinal,
-    );
-    if (frameRange === undefined) return undefined;
-    return JSON.stringify([
-      frameRange.directMember.worldIdentity,
-      frameRange.directMember.entityKey,
-      frameRange.directMember.drawItemIndex,
-      frameRange.directMember.instanceOrdinal,
-    ]);
+  /** A readback completes asynchronously. Its member addresses belong to the issuing projection. */
+  capturedMemberId(): (entity: number, draw: number, ordinal: number) => string | undefined {
+    const addresses = this.surfaceFrameRangeCache?.value.addresses;
+    return (entity, draw, ordinal) => {
+      const run = addresses?.layout.get(entity, draw);
+      if (run === undefined || ordinal < 0 || ordinal >= run.count) return undefined;
+      const member = addresses?.members[run.start + ordinal]?.directMember;
+      return member === undefined ? undefined : publicSurfaceMemberId(member);
+    };
   }
 
   clear(): void {

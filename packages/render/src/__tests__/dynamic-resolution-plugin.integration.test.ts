@@ -126,16 +126,13 @@ it('leases camera AO vocabulary and removes its extracted demand when toggled of
         { component: Camera, data: {} },
         {
           component: AmbientOcclusion,
-          data: { directLightingStrength: 0.7, application: 1, sceneColorStrength: 0.8 },
+          data: { intensity: 0.7, quality: 75 },
         },
       )
       .unwrap();
-    expect(extractCameraSnapshots(world)[0]?.ambientOcclusion?.directLightingStrength).toBeCloseTo(
-      0.7,
-    );
+    expect(extractCameraSnapshots(world)[0]?.ambientOcclusion?.intensity).toBeCloseTo(0.7);
     expect(extractCameraSnapshots(world)[0]?.ambientOcclusion).toMatchObject({
-      application: 1,
-      sceneColorStrength: Math.fround(0.8),
+      quality: 75,
     });
     world.removeComponent(camera, AmbientOcclusion).unwrap();
     expect(extractCameraSnapshots(world)[0]?.ambientOcclusion).toBeUndefined();

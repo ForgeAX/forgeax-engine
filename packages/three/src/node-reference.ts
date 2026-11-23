@@ -57,7 +57,7 @@ export function admitReference(material: Material, subject: string, input: Refer
 }
 
 /** Source selector authority; never the mutable last-update reference cache. */
-function referenceTarget(material: Material, input: ReferenceInput): unknown {
+export function referenceTarget(material: Material, input: ReferenceInput): unknown {
   if (input.constructor === MaterialReferenceNode) {
     const target =
       (input as MaterialReferenceNode & { material: Material | null }).material ?? material;

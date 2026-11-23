@@ -251,6 +251,39 @@ export class GpuSceneCapacityPreparation {
     return ok(undefined);
   }
 
+  /** During live table contraction, keep the already copied prefix current as it is written.
+   * Untouched future chunks still take the active source exactly once at their copy cursor. */
+  followSubmitted(name: CapacityTable, offset: number, size: number): Result<void, RhiError> {
+    const target = this.targets.find((candidate) => candidate.name === name);
+    if (target === undefined || offset >= target.copied) return ok(undefined);
+    const end = Math.min(offset + size, target.copied);
+    const source = this.source?.(name);
+    if (source === undefined || this.busy) return err(stale());
+    target.bytes.set(source.subarray(offset, end), offset);
+    const written = writeGpuSceneTable(
+      this.device,
+      target.resource,
+      target.bytes.buffer,
+      offset,
+      end - offset,
+    );
+    if (!written.ok) return written;
+    this.uploaded += written.value;
+    return ok(undefined);
+  }
+
+  /** Give an abandoned private copy to the owning device's ordinary fenced retirement. */
+  abandon(retire: (storage: GpuSceneTableStorage) => void): void {
+    if (this.busy || this.published || this.retireRows !== undefined) throw stale();
+    for (const target of this.targets) retire(target.resource);
+    this.targets.length = 0;
+    this.source = this.live = this.descriptorBytes = undefined;
+    this.retired = true;
+    const done = this.finished;
+    this.finished = undefined;
+    done?.();
+  }
+
   /** Encode owned private rows without changing active bytes; catch-up preserves these intervals. */
   writeRows(name: CapacityTable, offset: number, bytes: Uint8Array): Result<void, RhiError> {
     if (

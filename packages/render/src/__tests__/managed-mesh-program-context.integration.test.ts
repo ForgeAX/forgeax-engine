@@ -321,12 +321,10 @@ it.each([
     const old = [...before.dispatch];
     const oldResource = before.renderables.at(0)?.material;
     if (oldResource === undefined) throw Error('Missing first material');
-    let firstSeen = false,
-      mutated = false;
+    let mutated = false;
     native.prepareMeshMaterial = (...args) => {
       const resource = original(...args);
-      if (args[1] === first) firstSeen = true;
-      if (args[1] === second && firstSeen && !mutated) {
+      if (args[1] === second && !mutated) {
         mutated = true;
         if (mutation === 'asset') assets.update(first, { values: { roughness: 0.125 } }).unwrap();
         else {
@@ -336,10 +334,13 @@ it.each([
       }
       return resource;
     };
-    // Equal slot tables retain accepted bindings; force an actual Pass-query candidate.
+    // Editing the second mesh forces the incremental query to resolve its binding.
+    // The injected mutation reaches a different already accepted source.
     assets
-      .update(firstMesh, {
-        materialSlots: [{ slotName: 'body', sourceKey: 'query-candidate', defaultMaterial: first }],
+      .update(secondMesh, {
+        materialSlots: [
+          { slotName: 'body', sourceKey: 'query-candidate', defaultMaterial: second },
+        ],
       })
       .unwrap();
     expect(draw).toThrow(

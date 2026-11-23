@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import devkitPackage from '../package.json' with { type: 'json' };
 import type { SdkManifest } from './sdk.js';
 import type { CommandResult, InitOptions, ProjectFacts } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 const STANDARD_SCRIPTS = {
   dev: 'forgeax dev start',
@@ -57,15 +58,12 @@ export function createInitPlan(
         (name) => !isEnginePackage(name) && !(name in SDK_DEV_DEPENDENCIES),
       );
       if (unsupported.length > 0) {
-        return {
-          ok: false,
-          error: {
-            code: 'sdk-external-dependency-unsupported',
-            expected: 'archive-backed init dependencies to belong to the SDK closure',
-            hint: 'Remove the external dependency or use a network-backed package workflow explicitly.',
-            detail: { root: facts.root, dependencies: unsupported.sort() },
-          },
-        };
+        return failCommand(
+          'sdk-external-dependency-unsupported',
+          'archive-backed init dependencies to belong to the SDK closure',
+          'Remove the external dependency or use a network-backed package workflow explicitly.',
+          { root: facts.root, dependencies: unsupported.sort() },
+        );
       }
     }
   }
@@ -120,15 +118,12 @@ export function createInitPlan(
     const existing = scripts[name];
     if (existing === undefined) scriptChanges.push({ name, to: command });
     else if (existing !== command) {
-      return {
-        ok: false,
-        error: {
-          code: 'project-script-conflict',
-          expected: `package.json#scripts.${name} to be absent or ${JSON.stringify(command)}`,
-          hint: `Rename the existing ${name} script, then rerun forgeax project init.`,
-          detail: { root: facts.root, script: name, existing },
-        },
-      };
+      return failCommand(
+        'project-script-conflict',
+        `package.json#scripts.${name} to be absent or ${JSON.stringify(command)}`,
+        `Rename the existing ${name} script, then rerun forgeax project init.`,
+        { root: facts.root, script: name, existing },
+      );
     }
   }
   const devDependencies = manifest.devDependencies;
@@ -144,17 +139,14 @@ export function createInitPlan(
       to: devkitVersion,
     });
   }
-  return {
-    ok: true,
-    value: {
-      root: facts.root,
-      version: sdk?.sdkVersion ?? devkitVersion,
-      ...(sdk === undefined ? {} : { pnpmVersion: sdk.requirements.pnpm }),
-      archiveBacked: sdk !== undefined,
-      dependencyChanges,
-      scriptChanges,
-    },
-  };
+  return completeCommand({
+    root: facts.root,
+    version: sdk?.sdkVersion ?? devkitVersion,
+    ...(sdk === undefined ? {} : { pnpmVersion: sdk.requirements.pnpm }),
+    archiveBacked: sdk !== undefined,
+    dependencyChanges,
+    scriptChanges,
+  });
 }
 
 export async function applyInitPlan(

@@ -38,4 +38,12 @@ indices and weights plus a world-space palette. It retains influence order,
 non-unit weight sums and zero-weight index validation. Picking rounds XYZ into
 its Float32 vertex output; Render uses both XYZ and homogeneous projection to
 form a conservative envelope. Neither query path normalizes the source weights.
+Set `Skin.affinePoint` when the affine world palette already includes the mesh
+world transform and the blended local XYZ should transform as a point. Render
+and picking apply the mesh translation once, independent of the weight sum.
+The default retains homogeneous world-palette behavior for glTF. Bounds
+include the translation correction when a conservative envelope is available.
+Affine-point bindings use mesh shadow casters, since one joint capsule cannot
+encode an independently weighted translation.
+
 Palette acquisition, cache lifetime and World reads remain with the consumer.

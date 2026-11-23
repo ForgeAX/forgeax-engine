@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "3ce70155-2b31-580d-b0e3-520ebb4b0ae8",
+  "schemaVersion": "3.0.0",
+  "packageId": "b36f90b5-32e8-5832-9208-7230c5b04c9c",
+  "assets": {
+    "shader-defs.wgsl": {
       "kind": "material",
-      "sourceKey": "shader-defs.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -16,7 +14,12 @@
               "vertexEntry": "vs_main",
               "fragmentEntry": "fs_main"
             },
-            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
           }
         ],
         "parameters": [
@@ -48,5 +51,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

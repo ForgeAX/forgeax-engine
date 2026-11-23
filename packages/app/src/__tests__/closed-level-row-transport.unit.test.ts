@@ -1,4 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { encodeClosedLevelRows, RenderPublicationReceiver } from '@forgeax/engine-render/internal';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import { ok, type ResultOk } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -274,6 +276,76 @@ describe('closed Level row custody', () => {
     }
   });
 
+  it('admits a cold producer program before acknowledging a Level seal', async () => {
+    const f = closedLevelWorld();
+    const shader = 'pine-basin::cooked-shadow';
+    const wgsl = '@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); }';
+    f.assets.shaderRegistry.installMaterialArtifact(shader, { source: wgsl, paramSchema: [] });
+    for (const { material } of f.rows.renderables)
+      material.adoptProgramSnapshot(
+        {
+          ...material.snapshot,
+          materialSceneIndexProgramKeys: {
+            shadow: { pass: 'shadow', specializationKey: shader },
+          },
+        },
+        true,
+      );
+    const publicationReceiver = new RenderPublicationReceiver(publication);
+    const receivingAssets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const install = vi.fn(
+      (programs: NonNullable<Extract<ClosedLevelRowOperation, { kind: 'seal' }>['programs']>) => {
+        for (const { key, shader } of programs)
+          if ('source' in shader)
+            receivingAssets.shaderRegistry.installMaterialArtifact(key, shader);
+      },
+    );
+    const receiver = new RenderClosedLevelRows(
+      publication,
+      f.world.identity,
+      (asset) => {
+        const retained = publicationReceiver.retainClosedLevelAsset(publication, asset);
+        return retained.ok ? retained.value : undefined;
+      },
+      install,
+    );
+    const source = new SourceClosedLevelRows(
+      () => ({
+        publication,
+        worldIdentity: f.world.identity,
+        isCurrent: () => true,
+        post(message, transfer) {
+          source.receive(receiver.receive(structuredClone(message, { transfer })));
+        },
+      }),
+      () => f.assets,
+    );
+    try {
+      expect(receivingAssets.shaderRegistry.findMaterialArtifact(shader).ok).toBe(false);
+      install.mockImplementationOnce(() => {
+        throw Error('invalid program');
+      });
+      expect((await source.stage(level, f.rows, { assets: f.coldAssets })).ok).toBe(false);
+      const next = (
+        await source.stage({ ...level, attempt: 3 }, f.rows, { assets: f.coldAssets })
+      ).unwrap();
+      expect(receiver.borrowSealed(next.id)?.isCurrent()).toBe(true);
+      expect(receivingAssets.shaderRegistry.findMaterialArtifact(shader).unwrap().source).toBe(
+        wgsl,
+      );
+      (await source.stage({ ...level, attempt: 4 }, f.rows, { assets: f.coldAssets })).unwrap();
+      expect(install).toHaveBeenCalledTimes(2);
+    } finally {
+      source.invalidate();
+      receiver.dispose();
+      publicationReceiver.dispose();
+      receivingAssets.dispose();
+      f.assets.dispose();
+    }
+  });
+
   it('shares exact asset custody across sealed Levels and retries a missing retained version', async () => {
     const f = closedLevelWorld();
     const publicationReceiver = new RenderPublicationReceiver(publication);
@@ -321,4 +393,55 @@ describe('closed Level row custody', () => {
       f.assets.dispose();
     }
   });
+});
+
+it('rolls back the entire visual exchange before drawing when one recipient refuses', () => {
+  const worldIdentity = 'fixture-world';
+  const id = (stream: number): ClosedLevelRowIdentity => ({
+    publication,
+    worldIdentity,
+    stream,
+    level: { ...level, instance: stream },
+  });
+  const changes = [
+    { id: id(1), active: true },
+    { id: id(2), active: true },
+    { id: id(3), active: false },
+  ];
+  const selected = new Set([3]);
+  const replies = vi.fn();
+  const transaction = new RenderLevelFrameSelection(
+    {
+      worldIdentity,
+      frameId: 22,
+      publication: { ...publication, revision: 23, record: new ArrayBuffer(0) },
+    },
+    { changes },
+    {
+      select({ id: identity, active }) {
+        if (identity.stream === 2)
+          return {
+            ok: false,
+            error: { ok: false, reason: 'view-obsolete' },
+          };
+        if (active) selected.add(identity.stream);
+        else selected.delete(identity.stream);
+        return ok(() => {
+          selected.delete(identity.stream);
+        });
+      },
+    },
+    replies,
+  );
+  transaction.apply({ ...publication, revision: 23 });
+  expect([...selected]).toEqual([3]);
+  transaction.finish(undefined);
+  for (const change of changes)
+    expect(replies).toHaveBeenCalledWith({
+      ...change,
+      kind: 'closed-level-selection-result',
+      frameId: 22,
+      revision: 23,
+      result: { ok: false, reason: 'view-obsolete' },
+    });
 });

@@ -3,6 +3,7 @@ import type { MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { CollectedMaterialArtifacts } from '../gpu-driven/material-artifacts';
+import { sceneIndexKeyForPass } from '../gpu-driven/material-artifacts';
 import type { GpuDrivenPrepareInput } from '../gpu-driven/production-raster';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -39,6 +40,7 @@ export interface FrameGpuDrivenSources {
   readonly camera: CameraSnapshot;
   readonly lights: ViewLights;
   readonly renderables: FrameList<RenderableSnapshot>;
+  readonly hasLightProbes?: boolean;
   readonly shadowCasterProjection: PersistentShadowCasterProjection | undefined;
   readonly materialBindingClasses: ReadonlyMap<string, string>;
   readonly gpuDriven: GpuDrivenRecordInput;
@@ -90,7 +92,10 @@ function resolveDirectSurface(
     const material = source.materials[slot]?.snapshot;
     if (material?.surfaceModel !== 'single-layer-medium' || material.materialShaderId === undefined)
       return false;
-    artifact ??= internals.getMaterialShaderArtifact?.(material.materialShaderId, {
+    const sharedPageProgram =
+      sceneIndexKeyForPass(material, 'forward', material.materialShaderId) ??
+      material.materialShaderId;
+    artifact ??= internals.getMaterialShaderArtifact?.(sharedPageProgram, {
       address: 'scene-index',
       pass: 'forward',
       clustered: standard.kind === 'clustered',
@@ -118,6 +123,7 @@ export function buildFrameGpuDrivenInput(
     standard,
     frame?.scene,
     renderables,
+    sources.hasLightProbes,
   );
   const { materials } = resolveFrameMaterials(
     shadowCasterProjection,

@@ -29,17 +29,23 @@ export function directionalShadowSimple(
  * True when the frame's Standard light loop needs none of the per-light
  * modifier lanes: no IES, Cookie or projector spot, no IES point, no rect-area
  * or additional directional slot, no atmosphere solar transmittance and no
- * live cloud shadow (absent, low sun or empty range). The forward Standard
+ * live cloud shadow (absent, low sun or empty range).
+ * The Forward Standard
  * pipeline can select LEAN_LIGHTING within the admitted plain storage-forward domain.
  * The predicates stay distinct: full lighting keeps every modifier lane while
  * still allowing a simple directional receiver.
  */
 export function leanLightingFrame(
-  lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
+  lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'> &
+    Partial<Pick<ViewLights, 'directional'>>,
   environmentKind: string | undefined,
   cloudShadow: { readonly lowSun: boolean; readonly range: number } | undefined,
 ): boolean {
-  if (environmentKind === 'atmosphere') return false;
+  if (
+    environmentKind === 'atmosphere' &&
+    lights.directional?.perPixelAtmosphereTransmittance !== false
+  )
+    return false;
   if (cloudShadow !== undefined && !cloudShadow.lowSun && cloudShadow.range > 0) return false;
   if (lights.rect.length > 0 || (lights.additionalDirectional?.length ?? 0) > 0) return false;
   for (const point of lights.point) if (point.iesProfileSlice !== undefined) return false;

@@ -120,6 +120,7 @@ async function main() {
         artifactId,
         '--path',
         staging,
+        ...(retainSdkCore ? ['--range-minimum-bytes', String(32 * 1024 * 1024)] : []),
       ],
       { stdio: 'inherit', env: { ...process.env, FORGEAX_ARTIFACT_EXPECTED_SHA: sha } },
     );

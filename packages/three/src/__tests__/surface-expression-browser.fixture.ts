@@ -57,6 +57,7 @@ export function registerSurfaceExpressionBrowserCase(kind: 'standard' | 'unlit' 
           referenceQueue = evidence.catch(() => {});
         },
         replays.queue,
+        kind === 'unlit',
       ).catch((cause: unknown) => {
         failures.push(cause);
       });

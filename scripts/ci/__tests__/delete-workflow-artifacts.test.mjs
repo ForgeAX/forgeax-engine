@@ -143,7 +143,7 @@ test('successful CI retains original repair evidence through its bounded produce
   assert.equal(fixture.status, 0, fixture.stderr);
   assert.deepEqual(
     fixture.log.trim().split('\n').sort(),
-    [111, 112, 113].map((id) => `repos/owner/repo/actions/artifacts/${id}`),
+    [108, 111, 112, 113].map((id) => `repos/owner/repo/actions/artifacts/${id}`),
   );
 });
 

@@ -500,6 +500,9 @@ it('observes raw in-place entry changes from the preceding callback', async () =
 
 it('replays an unchanged view without visiting its rows and re-records a replaced projection map', async () => {
   const f = await fixture();
+  Object.assign(f.context.runtime, {
+    options: { ...f.context.runtime.options, retainIndirectBundles: true },
+  });
   try {
     const submission = { view: f.shadowView, plan: { batches: f.batches } };
     Object.assign(f.context, { gpuDrivenShadowViews: { submission: () => submission } });
@@ -529,6 +532,9 @@ it('replays an unchanged view without visiting its rows and re-records a replace
 
 it('does not retain a superseded projection map or plan for replay', async () => {
   const f = await fixture();
+  Object.assign(f.context.runtime, {
+    options: { ...f.context.runtime.options, retainIndirectBundles: true },
+  });
   try {
     const views = f.context.gpuDrivenShadowBatchProjections as Map<string, unknown>;
     let submission: { view: unknown; plan: { batches: unknown } } | undefined = {

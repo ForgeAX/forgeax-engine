@@ -1,5 +1,5 @@
 import { err } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { AssetRecords } from '../internal/asset-records';
 
 describe('fixed asset content and reference custody', () => {
@@ -7,7 +7,8 @@ describe('fixed asset content and reference custody', () => {
     const assets = new AssetRecords();
     const old = assets.create('texture', { pixels: new Uint8Array([3, 7]) }).unwrap();
     const root = assets.create('scene', { child: old }, [old]).unwrap();
-    const lease = assets.captureContent(root).unwrap();
+    const lease = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(lease);
     const captured = lease.read<{ pixels: Uint8Array }>(old).unwrap();
     expect(lease.read(old).unwrap()).toBe(captured);
     expect(lease.matchesCurrent()).toBe(true);
@@ -35,12 +36,13 @@ describe('fixed asset content and reference custody', () => {
     const assets = new AssetRecords({ maxSnapshots: 1 });
     const root = assets.create('scene', { name: 'fixed' }).unwrap();
     const snapshot = assets.snapshot(root).unwrap();
-    expect(assets.captureContent(root)).toMatchObject({
+    expect(assets.beginContentCapture(root)).toMatchObject({
       ok: false,
       error: { code: 'asset-budget-exceeded' },
     });
     snapshot.dispose();
-    const lease = assets.captureContent(root).unwrap();
+    const lease = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(lease);
     const owned = assets.read<{ name: string }>(root).unwrap();
     owned.name = 'changed detached read';
     expect(lease.read<{ name: string }>(root).unwrap().name).toBe('fixed');
@@ -114,8 +116,10 @@ describe('fixed asset content and reference custody', () => {
   it('keeps independent captured consumers alive until their own custody is drained', () => {
     const assets = new AssetRecords();
     const root = assets.create('scene', { value: 1 }).unwrap();
-    const first = assets.captureContent(root).unwrap();
-    const second = assets.captureContent(root).unwrap();
+    const first = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(first);
+    const second = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(second);
     assets.release(root).unwrap();
     first.retire().unwrap().step(1).unwrap();
     expect(assets.inspect()).toMatchObject({ assets: 1, snapshots: 1 });
@@ -127,10 +131,11 @@ describe('fixed asset content and reference custody', () => {
   it('rejects custody changes inside an adoption transaction without losing the old lease', () => {
     const assets = new AssetRecords();
     const root = assets.create('scene', { value: 1 }).unwrap();
-    const lease = assets.captureContent(root).unwrap();
+    const lease = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(lease);
     const before = assets.inspect();
     assets.adoptClosure(() => {
-      expect(assets.captureContent(root)).toMatchObject({
+      expect(assets.beginContentCapture(root)).toMatchObject({
         ok: false,
         error: { code: 'asset-write-conflict' },
       });
@@ -160,7 +165,8 @@ describe('fixed asset content and reference custody', () => {
   it('closes captured copies and transferred holds after the asset owner itself is disposed', () => {
     const assets = new AssetRecords();
     const root = assets.create('scene', { value: 1 }).unwrap();
-    const lease = assets.captureContent(root).unwrap();
+    const lease = assets.beginContentCapture(root).unwrap().step(1000).unwrap();
+    assert.isDefined(lease);
     assets.dispose();
     expect(lease.matchesCurrent()).toBe(false);
     const task = lease.retire().unwrap();

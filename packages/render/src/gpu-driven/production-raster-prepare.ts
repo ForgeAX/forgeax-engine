@@ -521,12 +521,20 @@ export function suppressedPrimitiveWords(
   addresses: Pick<GpuScene, 'rowAddressExtent' | 'primitiveIndexForSlot'>,
 ): Uint32Array {
   const words = new Uint32Array(Math.max(1, Math.ceil(addresses.rowAddressExtent / 32)));
-  for (const slot of slots) {
-    if (activeEntityKeys.has(slot.snapshot.entityKey)) continue;
-    const index = addresses.primitiveIndexForSlot(slot.slot);
-    if (index === undefined) continue;
+  const suppress = (entity: number, slot: number): void => {
+    if (activeEntityKeys.has(entity)) return;
+    const index = addresses.primitiveIndexForSlot(slot);
+    if (index === undefined) return;
     const word = index >>> 5;
     if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (index & 31));
+  };
+  if (slots instanceof SceneSlotFrame && SceneSlotFrame.hasNativeIteration(slots)) {
+    slots.findContent((_content, entity, slot) => {
+      suppress(entity, slot);
+      return undefined;
+    });
+  } else {
+    for (const slot of slots) suppress(slot.snapshot.entityKey, slot.slot);
   }
   return words;
 }
@@ -572,6 +580,8 @@ export function patchSuppressedPrimitiveWords(
     !(previous.slots instanceof SceneSlotFrame) ||
     !(activeEntityKeys instanceof SlotIdentityKeys) ||
     !(previous.activeEntityKeys instanceof SlotIdentityKeys) ||
+    !activeEntityKeys.usesSlotsOf(slots) ||
+    !previous.activeEntityKeys.usesSlotsOf(previous.slots) ||
     previous.addressRevision !== addresses.allocationRevision ||
     // Capacity bounds which rows the earlier bitmap could address.
     previous.words.length !== Math.max(1, Math.ceil(addresses.rowAddressExtent / 32))
@@ -579,13 +589,13 @@ export function patchSuppressedPrimitiveWords(
     return undefined;
   const words = previous.words.slice();
   const changed: number[] = [];
+  const hidden = (_content: unknown, entity: number): boolean => !activeEntityKeys.has(entity);
   const evaluate = (slot: number): void => {
     const index = addresses.primitiveIndexForSlot(slot);
     if (index === undefined) return;
     const word = index >>> 5;
     if (word >= words.length) return;
-    const record = slots.slotAt(slot);
-    const suppressed = record !== undefined && !activeEntityKeys.has(record.snapshot.entityKey);
+    const suppressed = slots.readContentSlot(slot, hidden) === true;
     const bit = 1 << (index & 31);
     const before = words[word] ?? 0;
     const after = suppressed ? before | bit : before & ~bit;

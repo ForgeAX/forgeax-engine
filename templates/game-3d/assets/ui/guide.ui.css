@@ -60,3 +60,8 @@
   }
 }
 :host(.touch) .hud { display: none; }
+
+.checkpoint { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.checkpoint button { pointer-events: auto; color: inherit; background: #142b43; border: 1px solid #c8d7e8; border-radius: 4px; padding: 5px 8px; font: inherit; cursor: pointer; }
+.checkpoint span { color: #c8d7e8; font-size: 11px; }
+:host(.locked) .checkpoint button { visibility: hidden; }

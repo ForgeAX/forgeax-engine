@@ -108,13 +108,9 @@ const materialTemplateResolvers = new WeakMap<
     readonly owns: (pass: string, key: string) => boolean;
   }
 >();
-type TemplatePrograms = {
-  readonly direct?: ProgramSelection;
-  readonly sceneIndex?: ProgramSelection;
-};
 const materialTemplatePrograms = new WeakMap<
   MaterialArtifactRegistry,
-  Map<string, TemplatePrograms>
+  Map<string, ProgramSelection | null>
 >();
 
 /** Static author choices require their exact admitted publication, including children. */
@@ -560,6 +556,7 @@ export function bindMaterialTemplateProjection(
       passName,
       materialProgramContextKey(context),
       vertexColorAvailable,
+      address,
     ]);
     let known = accepted.get(selection);
     if (known === undefined) {
@@ -570,37 +567,23 @@ export function bindMaterialTemplateProjection(
           sources: template.sources,
         })
         .unwrap();
-      const compiled = prepared.select({ pass: passName, context, vertexColorAvailable }).unwrap();
-      known =
-        compiled === undefined
-          ? {}
-          : {
-              direct: install(pass, context, 'direct', compiled.direct),
-              ...(compiled.sceneIndex === undefined
-                ? {}
-                : {
-                    sceneIndex: install(pass, context, 'scene-index', compiled.sceneIndex),
-                  }),
-            };
+      const request = { pass: passName, context, vertexColorAvailable };
+      const legacy =
+        prepared.selectAddress === undefined ? prepared.select(request).unwrap() : undefined;
+      const selected = prepared.selectAddress?.(request, address).unwrap();
+      const compiled =
+        selected?.program ?? (address === 'direct' ? legacy?.direct : legacy?.sceneIndex);
+      known = compiled === undefined ? null : install(pass, context, address, compiled);
       accepted.set(selection, known);
-      if (compiled?.rasterCoverage !== undefined) {
-        if (known.direct !== undefined)
-          bindTemplateRasterCoverage(
-            shaderRegistry,
-            known.direct,
-            compiled.rasterCoverage,
-            (next) => select(passName, next, 'direct', vertexColorAvailable),
-          );
-        if (known.sceneIndex !== undefined)
-          bindTemplateRasterCoverage(
-            shaderRegistry,
-            known.sceneIndex,
-            compiled.rasterCoverage,
-            (next) => select(passName, next, 'scene-index', vertexColorAvailable),
-          );
-      }
+      if (known !== null)
+        bindTemplateRasterCoverage(
+          shaderRegistry,
+          known,
+          selected?.rasterCoverage ?? legacy?.rasterCoverage,
+          (next) => select(passName, next, address, vertexColorAvailable),
+        );
     }
-    return address === 'direct' ? known.direct : known.sceneIndex;
+    return known ?? undefined;
   };
   materialTemplateResolvers.set(projection, {
     select,

@@ -48,6 +48,8 @@ export interface EngineSettings {
     readonly workers?: ExecutionWorkersOptions;
     readonly taskWorkers?: number;
     readonly renderPipelineCapacity?: 2 | 3 | 4;
+    /** Maximum unique transferred backing bytes across outstanding draw publications (default 256 MiB). */
+    readonly renderPublicationTransferBudgetBytes?: number;
   };
   readonly assets?: { readonly assetBudgetBytes?: number };
   readonly audio?: {
@@ -70,6 +72,7 @@ export interface EngineSettings {
     readonly renderBackend?: 'auto' | 'webgpu' | 'webgl2';
     readonly resources?: {
       readonly dynamicGeometryMeshBudgetBytes?: number;
+      readonly staticShadowBudgetBytes?: number;
       readonly featureTextureReadbackBudgetBytes?: number;
     };
   };

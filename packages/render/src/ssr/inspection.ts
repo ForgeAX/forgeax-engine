@@ -4,12 +4,11 @@ import type { ScreenSpaceReflectionData } from '../components/screen-space-refle
 import type { ReflectionFallbackSource } from '../inspection-types';
 import type { SsrAdmissionWork, SsrSpatialAdmission, SsrSpatialLane } from './admission';
 import type { SsrConfigInvalidError, SsrUnavailableError } from './errors';
-import type { SsrHistoryState } from './history';
 
 export type SsrSpatialInspectionFailure = SsrConfigInvalidError | SsrUnavailableError;
 
 export interface SsrSpatialHistoryInspection {
-  readonly state: 'not-owned' | SsrHistoryState;
+  readonly state: 'not-owned';
   readonly bytes: number;
   readonly resetCount: number;
 }
@@ -102,7 +101,6 @@ export function projectSsrSpatialInspection(
             maxDistance: config.maxDistance,
             thickness: config.thickness,
             maxRoughness: config.maxRoughness,
-            waterTemporal: config.waterTemporal,
           }),
     viewRange: admission.viewRange,
     coverage: copyCoverage(projection.coverage),

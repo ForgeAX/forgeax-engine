@@ -13,7 +13,6 @@ import { RenderGraphError } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   RenderPassDepthStencilAttachment,
-  RenderPipeline,
   RhiRenderPassEncoder,
   TextureFormat,
 } from '@forgeax/engine-rhi';
@@ -66,11 +65,6 @@ export type RenderFeatureGraphBindingsResolver<FrameCtx extends RenderGraphFrame
   readonly resolveTarget: RenderFeatureGraphTargetResolver;
   readonly resolveGpuResource?: (name: string) => RenderFeatureResolvedGpuBuffer | undefined;
 }) => RenderFeatureGraphBindingsResolution | undefined;
-
-export type RenderFeatureLightingResolver<FrameCtx extends RenderGraphFrame> = (
-  frame: FrameCtx,
-  pipeline: RenderPipeline,
-) => BindGroup | undefined;
 
 /** Prepared draws embedded by the owning pipeline into its light-view passes. */
 export interface RenderFeatureShadowDraws<FrameCtx extends RenderGraphFrame> {
@@ -132,7 +126,7 @@ function hasStencilAspect(format: TextureFormat): boolean {
 function depthStencilOperations(
   depth: NonNullable<RenderFeatureGraphicsPassDescriptor['attachments']['depthStencil']>,
   readOnly: boolean,
-): Omit<RasterDepthStencilAttachment, 'view'> {
+): Omit<RenderPassDepthStencilAttachment, 'view'> {
   const stencil = hasStencilAspect(depth.format);
   return readOnly
     ? { depthReadOnly: true, ...(stencil ? { stencilReadOnly: true } : {}) }
@@ -219,7 +213,6 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     private readonly resolveBindings?: RenderFeatureGraphBindingsResolver<FrameCtx>,
     buffers?: RenderFeatureGraphBufferState,
     private readonly reportError?: (error: RenderError) => void,
-    private readonly resolveStandardLighting?: RenderFeatureLightingResolver<FrameCtx>,
     private readonly standardSurfaceAccesses: readonly GraphAccess[] = [],
     private readonly viewAccesses: readonly GraphAccess[] = [],
   ) {
@@ -580,6 +573,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             resources,
             undefined,
             scope,
+            this.resolveTarget,
+            work,
           );
         } catch (failure) {
           throwFeatureRecordingFailure(
@@ -645,8 +640,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     shadowView?: BindGroup,
     scope?: string,
     resolveTarget: RenderFeatureGraphTargetResolver = this.resolveTarget,
+    current = currentRenderFeaturePass(frame, featureIdentity, name, scope),
   ): void {
-    const current = currentRenderFeaturePass(frame, featureIdentity, name, scope);
     if (current?.enabled === false) return;
     const activeSnapshot = current?.resolvedGraphics ?? snapshot;
     let nextDrawIndex = 0;
@@ -662,18 +657,6 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           new Error(`Raster pass "${name}" has no prepared pipeline for draw ${drawIndex}.`),
         );
       pass.setPipeline(pipeline.handle);
-      if (pipeline.standardLighting === true) {
-        const lighting = this.resolveStandardLighting?.(frame, pipeline.handle);
-        if (lighting === undefined)
-          throw missing(
-            featureIdentity,
-            order,
-            new Error(
-              `Raster pass "${name}" could not resolve Standard lighting for draw ${drawIndex}.`,
-            ),
-          );
-        pass.setBindGroup(2, lighting);
-      }
       let nextGroup = 0;
       for (const reference of activeDraw.bindings) {
         const group = nextGroup++;

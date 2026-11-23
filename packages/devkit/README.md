@@ -409,7 +409,7 @@ presentation clients decide how query results affect their selection.
 - [RHI-debug operations](#rhi-debug-operations)
 - [Authoring preview](#authoring-preview)
 - [Project authority](#project-authority)
-- [Migration and carrier](#migration-and-carrier)
+- [Carrier](#carrier)
 
 ## CLI and catalog
 
@@ -758,6 +758,151 @@ Static deployment is an Engine-owned build product. A publishing host supplies
 the project root, public URL base, and dedicated output directory; DevKit owns
 the generated host, asset cooking, shader compilation, Pack index, and
 `forgeax-dist.json` closure.
+
+### Native desktop development build
+
+The desktop target compiles the ordinary project roots to Node ESM and includes
+the matching native addon, audio runtime, Packs and Shader publications. Build
+or install the addon for a source checkout. A Windows x64 SDK can supply an
+admitted prebuilt addon through its artifact inventory.
+
+```sh
+pnpm --filter @forgeax/engine-rhi-wgpu-native build:native
+forgeax project build --root templates/game-3d --target native --out-dir dist/native
+node templates/game-3d/dist/native/game.mjs
+```
+
+`--platform windows|macos|linux` and `--arch x64|arm64` select the destination
+addon when staging an explicit destination, and the build requires its
+artifact. This development target runs with a compatible Node installation.
+Its output includes the selected addon. It uses the existing RHI
+and App frame receipts, local Catalog and Bundle files, native keyboard/pointer
+input, Blitz UI, Host-owned audio and local quality preferences. Click the
+scene to grab the cursor when the game allows it. <kbd>Esc</kbd> and loss of
+focus release the grab. Device loss runs the Renderer recovery path before
+the App resumes simulation. Windows uses XInput and macOS uses the system Game
+Controller extended profile. Both publish up to four controllers through
+`InputSnapshot.gamepad(index)` with the standard gamepad mapping. Text controls in
+Blitz receive keyboard and system IME input while focused, with the candidate
+window anchored to the control. The desktop build includes the native UI font
+subsets used to render Latin and Simplified Chinese text.
+
+`GameHost.audio` exposes `listOutputDevices()`, `getOutputDevice()` and
+`setOutputDevice(id)` to game settings. An empty ID selects the system default.
+The Host switches its active AudioContext in place. Cooked streaming WAVs use
+bounded byte ranges from the installed game, including while seeking or looping.
+
+Game plugins use `GameHost.saves` to persist versioned JSON in named slots. Web
+uses origin and project-scoped IndexedDB. Windows uses atomic files in
+`%LOCALAPPDATA%/ForgeaX/<projectKey>/saves`. macOS and Linux use
+`~/.local/share/ForgeaX/<projectKey>/saves`. Each game owns schema interpretation
+and migration. Game 3D demonstrates checkpoint save and resume.
+
+The build emits authored Runtime
+Pack programs as Node ESM files. On a cache miss the installed player's Task
+Worker generates their assets, then the project disk cache stores the outputs.
+WeChat bundles ordinary Runtime Pack generators as lazy local modules and runs
+them in the game realm on demand. Its target rejects an explicit
+`execution: 'task-worker'` requirement.
+
+### Windows native installer
+
+`forgeax project package --format native` builds the native game and creates a
+Windows x64 MSI with a GUI launcher, a Start Menu shortcut, Node and the Visual C++
+runtime libraries. Use a Windows x64 source checkout or SDK with its matching
+native addon, the .NET Framework C# compiler and WiX 5 or later on PATH. Supply the extracted
+official Windows x64 Node distribution, including its LICENSE, and the
+`x64/Microsoft.VC143.CRT` redistributable directory from the Visual Studio toolchain.
+
+```powershell
+forgeax project package --format native --platform windows --arch x64 --publisher "Studio" --version 1.0.0 --node-dist $NodeDist --vc-runtime $VcRuntime --output release/Game.msi
+```
+
+The publisher, project ID and `--channel` identify an installation family. Keep them
+stable and increase the three-part version for a major upgrade. The channel defaults
+to `stable` and the version defaults to the project's package version. Launch logs
+are written under `%LOCALAPPDATA%/ForgeaX/<installDirectory>/logs`.
+
+To sign both the launcher and installer, add `--sign-thumbprint` and
+`--timestamp-url` and put Windows SDK SignTool on PATH. The signer is selected from
+`CurrentUser/My` unless `--sign-store machine` selects `LocalMachine/My`. The CLI
+validates the MSI and verifies the timestamped signatures before publishing. The JSON
+receipt identifies the resulting MSI by SHA-256 and includes its product and upgrade codes.
+
+### macOS native disk image
+
+On Apple Silicon, `forgeax project package --format native --platform macos`
+builds a relocatable `.app` inside a DMG. The app carries Node, the Metal and
+CoreAudio addons, and the game's sealed assets. Install the Apple command line
+tools and supply the extracted official macOS arm64 Node distribution. Keep the
+bundle ID stable across upgrades. Use a separate bundle ID for a release channel
+that players should be able to install alongside the stable app.
+
+```sh
+forgeax project package --format native --platform macos --arch arm64 \
+  --bundle-id com.example.game --version 1.0.0 --node-dist "$NodeDist" \
+  --output release/Game.dmg
+```
+
+The default produces an ad hoc signed DMG for local testing. The launcher writes
+logs to `~/Library/Logs/ForgeaX/<bundle-id>/launcher.log`.
+For public distribution, pass a Developer ID Application identity available in
+the signing keychain with `--sign-identity`. Add `--notary-keychain-profile` with
+a configured `notarytool` profile to submit the DMG, staple its ticket and verify
+it before publication. The JSON receipt records the signature type, notarization
+status, deployment target and final SHA-256.
+
+### Installed desktop acceptance
+
+The native build resolves the destination's device profile before bundling.
+Use a browser-specific profile for browser Workers or WebGL2 when the same
+project targets the native desktop Host. Unsupported settings fail with
+`configuration-domain-unavailable` and the setting path. The launch log reports
+the selected profile, Renderer backend, native adapter and graphics API, Ray
+Query capability, and the Renderer-reported diffuse GI traversal and fallback
+when the game uses that feature.
+
+> [!IMPORTANT]
+> Run installed acceptance manually on a Windows x64 or Apple Silicon macOS
+> test account. CI exercises the platform-independent checks on Linux.
+
+1. Build two increasing versions of Game 3D with the same MSI upgrade family
+   or macOS bundle ID. Capture each `forgeax project package --format native
+   … --json` receipt to a separate file.
+2. Install the baseline MSI or copy the `.app` from the baseline DMG to a
+   writable installation location. Launch the installed app, move away from
+   spawn, select **Save checkpoint**, observe **Checkpoint saved**, then quit.
+3. Record baseline evidence using the corresponding launcher log.
+4. Upgrade the same installation with the second MSI or replace the installed
+   macOS app. Launch it, observe **Checkpoint restored** and the saved position,
+   then quit. Record upgrade evidence with the baseline JSON and new log.
+
+| Target | Launcher log |
+| --- | --- |
+| Windows x64 | `%LOCALAPPDATA%/ForgeaX/<installDirectory>/logs/` contains one file per launch |
+| Apple Silicon | `~/Library/Logs/ForgeaX/<bundle-id>/launcher.log` contains successive launches |
+
+Run the evidence tool with Node on the target. [Evidence tool](../../scripts/forgeax/accept-installed-desktop.mjs)
+
+```sh
+node accept-installed-desktop.mjs --receipt v1-package.json --artifact v1.dmg \
+  --log launcher.log --observed saved --output baseline.json
+node accept-installed-desktop.mjs --receipt v2-package.json --artifact v2.dmg \
+  --log launcher.log --observed restored --baseline baseline.json --output upgrade.json
+```
+
+On Windows, substitute each MSI and its individual launch log. The tool
+correlates the installer digest and sealed game manifest with the installed
+launch's 60 completed frames and compares checkpoint bytes across versions.
+`--observed` records the HUD observation. Add `--controller`, `--ime` or
+`--audio` only after observing, respectively, a physical controller across a
+disconnect and reconnect, system composition and candidate selection in a
+focused text field, or continued sound after switching an output device during
+play. Device observations omitted from the invocation remain unverified.
+Use a package with a text field for the IME observation.
+
+For a public macOS release, use Developer ID signing and notarization, then
+repeat first launch with the downloaded package through Gatekeeper.
 
 ### WeChat mini-game
 
@@ -1854,10 +1999,9 @@ Vite resolver fallback, using each package's declared exports. Project-installed
 packages keep priority; an explicit source binding continues to select that source
 workspace. This fallback does not install packages or write a project binding.
 
-Physical realm consumers use `createRealmDispatch`. Each descriptor is routed to
-one owner for its declared realm (the `ToolRealm` contract). A missing owner
-returns `tool-capability-unavailable` with the realm in `detail`; it never falls
-through to another realm.
+Use the host-owned Tool API to discover and run tools. Tool descriptors declare
+their execution realm. If multiple providers publish the same operation,
+pass the source and provider identifiers returned by discovery.
 
 ## Platform SDK adaptation
 
@@ -1955,7 +2099,7 @@ repair the validator rather than obfuscating Engine code or bypassing publishing
 
 ## Startup diagnostics
 
-Ordinary game pages show `Game <version> | Engine <version> | FPS <rate>`
+Ordinary game pages show `Game <version> | Engine <version> | Render FPS <rate>`
 after their first scene-ready Renderer completion. The shared browser/WeChat
 startup document owns this unobtrusive bottom-left line: 10px, half-opacity white
 text, no border or background, and no pointer input. Game releases use
@@ -1966,9 +2110,12 @@ and SDK source archives use SDK provenance. A `0.0.0-dev.<hash>` archive shows
 its hash. Without either version or Git provenance the label is `unversioned`.
 Labels are baked into generated HTML, including static and offline delivery.
 Browser and WeChat hosts count the same successful scene
-receipts over one-second monotonic-clock windows; rAF, loading-only completions
-and duplicate/retired receipts do not count. The line updates FPS text only when its
-value changes, takes no input and requests no extra render frames. Visibility,
+receipts over one-second monotonic-clock windows. The same line shows the
+longest completion gap, including the wait for the next receipt. The browser
+compositor can display fewer Canvas updates than the Renderer completes.
+The line ignores rAF, loading-only completions and duplicate or retired
+receipts. It updates text only when its value changes, takes no input and
+requests no extra render frames. Visibility,
 Surface/device and session changes reset the sample; failure or disposal removes
 its timer and listeners. Workspace and tool pages omit it.
 
@@ -2968,22 +3115,10 @@ its project server in another process; passing a carrier does not transfer a
 BackendHost or a Catalog across that boundary. Ordinary calls without `host`
 retain their existing behavior.
 
-## Migration and carrier
+## Carrier
 
-Only operations with committed, owner-attributed ArtifactRef proofs are admitted
-to the migration roster. Operations without a verifiable digest remain absent:
-
-| Operation | Owner | Evidence | Fallback |
-|:--|:--|:--|:--|
-| `preview.run` | Preview host | RHI, ProfileCapture, and PNG refs | Private executor |
-| `preview.analyze` | RHI-debug consumer | RHI and ProfileCapture refs | Private executor |
-
-`resolveMigration` rechecks target realm, catalog digest, RHI backend, and
-evidence before selecting a service. Service admission is optional; absent or
-invalid admission selects the private executor.
-Executor options derive their workload identity from ToolRuntime's
-`ServiceAdmissionExpectation`; the contribution supplies the tool ID and the
-service adapter supplies the backend.
+Import service admission and migration primitives from
+`@forgeax/engine-tool-runtime`.
 
 `createCarrierProviderService` owns an authenticated, ephemeral provider
 process. It exposes only POD carrier routes and keeps no provider registry after
@@ -3238,12 +3373,6 @@ Browser capture uses `BrowserCaptureOptions.backend` (`auto`, `software`, or
 that choice while `backend` reports the observed adapter. Software rendering uses
 the same `browserCaptureCommand` / `createBrowserCapture` APIs and
 `browser-capture-*` failures; there is no separate software option or facade.
-
-The tool-service benchmark harness and admission report share their ordered mode
-and phase vocabulary and default thresholds. Completeness requires the configured
-sample count for each mode in each phase; balanced totals cannot substitute for
-missing cold or warm measurements. Timing thresholds and alternation remain
-independent admission checks.
 
 Direct JSON discovery uses Scene schemas for common transform, name, camera,
 light and mesh components. Scalar and short-vector fields can preview directly;

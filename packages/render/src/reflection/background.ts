@@ -10,7 +10,6 @@ import {
 } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { getIblProbeBackgroundSource } from '../ibl/IblPipelineCache';
-import { prepareMaterialSkylight } from '../record/main-pass-material';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
@@ -71,6 +70,25 @@ export async function createProbeBackgroundResources(
   return { pipeline, layout, uniform, groups: new WeakMap() };
 }
 
+function probeBackgroundInputs(
+  context: _InternalRenderPipelineContext,
+  environmentCube: TextureView | undefined,
+) {
+  const skybox = context.skybox;
+  const source = skybox ?? context.skylight;
+  const image =
+    source === undefined
+      ? undefined
+      : context.store.getCubemapGpuView(
+          source.equirectHandle as AssetHandle<'equirect'>,
+          context.world,
+        );
+  const skylightResources = context.pipelineState.skylightFallback;
+  const view = environmentCube ?? image ?? skylightResources?.irradianceView;
+  if (view === undefined || skylightResources == null) return;
+  return { view, skybox, source, sampler: skylightResources.sampler };
+}
+
 /** Capture the scene's environment in the same raw HDR pass as its geometry. */
 export function recordProbeBackground(
   resources: ProbeBackgroundResources | undefined,
@@ -91,17 +109,10 @@ export function recordProbeBackground(
       expected: 'the compiled probe environment background program',
       hint: 'rebuild the Engine shader manifest before enabling ReflectionProbe',
     });
-  const { skylightResources } = prepareMaterialSkylight(context);
-  const skybox = context.skybox;
-  const source = skybox ?? context.skylight;
-  const image =
-    source === undefined
-      ? undefined
-      : context.store.getCubemapGpuView(
-          source.equirectHandle as AssetHandle<'equirect'>,
-          context.world,
-        );
-  const view = environmentCube ?? image ?? skylightResources.irradianceView;
+
+  const inputs = probeBackgroundInputs(context, environmentCube);
+  if (inputs === undefined) return;
+  const { view, skybox, source, sampler } = inputs;
   const rotation =
     environmentCube === undefined ? (source?.rotation ?? [0, 0, 0, 1]) : [0, 0, 0, 1];
   const scale =
@@ -141,7 +152,7 @@ export function recordProbeBackground(
         layout: resources.layout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: view } },
-          { binding: 1, resource: { kind: 'sampler', value: skylightResources.prefilterSampler } },
+          { binding: 1, resource: { kind: 'sampler', value: sampler } },
           { binding: 2, resource: { kind: 'buffer', value: { buffer: resources.uniform } } },
         ],
       })

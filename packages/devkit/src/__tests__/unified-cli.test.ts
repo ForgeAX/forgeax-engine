@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
-import type { ToolContribution } from '@forgeax/engine-tool-runtime';
+import { createToolApi, type ToolContribution } from '@forgeax/engine-tool-runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativePreviewRun = vi.hoisted(() => vi.fn());
@@ -223,13 +223,13 @@ describe('unified CLI', () => {
             source: 'app',
             frameId: 1,
             phase: 'frame-total',
-            startMicros: 1000,
-            endMicros: 1100,
+            startMicros: 0,
+            endMicros: 100,
             durationMicros: 100,
           },
         ],
         completeness: { status: 'complete', retainedEventCount: 1, droppedEventCount: 0 },
-      }),
+      }).replace('"startMicros":0', '"startMicros":-0'),
     );
     for (const args of [
       ['summary'],
@@ -247,6 +247,9 @@ describe('unified CLI', () => {
       ]);
       expect(result, JSON.stringify({ args, result })).toMatchObject({ ok: true });
       expect(JSON.stringify(result.value)).toContain('capture-0001');
+      if (args[0] === 'frame') {
+        expect(result.value).toMatchObject({ frame: { records: [{ startMicros: 0 }] } });
+      }
     }
     const missing = join(root, 'absent-profile.json');
     expect(
@@ -289,6 +292,35 @@ describe('unified CLI', () => {
     const created = await runUnifiedCli(['asset', 'source', 'create', '--root', root, '--json']);
     expect(created.ok).toBe(false);
     expect(created.error?.hint).toContain('requestId');
+  });
+
+  it('inspects a cooked asset through the unified offline Catalog option', async () => {
+    const root = await fixtureRoot();
+    const guid = '01890000-0000-7000-8000-aaaaaaaaaaaa';
+    const packageUrl = '/assets/config.runtime-pack.json';
+    await mkdir(join(root, 'assets'));
+    await writeFile(join(root, 'catalog.json'), JSON.stringify([{ guid, packageUrl }]));
+    await writeFile(
+      join(root, packageUrl),
+      JSON.stringify({
+        schemaVersion: '2.0.0',
+        kind: 'internal-text-package',
+        assets: [{ guid, kind: 'config', payload: {}, artifacts: {}, refs: [] }],
+      }),
+    );
+    expect(
+      await runUnifiedCli([
+        'asset',
+        'inspect',
+        '--root',
+        root,
+        '--subject',
+        guid,
+        '--catalog',
+        'catalog.json',
+        '--json',
+      ]),
+    ).toMatchObject({ ok: true, value: { guid, packageUrl } });
   });
 
   it('derives an asset guid from positional package id and key through the unified CLI', async () => {
@@ -747,6 +779,47 @@ describe('unified CLI', () => {
       ).resolves.toMatchObject({ outcome: 'succeeded', result: { owner: 'two' } });
     } finally {
       await client.dispose?.();
+    }
+  });
+
+  it('prefers its sole provider and leaves a borrowed Tool API owner active on disposal', async () => {
+    const root = await fixtureRoot();
+    const api = createToolApi();
+    const makeOperation = (owner: string) =>
+      command(
+        'shared.operation',
+        'Shared operation',
+        'Returns its provider identity.',
+        async () => ({ ok: true, value: { owner } }),
+        'host',
+      ) as ToolContribution;
+    const external = { sourceId: 'outer', providerId: 'outer-provider' };
+    api.registerProvider({ ...external, realm: 'host', tools: [makeOperation('outer')] });
+    try {
+      const client = await createToolClient({
+        projectRoot: root,
+        projectDiscovery: async () => [],
+        baseContributions: [],
+        realmOwners: [{ realm: 'host', contributions: [makeOperation('client')] }],
+        toolApi: api,
+      });
+      try {
+        await expect(client.run('shared.operation', {})).resolves.toMatchObject({
+          outcome: 'succeeded',
+          result: { owner: 'client' },
+        });
+        await expect(client.run('shared.operation', {}, external)).resolves.toMatchObject({
+          outcome: 'succeeded',
+          result: { owner: 'outer' },
+        });
+      } finally {
+        await client.dispose?.();
+      }
+      expect(api.describe('shared.operation').filter((record) => record.callable)).toMatchObject([
+        { owner: external },
+      ]);
+    } finally {
+      await api.dispose();
     }
   });
 

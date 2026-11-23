@@ -1,4 +1,7 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { World } from '@forgeax/engine-ecs';
+import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
@@ -44,14 +47,22 @@ it('rehydrates an encoded Terrain layer before publishing the same Renderer repl
     },
     unconfigure() {},
   };
+  const captureDirectory = process.env.FORGEAX_TERRAIN_RHI_CAPTURE_DIR?.trim();
+  const recorder = captureDirectory ? attachRecorder(webgpu).unwrap() : undefined;
   const implementation = await createRenderer(
     { width: 64, height: 64, getContext: () => context },
     {},
     { shaderManifestUrl: manifest, prepareShaderProgramCompiler },
-    loadRhiPack(webgpu, {
+    loadRhiPack(recorder?.backend ?? webgpu, {
+      ...(recorder === undefined
+        ? {}
+        : { resolveSurfaceDevice: (device) => recorder.backend.unwrapDeviceForSurface(device) }),
       deviceLost: () =>
         new Promise((resolve) => {
-          lose = () => resolve({ reason: 'unknown', message: 'encoded texture recovery' });
+          lose = () => {
+            recorder?.deviceLost();
+            resolve({ reason: 'unknown', message: 'encoded texture recovery' });
+          };
         }),
     }),
   );
@@ -133,8 +144,13 @@ it('rehydrates an encoded Terrain layer before publishing the same Renderer repl
     .unwrap();
   let frames = 0;
   const draw = async (green: boolean) => {
+    let capture: ReturnType<NonNullable<typeof recorder>['captureFrame']> | undefined;
     for (let i = 0; i < 20; i++) {
       world.update(1 / 60).unwrap();
+      if (i === 19 && recorder !== undefined) {
+        capture = recorder.captureFrame();
+        (await recorder.frameBoundary()).unwrap();
+      }
       await completeReadyFrame(async () => {
         const drawn = renderer.draw({ source: lease });
         assert(drawn.ok, JSON.stringify({ drawn, failures }));
@@ -143,6 +159,9 @@ it('rehydrates an encoded Terrain layer before publishing the same Renderer repl
         return receipt;
       });
       frames++;
+    }
+    if (recorder !== undefined && capture !== undefined) {
+      (await recorder.frameBoundary()).unwrap();
     }
     assert(device && target);
     const buffer = device.createBuffer({
@@ -157,11 +176,32 @@ it('rehydrates an encoded Terrain layer before publishing the same Renderer repl
     );
     device.queue.submit([encoder.finish()]);
     await buffer.mapAsync(GPUMapMode.READ);
-    const pixel = new Uint8Array(buffer.getMappedRange());
-    expect(pixel[green ? 1 : format.startsWith('bgra') ? 2 : 0]).toBeGreaterThan(240);
-    expect(pixel[green ? (format.startsWith('bgra') ? 2 : 0) : 1]).toBeLessThan(15);
+    const pixel = [...new Uint8Array(buffer.getMappedRange(), 0, 4)];
     buffer.unmap();
     buffer.destroy();
+    const red = pixel[format.startsWith('bgra') ? 2 : 0];
+    const greenValue = pixel[1];
+    const expected = green ? greenValue : red;
+    const other = green ? red : greenValue;
+    assert(expected !== undefined && other !== undefined);
+    const recorded = await capture;
+    if ((expected <= 240 || other >= 15) && captureDirectory && recorded?.ok) {
+      mkdirSync(captureDirectory, { recursive: true });
+      writeFileSync(join(captureDirectory, `frame-${frames}.rhitape`), recorded.value.bytes);
+    }
+    const pixelContext = JSON.stringify({
+      frames,
+      format,
+      pixel,
+      failures: failures.map((failure) =>
+        failure !== null && typeof failure === 'object' && 'message' in failure
+          ? failure.message
+          : failure,
+      ),
+      capture: recorded?.ok === false ? recorded.error : undefined,
+    });
+    expect(expected, pixelContext).toBeGreaterThan(240);
+    expect(other, pixelContext).toBeLessThan(15);
   };
   try {
     await draw(false);

@@ -10,7 +10,7 @@ import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-ext
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { MeshFrame } from '../../scene/mesh-frame';
-import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
+import { type PersistentShadowCasterProjection, RenderScene } from '../../scene/render-scene';
 import { projectTerrainView } from '../../terrain/view';
 import type { ViewLights } from '../../world/render-lights';
 import { runtimeTerrainFixture, terrainViewPreparation } from './runtime-fixture';
@@ -45,11 +45,12 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     ).frame.renderables;
   };
   const owner = {},
+    meshDraws = new RenderScene(),
     a = project(0.25),
     b = project(0.75);
   const casters = (sections: FrameList<RenderableSnapshot>) =>
     ({
-      meshDraws: { meshDrawSlot: () => 0, beginMeshDrawFrame: () => {} },
+      meshDraws,
       content: {
         meshes: new MeshFrame(),
         subsurface: { source: 0, authorVisible: 0, admitted: 0 },

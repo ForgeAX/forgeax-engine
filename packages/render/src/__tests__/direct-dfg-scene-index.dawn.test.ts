@@ -115,8 +115,15 @@ it.each([
         ).toEqual([]);
         // Use the producer's reflected binding contract, as in gpu-driven-pbr.
         // No substitute fragment or material-provider shader is introduced here.
-        const layouts = compiled.bindings.map((group) =>
-          device.createBindGroupLayout({ entries: group.entries as GPUBindGroupLayoutEntry[] }),
+        const layouts = compiled.bindings.map((group, index) =>
+          device.createBindGroupLayout({
+            entries: group.entries.map((entry) =>
+              // The renderer's View layout supplies a filterable screen-surface view.
+              index === 0 && entry.binding === 29 && entry.texture !== undefined
+                ? { ...entry, texture: { ...entry.texture, sampleType: 'float' as const } }
+                : entry,
+            ) as GPUBindGroupLayoutEntry[],
+          }),
         );
         const groups = compiled.bindings.map((group, groupIndex) =>
           device.createBindGroup({
@@ -151,7 +158,7 @@ it.each([
                 };
               if (!entry.texture) throw new Error('Unexpected Standard resource kind');
               const dimension = entry.texture.viewDimension ?? '2d';
-              const isLut = groupIndex === 1 && entry.binding === 72;
+              const isLut = groupIndex === 0 && entry.binding === 40;
               const size = isLut ? 16 : 1;
               const layers =
                 dimension === 'cube' || dimension === 'cube-array'
@@ -221,7 +228,7 @@ it.each([
         lightingChannels: [0xffffffff],
         temporalProjection: [0.1, 10, 1, 0],
       });
-      writeMembers(2, 6, { grid: [1, 1, 1, 0], near_far_log: [0.1, 10, Math.log(100), 0] });
+      writeMembers(0, 33, { grid: [1, 1, 1, 0], near_far_log: [0.1, 10, Math.log(100), 0] });
       const materialBytes = new Uint8Array(pass.abi.materialRow.byteLength * 2);
       for (const [index, material] of [lut, fit].entries()) {
         const row = packMaterialProgramRow(
@@ -262,7 +269,7 @@ it.each([
         // Every stamp matches row 0, so each row is its own previous pose.
         transformWords[offset + previousWord] = index;
       }
-      device.queue.writeBuffer(bufferAt(2, 0), 0, transformBytes);
+      device.queue.writeBuffer(bufferAt(3, 9), 0, transformBytes);
       const primitive = new Uint32Array((GPU_SCENE_LAYOUTS.primitive.stride * 2) / 4);
       const instances = new Uint32Array((GPU_SCENE_LAYOUTS.instance.stride * 2) / 4);
       for (let i = 0; i < 2; i++) {

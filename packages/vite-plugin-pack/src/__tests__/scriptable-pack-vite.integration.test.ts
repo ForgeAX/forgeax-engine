@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { borrowAudioClip } from '@forgeax/engine-audio/internal';
 import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine-audio-webaudio';
@@ -13,10 +12,11 @@ import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { defaultAssetDecoderContributions } from '@forgeax/engine-runtime';
 import {
-  type Asset,
+  assetPublicationReceiptMatches,
   type BuiltinAssetKind,
   createStandaloneRuntimeAssetBinding,
   type PackIndexEntry,
+  type PackV2,
   type ParticleEffectAsset,
 } from '@forgeax/engine-types';
 import {
@@ -26,11 +26,31 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { classifyWatchedPath } from '../dev/revision-observer.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import {
+  capturePackMiddleware,
+  type Middleware,
+  requestMiddleware as request,
+} from './middleware-fixture.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+function derivedAssetSource(readResult: string): string {
+  return `
+const packageId = new Uint8Array(${JSON.stringify([...DERIVED_PACKAGE_ID])});
+const dependency = new Uint8Array(${JSON.stringify(DEPENDENCY_GUID_BYTES)});
+export default {
+  schemaVersion: '2.0.0', packageId,
+  async build({ readByGuid }) {
+    const source = await readByGuid(dependency);
+    if (!source.ok) return source;
+    return { ok: true, value: ${readResult} };
+  },
+};
+`;
+}
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -41,58 +61,6 @@ function canonical(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'null';
-}
-
-type Middleware = (
-  request: {
-    readonly url?: string;
-    readonly method?: string;
-    readonly headers?: Readonly<Record<string, string>>;
-  },
-  response: {
-    statusCode: number;
-    setHeader(name: string, value: string): void;
-    end(body?: string | Uint8Array): void;
-  },
-  next: () => void,
-) => void | Promise<void>;
-
-async function request(
-  middlewares: readonly Middleware[],
-  url: string,
-  method: 'GET' | 'POST' = 'GET',
-  headers: Readonly<Record<string, string>> = {},
-) {
-  const result = {
-    statusCode: 200,
-    headers: {} as Record<string, string>,
-    body: '' as string | Uint8Array,
-  };
-  for (const middleware of middlewares) {
-    let next = false;
-    await middleware(
-      { url, method, headers },
-      {
-        get statusCode() {
-          return result.statusCode;
-        },
-        set statusCode(value: number) {
-          result.statusCode = value;
-        },
-        setHeader(name, value) {
-          result.headers[name] = value;
-        },
-        end(body) {
-          result.body = body ?? '';
-        },
-      },
-      () => {
-        next = true;
-      },
-    );
-    if (!next) break;
-  }
-  return result;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -323,19 +291,65 @@ async function waitForCatalogRevision(
   throw new Error('timed out waiting for a fresh ScriptablePack Catalog revision');
 }
 
+async function emitProduction(assets: string) {
+  const plugin = createPluginPackInternal({ roots: [assets] });
+  const emitted = new Map<string, string | Uint8Array>();
+  try {
+    await plugin.generateBundle.call({
+      emitFile(asset) {
+        const name = asset.fileName ?? `assets/${asset.name ?? 'asset'}`;
+        emitted.set(name, asset.source);
+        return name;
+      },
+      getFileName: (referenceId) => referenceId,
+    });
+    return emitted;
+  } finally {
+    await plugin.closeBundle();
+  }
+}
+
+async function withDevPublication<T>(
+  assets: string,
+  scope: string,
+  verify: (
+    middlewares: readonly Middleware[],
+    binding: ReturnType<typeof createStandaloneRuntimeAssetBinding>,
+  ) => Promise<T>,
+): Promise<T> {
+  const plugin = createPluginPackInternal({ roots: [assets] });
+  const middlewares = capturePackMiddleware(plugin);
+  try {
+    const binding = createStandaloneRuntimeAssetBinding(scope);
+    await plugin.rebind(binding, [assets]);
+    return await verify(middlewares, binding);
+  } finally {
+    await plugin.closeBundle();
+  }
+}
+
+function bundleJson<T>(emitted: ReadonlyMap<string, string | Uint8Array>, name: string): T {
+  const body = emitted.get(name);
+  if (body === undefined) throw new Error(`missing production asset ${name}`);
+  return JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body)) as T;
+}
+
+function authoredScene(marker: number, packageSuffix = 0): string {
+  return `export default {
+    schemaVersion: '2.0.0',
+    packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,${packageSuffix}]),
+    build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [], marker: ${marker} } } }),
+  };`;
+}
+
 describe.sequential('ScriptablePack Vite publication', () => {
   it('rejects an edited source captured before the initial Pack scan', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-stale-snapshot-'));
     const source = join(root, 'scene.pack.ts');
-    const authored = (marker: number) => `export default {
-      schemaVersion: '2.0.0',
-      packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,0]),
-      build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [], marker: ${marker} } } }),
-    };`;
-    await writeFile(source, authored(1));
+    await writeFile(source, authoredScene(1));
     const snapshot = createScriptablePackSourceSnapshot();
     await snapshot.inventory(source);
-    await writeFile(source, authored(2));
+    await writeFile(source, authoredScene(2));
     const plugin = createPluginPackInternal({
       roots: [root],
       watch: false,
@@ -354,88 +368,46 @@ describe.sequential('ScriptablePack Vite publication', () => {
     }
   });
 
-  it('uses the preparation snapshot once and reads fresh source on a later generation', async () => {
+  it('uses one preparation snapshot and keeps refreshed content authoritative across repeated notifications', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-initial-snapshot-'));
     const source = join(root, 'scene.pack.ts');
-    const authored = (marker: number, packageSuffix = 0) => `export default {
-      schemaVersion: '2.0.0',
-      packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,${packageSuffix}]),
-      build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [], marker: ${marker} } } }),
-    };`;
-    await writeFile(source, authored(1));
+    await writeFile(source, authoredScene(1));
     const snapshot = createScriptablePackSourceSnapshot();
     await snapshot.inventory(source);
     const inventory = vi.spyOn(snapshot, 'inventory');
-    // Directory discovery stays live even though existing source bytes are shared.
-    await writeFile(join(root, 'sibling.pack.ts'), authored(3, 1));
+    // Discovery remains live even when a source already has captured bytes.
+    await writeFile(join(root, 'sibling.pack.ts'), authoredScene(3, 1));
     const plugin = createPluginPackInternal({
       roots: [root],
       watch: false,
       takeInitialSourceSnapshot: () => snapshot,
     });
     try {
-      plugin.configureServer({
-        middlewares: { use: () => {} },
-        ws: { send: () => {} },
-      });
+      const middlewares = capturePackMiddleware(plugin);
       await plugin.ready();
       expect(inventory).toHaveBeenCalled();
       expect(plugin.catalogSnapshot()).toHaveLength(2);
       const calls = inventory.mock.calls.length;
       const binding = createStandaloneRuntimeAssetBinding('initial-snapshot');
       await plugin.rebind(binding, [root]);
-      const first = plugin
-        .catalogSnapshot()
-        .find((entry) => entry.sourcePath.endsWith('/scene.pack.ts'))?.revision?.digest;
-      expect(first).toBeDefined();
-      await writeFile(source, authored(2));
-      expect(await plugin.rebuildCatalogInPlace([source])).toBe(true);
-      expect(
-        plugin.catalogSnapshot().find((entry) => entry.sourcePath.endsWith('/scene.pack.ts'))
-          ?.revision?.digest,
-      ).not.toBe(first);
-      expect(inventory).toHaveBeenCalledTimes(calls);
-    } finally {
-      await plugin.closeBundle();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps an accepted Pack authoritative when a later file notification has identical bytes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-duplicate-notification-'));
-    const source = join(root, 'scene.pack.ts');
-    const authored = (marker: number) => `export default {
-      schemaVersion: '2.0.0',
-      packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,0]),
-      build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [], marker: ${marker} } } }),
-    };`;
-    const plugin = createPluginPackInternal({ roots: [root], watch: false });
-    try {
-      await writeFile(source, authored(1));
-      const middlewares: Middleware[] = [];
-      plugin.configureServer({
-        middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
-        ws: { send: () => {} },
-      });
-      const binding = createStandaloneRuntimeAssetBinding('duplicate-notification');
-      await plugin.rebind(binding, [root]);
       const catalog = async () =>
         JSON.parse(String((await request(middlewares, binding.catalogUrl)).body));
+      const digest = (body: unknown) =>
+        decodeCatalogWire(body)
+          .unwrap()
+          .find((entry) => entry.sourcePath.endsWith('/scene.pack.ts'))?.revision?.digest;
+
       const baseline = await catalog();
       expect(baseline.authority).toBe('authoritative');
-      const baselineDigest = decodeCatalogWire(baseline).unwrap()[0]?.revision?.digest;
-      expect(baselineDigest).toBeDefined();
-
-      await writeFile(source, authored(2));
-      await plugin.rebuildCatalogInPlace([source]);
+      expect(digest(baseline)).toBeDefined();
+      await writeFile(source, authoredScene(2));
+      expect(await plugin.rebuildCatalogInPlace([source])).toBe(true);
       const revised = await catalog();
       expect(revised.authority).toBe('authoritative');
-      const revisedDigest = decodeCatalogWire(revised).unwrap()[0]?.revision?.digest;
-      expect(revisedDigest).toBeDefined();
-      expect(revisedDigest).not.toBe(baselineDigest);
+      expect(digest(revised)).toBeDefined();
+      expect(digest(revised)).not.toBe(digest(baseline));
+      expect(inventory).toHaveBeenCalledTimes(calls);
 
-      // A queued watch batch can arrive after the producer already read these
-      // bytes. The explicit content-refresh route uses the same batch applier.
       await plugin.rebuildCatalogInPlace([source]);
       const repeated = await catalog();
       expect(repeated.authority).toBe('authoritative');
@@ -455,73 +427,28 @@ describe.sequential('ScriptablePack Vite publication', () => {
       const originalFetch = globalThis.fetch;
       try {
         await mkdir(assets);
-        await mkdir(join(root, 'node_modules', '@forgeax'), { recursive: true });
-        await symlink(
-          join(repositoryRoot, 'packages', 'pack', 'node_modules', 'uuidv7'),
-          join(root, 'node_modules', 'uuidv7'),
-          'dir',
-        );
-        await symlink(
-          join(repositoryRoot, 'packages', 'pack'),
-          join(root, 'node_modules', '@forgeax', 'engine-pack'),
-          'dir',
-        );
-        await symlink(
-          join(repositoryRoot, 'packages', 'types'),
-          join(root, 'node_modules', '@forgeax', 'engine-types'),
-          'dir',
-        );
+        await installPackAuthorDependencies(root);
         const particleProgram = await cookExternalParticleProgram();
         await writeFile(join(assets, 'all-kinds.pack.ts'), allKindsSource(particleProgram));
-        const plugin = createPluginPackInternal({ roots: [assets] });
-        const emitted = new Map<string, string | Uint8Array>();
-        await plugin.generateBundle.call({
-          emitFile(asset) {
-            const fileName = asset.fileName ?? asset.name ?? 'asset';
-            emitted.set(fileName, asset.source);
-            return fileName;
-          },
-          getFileName(referenceId) {
-            return referenceId;
-          },
-        });
-        await plugin.closeBundle();
-
-        const index = decodeCatalogWire(
-          JSON.parse(String(emitted.get('pack-index.json'))),
-        ).unwrap() as readonly PackIndexEntry[];
-        expect(new Set(index.map((entry) => entry.kind))).toEqual(new Set(ALL_KINDS));
-        for (const entry of index) {
-          expect(entry.packageUrl).toMatch(/^\/assets\/[^/]+\.pack\.json$/);
-          expect(entry.cookReceiptUrl).toMatch(/^\/assets\/[^/]+\.receipt\.json$/);
-          expect(entry.revision?.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-          expect(entry.refs).toBeDefined();
-        }
-        const packs = new Map<
-          string,
-          {
-            readonly assets: readonly {
-              readonly guid: string;
-              readonly kind: string;
-              readonly refs: readonly string[];
-              readonly artifacts?: Readonly<Record<string, unknown>>;
-            }[];
-          }
-        >();
-        for (const entry of index) {
-          const path = new URL(entry.packageUrl, 'https://production.test').pathname.slice(1);
-          const source = emitted.get(path);
-          expect(source, `production Pack ${path}`).toBeDefined();
-          packs.set(
-            entry.guid,
-            JSON.parse(typeof source === 'string' ? source : new TextDecoder().decode(source)),
-          );
-        }
-        expect(new Set(index.map((entry) => entry.packageUrl)).size).toBe(1);
-        expect(new Set(index.map((entry) => entry.cookReceiptUrl)).size).toBe(ALL_KINDS.length);
-        expect([...packs.values()].some((pack) => pack.assets.length === ALL_KINDS.length)).toBe(
-          true,
+        const emitted = await emitProduction(assets);
+        const index = decodeCatalogWire(bundleJson(emitted, 'pack-index.json')).unwrap();
+        expect(index.map(({ kind }) => kind).sort()).toEqual([...ALL_KINDS].sort());
+        const packageUrls = new Set(index.map(({ packageUrl }) => packageUrl));
+        expect(packageUrls.size).toBe(1);
+        const packageUrl = index[0]?.packageUrl ?? '';
+        expect(packageUrl).toMatch(/^\/assets\/[^/]+\.runtime-pack\.json$/);
+        const pack = bundleJson<PackV2>(emitted, packageUrl.slice(1));
+        expect(pack.assets).toHaveLength(ALL_KINDS.length);
+        expect(new Set(index.map(({ cookReceiptUrl }) => cookReceiptUrl)).size).toBe(
+          ALL_KINDS.length,
         );
+        for (const row of index) {
+          expect(row).toMatchObject({
+            cookReceiptUrl: expect.stringMatching(/^\/assets\/[^/]+\.receipt\.json$/),
+            revision: { digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+            refs: expect.any(Array),
+          });
+        }
         globalThis.fetch = async (input) => {
           const path = new URL(String(input), 'https://production.test').pathname.slice(1);
           const body = emitted.get(path);
@@ -543,57 +470,31 @@ describe.sequential('ScriptablePack Vite publication', () => {
           value: { state: 'attached' },
         });
         const loadPayload = async <K extends BuiltinAssetKind>(guid: string, kind: K) => {
-          const loaded = await registry.load(guid, kind);
-          return loaded.ok ? registry.read(loaded.value) : loaded;
+          const handle = (await registry.load(guid, kind)).unwrap();
+          return registry.read(handle).unwrap();
         };
-        const loadResults = await Promise.all([
-          loadPayload(ALL_KIND_GUIDS.mesh, 'mesh'),
-          loadPayload(ALL_KIND_GUIDS.material, 'material'),
-          loadPayload(ALL_KIND_GUIDS.scene, 'scene'),
-          loadPayload(ALL_KIND_GUIDS.texture, 'texture'),
-          loadPayload(ALL_KIND_GUIDS.equirect, 'equirect'),
-          loadPayload(ALL_KIND_GUIDS.sampler, 'sampler'),
-          loadPayload(ALL_KIND_GUIDS.font, 'font'),
-          loadPayload(ALL_KIND_GUIDS['render-pipeline'], 'render-pipeline'),
-          loadPayload(ALL_KIND_GUIDS.tileset, 'tileset'),
-          loadPayload(ALL_KIND_GUIDS.video, 'video'),
-          loadPayload(ALL_KIND_GUIDS.skeleton, 'skeleton'),
-          loadPayload(ALL_KIND_GUIDS.skin, 'skin'),
-          loadPayload(ALL_KIND_GUIDS['animation-clip'], 'animation-clip'),
-          loadPayload(ALL_KIND_GUIDS['animation-graph'], 'animation-graph'),
-          loadPayload(ALL_KIND_GUIDS.audio, 'audio'),
-          loadPayload(ALL_KIND_GUIDS['particle-effect'], 'particle-effect'),
-        ]);
-        const [
-          ,
-          ,
-          ,
-          ,
-          ,
-          ,
-          ,
-          ,
-          tilesetResult,
-          ,
-          ,
-          ,
-          animationClipResult,
-          animationGraphResult,
-          audioResult,
-          particleResult,
-        ] = loadResults;
-        const loadedKinds = loadResults.map((result) => {
-          if (!result.ok) throw result.error;
-          return result.value.kind;
-        });
-        expect(loadedKinds).toEqual(ALL_KINDS);
-        const loadedAssets = new Map<string, Asset>();
-        for (const [index, result] of loadResults.entries()) {
-          if (!result.ok) throw result.error;
-          const kind = ALL_KINDS[index];
-          if (kind === undefined) throw new Error(`missing test kind at index ${index}`);
-          loadedAssets.set(ALL_KIND_GUIDS[kind].toLowerCase(), result.value);
+        const loaded = await Promise.all(
+          ALL_KINDS.map((kind) => loadPayload(ALL_KIND_GUIDS[kind], kind)),
+        );
+        expect(loaded.map(({ kind }) => kind)).toEqual(ALL_KINDS);
+        for (const kind of ALL_KINDS) {
+          expect(pack.assets.find(({ guid }) => guid === ALL_KIND_GUIDS[kind])).toMatchObject({
+            kind,
+            refs: expect.any(Array),
+            artifacts: expect.any(Object),
+          });
         }
+
+        for (const kind of ['audio', 'particle-effect'] as const) {
+          const asset = pack.assets.find(({ guid }) => guid === ALL_KIND_GUIDS[kind]);
+          expect(Object.keys(asset?.artifacts ?? {})).not.toHaveLength(0);
+        }
+        const video = pack.assets.find(({ guid }) => guid === ALL_KIND_GUIDS.video);
+        expect(video?.payload).toMatchObject({
+          kind: 'video',
+          url: 'https://example.test/video.webm',
+        });
+
         const loadedParticleHandle = await loadVfxGpuEffect(
           registry,
           ALL_KIND_GUIDS['particle-effect'],
@@ -608,26 +509,18 @@ describe.sequential('ScriptablePack Vite publication', () => {
             'forgeax_vfx_spawn_main',
           );
         }
-        if (!animationClipResult.ok || !animationGraphResult.ok) {
-          throw new Error('animation assets did not load');
-        }
-        expect(animationClipResult.value.kind).toBe('animation-clip');
-        expect(animationGraphResult.value.kind).toBe('animation-graph');
-        const firstGraphNode = animationGraphResult.value.nodes[0];
-        expect(firstGraphNode?.type).toBe('clip');
-        if (firstGraphNode?.type === 'clip') {
-          expect(firstGraphNode.clip).toBe(
-            (await registry.load(ALL_KIND_GUIDS['animation-clip'], 'animation-clip')).unwrap(),
-          );
-        }
+        const graph = await loadPayload(ALL_KIND_GUIDS['animation-graph'], 'animation-graph');
+        expect(graph.nodes[0]).toMatchObject({
+          type: 'clip',
+          clip: (await registry.load(ALL_KIND_GUIDS['animation-clip'], 'animation-clip')).unwrap(),
+        });
 
-        if (!tilesetResult.ok) throw new Error('tileset asset did not load');
-        const atlasHandle = tilesetResult.value.atlases[0];
-        if (typeof atlasHandle !== 'number')
-          throw new Error('Tileset atlas was not linked at admission');
-        expect(registry.read(atlasHandle)).toMatchObject({ ok: true, value: { kind: 'texture' } });
+        const tileset = await loadPayload(ALL_KIND_GUIDS.tileset, 'tileset');
+        const atlas = tileset.atlases[0];
+        if (typeof atlas !== 'number') throw new Error('missing admitted Tileset atlas');
+        expect(registry.read(atlas)).toMatchObject({ ok: true, value: { kind: 'texture' } });
 
-        if (!audioResult.ok) throw new Error('audio asset did not load');
+        const audio = await loadPayload(ALL_KIND_GUIDS.audio, 'audio');
         const audioEngine = new WebAudioEngine();
         const decode = vi.spyOn(audioEngine, 'decode').mockResolvedValue({} as AudioBuffer);
         const play = vi.spyOn(audioEngine, 'play').mockImplementation(() => {});
@@ -639,14 +532,12 @@ describe.sequential('ScriptablePack Vite publication', () => {
             (await registry.load(ALL_KIND_GUIDS.audio, 'audio')).unwrap(),
           ).identity,
           entityId: 1,
-          sourceKey: audioResult.value.sourceKey,
-          ...(audioResult.value.bytes
-            ? { bytes: audioResult.value.bytes }
-            : { stream: audioResult.value.stream }),
+          sourceKey: audio.sourceKey,
+          ...(audio.bytes ? { bytes: audio.bytes } : { stream: audio.stream }),
           options: { loop: false, volume: 1, spatialBlend: 0, bus: 'sfx' },
         });
         await vi.waitFor(() => expect(play).toHaveBeenCalledTimes(1));
-        expect(decode).toHaveBeenCalledWith(audioResult.value.bytes);
+        expect(decode).toHaveBeenCalledWith(audio.bytes);
         expect(play).toHaveBeenCalledWith(1, expect.anything(), {
           loop: false,
           volume: 1,
@@ -655,7 +546,6 @@ describe.sequential('ScriptablePack Vite publication', () => {
         });
         audioConsumer.dispose();
 
-        if (!particleResult.ok) throw new Error('particle-effect asset did not load');
         const effect = (
           await registry.load(ALL_KIND_GUIDS['particle-effect'], 'particle-effect')
         ).unwrap();
@@ -673,36 +563,19 @@ describe.sequential('ScriptablePack Vite publication', () => {
           ok: true,
           value: { state: 'detached' },
         });
-        for (const [index, kind] of ALL_KINDS.entries()) {
-          const guid = ALL_KIND_GUIDS[kind];
-          const pack = packs.get(guid);
-          const asset = pack?.assets.find((candidate) => candidate.guid === guid);
-          expect(asset?.kind).toBe(kind);
-          expect(asset?.refs).toBeDefined();
-          expect(asset?.artifacts).toBeDefined();
-          expect(loadedAssets.get(guid.toLowerCase())?.kind).toBe(kind);
-          expect(loadResults[index]?.ok).toBe(true);
-        }
-        const devPlugin = createPluginPackInternal({ roots: [assets] });
-        const middlewares: Middleware[] = [];
-        devPlugin.configureServer({
-          middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
-          ws: { send: () => {} },
+        registry.dispose();
+        await withDevPublication(assets, 'all-kinds-dev', async (middlewares, binding) => {
+          const { body } = await request(middlewares, binding.catalogUrl);
+          const rows = decodeCatalogWire(JSON.parse(String(body))).unwrap();
+          expect(rows.map(({ kind }) => kind).sort()).toEqual([...ALL_KINDS].sort());
+          for (const guid of Object.values(ALL_KIND_GUIDS)) {
+            const imported = await request(middlewares, `${binding.importUrlBase}/${guid}`, 'POST');
+            expect(imported.statusCode).toBe(200);
+            expect(JSON.parse(String(imported.body))).toEqual([
+              expect.objectContaining({ guid, lifecycle: 'current' }),
+            ]);
+          }
         });
-        const binding = createStandaloneRuntimeAssetBinding('all-kinds-dev');
-        await devPlugin.rebind(binding, [assets]);
-        const devCatalog = decodeCatalogWire(
-          JSON.parse(String((await request(middlewares, binding.catalogUrl)).body)),
-        ).unwrap();
-        expect(new Set(devCatalog.map((entry) => entry.kind))).toEqual(new Set(ALL_KINDS));
-        for (const guid of Object.values(ALL_KIND_GUIDS)) {
-          const imported = await request(middlewares, `${binding.importUrlBase}/${guid}`, 'POST');
-          expect(imported.statusCode).toBe(200);
-          expect(JSON.parse(String(imported.body))).toEqual([
-            expect.objectContaining({ guid, lifecycle: 'current' }),
-          ]);
-        }
-        await devPlugin.closeBundle();
       } finally {
         globalThis.fetch = originalFetch;
         await rm(root, { recursive: true, force: true });
@@ -712,202 +585,66 @@ describe.sequential('ScriptablePack Vite publication', () => {
   );
 
   it(
-    'discovers, emits Pack v2 from ScriptablePack sources, and publishes current Catalog rows',
+    'emits deterministic production bytes and keeps dev and build evidence aligned',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-vite-'));
-      try {
-        await mkdir(join(root, 'assets'));
-        await writeFile(
-          join(root, 'assets', 'generated.pack.ts'),
-          `const packageId = new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,0]);
-export default {
-  schemaVersion: '2.0.0',
-  packageId,
-  build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [] } } }),
-};\n`,
-        );
-        const plugin = createPluginPackInternal({ roots: [join(root, 'assets')] });
-        const emitted = new Map<string, string | Uint8Array>();
-        await plugin.generateBundle.call({
-          emitFile(asset) {
-            const key = asset.fileName ?? `assets/${asset.name ?? 'asset'}`;
-            emitted.set(key, asset.source);
-            return key;
-          },
-          getFileName(referenceId) {
-            return referenceId;
-          },
-        });
-        await plugin.closeBundle();
-
-        const catalog = decodeCatalogWire(
-          JSON.parse(String(emitted.get('pack-index.json'))),
-        ).unwrap() as readonly PackIndexEntry[];
-        expect(catalog).toHaveLength(1);
-        expect(catalog[0]).toMatchObject({
-          guid: GENERATED_GUID,
-          packageUrl: `/assets/${GENERATED_PACKAGE_ID_TEXT}.pack.json`,
-          cookReceiptUrl: `/assets/${GENERATED_GUID}.receipt.json`,
-          revision: {
-            digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-            observedAt: expect.any(Number),
-          },
-          lifecycle: 'current',
-        });
-        const publicationSourcePath = catalog[0]?.sourcePath;
-        expect(catalog[0]?.publication).toMatchObject({
-          schemaVersion: 'asset-publication/1',
-          sourcePath: publicationSourcePath,
-          sourceRevision: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          generation: expect.any(Number),
+      onTestFinished(() => rm(root, { recursive: true, force: true }));
+      const path = `assets/${GENERATED_PACKAGE_ID_TEXT}.runtime-pack.json`;
+      const receiptPath = `assets/${GENERATED_GUID}.receipt.json`;
+      await writeFile(
+        join(root, 'generated.pack.ts'),
+        `export default {
+        schemaVersion: '2.0.0',
+        packageId: new Uint8Array(${JSON.stringify([...GENERATED_PACKAGE_ID])}),
+        build: () => ({ ok: true, value: { scene: { kind: 'scene', entities: [] } } }),
+      };`,
+      );
+      const emitted = await emitProduction(root);
+      expect([...(await emitProduction(root))]).toEqual([...emitted]);
+      const [row] = decodeCatalogWire(bundleJson(emitted, 'pack-index.json')).unwrap();
+      if (!row?.publication) throw new Error('missing emitted scene publication');
+      expect(row).toMatchObject({
+        guid: GENERATED_GUID,
+        packageUrl: `/${path}`,
+        cookReceiptUrl: `/${receiptPath}`,
+        revision: {
           digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          outputSetDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          outputs: [
-            expect.objectContaining({
-              guid: GENERATED_GUID,
-              sourceKey: 'scene',
-              kind: 'scene',
-              digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-              refs: [],
-            }),
-          ],
-          receipt: expect.objectContaining({
-            schemaVersion: 'asset-publication-receipt/1',
-            sourcePath: publicationSourcePath,
-            sourceRevision: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-            inputFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-            outputDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-            outputSetDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          }),
-          current: expect.objectContaining({
-            generation: expect.any(Number),
-            packageUrl: `/assets/${GENERATED_PACKAGE_ID_TEXT}.pack.json`,
-          }),
-        });
-        expect(catalog[0]?.publication?.current).toMatchObject({
-          packageUrl: `/assets/${GENERATED_PACKAGE_ID_TEXT}.pack.json`,
-          generation: expect.any(Number),
-          digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          outputSetDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        });
-        expect(catalog[0]?.revision?.rootId).toBe(catalog[0]?.sourcePath);
-        const receipt = JSON.parse(
-          String(emitted.get(`assets/${GENERATED_GUID}.receipt.json`)),
-        ) as {
-          readonly guid: string;
-          readonly origin: string;
-          readonly status: string;
-          readonly inputFingerprint: string;
-          readonly outputDigest: string;
-        };
-        expect(receipt).toMatchObject({
-          guid: GENERATED_GUID,
-          origin: 'authoredPack',
-          status: 'succeeded',
-        });
-        expect(receipt.inputFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
-        expect(receipt.outputDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
-        const packSource = emitted.get(`assets/${GENERATED_PACKAGE_ID_TEXT}.pack.json`);
-        if (packSource === undefined) throw new Error('missing emitted ScriptablePack body');
-        const pack = JSON.parse(
-          typeof packSource === 'string' ? packSource : new TextDecoder().decode(packSource),
-        ) as {
-          readonly assets: readonly {
-            readonly guid: string;
-            readonly kind: string;
-            readonly refs: readonly string[];
-            readonly artifacts: Readonly<Record<string, unknown>>;
-          }[];
-        };
-        expect(pack.assets).toEqual([
-          expect.objectContaining({
-            guid: GENERATED_GUID,
-            kind: 'scene',
-            refs: [],
-            artifacts: {},
-          }),
-        ]);
+          rootId: row.sourcePath,
+        },
+        lifecycle: 'current',
+      });
+      expect(assetPublicationReceiptMatches(row.publication)).toBe(true);
+      expect(row.publication.outputs).toMatchObject([
+        { guid: GENERATED_GUID, sourceKey: 'scene', kind: 'scene', refs: [] },
+      ]);
+      expect(row.publication.current).toMatchObject({
+        packageUrl: row.packageUrl,
+        generation: row.publication.generation,
+      });
+      expect(bundleJson(emitted, receiptPath)).toMatchObject({
+        guid: GENERATED_GUID,
+        origin: 'authoredPack',
+        status: 'succeeded',
+        inputFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        outputDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      });
 
-        const secondEmitted = new Map<string, string | Uint8Array>();
-        const secondPlugin = createPluginPackInternal({ roots: [join(root, 'assets')] });
-        await secondPlugin.generateBundle.call({
-          emitFile(asset) {
-            const key = asset.fileName ?? `assets/${asset.name ?? 'asset'}`;
-            secondEmitted.set(key, asset.source);
-            return key;
-          },
-          getFileName(referenceId) {
-            return referenceId;
-          },
-        });
-        await secondPlugin.closeBundle();
-        expect([...secondEmitted.entries()]).toEqual([...emitted.entries()]);
-
-        const devPlugin = createPluginPackInternal({ roots: [join(root, 'assets')] });
-        const middlewares: Middleware[] = [];
-        devPlugin.configureServer({
-          middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
-          ws: { send: () => {} },
-        });
-        const binding = createStandaloneRuntimeAssetBinding('scriptable-parity');
-        await devPlugin.rebind(binding, [join(root, 'assets')]);
-        const snapshot = decodeCatalogWire(
-          JSON.parse(String((await request(middlewares, binding.catalogUrl)).body)),
-        ).unwrap();
-        const devRow = snapshot[0];
-        expect(devRow).toMatchObject({
-          guid: catalog[0]?.guid,
+      const pack = bundleJson<PackV2>(emitted, path);
+      expect(pack.assets).toMatchObject([
+        { guid: GENERATED_GUID, kind: 'scene', refs: [], artifacts: {} },
+      ]);
+      await withDevPublication(root, 'scriptable-parity', async (middlewares, binding) => {
+        const catalog = await request(middlewares, binding.catalogUrl);
+        const [dev] = decodeCatalogWire(JSON.parse(String(catalog.body))).unwrap();
+        expect(dev).toMatchObject({
+          guid: row.guid,
           lifecycle: 'current',
-          revision: catalog[0]?.revision,
+          revision: row.revision,
         });
-        const devPack = JSON.parse(
-          String(
-            await request(middlewares, devRow?.packageUrl ?? '').then((result) => result.body),
-          ),
-        ) as {
-          readonly assets: readonly {
-            readonly guid: string;
-            readonly kind: string;
-            readonly payload: unknown;
-            readonly refs: readonly string[];
-            readonly artifacts?: Readonly<
-              Record<
-                string,
-                {
-                  readonly path: string;
-                  readonly mediaType: string;
-                  readonly byteLength: number;
-                  readonly integrity: unknown;
-                }
-              >
-            >;
-          }[];
-        };
-        const productionPack = JSON.parse(
-          typeof packSource === 'string' ? packSource : new TextDecoder().decode(packSource),
-        ) as typeof devPack;
-        const semantic = (pack: typeof devPack) =>
-          pack.assets.map((asset) => ({
-            guid: asset.guid,
-            kind: asset.kind,
-            payload: asset.payload,
-            refs: asset.refs,
-            artifacts: Object.fromEntries(
-              Object.entries(asset.artifacts ?? {}).map(([key, descriptor]) => [
-                key,
-                {
-                  mediaType: descriptor.mediaType,
-                  byteLength: descriptor.byteLength,
-                  integrity: descriptor.integrity,
-                },
-              ]),
-            ),
-          }));
-        expect(semantic(devPack)).toEqual(semantic(productionPack));
-        await devPlugin.closeBundle();
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
+        const response = await request(middlewares, dev?.packageUrl ?? '');
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(String(response.body)).assets).toEqual(pack.assets);
+      });
     },
     SCRIPTABLE_PACK_INTEGRATION_TIMEOUT_MS,
   );
@@ -946,39 +683,22 @@ export default {
         for (const [source, guid] of [
           ['atlas.png', DEPENDENCY_GUID],
           ['unread.png', GENERATED_GUID],
-        ]) {
+        ] as const) {
           await writeFile(
             join(assets, `${source}.meta.json`),
-            JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'external-asset-package',
-              importer: 'image',
+            metaFixture(
               source,
-              importSettings: { colorSpace: 'linear', mipmap: false, compressionMode: 'none' },
-              subAssets: [{ guid, sourceIndex: 0, kind: 'texture', sourceKey: 'texture' }],
-            }),
+              'image',
+              [{ guid, sourceIndex: 0, kind: 'texture', sourceKey: 'texture' }],
+              { colorSpace: 'linear', mipmap: false, compressionMode: 'none' },
+            ),
           );
         }
         await writeFile(
           join(assets, 'derived.pack.ts'),
-          [
-            `const packageId = new Uint8Array(${JSON.stringify([...DERIVED_PACKAGE_ID])});`,
-            `const dependency = new Uint8Array(${JSON.stringify(DEPENDENCY_GUID_BYTES)});`,
-            'export default {',
-            "schemaVersion: '2.0.0', packageId,",
-            'build: async ({ readByGuid }) => {',
-            '  const source = await readByGuid(dependency);',
-            '  if (!source.ok) return source;',
-            '  return { ok: true, value: { texture: source.value } };',
-            '},',
-            '};',
-          ].join('\n'),
+          derivedAssetSource('{ texture: source.value }'),
         );
-        const middlewares: Middleware[] = [];
-        plugin.configureServer({
-          middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
-          ws: { send: () => {} },
-        });
+        const middlewares = capturePackMiddleware(plugin);
         const binding = createStandaloneRuntimeAssetBinding('scriptable-meta-content');
         await plugin.rebind(binding, [assets]);
         const catalog = await request(middlewares, binding.catalogUrl);
@@ -1025,74 +745,58 @@ export default {
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-generation-owner-'));
       const assets = join(root, 'assets');
-      try {
-        await mkdir(assets);
-        await writeFile(
-          join(assets, 'dependency.pack.ts'),
-          [
-            `const packageId = new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,40]);`,
-            'export default {',
-            "schemaVersion: '2.0.0', packageId,",
-            "build: () => ({ ok: true, value: { audio: { kind: 'audio', sourceKey: 'dependency', mediaType: 'audio/wav', bytes: new Uint8Array([17]) } } }),",
-            '};',
-          ].join('\n'),
-        );
-        await writeFile(
-          join(assets, 'derived.pack.ts'),
-          [
-            `const packageId = new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,61]);`,
-            `const dependency = new Uint8Array(${JSON.stringify(DEPENDENCY_GUID_BYTES)});`,
-            'export default {',
-            "schemaVersion: '2.0.0', packageId,",
-            'build: async ({ readByGuid }: { readByGuid: (guid: Uint8Array) => Promise<{ ok: true; value: { bytes: Uint8Array } } | { ok: false; error: unknown }> }) => {',
-            '  const source = await readByGuid(dependency);',
-            '  if (!source.ok) return source;',
-            "  return { ok: true, value: { scene: { kind: 'scene', entities: [], marker: source.value.bytes[0] } } };",
-            '},',
-            '};',
-          ].join('\n'),
-        );
-        const plugin = createPluginPackInternal({ roots: [assets] });
-        const middlewares: Middleware[] = [];
-        plugin.configureServer({
-          middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
-          ws: { send: () => {} },
-        });
-        const binding = createStandaloneRuntimeAssetBinding('scriptable-generation-owner');
-        await plugin.rebind(binding, [assets]);
-        const catalog = await request(middlewares, binding.catalogUrl);
-        expect(catalog.statusCode).toBe(200);
-        const snapshot = decodeCatalogWire(JSON.parse(String(catalog.body))).unwrap();
-        expect(snapshot).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ guid: DEPENDENCY_GUID }),
-            expect.objectContaining({
-              guid: DERIVED_GUID,
-              lifecycle: 'current',
-            }),
-          ]),
-        );
-        const generatedRows = snapshot.filter((entry) => entry.sourcePath.endsWith('.pack.ts'));
-        expect(generatedRows).toHaveLength(2);
-        const generatedPublication = generatedRows.find((entry) =>
-          entry.sourcePath.endsWith('/derived.pack.ts'),
-        )?.publication;
-        expect(generatedPublication?.outputs).toEqual([
+      onTestFinished(() => rm(root, { recursive: true, force: true }));
+      await mkdir(assets);
+      await writeFile(
+        join(assets, 'dependency.pack.ts'),
+        [
+          `const packageId = new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,40]);`,
+          'export default {',
+          "schemaVersion: '2.0.0', packageId,",
+          "build: () => ({ ok: true, value: { audio: { kind: 'audio', sourceKey: 'dependency', mediaType: 'audio/wav', bytes: new Uint8Array([17]) } } }),",
+          '};',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(assets, 'derived.pack.ts'),
+        derivedAssetSource(
+          "{ scene: { kind: 'scene', entities: [], marker: source.value.bytes[0] } }",
+        ),
+      );
+      const plugin = createPluginPackInternal({ roots: [assets] });
+      const middlewares = capturePackMiddleware(plugin);
+      const binding = createStandaloneRuntimeAssetBinding('scriptable-generation-owner');
+      await plugin.rebind(binding, [assets]);
+      const catalog = await request(middlewares, binding.catalogUrl);
+      expect(catalog.statusCode).toBe(200);
+      const snapshot = decodeCatalogWire(JSON.parse(String(catalog.body))).unwrap();
+      expect(snapshot).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ guid: DEPENDENCY_GUID }),
           expect.objectContaining({
             guid: DERIVED_GUID,
-            sourceKey: 'scene',
+            lifecycle: 'current',
           }),
-        ]);
-        expect(generatedPublication?.current).toMatchObject({
-          packageUrl: expect.stringMatching(/\.pack\.json$/),
-          generation: expect.any(Number),
-          digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          outputSetDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        });
-        await plugin.closeBundle();
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
+        ]),
+      );
+      const generatedRows = snapshot.filter((entry) => entry.sourcePath.endsWith('.pack.ts'));
+      expect(generatedRows).toHaveLength(2);
+      const generatedPublication = generatedRows.find((entry) =>
+        entry.sourcePath.endsWith('/derived.pack.ts'),
+      )?.publication;
+      expect(generatedPublication?.outputs).toEqual([
+        expect.objectContaining({
+          guid: DERIVED_GUID,
+          sourceKey: 'scene',
+        }),
+      ]);
+      expect(generatedPublication?.current).toMatchObject({
+        packageUrl: expect.stringMatching(/\.runtime-pack\.json$/),
+        generation: expect.any(Number),
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        outputSetDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      });
+      await plugin.closeBundle();
     },
     SCRIPTABLE_PACK_INTEGRATION_TIMEOUT_MS,
   );

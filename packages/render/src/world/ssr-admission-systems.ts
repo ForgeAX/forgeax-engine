@@ -1,5 +1,6 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
+import { extendedLightingSampledTextureCapacityAvailable } from '../prepare/extended-lighting/resources';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { hasSsrSceneInputs } from '../record/main-pass';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -17,7 +18,7 @@ import { type ViewPhaseQueue, ViewPhases } from './queue-systems';
 import { ViewRecorder } from './render-views';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ownerOf } from './view-settlement';
 
 /** RenderQueue: the view's deferred or forward SSR admission and reflection-fallback demand. */
@@ -105,10 +106,16 @@ export function admitSsrPipelineDemand(
   const reflectionFallbackCandidate =
     probeFallbackDemand ||
     (dependencies.requested === true && dependencies.reflectionFallback !== undefined);
+  const inline =
+    renderPath === 'forward' &&
+    capabilities.compute &&
+    capabilities.storageTexture &&
+    extendedLightingSampledTextureCapacityAvailable(input.sampledTextureLimit);
   const admission = admitSsrSpatial({
     camera,
     environment: {
       lane: renderPath,
+      inline,
       m0: dependencies.admission,
       sceneInputs,
       temporal: sceneInputs,
@@ -134,7 +141,7 @@ export function admitSsrPipelineDemand(
     admission,
     reflectionFallbackCandidate,
     reflectionFallbackDemand:
-      (reflectionFallbackCandidate || admission.status === 'admitted') && sceneInputs,
+      (reflectionFallbackCandidate || (!inline && admission.status === 'admitted')) && sceneInputs,
   };
 }
 
@@ -148,12 +155,8 @@ export function viewSsrAdmissionOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewSsrAdmissionOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewSsrAdmission)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewSsrAdmissionState>(
-      requireViewField(world, entity, ViewSsrAdmission, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewSsrAdmissionState>(world, entity, ViewSsrAdmission);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 
@@ -211,11 +214,14 @@ function admitViewSsr(
   try {
     const sceneInputs =
       (reflectionFallbackCandidate || camera.screenSpaceReflection !== undefined) &&
-      hasSsrSceneInputs(
+      (hasSsrSceneInputs(
         { renderables: input.renderables, dispatch, materialFrame: input.materials },
         reportedPath,
         pairedMsaaSurface,
-      );
+      ) ||
+        (renderPath === 'forward' &&
+          extendedLightingSampledTextureCapacityAvailable(input.ssr.sampledTextureLimit) &&
+          (input.materials.hasWater || input.preparation?.hasWater === true)));
     const recorder = readViewField(world, entity, ViewRecorder, 'state');
     const retained =
       recorder === undefined

@@ -3,6 +3,7 @@ import {
   cubicValueEnvelope,
   deriveConservativeAnimatedBounds,
 } from '@forgeax/engine-animation/animated-bounds';
+import { skinWeightDenominator } from '@forgeax/engine-geometry';
 import { groupMeshPrimitives } from './mesh-primitives';
 import { buildNodeParentMap, resolveNamedNodePath } from './node-path';
 import type { GltfDoc } from './parse-gltf';
@@ -77,6 +78,7 @@ export function deriveGltfAnimatedBounds(doc: GltfDoc): GltfDoc {
           positions: mesh.positions,
           joints: mesh.joints0,
           weights: mesh.weights0,
+          weightDenominator: skinWeightDenominator(mesh.weights0),
           morphExtent,
         });
       }

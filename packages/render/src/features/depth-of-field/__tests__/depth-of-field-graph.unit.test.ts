@@ -1,9 +1,9 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../../render-pipeline';
-import { addDepthOfFieldPasses } from '../depth-of-field-feature';
+import { addDepthOfFieldPasses, depthOfFieldTopology } from '../depth-of-field-feature';
 import { inspectDepthOfFieldGraph } from '../depth-of-field-inspection';
 import { DEFAULT_DEPTH_OF_FIELD_PARAMS } from '../depth-of-field-params';
 
@@ -57,12 +57,16 @@ it.each([
         );
       }
     }
-    expect(inspectDepthOfFieldGraph(info, params)).toMatchObject({
+    const shape = depthOfFieldTopology(params);
+    if (shape === undefined) throw new Error('expected an active DoF aperture');
+    const inspect = vi.spyOn(compiled, 'inspect');
+    expect(inspectDepthOfFieldGraph(compiled, shape)).toMatchObject({
       status: 'active',
       passCount: blurSide === 'both' ? 7 : 5,
       outputExtent: { width: 129, height: 73 },
       workExtent: { width: 65, height: 37 },
     });
+    expect(inspect).not.toHaveBeenCalled();
   } finally {
     (await compiled.retire()).unwrap();
   }

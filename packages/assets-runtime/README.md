@@ -77,12 +77,22 @@ built-in mesh handles or additional World payload registrations.
 `load(guid, 'mesh', { usage: 'render' })` allows a verified static Mesh to keep its
 draw metadata in Engine and its geometry in a split Render Worker. If preparation
 or exact recovery cannot be provided, the load keeps complete CPU content.
-The split Render Worker reserves bytes before the Registry captures a private
-transfer copy. Refusal leaves the adopted CPU Mesh readable.
+The split Render Worker reserves bytes before handoff. A first load can take
+the built-in Mesh decoder's original, exclusively held backing. Other eligible
+loads use a private copy. A normal load can take precedence before handoff or
+restore the same revision after handoff.
+
+Pass the same usage to a Scene load to prefer Render residency for its
+draw-only Mesh references. A direct MeshFilter reference qualifies when no
+other reference in the closure needs that Mesh. Nested scenes and unknown
+component schemas use the ordinary CPU path. During Engine Worker bootstrap,
+the staged split receiver prepares requested geometry after its device becomes
+ready and before it accepts its first World publication.
 A second split Render receiver restores that revision into shared Engine CPU storage before
 it publishes its first scene. Each receiver then owns its own render resources.
 `meshCpuResidency(handle)` reports the current mode, the Registry bytes and the
-recovery artifact bytes. For CPU residents, `cpuRetentionReason` reports the
+recovery artifact bytes, and whether the handoff transferred original storage
+or copied it. For CPU residents, `cpuRetentionReason` reports the
 ordinary CPU requirement, the receiver topology or the reason the current Mesh
 revision could not move to Render. Recovery artifact capacity and Render
 preparation have distinct budget reasons. The Render budget charges prepared
@@ -380,7 +390,7 @@ linear light.
 
 ## AssetEvidence SDK boundary
 
-`inspect(guid)` and `verifyByGuid(guid)` project injected source, Catalog, Cook
+`inspect(guid)` projects injected source, Catalog, Cook
 receipt and package verification evidence. `configureAssetEvidence(source)`
 provides that host capability. Missing evidence remains unknown, and source
 readiness is distinct from actual runtime adoption or GPU completion.
@@ -764,9 +774,8 @@ are never refreshed to mix sources. Pending cancellation/disposal clears its
 partial copies, guards and reservation, then retires real holds through the owner.
 The owner settles unfinished capture cleanup on close without a future frame or
 caller step. Registry root/nested publication fences remain a separate authority.
-`captureContent` synchronously drives the same algorithm and can still block;
-streaming scheduling must use the explicit continuation route. Per-asset copying,
-initial closure collection and guards remain measured, indivisible work.
+Per-asset copying, initial closure collection and guards remain measured,
+indivisible work.
 
 Scene publication continuations recheck fixed content, adopted source identity
 and modification, and the current root plus every required Catalog sibling.

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -21,6 +21,8 @@ import {
   type ToolTerminal,
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
+import { sha256 } from '@forgeax/engine-types';
+import { writeFileAtomic } from './filesystem-path.js';
 
 export interface OperationHistoryEntry {
   schemaVersion: 1;
@@ -47,7 +49,7 @@ export interface OperationHistoryPage {
 }
 const ID = /^\d{13}-[0-9a-f-]{36}$/;
 const MAX_IMAGE = 32 * 1024 * 1024;
-const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+const digest = (bytes: Uint8Array) => `sha256:${sha256(bytes)}`;
 
 /** Bounded diagnostic projection. Binary payloads and credentials are never history text. */
 function project(value: unknown, depth = 0, budget = { remaining: 65536 }): JsonValue {
@@ -113,7 +115,7 @@ export async function createOperationHistoryStore(rootInput: string, directoryIn
     join(
       process.env.FORGEAX_HISTORY_DIR ??
         join(process.env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'ForgeaX/operations'),
-      createHash('sha256').update(root).digest('hex'),
+      sha256(root),
     );
   const read = async (id: string): Promise<OperationHistoryEntry> => {
     requireId(id);
@@ -145,9 +147,7 @@ export async function createOperationHistoryStore(rootInput: string, directoryIn
       return;
     }
     await mkdir(folder, { recursive: true });
-    const temporary = join(folder, `record-${randomUUID()}.tmp`);
-    await writeFile(temporary, JSON.stringify(entry), { mode: 0o600 });
-    await rename(temporary, join(folder, 'record.json'));
+    await writeFileAtomic(join(folder, 'record.json'), JSON.stringify(entry), { mode: 0o600 });
   };
   return {
     root,

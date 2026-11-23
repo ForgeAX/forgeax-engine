@@ -75,3 +75,16 @@ it('keeps a ground reference outside a very thin authored atmosphere finite', ()
   expect(groundSolarTransmittance(thin, [1, 0, 0])).toEqual([1, 1, 1]);
   expect(groundSolarTransmittance(thin, [0, -1, 0]).every(Number.isFinite)).toBe(true);
 });
+
+it('uses the configured minimum elevation for the shared CPU solar reference', () => {
+  const angle = (6 * Math.PI) / 180;
+  const medium = { ...earthAtmosphere, transmittanceMinLightElevationDegrees: 6 };
+  const floor = groundSolarTransmittance(medium, [0, -0.5, 1]);
+  expect(groundSolarTransmittance(medium, [0, 0.5, -1], true)).toBe(floor);
+  const atAngle = groundSolarTransmittance(earthAtmosphere, [0, Math.sin(angle), Math.cos(angle)]);
+  for (const [channel, value] of floor.entries())
+    expect(value).toBeCloseTo(atAngle[channel] ?? 0, 12);
+  expect(groundSolarTransmittance({ ...medium, mieScattering: 0 }, [0, -0.5, 1])).not.toEqual(
+    floor,
+  );
+});

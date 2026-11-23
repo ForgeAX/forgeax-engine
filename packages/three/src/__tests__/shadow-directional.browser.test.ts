@@ -16,7 +16,7 @@ describe.sequential('projects the authored directional shadow and filter', () =>
   it('checks authored directional shadow maps and filters', { timeout: 240000 }, async () => {
     await journey.verifyAuthoredFilters();
   });
-  it('checks directional shadow layers and variance controls', { timeout: 240000 }, async () => {
-    await journey.verifyLayersAndVariance();
+  it('checks directional shadow layers', { timeout: 240000 }, async () => {
+    await journey.verifyLayers();
   });
 });

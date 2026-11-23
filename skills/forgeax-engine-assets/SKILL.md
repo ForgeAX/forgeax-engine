@@ -287,9 +287,8 @@ When the source is not configured, keep the structured failure instead of
 inventing a fallback row.
 
 The Vite boundary has one producer and one Catalog projection. `pluginPack`
-publishes the scoped dev/build result; `createCatalogClient` subscribes to the
-dev delta stream and enumerates the initial snapshot without moving Vite into the
-runtime. `runtimeBinding` carries the active scope and `generation`, so a late
+publishes the scoped dev/build result. Use `createCatalogHotSubscription` for
+dev deltas and `enumerateCatalog()` for the initial snapshot. `runtimeBinding` carries the active scope and `generation`, so a late
 publication from an old host is rejected. Preserve `sourceKey` as the semantic
 source identity in Catalog facts; it is not a URL, filename, or GUID fallback.
 
@@ -364,7 +363,8 @@ producer, outside asset loading and the ECS frame.
 > executes `build` to derive a payload.
 
 Runtime-capable generators declare their complete `runtime.dependencies`, including
-non-default parameter branches. Admission preserves verified JS artifacts and
+non-default parameter branches. Declare `execution: 'task-worker'` only when the
+generator requires a separate realm. Admission preserves verified JS artifacts and
 fixed asset dependencies without evaluating the generator. Persist the original
 Pack/program/instance closure before clearing derived caches; DDC is not a save
 store. Recovery may replay generators and does not install plugin Fibers. View
@@ -382,12 +382,9 @@ For generated `material` and `mesh` outputs, register
 self-contained; provide the host snapshot source before using
 `reader.readByGuid`.
 
-For ordinary prebuilt `.pack.json` dependencies, create the source in the
-build-time owner with `createScriptablePackFileAssetSnapshotSource({
-assetRoots })` from `@forgeax/engine-import`. It validates and indexes GUIDs
-once, returns private Asset snapshots with deterministic generation/digest
-evidence, and keeps missing, malformed, unreadable, and colliding files as
-structured `Result` errors.
+For external Pack and Meta dependencies, pass the current inventory
+declarations, native cookers, and available GUIDs to
+`createDeclaredPackAssetSnapshotSource` from `@forgeax/engine-import`.
 
 ## MaterialAsset catalog recovery
 
@@ -433,6 +430,11 @@ prepared target for complete capture. Restore may expose a foreign definition
 as metadata; mounting it without membership in the current target's tools map fails.
 
 ### Runtime Pack validation route
+
+For native desktop delivery, build and launch the packaged game on fresh project
+data, then relaunch against the same data. Check the generated asset's load and
+verify that the second process uses the cached output. Use the
+[DevKit native build entry](../../packages/devkit/README.md#native-desktop-development-build).
 
 For a generator that can run in a separate realm, declare
 `runtime: { dependencies, execution: 'task-worker' }`. Use the App Engine

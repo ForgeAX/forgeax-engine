@@ -47,3 +47,16 @@ test('software scene keeps the shared watchdog policy without overriding device 
   assert.ok(launch.args.includes('--use-angle=swiftshader'));
   assert.ok(launch.args.includes('--use-vulkan=swiftshader'));
 });
+
+test('the local compatibility scene honors explicit native graphics admission', () => {
+  const defaults = JSON.parse(readFileSync(new URL('../browser-launch.json', import.meta.url)));
+  const env = { CI: '1', FORGEAX_BROWSER_GPU: 'native' };
+  const launch = compatibilityLaunch(defaults, 'scene', env, 'darwin');
+  assert.equal(launch.chromiumSandbox, true);
+  assert.ok(launch.args.includes('--enable-unsafe-webgpu'));
+  assert.ok(launch.args.includes('--disable-gpu-watchdog'));
+  assert.ok(!launch.args.some((arg) => /SwiftShader|Vulkan/i.test(arg)));
+  assert.ok(
+    compatibilityLaunch(defaults, 'policy', env, 'darwin').args.includes('--use-angle=swiftshader'),
+  );
+});

@@ -18,7 +18,6 @@ import {
   createDeclaredPackAssetSnapshotSource,
   declaredPackExternalOutputs,
   prepareDirectPackTransport,
-  prepareLegacyPackTransport,
 } from '../scriptable-pack-host.js';
 
 const GUID = '019ffa97-0000-7000-8000-000000000001';
@@ -274,35 +273,35 @@ describe('ScriptablePack external Meta staging', () => {
   });
 
   it('retries a failed external owner and isolates concurrent sibling snapshots', async () => {
-    const siblingGuid = '019ffa97-0000-7000-8000-000000000002';
+    const source = {
+      schemaVersion: '3.0.0',
+      packageId: '019ffa97-0000-7000-8000-000000000001',
+      assets: {
+        primary: { kind: 'sampler', payload: {}, refs: [] },
+        sibling: { kind: 'sampler', payload: {}, refs: [] },
+      },
+    };
+    const value = parsePackSourceJson(source).unwrap();
+    if (value.format !== 'direct') throw new Error('expected a direct Pack');
+    const outputGuid = AssetGuid.format(AssetGuid.derive(value.packageId, 'primary'));
+    const siblingGuid = AssetGuid.format(AssetGuid.derive(value.packageId, 'sibling'));
     const declaration = {
       format: 'pack.json',
       sourcePath: '/project/effects.pack.json',
       sourceRevision: 'sha256:effects',
-      sourceText: '',
-      value: {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [GUID, siblingGuid].map((guid) => ({
-          guid,
-          kind: 'test-effect',
-          execution: 'cooked',
-          payload: {},
-          refs: [],
-          artifacts: {},
-        })),
-      },
+      sourceText: JSON.stringify(source),
+      value,
     } satisfies Extract<ScanSourceDeclaration, { readonly format: 'pack.json' }>;
     let broken = true;
     let calls = 0;
     const cooker: NativeCooker = {
-      key: 'test-effect',
+      key: 'sampler',
       cook(input) {
         calls++;
         if (broken) throw new Error('repairable external producer');
         return {
           guid: (input as { readonly guid: string }).guid,
-          payload: { values: [1, 2] },
+          payload: { kind: 'sampler', values: [1, 2] },
           refs: [],
           artifacts: {},
           inputFingerprint: 'sha256:effects',
@@ -312,17 +311,17 @@ describe('ScriptablePack external Meta staging', () => {
     const lazy = createDeclaredPackAssetSnapshotSource(
       new Map([[declaration.sourcePath, declaration]]),
       [cooker],
-      [parseGuid(GUID), parseGuid(siblingGuid)],
+      [parseGuid(outputGuid), parseGuid(siblingGuid)],
     );
     expect(calls).toBe(0);
-    expect(await lazy.readByGuid(parseGuid(GUID))).toMatchObject({
+    expect(await lazy.readByGuid(parseGuid(outputGuid))).toMatchObject({
       ok: false,
       error: { code: 'native-cook-failed' },
     });
     expect(calls).toBe(1);
     broken = false;
     const [first, sibling] = await Promise.all([
-      lazy.readByGuid(parseGuid(GUID)),
+      lazy.readByGuid(parseGuid(outputGuid)),
       lazy.readByGuid(parseGuid(siblingGuid)),
     ]);
     expect(calls).toBe(3);
@@ -332,11 +331,11 @@ describe('ScriptablePack external Meta staging', () => {
       digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
     });
     (first.unwrap().asset as unknown as { values: number[] }).values[0] = 99;
-    expect((await lazy.readByGuid(parseGuid(GUID))).unwrap().asset).toEqual({
-      kind: 'test-effect',
+    expect((await lazy.readByGuid(parseGuid(outputGuid))).unwrap().asset).toEqual({
+      kind: 'sampler',
       values: [1, 2],
     });
-    expect(sibling.unwrap().asset).toEqual({ kind: 'test-effect', values: [1, 2] });
+    expect(sibling.unwrap().asset).toEqual({ kind: 'sampler', values: [1, 2] });
     expect(await lazy.readByGuid(parseGuid('019ffa97-0000-7000-8000-000000000003'))).toMatchObject({
       ok: false,
       error: { code: 'asset-not-found' },
@@ -344,10 +343,10 @@ describe('ScriptablePack external Meta staging', () => {
     const fresh = createDeclaredPackAssetSnapshotSource(
       new Map([[declaration.sourcePath, declaration]]),
       [cooker],
-      [parseGuid(GUID), parseGuid(siblingGuid)],
+      [parseGuid(outputGuid), parseGuid(siblingGuid)],
     );
-    expect((await fresh.readByGuid(parseGuid(GUID))).ok).toBe(true);
-    expect(calls).toBe(5);
+    expect((await fresh.readByGuid(parseGuid(outputGuid))).ok).toBe(true);
+    expect(calls).toBe(4);
   });
 
   it('keeps a direct non-Engine POD as direct transport', async () => {
@@ -460,53 +459,6 @@ describe('ScriptablePack external Meta staging', () => {
         artifacts: {},
       },
     ]);
-  });
-
-  it('publishes already-cooked Engine-owned materials from legacy Pack v2', async () => {
-    const guid = '019ffa97-0000-0000-8000-000000000012';
-    const result = await prepareLegacyPackTransport(
-      {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid,
-            kind: 'material',
-            sourceKey: 'shaders/rusted-iron.wgsl',
-            execution: 'cooked',
-            payload: {
-              kind: 'material',
-              passes: [
-                {
-                  name: 'forward',
-                  program: {
-                    module: 'forgeax::default-standard-pbr',
-                    fragmentEntry: 'fs_main',
-                  },
-                  renderState: { tags: { LightMode: 'Forward' } },
-                },
-              ],
-              parameters: [{ name: 'noiseScale', type: 'f32' }],
-              values: { noiseScale: 1.85 },
-            },
-            refs: [],
-          },
-        ],
-      },
-      [],
-      (assetGuid) => ({
-        base: '/',
-        packagePath: `/__forgeax-ddc/${assetGuid}.pack.json`,
-        artifactPath: (childGuid, key) => `${childGuid}/${key}.bin`,
-      }),
-    );
-
-    expect(result.firstGuid).toBe(guid);
-    expect(result.cooked?.refsByGuid.get(guid)).toEqual([]);
-    expect(result.finalized?.packageUrl).toBe(`/__forgeax-ddc/${guid}.pack.json`);
-    expect(result.finalized?.pack.assets[0]?.payload).toMatchObject({
-      passes: [{ program: { module: 'forgeax::default-standard-pbr' } }],
-    });
   });
 });
 

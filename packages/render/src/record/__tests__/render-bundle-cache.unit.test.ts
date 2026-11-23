@@ -10,6 +10,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type PreparedSceneReplay,
   RenderBundleCache,
   type RenderBundleCounters,
   retireSceneRenderBundleCache,
@@ -47,6 +48,7 @@ function observeCommands(d: RhiDevice) {
   type Event = { method: string; args: unknown[]; state?: string };
   const recorded = new WeakMap<RenderBundle, Command[]>();
   const bundleDrawCounts: number[] = [];
+  const replayBatchSizes: number[] = [];
   const ids = new WeakMap<object, number>();
   let nextId = 0;
   const canonical = (arg: unknown): unknown => {
@@ -168,10 +170,12 @@ function observeCommands(d: RhiDevice) {
   return {
     builds,
     bundleDrawCounts,
+    replayBatchSizes,
     frame(
       cache: RenderBundleCache | undefined,
-      record: (p: RhiRenderPassEncoder) => void,
+      record: (p: RhiRenderPassEncoder, replay?: PreparedSceneReplay) => void,
       counters?: RenderBundleCounters,
+      prepared = false,
     ) {
       const events: Event[] = [];
       let binding = emptyBinding();
@@ -180,6 +184,7 @@ function observeCommands(d: RhiDevice) {
         pass(d),
         (command) => simulate(command, binding, dynamic, events),
         (bundles) => {
+          if (prepared) replayBatchSizes.push(bundles.length);
           for (const bundle of bundles) {
             const commands = recorded.get(bundle);
             if (!commands) throw new Error('Unobserved bundle');
@@ -189,7 +194,7 @@ function observeCommands(d: RhiDevice) {
           binding = emptyBinding();
         },
       );
-      if (cache) cache.encode(d, p, record, counters);
+      if (cache) cache.encode(d, p, record, counters, prepared);
       else record(p);
       p.end();
       return events;
@@ -198,6 +203,52 @@ function observeCommands(d: RhiDevice) {
 }
 
 describe('scene pass render bundle cache', () => {
+  it('batches adjacent prepared ranges until a stencil change or direct draw', async () => {
+    const d = await device();
+    const observer = observeCommands(d);
+    const cache = new RenderBundleCache({ colorFormats: [] });
+    const pipeline = d.createRenderPipeline({} as RenderPipelineDescriptor).unwrap();
+    const view = d
+      .createBindGroup({
+        layout: d.createBindGroupLayout({ entries: [] }).unwrap(),
+        entries: [],
+      })
+      .unwrap();
+    const ranges = [0, 0, 7, 7].map((stencil, index) => ({
+      stencil,
+      vertices: index + 3,
+      prepared: { key: [index] },
+    }));
+    const record = (pass: RhiRenderPassEncoder, replay?: PreparedSceneReplay) => {
+      for (const [index, range] of ranges.entries()) {
+        if (replay !== undefined) {
+          if (replay.begin(index) === range.prepared) {
+            replay.execute();
+            continue;
+          }
+          replay.record();
+        }
+        pass.setBindGroup(0, view);
+        pass.setStencilReference(range.stencil);
+        pass.setPipeline(pipeline);
+        pass.draw(range.vertices);
+        replay?.finish(range.prepared);
+      }
+    };
+    const frame = () => {
+      observer.replayBatchSizes.length = 0;
+      expect(observer.frame(cache, record, undefined, true)).toEqual(
+        observer.frame(undefined, record),
+      );
+      return observer.replayBatchSizes;
+    };
+    frame();
+    frame();
+    expect(frame()).toEqual([2, 2]);
+    ranges[1] = { stencil: 0, vertices: 8, prepared: { key: [1, 8] } };
+    expect(frame()).toEqual([1, 2]);
+  });
+
   it.each([
     'retire-front',
     'insert-front',
@@ -232,8 +283,9 @@ describe('scene pass render bundle cache', () => {
       // Surviving batches retain buffers, dynamic offsets and indirect ranges.
       if (edit === 'insert-front') meshes.unshift({ index: 1025 + frame, vertex: buffer(d) });
       else meshes.splice(edit === 'retire-front' ? 0 : 128, 1);
-      const counters = { hits: 0, misses: 0 };
+      const counters = { hits: 0, misses: 0, visitedDraws: 0 };
       expect(observer.frame(cache, record, counters)).toEqual(observer.frame(undefined, record));
+      expect(counters.visitedDraws).toBe(meshes.length);
       observations.push(counters);
     }
     // Retirement touches only the front region. Later regions must stay reused,
@@ -583,6 +635,47 @@ describe('scene pass render bundle cache', () => {
     for (let index = 16; index < 160; index++) frame(index, false);
     expect(observer.builds.mock.calls.length).toBeGreaterThan(before);
     expect(directFrames.at(-1)).toBeLessThan(100);
+  });
+
+  it('keeps a large prepared range through several short changing segments', async () => {
+    const d = await device();
+    const cache = new RenderBundleCache({ colorFormats: [] });
+    const counters: RenderBundleCounters = { hits: 0, misses: 0, visitedDraws: 0 };
+    const writeFixed = vi.fn((encoder: RhiRenderPassEncoder) => {
+      for (let draw = 0; draw < 48; draw++) encoder.draw(3, 1, 0, draw);
+    });
+    for (let frame = 0; frame < 60; frame++) {
+      const target = pass(d);
+      cache.encode(
+        d,
+        target,
+        (encoder, replay) => {
+          if (replay === undefined) {
+            writeFixed(encoder);
+            for (let draw = 0; draw < 3; draw++) encoder.draw(4 + frame, 1, 0, draw);
+            return;
+          }
+          if (replay.begin(0) !== undefined) replay.execute();
+          else {
+            replay.record();
+            writeFixed(encoder);
+            replay.finish({ key: [] });
+          }
+          for (let draw = 0; draw < 3; draw++) {
+            replay.begin(draw + 1);
+            replay.record(false);
+            encoder.draw(4 + frame, 1, 0, draw);
+            replay.finish(undefined);
+          }
+        },
+        counters,
+        true,
+      );
+      target.end();
+      expect((target as unknown as { drawCount: number }).drawCount).toBe(51);
+    }
+    expect(writeFixed).toHaveBeenCalledTimes(2);
+    expect(counters.preparedHits).toBe(58);
   });
 
   it('replays unchanged bins after an earlier bin gains or loses whole segments', async () => {

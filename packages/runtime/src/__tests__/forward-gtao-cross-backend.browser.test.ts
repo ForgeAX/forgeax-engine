@@ -20,7 +20,6 @@ import { GTAO_COMPARISON_BUDGET } from '../../../render/src/__tests__/gtao-refer
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
   base64Bytes,
-  byteChannel,
   byteErrorMetrics,
   captureForwardGtaoLinearHdr,
   captureForwardGtaoTarget,
@@ -42,7 +41,6 @@ type DebugDrawHost = RendererHostAssembly['debugDrawHost'] &
     | 'getCurrentGraphTarget'
     | 'requestGraphTargetCapture'
     | 'cancelGraphTargetCapture'
-    | 'setGtaoExecutionOverrideForConformance'
     | 'setClusterWorkObservationForConformance'
     | 'clusterWorkFrameTraceForConformance'
   >;
@@ -58,16 +56,13 @@ const inputDescriptor = Object.freeze({
     antialias: 0,
   },
   ao: {
-    algorithm: 'gtao',
+    requestedMethod: 'gtao',
+    effectiveMethod: 'ssao',
     radius: FORWARD_GTAO_FIXTURE.radius,
     bias: FORWARD_GTAO_FIXTURE.bias,
     intensity: FORWARD_GTAO_FIXTURE.intensity,
-    thickness: FORWARD_GTAO_FIXTURE.thickness,
-    distanceExponent: FORWARD_GTAO_FIXTURE.distanceExponent,
-    distanceFallOff: FORWARD_GTAO_FIXTURE.distanceFallOff,
-    resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
+
     quality: FORWARD_GTAO_FIXTURE.quality,
-    directLightingStrength: 0,
   },
   material: {
     baseColor: [0.5, 0.5, 0.5, 1],
@@ -107,8 +102,7 @@ interface FragmentCapture {
     readonly presentation?: ForwardGtaoPresentation;
     readonly trace: ReturnType<DebugDrawHost['clusterWorkFrameTraceForConformance']>;
   }[];
-  readonly raw: ForwardGtaoTargetCapture;
-  readonly filtered: ForwardGtaoTargetCapture;
+  readonly visibility: ForwardGtaoTargetCapture;
   readonly linearHdr: ForwardGtaoLinearCapture;
 }
 
@@ -143,7 +137,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
   document.body.append(canvas);
   if (backendKind === 'webgpu' && canvas.getContext('webgpu') === null) {
     canvas.remove();
-    throw new Error('WebGPU context is unavailable for cross-backend GTAO capture');
+    throw new Error('WebGPU context is unavailable for cross-backend SSAO capture');
   }
   const recorderResult = backendKind === 'webgpu' ? attachRecorder(webgpu) : attachRecorder(webgl2);
   const recorder = value(recorderResult);
@@ -153,6 +147,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
       ? await constructRuntimeRendererHost(canvas, {
           standardProfile: {
             ...DEFAULT_STANDARD_PROFILE,
+            renderPath: 'forward',
             ambientOcclusion: { enabled: false, method: 'gtao' },
           },
           rhi: recorder.backend.rhi,
@@ -162,6 +157,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
       : await constructRuntimeRendererHost(canvas, {
           standardProfile: {
             ...DEFAULT_STANDARD_PROFILE,
+            renderPath: 'forward',
             ambientOcclusion: { enabled: false, method: 'gtao' },
           },
           rhi: recorder.backend.rhi,
@@ -198,19 +194,14 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     .addComponent(camera, {
       component: AmbientOcclusion,
       data: {
-        directLightingStrength: 0,
         radius: FORWARD_GTAO_FIXTURE.radius,
         bias: FORWARD_GTAO_FIXTURE.bias,
         intensity: FORWARD_GTAO_FIXTURE.intensity,
-        thickness: FORWARD_GTAO_FIXTURE.thickness,
-        distanceExponent: FORWARD_GTAO_FIXTURE.distanceExponent,
-        distanceFallOff: FORWARD_GTAO_FIXTURE.distanceFallOff,
-        resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
+
         quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
       },
     })
     .unwrap();
-  if (backendKind === 'webgpu') debugHost.setGtaoExecutionOverrideForConformance('fragment');
   const lease = value(renderer.attach(world));
   const attemptTraces: {
     readonly operation: 'draw' | 'target-capture' | 'linear-hdr';
@@ -252,7 +243,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     }
     throw new Error(`${backendKind} GTAO fragment did not produce a ready frame`);
   };
-  const captureTarget = async (name: 'ssao-raw' | 'ssao-blurred') => {
+  const captureTarget = async (name: 'ssao-calc') => {
     failureOperation = `capture-target:${name}`;
     for (let attempt = 0; attempt < 120; attempt += 1) {
       try {
@@ -345,22 +336,20 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     }
     await drawReady();
     const ao = renderer.inspect().standardLighting?.ambientOcclusion;
-    if (ao?.status !== 'active') throw new Error(`${backendKind} GTAO is not active`);
-    expect(ao.algorithm).toBe('gtao');
-    expect(ao.execution).toBe('fragment');
-    expect(ao.input.extent).toEqual({
-      width: FORWARD_GTAO_FIXTURE.width,
-      height: FORWARD_GTAO_FIXTURE.height,
+    expect(ao).toMatchObject({
+      status: 'active',
+      algorithm: 'ssao',
+      execution: 'fragment',
+      input: { normalSchema: 'depth-reconstruction' },
+      output: {
+        extent: { width: FORWARD_GTAO_FIXTURE.width, height: FORWARD_GTAO_FIXTURE.height },
+      },
     });
-    expect(ao.output.extent).toEqual({
-      width: Math.round(FORWARD_GTAO_FIXTURE.width * FORWARD_GTAO_FIXTURE.resolutionScale),
-      height: Math.round(FORWARD_GTAO_FIXTURE.height * FORWARD_GTAO_FIXTURE.resolutionScale),
-    });
-    expect(renderer.inspect().output.graphPassNames).toEqual(
-      expect.arrayContaining(['ssao-calc', 'ssao-blur', 'main']),
-    );
-    const raw = await captureTarget('ssao-raw');
-    const filtered = await captureTarget('ssao-blurred');
+    if (ao === undefined) throw new Error(`${backendKind} SSAO is missing from inspection`);
+    const passNames = [...renderer.inspect().output.graphPassNames];
+    expect(passNames).toEqual(expect.arrayContaining(['ssao-calc', 'main']));
+    expect(passNames).not.toContain('ssao-blur');
+    const visibility = await captureTarget('ssao-calc');
     const linearHdr = await captureLinearHdr();
     return {
       backend: backendKind,
@@ -369,14 +358,13 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
       execution: ao.execution,
       passNames: [...renderer.inspect().output.graphPassNames],
       attemptTraces,
-      raw,
-      filtered,
+      visibility,
       linearHdr,
     };
   } catch (failure) {
     await writeForwardGtaoFailureReport({
       writeFile: commands.writeFile,
-      path: `packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-cross-backend-${backendKind}-failure.json`,
+      path: `packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-ssao-cross-backend-${backendKind}-failure.json`,
       failure,
       context: {
         backend: backendKind,
@@ -385,8 +373,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
           width: FORWARD_GTAO_FIXTURE.width,
           height: FORWARD_GTAO_FIXTURE.height,
           algorithm: 'gtao',
-          quality: 'high',
-          resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
+          quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
         },
         operation: failureOperation,
         receipt: failureReceipt,
@@ -397,7 +384,6 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     });
     throw failure;
   } finally {
-    debugHost.setGtaoExecutionOverrideForConformance(undefined);
     debugHost.setClusterWorkObservationForConformance(false);
     unsubscribe();
     lease.dispose();
@@ -407,7 +393,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
   }
 }
 
-it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with one fixed workload', {
+it('compares Forward SSAO with a GTAO request across WebGPU and wgpu-WebGL2 with one fixed workload', {
   timeout: 300_000,
 }, async () => {
   let webgpuResult: FragmentCapture | undefined;
@@ -421,16 +407,12 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
     expect(webgpuCapture.manifestIdentity).toEqual(webglCapture.manifestIdentity);
     expect(webgpuCapture.execution).toBe('fragment');
     expect(webglCapture.execution).toBe('fragment');
-    expect(webgpuCapture.raw).toMatchObject({
-      format: 'rgba8unorm',
-      width: webglCapture.raw.width,
-      height: webglCapture.raw.height,
-    });
-    expect(webgpuCapture.filtered).toMatchObject({
+    expect(webgpuCapture.visibility).toMatchObject({
       format: 'r8unorm',
-      width: webglCapture.filtered.width,
-      height: webglCapture.filtered.height,
+      width: webglCapture.visibility.width,
+      height: webglCapture.visibility.height,
     });
+    expect(webglCapture.visibility.format).toBe('r8unorm');
     expect([webgpuCapture.linearHdr.width, webgpuCapture.linearHdr.height]).toEqual([
       webglCapture.linearHdr.width,
       webglCapture.linearHdr.height,
@@ -438,29 +420,16 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
     expect(webgpuCapture.linearHdr.format).toBe('rgba16float');
     expect(webglCapture.linearHdr.format).toBe('rgba16float');
 
-    const rawVisibility = byteErrorMetrics(
-      byteChannel(webgpuCapture.raw.bytes, 4, 0),
-      byteChannel(webglCapture.raw.bytes, 4, 0),
+    const visibility = byteErrorMetrics(
+      webgpuCapture.visibility.bytes,
+      webglCapture.visibility.bytes,
     );
-    expect(rawVisibility.maxAbsolute).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-    );
-    expect(rawVisibility.rms).toBeLessThanOrEqual(GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError);
-    const rawNormal = [1, 2].map((channel) =>
-      byteErrorMetrics(
-        byteChannel(webgpuCapture.raw.bytes, 4, channel),
-        byteChannel(webglCapture.raw.bytes, 4, channel),
-      ),
-    );
-    for (const metrics of rawNormal) {
-      expect(metrics.maxAbsolute).toBeLessThanOrEqual(GTAO_COMPARISON_BUDGET.rawNormalMaxByteError);
-      expect(metrics.rms).toBeLessThanOrEqual(GTAO_COMPARISON_BUDGET.rawNormalRmsByteError);
-    }
-    const filtered = byteErrorMetrics(webgpuCapture.filtered.bytes, webglCapture.filtered.bytes);
-    expect(filtered.maxAbsolute).toBeLessThanOrEqual(
+    expect(visibility.maxAbsolute).toBeLessThanOrEqual(
       GTAO_COMPARISON_BUDGET.filteredVisibilityMaxByteError,
     );
-    expect(filtered.rms).toBeLessThanOrEqual(GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError);
+    expect(visibility.rms).toBeLessThanOrEqual(
+      GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError,
+    );
     const linear = linearErrorMetrics(
       rgba16FloatRgb(webgpuCapture.linearHdr),
       rgba16FloatRgb(webglCapture.linearHdr),
@@ -503,8 +472,7 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
         manifestIdentity: capture.manifestIdentity,
         execution: capture.execution,
         passNames: capture.passNames,
-        raw: await outputArtifact(capture.raw),
-        filtered: await outputArtifact(capture.filtered),
+        visibility: await outputArtifact(capture.visibility),
         linearHdr: {
           ...(await outputArtifact(capture.linearHdr)),
           deviceGeneration: capture.linearHdr.deviceGeneration,
@@ -517,10 +485,10 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
       fixture: inputDescriptor,
       inputHash: webgpuCapture.inputHash,
       backendOutputs,
-      comparison: { rawVisibility, rawNormal, filtered, linear },
+      comparison: { visibility, linear },
     };
     await commands.writeFile(
-      'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-cross-backend.browser.json',
+      'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-ssao-cross-backend.browser.json',
       JSON.stringify(report, null, 2),
     );
   } catch (failure) {
@@ -532,19 +500,12 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
         inputHash: capture.inputHash,
         execution: capture.execution,
         passNames: capture.passNames,
-        raw: {
-          width: capture.raw.width,
-          height: capture.raw.height,
-          format: capture.raw.format,
-          byteLength: capture.raw.bytes.byteLength,
-          sha256: await sha256Hex(capture.raw.bytes),
-        },
-        filtered: {
-          width: capture.filtered.width,
-          height: capture.filtered.height,
-          format: capture.filtered.format,
-          byteLength: capture.filtered.bytes.byteLength,
-          sha256: await sha256Hex(capture.filtered.bytes),
+        visibility: {
+          width: capture.visibility.width,
+          height: capture.visibility.height,
+          format: capture.visibility.format,
+          byteLength: capture.visibility.bytes.byteLength,
+          sha256: await sha256Hex(capture.visibility.bytes),
         },
         linearHdr: {
           frameId: capture.linearHdr.frameId,
@@ -561,7 +522,7 @@ it('compares admitted Forward GTAO fragment across WebGPU and wgpu-WebGL2 with o
     };
     await writeForwardGtaoFailureReport({
       writeFile: commands.writeFile,
-      path: 'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-cross-backend-comparison-failure.json',
+      path: 'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-ssao-cross-backend-comparison-failure.json',
       failure,
       context: {
         backend: 'cross-backend-comparison',

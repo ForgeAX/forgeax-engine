@@ -35,6 +35,7 @@ export const DAWN_ISOLATED_GROUPS = [
     files: [
       'packages/runtime/src/__tests__/point-light-shadow.dawn.test.ts',
       'packages/runtime/src/__tests__/dawn/instances-uniform-fallback.dawn.test.ts',
+      'packages/render/src/features/editor-assistance/__tests__/editor-assistance.dawn.test.ts',
     ],
   },
   {
@@ -72,7 +73,8 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'modeling-show',
-    nativeProcessSlots: 1,
+    // Reserve the whole runner for cold Pack cooking and native PBR preparation.
+    nativeProcessSlots: 2,
     // Run 41597394498 reached this full capture journey at minute 36. The
     // retained complete-owner maximum is 187 seconds; preserve ten minutes of
     // startup/capture headroom without starving ordinary work on other lanes.
@@ -171,11 +173,15 @@ export const DAWN_ISOLATED_GROUPS = [
     // The cold shared-material cook needs the full compiler allocation before
     // the first native replay. Keep the complete file and every case deadline.
     nativeProcessSlots: 2,
-    placementReserveSeconds: 150,
+    // The complete owner took 355.022 seconds in run 45026514954.
+    placementReserveSeconds: 360,
     files: ['packages/render/src/__tests__/raytracing/path-tracer.dawn.test.ts'],
   },
   {
     id: 'gi-2',
+    // Run 44692964983 took 534 seconds in the complete serial owner.
+    // Reserve its observed cost plus startup drift before ordinary backfill.
+    placementReserveSeconds: 670,
     // The path-buffer fixture cooks the complete ray-material input set and
     // replays both sources. Keep the full compiler allocation for this owner.
     nativeProcessSlots: 2,
@@ -197,7 +203,9 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-4',
-    nativeProcessSlots: 1,
+    // Native GI replay exceeded the runner's memory limit alongside another owner.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts',
@@ -225,7 +233,9 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'screen-probe',
-    nativeProcessSlots: 1,
+    // The full capture/replay can exceed the runner's memory limit even alone.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
     // The same run never reached this owner; retain its complete maximum.
     placementReserveSeconds: 190.617,
     files: ['packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts'],
@@ -241,22 +251,34 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Run 44039100905 exhausted lanes one and four. Match the current core costs
 // and spread complete native owners and reserved headroom across these lanes;
 // one-pass backfill retains every file without historical layout constraints.
+// The complete 44724367065 Dawn cohort reached its longest ordinary child
+// on lane four. Moving the serial Surface owner to lane one rebalances ordinary
+// backfill and preserves the historical replay bounds across all four lanes.
+// Run 44681831426 completed GI-4 and GI-6 in 531 seconds before lane two
+// timed out in its ordinary child. Spread both owners across lanes one and four.
+// After GI-4 becomes exclusive, exchange GI-3 and Heavy-4 to retain headroom
+// across the complete historical cohorts.
+// Run 44935915143 used 37 minutes in complete native owners before ordinary-1.
+// Separate the serial Surface, Three Surface and GI-4 workloads across lanes.
+// Run 45026514954 reached ordinary-1 after 23 minutes of native owners.
+// Exchange Path Tracer and Compact-1 to use lane four's measured headroom.
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
+    'compact-1',
     'direct-light',
+    'feature-depth',
     'gi-1',
-    'heavy-4',
+    'gi-3',
+    'heavy-3',
     'modeling-s6',
-    'path-tracer',
     'rect-source',
     'three-surface-expression',
   ]),
   Object.freeze([
     'ordinary-2',
     'compact-2',
-    'gi-4',
-    'gi-6',
+    'gi-2',
     'heavy-2',
     'specular-aa',
     'shadow-quality',
@@ -267,19 +289,18 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'ordinary-3',
     'alpha-hash',
     'compact-3',
-    'feature-depth',
-    'gi-2',
+    'gi-4',
     'heavy-1',
-    'heavy-3',
     'modeling-show',
     'screen-probe',
   ]),
   Object.freeze([
     'ordinary-4',
-    'compact-1',
-    'gi-3',
     'gi-5',
+    'gi-6',
+    'heavy-4',
     'nested-discard',
+    'path-tracer',
     'shadow-fields',
     'renderer',
     'vfx-depth',
@@ -325,3 +346,52 @@ export const DAWN_ORDINARY_FILE_FAMILIES = [
     additionalProcessReserveSeconds: 40,
   },
 ];
+
+export function dawnGateGroupPriority(left, right) {
+  // Modeling retains first start even beside a larger native reservation.
+  return (
+    Number(right.id.startsWith('modeling-')) - Number(left.id.startsWith('modeling-')) ||
+    (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0)
+  );
+}
+
+export function dawnNativeExecutionOrder(groups, forecasts) {
+  const native = groups.filter((group) => group.vitestShard === undefined);
+  const priority = (group) =>
+    Math.max(forecasts.get(group.id) ?? 0, group.placementReserveSeconds ?? 0);
+  return [
+    ...native.slice(0, 2),
+    ...native.slice(2).sort((left, right) => priority(right) - priority(left)),
+    ...groups.filter((group) => group.vitestShard !== undefined),
+  ];
+}
+
+// Price the same two slots used by executeDawnGroups. An exclusive group
+// drains both slots before it starts, and the ordinary child follows last.
+export function dawnNativeLaneSeconds(groups, forecasts, concurrency) {
+  let slots = [0, 0];
+  for (const group of dawnNativeExecutionOrder(
+    [...groups].sort(dawnGateGroupPriority),
+    forecasts,
+  )) {
+    if (group.vitestShard !== undefined) continue;
+    const cost = forecasts.get(group.id);
+    if (cost === undefined) throw new Error(`Dawn owner has no placement forecast: ${group.id}`);
+    if (concurrency === 1 || group.nativeProcessSlots !== 1) {
+      slots = [Math.max(...slots) + cost, Math.max(...slots) + cost];
+    } else {
+      slots.sort((a, b) => a - b);
+      slots[0] += cost;
+    }
+  }
+  return Math.max(...slots);
+}
+
+// Retain most of the overlap as headroom for software-GPU contention. Full
+// elapsed overlap otherwise over-packs ordinary files on historically slow hosts.
+export function dawnNativeLaneReserve(groups, forecasts, concurrency) {
+  const serial = dawnNativeLaneSeconds(groups, forecasts, 1);
+  if (concurrency === 1) return serial;
+  const paired = dawnNativeLaneSeconds(groups, forecasts, concurrency);
+  return serial - Math.min(90, (serial - paired) / 4);
+}

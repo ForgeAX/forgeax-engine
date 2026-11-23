@@ -1,8 +1,10 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { RenderPublicationError } from '@forgeax/engine-render';
 import {
+  type ClosedLevelAssetPayload,
+  captureLevelMaterialPrograms,
   encodeClosedLevelRows,
   type PreparedMeshSource,
-  type PublishedAssetVersion,
   publicationAssetPayloadTransfers,
 } from '@forgeax/engine-render/internal';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -13,6 +15,7 @@ import {
 import {
   CLOSED_LEVEL_ROWS_PER_CHUNK,
   type ClosedLevelAttempt,
+  type ClosedLevelFrameChanges,
   type ClosedLevelFrameSelection,
   type ClosedLevelFrameSelectionReceipt,
   type ClosedLevelRowIdentity,
@@ -37,9 +40,16 @@ export interface SealedLevelRows {
 
 interface PendingSelection {
   readonly value: ClosedLevelFrameSelection;
+  readonly batch: symbol | undefined;
   readonly current: () => boolean;
   readonly resolve: (selection: LevelRenderSelection) => void;
   readonly reject: (cause: unknown) => void;
+}
+
+interface SentSelections {
+  readonly selections: Map<number, PendingSelection>;
+  readonly replies: Map<number, ClosedLevelFrameSelectionReceipt>;
+  readonly revision: number;
 }
 
 interface SealedAssetVersions {
@@ -56,25 +66,30 @@ export class SourceClosedLevelRows {
   private stream = 0;
   private serial = 0;
   private sending = false;
+  private readonly acknowledgedPrograms = new Set<string>();
+  private selectionBatch: symbol | undefined;
   private readonly pending = new Map<
     number,
     { readonly id: ClosedLevelRowIdentity; finish(result: Receipt): void }
   >();
 
   private readonly unsentSelections = new Map<number, PendingSelection>();
-  private readonly sentSelections = new Map<
-    number,
-    { readonly selection: PendingSelection; readonly revision: number }
-  >();
+  private readonly sentSelections = new Map<number, SentSelections>();
   // Sender hints contain only versions acknowledged by the receiving owner.
   private readonly sealedAssets = new Map<number, SealedAssetVersions>();
 
-  constructor(private readonly session: () => Session | undefined) {}
+  constructor(
+    private readonly session: () => Session | undefined,
+    private readonly registry?: () => AssetRegistry,
+  ) {}
 
   async stage(
     level: ClosedLevelAttempt,
     input: Pick<PreparedMeshSource, 'renderables' | 'dispatch' | 'isCurrent'>,
-    options?: { readonly signal?: AbortSignal; readonly assets?: Iterable<PublishedAssetVersion> },
+    options?: {
+      readonly signal?: AbortSignal;
+      readonly assets?: Iterable<ClosedLevelAssetPayload>;
+    },
   ): Promise<Result<SealedLevelRows, RenderPublicationError>> {
     const signal = options?.signal;
     const session = this.session();
@@ -108,6 +123,14 @@ export class SourceClosedLevelRows {
         this.confirm(result, 'chunk');
         ordinal++;
       }
+      if (!session.isCurrent() || !input.isCurrent() || signal?.aborted)
+        throw unavailable('closed Level source changed before seal');
+      const programs =
+        this.registry === undefined
+          ? []
+          : captureLevelMaterialPrograms(this.registry(), input.renderables, (key) =>
+              this.acknowledgedPrograms.has(key),
+            );
       const sealed = await this.request(
         session,
         id,
@@ -116,6 +139,7 @@ export class SourceClosedLevelRows {
           assets: assets.size,
           chunks: ordinal,
           rows: input.renderables.length,
+          ...(programs.length === 0 ? {} : { programs }),
         },
         undefined,
         signal,
@@ -123,6 +147,7 @@ export class SourceClosedLevelRows {
       this.confirm(sealed, 'seal');
       if (!session.isCurrent() || !input.isCurrent() || signal?.aborted)
         throw unavailable('closed Level source changed before seal returned');
+      for (const { key } of programs) this.acknowledgedPrograms.add(key);
       this.sealedAssets.set(id.stream, { id, versions: assets });
       return ok({
         id,
@@ -167,6 +192,24 @@ export class SourceClosedLevelRows {
     }
   }
 
+  batchSelections(apply: () => void): void {
+    if (this.selectionBatch !== undefined) throw Error('nested Level selection exchange');
+    const batch = Symbol();
+    this.selectionBatch = batch;
+    try {
+      apply();
+    } catch (cause) {
+      for (const [stream, selection] of this.unsentSelections) {
+        if (selection.batch !== batch) continue;
+        this.unsentSelections.delete(stream);
+        selection.reject(cause);
+      }
+      throw cause;
+    } finally {
+      this.selectionBatch = undefined;
+    }
+  }
+
   private select(
     session: Session,
     selection: ClosedLevelFrameSelection,
@@ -175,9 +218,7 @@ export class SourceClosedLevelRows {
       return Promise.reject(unavailable('closed Level frame session ended'));
     if (
       this.unsentSelections.has(selection.id.stream) ||
-      [...this.sentSelections.values()].some(
-        (sent) => sent.selection.value.id.stream === selection.id.stream,
-      )
+      [...this.sentSelections.values()].some((sent) => sent.selections.has(selection.id.stream))
     )
       return Promise.reject(
         new RenderPublicationError({ reason: 'in-flight', subject: 'Level selection' }),
@@ -185,6 +226,7 @@ export class SourceClosedLevelRows {
     return new Promise((resolve, reject) => {
       this.unsentSelections.set(selection.id.stream, {
         value: selection,
+        batch: this.selectionBatch,
         current: session.isCurrent,
         resolve,
         reject,
@@ -192,29 +234,62 @@ export class SourceClosedLevelRows {
     });
   }
 
-  takeSelection(frameId: number, revision: number): ClosedLevelFrameSelection | undefined {
-    for (const [stream, selection] of this.unsentSelections) {
-      this.unsentSelections.delete(stream);
-      if (!selection.current()) {
-        selection.reject(unavailable('closed Level frame session ended'));
-        continue;
+  takeSelection(frameId: number, revision: number): ClosedLevelFrameChanges | undefined {
+    const first = this.unsentSelections.values().next().value;
+    if (first === undefined) return undefined;
+    const selections = new Map([[first.value.id.stream, first]]);
+    this.unsentSelections.delete(first.value.id.stream);
+    if (first.batch !== undefined) {
+      for (const [stream, candidate] of this.unsentSelections) {
+        if (candidate.batch !== first.batch) continue;
+        selections.set(stream, candidate);
+        this.unsentSelections.delete(stream);
       }
-      this.sentSelections.set(frameId, { selection, revision });
-      return selection.value;
     }
-    return undefined;
+    if ([...selections.values()].some((selection) => !selection.current())) {
+      for (const selection of selections.values())
+        selection.reject(unavailable('closed Level frame session ended'));
+      return undefined;
+    }
+    this.sentSelections.set(frameId, { selections, replies: new Map(), revision });
+    const changes = [...selections.values()].map(({ value }) => value);
+    return changes.length === 1 ? changes[0] : { changes };
   }
 
   receiveSelection(receipt: ClosedLevelFrameSelectionReceipt): void {
     const sent = this.sentSelections.get(receipt.frameId);
     if (sent === undefined || receipt.revision !== sent.revision) return;
-    const { selection } = sent;
+    const stream = receipt.id.stream;
+    const selection = sent.selections.get(stream);
     if (
+      selection === undefined ||
       selection.value.active !== receipt.active ||
       !sameClosedLevelRowIdentity(selection.value.id, receipt.id)
     )
       return;
+    sent.replies.set(stream, receipt);
+    if (sent.replies.size !== sent.selections.size) return;
     this.sentSelections.delete(receipt.frameId);
+    const refused = [...sent.replies.values()].find((reply) => !reply.result.ok)?.result;
+    for (const [key, item] of sent.selections) {
+      const reply = sent.replies.get(key);
+      if (reply !== undefined)
+        this.finishSelection(
+          item,
+          refused === undefined
+            ? reply
+            : {
+                ...reply,
+                result: refused,
+              },
+        );
+    }
+  }
+
+  private finishSelection(
+    selection: PendingSelection,
+    receipt: ClosedLevelFrameSelectionReceipt,
+  ): void {
     if (!selection.current()) selection.reject(unavailable('closed Level frame session ended'));
     else if (receipt.result.ok)
       selection.resolve(
@@ -250,14 +325,14 @@ export class SourceClosedLevelRows {
     const sent = this.sentSelections.get(frameId);
     if (sent === undefined) return;
     this.sentSelections.delete(frameId);
-    sent.selection.reject(cause);
+    for (const selection of sent.selections.values()) selection.reject(cause);
   }
 
   private async sendAssets(
     session: Session,
     id: ClosedLevelRowIdentity,
     isCurrent: () => boolean,
-    assets: Iterable<PublishedAssetVersion> | undefined,
+    assets: Iterable<ClosedLevelAssetPayload> | undefined,
     signal: AbortSignal | undefined,
   ): Promise<ReadonlyMap<number, number>> {
     const versions = new Map<number, number>();
@@ -272,7 +347,7 @@ export class SourceClosedLevelRows {
 
   private mayRetain(
     id: ClosedLevelRowIdentity,
-    { handle, revision }: PublishedAssetVersion,
+    { handle, revision }: ClosedLevelAssetPayload,
   ): boolean {
     for (const entry of this.sealedAssets.values())
       if (
@@ -289,7 +364,7 @@ export class SourceClosedLevelRows {
     session: Session,
     id: ClosedLevelRowIdentity,
     ordinal: number,
-    asset: PublishedAssetVersion,
+    asset: ClosedLevelAssetPayload,
     current: () => boolean,
     signal: AbortSignal | undefined,
   ): Promise<void> {
@@ -329,7 +404,7 @@ export class SourceClosedLevelRows {
       queued.reject(unavailable('closed Level stream retired'));
     }
     for (const [frameId, sent] of this.sentSelections)
-      if (sameClosedLevelRowIdentity(sent.selection.value.id, id))
+      if (sent.selections.has(id.stream))
         this.failSelection(frameId, unavailable('closed Level stream retired'));
     if (session.isCurrent()) {
       const result = await this.request(session, id, { kind: 'retire' });
@@ -393,6 +468,7 @@ export class SourceClosedLevelRows {
 
   invalidate(): void {
     this.sealedAssets.clear();
+    this.acknowledgedPrograms.clear();
     for (const { finish } of this.pending.values()) finish(closed);
     const failure = unavailable('closed Level frame session ended');
     for (const selection of this.unsentSelections.values()) selection.reject(failure);

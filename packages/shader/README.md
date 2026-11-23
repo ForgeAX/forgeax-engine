@@ -130,14 +130,16 @@ flow so WGSL `select` does not evaluate both. These are work-reuse rules, not
 quality settings. The production GPU stage readbacks exercise source templates
 and prepare only the three volume kernels they actually dispatch.
 
-## GTAO angular and spatial kernels
+## Screen-space ambient occlusion kernels
 
-GTAO evaluates the same signed primitive across `-pi`, zero and `pi` as a
-cumulative expression rather than a four-segment array loop. The independent
-GPU quadrature covers both sides of the view plane and all three boundaries.
-The 5x5 spatial filter uses fixed Gaussian coefficients and three squarings for
-its eighth-power normal weight. Sampling positions, budgets, radius, intensity,
-depth rejection and filter footprint remain unchanged.
+Standard SSAO shares a reduced furthest HZB and uses a fixed 4x4 rotation
+pattern with view-temporal phase. Forward reconstructs depth normals. Deferred
+adds depth and normal weighted setup and reconstruction for coarse levels.
+
+GTAO shares horizon search and the projected-normal integral between native
+compute and raster. The spatial filter projects each depth tap onto the
+receiver's depth plane. Temporal filtering uses a separate submitted view
+history, and the resolve publishes the minimum of four bilinear samples.
 
 Publication metadata shares immutable facts within one admission. Lossless JSON
 row children are coalesced before recursive interning; signed zero, sparse arrays,
@@ -651,24 +653,9 @@ Shadow reception is a per-draw value, not a pipeline constant: there is no
 reception override, and receiving and non-receiving draws share one pipeline. The
 flag does not change shadow casting, bind-group layouts or material values.
 
-When storage buffers are unavailable, the same 96-byte light records, grid
-offset/count pairs and complete membership list use one `rgba32uint` texture at
-`@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form
-each texel, with the 1024 light records preceding the grid and index list.
-`@group(2) @binding(6)` holds six `vec4` rows in the 96-byte Cluster uniform.
-When AO is active, a row-aligned visibility region
-is appended after the complete Cluster payload, with its base word, logical
-extent and packed row stride in that uniform. Packing recovers the filtered
-UNORM8 byte before integer expansion, keeping identical Cluster words across
-normalized texture decoders with different f32 rounding. The eight visibility
-bits and neutral-white padding are unchanged. Forward PBR samples that region
-through the same integer texture binding, so authored material maps keep their
-full binding budget. The uniform's direct-light strength lane applies
-`mix(1, visibility, directLightingStrength)` to Forward direct illumination;
-zero preserves direct light, while the environment visibility path and material
-occlusion remain independent. The shader decodes light floats with `bitcast`
-and preserves integer metadata and lighting channels; membership and BRDF
-semantics match storage-buffer transport.
+The Standard lighting paths combine screen visibility with material AO at the
+indirect diffuse and environment reflection consumers. Screen reflection hits
+retain the material response.
 
 `src/standard-surface.wgsl` owns the Standard material/fragment evaluation shared
 by ordinary Mesh and the VFX Mesh vertex adapter. Geometry adapters supply world
@@ -876,20 +863,28 @@ without cooking. Nonempty `staticSwitches` require their own cooked publication,
 including explicit `false` selections; an Engine module name alone does not
 establish specialization readiness.
 
-Standard texture availability comes from authored parameter declarations, not
-GPU residency. Cooked materials omit unavailable texture declarations and
-sampling code. Shared built-in Standard modules retain a fixed binding layout
-and specialize sampling with one pipeline override, `STANDARD_TEXTURE_MASK_OVERRIDE`.
-`standardTextureMask()` derives its bits from the canonical texture-field order;
-the renderer carries the authored mask separately from the canonical UBO schema
-and includes it in pipeline identity. Runtime selects published WGSL and GPU
-pipeline constants; it does not compose or cook WGSL. A declared but nonresident
-texture remains enabled and follows the existing resource recovery route.
+Standard texture availability comes from authored parameter declarations. A
+declared texture remains enabled while its GPU resource is recovering. The
+canonical UBO schema is shared by Direct and GPU Scene draws.
+
+- Built-in Standard non-transmissive Forward draws specialize the admitted
+  source template on first use of the resource shape. The selected vertex and
+  fragment binding reads determine the material layout. Changing scalar shading
+  factors or replacing a texture with the same sampling relationship reuses
+  the pipeline. Precompiled publications without source templates use their
+  existing published layout and pipeline overrides.
+- An authored Surface declares its own textures and sampling code in the
+  material contract. Cooked programs omit unavailable declarations. The
+  Surface decodes any channel packing into `SurfaceData` for Standard lighting.
+
+`standardTextureMask()` derives `STANDARD_TEXTURE_MASK_OVERRIDE` from the
+canonical texture-field order. The renderer includes the mask in pipeline
+identity alongside the packed ORM selector.
 The override's low 20 bits retain presence; the higher bits select an earlier
 sample for each independent metallic, roughness, or alpha input when texture,
 sampler, and coordinates match. The selector is zero when that input needs its
-own sample. This changes sampling work without changing the Standard binding
-layout or the authored texture values.
+own sample. In projected Forward programs, shared ORM also supplies occlusion
+through the metallic–roughness sample, so the separate AO binding is omitted.
 Bits 29 and 30 (`STANDARD_TRIPLANAR_PROJECTION_BIT`,
 `STANDARD_OBJECT_SPACE_NORMAL_BIT`) are projection selectors that
 `standardProjectionMask()` derives from the effective `triplanarSpace` and
@@ -1247,20 +1242,6 @@ edge search and subpixel blend. Fractional luma search remains explicit bilinear
 texel sampling for backend stability. Endpoint comparisons allow four f32 rounding
 units scaled by local luminance, so mathematically equal endpoints terminate
 consistently across axes and backends. Output encoding belongs to the graph.
-
-When the project selects GTAO, `hdrp-ssao.wgsl` uses the Render owner's high
-quality defaults: three slices, six steps per side, radius 0.25, thickness 1 and
-linear radial sampling. A shared raw visibility kernel serves the fragment and
-compute entries; the prepared
-Renderer graph selects an eligible entry, then uses the same spatial filter and
-lighting consumer. Forward input preserves the selected material's evaluated
-normal and coverage. Visibility intensity is applied before the existing
-depth/normal bilateral filter. Its cosine-weighted slice integral covers the full
-`cos(theta - normal) * abs(sin(theta))` interval, splitting the analytic primitive
-at `-pi`, `0` and `pi` so tilted normals remain correct when horizons stay on
-one side of zero or cross either pi boundary. Fragment and compute use this same
-function. The verified projected-normal correction, orthographic rays and
-background/normal-plane rejection remain intentional differences from Three.
 
 Vogel PCF samples the original UV footprint with sampler edge clamping; receiver
 slope correction uses the actual half-texel clamped location. Bloom retains its

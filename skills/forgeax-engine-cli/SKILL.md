@@ -79,6 +79,12 @@ further state queries and the repair owner.
 
 ## View development and host validation
 
+For native desktop releases, `project package --format native` checks the
+destination profile before bundling. Use the
+[installed desktop procedure](../../packages/devkit/README.md#installed-desktop-acceptance)
+to record target launches, upgrade and restored checkpoints from package
+receipts. The installed device and installer checks are manual.
+
 Custom Preview hosts use `readProjectFacts` from `@forgeax/engine-devkit` and
 `loadProjectCookers` from its `plugin-build` subpath to activate the selected project's build root.
 Include the session's `watchFiles` in source-change handling and await `dispose()`

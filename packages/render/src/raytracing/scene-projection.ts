@@ -6,7 +6,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import { meshDrawSnapshot } from '../scene/mesh-draw';
+import { slotDrawSnapshot } from '../scene/mesh-draw';
 import type { MeshFrame } from '../scene/mesh-frame';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { buildRaySurfaceScene, type RaySurfaceInstance } from './attributes';
@@ -23,7 +23,7 @@ export function projectRayScene(
   const sources =
     frame === undefined
       ? slots
-      : slots.map((slot) => ({ ...slot, snapshot: meshDrawSnapshot(slot.snapshot, frame.meshes) }));
+      : slots.map((slot) => ({ ...slot, snapshot: slotDrawSnapshot(slot, frame.meshes) }));
   for (const { snapshot } of sources) {
     if (snapshot.authorVisible !== false && (snapshot.gpuDrivenDraws?.length ?? 0) === 0)
       return rayReferenceFailure(

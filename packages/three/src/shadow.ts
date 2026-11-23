@@ -6,7 +6,6 @@ import {
   PointLight,
   type ShadowMapType,
   type SpotLight,
-  VSMShadowMap,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
@@ -17,7 +16,12 @@ export interface ShadowMapSettings {
   readonly cameraLayers?: number;
 }
 
-type ShadowLight = DirectionalLight | PointLight | SpotLight;
+export type ShadowLight = DirectionalLight | PointLight | SpotLight;
+
+export function shadowCasterChannels(light: ShadowLight, viewChannels: number): number {
+  const mask = light.shadow.camera.layers.mask;
+  return ((mask & 0xfffffffe) === 0 ? viewChannels : mask) >>> 0;
+}
 
 function filter(light: ShadowLight, settings?: ShadowMapSettings) {
   if (settings?.enabled !== true || !light.castShadow) return undefined;
@@ -27,18 +31,13 @@ function filter(light: ShadowLight, settings?: ShadowMapSettings) {
       ? DirectionalShadowFilterValue.pcf1
       : settings.type === PCFShadowMap
         ? DirectionalShadowFilterValue.pcfVogel
-        : settings.type === VSMShadowMap
-          ? DirectionalShadowFilterValue.variance
-          : unsupported('Shadow filter unavailable in r187 WebGPU', light.uuid).unwrap();
+        : unsupported('Select BasicShadowMap or PCFShadowMap', light.uuid).unwrap();
   if (
     ![shadow.mapSize.x, shadow.mapSize.y].every((value) => Number.isInteger(value) && value > 0) ||
     ![shadow.bias, shadow.normalBias, shadow.radius, shadow.intensity].every(Number.isFinite) ||
     shadow.radius < 0 ||
     shadow.intensity < 0 ||
-    shadow.intensity > 1 ||
-    !Number.isInteger(shadow.blurSamples) ||
-    shadow.blurSamples < 1 ||
-    shadow.blurSamples > 64
+    shadow.intensity > 1
   )
     return invalid('LightShadow mapSize/bias/normalBias/radius/intensity', light.uuid).unwrap();
   return selected;
@@ -52,14 +51,14 @@ function shadowView(light: DirectionalLight | SpotLight) {
   }
   if (shadow.autoUpdate || shadow.needsUpdate) shadow.updateMatrices(light);
   // LightShadow.matrix retains the submitted camera when autoUpdate is false.
-  const matrix = shadow.matrix.clone().elements;
+  const matrix = shadow.matrix.elements.slice();
   for (let column = 0; column < 16; column += 4) {
-    matrix[column] = (matrix[column] as number) * 2 - (matrix[column + 3] as number);
-    matrix[column + 1] = (matrix[column + 1] as number) * 2 - (matrix[column + 3] as number);
+    const w = matrix[column + 3] as number;
+    matrix[column] = (matrix[column] as number) * 2 - w;
+    matrix[column + 1] = (matrix[column + 1] as number) * 2 - w;
+    // Convert ordinary WebGPU depth to native reverse-Z in the same pass.
+    matrix[column + 2] = w - (matrix[column + 2] as number);
   }
-  // The source renderer exposes ordinary WebGPU depth; native rendering owns reverse-Z.
-  for (let column = 0; column < 16; column += 4)
-    matrix[column + 2] = (matrix[column + 3] as number) - (matrix[column + 2] as number);
   return matrix;
 }
 
@@ -87,7 +86,6 @@ export function directionalShadow(light: DirectionalLight, settings?: ShadowMapS
     shadowViewProjection: shadowView(light),
     shadowFilter,
     shadowRadius: light.shadow.radius,
-    shadowBlurSamples: light.shadow.blurSamples,
   };
 }
 
@@ -106,7 +104,6 @@ export function spotShadow(light: SpotLight, settings?: ShadowMapSettings) {
     farPlane: light.shadow.camera.far,
     shadowFilter,
     pcfKernelSize: light.shadow.radius * 2 + 1,
-    shadowBlurSamples: light.shadow.blurSamples,
   };
 }
 
@@ -147,6 +144,10 @@ export class ShadowUpdates {
   >();
   private readonly active = new Set<ShadowLight>();
 
+  get pendingLights(): ReadonlySet<ShadowLight> {
+    return this.active;
+  }
+
   begin() {
     this.active.clear();
   }
@@ -173,7 +174,7 @@ export class ShadowUpdates {
       state.revision++;
       state.pending = true;
     }
-    this.active.add(light);
+    if (state.pending) this.active.add(light);
     const projected =
       light instanceof DirectionalLight
         ? directionalShadow(light, settings)
@@ -184,10 +185,7 @@ export class ShadowUpdates {
       ...projected,
       mapSize: light instanceof PointLight ? state.width : Math.max(state.width, state.height),
       ...(light instanceof PointLight ? {} : { shadowMapAspect: state.width / state.height }),
-      shadowCasterChannels:
-        ((light.shadow.camera.layers.mask & 0xfffffffe) === 0
-          ? (settings.cameraLayers ?? 1)
-          : light.shadow.camera.layers.mask) >>> 0,
+      shadowCasterChannels: shadowCasterChannels(light, settings.cameraLayers ?? 1),
       shadowAutoUpdate: light.shadow.autoUpdate,
       shadowRevision: state.revision,
     };
@@ -201,5 +199,6 @@ export class ShadowUpdates {
         state.pending = false;
       }
     }
+    this.active.clear();
   }
 }

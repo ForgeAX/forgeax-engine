@@ -59,7 +59,7 @@ fn evaluate_surface(input: SingleLayerMediumSurfaceInput) -> SingleLayerMediumSu
     const resources = program.reflection.boundGlobals;
     const keys = resources.map((global) => `${global.group}:${global.binding}`);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(resources.find((global) => global.name === 'mediumIrradianceMap')).toMatchObject({
+    expect(resources.find((global) => global.name === 'mediumSkySh')).toMatchObject({
       group: 1,
       binding: start,
     });

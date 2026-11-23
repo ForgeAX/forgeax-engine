@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { AuthoredRuntimePack } from '@forgeax/engine-app';
 import { inventoryScriptablePackSource } from '@forgeax/engine-pack/source-node';
+import { normalizePath } from 'vite';
 import type { ProjectFacts } from '../types.js';
 import {
   authoredRuntimePackDeclarations,
@@ -15,7 +16,11 @@ import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.
 export async function staticPackProgramsSource(
   facts: ProjectFacts,
   inventory: PluginSourceInventory,
-  runtime?: { readonly packs: readonly AuthoredRuntimePack[]; readonly generatedRoot: string },
+  runtime?: {
+    readonly packs: readonly AuthoredRuntimePack[];
+    readonly generatedRoot: string;
+    readonly localOnly?: true;
+  },
 ): Promise<string> {
   const records = [
     ...pluginAssetClosure(inventory, facts.roots.engine),
@@ -44,12 +49,28 @@ export async function staticPackProgramsSource(
   );
   if (runtime !== undefined)
     programs.push(...(await authoredStaticPackPrograms(runtime.packs, runtime.generatedRoot)));
+  const localOnly = runtime?.localOnly === true;
+  const taskUrls = localOnly
+    ? ''
+    : programs
+        .map(
+          ({ path }, index) =>
+            `import taskUrl${index} from ${JSON.stringify(staticPackTaskUrlSpecifier(path))};`,
+        )
+        .join('\n');
+  const entries = programs.map(({ path, entry, modules }, index) => {
+    const locator = localOnly
+      ? JSON.stringify(normalizePath(path))
+      : `/* @vite-ignore */ taskUrl${index}`;
+    const taskUrl = localOnly ? '' : `, taskUrl: () => taskUrl${index}`;
+    return `{ modules: ${JSON.stringify(modules)}, load: async entry => { if (entry !== ${JSON.stringify(entry)}) throw new Error('Unknown static program entry'); return import(${locator}); }${taskUrl} }`;
+  });
   return `import { createStaticPackProgramHost } from '@forgeax/engine/pack/runtime';
 import imports from 'virtual:forgeax/pack-program-imports';
-${programs.map(({ path }, index) => `import taskUrl${index} from ${JSON.stringify(staticPackTaskUrlSpecifier(path))};`).join('\n')}
+${taskUrls}
 export { imports };
 ${authoredRuntimePackDeclarations(runtime?.packs ?? [])}
 export const programHost = createStaticPackProgramHost([
-${programs.map(({ entry, modules }, index) => `{ modules: ${JSON.stringify(modules)}, load: async entry => { if (entry !== ${JSON.stringify(entry)}) throw new Error('Unknown static program entry'); return import(/* @vite-ignore */ taskUrl${index}); }, taskUrl: () => taskUrl${index} }`).join(',\n')}
+${entries.join(',\n')}
 ], imports);`;
 }

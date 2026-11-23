@@ -45,10 +45,10 @@ if (first.value.assets.length !== second.value.assets.length) {
 const fontDir = resolve(root, 'forgeax-engine-assets/dejavu-fonts');
 const fontBytes = readFileSync(resolve(fontDir, 'DejaVuSansMono.ttf'));
 const fontPack = JSON.parse(readFileSync(resolve(fontDir, 'DejaVuSansMono.font.pack.json'), 'utf8'));
-const fontAsset = fontPack.assets.find((asset) => asset.kind === 'font');
+const fontAsset = fontPack.assets['font/mono'];
 const glyphCount = Object.keys(fontAsset?.payload?.glyphs ?? {}).length;
 if (fontAsset === undefined || glyphCount < 90) throw new Error('[m2-content] pre-baked font pack has no printable glyph payload');
-if (typeof fontAsset.payload.atlasGuid !== 'string' || typeof fontAsset.payload.samplerGuid !== 'string') {
+if (typeof fontAsset.payload.atlas !== 'string' || typeof fontAsset.payload.sampler !== 'string') {
   throw new Error('[m2-content] pre-baked font pack lost atlas/sampler identity');
 }
 

@@ -141,6 +141,63 @@ describe('GpuSceneContentBoxes slot boxes', () => {
     expect(log.changedSince(2, 3, new Set([99]))).toEqual(new Float32Array());
   });
 
+  it('observes each caller membership and keeps returned changes detached', () => {
+    const log = new Journal();
+    log.record(1, delta({ createdSlots: [slot] }), () => union);
+    const ignored = new Set([slot.slot]);
+    expect(log.changedSince(0, 1, ignored)).toEqual(new Float32Array());
+    ignored.clear();
+    const change = log.changedSince(0, 1, ignored);
+    expect(change).toEqual(Float32Array.of(0, 0, 0, 512, 2, 512));
+    if (change === 'unbounded') throw Error('expected a box');
+    change.fill(99);
+    expect(log.changedSince(0, 1, ignored)).toEqual(Float32Array.of(0, 0, 0, 512, 2, 512));
+  });
+
+  it('owns bound coordinates only for pages containing a bounded slot', () => {
+    const log = new Journal();
+    const far = { ...slot, slot: 1_000_000 };
+    const neighbor = { ...slot, slot: far.slot + 1 };
+    const pages = (
+      log.boxes as unknown as {
+        pages: ReadonlyMap<number, { state: Uint8Array; values?: Float32Array }>;
+      }
+    ).pages;
+    log.record(1, delta({ createdSlots: [far, neighbor] }));
+    expect(pages.size).toBe(1);
+    const page = pages.get(Math.floor(far.slot / 64));
+    expect(page?.state.byteLength).toBe(64);
+    expect(page?.values).toBeUndefined();
+    log.record(2, delta({ updatedSlots: [far, neighbor] }), () => union);
+    expect(page?.values?.byteLength).toBe(64 * 6 * 4);
+    log.record(3, delta({ removedSlots: [far] }));
+    expect(page?.values).toBeDefined();
+    log.record(4, delta({ updatedSlots: [neighbor] }));
+    expect(page?.values).toBeUndefined();
+    log.record(5, delta({ removedSlots: [neighbor] }));
+    expect(pages.size).toBe(0);
+  });
+
+  it('records each occupied or empty slot once across overlapping update lanes', () => {
+    const log = new Journal();
+    const live = [31, 63, 64].map((address) => ({ ...slot, slot: address }));
+    const empty = {
+      ...slot,
+      slot: 95,
+      snapshot: { instances: { instanceCount: 0 } },
+    } as RenderSceneSlot;
+    const rows = [...live, empty, ...live, empty];
+    for (let step = 1; step <= 2; step++) {
+      const visited: number[] = [];
+      log.record(step, delta({ updatedSlots: rows, contentUpdatedSlots: rows }), (row) => {
+        visited.push(row.slot);
+        return row === empty ? undefined : union;
+      });
+      expect(visited).toEqual([31, 63, 64, 95]);
+      expect(log.changedSlotsSince(step - 1, step)).toEqual(visited);
+    }
+  });
+
   it('records the old and new union of an instance-only update', () => {
     const log = new Journal();
     log.record(1, delta({ createdSlots: [slot] }), () => union);

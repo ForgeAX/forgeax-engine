@@ -30,7 +30,7 @@ try {
   await writeFile(join(brokenRoot, 'assets/broken.pack.ts'), 'export default ;');
   await writeFile(join(brokenRoot, 'assets/broken.pack.json'), '{ broken json');
   await writeFile(join(brokenRoot, 'assets/healthy.pack.json'), JSON.stringify({
-    schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [],
+    schemaVersion: '3.0.0', packageId: '01900000-0000-7000-8000-000000001110', assets: {},
   }));
   await mkdir(join(brokenRoot, 'node_modules/@forgeax'), { recursive: true });
   await symlink(engine, join(brokenRoot, 'node_modules/@forgeax/engine'));

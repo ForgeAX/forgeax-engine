@@ -115,3 +115,27 @@ it('does not enumerate retained rows without resource owners, while disposing tr
   expect(iterateRows).not.toHaveBeenCalled();
   expect(iterateRetained).not.toHaveBeenCalled();
 });
+
+it('resolves a resident owner among changed rows without materializing the rest of the scene', () => {
+  let reads = 0;
+  function* submitted() {
+    for (let entityKey = 0; entityKey < 50000; entityKey++) {
+      reads++;
+      yield { source: { entityKey } };
+    }
+  }
+  const destroy = vi.fn(() => ({ ok: true }));
+  const state = {
+    instanceBuffers: new Map([[3, { buffer: { isDestroyed: false, destroy } }]]),
+    materialBgPerEntity: new Map(),
+    instancesBgPerEntity: new Map(),
+  };
+  cleanPerFrameCaches(
+    { errorRegistry: { fire: vi.fn() } } as never,
+    state as never,
+    submitted() as never,
+  );
+  expect(reads).toBe(4);
+  expect(state.instanceBuffers.has(3)).toBe(true);
+  expect(destroy).not.toHaveBeenCalled();
+});

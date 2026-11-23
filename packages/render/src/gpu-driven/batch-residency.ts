@@ -1,4 +1,5 @@
 import type { FrameSet } from '../scene/frame-set';
+import { slotContent } from '../scene/mesh-draw';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
 
 declare const groupBrand: unique symbol;
@@ -156,7 +157,7 @@ export class BatchResidency {
       const previous = delta.previous.get(updated);
       if (
         previous !== undefined &&
-        previous.snapshot.residencyGroup !== updated.snapshot.residencyGroup
+        slotContent(previous).residencyGroup !== slotContent(updated).residencyGroup
       )
         throw new Error('Residency claim cannot change within a Scene row lifetime');
     }
@@ -171,13 +172,13 @@ export class BatchResidency {
 
   private validateNewRows(slots: readonly RenderSceneSlot[]): void {
     for (const slot of slots) {
-      const token = slot.snapshot.residencyGroup;
+      const token = slotContent(slot).residencyGroup;
       if (token !== undefined) this.state(token);
     }
   }
 
   admit(slot: RenderSceneSlot): void {
-    const token = slot.snapshot.residencyGroup;
+    const token = slotContent(slot).residencyGroup;
     const previous = this.claims.get(slot.slot);
     if (previous !== undefined) {
       if (

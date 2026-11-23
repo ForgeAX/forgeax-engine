@@ -1,12 +1,13 @@
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, createPlaneGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
+import { buildFrameModel, decodeTape, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { ok } from '@forgeax/engine-types';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
-import { ANTIALIAS_TAA, Camera, MeshFilter, MeshRenderer } from '../components';
+import { ANTIALIAS_TAA, Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
 import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
 import { computeProjectionMatrix } from '../record/helpers';
@@ -112,8 +113,86 @@ function expectedCoverage(projection: 'perspective' | 'orthographic'): Uint8Arra
   });
 }
 
+interface DepthScenario {
+  readonly projection: 'perspective' | 'orthographic';
+  readonly lane?: 'direct' | 'scene-index';
+}
+
+async function verifyCoverageTape(
+  recorder: RecorderAttachment,
+  capture: ReturnType<RecorderAttachment['captureFrame']>,
+  scenario: DepthScenario,
+  inspectIndirectDraws: () => number | undefined,
+) {
+  (await recorder.frameBoundary()).unwrap();
+  const tape = decodeTape((await capture).unwrap().bytes).unwrap();
+  const model = buildFrameModel(tape);
+  const coverage = model.passes.find((pass) => {
+    const begin = tape.events[pass.beginEventIndex];
+    return (
+      begin?.kind === 'beginRenderPass' && begin.desc.label === 'standard-post-process-coverage'
+    );
+  });
+  const gpu = 'lane' in scenario && scenario.lane === 'scene-index';
+  const work = model.works.find(
+    (work) =>
+      work.passIndex === coverage?.passIndex &&
+      work.kind.endsWith('Indirect') === gpu &&
+      work.pipeline.shaders.some(({ entryPoint }) => entryPoint === 'fs_coverage'),
+  );
+  if (work === undefined)
+    throw new Error(
+      JSON.stringify({
+        scenario,
+        coverage,
+        draws: model.works
+          .filter((work) => work.passIndex === coverage?.passIndex)
+          .map((work) => ({
+            kind: work.kind,
+            entries: work.pipeline.shaders.map((shader) => shader.entryPoint),
+          })),
+        submission: inspectIndirectDraws(),
+      }),
+    );
+}
+
+async function verifyCoveragePixels(
+  native: GPUDevice | undefined,
+  target: GPUTexture | undefined,
+  scenario: DepthScenario,
+  expected: Uint8Array,
+  frames: number,
+  failures: readonly unknown[],
+) {
+  if (native === undefined || target === undefined) throw new Error('Missing GPU surface');
+  const buffer = native.createBuffer({
+    size: SIZE * 256,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = native.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture: target }, { buffer, bytesPerRow: 256 }, [SIZE, SIZE]);
+    native.queue.submit([encoder.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const pixels = new Uint8Array(buffer.getMappedRange());
+    for (const [index, coverage] of expected.entries()) {
+      if (pixels[index * 4 + 1] !== coverage * 255)
+        throw new Error(
+          `${JSON.stringify(scenario)} frame ${frames}: depth silhouette differs at ${index % SIZE},${Math.floor(index / SIZE)}; expected=${coverage * 255}, actual=${pixels[index * 4 + 1]}; ${JSON.stringify({ channelMax: [0, 1, 2, 3].map((channel) => Math.max(...pixels.filter((_value, pixel) => pixel % 4 === channel))), failures })}`,
+        );
+    }
+    buffer.unmap();
+  } finally {
+    buffer.destroy();
+  }
+}
+
 /** Exercise real Standard geometry and after-tonemap depth through 60 jittered frames. */
-export async function verifyPostProcessDepth(url = '/shaders/manifest.json') {
+export async function verifyPostProcessDepth(
+  url = '/shaders/manifest.json',
+  witness?: { recorder: RecorderAttachment; renderPath: 'forward' | 'deferred' },
+) {
+  const recorder = witness?.recorder;
   let native: GPUDevice | undefined, target: GPUTexture | undefined;
   const failures: unknown[] = [];
   const context = {
@@ -142,7 +221,7 @@ export async function verifyPostProcessDepth(url = '/shaders/manifest.json') {
     },
     { features: [feature] },
     { shaderManifestUrl: url, prepareShaderProgramCompiler },
-    webgpu,
+    recorder?.backend ?? webgpu,
   );
   host.onError((error) => failures.push(error));
   const initialized = await host.initialization;
@@ -153,6 +232,13 @@ export async function verifyPostProcessDepth(url = '/shaders/manifest.json') {
   const renderer = exposeRenderer(host);
   const observations: { projection: string; frames: number }[] = [];
   try {
+    if (witness !== undefined) {
+      const configured = renderer.setProfile({
+        ...renderer.inspect().profile,
+        renderPath: witness.renderPath,
+      });
+      if (!configured.ok) throw configured.error;
+    }
     const assets = host.assetRegistry,
       world = new World({ assets });
     const attachment = renderer.attach(world);
@@ -178,66 +264,155 @@ export async function verifyPostProcessDepth(url = '/shaders/manifest.json') {
         },
       )
       .unwrap();
-    const mesh = assets.create(createBoxGeometry(1.3, 1.3, 0.2).unwrap()).unwrap();
-    const material = assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
-    world
+    const angle = 0.8;
+    const displacement = 0.8;
+    const geometry =
+      recorder === undefined
+        ? createBoxGeometry(1.3, 1.3, 0.2).unwrap()
+        : createPlaneGeometry(2, 2, 8, 8).unwrap();
+    const mesh = assets.create(geometry).unwrap();
+    let meshWithLod = mesh;
+    if (recorder !== undefined) {
+      // The production indirect temporal/coverage lane owns multi-LOD rigid meshes.
+      const lower = assets.create(createPlaneGeometry(2, 2).unwrap()).unwrap();
+      meshWithLod = assets
+        .create({
+          ...geometry,
+          lods: [{ mesh: lower, screenCoverage: 0.02 }],
+        })
+        .unwrap();
+    }
+    const height =
+      recorder === undefined
+        ? undefined
+        : assets
+            .create({
+              kind: 'texture',
+              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              mips: { kind: 'none' },
+              data: new Uint8Array([255, 255, 255, 255]),
+            })
+            .unwrap();
+    const alpha =
+      height === undefined
+        ? undefined
+        : assets
+            .create({
+              kind: 'texture',
+              shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              mips: { kind: 'none' },
+              data: new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0]),
+            })
+            .unwrap();
+    const material = assets
+      .create(
+        height === undefined
+          ? Materials.unlit([1, 0, 0, 1])
+          : Materials.standard({
+              baseColor: [1, 1, 1, 1],
+              ...(alpha === undefined
+                ? {}
+                : {
+                    alphaTexture: { texture: alpha },
+                    alphaCutoff: 0.5,
+                  }),
+              displacementTexture: { texture: height },
+              displacementScale: displacement,
+            }),
+      )
+      .unwrap();
+    if (recorder !== undefined)
+      world
+        .spawn({
+          component: DirectionalLight,
+          data: { direction: [0, 0, -1], intensity: 1 },
+        })
+        .unwrap();
+    const object = world
       .spawn(
-        { component: Transform, data: {} },
+        {
+          component: Transform,
+          data:
+            height === undefined
+              ? {}
+              : {
+                  quat: [0, Math.sin(angle / 2), 0, Math.cos(angle / 2)],
+                },
+        },
         { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
-    for (const [projection, code] of [
-      ['perspective', 0],
-      ['orthographic', 1],
-    ] as const) {
-      world.set(camera, Camera, { projection: code }).unwrap();
-      const expected = expectedCoverage(projection);
-      let frames = 0;
-      let pending: unknown;
-      const deadline = performance.now() + 45_000;
-      while (frames < 60 && performance.now() < deadline) {
-        world.update(1 / 60).unwrap();
-        const drawn = renderer.draw({ source: lease, camera: { entityKey: camera } });
-        if (!drawn.ok) throw new Error(JSON.stringify({ draw: drawn.error, failures }));
-        const receipt = drawn.value;
-        const completed = await receipt.completed;
-        if (!completed.ok) throw completed.error;
-        if (receipt.presentation !== 'ready') {
-          pending = receipt.presentationPendingReason;
-          await new Promise((resolve) => setTimeout(resolve, 16));
-          continue;
-        }
-        if (native === undefined || target === undefined) throw new Error('Missing GPU surface');
-        const buffer = native.createBuffer({
-          size: SIZE * 256,
-          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        });
-        try {
-          const encoder = native.createCommandEncoder();
-          encoder.copyTextureToBuffer({ texture: target }, { buffer, bytesPerRow: 256 }, [
-            SIZE,
-            SIZE,
-          ]);
-          native.queue.submit([encoder.finish()]);
-          await buffer.mapAsync(GPUMapMode.READ);
-          const pixels = new Uint8Array(buffer.getMappedRange());
-          for (const [index, coverage] of expected.entries()) {
-            if (pixels[index * 4 + 1] !== coverage * 255)
-              throw new Error(
-                `${projection} frame ${frames}: depth silhouette differs at ${index % SIZE},${Math.floor(index / SIZE)}; expected=${coverage * 255}, actual=${pixels[index * 4 + 1]}; ${JSON.stringify({ channelMax: [0, 1, 2, 3].map((channel) => Math.max(...pixels.filter((_value, pixel) => pixel % 4 === channel))), failures })}`,
-              );
+    const scenarios =
+      recorder === undefined
+        ? ([
+            { projection: 'perspective', code: 0 },
+            { projection: 'orthographic', code: 1 },
+          ] as const)
+        : ([
+            { projection: 'orthographic', code: 1, lane: 'direct' },
+            { projection: 'orthographic', code: 1, lane: 'scene-index' },
+          ] as const);
+    const verifyScenarios = async () => {
+      for (const scenario of scenarios) {
+        const { projection, code } = scenario;
+        if ('lane' in scenario && scenario.lane === 'scene-index')
+          world.set(object, MeshFilter, { assetHandle: meshWithLod }).unwrap();
+        world.set(camera, Camera, { projection: code }).unwrap();
+        const expected =
+          'lane' in scenario
+            ? Uint8Array.from({ length: SIZE * SIZE }, (_, index) => {
+                // Independent orthographic projection of the rotated, displaced plane.
+                const x = (((index % SIZE) + 0.5) / SIZE - 0.5) * 4 + 0.11;
+                const y = (0.5 - (Math.floor(index / SIZE) + 0.5) / SIZE) * 4 + 0.03;
+                const localX = (x - displacement * Math.sin(angle)) / Math.cos(angle);
+                return Number(localX > -1 && localX < 0 && Math.abs(y) < 1);
+              })
+            : expectedCoverage(projection);
+        let frames = 0;
+        let pending: unknown;
+        const deadline = performance.now() + 45_000;
+        while (frames < 60 && performance.now() < deadline) {
+          world.update(1 / 60).unwrap();
+          const capture =
+            recorder !== undefined && frames === 59 ? recorder.captureFrame() : undefined;
+          if (capture !== undefined) (await recorder?.frameBoundary())?.unwrap();
+          const drawn = renderer.draw({
+            source: lease,
+            camera: { entityKey: camera },
+            ...('lane' in scenario && scenario.lane === 'direct' ? { geometryLane: 'direct' } : {}),
+          });
+          if (!drawn.ok) throw new Error(JSON.stringify({ scenario, draw: drawn.error, failures }));
+          const receipt = drawn.value;
+          const completed = await receipt.completed;
+          if (!completed.ok) throw completed.error;
+          if (capture !== undefined && recorder !== undefined) {
+            await verifyCoverageTape(
+              recorder,
+              capture,
+              scenario,
+              () => renderer.inspect().renderScene.gpuDriven?.indirectDrawCount,
+            );
           }
-          buffer.unmap();
-        } finally {
-          buffer.destroy();
+          if (receipt.presentation !== 'ready') {
+            pending = receipt.presentationPendingReason;
+            await new Promise((resolve) => setTimeout(resolve, 16));
+            continue;
+          }
+          await verifyCoveragePixels(native, target, scenario, expected, frames, failures);
+          frames++;
         }
-        frames++;
+        if (frames !== 60)
+          throw new Error(JSON.stringify({ projection, frames, pending, failures }));
+        if (failures.length) throw new Error(JSON.stringify(failures));
+        observations.push({ projection, frames });
       }
-      if (frames !== 60) throw new Error(JSON.stringify({ projection, frames, pending, failures }));
-      if (failures.length) throw new Error(JSON.stringify(failures));
-      observations.push({ projection, frames });
-    }
+    };
+    await verifyScenarios();
     return observations;
   } finally {
     await renderer.dispose().then((result) => {

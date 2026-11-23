@@ -11,7 +11,7 @@ struct ComposeVertex {
 @group(0) @binding(3) var normalRoughness : texture_2d<u32>;
 @group(0) @binding(7) var defaultGBufferB : texture_2d<u32>;
 @group(0) @binding(4) var radianceSampler : sampler;
-#import forgeax_view::common::View
+#import forgeax_view::common::{View, screenSpaceReflectionRoughnessFade}
 @group(0) @binding(5) var<uniform> view : View;
 
 fn ssrComposeVertex(index : u32) -> ComposeVertex {
@@ -80,7 +80,9 @@ fn evaluateSsrCompose(in : ComposeVertex, context : texture_2d<u32>, compact : b
   } else {
     filtered = sampleRoughSsr(uv, roughness);
   }
-  let weighted = filtered.rgb / max(filtered.a, 1e-6);
+  // A one-level view carries the trace's straight radiance. A filter
+  // pyramid, when supplied, stores confidence-weighted radiance.
+  let weighted = filtered.rgb / select(1.0, max(filtered.a, 1e-6), ssrRadianceLevelCount() > 1u);
   // Undo the trace's per-ray 1 / (1 + luminance) weight after every filter.
   let sample = vec4<f32>(ssrLuminanceUnweight(weighted), filtered.a);
   let materialResponse = textureLoad(response, pixel, 0).rgb;
@@ -88,8 +90,7 @@ fn evaluateSsrCompose(in : ComposeVertex, context : texture_2d<u32>, compact : b
   // lobe can contain a visible wall even when that one ray misses its edge.
   // Preserve the current material's cutoff instead of borrowing a neighbor's
   // roughness policy from the filtered reflection pyramid.
-  // Same UE GetRoughnessFade as the trace: full SSR up to half the limit.
-  let receiverConfidence = min(2.0 - 2.0 * clamp(receiverRoughness, 0.0, 1.0) / max(roughnessLimit, 1e-5), 1.0);
+  let receiverConfidence = screenSpaceReflectionRoughnessFade(receiverRoughness, roughnessLimit);
   let confidence = clamp(min(receiverConfidence, sample.a), 0.0, 1.0) * environment.a;
   return vec4<f32>(confidence * (sample.rgb * materialResponse - environment.rgb), 0.0);
 }

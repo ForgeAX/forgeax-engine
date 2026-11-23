@@ -21,7 +21,6 @@ it.each([
     'forgeax::depth-pyramid-seed-fragment',
     'forgeax::depth-pyramid-reduce-fragment',
     'forgeax::ssr-trace-fragment',
-    'forgeax::ssr-temporal-fragment',
     'forgeax::ssr-compose-fragment',
   ]);
   const find = (entry: string) => {
@@ -34,7 +33,6 @@ it.each([
     seedFragment: find('depth_pyramid_seed_fragment'),
     reduceFragment: find('depth_pyramid_reduce_fragment'),
     traceFragment: find('ssr_trace_fragment'),
-    temporalFragment: find('ssr_temporal_fragment'),
     composeFragment: find('vs_ssr_compose_fragment'),
   };
   const pack = backend === 'webgpu' ? webgpu : wgpu;

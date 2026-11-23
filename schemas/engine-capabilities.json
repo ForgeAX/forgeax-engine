@@ -323,7 +323,7 @@
     },
     {
       "name": "Screen-space ambient occlusion",
-      "form": "opt-in"
+      "form": "built-in"
     },
     {
       "name": "Screen-space reflections",
@@ -551,6 +551,14 @@
     },
     {
       "name": "SceneAsset instantiation",
+      "form": "built-in"
+    },
+    {
+      "name": "Level streaming",
+      "form": "built-in"
+    },
+    {
+      "name": "World streaming",
       "form": "built-in"
     },
     {

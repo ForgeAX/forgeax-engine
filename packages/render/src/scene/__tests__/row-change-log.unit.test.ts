@@ -76,3 +76,26 @@ it('declines cursors it cannot answer: other owners, a clear, or lapsed history'
   churn.writePose(0, new Float32Array(16));
   expect(changes(churn.capture(), recent)).toEqual(['update:0:1']);
 });
+
+it('walks occupied lanes across both words with independent captured row lifetimes', () => {
+  const slots = new SceneSlots();
+  const indices = [1, 31, 32, 63, 65, 127, 4_000_032, 4_000_063];
+  for (const index of indices) setSceneRow(slots, index, row(index));
+  const frame = slots.capture();
+  const a = frame[Symbol.iterator]();
+  const b = frame[Symbol.iterator]();
+  const result = a.next();
+  const first = result.value;
+  expect(first.slot).toBe(1);
+  setSceneRow(slots, 1, undefined);
+  setSceneRow(slots, 64, row(64));
+  expect(a.next()).toBe(result);
+  expect(result.value.slot).toBe(31);
+  expect(first.slot).toBe(1);
+  expect([...b].map((value) => value.slot)).toEqual(indices);
+  expect(a.return?.().done).toBe(true);
+  expect(a.next().done).toBe(true);
+  expect([...slots.capture()].map((value) => value.slot)).toEqual([
+    31, 32, 63, 64, 65, 127, 4_000_032, 4_000_063,
+  ]);
+});

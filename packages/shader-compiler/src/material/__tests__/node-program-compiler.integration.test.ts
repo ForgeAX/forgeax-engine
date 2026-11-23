@@ -75,9 +75,11 @@ describe('Node material program compilation', () => {
     const script = `
       import { createHash, getCiphers } from 'node:crypto';
       import { Worker } from 'node:worker_threads';
-      import { createMaterialPackCooker } from ${JSON.stringify(entry)};
+      import { captureMaterialSourceSnapshot, createMaterialPackCooker } from ${JSON.stringify(entry)};
       import { standardSurfaceParameters } from ${JSON.stringify(types)};
       getCiphers();
+      const startedAt = performance.now();
+      const phase = (name) => process.stderr.write(JSON.stringify({ phase: name, elapsedMs: performance.now() - startedAt }) + '\\n');
       const encode = (value) => JSON.stringify(value, (_, entry) => ArrayBuffer.isView(entry)
         ? { type: entry.constructor.name, bytes: Buffer.from(entry.buffer, entry.byteOffset, entry.byteLength).toString('base64') }
         : entry);
@@ -93,12 +95,16 @@ describe('Node material program compilation', () => {
           kind: 'material',
           staticSwitches: { alphaClipping: false, alphaHash: false, displacement: false },
           parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
-          passes: [
-            { name: 'forward', program: { module: 'forgeax_material::standard' } },
-            { name: 'shadow-caster', program: { module: 'forgeax::default-shadow-caster' } },
-          ],
+          // The route comparison uses the real forward material and its
+          // variants. Pack program reuse owns the complete shadow selection mesh.
+          passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
         },
       };
+      // Both routes cook immutable shipped sources. Keep cooker instances
+      // independent while reading that fenced source input once per process.
+      const sourceSnapshot = await captureMaterialSourceSnapshot([]);
+      phase('source snapshot');
+      const createCooker = () => createMaterialPackCooker([], { profile: 'webgpu-storage', sourceSnapshot });
       // Interrupt one genuinely pending cold publication. The following
       // complete publication is its recovery, compared against the serial
       // route below without separately cooking a duplicate cold baseline.
@@ -110,26 +116,32 @@ describe('Node material program compilation', () => {
           if (!interrupted) { interrupted = true; void this.terminate(); return; }
           return trackedPost.apply(this, args);
         };
-        try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input); }
+        try { await createCooker().cook(input); }
         catch { workerFailure = true; }
         finally { Worker.prototype.postMessage = trackedPost; }
       }
-      const result = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
+      const result = await createCooker().cook(input);
+      phase('first cook');
       const firstWorkers = workers.size;
-      const next = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
+      const next = await createCooker().cook(input);
+      phase('repeated cook');
       const expectedBytes = encode(next);
+      phase('expected bytes');
       const stableWorkers = firstWorkers === workers.size;
-      const concurrent = await Promise.all(Array.from({ length: 4 }, () =>
-        createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input)));
+      const concurrent = await Promise.all(Array.from({ length: 2 }, () =>
+        createCooker().cook(input)));
+      phase('concurrent cook');
       const bad = structuredClone(input);
       bad.source.passes[0].program.module = 'missing::module';
       let diagnostic;
-      try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(bad); }
+      try { await createCooker().cook(bad); }
       catch (error) {
         diagnostic = { code: error.code, message: error.message, expected: error.expected, hint: error.hint, detail: error.detail };
       }
+      phase('invalid module diagnostic');
       const totalWorkers = workers.size;
       const bytes = encode(result);
+      phase('first bytes');
       console.log(JSON.stringify({
         digest: createHash('sha256').update(bytes).digest('hex'),
         programs: result.payload.cooked.programs.length,

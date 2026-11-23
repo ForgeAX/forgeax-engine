@@ -34,6 +34,8 @@ export const Atmosphere = defineComponent('Atmosphere', {
   /** Ground reflection in multiple scattering; does not draw a visible planet surface. */
   groundAlbedo: { type: 'array<f32, 3>', default: new Float32Array([0.4, 0.4, 0.4]) },
   multipleScattering: { type: 'f32', default: 1 },
+  /** Clamp only the ground-reference optical path, in degrees above the horizon. */
+  transmittanceMinLightElevationDegrees: { type: 'f32', default: -90 },
   sunAngularRadius: { type: 'f32', default: 0.004675 },
   aerialPerspectiveStart: { type: 'f32', default: 0 },
   aerialPerspectiveDistanceScale: { type: 'f32', default: 1 },

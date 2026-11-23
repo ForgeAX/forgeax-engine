@@ -30,7 +30,7 @@ export default definePack({
     'plugin/scene': {
       kind: 'plugin',
       module: { specifier: './scene-owner.pack.ts', export: 'sceneOwner' },
-      config: { scene: { $asset: '019fb7ce-1000-7000-8000-000000000001' } },
+      config: { scene: { $asset: 'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125' } },
     },
   }),
 });

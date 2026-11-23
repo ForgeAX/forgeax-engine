@@ -1,6 +1,6 @@
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import type { SceneAsset } from '@forgeax/engine-types';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { type CatalogListener, createCatalogSource } from '../catalog-source';
 import type { AssetContentLease } from '../internal/asset-records';
@@ -30,15 +30,16 @@ function finish(task: SceneContentPublicationTask) {
   throw new Error('publication task did not terminate');
 }
 
+function sceneWithMount(source: string | number): SceneAsset {
+  return { kind: 'scene', entities: { mount: { components: {}, instance: { source } } } };
+}
+
 async function fixture() {
   const assets = new AssetRegistry();
   assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
   cleanups.push(() => assets.dispose());
   const child: SceneAsset = { kind: 'scene', entities: { leaf: { components: {} } } };
-  const root: SceneAsset = {
-    kind: 'scene',
-    entities: { mount: { components: {}, instance: { source: childGuid } } },
-  };
+  const root = sceneWithMount(childGuid);
   const entries = [
     { guid: childGuid, asset: child },
     { guid: rootGuid, asset: root, refs: [childGuid] },
@@ -48,14 +49,20 @@ async function fixture() {
   const handle = (await assets.load(rootGuid, 'scene')).unwrap();
   const records = runtimeAssets(assets);
   function capture(target = handle): AssetContentLease {
-    const lease = records.captureContent(target).unwrap();
+    const lease = records.beginContentCapture(target).unwrap().step(1000).unwrap();
+    assert.isDefined(lease);
     cleanups.push(() => {
       const retirement = lease.retire().unwrap();
       while (!retirement.inspect().done) retirement.step(1).unwrap();
     });
     return lease;
   }
-  return { assets, records, handle, entries, capture };
+  function task(lease = capture(), target = handle) {
+    const preparation = createSceneContentPublicationTask(assets, lease, target);
+    cleanups.push(() => preparation.dispose());
+    return preparation;
+  }
+  return { assets, records, handle, entries, capture, task };
 }
 
 describe('fixed Scene content publication preparation', () => {
@@ -64,8 +71,7 @@ describe('fixed Scene content publication preparation', () => {
     'guard',
   ] as const)('refuses nested %s without consuming or poisoning the current proof', async (where) => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     const read = f.assets.sourceOf.bind(f.assets);
     let nested: boolean | undefined;
@@ -80,8 +86,7 @@ describe('fixed Scene content publication preparation', () => {
 
   it('refuses nested stepping while the source iterator is running', async () => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const read = f.assets.sourceOf.bind(f.assets);
     let nested: boolean | undefined;
     vi.spyOn(f.assets, 'sourceOf').mockImplementationOnce((handle) => {
@@ -95,8 +100,7 @@ describe('fixed Scene content publication preparation', () => {
 
   it('rejects a real content edit made after the initial observation before returning its proof', async () => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     const read = f.assets.sourceOf.bind(f.assets);
     vi.spyOn(f.assets, 'sourceOf').mockImplementationOnce((handle) => {
@@ -115,8 +119,7 @@ describe('fixed Scene content publication preparation', () => {
   ] as const)('keeps disposal terminal during %s observation', async (where) => {
     const f = await fixture();
     const content = f.capture();
-    const task = createSceneContentPublicationTask(f.assets, content, f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task(content);
     const guard = defined(finish(task).unwrap());
     if (where === 'source') {
       const read = f.assets.sourceOf.bind(f.assets);
@@ -148,8 +151,7 @@ describe('fixed Scene content publication preparation', () => {
 
   it('settles disposal from inside the running publication traversal without returning its iterator recursively', async () => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const read = f.assets.sourceOf.bind(f.assets);
     vi.spyOn(f.assets, 'sourceOf').mockImplementationOnce((handle) => {
       task.dispose();
@@ -165,9 +167,8 @@ describe('fixed Scene content publication preparation', () => {
   it('reuses normalized proofs while immutable adopted and complete Catalog facts are unchanged', async () => {
     const f = await fixture();
     const normalize = vi.spyOn(publicationFences, 'createScenePublicationFence');
-    const complete = vi.spyOn(publicationFences, 'scenePublicationFenceFromCatalog');
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const complete = vi.spyOn(publicationFences, 'scenePublicationFenceForRow');
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     expect(normalize).toHaveBeenCalled();
     expect(complete).toHaveBeenCalled();
@@ -181,8 +182,7 @@ describe('fixed Scene content publication preparation', () => {
   it('revalidates the current closure without repeatedly reading adopted Scene origins', async () => {
     const f = await fixture();
     const lease = f.capture();
-    const task = createSceneContentPublicationTask(f.assets, lease, f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task(lease);
     const guard = defined(finish(task).unwrap());
     const version = vi.spyOn(f.records, 'version');
     const current = vi.spyOn(lease, 'matchesCurrent');
@@ -201,8 +201,7 @@ describe('fixed Scene content publication preparation', () => {
 
   it('reads only the Scene roots while the same accepted Catalog publication is current', async () => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     const entry = vi.spyOn(f.assets, 'catalogEntry');
     for (let repeat = 0; repeat < 5; repeat++) guard.validate().unwrap();
@@ -225,9 +224,8 @@ describe('fixed Scene content publication preparation', () => {
     const child = defined(f.assets.catalogEntry(childGuid)?.publication);
     expect(child).toEqual(root);
     expect(child === root).toBe(route === 'shared');
-    const complete = vi.spyOn(publicationFences, 'scenePublicationFenceFromCatalog');
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const complete = vi.spyOn(publicationFences, 'scenePublicationFenceForRow');
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     expect(complete).toHaveBeenCalledTimes(1);
     guard.validate().unwrap();
@@ -279,8 +277,7 @@ describe('fixed Scene content publication preparation', () => {
 
   it('does not lend a complete root proof to an equal scalar fence with a different missing output', async () => {
     const f = await fixture();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     guard.validate().unwrap();
     const rows = defined(f.assets.catalogSnapshot()).entries;
@@ -330,8 +327,7 @@ describe('fixed Scene content publication preparation', () => {
       }),
     );
     (await f.assets.enumerateCatalog()).unwrap();
-    const task = createSceneContentPublicationTask(f.assets, f.capture(), f.handle);
-    cleanups.push(() => task.dispose());
+    const task = f.task();
     const guard = defined(finish(task).unwrap());
     guard.validate().unwrap();
     defined(emit)({
@@ -366,7 +362,7 @@ describe('fixed Scene content publication preparation', () => {
     const catalog = vi.spyOn(f.assets, 'catalogSnapshot').mockImplementation(() => {
       throw new Error('unrelated Catalog enumeration is forbidden');
     });
-    const task = createSceneContentPublicationTask(f.assets, lease, f.handle);
+    const task = f.task(lease);
     expect(task.step(0)).toMatchObject({ ok: false, error: { code: 'asset-invalid-value' } });
     // Indexing a closure member does not also drain the whole nested hierarchy.
     expect(task.step(1).unwrap()).toBeUndefined();
@@ -381,7 +377,7 @@ describe('fixed Scene content publication preparation', () => {
   it('rejects changed current content on resume without reading it into the fixed candidate', async () => {
     const f = await fixture();
     const lease = f.capture();
-    const task = createSceneContentPublicationTask(f.assets, lease, f.handle);
+    const task = f.task(lease);
     task.step(1).unwrap();
     f.assets.update(f.handle, { entities: {} }).unwrap();
     expect(task.step(1)).toMatchObject({ ok: false, error: { code: 'asset-write-conflict' } });
@@ -392,7 +388,7 @@ describe('fixed Scene content publication preparation', () => {
   it('does not label old adopted content with a newer Catalog publication at final acceptance', async () => {
     const f = await fixture();
     const lease = f.capture();
-    const guard = finish(createSceneContentPublicationTask(f.assets, lease, f.handle)).unwrap();
+    const guard = finish(f.task(lease)).unwrap();
     expect(guard).toBeDefined();
     const oldDigest = f.assets.sourceOf(f.handle)?.publication?.digest;
     publishRuntimeAssets(f.assets, [
@@ -421,7 +417,7 @@ describe('fixed Scene content publication preparation', () => {
     expect(lease.handles).toHaveLength(2);
     f.assets.setCatalogSource(createCatalogSource({ entries: [row] }));
     (await f.assets.enumerateCatalog()).unwrap();
-    expect(finish(createSceneContentPublicationTask(f.assets, lease, f.handle))).toMatchObject({
+    expect(finish(f.task(lease))).toMatchObject({
       ok: false,
       error: { code: 'asset-generation-fence-mismatch', phase: 'catalog' },
     });
@@ -431,9 +427,7 @@ describe('fixed Scene content publication preparation', () => {
     const f = await fixture();
     f.assets.update(f.handle, { entities: {} }).unwrap();
     expect(f.assets.sourceOf(f.handle)?.modified).toBe(true);
-    expect(
-      finish(createSceneContentPublicationTask(f.assets, f.capture(), f.handle)),
-    ).toMatchObject({
+    expect(finish(f.task())).toMatchObject({
       ok: false,
       error: { code: 'asset-generation-fence-mismatch' },
     });
@@ -442,15 +436,10 @@ describe('fixed Scene content publication preparation', () => {
   it('keeps runtime-created nested scenes independent of Catalog publication', async () => {
     const f = await fixture();
     const child = f.assets.create({ kind: 'scene', entities: {} }).unwrap();
-    const root = f.assets
-      .create({
-        kind: 'scene',
-        entities: { mount: { components: {}, instance: { source: child } } },
-      })
-      .unwrap();
+    const root = f.assets.create(sceneWithMount(child)).unwrap();
     const lease = f.capture(root);
     expect(lease.handles).toContain(child);
-    const guard = finish(createSceneContentPublicationTask(f.assets, lease, root)).unwrap();
+    const guard = finish(f.task(lease, root)).unwrap();
     expect(guard?.validate().ok).toBe(true);
     f.assets.release(root).unwrap();
     f.assets.release(child).unwrap();
@@ -459,14 +448,9 @@ describe('fixed Scene content publication preparation', () => {
   it('refuses a current GUID outside the captured closure rather than resolving it live', async () => {
     const f = await fixture();
     // Deliberately malformed owner input: the source exists, but no dependency hold was declared.
-    const root = f.records
-      .create('scene', {
-        kind: 'scene',
-        entities: { mount: { components: {}, instance: { source: childGuid } } },
-      })
-      .unwrap();
+    const root = f.records.create('scene', sceneWithMount(childGuid)).unwrap();
     const lease = f.capture(root);
-    expect(finish(createSceneContentPublicationTask(f.assets, lease, root))).toMatchObject({
+    expect(finish(f.task(lease, root))).toMatchObject({
       ok: false,
       error: { code: 'asset-generation-fence-mismatch', hint: expect.stringContaining('outside') },
     });
@@ -476,7 +460,7 @@ describe('fixed Scene content publication preparation', () => {
   it('invalidates an accepted guard after its fixed lease is retired', async () => {
     const f = await fixture();
     const lease = f.capture();
-    const guard = finish(createSceneContentPublicationTask(f.assets, lease, f.handle)).unwrap();
+    const guard = finish(f.task(lease)).unwrap();
     lease.retire().unwrap();
     expect(guard?.validate()).toMatchObject({ ok: false, error: { code: 'asset-write-conflict' } });
   });
@@ -484,7 +468,7 @@ describe('fixed Scene content publication preparation', () => {
   it('closes suspended preparation and accepted proofs without consuming the caller lease', async () => {
     const f = await fixture();
     const lease = f.capture();
-    const task = createSceneContentPublicationTask(f.assets, lease, f.handle);
+    const task = f.task(lease);
     task.step(3).unwrap();
     task.dispose();
     task.dispose();
@@ -493,7 +477,7 @@ describe('fixed Scene content publication preparation', () => {
       error: { code: 'asset-generation-fence-mismatch', hint: expect.stringContaining('disposed') },
     });
     expect(lease.read<SceneAsset>(f.handle).ok).toBe(true);
-    const next = createSceneContentPublicationTask(f.assets, lease, f.handle);
+    const next = f.task(lease);
     const guard = finish(next).unwrap();
     expect(guard?.validate().ok).toBe(true);
     next.dispose();

@@ -22,16 +22,6 @@
       "node": { "import": "./dist/entry-store.mjs" },
       "default": null
     },
-    "./layout": {
-      "types": "./dist/layout.d.ts",
-      "node": { "import": "./dist/layout.mjs" },
-      "default": null
-    },
-    "./status": {
-      "types": "./dist/status.d.ts",
-      "node": { "import": "./dist/status.mjs" },
-      "default": null
-    },
     "./errors": {
       "types": "./dist/errors.d.ts",
       "node": { "import": "./dist/errors.mjs" },

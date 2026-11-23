@@ -76,7 +76,7 @@ describe('loaded temporal supplement eligibility', () => {
     buildPerFrameBindGroups.mockReturnValue({
       viewBindGroup: null,
       meshBindGroup: null,
-      hdrpClusterBindGroup: null,
+      clusterViewReady: false,
       hdrpClusterMembershipBindGroup: null,
     });
     encodeMainPass.mockReset();
@@ -101,8 +101,11 @@ describe('loaded temporal supplement eligibility', () => {
   });
 
   it.each([
-    1, 4,
-  ] as const)('uses the depth attachment sample count for colorless direct recording (%i)', async (sampleCount) => {
+    [1, false],
+    [4, false],
+    [1, true],
+    [4, true],
+  ] as const)('uses the depth attachment sample count for colorless recording (%i, bundles %s)', async (sampleCount, retainIndirectBundles) => {
     const { addTypedScenePass } = await import('../typed-render-graph-primitives');
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -113,6 +116,7 @@ describe('loaded temporal supplement eligibility', () => {
     }).unwrap();
     addTypedScenePass(graph, {
       name: 'colorless-primary',
+      retainIndirectBundles,
       colorTargets: [],
       depth,
       fragmentEntryPoint: 'fs_depth_masked',
@@ -137,7 +141,7 @@ describe('loaded temporal supplement eligibility', () => {
     buildPerFrameBindGroups.mockReturnValue({
       viewBindGroup: null,
       meshBindGroup: null,
-      hdrpClusterBindGroup: null,
+      clusterViewReady: false,
       hdrpClusterMembershipBindGroup: null,
     });
     encodeMainPass.mockReset();
@@ -148,7 +152,9 @@ describe('loaded temporal supplement eligibility', () => {
       const context = encodeMainPass.mock.calls[0]?.[0];
       expect(context?.msaaActive).toBe(sampleCount === 4);
       expect(Reflect.get(frame, 'msaaActive')).toBe(inheritedMsaa);
-      expect(encodeMainPass.mock.calls[0]?.[3]?.bundleDescriptor?.sampleCount).toBe(sampleCount);
+      const descriptor = encodeMainPass.mock.calls[0]?.[3]?.bundleDescriptor;
+      if (retainIndirectBundles) expect(descriptor?.sampleCount).toBe(sampleCount);
+      else expect(descriptor).toBeUndefined();
     } finally {
       frame.encoder.finish().unwrap();
       await compiled.retire();
@@ -210,7 +216,7 @@ describe('loaded temporal supplement eligibility', () => {
     buildPerFrameBindGroups.mockReturnValue({
       viewBindGroup: null,
       meshBindGroup: null,
-      hdrpClusterBindGroup: null,
+      clusterViewReady: false,
       hdrpClusterMembershipBindGroup: null,
     });
     encodeMainPass.mockReset();

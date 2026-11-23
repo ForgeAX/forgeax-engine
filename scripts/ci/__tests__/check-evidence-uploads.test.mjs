@@ -35,7 +35,7 @@ test('rejects generated evidence reports, raw measurements, logs and media', () 
 
 test('allows evidence-producing source, schemas, tests and retained author inputs', () => {
   for (const path of [
-    'packages/pack/src/evidence/offline-evidence.ts',
+    'packages/pack/src/evidence/source-inventory.ts',
     'scripts/ci/evidence/fingerprint.mjs',
     'scripts/ci/evidence/vertex-color-gate-report.schema.json',
     'apps/hello/format-tier1/evidence/__tests__/recovery-scenarios.test.mjs',

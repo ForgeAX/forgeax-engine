@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, it } from 'vitest';
 import {
-  CURVED_SHADOW_CASES,
+  CURVED_SHADOW_REPRESENTATIVES,
   CURVED_SHADOW_SIZE,
   createCurvedShadowReceiverFixture,
 } from './curved-shadow-receiver.fixture';
@@ -16,16 +16,15 @@ afterAll(async () => {
   await fixture?.dispose();
   canvas.remove();
 });
-// Each filter still runs through both render paths. Vary mesh and shadow-map
-// size across those checks instead of rasterizing all four permutations.
-const cases = CURVED_SHADOW_CASES.filter(({ kind, mapSize, filter, renderPath }) => {
-  const even = filter % 2 === 0;
-  const forward = renderPath === 'forward';
-  const large = filter % 4 < 2;
-  return (
-    kind === (even === forward ? 'wave' : 'fold') && mapSize === (large === forward ? 2048 : 512)
-  );
-});
+// Browser core witnesses every filter and both render paths through the same
+// real pixel oracle. The full profile also tests every filter on both paths.
+const cases =
+  import.meta.env.FORGEAX_CI_CORE_VALIDATION === '1'
+    ? CURVED_SHADOW_REPRESENTATIVES.filter(
+        ({ filter, renderPath }) =>
+          (Math.floor((filter - 1) / 2) % 2 === 0) === (renderPath === 'forward'),
+      )
+    : CURVED_SHADOW_REPRESENTATIVES;
 
 it.each(
   cases,

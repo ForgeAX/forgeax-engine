@@ -101,12 +101,7 @@ function encodeComposite(
     if (view.target === undefined || view.output === undefined) continue;
     const target = internals.getRenderTargetPhysical?.(view.target);
     if (target === undefined) return false;
-    const { width, height, texture } = view.output;
-    const picture = {
-      texture,
-      viewport: { x: 0, y: 0, width, height, renderWidth: width, renderHeight: height },
-    };
-    if (!view.composite.encode(encoder, [picture], target.texture, target.descriptor)) return false;
+    if (!view.composite.encode(encoder, view.output, target.texture, target)) return false;
   }
   if (plan.directDisplay !== undefined) {
     recordContext(internals).encodeRenderTargetReadbacks?.(encoder);
@@ -136,7 +131,9 @@ function publishPhysicalSubmission(
       collectFailure(state, () => view.onSubmittedWork?.(completion));
   if (owner !== undefined) {
     owner.gpuPassTimingSubmittedWork = completion;
-    owner.submittedPassNames = Object.freeze([...(owner.framePassNames ?? [])]);
+    // Recording ended at the physical queue submit. The next attempt opens its
+    // own list, so previous inspection receipts keep these exact commands.
+    owner.submittedPassNames = Object.freeze(owner.framePassNames ?? []);
     collectFailure(state, () => owner.gpuPassTimingCapture?.markSubmitted(completion));
   }
   publishRenderSubmission(world, {

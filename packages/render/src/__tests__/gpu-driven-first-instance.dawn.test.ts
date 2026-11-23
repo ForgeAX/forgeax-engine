@@ -336,6 +336,8 @@ describe('GPU-driven native first-instance addressing', () => {
           })
           .unwrap();
         material.ensureSceneTables(
+          scene.transformBuffer,
+          scene.transformByteLength,
           scene.instanceBuffer,
           tables.instance.bytes,
           scene.primitiveBuffer,

@@ -1,6 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, StandardClusterTransportUnavailableError } from '../../errors/render';
 import type { StandardClusterReflectedAbi } from '../../light-buffer-layout';
+import { standardLightBoundsBytes } from './membership';
 import type { PreparedStandardLighting } from './prepare';
 import { standardClusterTextureLayout } from './texture';
 
@@ -37,14 +38,6 @@ export interface StandardClusterTransport {
   readonly lightBoundsBytes: number;
 }
 
-function occupiedClusterCount(prepared: PreparedStandardLighting): number {
-  let occupied = 0;
-  for (let index = 1; index < prepared.clusterGrid.length; index += 2) {
-    if ((prepared.clusterGrid[index] ?? 0) > 0) occupied += 1;
-  }
-  return occupied;
-}
-
 /**
  * Select a transport from one prepared frame. Capability facts choose only a
  * producer/storage pair; all counts and byte sizes come from that frame.
@@ -66,17 +59,16 @@ export function selectStandardClusterTransport(
   }
   const lightDataSlotBytes = reflectedAbi.directLightSlot.byteSize;
   const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
-  const texture = standardClusterTextureLayout(prepared.layout, lightDataSlotBytes);
-  if (
-    !capabilities.storageBuffer &&
-    (capabilities.maxTextureDimension2D ?? 0) < Math.max(texture.width, texture.height)
-  ) {
-    return err(
-      new StandardClusterTransportUnavailableError(
-        requested,
-        'provide storage buffers or a sampled integer texture large enough for the complete Cluster payload',
-      ),
-    );
+  if (!capabilities.storageBuffer) {
+    const texture = standardClusterTextureLayout(prepared.layout, lightDataSlotBytes);
+    if ((capabilities.maxTextureDimension2D ?? 0) < Math.max(texture.width, texture.height)) {
+      return err(
+        new StandardClusterTransportUnavailableError(
+          requested,
+          'provide storage buffers or a sampled integer texture large enough for the complete Cluster payload',
+        ),
+      );
+    }
   }
 
   const producer: StandardClusterMembershipProducer =
@@ -95,12 +87,12 @@ export function selectStandardClusterTransport(
     requestedLightCount: requested,
     admittedLightCount: admitted,
     membershipEntryCount: prepared.membershipEntryCount,
-    occupiedClusterCount: occupiedClusterCount(prepared),
+    occupiedClusterCount: prepared.occupiedClusterCount,
     clusterGridBytes: prepared.layout.clusterGridU32Length * Uint32Array.BYTES_PER_ELEMENT,
     lightIndexListBytes: prepared.membershipEntryCount * Uint32Array.BYTES_PER_ELEMENT,
     lightDataBytes: admitted * lightDataSlotBytes,
     lightDataSlotBytes,
     clusterUniformBytes,
-    lightBoundsBytes: prepared.lightBounds.byteLength,
+    lightBoundsBytes: standardLightBoundsBytes(prepared),
   });
 }

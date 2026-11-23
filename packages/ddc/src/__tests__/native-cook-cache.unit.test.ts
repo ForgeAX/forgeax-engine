@@ -1,17 +1,14 @@
 import { utimesSync } from 'node:fs';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { collectNativeCookGarbage, createNativeCookCache } from '../native-cook-cache.js';
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+const scratch = temporaryDirectories();
+afterEach(scratch.clear);
 async function root(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), 'native-cook-cache-'));
-  roots.push(path);
+  const path = await scratch.make('native-cook-cache-');
   return path;
 }
 

@@ -19,8 +19,10 @@ import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
 import { PointShapeValue } from '../components/points';
 import { sunSourceRadiusOf } from '../components/sun-source-radius';
+import { groundSolarTransmittance } from '../environment/ground-solar';
 import { writeAtmosphereUniform } from '../environment/uniform';
 import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type { DirectionalLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
@@ -30,7 +32,7 @@ import type { TemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
-export const VIEW_UNIFORM_BYTES = 1376;
+export const VIEW_UNIFORM_BYTES = 1392;
 /** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
 export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
@@ -117,7 +119,6 @@ function directionalShadowFilterCarrier(
   quality: DirectionalShadowQuality | undefined,
 ): readonly [number, number, number] {
   if (quality === undefined) return [0, 0, 0];
-  if (quality.kind === 'variance') return [DirectionalShadowFilterValue.variance, 0, 0];
   if (quality.kind === 'pcf-soft') return [DirectionalShadowFilterValue.pcfSoft, 0, 0];
   if (quality.kind === 'pcf-vogel') return [DirectionalShadowFilterValue.pcfVogel, 0, 0];
   if (quality.kind === 'pcss') {
@@ -257,6 +258,48 @@ function createViewUboScratch() {
 let viewUboScratch: ReturnType<typeof createViewUboScratch> | undefined;
 let writingViewUbo = false;
 
+function writeViewAtmosphere(
+  viewPayload: Float32Array,
+  atmosphere: AtmosphereParameters | undefined,
+  atmosphereProfile: StandardProfile['atmosphere'],
+  near: number,
+  sceneCapture: boolean,
+  light: DirectionalLightSnapshot | undefined,
+): void {
+  if (atmosphere !== undefined) {
+    writeAtmosphereUniform(viewPayload, 292, atmosphere, sceneCapture ? 64 : 0);
+    if (
+      atmosphereProfile?.aerialPerspectiveQuality === 'fast' &&
+      !sceneCapture &&
+      !atmosphere.backgroundOnly
+    ) {
+      const start =
+        atmosphereProfile.aerialPerspectiveStartM ?? (atmosphere.aerialPerspectiveStart || 100);
+      viewPayload[314] = Math.max(start, near) * 0.001;
+      viewPayload[316] = -Math.max(
+        1,
+        Math.min(
+          atmosphereProfile.sampleCountMaxPerSlice ?? 2,
+          2 * (atmosphereProfile.traceSampleCountScale ?? 1),
+        ),
+      );
+      viewPayload[318] = (atmosphereProfile.aerialPerspectiveRangeM ?? 96_000) * 0.001;
+      viewPayload[319] =
+        (viewPayload[319] ?? 0) +
+        4 +
+        (atmosphereProfile.skyAtmosphereAffectsHeightFog === false ? 8 : 0);
+    }
+    // The low bit selects aerial perspective; the second describes the captured sun lane.
+    if (light !== undefined) {
+      viewPayload[319] = (viewPayload[319] ?? 0) + 2;
+      const ground = groundSolarTransmittance(atmosphere, light.direction, true);
+      viewPayload.set(ground, 344);
+      viewPayload[347] =
+        !atmosphere.backgroundOnly && light.perPixelAtmosphereTransmittance === false ? 1 : 2;
+    }
+  }
+}
+
 /**
  * feat-20260704 M3/w18: assemble + upload the per-frame View UBO payload.
  *
@@ -269,7 +312,8 @@ let writingViewUbo = false;
  * SSOT, no double-negation).
  *
  * feat-20260520-directional-light-shadow-mapping M1b / w7 + feat-20260613-csm
- * M4 / w16+w25: viewPayload is 292 floats. Layout matches common.wgsl View
+ * M4 / w16+w25: View includes the original 292-float camera and fog prefix.
+ * Layout matches common.wgsl View
  * struct byte-for-byte:
  *   [ 0..15] worldViewProj, [16..18] lightDir, [20..22] lightColor,
  *   [24..26] cameraPos, [28..43] lightViewProj0 (was lightSpaceMatrix),
@@ -290,10 +334,21 @@ let writingViewUbo = false;
  *   [280..283] clippingControl, [284..287] fogColorDensity,
  *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time),
  *   [292..315] atmosphere medium, [316..319] atmosphereControl,
- *   [320..323] fogSky (skyOpacity, vertex route, camera height density, Deferred channel proof).
+ *   [320..323] fogSky (skyOpacity, vertex route, camera height density, Deferred channel proof),
+ *   [324..327] SSR work budgets, [328..343] subsurface profiles,
+ *   [344..347] CPU ground solar RGB and surface lighting mode.
  *
  * @internal
  */
+export function indirectSpecularMode(
+  profile: StandardProfile | undefined,
+  screenReflections: boolean,
+): 0 | 1 | 3 {
+  if (profile?.ibl !== false) return 0;
+  const gi = profile.diffuseGi;
+  return screenReflections || (gi?.gather !== 'baked' && gi?.reflections !== undefined) ? 1 : 3;
+}
+
 export function writeViewUbo(
   queue: RhiQueue,
   viewUniformBuffer: Buffer,
@@ -313,6 +368,11 @@ export function writeViewUbo(
   ssrQuality?: import('../quality').RenderQualityBudgets['ssr'],
   deferredChannelProjection = 0,
   subsurfaceProfiles?: readonly number[],
+  indirectSpecular: 0 | 1 | 3 = 0,
+  atmosphereProfile?: StandardProfile['atmosphere'],
+  forwardProjectedSun = false,
+  inlineSsr = false,
+  ssrPreviousColorValid = false,
 ): void {
   // Borrow ordinary staging once; raw getter/queue callback reentry owns an
   // independent invocation and cannot overwrite the caller's pending upload.
@@ -330,7 +390,8 @@ export function writeViewUbo(
     viewPayload.fill(0);
     writeSsrQualityLanes(viewPayload, ssrQuality);
     // Packed 20-bit integer, exactly representable in a regular f32 lane.
-    viewPayload[323] = deferredChannelProjection;
+    // The low 20 bits belong to Deferred channel projection. Keep the combined word exact in f32.
+    viewPayload[323] = deferredChannelProjection | (indirectSpecular << 20);
     if (subsurfaceProfiles !== undefined) scratch.words.set(subsurfaceProfiles, 328);
     const projMatrix = computeProjectionMatrix(camera, scratch.projection);
     const viewMatrix = computeViewMatrix(camera, scratch.view);
@@ -339,20 +400,29 @@ export function writeViewUbo(
     const mainProjection = scratch.mainProjection;
     mat4.multiply(mainProjection, projMatrix, viewMatrix);
     writeTemporalLanes(viewPayload, mainProjection, camera, resolvedTemporal);
+    viewPayload[231] = Number(forwardProjectedSun);
     jitterCameraProjection(projMatrix, projMatrix, resolvedTemporal?.currentJitterUv);
     mat4.multiply(mainProjection, projMatrix, viewMatrix);
 
     if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
     writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
-    if (atmosphere !== undefined) {
-      writeAtmosphereUniform(viewPayload, 292, atmosphere, sceneCapture ? 64 : 0);
-      // The low bit selects aerial perspective; the second describes the captured sun lane.
-      if (lights.directional !== undefined) viewPayload[319] = (viewPayload[319] ?? 0) + 2;
-    }
+    writeViewAtmosphere(
+      viewPayload,
+      atmosphere,
+      atmosphereProfile,
+      camera.near,
+      sceneCapture,
+      lights.directional === undefined ? undefined : light,
+    );
     writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
     writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
     if (camera.screenSpaceReflection !== undefined)
-      writeScreenSpaceReflectionLanes(viewPayload, camera.screenSpaceReflection);
+      writeScreenSpaceReflectionLanes(
+        viewPayload,
+        camera.screenSpaceReflection,
+        inlineSsr,
+        ssrPreviousColorValid,
+      );
     if (cloudShadowProjection !== undefined)
       writeCloudShadowLanes(viewPayload, cloudShadowProjection);
     writeDirectionalShadowLanes(viewPayload, lights, light);
@@ -612,11 +682,13 @@ function writeTemporalLanes(
 function writeScreenSpaceReflectionLanes(
   viewPayload: Float32Array,
   ssr: NonNullable<CameraSnapshot['screenSpaceReflection']>,
+  inlineSsr: boolean,
+  previousColorValid: boolean,
 ): void {
   viewPayload[236] = ssr.maxDistance;
   viewPayload[237] = ssr.thickness;
   viewPayload[238] = ssr.maxRoughness;
-  viewPayload[239] = 1;
+  viewPayload[239] = inlineSsr ? (previousColorValid ? 3 : 2) : 1;
 }
 
 /** Cloud shadow projection at [240..255]. */

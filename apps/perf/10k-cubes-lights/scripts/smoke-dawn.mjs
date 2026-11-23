@@ -17,10 +17,10 @@ import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const distRoot = resolve(appRoot, 'dist');
-const width = 320;
-const height = 180;
+const [width, height] = (process.env.PERF_DAWN_SIZE ?? '320x180').split('x').map(Number);
 const targetFrames = Number.parseInt(process.env.PERF_DAWN_FRAMES ?? '60', 10);
 const requestedQuery = new URLSearchParams(process.env.PERF_QUERY ?? '');
+const shadowProjection = requestedQuery.get('shadowProjection');
 // The app's default 180-frame profile window outlives the 60-frame smoke budget.
 if (!requestedQuery.has('profileFrames')) requestedQuery.set('profileFrames', String(Math.max(1, Math.floor(targetFrames / 2))));
 const query = `?${requestedQuery}`;
@@ -47,6 +47,11 @@ function fail(message) {
   process.exit(1);
 }
 
+if (![width, height].every((value) => Number.isInteger(value) && value > 0 && value <= 4096))
+  fail('PERF_DAWN_SIZE must be WIDTHxHEIGHT from 1 to 4096');
+if (shadowProjection !== null && shadowProjection !== 'screen')
+  fail('shadowProjection must be screen');
+
 const entryName = readdirSync(resolve(distRoot, 'assets')).find((name) => /^main-.*\.js$/u.test(name));
 if (entryName === undefined) fail('dist entry missing; run the app build first');
 const entryPath = resolve(distRoot, 'assets', entryName);
@@ -66,10 +71,13 @@ Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: t
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 let sharedDevice;
+let gpuAdapterInfo;
 const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (...args) => {
   const adapter = await originalRequestAdapter(...args);
   if (adapter === null) return adapter;
+  const { vendor, architecture, device, description, isFallbackAdapter } = adapter.info ?? {};
+  gpuAdapterInfo = { vendor, architecture, device, description, isFallbackAdapter };
   const originalRequestDevice = adapter.requestDevice.bind(adapter);
   adapter.requestDevice = async (...deviceArgs) => {
     const device = await originalRequestDevice(...deviceArgs);
@@ -194,6 +202,7 @@ while (globalThis.__forgeaxPerf.frameProgress < targetFrames && Date.now() < fra
   if (firstPixels === undefined && globalThis.__forgeaxPerf.frameProgress >= motionBaselineFrame) {
     firstPixels = await readback();
   }
+  if (shadowProjection !== null && drivenRafCallbacks % 4 === 0) await sharedDevice?.queue.onSubmittedWorkDone();
   if (drivenRafCallbacks % 16 === 0) await delay(1);
 }
 const observedFrames = globalThis.__forgeaxPerf.frameProgress;
@@ -235,11 +244,11 @@ function pixelDelta(left, right) {
   return { changedPixels, maxDelta };
 }
 
-function hasFixedDirectionalBaseline(value) {
+function hasFixedDirectionalBaseline(value, shadowCasterCount = expectedDirectionalBaseline.shadowCasterCount) {
   const baseline = value?.directionalBaseline;
   const closeTo = (actual, expected) => typeof actual === 'number' && Math.abs(actual - expected) <= 1e-6;
   return baseline?.count === expectedDirectionalBaseline.count
-    && baseline.shadowCasterCount === expectedDirectionalBaseline.shadowCasterCount
+    && baseline.shadowCasterCount === shadowCasterCount
     && closeTo(baseline.intensity, expectedDirectionalBaseline.intensity)
     && baseline.direction?.every((component, index) => closeTo(component, expectedDirectionalBaseline.direction[index]))
     && baseline.color?.every((component, index) => closeTo(component, expectedDirectionalBaseline.color[index]));
@@ -253,6 +262,7 @@ const stats = pixelStats(finalPixels);
 const motion = firstPixels === undefined ? { changedPixels: 0, maxDelta: 0 } : pixelDelta(firstPixels, finalPixels);
 const result = {
   backend: 'webgpu',
+  gpuAdapterInfo,
   observedFrames,
   drivenRafCallbacks,
   evidence,
@@ -262,20 +272,23 @@ const result = {
     exactCubeCount: evidence.postSpawn.cubeCount === expectedCubeCount && evidence.processedCubeCount === expectedCubeCount,
     sharedMeshAndMaterial: evidence.postSpawn.meshHandleMatches === expectedCubeCount && evidence.postSpawn.materialHandleMatches === expectedCubeCount,
     punctualLightsPresent: evidence.postSpawn.pointLightCount === expectedPointLightCount && evidence.postSpawn.spotLightCount === expectedSpotLightCount,
-    fixedDirectionalBaseline: hasFixedDirectionalBaseline(evidence.postSpawn),
+    fixedDirectionalBaseline: hasFixedDirectionalBaseline(
+      evidence.postSpawn, Number(shadowProjection !== null && requestedQuery.get('shadowedSun') === '1'),
+    ),
+    projectionAdmitted: shadowProjection !== 'screen' || evidence.shadowProjection?.observed?.mode === 'screen',
     cameraAndCubeMotion: evidence.cameraRotationRadians > 0 && motion.changedPixels > width * height * 0.01,
     notClearOnly: stats.nonClearPixels > width * height * 0.01 && stats.lumaVariance > 0.00001,
     completeProfileNoDrops: !profilingExpected || profileComplete,
     noAppRendererErrors: evidence.appRendererErrors.length === 0,
   },
 };
-writeFileSync(outputPath, JSON.stringify(result, null, 2));
+writeFileSync(outputPath, JSON.stringify(result, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 writeFileSync(rawPath, finalPixels);
 writeFileSync(screenshotPath, encodePng(width, height, finalPixels));
 // The isolated lighting control does not share this renderer or device.
 sharedDevice?.destroy?.();
 
-if (process.env.PERF_LIGHT_CONTROL !== '1') {
+if (process.env.PERF_LIGHT_CONTROL !== '1' && shadowProjection === null) {
   const controlOutput = `${outputPath}.no-lights.json`;
   const controlRaw = `${outputPath}.no-lights.rgba`;
   const control = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
@@ -302,5 +315,5 @@ if (failed.length > 0) fail(`assertions failed: ${JSON.stringify(Object.fromEntr
 if (result.zeroPunctualControl !== undefined && !result.zeroPunctualControl.distinguishesLightPayload) fail('default vs zero-punctual readback did not distinguish punctual-light payload');
 console.log(`[perf-10k-cubes-lights/dawn] PASS ${JSON.stringify({ observedFrames, stats, motion, profileComplete, zeroPunctualControl: result.zeroPunctualControl })}`);
 delete globalThis.navigator.gpu;
-if (process.env.PERF_LIGHT_CONTROL !== '1') emitSmokeReceipt('perf-10k-cubes-lights/smoke', observedFrames);
+if (process.env.PERF_LIGHT_CONTROL !== '1' && shadowProjection === null) emitSmokeReceipt('perf-10k-cubes-lights/smoke', observedFrames);
 process.exit(0);

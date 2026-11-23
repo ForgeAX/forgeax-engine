@@ -8,7 +8,6 @@ import type { RenderableSnapshot } from '../render-system-extract';
 export type RowContent = Omit<RenderableSnapshot, 'entityKey' | 'transform'>;
 
 const EXCLUDED = new Set(['entityKey', 'transform', 'temporal']);
-const RECENT_LIMIT = 64;
 
 function token(value: unknown): string {
   switch (typeof value) {
@@ -27,24 +26,48 @@ function token(value: unknown): string {
   }
 }
 
-/** Do two owned sources carry the same drawable field references? */
-function sameFields(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  let count = 0;
-  for (const field in a) {
-    if (EXCLUDED.has(field)) continue;
-    const value = a[field];
-    if (value === undefined) continue;
-    if (b[field] !== value) return false;
-    count++;
-  }
-  for (const field in b) if (!EXCLUDED.has(field) && b[field] !== undefined) count--;
-  return count === 0;
+type Fields = Readonly<Record<string, unknown>>;
+
+interface ArrayBinding {
+  readonly field: string;
+  readonly key: string;
+  readonly value: readonly unknown[];
+  holders: number;
+  /** A resident content using this materials list. Cleared at its final release. */
+  content?: ContentBinding;
 }
 
-interface Interned<T> {
-  readonly value: T;
+interface ContentBinding {
   readonly key: string;
+  readonly value: RowContent;
+  readonly fieldCount: number;
+  readonly arrays: readonly ArrayBinding[];
   holders: number;
+}
+
+function sameList(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
+}
+
+/** Compare this admission to immutable live facts, including values supplied in mutable lists. */
+function sameFields(source: Fields, bound: ContentBinding): boolean {
+  const facts = bound.value as unknown as Fields;
+  let count = 0;
+  for (const field in source) {
+    if (EXCLUDED.has(field)) continue;
+    const value = source[field];
+    if (value === undefined) continue;
+    const fact = facts[field];
+    if (
+      !Object.is(value, fact) &&
+      !(Array.isArray(value) && Array.isArray(fact) && sameList(value, fact))
+    )
+      return false;
+    count++;
+  }
+  return count === bound.fieldCount;
 }
 
 function arrayKey(field: string, value: readonly unknown[]): string {
@@ -53,122 +76,94 @@ function arrayKey(field: string, value: readonly unknown[]): string {
   return key;
 }
 
-/**
- * Reference-counted shared row contents. Arrays are interned per field by their
- * elements first, so rows (and distinct contents) carrying equal lists hold one
- * list and list identity still means list equality within that field.
- */
+/** Shared, immutable draw facts. Every strong binding is held by a live scene row. */
 export class RowContents {
-  private readonly contents = new Map<string, Interned<RowContent>>();
-  private readonly byContent = new WeakMap<RowContent, Interned<RowContent>>();
-  private readonly arrays = new Map<string, Interned<readonly unknown[]>>();
-  private readonly byArray = new WeakMap<readonly unknown[], Interned<readonly unknown[]>>();
-  /** Recent sources by their `materials` list identity; bounded, never a row index. */
-  private readonly recent = new Map<
-    unknown,
-    { readonly source: Record<string, unknown>; readonly entry: Interned<RowContent> }
-  >();
+  private readonly contents = new Map<string, ContentBinding>();
+  private byContent = new WeakMap<RowContent, ContentBinding>();
+  private readonly arrays = new Map<string, ArrayBinding>();
+  private byArray = new WeakMap<readonly unknown[], ArrayBinding>();
 
   get size(): number {
     return this.contents.size;
   }
 
-  private shareArray(field: string, value: readonly unknown[]): Interned<readonly unknown[]> {
-    const known = this.byArray.get(value);
-    if (
-      known !== undefined &&
-      this.arrays.get(known.key) === known &&
-      known.key.startsWith(`${field}:`)
-    )
-      return known;
-    const key = arrayKey(field, value);
-    let entry = this.arrays.get(key);
-    if (entry === undefined) {
-      entry = { value, key, holders: 0 };
-      this.arrays.set(key, entry);
-      this.byArray.set(value, entry);
-    }
-    return entry;
+  private resolveArray(field: string, input: readonly unknown[]): ArrayBinding {
+    const known = this.byArray.get(input);
+    if (known?.field === field) return known;
+    const key = arrayKey(field, input);
+    return (
+      this.arrays.get(key) ?? {
+        field,
+        key,
+        value: Object.isFrozen(input) ? input : Object.freeze([...input]),
+        holders: 0,
+      }
+    );
   }
 
-  /**
-   * The shared content of `snapshot`'s drawable facts; release it with {@link release}.
-   * Bulk admission stages many rows from one template: rows whose field values
-   * are the same references as a recent row's reuse its content after one
-   * shallow comparison, without rebuilding the key.
-   */
+  /** Acquire current drawable facts without retaining the producer's row, pose or mutable lists. */
   acquire(snapshot: RenderableSnapshot | RowContent): RowContent {
-    const source = snapshot as unknown as Record<string, unknown>;
-    const probe = source.materials;
-    const recent = probe === undefined ? undefined : this.recent.get(probe);
-    if (
-      recent !== undefined &&
-      this.contents.get(recent.entry.key) === recent.entry &&
-      sameFields(source, recent.source)
-    ) {
-      recent.entry.holders++;
-      return recent.entry.value;
+    const materials = this.resolveArray('materials', snapshot.materials);
+    const source = snapshot as unknown as Fields;
+    const bound = materials.content;
+    if (bound !== undefined && sameFields(source, bound)) {
+      bound.holders++;
+      return bound.value;
     }
-    const entry = this.acquireKeyed(source);
-    if (probe !== undefined) {
-      if (this.recent.size >= RECENT_LIMIT) this.recent.clear();
-      this.recent.set(probe, { source, entry });
-    }
-    return entry.value;
+    return this.acquireKeyed(source, materials).value;
   }
 
-  private acquireKeyed(source: Record<string, unknown>): Interned<RowContent> {
-    let key = '';
-    let shared: Record<string, Interned<readonly unknown[]>> | undefined;
+  private acquireKeyed(source: Fields, materials: ArrayBinding): ContentBinding {
+    const facts: Record<string, unknown> = {};
+    const arrays: ArrayBinding[] = [];
     for (const field in source) {
       if (EXCLUDED.has(field)) continue;
-      const value = source[field];
+      const value = field === 'materials' ? materials.value : source[field];
       if (value === undefined) continue;
       if (Array.isArray(value)) {
-        const entry = this.shareArray(field, value);
-        shared ??= {};
-        shared[field] = entry;
-        key += `${field}=${token(entry.value)};`;
-      } else key += `${field}=${token(value)};`;
+        const binding = field === 'materials' ? materials : this.resolveArray(field, value);
+        arrays.push(binding);
+        facts[field] = binding.value;
+      } else facts[field] = value;
     }
+    const fields = Object.keys(facts).sort();
+    let key = '';
+    for (const field of fields) key += `${field}=${token(facts[field])};`;
     let entry = this.contents.get(key);
     if (entry === undefined) {
-      const content: Record<string, unknown> = {};
-      for (const field in source) {
-        if (EXCLUDED.has(field)) continue;
-        const value = source[field];
-        if (value === undefined) continue;
-        const array = shared?.[field];
-        if (array !== undefined) array.holders++;
-        content[field] = array === undefined ? value : array.value;
+      const value = Object.freeze(facts) as unknown as RowContent;
+      entry = { value, key, fieldCount: fields.length, arrays, holders: 0 };
+      for (const array of arrays) {
+        if (array.holders++ === 0) {
+          this.arrays.set(array.key, array);
+          this.byArray.set(array.value, array);
+        }
       }
-      const value = Object.freeze(content) as unknown as RowContent;
-      entry = { value, key, holders: 0 };
       this.contents.set(key, entry);
       this.byContent.set(value, entry);
     }
+    materials.content = entry;
     entry.holders++;
     return entry;
   }
 
   release(content: RowContent): void {
     const entry = this.byContent.get(content);
-    if (entry === undefined || this.contents.get(entry.key) !== entry) return;
-    if (--entry.holders !== 0) return;
+    if (entry === undefined || --entry.holders !== 0) return;
     this.contents.delete(entry.key);
-    const source = content as unknown as Record<string, unknown>;
-    for (const field in source) {
-      const value = source[field];
-      if (!Array.isArray(value)) continue;
-      const key = arrayKey(field, value);
-      const array = this.arrays.get(key);
-      if (array?.value === value && --array.holders === 0) this.arrays.delete(key);
+    this.byContent.delete(content);
+    for (const array of entry.arrays) {
+      if (array.content === entry) delete array.content;
+      if (--array.holders !== 0) continue;
+      this.arrays.delete(array.key);
+      if (this.byArray.get(array.value) === array) this.byArray.delete(array.value);
     }
   }
 
   clear(): void {
-    this.recent.clear();
     this.contents.clear();
     this.arrays.clear();
+    this.byArray = new WeakMap();
+    this.byContent = new WeakMap();
   }
 }

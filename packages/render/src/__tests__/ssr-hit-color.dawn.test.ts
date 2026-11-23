@@ -26,9 +26,7 @@ it.each([
     /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
   );
   const source = readFileSync(resolve('packages/shader/src/ssr-trace.wgsl'), 'utf8');
-  expect(source).toContain(
-    'let hitSample = sampleSsrHitSample(hitResult.uv, reflectionDirection);',
-  );
+  expect(source).toContain('let hitSample = sampleSsrHit(hitResult.uv, reflectionDirection, lod);');
   expect(source).toContain('max(hitResult.reactivity, hitSample.reactivity)');
   const compiled = await compiler.compileShader(
     `${source}
@@ -36,8 +34,8 @@ it.each([
 @compute @workgroup_size(1) fn probe_color() {
   let uvs = array<vec2<f32>, 6>(vec2<f32>(0.5), vec2<f32>(0.49, 0.25), vec2<f32>(0.51, 0.25), vec2<f32>(0.0), vec2<f32>(1.0), vec2<f32>(0.25, 0.75));
   for (var i = 0u; i < 6u; i++) {
-    let sample = sampleSsrHitSample(uvs[i], vec3<f32>(0.0, 0.0, -1.0));
-    colors[i] = sample.color;
+    let sample = sampleSsrHit(uvs[i], vec3<f32>(0.0, 0.0, -1.0), 0.0);
+    colors[i] = vec4<f32>(sample.color, sample.coverage);
     colors[6u + i] = vec4<f32>(sample.reactivity);
   }
 }`,

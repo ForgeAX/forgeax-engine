@@ -8,10 +8,11 @@ import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 const AO = {
   enabled: true,
   method: 'ssao',
-  quality: 'high',
+  quality: 100,
   radius: 0.8,
-  bias: 0.025,
-  intensity: 2.5,
+  radiusInWorldSpace: true,
+  bias: 3,
+  intensity: 1,
 } as const;
 
 export default defineFeature<FeatureDefinition>({
@@ -19,7 +20,7 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'Screen-space ambient occlusion',
   kind: 'visual',
   summary:
-    'StandardProfile.ambientOcclusion enables screen-space AO on eligible Forward and Deferred paths. The method selects the estimator and resolutionScale controls its pixel budget. AO darkens indirect light by default, with direct-light attenuation controlled separately.',
+    'Standard enables SSAO by default. This comparison toggles indirect-light AO with unchanged scene lighting and camera.',
   expect:
     'ON: dark contact shadows pool where the cubes meet the floor and in the inner corner of the stacked blocks. OFF: the same scene is flatly lit by the skylight with no contact darkening.',
   appOptions: {

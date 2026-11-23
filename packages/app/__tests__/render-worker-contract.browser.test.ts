@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { computeDisplayScreenRay } from '../../picking/src/display-picking';
 import { createCleanupEvidenceWriter } from './render-worker-cleanup-evidence';
+import { verifyRenderWorkerMultiCamera } from './render-worker-multi-camera.fixture';
 
 async function fixture(
   data: { stallMs?: number; cleanupMs?: number; fail?: boolean; holdFirstCompletion?: boolean; cleanupEvidence?: boolean },
@@ -138,7 +139,8 @@ it('submits and executes two frames before the oldest receipt retires without ad
 }, 90_000);
 
 it('overlaps exactly one sealed successor, stays responsive beyond the admission timeout, and drains cleanup', async () => {
-  const f = await fixture({ stallMs: 3000, cleanupMs: 50, cleanupEvidence: true });
+  const stallMs = 3000;
+  const f = await fixture({ holdFirstCompletion: true, cleanupMs: 50, cleanupEvidence: true });
   try {
     f.app.start().unwrap();
     await expect
@@ -147,6 +149,12 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     expect(f.app.execution?.report().render?.completedFrame).toBe(0);
     f.channel.port1.postMessage('mutate-sealed-source');
     await expect.poll(() => f.messages.some((row) => row.kind === 'mutated')).toBe(true);
+    // Sealing happens before the Render Worker prepares and submits a picture.
+    // Start the timed receipt stall after both submissions have reached Host.
+    await expect
+      .poll(() => f.submitted.map((frame) => frame.frameId), { timeout: 10_000 })
+      .toEqual([1, 2]);
+    const stalledUntil = performance.now() + stallMs;
     await new Promise((resolve) => setTimeout(resolve, 2100));
     const stalled = f.app.execution?.report();
     expect(stalled?.frame.completed).toBeGreaterThan(2);
@@ -158,6 +166,8 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     expect(f.app.lastError).toBeUndefined();
     expect(f.app.execution?.report().render?.completedFrame).toBe(0);
     f.app.pause().unwrap();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, stalledUntil - performance.now())));
+    f.releaseFirstFrame();
     await expect
       .poll(() => f.messages.find((row) => row.kind === 'feedback' && row.value?.tick === 2), {
         timeout: 30_000,
@@ -223,6 +233,7 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     }
     throw cause;
   } finally {
+    f.releaseFirstFrame();
     (await f.dispose()).unwrap();
   }
 }, 90_000);
@@ -300,3 +311,9 @@ it.each([
     await f.dispose();
   }
 }, 90_000);
+
+it(
+  'keeps multi-camera pixels, cadence and source ownership through actual Render Worker replacement',
+  verifyRenderWorkerMultiCamera,
+  240_000,
+);

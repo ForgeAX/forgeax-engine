@@ -168,12 +168,12 @@ async function build(
   const emitted: unknown[] = [];
   const result = await produceBuildAssets({
     inventory: {
-      schemaVersion: 'catalog-legacy-v1',
       entries: [],
       authority: 'authoritative',
       diagnostics: [],
       declarations: new Map(),
       sourceDeclarations: inventory.value.declarations,
+      packInstances: inventory.value.instances,
     },
     cwd: root,
     ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
@@ -190,7 +190,6 @@ async function build(
         }),
     },
     cookedCurrentProjection: {},
-    directCurrentProjection: {},
     authoredCookedCurrentProjection: {},
     sink: {
       emitFile: (file) => {

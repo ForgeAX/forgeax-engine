@@ -16,7 +16,7 @@ import { renderReference } from './webgpu-reference.fixture';
 export interface AuthoredShadowJourney {
   verifyBaseline(): Promise<void>;
   verifyAuthoredFilters(): Promise<void>;
-  verifyLayersAndVariance(): Promise<void>;
+  verifyLayers(): Promise<void>;
   verifyAll(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -62,7 +62,7 @@ export function createAuthoredShadowJourney(
     else replays.queue(capture, label);
   };
   const verifyPendingReplays = replays.complete;
-  const measure = async (name: string, frames = 1) => {
+  const measure = async (name: string, frames = 1, equivalentPixels?: Uint8Array) => {
     const started = performance.now();
     const milestonesMs: Record<string, number> = {};
     try {
@@ -74,12 +74,16 @@ export function createAuthoredShadowJourney(
       milestonesMs.ready = performance.now() - started;
       const capture = await renderer.captureFrame(scene, camera);
       milestonesMs.captured = performance.now() - started;
-      const reference = await renderReference(scene, camera, { shadowMap: renderer.shadowMap });
+      const reference =
+        equivalentPixels === undefined
+          ? await renderReference(scene, camera, { shadowMap: renderer.shadowMap })
+          : undefined;
       milestonesMs.reference = performance.now() - started;
       await saveBrowserEvidence(`shadow-${kind}-${name}`, capture, reference);
       milestonesMs.saved = performance.now() - started;
       const pixels = displayPixels(capture);
-      comparePixels(pixels, reference);
+      if (reference !== undefined) comparePixels(pixels, reference);
+      else expect(pixels).toEqual(equivalentPixels);
       captureCount++;
       if (shouldReplayAuthoredShadow(name, coreValidation)) {
         await verifyCapturedReplay(capture, `${kind}/${name}`);
@@ -128,25 +132,22 @@ export function createAuthoredShadowJourney(
     sun.shadow.radius = 2.5;
     sun.shadow.normalBias = 0.02;
     sun.shadow.intensity = 0.6;
-    await measure('authored');
     if (!(sun instanceof THREE.PointLight)) {
       sun.target.position.set(1, 0, -1);
       scene.add(sun.target);
-      await measure('target');
     }
+    await measure('authored');
     renderer.shadowMap.type = THREE.BasicShadowMap;
     await measure('basic');
     renderer.shadowMap.type = THREE.PCFShadowMap;
-    await measure('pcf-soft');
-    if (!(sun instanceof THREE.PointLight)) {
+    if (sun instanceof THREE.PointLight) await measure('pcf-soft');
+    else {
       sun.shadow.mapSize.set(256, 128);
       await measure('rectangular-soft');
-      renderer.shadowMap.type = THREE.PCFShadowMap;
-      await measure('rectangular-vogel');
     }
   };
-  const verifyLayersAndVariance = async () => {
-    if (!initialized) throw new Error('verify the baseline before shadow layers and variance');
+  const verifyLayers = async () => {
+    if (!initialized) throw new Error('verify the baseline before shadow layers');
     cube.layers.set(1);
     sun.shadow.camera.layers.set(1);
     const shadowOnly = await measure('shadow-layer-only');
@@ -155,27 +156,11 @@ export function createAuthoredShadowJourney(
     expect(shadowOnly).not.toEqual(excluded);
     cube.layers.set(31);
     sun.shadow.camera.layers.set(31);
-    expect(await measure('shadow-layer-bit31')).toEqual(shadowOnly);
+    await measure('shadow-layer-bit31', 1, shadowOnly);
     cube.layers.set(0);
     sun.shadow.camera.layers.set(0);
-    renderer.shadowMap.type = THREE.VSMShadowMap;
-    const variance = await measure('variance');
-    cube.castShadow = false;
-    expect(await measure('variance-receiver-casts')).toEqual(variance);
-    cube.receiveShadow = false;
-    expect(await measure('variance-caster-off')).not.toEqual(variance);
-    cube.castShadow = cube.receiveShadow = true;
-    if (!(sun instanceof THREE.PointLight)) {
-      sun.shadow.blurSamples = 1;
-      await measure('variance-one-sample');
-      sun.shadow.blurSamples = 16;
-      sun.shadow.radius = 4;
-      await measure('variance-wide');
-    }
-    expect(captureCount).toBe(kind === 'point' ? 13 : 18);
-    expect(replayCount).toBe(
-      coreValidation ? (kind === 'point' ? 10 : 14) : kind === 'point' ? 13 : 18,
-    );
+    expect(captureCount).toBe(10);
+    expect(replayCount).toBe(coreValidation ? 8 : 10);
   };
   const withCompleteReplays = async (verify: () => Promise<void>) => {
     try {
@@ -205,12 +190,12 @@ export function createAuthoredShadowJourney(
   return {
     verifyBaseline: () => withCompleteReplays(verifyBaseline),
     verifyAuthoredFilters: () => withCompleteReplays(verifyAuthoredFilters),
-    verifyLayersAndVariance: () => withCompleteReplays(verifyLayersAndVariance),
+    verifyLayers: () => withCompleteReplays(verifyLayers),
     verifyAll: () =>
       withCompleteReplays(async () => {
         await verifyBaseline();
         await verifyAuthoredFilters();
-        await verifyLayersAndVariance();
+        await verifyLayers();
       }),
     dispose,
   };

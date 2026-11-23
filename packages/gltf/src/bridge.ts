@@ -23,6 +23,7 @@ import {
   computeTangentVec4,
   meshMaterialSlotsFromTopology,
   packInterleavedVertexAttributes,
+  skinWeightDenominator,
   writeNormalPlaneTangent,
 } from '@forgeax/engine-geometry';
 import type { Mat4 } from '@forgeax/engine-math';
@@ -63,6 +64,7 @@ import type {
   GltfMaterialIr,
   GltfMeshIr,
   GltfPunctualLightIr,
+  GltfSkinWeights,
   GltfTextureInfoIr,
 } from './parse-gltf.js';
 import { GLTF_UV_SET_COUNT, gltfMeshUvSet } from './parse-gltf.js';
@@ -264,7 +266,7 @@ interface MergedMeshStreams {
   readonly tangents: Float32Array;
   readonly colors: Float32Array | undefined;
   readonly skinIndices: Uint16Array | undefined;
-  readonly skinWeights: Float32Array | undefined;
+  readonly skinWeights: GltfSkinWeights | undefined;
   /** uv1..uvN standalone arrays, allocated only for imported sets. */
   readonly uvSets: readonly Float32Array[];
   readonly morphTargets: MorphTarget[];
@@ -285,13 +287,33 @@ function allocateMergedStreams(
     // D-2 / w8: when promoted to a skinned projection, retain canonical
     // standalone arrays; the geometry packer owns the interleaved GPU bytes.
     skinIndices: shape.hasSkin ? new Uint16Array(vertexCount * 4) : undefined,
-    skinWeights: shape.hasSkin ? new Float32Array(vertexCount * 4) : undefined,
+    skinWeights: shape.hasSkin ? allocateMergedWeights(prims, vertexCount * 4) : undefined,
     uvSets: Array.from({ length: shape.extraUvSetCount }, () => new Float32Array(vertexCount * 2)),
     morphTargets: Array.from({ length: shape.morphTargetCount }, (_, targetIndex) =>
       allocateMorphTarget(prims[0]?.morphTargets?.[targetIndex], vertexCount),
     ),
     indices: allocateMergedIndices(shape),
   };
+}
+
+function allocateMergedWeights(prims: readonly GltfMeshIr[], length: number): GltfSkinWeights {
+  let uint16 = false;
+  for (const { weights0 } of prims) {
+    if (weights0 instanceof Float32Array) return new Float32Array(length);
+    if (weights0 instanceof Uint16Array) uint16 = true;
+  }
+  return uint16 ? new Uint16Array(length) : new Uint8Array(length);
+}
+
+function copySkinWeights(
+  target: GltfSkinWeights,
+  source: GltfSkinWeights,
+  offset: number,
+  count: number,
+): void {
+  const scale = skinWeightDenominator(target) / skinWeightDenominator(source);
+  for (let index = 0; index < count; index++)
+    target[offset + index] = (source[index] as number) * scale;
 }
 
 type GltfMorphTargetIr = NonNullable<GltfMeshIr['morphTargets']>[number];
@@ -520,7 +542,7 @@ function copyPrimitiveOptionalStreams(
     mesh.weights0 !== undefined
   ) {
     copyVertexStream(streams.skinIndices, mesh.joints0, vertexCursor * 4, vertexCount * 4);
-    copyVertexStream(streams.skinWeights, mesh.weights0, vertexCursor * 4, vertexCount * 4);
+    copySkinWeights(streams.skinWeights, mesh.weights0, vertexCursor * 4, vertexCount * 4);
   }
   for (let k = 1; k <= streams.uvSets.length; k++) {
     const source = gltfMeshUvSet(mesh, k);

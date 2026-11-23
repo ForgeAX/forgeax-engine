@@ -62,43 +62,50 @@ function ModelingPanel({ host }: { host: ModelingHost }) {
  useEffect(() => { setRendered(undefined); }, [source]);
  // Checkpoint list with previews, refreshed after parameter changes settle (0.5 s).
  useEffect(() => {
-  if (!source) return;
-  let live = true;
+  if (!context.projectId || !source) return;
+  const controller = new AbortController();
+  const { signal } = controller;
   const timer = setTimeout(async () => {
    try {
     setBusy('Inspecting'); setError('');
-    const next = checkpointRows(await host.operations.inspect(source, values));
-    if (!live) return;
+    const next = checkpointRows(await host.operations.inspect(source, values, signal));
+    if (signal.aborted) return;
     setListed({ source, rows: next });
     setSelected(current => (next.some(r => r.key === current) ? current : next[next.length - 1]?.key));
     // One state that cannot render must not hide the previews of the others.
     for (const row of next) {
      try {
-      const out = await host.operations.render({ ...where(row), width: 160, height: 160 });
+      const out = await host.operations.render({ ...where(row), width: 160, height: 160 }, signal);
+      if (signal.aborted) return;
       const url = out.views[0] ? await host.readImage(out.views[0].image) : undefined;
-      if (!live) return;
+      if (signal.aborted) return;
       if (url) setThumbs(t => ({ ...t, [`${source}|${row.key}:${valuesKey}`]: url }));
-     } catch (e) { if (live) setError(`${row.name}: ${message(e)}`); }
+     } catch (e) {
+      if (signal.aborted) return;
+      setError(`${row.name}: ${message(e)}`);
+     }
     }
-   } catch (e) { if (live) setError(message(e)); } finally { if (live) setBusy(''); }
+   } catch (e) { if (!signal.aborted) setError(message(e)); } finally { if (!signal.aborted) setBusy(''); }
   }, 500);
-  return () => { live = false; clearTimeout(timer); };
- }, [host, source, valuesKey]);
+  return () => { controller.abort(); clearTimeout(timer); };
+ }, [host, context.projectId, source, valuesKey]);
  // The selected state in the chosen view, with the synthesized selection highlighted by the real renderer.
  useEffect(() => {
-  if (!source || !state) return;
-  let live = true;
+  if (!context.projectId || !source || !state) return;
+  const controller = new AbortController();
+  const { signal } = controller;
   void (async () => {
    try {
     const selector = report?.expression;
-    const out = await host.operations.render({ ...where(state), views: [view], width: SIZE, height: SIZE, ...(selector ? { selector } : {}) });
+    const out = await host.operations.render({ ...where(state), views: [view], width: SIZE, height: SIZE, ...(selector ? { selector } : {}) }, signal);
+    if (signal.aborted) return;
     const first = out.views[0];
     const url = first ? await host.readImage(first.image) : undefined;
-    if (live && first && url) setRendered({ view: first, url, key: `${state.key}|${view}|${selector ?? ''}|${valuesKey}` });
-   } catch (e) { if (live) setError(message(e)); }
+    if (!signal.aborted && first && url) setRendered({ view: first, url, key: `${state.key}|${view}|${selector ?? ''}|${valuesKey}` });
+   } catch (e) { if (!signal.aborted) setError(message(e)); }
   })();
-  return () => { live = false; };
- }, [host, source, state?.key, view, valuesKey, report?.expression]);
+  return () => controller.abort();
+ }, [host, context.projectId, source, state?.key, view, valuesKey, report?.expression]);
  // A parameter change keeps the selector and re-evaluates it: does it still hit the region?
  useEffect(() => {
   if (!report || !state) { setRecheck(undefined); return; }

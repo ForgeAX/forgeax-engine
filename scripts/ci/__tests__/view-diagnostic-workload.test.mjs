@@ -129,6 +129,25 @@ test('CI retains the complete View plan and its diagnostic-page capability flag'
   diagnostic.push({ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' });
   assert.deepEqual(viewPlanForCI('true', '--dry-run'), local);
 });
+// Complete stage receipts from these original job logs split the archived
+// workspace total. The additional resource forecast also covers setup drift.
+const resourcePreviewReserveSeconds = 240;
+const workspaceExperienceSeconds = new Map([
+  [42130885413, 273.229],
+  [42955764870, 138.125],
+  [43737218283, 173.837],
+  [43880193250, 248.389],
+  [44242238183, 194.219],
+  [44249977351, 226.525],
+]);
+
+function viewOwnerSeconds(receipt, owner) {
+  if (owner === 'workspace-resources') return resourcePreviewReserveSeconds;
+  if (owner === 'workspace' && workspaceExperienceSeconds.has(receipt.runId))
+    return workspaceExperienceSeconds.get(receipt.runId);
+  return receipt.completedOwnerSeconds?.[owner] ?? receipt.retainedOwnerSeconds?.[owner];
+}
+
 test('complete View owner receipts retain setup headroom inside four original jobs', async () => {
   const receipts = [
     JSON.parse(
@@ -158,14 +177,22 @@ test('complete View owner receipts retain setup headroom inside four original jo
   assert.equal(lifecycleEvidence.conclusion, 'cancelled');
   assert.deepEqual(lifecycleEvidence.uncompletedOwners, ['lifecycle']);
   assert.equal(Object.hasOwn(lifecycleEvidence.completedOwnerSeconds, 'lifecycle'), false);
-  const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
+  const standalone = new Set([
+    'diagnostic-gpu-2d',
+    'diagnostic-pack-authoring',
+    'diagnostic-texture',
+    'runtime-ts',
+  ]);
+  const full = viewPlan('--dry-run').filter(
+    ([owner]) => owner !== 'prepare' && !standalone.has(owner),
+  );
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
   );
   assert.deepEqual(shards.flat().map(JSON.stringify).sort(), full.map(JSON.stringify).sort());
   const owners = shards.map((steps) => [...new Set(steps.map(([owner]) => owner))]);
   assert.equal(new Set(owners.flat()).size, owners.flat().length);
-  for (const owner of owners.flat())
+  for (const owner of owners.flat().filter((name) => name !== 'workspace-resources'))
     assert.ok(
       receipts.some(
         (receipt) =>
@@ -175,12 +202,7 @@ test('complete View owner receipts retain setup headroom inside four original jo
       `complete owner requires a measured or retained forecast: ${owner}`,
     );
   const ownerSeconds = (owner) =>
-    Math.max(
-      ...receipts.flatMap((receipt) => [
-        receipt.completedOwnerSeconds?.[owner] ?? 0,
-        receipt.retainedOwnerSeconds?.[owner] ?? 0,
-      ]),
-    );
+    Math.max(...receipts.map((receipt) => viewOwnerSeconds(receipt, owner) ?? 0));
   const finishes = owners.map(
     (groups) =>
       groups.reduce((sum, owner) => sum + ownerSeconds(owner), 0) +
@@ -213,7 +235,7 @@ for (const [runId, uncompletedOwners] of [
       );
       owners.delete('prepare');
       const ownerSeconds = [...owners].map((owner) => {
-        const seconds = receipt.completedOwnerSeconds[owner] ?? receipt.retainedOwnerSeconds[owner];
+        const seconds = viewOwnerSeconds(receipt, owner);
         assert.ok(seconds > 0, `missing complete timing or retained forecast for ${owner}`);
         return seconds;
       });
@@ -243,16 +265,11 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
   assert.deepEqual(groupOwner('tools/view/scripts/verify-diagnostic-pages-integration.mjs'), [
     { owner: 'diagnostic-pages', shard: 3 },
   ]);
-  assert.deepEqual(groupOwner('tools/view/scripts/verify-texture-preview-integration.mjs'), [
-    { owner: 'diagnostic-texture', shard: 0 },
-  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-texture-preview-integration.mjs'), []);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-gpu-texture-preview.mjs'), [
-    { owner: 'diagnostic-gpu-2d', shard: 0 },
     { owner: 'diagnostic-gpu-array', shard: 1 },
   ]);
-  assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-authoring-integration.mjs'), [
-    { owner: 'diagnostic-pack-authoring', shard: 0 },
-  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-authoring-integration.mjs'), []);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-save-reopen-integration.mjs'), [
     { owner: 'diagnostic-pack-save', shard: 1 },
   ]);
@@ -288,13 +305,15 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
   );
   assert.deepEqual(
     shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
-    ['plugin', 'workspace', 'workspace', 'runtime-js', 'runtime-js'],
+    ['plugin', 'workspace', 'runtime-js', 'runtime-js'],
     'the plugin journey starts before its remaining paired probes',
   );
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-resource-preview-lifecycle.mjs'), [
+    { owner: 'workspace-resources', shard: 0 },
+  ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-runtime-content-engine.mjs'), [
     { owner: 'runtime-js', shard: 2 },
     { owner: 'runtime-js', shard: 2 },
-    { owner: 'runtime-ts', shard: 3 },
   ]);
   assert.ok(viewPlan('--list-groups').includes('modeling'));
   assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);

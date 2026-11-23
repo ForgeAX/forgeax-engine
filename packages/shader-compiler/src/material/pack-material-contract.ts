@@ -20,9 +20,12 @@ export function supportsMaterialViewClipping(module: string): boolean {
   );
 }
 
-export function supportsMaterialLodCoverage(pass: MaterialCookedPass): boolean {
+export function supportsMaterialLodCoverage(
+  pass: MaterialCookedPass,
+  sceneIndexAvailable = pass.sceneCompile !== undefined,
+): boolean {
   return (
-    pass.sceneCompile !== undefined &&
+    sceneIndexAvailable &&
     pass.context.capability !== 'uniform-fallback' &&
     (pass.context.geometry === 'mesh' || pass.context.geometry === 'skinned') &&
     (pass.module === 'forgeax::default-shadow-caster' ||

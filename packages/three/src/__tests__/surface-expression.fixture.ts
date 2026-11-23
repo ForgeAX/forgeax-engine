@@ -17,6 +17,7 @@ export async function verifySurfaceExpression(
     capture: THREE.ThreeFrameCapture,
     label: string,
   ) => void | Promise<unknown> = verifyReplay,
+  retainedDraws = false,
 ) {
   const example = surfaceExpressionExample(kind);
   THREE.bindThreeSurface(example.material, publication.recipe).unwrap();
@@ -52,6 +53,53 @@ export async function verifySurfaceExpression(
     await readyFrames(renderer, scene, camera, 60);
     const first = await renderer.captureFrame(scene, camera);
     await evidence(`${kind}-initial`, first);
+    if (retainedDraws) {
+      const stop = THREE.enableThreeSourceTracking();
+      const glass = new THREE.MeshBasicMaterial({ transparent: true });
+      const fixed = Array.from({ length: 12 }, (_, i) => {
+        const object = new THREE.Mesh(geometry, glass);
+        object.position.x = 10 + i;
+        object.frustumCulled = false;
+        return object;
+      });
+      stop();
+      scene.add(...fixed);
+      if (kind === 'unlit') mesh.renderOrder = 5;
+      THREE.setThreeSceneTracking(scene, true);
+      const originalAmount = example.amount.value;
+      try {
+        await readyFrames(renderer, scene, camera, 3);
+        const retained = renderer.inspect().sourceWork;
+        expect(retained).toMatchObject({
+          mode: 'tracked',
+          viewBindings: 1,
+          meshPlans: kind === 'standard' ? 1 : 0,
+          ...(kind === 'unlit' ? { materialUses: 0 } : {}),
+        });
+        // The twelve ordinary meshes use the native resident path. The
+        // cooked draw is retained separately through its observed bindings.
+        expect(retained?.residentNodes).toBeGreaterThanOrEqual(fixed.length);
+        expect(
+          equalBytes(
+            displayPixels(await renderer.captureFrame(scene, camera)),
+            displayPixels(first),
+          ),
+        ).toBe(true);
+        example.amount.value = 0.8;
+        if (kind === 'unlit') {
+          await readyFrames(renderer, scene, camera, 1);
+          expect(renderer.inspect().sourceWork).toMatchObject({ meshPlans: 0, materialUses: 0 });
+        }
+        const changed = displayPixels(await renderer.captureFrame(scene, camera));
+        expect(equalBytes(changed, displayPixels(first))).toBe(false);
+      } finally {
+        example.amount.value = originalAmount;
+        THREE.setThreeSceneTracking(scene, false);
+        mesh.renderOrder = 0;
+        scene.remove(...fixed);
+        glass.dispose();
+      }
+    }
     if (kind === 'standard') {
       sun.castShadow = false;
       await readyFrames(renderer, scene, camera, 1);

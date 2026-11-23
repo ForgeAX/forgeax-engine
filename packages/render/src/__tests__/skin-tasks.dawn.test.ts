@@ -4,11 +4,15 @@ import { SkinTasks } from '../record/skin-tasks';
 import { skinTaskFixture } from './skin-task-fixture';
 
 it.each([
-  false,
-  true,
-])('consumes the paired current/previous actual task buffers after same-record growth (storage=%s)', async (storage) => {
+  { storage: false, affinePoint: false },
+  { storage: true, affinePoint: false },
+  { storage: false, affinePoint: true },
+])('consumes current/previous Skin task buffers after growth (storage=$storage, affinePoint=$affinePoint)', async ({
+  storage,
+  affinePoint,
+}) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap(),
-    f = skinTaskFixture(),
+    f = skinTaskFixture(1, undefined, affinePoint),
     tasks = new SkinTasks(device, storage);
   const output = device.createBuffer({ size: 32, usage: 132 }).unwrap(),
     readback = device.createBuffer({ size: 32, usage: 9 }).unwrap();
@@ -16,11 +20,22 @@ it.each([
     await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     f.matrix[12] = 5;
     f.skin.joint(19, f.matrix);
+    if (affinePoint) {
+      const moved = f.matrix.slice();
+      moved[12] = 11;
+      f.scene.apply(
+        [f.first, f.second].map(({ entityKey, snapshot }) => ({
+          kind: 'update',
+          entityKey,
+          snapshot: { ...snapshot, transform: { world: moved } },
+        })),
+      );
+    }
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (!frame) throw new Error('Missing current fixed root');
     tasks.begin(frame);
-    const first = tasks.demand(f.first),
-      second = tasks.demand(f.second);
+    const first = tasks.demand(frame.slots.lookup(17) ?? f.first),
+      second = tasks.demand(frame.slots.lookup(23) ?? f.second);
     if (!first || !second) throw new Error('Missing actual Skin task data');
     const code =
       (storage
@@ -32,8 +47,12 @@ fn sampleTask()->vec4<f32>{let descriptor=data[address.y+data[address.x].x];retu
         : `
 struct Current { joints:array<mat4x4<f32>,255>,state:vec4<u32> }
 @group(0) @binding(0) var<uniform> current:Current;
-@group(0) @binding(1) var<uniform> previous:array<mat4x4<f32>,255>;
-fn sampleTask()->vec4<f32>{return vec4<f32>(current.joints[0][3].x,previous[0][3].x,f32(current.state.x),f32(current.state.y));}
+struct Previous { joints:array<mat4x4<f32>,255>,meshTranslation:vec4<f32> }
+@group(0) @binding(1) var<uniform> previous:Previous;
+fn sampleTask()->vec4<f32>{
+  let affinePoint = (current.state.y & 4u) != 0u;
+  return vec4<f32>(current.joints[0][3].x,previous.joints[0][3].x,select(f32(current.state.x),previous.meshTranslation.x,affinePoint),f32(current.state.y));
+}
 `) +
       `
 @group(0) @binding(2) var<storage,read_write> result:array<vec4<f32>>;
@@ -110,7 +129,14 @@ fn sampleTask()->vec4<f32>{return vec4<f32>(current.joints[0][3].x,previous[0][3
     const mapped = (await readback.mapAsync(1)).unwrap();
     try {
       expect(Array.from(new Float32Array(mapped.getMappedRange().unwrap()))).toEqual([
-        5, 3, 1, 3, 5, 3, 1, 3,
+        5,
+        3,
+        affinePoint ? 2 : 1,
+        affinePoint ? 7 : 3,
+        5,
+        3,
+        affinePoint ? 2 : 1,
+        affinePoint ? 7 : 3,
       ]);
     } finally {
       mapped.unmap();

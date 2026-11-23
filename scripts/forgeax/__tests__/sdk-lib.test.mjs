@@ -1048,9 +1048,7 @@ describe('SDK verifier template contract', () => {
     );
     const layoutCheck = source.slice(
       source.indexOf('const projectManifestPath ='),
-      source.indexOf(
-        "await readFile(resolve(project, 'assets', 'world', 'world.scene.pack.json'))",
-      ),
+      source.indexOf("resolve(project, 'assets', 'world', 'world.scene.pack.json')"),
     );
     expect(template).toMatchObject({
       schemaVersion: '3.0.0',
@@ -1075,6 +1073,7 @@ describe('SDK verifier template contract', () => {
     expect(projectLayout).toContain("starterTest: 'assets/__tests__/empty-project.test.ts'");
     expect(projectLayout).not.toContain('entry: projectManifest.entry');
     expect(source).toContain('sdk-empty-authored-scene-not-empty');
+    expect(source).toMatch(/world\.scene\.pack\.json'\),\s*'direct-pack'/);
     expect(source).not.toContain('sdk-empty-authored-camera-missing');
     expect(source).toContain("retiredPath of ['src', 'src/main.ts', 'src/__tests__']");
   });
@@ -1149,10 +1148,21 @@ describe('SDK verifier template contract', () => {
     ).replaceAll(`\${gameProjectionSource}`, gameProjectionSource);
     expect(source).toContain('const gameProjectionDefinitions = new Map();');
     expect(source).toMatch(/globalThis\.__forgeaxGameInspection\s*=/);
-    // Release builds keep a read-only projection for `project play --release`;
-    // the clock and time scale stay development-only.
+    // Release builds share the inspection owner while keeping game projections
+    // readable and leaving time controls to development hosts.
     expect(source).toMatch(/\n\s+gameProjection,\n/);
-    expect(source).toContain('globalThis.__forgeaxGameInspection = releaseInspection;');
+    const ownerStart = source.indexOf(
+      'const localInspection = globalThis.__forgeaxGameInspection;',
+    );
+    const ownerEnd = source.indexOf("'devkit/host-release-inspection');", ownerStart);
+    expect(ownerStart).toBeGreaterThanOrEqual(0);
+    expect(ownerEnd).toBeGreaterThan(ownerStart);
+    const owner = source.slice(ownerStart, ownerEnd);
+    expect(owner).toContain('const inspection = createGameInspection(app, {');
+    expect(owner).toContain('list: async () => {');
+    expect(owner).toContain('read: (id: string) => {');
+    expect(owner).toContain('}, rendererErrors === undefined ? undefined : {');
+    expect(owner).toContain('globalThis.__forgeaxGameInspection = inspection;');
     expect(source).toContain(
       "if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };",
     );

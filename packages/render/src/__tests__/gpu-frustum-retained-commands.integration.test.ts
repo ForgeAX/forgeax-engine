@@ -58,7 +58,11 @@ it.each([
   const profiler = createProfiler();
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
-    { profiler, standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
+    {
+      profiler,
+      retainIndirectBundles: true,
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true },
+    },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
     {
       rhi,
@@ -115,7 +119,10 @@ it.each([
     }
     expect(errors).toEqual([]);
     const phaseCapture = profiler.latestCapture();
-    expect(phaseCapture?.completeness.status).toBe('complete');
+    expect(
+      phaseCapture?.completeness.status,
+      JSON.stringify(phaseStarted.value.firstSourceFailure() ?? phaseCapture?.completeness),
+    ).toBe('complete');
     expect(
       phaseCapture?.records.some(
         (row) => row.kind === 'phase' && row.phase.endsWith('/groups/key'),
@@ -175,7 +182,7 @@ it('re-encodes in proportion to edited batches, not to the batch count', async (
   for (const count of [64, 512]) {
     const renderer = await createRenderer(
       { width: 64, height: 64, getContext: () => null },
-      {},
+      { retainIndirectBundles: true },
       {
         shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
       },

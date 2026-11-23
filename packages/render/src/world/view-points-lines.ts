@@ -4,7 +4,7 @@ import { RendererOperationError } from '../errors/render';
 import { pointsLinesRowKey, StandardPointsLinesOwner } from '../points-lines/standard-owner';
 import type { PointsLinesPreparedRows, RenderSystemInternals } from '../record/render-context';
 import { renderSubmission, renderWorldFor } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewState } from './view-field';
 
 /** The view's Points/Lines preparation cache; it lives and dies with the view entity. */
 export const ViewPointsLines = defineComponent('ViewPointsLines', {
@@ -30,12 +30,7 @@ export function viewPointsLines(
   world: World,
   entity: EntityHandle | undefined,
 ): StandardPointsLinesOwner | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewPointsLines)) return undefined;
-  return world
-    .resolveUniqueRef<StandardPointsLinesOwner>(
-      requireViewField(world, entity, ViewPointsLines, 'state'),
-    )
-    .unwrap();
+  return readViewState<StandardPointsLinesOwner>(world, entity, ViewPointsLines);
 }
 
 /** Resolve the owner behind a `ViewPointsLines.state` handle read by a system. */

@@ -298,6 +298,7 @@ async function generatedHost(
     },
     enginePrograms: () => ({}),
     runtimeBinding: { scopeId: 'native-recovery' },
+    authored: [],
     imports: {},
     programHost: {},
     inputBackendPlugin: () => ({}),

@@ -105,29 +105,36 @@ function frozenOnce(
   return output;
 }
 
-function sorted(value: unknown): unknown {
-  return frozenOnce(sortedFrozen, value, sortedValue);
+function jsonProjection(
+  cache: WeakMap<object, unknown>,
+  bytes: (value: Uint8Array) => unknown,
+  object: (value: Record<string, unknown>, project: (item: unknown) => unknown) => unknown,
+): (item: unknown) => unknown {
+  const transform = (value: unknown): unknown => {
+    if (value instanceof Uint8Array) return bytes(value);
+    // Preserve scalar array backing instead of cloning large mesh payloads.
+    if (Array.isArray(value))
+      return Object.hasOwn(value, 'toJSON') ||
+        value.some((item) => item !== null && typeof item === 'object')
+        ? value.map(project)
+        : value;
+    return value !== null && typeof value === 'object'
+      ? object(value as Record<string, unknown>, project)
+      : value;
+  };
+  const project = (item: unknown) => frozenOnce(cache, item, transform);
+  return project;
 }
 
-function sortedValue(value: unknown): unknown {
-  if (value instanceof Uint8Array) return Buffer.from(value).toString('base64');
-  if (Array.isArray(value)) {
-    // Portable scalar arrays already have canonical order. Keep the original
-    // backing store instead of cloning large mesh payloads for serialization.
-    return Object.hasOwn(value, 'toJSON') ||
-      value.some((item) => item !== null && typeof item === 'object')
-      ? value.map(sorted)
-      : value;
-  }
-  if (value !== null && typeof value === 'object') {
+const sorted = jsonProjection(
+  sortedFrozen,
+  (value) => Buffer.from(value).toString('base64'),
+  (value, project) => {
     const output: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      output[key] = sorted((value as Record<string, unknown>)[key]);
-    }
+    for (const key of Object.keys(value).sort()) output[key] = project(value[key]);
     return output;
-  }
-  return value;
-}
+  },
+);
 
 const JSON_CHUNK_SIZE = 48 * 1024;
 
@@ -564,40 +571,23 @@ function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function revisionStable(value: unknown, digestBytes: (bytes: Uint8Array) => string): unknown {
-  // Deep-frozen JSON holds no bytes, so its stable form does not depend on the digest.
-  return frozenOnce(revisionStableFrozen, value, (item) => revisionStableValue(item, digestBytes));
-}
-
-function revisionStableValue(value: unknown, digestBytes: (bytes: Uint8Array) => string): unknown {
-  if (value instanceof Uint8Array) {
-    return {
-      byteLength: value.byteLength,
-      digest: digestBytes(value),
-    };
-  }
-  if (Array.isArray(value)) {
-    return Object.hasOwn(value, 'toJSON') ||
-      value.some((item) => item !== null && typeof item === 'object')
-      ? value.map((item) => revisionStable(item, digestBytes))
-      : value;
-  }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, revisionStable(item, digestBytes)]),
-    );
-  }
-  return value;
-}
-
 export function packageTransportRevision(value: unknown): string {
   return transportRevision(value, sha256);
 }
 
 function transportRevision(value: unknown, digestBytes: (bytes: Uint8Array) => string): string {
   const hash = createHash('sha256');
-  writeJson(revisionStable(value, digestBytes), (chunk) => hash.update(chunk));
+  // Deep-frozen JSON holds no bytes, so its cached projection is digest-independent.
+  const project = jsonProjection(
+    revisionStableFrozen,
+    (bytes) => ({ byteLength: bytes.byteLength, digest: digestBytes(bytes) }),
+    (record, apply) =>
+      Object.fromEntries(
+        Object.entries(record)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, item]) => [key, apply(item)]),
+      ),
+  );
+  writeJson(project(value), (chunk) => hash.update(chunk));
   return hash.digest('hex');
 }

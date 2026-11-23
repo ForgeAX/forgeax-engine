@@ -20,6 +20,7 @@ function fixture() {
   const fallback: SkylightFallback = {
     irradianceTexture: handle<Texture>('fallback-irr-tex'),
     irradianceView: handle<TextureView>('fallback-irr'),
+    skySh: handle<Buffer>('fallback-sky-sh'),
     prefilterTexture: handle<Texture>('fallback-pref-tex'),
     prefilterView: handle<TextureView>('fallback-pref'),
     brdfLutTexture: handle<Texture>('fallback-brdf-tex'),
@@ -49,7 +50,7 @@ function fixture() {
   };
   const ready = () => {
     cache = {
-      irradianceView: handle<TextureView>('ready-irr'),
+      skySh: handle<Buffer>('ready-sky-sh'),
       prefilterView: handle<TextureView>('ready-pref'),
       brdfLutView: handle<TextureView>('ready-brdf'),
     } as IblPrecomputeOutput;
@@ -95,7 +96,7 @@ describe('material Skylight explicit-image availability', () => {
     const f = fixture();
     const result = f.resolve(f.image);
     expect(result.activeViews).toBeUndefined();
-    expect(result.skylightResources.irradianceView).toBe(f.fallback.irradianceView);
+    expect(result.skylightResources.skySh).toBe(f.fallback.skySh);
     expect(result.skylightResources.prefilterView).toBe(f.fallback.prefilterView);
     expect(result.skylightResources.brdfLutView).toBe(f.fallback.brdfLutView);
     expect(f.payload()).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
@@ -117,7 +118,7 @@ describe('material Skylight explicit-image availability', () => {
   it('retains positive solid-color ambient without an authored image', () => {
     const f = fixture();
     const result = f.resolve({ ...f.image, equirectHandle: 0 });
-    expect(result.skylightResources.irradianceView).toBe(f.fallback.irradianceView);
+    expect(result.skylightResources.skySh).toBe(f.fallback.skySh);
     expect(f.payload()).toEqual([2, 0.25, 0.5, 0.75, 0, 0, 0, 1]);
   });
 
@@ -125,7 +126,7 @@ describe('material Skylight explicit-image availability', () => {
     const f = fixture();
     f.ready();
     const result = f.resolve(f.image);
-    expect(result.skylightResources.irradianceView).toBe(f.cache?.irradianceView);
+    expect(result.skylightResources.skySh).toBe(f.cache?.skySh);
     expect(result.skylightResources.prefilterView).toBe(f.cache?.prefilterView);
     expect(result.skylightResources.brdfLutView).toBe(f.cache?.brdfLutView);
     expect(f.payload()).toEqual([2, 0.25, 0.5, 0.75, 0, 0, 0, 1]);
@@ -134,11 +135,11 @@ describe('material Skylight explicit-image availability', () => {
   it('retains the no-image graph environment and positive uniform', () => {
     const f = fixture();
     const environment = {
-      irradiance: handle<TextureView>('graph-irr'),
+      skySh: handle<Buffer>('graph-sky-sh'),
       prefilter: handle<TextureView>('graph-pref'),
     };
     const result = f.resolve({ ...f.image, equirectHandle: 0 }, 1, environment);
-    expect(result.skylightResources.irradianceView).toBe(environment.irradiance);
+    expect(result.skylightResources.skySh).toBe(environment.skySh);
     expect(result.skylightResources.prefilterView).toBe(environment.prefilter);
     expect(result.skylightResources.brdfLutView).toBe(f.fallback.brdfLutView);
     expect(f.payload()[0]).toBe(2);
@@ -147,10 +148,10 @@ describe('material Skylight explicit-image availability', () => {
   it('does not use the no-image graph environment for an unavailable explicit image', () => {
     const f = fixture();
     const result = f.resolve(f.image, 1, {
-      irradiance: handle<TextureView>('graph-irr'),
+      skySh: handle<Buffer>('graph-sky-sh'),
       prefilter: handle<TextureView>('graph-pref'),
     });
-    expect(result.skylightResources.irradianceView).toBe(f.fallback.irradianceView);
+    expect(result.skylightResources.skySh).toBe(f.fallback.skySh);
     expect(f.payload()[0]).toBe(0);
   });
 

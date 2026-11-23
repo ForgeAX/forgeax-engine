@@ -248,3 +248,68 @@ it('holds exact native import texture currency even when every view is supplied 
     device.destroyTexture(second).unwrap();
   }
 });
+
+it('checks liveness at native preparation boundaries independently of ordinary pass count', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const workFor = (ordinary: number) => {
+    const builder = new RenderGraphBuilder();
+    const encodeDirect = () => {};
+    for (let index = 0; index < ordinary; index++)
+      builder.addCopyPass(String(index), { accesses: [], encodeDirect }).unwrap();
+    const ready = vi.fn(() => true);
+    const recipe = vi.fn();
+    builder
+      .addComputePass('native', {
+        accesses: [],
+        encodeDirect,
+        preparedResourcesCurrent: ready,
+        *prepareResources() {
+          recipe();
+          yield;
+        },
+      })
+      .unwrap();
+    const graph = builder.compile({ device, surfaceSize: { width: 8, height: 8 } }).unwrap();
+    const current = vi.fn(() => true);
+    const steps = graph.prepareResources(current);
+    expect(steps.next().done).toBe(false);
+    expect(steps.next()).toEqual({ done: true, value: ok(undefined) });
+    expect(graph.preparedResourcesCurrent()).toBe(true);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(recipe).toHaveBeenCalledOnce();
+    graph.retire();
+    return current.mock.calls.length;
+  };
+  expect(workFor(1024)).toBe(workFor(0));
+});
+
+it('prepares an ordered command stage before issuing any of its frame commands', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const builder = new RenderGraphBuilder();
+  let prepared = false;
+  const commands = vi.fn();
+  const descriptor = {
+    accesses: [],
+    commands,
+    preparedResourcesCurrent() {
+      return prepared;
+    },
+    *prepareResources() {
+      yield;
+      prepared = true;
+    },
+  };
+  builder.addSubgraphPass('ordered', descriptor).unwrap();
+  const graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+  try {
+    expect(graph.preparedResourcesCurrent()).toBe(false);
+    const steps = graph.prepareResources(() => true);
+    expect(steps.next().done).toBe(false);
+    expect(graph.preparedResourcesCurrent()).toBe(false);
+    expect(steps.next().done).toBe(true);
+    expect(graph.preparedResourcesCurrent()).toBe(true);
+    expect(commands).not.toHaveBeenCalled();
+  } finally {
+    await graph.retire();
+  }
+});

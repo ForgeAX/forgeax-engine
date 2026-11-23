@@ -14,6 +14,24 @@ test('paged membership answers has, size and ascending order across word and pag
   expect(FrameSet.from(KEYS).size).toBe(KEYS.length);
 });
 
+test('the producer cannot mutate published membership or retain a failed writer', () => {
+  let write: ((key: number) => void) | undefined;
+  const first = FrameSet.collect((add) => {
+    write = add;
+    add(31);
+  });
+  expect(() => write?.(32)).toThrow('collection has ended');
+  expect(first.size).toBe(1);
+  expect(first.has(32)).toBe(false);
+  expect(() =>
+    FrameSet.collect((add) => {
+      write = add;
+      add(-1);
+    }),
+  ).toThrow(RangeError);
+  expect(() => write?.(31)).toThrow('collection has ended');
+});
+
 test('additions and removals keep earlier frames and report exactly the flipped keys', () => {
   const before = FrameSet.from(KEYS);
   const after = before.without(31).without(1024).with(5).with(2047).with(70_001);

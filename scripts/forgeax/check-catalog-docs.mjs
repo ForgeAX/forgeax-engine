@@ -32,7 +32,6 @@ const engineDocuments = [
       'stale',
       'unknown',
       'inspect(guid)',
-      'verifyByGuid(guid)',
     ],
   ],
   [
@@ -40,7 +39,7 @@ const engineDocuments = [
     [
       'pluginPack',
       'reloadAssetHost()',
-      'createCatalogClient',
+      'createCatalogHotSubscription',
       'producerReadiness',
       'runtimeBinding',
       'sourceKey',
@@ -64,7 +63,7 @@ const engineDocuments = [
       'subscribeCatalog',
       'enumerateCatalog',
       'pluginPack',
-      'createCatalogClient',
+      'createCatalogHotSubscription',
       'reloadAssetHost()',
       'runtimeBinding',
       'generation',
@@ -318,7 +317,7 @@ async function checkVitePluginPackSurface(root) {
   for (const token of [
     'pluginPack',
     'reloadAssetHost()',
-    'createCatalogClient',
+    'createCatalogHotSubscription',
     'producerReadiness',
     'runtimeBinding',
     'sourceKey',

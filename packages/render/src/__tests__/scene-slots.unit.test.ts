@@ -1,6 +1,6 @@
 import { assert, expect, test, vi } from 'vitest';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { setSceneRow } from '../scene/__tests__/scene-row-writes';
+import { sceneSnapshot, setSceneRow } from '../scene/__tests__/scene-row-writes';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { SceneRows } from '../scene/scene-rows';
 import { RowViews, SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
@@ -77,6 +77,23 @@ test('keeps returned rows and matrix windows fixed across repeated pending write
   expect(captured.slotAt(0)?.snapshot.transform.world[12]).toBe(31);
   expect(firstPose[12]).toBe(0);
   expect(secondPose[12]).toBe(17);
+});
+
+test('an issued row keeps its original eight-row pose chunk before anyone asks for its matrix', () => {
+  const slots = new SceneSlots();
+  const slot = 13;
+  const held = setSceneRow(slots, slot, record(slot));
+  assert(held);
+  const pose = new Float32Array(16);
+  pose[12] = 31;
+  const second = slots.writePose(slot, pose);
+  pose[12] = 77;
+  const third = slots.writePose(slot, pose);
+  expect(held.snapshot.transform.world[12]).toBe(0);
+  expect(second.snapshot.transform.world[12]).toBe(31);
+  expect(third.snapshot.transform.world[12]).toBe(77);
+  expect(second.snapshot.transform.world).toHaveLength(16);
+  expect(second.snapshot.transform.world).toBe(second.snapshot.transform.world);
 });
 
 test('cycling pose edits keep current row observations within a bounded matrix backing budget', () => {
@@ -225,7 +242,7 @@ test('quiet publication reads keep row identity without rebuilding a per-row map
     Array.from({ length: 1000 }, (_, entityKey) => ({
       kind: 'update' as const,
       entityKey,
-      snapshot: { entityKey, transform: { world: pose } } as RenderableSnapshot,
+      snapshot: sceneSnapshot(entityKey, pose),
     })),
   );
   const frame = rows.capture();
@@ -288,10 +305,7 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     return {
       kind: 'update' as const,
       entityKey,
-      snapshot: {
-        entityKey,
-        transform: { world: pose },
-      } as RenderableSnapshot,
+      snapshot: sceneSnapshot(entityKey, pose),
     };
   });
   rows.apply(operations, [], true);
@@ -322,7 +336,7 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
 test('numeric pose admission respects prior staged edits, selected offsets and late identities', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { entityKey: 5, transform: { world: pose } } as RenderableSnapshot;
+  const snapshot = sceneSnapshot(5, pose);
   rows.apply([{ kind: 'update', entityKey: 5, snapshot }], [], true);
   const old = rows.capture().slotAt(0);
   const moved = pose.slice();
@@ -370,7 +384,7 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
 test('numeric pose admission reports parity changes and preserves strict NaN comparisons', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { entityKey: 1, transform: { world: pose } } as RenderableSnapshot;
+  const snapshot = sceneSnapshot(1, pose);
   rows.apply([{ kind: 'update', entityKey: 1, snapshot }], [], true);
   const before = rows.capture();
   const mirrored = pose.slice();
@@ -397,10 +411,7 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
       {
         kind: 'update',
         entityKey: 1,
-        snapshot: {
-          entityKey: 1,
-          transform: { world: pose },
-        } as RenderableSnapshot,
+        snapshot: sceneSnapshot(1, pose),
       },
     ],
     [],

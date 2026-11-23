@@ -69,6 +69,6 @@ export {
 } from './standard-schema.js';
 export * from './static-switches.js';
 export * from './surface-model.js';
-export { TERRAIN_MATERIAL_PARAMETERS } from './terrain-schema.js';
+export { TERRAIN_MATERIAL_PARAMETERS, TERRAIN_WEIGHT_DETAIL_PARAMETERS } from './terrain-schema.js';
 
 export { unlitMaterialParameters } from './unlit-parameters';

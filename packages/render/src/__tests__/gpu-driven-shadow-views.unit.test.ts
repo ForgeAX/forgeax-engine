@@ -585,7 +585,11 @@ describe('GPU-driven shadow view owner contract', () => {
       matrix ?? mat4.identity(mat4.create()),
     );
     const apply = (entity: number, x: number) => {
-      const value = preparedPbrSnapshot({ ...placed(entity, x), assetHandle: entity + 3 });
+      const value = preparedPbrSnapshot({
+        ...placed(entity, x),
+        mobility: 'static',
+        assetHandle: entity + 3,
+      });
       scene
         .sync(projection.apply([updateSnapshot(value)]), undefined, (slot) =>
           projection.cullingWorldBoundsAt(slot),

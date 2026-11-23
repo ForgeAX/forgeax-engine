@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseGltf, toMaterialAsset } from '@forgeax/engine-gltf';
+import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const files = ['material-transmission.pack.json', 'material-transmission-gltf.pack.json'];
@@ -14,12 +15,13 @@ const expected = toMaterialAsset(parsed.value.materials[0]).values;
 
 const entries = [];
 for (const file of files) {
-  const pack = JSON.parse(await readFile(resolve(root, 'assets', file), 'utf8'));
-  if (pack.kind !== 'internal-text-package' || !Array.isArray(pack.assets) || pack.assets.length !== 1) {
-    throw new Error(`${file}: expected one internal-text-package asset`);
+  const pack = parsePackSourceJson(JSON.parse(await readFile(resolve(root, 'assets', file), 'utf8'))).unwrap();
+  if (pack.format !== 'direct') {
+    throw new Error(`${file}: expected a direct authoring Pack`);
   }
-  const asset = pack.assets[0];
-  if (asset.kind !== 'material' || asset.payload?.passes?.[0]?.program?.module !== 'forgeax::default-standard-pbr') {
+  const { assets } = projectDirectPackJson(pack);
+  const asset = assets[0];
+  if (assets.length !== 1 || asset?.kind !== 'material' || asset.payload?.passes?.[0]?.program?.module !== 'forgeax::default-standard-pbr') {
     throw new Error(`${file}: not a Standard material producer payload`);
   }
   const expectedValues = file === 'material-transmission-gltf.pack.json'

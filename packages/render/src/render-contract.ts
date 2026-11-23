@@ -194,6 +194,8 @@ export interface ResolvedViewCamera {
 
 export interface CameraSnapshot {
   readonly cullMask?: number;
+  /** Sort the direct opaque phase by render Layer in this view. */
+  readonly orderOpaqueByLayer?: boolean;
   readonly projectedDecals?: readonly import('./decals/extract').ProjectedDecalSnapshot[];
   /** Public world-space per-view clipping; captures carry their own detached value. */
   readonly clipping?: import('@forgeax/engine-types').ClippingOptions;
@@ -414,12 +416,14 @@ interface RenderPipelineRuntime {
   readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
   readonly viewEntity?: import('@forgeax/engine-ecs').EntityHandle | undefined;
   readonly lookupPostProcess?: (id: string) => PostProcessShaderEntry | undefined;
-  readonly getPostProcessParamsBuffer?: (id: string) => Buffer | undefined;
+  /** Reserve a distinct uniform for each write before submission. A lookup only reads the declaration. */
+  readonly getPostProcessParamsBuffer?: (id: string, access?: 'write') => Buffer | undefined;
   readonly getPostProcessPipeline?: (
     id: string,
     bgl: BindGroupLayout,
     colorFormats: readonly GPUTextureFormat[],
     entry?: PostProcessShaderEntry,
+    fragmentEntryPoint?: string,
   ) => RhiRenderPipeline | null;
 }
 
@@ -546,9 +550,7 @@ export interface SsrShaderSources {
   readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
   readonly composeFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly traceFragment?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly temporalFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly trace: string | import('@forgeax/engine-types').ShaderSource;
-  readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
   readonly compose: string | import('@forgeax/engine-types').ShaderSource;
 }
 
@@ -557,7 +559,6 @@ export interface AtmosphereShaderSources {
   readonly lutsFragment: string | import('@forgeax/engine-types').ShaderSource;
   readonly luts: string | import('@forgeax/engine-types').ShaderSource;
   readonly compose: string | import('@forgeax/engine-types').ShaderSource;
-  readonly ibl: string | import('@forgeax/engine-types').ShaderSource;
   readonly prefilter: string | import('@forgeax/engine-types').ShaderSource;
   readonly cube: string | import('@forgeax/engine-types').ShaderSource;
   readonly background: string | import('@forgeax/engine-types').ShaderSource;
@@ -793,6 +794,11 @@ export interface Renderer {
   inspect<K extends keyof RenderInspection = keyof RenderInspection>(
     options?: RenderInspectionOptions<K>,
   ): Pick<RenderInspection, K>;
+  /** Pick the visible static scene on a subsequent ready display frame. */
+  requestViewportHit?: (
+    request: import('./viewport-hit').ViewportHitRequest,
+    signal?: AbortSignal,
+  ) => Promise<import('./viewport-hit').ViewportHitResult>;
   /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
   observeGeometry?: (
     receipt: FrameReceipt,
@@ -897,7 +903,7 @@ export interface FrameObservationRequest {
  * this exact receipt; a recovery retry must obtain a new one.
  */
 export interface FrameReceipt {
-  /** Revision of the graph that recorded this scene, absent for UI-only submissions. */
+  /** App configuration revision applied to this submitted scene, absent for UI-only submissions. */
   readonly configurationRevision?: number;
   readonly editorAssistance?: import('./features/editor-assistance/picking').SubmittedEditorAssistanceFrame;
   /** Default-off CPU shadow census captured by this successful submission. */
@@ -1258,6 +1264,16 @@ export interface RenderObservationInspection {
  * execution.
  */
 export interface RenderInspection {
+  /** Explicit field selection reads this Renderer's built-in program template cache. */
+  readonly shaderTemplates?: ReturnType<
+    import('@forgeax/engine-shader').ShaderRegistry['programTemplateInspection']
+  >;
+  /** Material requests observed while the explicit pipeline collection scope is active. */
+  readonly rasterPassRequests?: {
+    readonly deviceGeneration: number;
+    readonly overwritten: number;
+    readonly requests: readonly RasterPassRequestInspection[];
+  };
   /** The latest debug overlay outcome; absent when no overlay source was ever installed. */
   readonly debugOverlay?: DebugOverlayInspection;
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
@@ -1310,6 +1326,8 @@ export interface RenderInspection {
       readonly description: string;
       /** Null when the native API does not publish a boolean. */
       readonly isFallbackAdapter: boolean | null;
+      /** Graphics API reported by a native adapter when available. */
+      readonly nativeBackend?: string;
     } | null;
   };
   readonly frame: {
@@ -1368,6 +1386,8 @@ export interface RenderInspection {
   readonly renderScene: RenderSceneInspection;
   /** Detached logical allocation facts for graph-created render targets. */
   readonly renderGraphResourceAllocation?: RenderGraphResourceAllocationInspection;
+  /** View-owned single-sample pass targets including ordinary material depth and weighted transparency. */
+  readonly viewTargetAllocation?: import('./inspection-types').GpuResourceAllocationInspection;
   /** Detached logical allocation facts across graph generations. */
   readonly renderGraphGenerationAllocation?: RenderGraphGenerationAllocationInspection;
   /** Actual current-view Water pass dependencies and resource descriptors; no inferred backend policy. */
@@ -1457,6 +1477,24 @@ export interface RenderInspection {
   readonly depthOfField?: DepthOfFieldInspection;
   /** Bounded renderer-owned LOD/occlusion facts; absent before a candidate frame. */
   readonly lodOcclusion?: LodOcclusionInspection;
+}
+
+export interface RasterPassRequestInspection {
+  readonly material: string;
+  readonly requestedVariant: string | undefined;
+  readonly shader: import('./pipeline-spec-types').PipelineSpec['shader'];
+  readonly attachments: import('./pipeline-spec-types').PipelineSpec['attachments'];
+  readonly layout: string | undefined;
+  readonly waterInfoFormat: string | undefined;
+  readonly preparing: boolean;
+  readonly selection: 'registered' | 'fallback' | 'unavailable';
+  readonly pipelineLabel: string | undefined;
+  /** The selected physical Group 0 texture layout, when the Standard pass owns it. */
+  readonly viewTextures?: readonly { readonly binding: number; readonly visibility: number }[];
+  readonly nativeRecipe?: {
+    readonly localIdentity: number;
+    readonly identity: string | null;
+  };
 }
 /** An explicit ordered HDR write through the existing capture graph. */
 export interface RenderTargetWrite {
@@ -1573,7 +1611,6 @@ export const RENDER_GRAPH_EXECUTION_PHASE_CATALOG = [
   'record/graph-execute/bloom-composite',
   'record/graph-execute/depth-pyramid',
   'record/graph-execute/ssr-trace',
-  'record/graph-execute/ssr-temporal',
   'record/graph-execute/ssr-reflection-mip',
   'record/graph-execute/ssr-compose',
   'record/graph-execute/other',
@@ -1694,6 +1731,9 @@ export type RenderRecordPhase =
 export const RENDER_PHASE_CATALOG = [
   'extract',
   'extract/resource-frame',
+  'extract/follow-adoption',
+  'extract/derive-view',
+  'extract/derive-view/cull',
   'extract-schedule',
   'stage-inputs',
   'post-prepare',
@@ -1711,9 +1751,11 @@ export const RENDER_PHASE_CATALOG = [
   'submission/finish',
   'submission/submit',
   'submission/receipt-issue',
+  'capture/prepare',
   'graph/key-match',
   'graph/build',
   'graph/compile',
+  'graph/bind-ordered-resources',
   'finally-cleanup',
   ...RENDER_RECORD_PHASE_CATALOG,
 ] as const;
@@ -1750,8 +1792,14 @@ export interface RendererOptions {
   readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Outstanding native requests for `backgroundPipelineLibrary`: integer 1..4; omission keeps the hardware default. */
   readonly backgroundPipelineLibraryConcurrency?: number;
+  /** Prepare the first visible viewport's Hit Proxy pipelines after its color submission. Default off. */
+  readonly viewportHitWarmup?: boolean;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /** Optional static shadow depth ceiling (default 64 MiB). Admission counts all views on the device, including retiring textures. A view may hold up to half this ceiling per generation. Zero draws combined shadows. */
+  readonly staticShadowBudgetBytes?: number;
+  /** Opt in to native indirect bundles for the installed view pipeline. The default encodes current draws directly. */
+  readonly retainIndirectBundles?: boolean;
   /** Renderer AssetRegistry content bytes: positive safe integer; default 4 GiB. */
   readonly assetBudgetBytes?: number;
   /**

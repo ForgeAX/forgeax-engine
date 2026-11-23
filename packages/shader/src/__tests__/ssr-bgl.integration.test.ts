@@ -237,7 +237,6 @@ describe('SSR built-in shader binding contract', () => {
     });
     expect(SSR_SHADER_MODULES).toEqual({
       trace: 'forgeax_ssr::trace',
-      temporal: 'forgeax_ssr::temporal',
     });
   });
 });

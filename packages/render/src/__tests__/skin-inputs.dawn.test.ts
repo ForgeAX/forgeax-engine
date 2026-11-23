@@ -367,7 +367,7 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
       shapes: new Float32Array([7, 8, 9, 10, 11, 12, 4]),
     });
   skin.unbind(11);
-  skin.bind(11, nextSource, nextSkeleton, new Uint32Array([7]));
+  skin.bind(11, nextSource, nextSkeleton, new Uint32Array([7]), true);
   skin.setJoint(nextSource, 7, world(20, 1));
   skin.remove(source);
   skin.remove(skeleton);
@@ -387,7 +387,13 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
       expect(translation(bytes, a.root, 11, 0)).toBe(3);
       const binding = rowAddress(bytes, a.root, 1, 11);
       if (binding === undefined) throw new Error('Missing held Skin binding');
-      expect(Array.from(bytes.slice(binding, binding + 4))).toEqual([1, source.id, skeleton.id, 7]);
+      expect(Array.from(bytes.slice(binding, binding + 5))).toEqual([
+        1,
+        source.id,
+        skeleton.id,
+        0,
+        7,
+      ]);
       const ibm = rowAddress(bytes, a.root, 0, skeleton.id);
       if (ibm === undefined) throw new Error('Missing held Skeleton');
       expect(new Float32Array(bytes.buffer)[ibm + 13]).toBe(1);
@@ -398,10 +404,11 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
     }
     const nextBinding = rowAddress(grown, b.root, 1, 11);
     if (nextBinding === undefined) throw new Error('Missing rebound Skin');
-    expect(Array.from(grown.slice(nextBinding, nextBinding + 4))).toEqual([
+    expect(Array.from(grown.slice(nextBinding, nextBinding + 5))).toEqual([
       1,
       nextSource.id,
       nextSkeleton.id,
+      1,
       7,
     ]);
     const nextIbm = rowAddress(grown, b.root, 0, nextSkeleton.id);

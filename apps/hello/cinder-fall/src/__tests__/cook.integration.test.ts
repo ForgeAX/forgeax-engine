@@ -12,7 +12,7 @@ function module(name: string): ParticleCodeModuleSet {
 }
 
 const materials: Readonly<Record<string, readonly MaterialParticleInput[]>> = {
-  'c1de0000-0000-7000-8000-000000000002': [
+  '2dad36f7-99bb-5aad-8dbe-321db767a727': [
     { name: 'heat', type: 'f32', visibility: 'fragment', lane: 0 },
   ],
 };

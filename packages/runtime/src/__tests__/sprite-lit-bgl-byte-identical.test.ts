@@ -124,11 +124,11 @@ describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
       expect(base.length).toBe(25);
     });
 
-    it('pbr-material-merged has 35 entries for the generic sprite contract', () => {
+    it('pbr-material-merged has 34 entries for the generic sprite contract', () => {
       const merged = buildBindGroupLayoutDescriptor(makeSpec('forgeax::sprite-lit'), {
         kind: 'pbr-material-merged',
       });
-      expect(merged.entries.length).toBe(35);
+      expect(merged.entries.length).toBe(34);
       // IBL + transmission injection must stay
       // append-only against the user region, including the generic backdrop sampler.
       const base = buildPbrMaterialUserRegionEntries();
@@ -141,7 +141,6 @@ describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
           visibility: 0x1 | 0x2,
           buffer: { type: 'read-only-storage', hasDynamicOffset: false },
         },
-        { binding: 47, visibility: 0x2, texture: { sampleType: 'float', viewDimension: '2d' } },
       ];
       expect(merged.entries).toEqual(expected);
     });

@@ -7,7 +7,7 @@ import { GlyphText } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 
 /** The legacy baked font remains the default compatibility/reference source. */
-export const GAME_DEFAULT_FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
+export const GAME_DEFAULT_FONT_GUID = '0172daac-227f-5a3b-b6ae-313f9fd52081';
 /** The same licensed TTF through the build-time font importer/plugin. */
 export const GAME_DEFAULT_TTF_FONT_GUID = '57db8d79-bb62-4b2a-8400-67c9601870cd';
 const WORLD_SCORE_FONT_SIZE = 0.024;
@@ -17,7 +17,7 @@ const WORLD_SCORE_TTF_COLOR = [0.42, 0.92, 1, 1] as const;
 const WORLD_SCORE_LIFETIME = 0.9;
 const WORLD_SCORE_RISE = 0.7;
 
-export type WorldScoreFontSource = 'legacy-pack' | 'ttf-plugin';
+export type WorldScoreFontSource = 'baked-pack' | 'ttf-plugin';
 
 export interface WorldScoreTextSnapshot {
   readonly available: boolean;
@@ -64,7 +64,7 @@ export async function createWorldScoreText(
   if (assets === undefined) return undefined;
 
   const fontEntries: readonly [WorldScoreFontSource, string][] = [
-    ['legacy-pack', GAME_DEFAULT_FONT_GUID],
+    ['baked-pack', GAME_DEFAULT_FONT_GUID],
     ['ttf-plugin', GAME_DEFAULT_TTF_FONT_GUID],
   ];
   const loadedFonts: Array<{
@@ -84,7 +84,7 @@ export async function createWorldScoreText(
   }
   if (loadedFonts.length === 0) return undefined;
 
-  const defaultFont = loadedFonts.find((font) => font.source === 'legacy-pack') ?? loadedFonts[0]!;
+  const defaultFont = loadedFonts.find((font) => font.source === 'baked-pack') ?? loadedFonts[0]!;
   let activeFont = defaultFont;
   let presentation = worldScoreFontPresentation(activeFont.source);
   let toggles = 0;

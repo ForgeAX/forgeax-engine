@@ -38,6 +38,8 @@ export interface NativeCooker<P = unknown, I = unknown> {
   readonly key: string;
   /** Opt in only for reentrant, input-isolated cooking; absence keeps host admission serial. */
   readonly concurrency?: 'parallel';
+  /** Material publication generation changes only validated record metadata. */
+  readonly publicationGeneration?: 'metadata-only';
   /**
    * Upper bound (ms) of one cook. A host that runs cookers out of process uses it as the
    * cook's deadline instead of its default; absence keeps the host default.

@@ -1,5 +1,6 @@
 import type { SpawnOptions } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir, totalmem } from 'node:os';
 import { join } from 'node:path';
@@ -15,8 +16,9 @@ import { err, ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { serializeBridgeResult } from '../../../app/src/internal/browser-remote-bridge';
-import { backendHeapEnv } from '../backend-heap.js';
+import { backendHeapEnv } from '../child-process.js';
 import { publicPageUrl } from '../live-bridge-url.js';
+import { createDeferred } from '../target-requests.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
 const snapshotFixture = vi.hoisted(() => ({ create: vi.fn() }));
@@ -225,6 +227,19 @@ function bridgePage(url: string, sockets: WebSocket[]) {
   const answer = (id: number | undefined, value: unknown) =>
     socket.send(JSON.stringify({ type: 'result', id, payload: { ok: true, value } }));
   return { socket, evals, opened, closed, answer };
+}
+
+function startCarrierDaemon(root: string, port: number, signal: AbortSignal) {
+  let notifyReady!: () => void;
+  const readiness = new Promise<void>((resolve) => {
+    notifyReady = resolve;
+  });
+  const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
+    carrier: {} as BrowserCarrierAdapter,
+    signal,
+    onReady: notifyReady,
+  });
+  return { daemon, ready: Promise.race([readiness, daemon]) };
 }
 
 afterEach(() => {
@@ -556,25 +571,24 @@ describe('live DevKit borrowed carrier boundary', () => {
     }
   });
 
-  it('forwards fresh Host execution reports through the public status route', async () => {
+  it('forwards fresh Host execution reports through the public status route', async ({
+    signal,
+  }) => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-execution-status-'));
     const port = await freePort();
     await mkdir(join(root, '.forgeax'), { recursive: true });
-    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
-      carrier: {} as BrowserCarrierAdapter,
-    });
     let bridge: WebSocket | undefined;
     let execution = {
       frame: { submitted: 4, completed: 2, inFlight: 2 },
       render: { state: 'alive', completedFrame: 2 },
     };
-    try {
-      await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
-      bridge = new WebSocket(ownerBridgeUrl(port));
-      bridge.on('message', (raw) => {
+    fixtures.browser.open.mockImplementationOnce(async () => {
+      const socket = new WebSocket(ownerBridgeUrl(port));
+      bridge = socket;
+      socket.on('message', (raw) => {
         const message = JSON.parse(String(raw));
         if (message.type === 'status')
-          bridge?.send(
+          socket.send(
             JSON.stringify({
               type: 'result',
               id: message.id,
@@ -582,10 +596,14 @@ describe('live DevKit borrowed carrier boundary', () => {
             }),
           );
       });
-      await new Promise<void>((resolve, reject) => {
-        bridge?.once('open', resolve);
-        bridge?.once('error', reject);
-      });
+      socket.on('error', () => {});
+      await once(socket, 'open', { signal });
+      return fixtures.session;
+    });
+    const { daemon, ready } = startCarrierDaemon(root, port, signal);
+    try {
+      await ready;
+      expect(fixtures.browser.open).toHaveBeenCalledOnce();
       await vi.waitFor(async () => {
         expect(await request(port, '/status', 'GET')).toMatchObject({
           ok: true,
@@ -1394,6 +1412,7 @@ describe('live readiness waiting guards', () => {
     readonly evaluated: string[];
     world: string;
     statusDelayMs: number;
+    beforeStatus?: () => Promise<void>;
     answer: ((code: string) => unknown) | undefined;
     hold(): Promise<void>;
     release(): void;
@@ -1409,6 +1428,7 @@ describe('live readiness waiting guards', () => {
     await mkdir(join(root, '.forgeax'), { recursive: true });
     fixtures.page.evaluate.mockResolvedValue('2');
     let releaseHeld: (() => void) | undefined;
+    const published = createDeferred<void>();
     const fixture: Fixture = {
       root,
       port,
@@ -1439,9 +1459,11 @@ describe('live readiness waiting guards', () => {
     const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
       carrier: {} as BrowserCarrierAdapter,
       rhiCapture,
+      onReady: () => published.resolve(),
     });
     const bridge = reconnectingBridge(port, async (message) => {
       if (message.type === 'status') {
+        await fixture.beforeStatus?.();
         if (fixture.statusDelayMs > 0)
           await new Promise((resolve) => setTimeout(resolve, fixture.statusDelayMs));
         return { worldIdentity: fixture.world };
@@ -1455,6 +1477,7 @@ describe('live readiness waiting guards', () => {
       return fixture.answer?.(code) ?? {};
     });
     try {
+      await published.promise;
       await fixture.ready();
       await body(fixture);
     } finally {
@@ -1468,17 +1491,16 @@ describe('live readiness waiting guards', () => {
     }
   }
 
-  it('reopens a page whose bridge stays lost instead of waiting out the budget', async () => {
+  it('reopens a page whose bridge stays lost instead of waiting out the budget', async ({
+    signal,
+  }) => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-bridge-lost-'));
     const port = await freePort();
     await mkdir(join(root, '.forgeax'), { recursive: true });
     fixtures.page.evaluate.mockResolvedValue('2');
-    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
-      carrier: {} as BrowserCarrierAdapter,
-    });
     // Each opened page connects once; a lost page never reconnects on its own.
     const sockets: WebSocket[] = [];
-    const connectPage = () => {
+    fixtures.browser.open.mockImplementation(async () => {
       const socket = new WebSocket(ownerBridgeUrl(port));
       sockets.push(socket);
       socket.on('message', (raw) => {
@@ -1493,28 +1515,17 @@ describe('live readiness waiting guards', () => {
         );
       });
       socket.on('error', () => {});
-    };
+      await once(socket, 'open', { signal });
+      return fixtures.session;
+    });
+    const { daemon, ready } = startCarrierDaemon(root, port, signal);
     const opened = () => fixtures.browser.open.mock.calls.length;
-    let connectedPages = 0;
-    const pages = setInterval(() => {
-      if (opened() > connectedPages) {
-        connectedPages = opened();
-        connectPage();
-      }
-    }, 20);
-    const ready = async () => {
-      let revision = '';
-      await vi.waitFor(async () => {
-        const status = (await request(port, '/status', 'GET')) as {
-          value: { phase: string; revision: string };
-        };
-        expect(status.value.phase).toBe('ready');
-        revision = status.value.revision;
-      });
-      return revision;
-    };
     try {
-      await ready();
+      await ready;
+      expect(await request(port, '/status', 'GET')).toMatchObject({
+        ok: true,
+        value: { phase: 'ready' },
+      });
       expect(opened()).toBe(1);
       for (const socket of sockets) socket.terminate();
       const startedAt = Date.now();
@@ -1526,7 +1537,6 @@ describe('live readiness waiting guards', () => {
       expect(opened()).toBe(2);
       expect(Date.now() - startedAt).toBeLessThan(20_000);
     } finally {
-      clearInterval(pages);
       for (const socket of sockets) socket.terminate();
       fixtures.page.evaluate.mockResolvedValue(undefined);
       await request(port, '/stop', 'POST').catch(() => undefined);
@@ -1545,6 +1555,69 @@ describe('live readiness waiting guards', () => {
         await request(fixture.port, '/camera/set', 'POST', { position: [1, 2, 3] }),
       ).toMatchObject({ ok: false, error: { code: 'live-instance-changed' } });
       expect(fixture.evaluated.filter((code) => code.includes('camera.set'))).toHaveLength(1);
+    });
+  });
+
+  it('admits one evaluation after concurrent bridge readiness checks', async () => {
+    await withLiveOwner(async (fixture) => {
+      const revision = await fixture.ready();
+      // Let the bridge process status probes already queued by ready().
+      expect(
+        await request(fixture.port, '/eval', 'POST', { code: 'prime', revision }),
+      ).toMatchObject({ ok: true });
+      fixture.evaluated.length = 0;
+      const statusProbes: Array<() => void> = [];
+      fixture.beforeStatus = () => new Promise((resolve) => statusProbes.push(resolve));
+      const release: Array<() => void> = [];
+      fixture.answer = () => new Promise((resolve) => release.push(() => resolve('finished')));
+      const pending = ['first', 'second'].map((code) =>
+        request(fixture.port, '/eval', 'POST', {
+          code,
+          revision,
+          timeoutMs: 900,
+          readyTimeoutMs: 0,
+        }),
+      );
+      try {
+        await vi.waitFor(() => expect(statusProbes).toHaveLength(2));
+        delete fixture.beforeStatus;
+        for (const respond of statusProbes) respond();
+        expect(await Promise.race(pending)).toMatchObject({
+          ok: false,
+          error: { code: 'live-eval-running' },
+        });
+        await vi.waitFor(() => expect(fixture.evaluated).toHaveLength(1));
+        expect(await request(fixture.port, '/status', 'GET')).toMatchObject({
+          value: { unfinishedEval: true },
+        });
+      } finally {
+        delete fixture.beforeStatus;
+        for (const respond of statusProbes) respond();
+        for (const finish of release) finish();
+        await Promise.all(pending);
+      }
+      expect(await Promise.all(pending)).toContainEqual(
+        expect.objectContaining({ ok: true, value: { revision, result: 'finished' } }),
+      );
+      expect(await request(fixture.port, '/status', 'GET')).toMatchObject({
+        value: { unfinishedEval: false },
+      });
+    });
+  });
+
+  it('checks the published owner without rewriting its record for an evaluation', async () => {
+    await withLiveOwner(async (fixture) => {
+      const revision = await fixture.ready();
+      const path = join(fixture.root, '.forgeax', 'session.json');
+      const before = await stat(path, { bigint: true });
+      expect(
+        await request(fixture.port, '/eval', 'POST', { code: 'sample', revision }),
+      ).toMatchObject({
+        ok: true,
+      });
+      const after = await stat(path, { bigint: true });
+      expect(after.ino).toBe(before.ino);
+      expect(after.mtimeNs).toBe(before.mtimeNs);
     });
   });
 
@@ -1701,6 +1774,31 @@ describe('live readiness waiting guards', () => {
         },
       });
       expect((result as { value: Record<string, unknown> }).value.submittedFrame).toBeUndefined();
+    });
+  });
+
+  it('preserves UTF-8 arguments split across request chunks', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.ready();
+      const name = 'H\u00e9ro\u00efne';
+      const bytes = Buffer.from(JSON.stringify({ name }));
+      const split = bytes.indexOf(Buffer.from('\u00e9')) + 1;
+      const init = {
+        method: 'POST',
+        duplex: 'half',
+        body: new ReadableStream({
+          start(stream) {
+            stream.enqueue(bytes.subarray(0, split));
+            setTimeout(() => {
+              stream.enqueue(bytes.subarray(split));
+              stream.close();
+            }, 40);
+          },
+        }),
+      };
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/find`, init);
+      expect(await response.json()).toMatchObject({ ok: true });
+      expect(fixture.evaluated.some((code) => code.includes(name))).toBe(true);
     });
   });
 

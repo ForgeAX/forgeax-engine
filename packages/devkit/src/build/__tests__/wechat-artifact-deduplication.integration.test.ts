@@ -7,15 +7,12 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { copyMeshAttribute, meshAssetContribution } from '@forgeax/engine-geometry';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, scanInventory } from '@forgeax/engine-pack/scanner';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
-import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { createWechatPackageFetcher } from '@forgeax/engine-platform-wechat';
 import type { PackIndexEntry, PackV2 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createPluginPackInternal } from '../../../../vite-plugin-pack/src/plugin-pack.js';
 import type { ProjectFacts } from '../../types.js';
-import { prepareAuthoredRuntimePacks } from '../authored-runtime-packs.js';
 import { writeWechatProject } from '../wechat.js';
 
 it('shares identical produced bodies while retaining distinct Catalog assets and integrity checks', async () => {
@@ -51,63 +48,35 @@ import { definePackageId } from '@forgeax/engine-pack/source';
 export default {
   schemaVersion: '2.0.0',
   packageId: definePackageId('${packId}'),
-  runtime: { export: 'generate', fallback: 'build', dependencies: [], outputs: { another: 'mesh' } },
-  build: () => ({ ok: true, value: {} }),
+  build: () => ({ ok: true, value: { another: createBoxGeometry(2, 3, 4).unwrap() } }),
 };
-export function generate() {
-  return { ok: true, value: { another: createBoxGeometry(2, 3, 4).unwrap() } };
-}
 `,
     );
-    const sourceSnapshot = createScriptablePackSourceSnapshot();
-    const inventory = await scanInventory([assets], {
-      scriptablePack: {
-        ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
-        metadataOnly: true,
-        sourceSnapshot,
-      },
-    });
-    if (!inventory.ok) throw inventory.error;
-    const { packs, cooked } = await prepareAuthoredRuntimePacks(
-      root,
-      inventory.value.declarations,
-      sourceSnapshot,
-      'wechat',
-    );
-    expect(packs).toEqual([]);
-    expect([...cooked]).toEqual([packId]);
     const emitted = new Map<string, string | Uint8Array>();
-    async function produce(cookedRuntimePacks?: ReadonlySet<string>) {
-      emitted.clear();
-      const plugin = createPluginPackInternal({
-        roots: [assets],
-        ddc: { buildCacheRoot: join(root, 'ddc') },
-        ...(cookedRuntimePacks === undefined ? {} : { cookedRuntimePacks }),
+    const plugin = createPluginPackInternal({
+      roots: [assets],
+      ddc: { buildCacheRoot: join(root, 'ddc') },
+    });
+    try {
+      await plugin.generateBundle.call({
+        emitFile(asset) {
+          const name = asset.fileName ?? `assets/${asset.name ?? 'asset'}`;
+          emitted.set(name, asset.source);
+          return name;
+        },
+        getFileName: (reference) => reference,
       });
-      try {
-        await plugin.generateBundle.call({
-          emitFile(asset) {
-            const name = asset.fileName ?? `assets/${asset.name ?? 'asset'}`;
-            emitted.set(name, asset.source);
-            return name;
-          },
-          getFileName: (reference) => reference,
-        });
-      } finally {
-        await plugin.closeBundle();
-      }
+    } finally {
+      await plugin.closeBundle();
     }
     const json = (name: string) => {
       const body = emitted.get(name);
       if (body === undefined) throw new Error(`missing emitted file: ${name}`);
       return JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body));
     };
-    const readCatalog = () =>
-      decodeCatalogWire(json('pack-index.json')).unwrap() as readonly PackIndexEntry[];
-    await produce();
-    expect(readCatalog()).toHaveLength(3);
-    await produce(cooked);
-    const catalog = readCatalog();
+    const catalog = decodeCatalogWire(
+      json('pack-index.json'),
+    ).unwrap() as readonly PackIndexEntry[];
     expect(catalog).toHaveLength(4);
     const entryFor = (key: string) => {
       const entry = catalog.find((candidate) => candidate.sourceKey === key);

@@ -139,3 +139,95 @@ it('revokes the retiring graph immediately while keeping a successor shared view
     (await next.graph.retire()).unwrap();
   }
 });
+
+it('binds equal slices once across changing logical rows and drops a slice when its last layout leaves', async () => {
+  const gpu = await device();
+  const creates = vi.spyOn(gpu, 'createTextureView');
+  const nativeTextures = vi.spyOn(gpu, 'createTexture');
+  let prior: CompiledRenderGraph<RenderGraphFrame> | undefined;
+  let common: TextureView | undefined;
+  const layouts = [
+    [true, 2],
+    [true, 2],
+    [false, 2],
+    [true, 3],
+  ] as const;
+  try {
+    for (const [frame, [withSecondMip, expectedCreates]] of layouts.entries()) {
+      const procedure = RenderGraphBuilder.procedure({
+        device: gpu,
+        surfaceSize: size,
+        reuseResourcesFrom: prior,
+      });
+      const b = procedure.passes;
+      const texture = b
+        .createTexture('image', { size, format: 'rgba8unorm', mipLevelCount: 2 })
+        .unwrap();
+      const rows = Array.from({ length: frame + 8 }, (_, index) => {
+        const mip = withSecondMip && index % 3 === frame % 3 ? 1 : 0;
+        const view = b
+          .view(texture, {
+            label: `frame-${frame}-view-${index}`,
+            baseMipLevel: mip,
+            mipLevelCount: 1,
+          })
+          .unwrap();
+        b.addRasterPass(`writer-${index}`, {
+          accesses: [{ resource: view, usage: 'color-attachment' }],
+          colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+          encodeDirect() {},
+        }).unwrap();
+        return { view, mip };
+      });
+      const active = procedure.bindResources().unwrap();
+      let second: TextureView | undefined;
+      for (const { view, mip } of rows) {
+        const native = active.createdTextureView(view);
+        expect(native).toBeDefined();
+        if (mip === 1) {
+          second ??= native;
+          expect(native).toBe(second);
+        } else {
+          common ??= native;
+          expect(native).toBe(common);
+        }
+      }
+      if (withSecondMip) expect(second).not.toBe(common);
+      expect(creates).toHaveBeenCalledTimes(expectedCreates);
+      expect(nativeTextures).toHaveBeenCalledTimes(1);
+      execute(gpu, active);
+      if (prior !== undefined) (await prior.retire()).unwrap();
+      prior = active;
+    }
+  } finally {
+    if (prior !== undefined) (await prior.retire()).unwrap();
+    creates.mockRestore();
+    nativeTextures.mockRestore();
+  }
+});
+
+it('revokes physical inputs when the source retires before a staged successor binds', async () => {
+  const gpu = await device();
+  const first = created(gpu);
+  const oldView = first.graph.createdTextureView(first.view);
+  const candidate = RenderGraphBuilder.procedure({
+    device: gpu,
+    surfaceSize: size,
+    reuseResourcesFrom: first.graph,
+  });
+  const b = candidate.passes;
+  const image = b.createTexture('color', { format: 'rgba8unorm', size }).unwrap();
+  const view = b.view(image).unwrap();
+  b.addRasterPass('clear', {
+    accesses: [{ resource: view, usage: 'color-attachment' }],
+    colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+    encodeDirect() {},
+  }).unwrap();
+  const retiring = first.graph.retire();
+  const replacement = candidate.bindResources().unwrap();
+  expect(replacement.createdTextureView(view)).toBeDefined();
+  expect(replacement.createdTextureView(view)).not.toBe(oldView);
+  (await retiring).unwrap();
+  execute(gpu, replacement);
+  (await replacement.retire()).unwrap();
+});

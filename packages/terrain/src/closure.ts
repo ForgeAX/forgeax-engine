@@ -6,6 +6,7 @@ import {
   type Result,
   resolveMaterialAsset,
   TERRAIN_MATERIAL_PARAMETERS,
+  TERRAIN_WEIGHT_DETAIL_PARAMETERS,
   type TerrainAsset,
   type TerrainError,
   type TerrainMaterialEncoding,
@@ -14,6 +15,7 @@ import {
 import { cookTerrain } from './cook-terrain.js';
 import { terrainDerivedGeometryValid } from './height-packing.js';
 import { createTerrainLayerPlan, terrainLayerModes } from './layer-plan.js';
+import { terrainFailure } from './validation.js';
 
 const controlSampler = {
   kind: 'sampler',
@@ -23,9 +25,27 @@ const controlSampler = {
   addressModeU: 'clamp-to-edge',
   addressModeV: 'clamp-to-edge',
 } as const;
-function terrainPasses(encoding: TerrainMaterialEncoding): NonNullable<MaterialAsset['passes']> {
-  const module =
-    encoding.kind === 'ids' ? 'forgeax::standard-terrain-ids' : 'forgeax::standard-terrain';
+const detailSampler = {
+  ...controlSampler,
+  addressModeU: 'repeat',
+  addressModeV: 'repeat',
+} as const;
+
+function validWeightDetailTexture(asset: Asset | undefined): boolean {
+  return (
+    (asset?.kind === 'gpu-texture' || asset?.kind === 'texture') &&
+    asset.shape.viewDimension === '2d' &&
+    asset.format === 'rgba8unorm' &&
+    asset.colorSpace === 'linear'
+  );
+}
+
+function terrainPasses(
+  encoding: TerrainMaterialEncoding,
+  hasDetail: boolean,
+): NonNullable<MaterialAsset['passes']> {
+  const suffix = encoding.kind === 'ids' ? '-ids' : hasDetail ? '-detail' : '';
+  const module = `forgeax::standard-terrain${suffix}`;
   return [
     {
       name: 'forward',
@@ -64,8 +84,16 @@ export function buildTerrainAssets(
 ): Result<Readonly<Record<string, Asset>>, TerrainError> {
   const cooked = cookTerrain(source, materialEncoding);
   if (!cooked.ok) return cooked;
+  const detail = source.weightDetail;
+  if (detail !== undefined && !validWeightDetailTexture(assets[detail.texture]))
+    return terrainFailure(
+      'terrain-layer-invalid',
+      'weightDetail.texture',
+      'a linear RGBA8 2D texture in the Terrain dependency closure',
+    );
   const outputs: Record<string, Asset> = {
       'control-sampler': controlSampler,
+      ...(detail === undefined ? {} : { 'weight-detail-sampler': detailSampler }),
       height: cooked.value.height,
     },
     grids = createTerrainGrids(source.subsectionVertices);
@@ -81,7 +109,8 @@ export function buildTerrainAssets(
     outputs[`section/${si}/material`] = {
       kind: 'material',
       colorSpace: 'linear',
-      parameters: TERRAIN_MATERIAL_PARAMETERS,
+      parameters:
+        detail === undefined ? TERRAIN_MATERIAL_PARAMETERS : TERRAIN_WEIGHT_DETAIL_PARAMETERS,
       values: {
         terrainSection: [
           section.x,
@@ -96,6 +125,15 @@ export function buildTerrainAssets(
           (source.rows - 1) / (source.subsectionVertices - 1),
         ],
         terrainLayerModes: modes,
+        ...(detail === undefined
+          ? {}
+          : {
+              terrainWeightDetail: {
+                texture: detail.texture,
+                sampler: guid('weight-detail-sampler'),
+              },
+              terrainWeightDetailParams: [1 / detail.period, detail.strength],
+            }),
         terrainHeightTexture: guid('height'),
         terrainWeightTexture: {
           texture: guid(`section/${si}/weights`),
@@ -106,7 +144,7 @@ export function buildTerrainAssets(
           (_, index) => section.activeLayers[index] ?? -1,
         ),
       },
-      passes: terrainPasses(materialEncoding),
+      passes: terrainPasses(materialEncoding, detail !== undefined),
     };
   }
   outputs.terrain = {
@@ -129,6 +167,96 @@ export function buildTerrainAssets(
   return ok(outputs);
 }
 
+function sameTerrainValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (
+    typeof a !== 'object' ||
+    a === null ||
+    typeof b !== 'object' ||
+    b === null ||
+    Array.isArray(a) !== Array.isArray(b)
+  )
+    return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && sameTerrainValue(left[key], right[key]))
+  );
+}
+
+function weightDetailBindingValid(
+  detail: NonNullable<TerrainAsset['weightDetail']>,
+  values: NonNullable<MaterialAsset['values']>,
+  closure: ReadonlyMap<string, Asset>,
+): boolean {
+  const bound = values.terrainWeightDetail;
+  return (
+    typeof bound === 'object' &&
+    bound !== null &&
+    Object.keys(bound).length === 2 &&
+    'texture' in bound &&
+    bound.texture === detail.texture &&
+    'sampler' in bound &&
+    sameTerrainValue(closure.get(String(bound.sampler).toLowerCase()), detailSampler) &&
+    sameTerrainValue(values.terrainWeightDetailParams, [1 / detail.period, detail.strength])
+  );
+}
+
+function weightControlBindingValid(
+  control: unknown,
+  weightTexture: TerrainAsset['sections'][number]['weightTexture'],
+  closure: ReadonlyMap<string, Asset>,
+): boolean {
+  return (
+    typeof control === 'object' &&
+    control !== null &&
+    Object.keys(control).length === 2 &&
+    'texture' in control &&
+    control.texture === weightTexture &&
+    'sampler' in control &&
+    (typeof control.sampler === 'string' || typeof control.sampler === 'number') &&
+    sameTerrainValue(closure.get(String(control.sampler).toLowerCase()), controlSampler)
+  );
+}
+
+function terrainSectionMaterialValid(
+  root: TerrainAsset,
+  section: TerrainAsset['sections'][number],
+  material: MaterialAsset,
+  closure: ReadonlyMap<string, Asset>,
+): boolean {
+  const detail = root.weightDetail;
+  const parameters =
+    detail === undefined ? TERRAIN_MATERIAL_PARAMETERS : TERRAIN_WEIGHT_DETAIL_PARAMETERS;
+  if (
+    !sameTerrainValue(
+      material.passes,
+      terrainPasses(root.materialEncoding, detail !== undefined),
+    ) ||
+    !sameTerrainValue(material.parameters, parameters)
+  )
+    return false;
+  const values = {
+    ...Object.fromEntries(
+      (material.parameters ?? []).flatMap((p) =>
+        !('default' in p) || p.default === undefined ? [] : [[p.name, p.default]],
+      ),
+    ),
+    ...material.values,
+  };
+  return (
+    sameTerrainValue(values.terrainLayerModes, terrainLayerModes(root, section.activeLayers)) &&
+    (detail === undefined || weightDetailBindingValid(detail, values, closure)) &&
+    weightControlBindingValid(values.terrainWeightTexture, section.weightTexture, closure) &&
+    sameTerrainValue(
+      values.terrainLayerIndices,
+      Array.from({ length: 4 }, (_, index) => section.activeLayers[index] ?? -1),
+    )
+  );
+}
+
 /** Admit the same geometry and streamed Standard texels the producer cooks. */
 export function terrainDerivedClosureValid(
   root: TerrainAsset,
@@ -141,61 +269,14 @@ export function terrainDerivedClosureValid(
     new Set(root.sections.flatMap((section) => [...section.activeLayers])),
   );
   if (!plan.ok) return false;
+  const detail = root.weightDetail;
+  if (detail !== undefined && !validWeightDetailTexture(closure.get(String(detail.texture))))
+    return false;
   const table = Object.fromEntries(
     [...closure].filter((row): row is [string, MaterialAsset] => row[1].kind === 'material'),
   );
-  const same = (a: unknown, b: unknown): boolean => {
-    if (Object.is(a, b)) return true;
-    if (
-      typeof a !== 'object' ||
-      a === null ||
-      typeof b !== 'object' ||
-      b === null ||
-      Array.isArray(a) !== Array.isArray(b)
-    )
-      return false;
-    const left = a as Record<string, unknown>,
-      right = b as Record<string, unknown>;
-    return (
-      Object.keys(left).length === Object.keys(right).length &&
-      Object.keys(left).every((key) => Object.hasOwn(right, key) && same(left[key], right[key]))
-    );
-  };
-  for (const section of root.sections) {
+  return root.sections.every((section) => {
     const resolved = resolveMaterialAsset(String(section.material), table);
-    if (!resolved.ok) return false;
-    const material = resolved.value.asset;
-    if (!same(material.passes, terrainPasses(root.materialEncoding))) return false;
-    if (!same(material.parameters, TERRAIN_MATERIAL_PARAMETERS)) return false;
-    const values = {
-      ...Object.fromEntries(
-        (material.parameters ?? []).flatMap((p) =>
-          !('default' in p) || p.default === undefined ? [] : [[p.name, p.default]],
-        ),
-      ),
-      ...material.values,
-    };
-    if (!same(values.terrainLayerModes, terrainLayerModes(root, section.activeLayers)))
-      return false;
-    const control = values.terrainWeightTexture;
-    if (
-      typeof control !== 'object' ||
-      control === null ||
-      Object.keys(control).length !== 2 ||
-      !('texture' in control) ||
-      control.texture !== section.weightTexture ||
-      !('sampler' in control) ||
-      (typeof control.sampler !== 'string' && typeof control.sampler !== 'number') ||
-      !same(closure.get(String(control.sampler).toLowerCase()), controlSampler)
-    )
-      return false;
-    if (
-      !same(
-        values.terrainLayerIndices,
-        Array.from({ length: 4 }, (_, index) => section.activeLayers[index] ?? -1),
-      )
-    )
-      return false;
-  }
-  return true;
+    return resolved.ok && terrainSectionMaterialValid(root, section, resolved.value.asset, closure);
+  });
 }

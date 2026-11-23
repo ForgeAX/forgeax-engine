@@ -1,8 +1,12 @@
-import type { AssetContentLease } from '@forgeax/engine-assets-runtime/internal';
 import {
+  type AssetContentLease,
+  runtimeAssetSource,
+  runtimeAssets,
+} from '@forgeax/engine-assets-runtime/internal';
+import {
+  type ClosedLevelAssetPayload,
   LocalMeshSource,
   type PreparedMeshSource,
-  type PublishedAssetVersion,
   type prepareExtractContext,
   publicationDependencies,
   type SourceViewPreparation,
@@ -10,7 +14,7 @@ import {
   type StagedMeshSourceStatus,
 } from '@forgeax/engine-render/internal';
 import type { SceneRosterObservation } from '@forgeax/engine-scene/internal';
-import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
+import { type Asset, type AssetReferenceOwner, err, ok, type Result } from '@forgeax/engine-types';
 import type {
   CandidateRenderSource,
   LevelRenderSelection,
@@ -29,6 +33,7 @@ export class WorkerLevelRenderSource implements CandidateRenderSource {
   private failure: StagedMeshSourceError | undefined;
   private retirementFailure: StagedMeshSourceError | undefined;
   private rasterRows = 0;
+  private readonly owner: AssetReferenceOwner;
 
   constructor(
     observation: SceneRosterObservation,
@@ -39,6 +44,9 @@ export class WorkerLevelRenderSource implements CandidateRenderSource {
     private readonly current: () => boolean,
     private readonly release: () => void,
   ) {
+    const owner = observation.world.assets;
+    if (owner === undefined) throw new StagedMeshSourceError({ reason: 'source' });
+    this.owner = owner;
     this.staged = new LocalMeshSource(observation, context);
     this.work = this.prepare();
   }
@@ -49,20 +57,24 @@ export class WorkerLevelRenderSource implements CandidateRenderSource {
 
   private *prepare(): Generator<void> {
     const prepared = (yield* this.staged.extract(() => this.isCurrent())).unwrap();
-    const handles = yield* fixedAssets(prepared);
     this.rasterRows = prepared.renderables.length;
     if (this.rasterRows === 0) {
       this.phase = 'resident-input';
       return;
     }
+    const owner = this.owner;
+    const handles = yield* fixedAssets(prepared, owner);
     const lease = this.content;
-    function* versions(): Generator<PublishedAssetVersion> {
-      for (const handle of handles)
+    function* versions(): Generator<ClosedLevelAssetPayload> {
+      for (const handle of handles) {
+        const guid = runtimeAssetSource(owner, handle);
         yield {
           handle,
           revision: lease.version(handle).unwrap(),
           value: lease.read<Asset>(handle).unwrap(),
+          ...(guid === undefined ? {} : { guid }),
         };
+      }
     }
     this.phase = 'admitting';
     this.awaitWork(
@@ -189,13 +201,21 @@ export class WorkerLevelRenderSource implements CandidateRenderSource {
   }
 }
 
-function* fixedAssets(input: PreparedMeshSource): Generator<void, Set<number>> {
+function* fixedAssets(
+  input: PreparedMeshSource,
+  owner: AssetReferenceOwner,
+): Generator<void, Set<number>> {
   const handles = new Set<number>();
   for (const row of input.renderables) {
     for (const handle of publicationDependencies(row)) handles.add(handle);
     for (const lod of row.lods ?? []) if (typeof lod.mesh === 'number') handles.add(lod.mesh);
     for (const material of [...row.materials, ...(row.materialOverrides ?? [])])
       for (const asset of material?.snapshot.sourceAssets?.assets ?? []) handles.add(asset.handle);
+    yield;
+  }
+  const records = runtimeAssets(owner);
+  for (const handle of handles) {
+    for (const dependency of records.dependencies(handle).unwrap()) handles.add(dependency);
     yield;
   }
   return handles;

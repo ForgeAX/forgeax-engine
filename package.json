@@ -142,7 +142,7 @@
     "gauntlet": "node scripts/gauntlet.mjs",
     "metrics:check": "node scripts/check-metrics-declared.mjs",
     "check:asset-authority-audit": "node scripts/forgeax/check-asset-authority-audit.mjs",
-    "pack:authoring-audit": "node scripts/forgeax/migrate-pack-authoring.mjs --audit",
+    "pack:authoring-audit": "node scripts/asset-cook-contract.mjs --authoring",
     "runtime:cutover": "node scripts/check-runtime-cutover.mjs",
     "runtime:compat": "node scripts/check-runtime-compat.mjs",
     "runtime:governance": "pnpm runtime:cutover && pnpm runtime:compat && pnpm metrics:check",

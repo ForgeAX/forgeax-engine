@@ -60,13 +60,23 @@ describe('ALPHA_MASK compile-time variant', () => {
   });
 
   it('calls the alpha-hash discard only from the alpha-mask variant', () => {
-    const source = read('default_standard_surface.wgsl');
-    const defines = { ALPHA_HASH_AVAILABLE: true };
-    expect(projectShaderConditionals(source, { ...defines, ALPHA_MASK: false }, 'all')).not.toMatch(
-      /applyAlphaHash\(coverage/,
-    );
-    expect(projectShaderConditionals(source, { ...defines, ALPHA_MASK: true }, 'all')).toMatch(
-      /applyAlphaHash\(coverage/,
+    const source = read('material/standard-surface-maps.wgsl');
+    const coverage = (alphaMask: boolean) =>
+      functionBody(
+        projectShaderConditionals(
+          source,
+          { ALPHA_HASH_AVAILABLE: true, ALPHA_MASK: alphaMask },
+          'all',
+        ),
+        'resolveStandardCoverage',
+      );
+    expect(coverage(false)).not.toMatch(/applyAlphaHash\(coverage/);
+    expect(coverage(true)).toMatch(/applyAlphaHash\(coverage/);
+    expect(
+      functionBody(read('default_standard_surface.wgsl'), 'evaluate_standard_surface'),
+    ).toMatch(/resolveStandardCoverage\(/);
+    expect(functionBody(source, 'evaluateStandardCoverageOnly')).toMatch(
+      /resolveStandardCoverage\(/,
     );
   });
 

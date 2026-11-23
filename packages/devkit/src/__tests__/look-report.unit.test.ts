@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LookRequestError, parseLookRequest } from '../live-look.js';
-import { lookFindings, summarizeLook } from '../look-report.js';
+import { LookRequestError, lookFindings, parseLookRequest, summarizeLook } from '../live-look.js';
 
 const WIDTH = 64;
 const HEIGHT = 32;

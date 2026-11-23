@@ -273,6 +273,30 @@ export class StableRangeAllocator {
     while (tail?.right !== undefined) tail = tail.right;
     return tail !== undefined && tail.start + tail.count === this.next ? tail.start : this.next;
   }
+  /** Rehome disposable scratch to an earlier free range. Live scene addresses never move. */
+  moveScratchLower(start: number, count: number): number {
+    const hole = firstFit(this.free, count, 1);
+    if (hole === undefined || hole.start >= start) return start;
+    const lower = this.allocate(count);
+    if (lower >= start) {
+      this.release(lower, count);
+      return start;
+    }
+    this.release(start, count);
+    return lower;
+  }
+
+  /** Return an unused physical tail without moving live ranges or private reservations. */
+  releaseTail(): number {
+    const end = this.allocatedEnd();
+    if (end !== this.next) {
+      this.free = remove(this.free, end);
+      this.next = end;
+      this.acceptedEnd = Math.min(this.acceptedEnd, end);
+    }
+    return end;
+  }
+
   reset(start = 0): void {
     this.next = start;
     this.acceptedEnd = start;

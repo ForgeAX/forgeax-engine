@@ -1,5 +1,5 @@
 // view-ubo-layout.browser.test.ts - feat-20260518-pbr-direct-lighting-mvp
-// feat-20260827-directional-csm-pcss-quality M1: VIEW_UBO_BYTES is 1376 (fog, atmosphere and sky-fog lanes included)
+// feat-20260827-directional-csm-pcss-quality M1: VIEW_UBO_BYTES is 1392 (fog, atmosphere and sky-fog lanes included)
 // while the View slot is 1536 B. The prefix layout is unchanged and the
 // directional shadow carrier reuses the existing tail pad.
 // 16 B + cameraPos 16 B + lightSpaceMatrix 64 B + inverseViewProj 64 B;
@@ -51,7 +51,7 @@ const DIRECTIONAL_FILTER_OFFSET = 512;
 const SPOT_LIGHT_VIEW_PROJ_OFFSET = 528;
 
 describe('w4 view UBO 292-f32 std140 layout (AC-06, browser)', () => {
-  it.skipIf(!browserReady)('host write payload is exactly 1376 bytes (344 floats)', () => {
+  it.skipIf(!browserReady)('host write payload is exactly 1392 bytes (348 floats)', () => {
     // The host (view-ubo.ts) builds a Float32Array(292) and
     // emits a single queue.writeBuffer. Asserting the size lock here keeps
     // the host shape and shader ABI in agreement before the GPU sees it.
@@ -154,7 +154,7 @@ describe('w4 view UBO 292-f32 std140 layout (AC-06, browser)', () => {
     expect(SPOT_LIGHT_VIEW_PROJ_OFFSET).toBe(132 * 4);
     expect(SPOT_LIGHT_VIEW_PROJ_OFFSET - DIRECTIONAL_FILTER_OFFSET).toBe(16);
     expect(SPOT_LIGHT_VIEW_PROJ_OFFSET + 4 * 4 * 16).toBe(784);
-    expect(VIEW_UBO_BYTES).toBe(1376);
+    expect(VIEW_UBO_BYTES).toBe(1392);
   });
 
   it.skipIf(!browserReady)(

@@ -435,7 +435,7 @@ function observeSourceInputs(scene: GpuScene) {
   const prepare = scene.prepareSourceInputs;
   const spy = vi
     .spyOn(scene, 'prepareSourceInputs')
-    .mockImplementation(function* (task, capture, current) {
+    .mockImplementation(function* (task, capture, current, retired) {
       return yield* prepare.call(
         scene,
         task,
@@ -444,6 +444,7 @@ function observeSourceInputs(scene: GpuScene) {
           capture(input);
         },
         current,
+        retired,
       );
     });
   const committed = new Set<GpuSceneInputPreparation>();

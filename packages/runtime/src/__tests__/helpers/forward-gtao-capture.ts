@@ -15,6 +15,7 @@ const GPU_BUFFER_USAGE_MAP_READ = 0x01;
 const GPU_BUFFER_USAGE_COPY_DST = 0x08;
 const GPU_MAP_MODE_READ = 0x01;
 export type ForwardGtaoTargetName =
+  | 'ssao-calc'
   | 'ssao-raw'
   | 'ssao-blurred'
   | 'standard-scene-surface-normal'

@@ -41,7 +41,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'deferred',
-          ambientOcclusion: enabled ? { enabled: true, method: algorithm, radius: 0.5, bias: 0.025, intensity: 1, quality: 'high' } : { enabled: false },
+          ambientOcclusion: enabled ? { enabled: true, method: algorithm } : { enabled: false },
         },
       },
       forgeaxBundlerAdapter(),
@@ -97,9 +97,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   controls.innerHTML = `<nav><a href="?">Plane + cube</a> · <a href="?scene=room">Room</a></nav><strong>${room ? "Room: AO + soft shadows" : "Plane + cube"}</strong>
     <label><input id="ao-enabled" type="checkbox" ${enabled ? 'checked' : ''}> Ambient occlusion</label>
     <label>Method <select id="ao-algorithm"><option value="ssao" ${algorithm === 'ssao' ? 'selected' : ''}>SSAO</option><option value="gtao" ${algorithm === 'gtao' ? 'selected' : ''}>GTAO</option></select></label>
-    <label>Quality <select id="ao-quality"><option>low</option><option>medium</option><option selected>high</option></select></label>
-    <label>Radius <input id="ao-radius" type="range" min="0.1" max="1.5" step="0.05" value="0.5"></label>
-    <label>Strength <input id="ao-strength" type="range" min="0" max="3" step="0.1" value="1"></label>
+    <label>Quality <select id="ao-quality"><option value="25">Low</option><option value="50" selected>Medium</option><option value="100">High</option></select></label>
+    <label>Radius <input id="ao-radius" type="range" min="0.1" max="4" step="0.05" value="2"></label>
+    <label>Strength <input id="ao-strength" type="range" min="0" max="1" step="0.05" value="0.5"></label>
     <label>Cube lift <input id="cube-lift" type="range" min="0" max="2" step="0.05" value="0"></label>
     ${room ? '<label>Shadows <select id="shadow-filter"><option value="off">Off</option><option value="pcf3">PCF 3</option><option value="pcf5">PCF 5</option><option value="pcssMedium" selected>PCSS medium</option><option value="pcssHigh">PCSS high</option></select></label><label>Sun angular radius <input id="shadow-radius" type="range" min="0.001" max="0.05" step="0.001" value="0.025"></label>' : ''}
     <small>Toggle AO at the contact edge, then lift the cube. Lights and exposure stay fixed.</small>`;
@@ -110,10 +110,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return element;
   };
   controls.addEventListener('input', () => {
-    const quality = controls.querySelector<HTMLSelectElement>('#ao-quality')?.value as
-      | 'low'
-      | 'medium'
-      | 'high';
+    const quality = Number(controls.querySelector<HTMLSelectElement>('#ao-quality')?.value ?? 50);
+    const method = controls.querySelector<HTMLSelectElement>('#ao-algorithm')?.value === 'gtao' ? 'gtao' : 'ssao';
+    const radius = Number(input('ao-radius').value);
     app.world
       .set(movingContact, Transform, { pos: [0, Number(input('cube-lift').value), 0] })
       .unwrap();
@@ -121,8 +120,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       ...app.renderer.inspect().profile,
       ambientOcclusion: input('ao-enabled').checked
         ? { enabled: true,
-            method: controls.querySelector<HTMLSelectElement>('#ao-algorithm')?.value === 'gtao' ? 'gtao' : 'ssao',
-            radius: Number(input('ao-radius').value),
+            method,
+            ...(method === 'gtao' ? { gtao: { falloffEnd: radius } } : { radius }),
             intensity: Number(input('ao-strength').value),
             quality,
           }

@@ -8,13 +8,16 @@ describe('render consumes geometry layout projection', () => {
   it('does not retain the legacy stride discriminator or uv count as layout authority', () => {
     const renderData = source('render-data.ts');
     const store = source('device/gpu-residency.ts');
+    const lodGeometry = source('device/mesh-lod-geometry.ts');
     const pipeline = source('pipeline-spec.ts');
 
     expect(renderData).toMatch(/VertexLayoutProjection/);
     expect(store).toMatch(/VertexLayoutProjection/);
     expect(pipeline).toMatch(/VertexLayoutProjection/);
     expect(renderData).toMatch(/deriveVertexLayoutProjection/);
-    expect(store).toMatch(/layoutProjection\.arrayStride/);
+    expect(store).toContain('deriveVertexCount(mesh.vertices, renderData.layoutProjection)');
+    expect(store).toContain('packMeshLodGeometry(mesh, renderData, lodMeshes, split)');
+    expect(lodGeometry).toContain('rootData.layoutProjection.arrayStride');
   });
 
   it('routes GPU layout construction through the geometry owner', () => {

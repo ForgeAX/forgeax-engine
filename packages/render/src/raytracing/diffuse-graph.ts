@@ -1,4 +1,5 @@
 import {
+  type GraphBuffer,
   type GraphTextureView,
   type RenderGraphBuilder,
   RenderGraphError,
@@ -22,12 +23,14 @@ export type ExactRayDiffuseTargets = RayDiffuseTargets & {
 
 export interface RayDiffuseTargets {
   readonly scene: RenderPipelineTarget;
+  /** The deferred raster produces this only for an admitted GI consumer. */
+  readonly diffuseGiBaseline: GraphBuffer;
+  readonly subsurfaceDiffuse?: RenderPipelineTarget;
   readonly depth: GraphTextureView;
   readonly normal: RenderPipelineTarget;
   readonly albedo: RenderPipelineTarget;
   readonly f0: RenderPipelineTarget;
   readonly compactGbuffer?: true;
-  readonly subsurfaceDiffuse?: RenderPipelineTarget;
   /** Visible-surface identity; only the exact gather reads it (`visibleSurface` profiles). */
   readonly identity?: RenderPipelineTarget;
   readonly motion: RenderPipelineTarget;
@@ -150,17 +153,13 @@ export function addRayDiffusePasses(
     if (!reconstructed.ok) return reconstructed;
     irradiance = reconstructed.value;
   }
-  const reflectionResponse =
-    prepared.reflections === undefined ? undefined : target.reflection?.response.view;
   const composited = addRayDiffuseCompositePass(
     graph,
     'ray-diffuse.composite',
     () => prepared.composite,
     target,
     irradiance,
-    view,
     prepared.pixelCount,
-    reflectionResponse,
   );
   if (!composited.ok || prepared.reflections === undefined || target.reflection === undefined)
     return composited;

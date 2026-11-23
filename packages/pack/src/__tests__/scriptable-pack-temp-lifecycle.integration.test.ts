@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Worker } from 'node:worker_threads';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createScriptablePackModuleExecutorPool,
   createScriptablePackSourceSnapshot,
@@ -15,15 +15,15 @@ import {
 
 it('returns the module failure and retires its Worker when temporary allocation is unavailable', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pack-unavailable-temp-'));
-  try {
-    const source = join(root, 'owner.pack.ts');
-    await writeFile(source, 'export default {};');
-    const { stdout } = await promisify(execFile)(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        `import { Worker } from 'node:worker_threads';
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'owner.pack.ts');
+  await writeFile(source, 'export default {};');
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { Worker } from 'node:worker_threads';
         const workers = new Set();
         const on = Worker.prototype.on;
         Worker.prototype.on = function (...args) {
@@ -39,25 +39,22 @@ it('returns the module failure and retires its Worker when temporary allocation 
         } finally {
           await Promise.all([...workers].map(w => w.terminate()));
         }`,
-        source,
-        new URL('../../dist/scriptable-pack-node.mjs', import.meta.url).href,
-      ],
-      {
-        env: {
-          ...process.env,
-          TMPDIR: join(root, 'missing-parent'),
-          TMP: join(root, 'missing-parent'),
-          TEMP: join(root, 'missing-parent'),
-        },
+      source,
+      new URL('../../dist/scriptable-pack-node.mjs', import.meta.url).href,
+    ],
+    {
+      env: {
+        ...process.env,
+        TMPDIR: join(root, 'missing-parent'),
+        TMP: join(root, 'missing-parent'),
+        TEMP: join(root, 'missing-parent'),
       },
-    );
-    expect(JSON.parse(stdout)).toMatchObject({
-      result: { ok: false, error: { detail: { reason: 'module-load', phase: 'module-load' } } },
-      workers: [-1],
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+    },
+  );
+  expect(JSON.parse(stdout)).toMatchObject({
+    result: { ok: false, error: { detail: { reason: 'module-load', phase: 'module-load' } } },
+    workers: [-1],
+  });
 });
 
 it('does not restart a retired worker when captured sources arrive after the module timeout', async () => {
@@ -107,41 +104,38 @@ it.each([
   'timeout',
 ] as const)('removes the compiled module directory after %s', async (mode) => {
   const root = await mkdtemp(join(tmpdir(), 'pack-temp-lifecycle-'));
-  try {
-    const source = join(root, 'owner.pack.ts');
-    const build =
-      mode === 'failure'
-        ? "throw new Error('AUTHORED_FAILURE');"
-        : mode === 'timeout'
-          ? 'return new Promise(() => {});'
-          : 'return { ok: true, value: {} };';
-    await writeFile(
-      source,
-      `export default { schemaVersion: '2.0.0',
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'owner.pack.ts');
+  const build =
+    mode === 'failure'
+      ? "throw new Error('AUTHORED_FAILURE');"
+      : mode === 'timeout'
+        ? 'return new Promise(() => {});'
+        : 'return { ok: true, value: {} };';
+  await writeFile(
+    source,
+    `export default { schemaVersion: '2.0.0',
       packageId: new Uint8Array(16).fill(7), name: new URL('.', import.meta.url).href,
       build() { ${build} } };`,
-    );
-    const loaded = await loadScriptablePack(source, { buildTimeoutMs: 100 });
-    if (!loaded.ok) throw loaded.error;
-    const compileRoot = fileURLToPath(loaded.value.name ?? '');
-    expect((await stat(compileRoot)).isDirectory()).toBe(true);
-    const built = loaded.value.build({
-      packageId: loaded.value.packageId,
-      readByGuid: async () => {
-        throw new Error('unused');
-      },
+  );
+  const loaded = await loadScriptablePack(source, { buildTimeoutMs: 100 });
+  if (!loaded.ok) throw loaded.error;
+  const compileRoot = fileURLToPath(loaded.value.name ?? '');
+  expect((await stat(compileRoot)).isDirectory()).toBe(true);
+  const built = loaded.value.build({
+    packageId: loaded.value.packageId,
+    readByGuid: async () => {
+      throw new Error('unused');
+    },
+  });
+  if (mode === 'failure') await expect(built).rejects.toThrow('AUTHORED_FAILURE');
+  else if (mode === 'timeout')
+    expect(await built).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'timeout', phase: 'build' } },
     });
-    if (mode === 'failure') await expect(built).rejects.toThrow('AUTHORED_FAILURE');
-    else if (mode === 'timeout')
-      expect(await built).toMatchObject({
-        ok: false,
-        error: { detail: { reason: 'timeout', phase: 'build' } },
-      });
-    else expect(await built).toEqual({ ok: true, value: {} });
-    await expect(stat(compileRoot)).rejects.toMatchObject({ code: 'ENOENT' });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  else expect(await built).toEqual({ ok: true, value: {} });
+  await expect(stat(compileRoot)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('recreates a removed idle compile directory from current source and removes it on pool retirement', async () => {

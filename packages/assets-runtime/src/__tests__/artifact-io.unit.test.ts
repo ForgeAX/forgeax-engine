@@ -1,35 +1,35 @@
+import { createHash } from 'node:crypto';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { readArtifact } from '../registry/artifact-io';
 
-const GUID = '11111111-1111-4111-8111-111111111111';
+const guid = '11111111-1111-4111-8111-111111111111';
+const bytes = Uint8Array.of(1, 2, 3);
+const integrity = {
+  algorithm: 'sha256',
+  digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+} as const;
 
-function descriptor(path: string, changes: Partial<ArtifactDescriptor> = {}): ArtifactDescriptor {
-  return { path, mediaType: 'application/octet-stream', ...changes };
-}
-
-function response(bytes: Uint8Array, ok = true): Response {
-  const body = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(body).set(bytes);
-  return new Response(body, { status: ok ? 200 : 404 });
+function read(changes: Partial<ArtifactDescriptor>, fetcher: typeof fetch) {
+  return readArtifact(
+    {
+      packageUrl: 'https://example.test/packages/main.pack.json',
+      guid,
+      artifactKey: 'source',
+      descriptor: { path: 'payload.bin', mediaType: 'application/octet-stream', ...changes },
+    },
+    fetcher,
+  );
 }
 
 describe('artifact I/O', () => {
-  it('rejects an empty media type before fetching artifact bytes', async () => {
+  it('rejects an empty media type before fetching bytes', async () => {
     const fetcher = vi.fn();
-    const result = await readArtifact(
-      {
-        packageUrl: 'https://example.test/packages/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor('payload.bin', { mediaType: '' }),
-      },
-      fetcher,
-    );
-
-    expect(result.ok).toBe(false);
+    expect(await read({ mediaType: '' }, fetcher)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-artifact-media-unsupported' },
+    });
     expect(fetcher).not.toHaveBeenCalled();
-    if (!result.ok) expect(result.error.code).toBe('asset-artifact-media-unsupported');
   });
 
   it.each([
@@ -41,87 +41,88 @@ describe('artifact I/O', () => {
     '..\\outside.bin',
   ])('rejects unsafe locator %s before reading', async (path) => {
     const fetcher = vi.fn();
-    const result = await readArtifact(
-      {
-        packageUrl: 'https://example.test/packages/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor(path),
+    expect(await read({ path }, fetcher)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-artifact-path-invalid',
+        detail: { guid, artifactKey: 'source' },
+        hint: expect.stringContaining('package-relative'),
       },
-      fetcher,
-    );
-
-    expect(result.ok).toBe(false);
+    });
     expect(fetcher).not.toHaveBeenCalled();
-    if (!result.ok) {
-      expect(result.error.code).toBe('asset-artifact-path-invalid');
-      expect(result.error.detail.guid).toBe(GUID);
-      expect(result.error.detail.artifactKey).toBe('source');
-      expect(result.error.hint).toContain('package-relative');
-    }
   });
 
-  it('reads a normalized package-relative artifact and preserves asset codec metadata as data', async () => {
-    const fetcher = vi.fn().mockResolvedValue(response(Uint8Array.of(1, 2, 3)));
-    const result = await readArtifact(
-      {
-        packageUrl: 'https://example.test/packages/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor('./payload.bin', {
+  it('reads a normalized package-relative artifact and leaves its asset codec metadata to the caller', async () => {
+    const fetcher = vi.fn(async () => new Response(bytes));
+    expect(
+      await read(
+        {
+          path: './payload.bin',
           mediaType: 'image/ktx2',
           assetCodec: { name: 'basis', profile: 'uastc' },
           contentEncoding: 'identity',
-        }),
+        },
+        fetcher,
+      ),
+    ).toEqual({ ok: true, value: bytes });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith('https://example.test/packages/payload.bin');
+  });
+
+  it('returns structured missing and unsupported encoding errors', async () => {
+    expect(
+      await read({ path: 'missing.bin' }, async () => new Response(null, { status: 404 })),
+    ).toMatchObject({ ok: false, error: { code: 'asset-artifact-missing' } });
+    expect(await read({ contentEncoding: 'brotli' as never }, vi.fn())).toMatchObject({
+      ok: false,
+      error: { code: 'asset-artifact-encoding-unsupported' },
+    });
+  });
+
+  it.each([
+    ['valid', bytes],
+    ['corrupt', Uint8Array.of(3, 2, 1)],
+    ['missing', null],
+  ] as const)('verifies a %s stream body against the published digest', async (state, body) => {
+    const fetcher = vi.fn(async () => new Response(body, { status: body === null ? 404 : 200 }));
+    const result = await read(
+      {
+        delivery: 'stream',
+        path: 'cover.png',
+        mediaType: 'image/png',
+        byteLength: bytes.byteLength,
+        integrity,
       },
       fetcher,
     );
-
-    expect(result).toEqual({ ok: true, value: Uint8Array.of(1, 2, 3) });
-    expect(fetcher).toHaveBeenCalledWith('https://example.test/packages/payload.bin');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    if (state === 'valid') expect(result).toEqual({ ok: true, value: bytes });
+    else
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code:
+            state === 'missing' ? 'asset-artifact-missing' : 'asset-artifact-integrity-mismatch',
+        },
+      });
   });
 
-  it('returns structured missing, encoding, and integrity failures', async () => {
-    const missing = await readArtifact(
-      {
-        packageUrl: 'https://example.test/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor('missing.bin'),
+  it('reports a same-sized body with the wrong digest as an integrity mismatch', async () => {
+    expect(
+      await read(
+        {
+          contentEncoding: 'identity',
+          byteLength: bytes.byteLength,
+          integrity,
+        },
+        async () => new Response(Uint8Array.of(3, 2, 1)),
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-artifact-integrity-mismatch',
+        expected: expect.stringContaining('sha256'),
+        detail: { guid, artifactKey: 'source', observed: expect.any(String) },
       },
-      vi.fn().mockResolvedValue(response(new Uint8Array(), false)),
-    );
-    expect(missing.ok).toBe(false);
-    if (!missing.ok) expect(missing.error.code).toBe('asset-artifact-missing');
-
-    const unsupported = await readArtifact(
-      {
-        packageUrl: 'https://example.test/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor('payload.bin', { contentEncoding: 'brotli' as never }),
-      },
-      vi.fn(),
-    );
-    expect(unsupported.ok).toBe(false);
-    if (!unsupported.ok) expect(unsupported.error.code).toBe('asset-artifact-encoding-unsupported');
-
-    const integrity = await readArtifact(
-      {
-        packageUrl: 'https://example.test/main.pack.json',
-        guid: GUID,
-        artifactKey: 'source',
-        descriptor: descriptor('payload.bin', {
-          integrity: { algorithm: 'sha256', digest: 'not-the-digest' },
-        }),
-      },
-      vi.fn().mockResolvedValue(response(Uint8Array.of(1, 2, 3))),
-    );
-    expect(integrity.ok).toBe(false);
-    if (!integrity.ok) {
-      expect(integrity.error.code).toBe('asset-artifact-integrity-mismatch');
-      expect(integrity.error.detail.guid).toBe(GUID);
-      expect(integrity.error.detail.artifactKey).toBe('source');
-    }
+    });
   });
 });

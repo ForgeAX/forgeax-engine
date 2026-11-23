@@ -1,8 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { compressZstd } from '@forgeax/engine-codec/encode';
-import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import {
   createMaterialPackCooker,
   getShaderCompilerFingerprint,
@@ -25,6 +24,7 @@ import {
   ThreeSurfaceError,
   type ThreeSurfaceRecipe,
 } from '../node-surface';
+import { packMaterialPrograms } from './program-publication';
 
 const wgslType = (type: SurfaceExpression['type']) =>
   type === 'float' ? 'f32' : type === 'bool' ? 'bool' : `${type}<f32>`;
@@ -179,7 +179,6 @@ export async function cookThreeSurface(
     material as SupportedMaterial,
     textures,
     undefined,
-    false,
     planarReflection,
   ).unwrap();
   const module = `forgeax_three::surface_${graph.graphKey}`;
@@ -214,12 +213,7 @@ export async function cookThreeSurface(
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
-    const compression = await compressZstd(
-      new TextEncoder().encode(`[${serializeCookedMaterialRecord(record)}]`),
-    );
-    if (!compression.ok) throw compression.error;
-    const compressed = compression.value;
-    return { recipe, publication: Buffer.from(compressed).toString('base64') };
+    return { recipe, publication: await packMaterialPrograms([record]) };
   } finally {
     await rm(root, { recursive: true, force: true });
   }

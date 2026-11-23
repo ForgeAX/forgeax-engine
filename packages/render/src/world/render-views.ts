@@ -16,6 +16,7 @@ import {
 } from '../components/camera-view';
 import { type StereoEye, stereoEyeViewport } from '../components/stereo-camera';
 import { CameraViewInvalidError } from '../errors/render';
+import type { SubmissionCameras } from '../extract/cameras';
 import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import type {
   CameraSnapshot,
@@ -27,7 +28,7 @@ import { cameraForView, resolveCameraTarget, selectCameraRoles } from '../render
 import { RenderViewCamerasOrder, RenderViewsOrder } from '../system-order';
 import type { RenderTarget } from '../targets/contracts';
 import { RenderCommit, RenderExtract, renderSubmission } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 
 /** Eye column of a composed view: a mono CameraView or one stereo eye of it. */
 export const ViewEyeValue = Object.freeze({ mono: 0, left: 1, right: 2 } as const);
@@ -86,10 +87,7 @@ export function viewCameraOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewCameraState | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewCamera)) return undefined;
-  return world
-    .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
-    .unwrap();
+  return readViewState<ViewCameraState>(world, entity, ViewCamera);
 }
 
 /**
@@ -101,9 +99,11 @@ export function composedViewCamera(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewCameraState | undefined {
-  if (entity === undefined || !world.hasComponent(entity, RenderView)) return undefined;
-  const view = world.get(entity, RenderView).unwrap();
-  return view.primary || view.capture ? undefined : viewCameraOf(world, entity);
+  if (entity === undefined || readViewField(world, entity, RenderView, 'primary') !== false)
+    return undefined;
+  return readViewField(world, entity, RenderView, 'capture')
+    ? undefined
+    : viewCameraOf(world, entity);
 }
 
 /**
@@ -141,10 +141,13 @@ type ViewSubmissionFacts = {
  * was accepted. Every history commit reads this, never queue acceptance alone.
  */
 export function viewAccepted(world: World, entity: EntityHandle | undefined): boolean {
-  if (entity === undefined || !world.hasComponent(entity, ViewSubmission)) return false;
+  if (entity === undefined) return false;
+  const acceptedByView = readViewField(world, entity, ViewSubmission, 'accepted');
+  if (acceptedByView === undefined) return false;
   const { accepted, frame } = renderSubmission(world);
-  const submission = world.get(entity, ViewSubmission).unwrap();
-  return accepted && submission.accepted && submission.attempt === frame;
+  return (
+    accepted && acceptedByView && readViewField(world, entity, ViewSubmission, 'attempt') === frame
+  );
 }
 
 /** Write a view's record-attempt outcome; a view entity that retired is skipped. */
@@ -249,11 +252,12 @@ function primaryDisplayCamera(
   publication: PreparedRenderPublication | undefined,
   world: World | undefined,
   cameraEntityKey: number | undefined,
+  source: SubmissionCameras | undefined,
 ): CameraSnapshot | undefined {
   if (publication !== undefined) return publication.frame.cameras[0];
   if (world === undefined) return undefined;
   try {
-    return selectCameraRoles(world, cameraEntityKey).display[0];
+    return selectCameraRoles(world, cameraEntityKey, undefined, source).display[0];
   } catch {
     return undefined;
   }
@@ -267,6 +271,7 @@ export class RenderViewFrameSource implements RenderViewSource {
   primary = false;
   maxRenderShortSide = 0;
   primaryCamera: CameraSnapshot | undefined;
+  cameraSource: SubmissionCameras | undefined;
   /** The camera owner World; source Worlds name each attachment. */
   world: World | undefined;
   /** The frame's draw options; each recording view stages its own camera over them. */
@@ -303,15 +308,17 @@ export class RenderViewFrameSource implements RenderViewSource {
     publication: PreparedRenderPublication | undefined,
     receiver?: RenderPublicationReceiver,
     maxRenderShortSide = 0,
+    cameraSource?: SubmissionCameras,
   ): void {
     assertRenderShortSide(maxRenderShortSide);
     assertViewCameras(cameras, maxRenderShortSide > 0);
+    this.cameraSource = cameraSource;
     this.maxRenderShortSide = maxRenderShortSide;
     this.cameras = cameras;
     this.captures = captures;
     this.primary = maxRenderShortSide === 0 && !cameras.some((camera) => camera.view !== undefined);
     this.primaryCamera = this.primary
-      ? primaryDisplayCamera(publication, world, opts.cameraEntityKey)
+      ? primaryDisplayCamera(publication, world, opts.cameraEntityKey, cameraSource)
       : undefined;
     this.world = world;
     this.opts = opts;
@@ -321,6 +328,7 @@ export class RenderViewFrameSource implements RenderViewSource {
   }
 
   clear(): void {
+    this.cameraSource = undefined;
     this.cameras = this.captures = [];
     this.primary = false;
     this.primaryCamera = this.world = this.lease = this.publication = this.receiver = undefined;

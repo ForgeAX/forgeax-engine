@@ -22,7 +22,7 @@ Shader Compiler 是构建期 WGSL 组合、编译、入口校验和反射的所�
 
 普通 `.pack.ts` 材质发布 `material-template/1`，携带解析后的材质契约和可达的 WGSL 源码模块。游戏运行时按 Render 请求的 pass、设备、顶点输入和提交路径编译程序，并使用相同的反射和 ABI 校验。Pack 生产者版本为 `material-pack-cooker/7`。已有的 `material-cook/5` 编译产物仍可加载。
 
-自定义受光材质选择 `program.bindings: 'render-lit-material-and-scene-depth'` 和 `sceneDepth: 'before-pass'`，普通参数 schema 仍为权威。从 `forgeax_material::lighting_inputs` 导入 `irradianceMap`、`irradianceSampler`、`prefilterMap`、`prefilterSampler`、`brdfLut`、`skylight` 和 `skylightPrefilterMap`。cooker 根据该材质自己的派生参数 schema，在用户绑定区域之后生成 Engine-owned 模块；项目 WGSL 不得声明或猜测其槽位。发布验证生成资源身份，只接纳该模块实际保留的资源，继续拒绝无关、未声明或冒充的绑定。
+自定义受光材质选择 `program.bindings: 'render-lit-material-and-scene-depth'` 和 `sceneDepth: 'before-pass'`，普通参数 schema 仍为权威。从 `forgeax_material::lighting_inputs` 导入 `skySh`、`irradianceSampler`、`prefilterMap`、`prefilterSampler`、`brdfLut` 和 `skylight`。cooker 根据该材质自己的派生参数 schema，在用户绑定区域之后生成 Engine-owned 模块；项目 WGSL 不得声明或猜测其槽位。发布验证生成资源身份，只接纳该模块实际保留的资源，继续拒绝无关、未声明或冒充的绑定。
 
 显式声明 `sceneDepth: 'before-pass'` pass 的 Standard Surface 可导入 `forgeax_material::scene_depth::{sceneDepth}`。该 Engine-owned 单采样深度纹理位于 Standard View group 的 binding 1；所选模板只为该契约将它加入受信任依赖闭包。Surface 和项目 helper 仍不能声明资源绑定。Renderer 负责 pass 前深度解析，包括多重采样视图。
 

@@ -110,7 +110,9 @@ describe('stock-recorder raster classes', () => {
     expect(update('a', 'b').recording).toBe(base);
     expect(update('a').recording).toBe(base);
     expect(update('a', 'b').recording).toBe(base);
-    expect(owner.changes.lateRecordingClasses).toBe(1);
+    // Leaving the live roster releases the name. Re-entry is a second admission
+    // to the same graph identity and contributes a second diagnostic change.
+    expect(owner.changes.lateRecordingClasses).toBe(2);
     // The raw projection still follows its class set.
     expect(update('a', 'c').raw).not.toBe(update('a').raw);
     // Only a pass-list generation change rebuilds the stock graph.

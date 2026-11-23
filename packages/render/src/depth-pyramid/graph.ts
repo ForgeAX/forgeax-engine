@@ -7,6 +7,7 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
   RenderGraphFrame,
+  RenderGraphNativePass,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError as DepthGraphError } from '@forgeax/engine-render-graph';
 import type { BindGroup, Buffer, RhiDevice, TextureView } from '@forgeax/engine-rhi';
@@ -17,6 +18,7 @@ import {
   resolvedGraphBuffer,
   resolvedGraphView,
 } from '../compute-graph-state';
+import type { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import type { BindGroupCounts } from '../record/frame-snapshot';
 import {
@@ -27,8 +29,10 @@ import {
 } from '../record/mesh-ssbo';
 import type { NativeGraphInputs } from '../record/native-graph-inputs';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { viewTargetTextures } from '../record/view-target-textures';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { CurrentOcclusionDepth } from './current-occlusion';
 import {
   buildDepthPyramidPlan,
   DEPTH_PYRAMID_FORMAT,
@@ -165,6 +169,9 @@ interface DepthPyramidGraphInputBase {
   readonly execution?: 'compute' | 'fragment';
   /** Shared View UBO; its projection range linearizes depth. */
   readonly view?: GraphBuffer;
+  /** A native consumer also uses mip zero as a full-resolution linear depth source. */
+  readonly fullResolutionSeed?: true;
+  readonly mipLevelLimit?: number;
   readonly width: number;
   readonly height: number;
 }
@@ -270,11 +277,10 @@ export function estimateDepthPyramidMemory(extent: DepthPyramidExtent): number {
 
 function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
-  extent: DepthPyramidExtent,
+  plan: DepthPyramidPlan,
   name: string,
   reduction: DepthPyramidReduction,
 ): Result<DepthPyramid, RenderGraphError> {
-  const plan = planViewDepthPyramid(extent);
   const created = graph.createTexture(name, {
     format: DEPTH_PYRAMID_FORMAT,
     size: plan.graphSize,
@@ -458,12 +464,23 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const multisampled = input.reduction === 'furthest' && input.multisampled === true;
   const seedPass = `${label}-seed`;
   const reducePass = `${label}-reduce-chain`;
-  const created = createDepthPyramid(
-    graph,
-    { width: input.width, height: input.height },
-    label,
-    reduction,
+  const fullPlan =
+    input.fullResolutionSeed === true && input.execution !== 'fragment'
+      ? buildDepthPyramidPlan(input)
+      : planViewDepthPyramid(input);
+  const mipLevelCount = Math.min(
+    fullPlan.mipLevelCount,
+    input.mipLevelLimit ?? fullPlan.mipLevelCount,
   );
+  const plan =
+    mipLevelCount === fullPlan.mipLevelCount
+      ? fullPlan
+      : {
+          ...fullPlan,
+          mipLevelCount,
+          levels: fullPlan.levels.slice(0, mipLevelCount),
+        };
+  const created = createDepthPyramid(graph, plan, label, reduction);
   if (!created.ok) return created;
   const pyramid = created.value;
   if (input.execution === 'fragment') return addFragmentDepthPyramidPasses(graph, input, pyramid);
@@ -553,4 +570,128 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
     passNames.push(reducePass);
   }
   return ok({ pyramid, passNames: Object.freeze(passNames) });
+}
+
+/** A stock camera's late kernels consume its early depth on the same physical encoder. */
+export function addCurrentCameraOcclusion(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  input: {
+    readonly depth: GraphTextureView;
+    readonly view: GraphBuffer;
+    readonly width: number;
+    readonly height: number;
+    readonly multisampled: boolean;
+  },
+  currentView: () => GpuDrivenView | undefined,
+  readback: RenderGraphNativePass,
+): Result<void, RenderGraphError> {
+  const plan = planViewDepthPyramid(input);
+  const program = createDepthPyramidProgramResolver(PROGRAM_LAYOUTS);
+  let active: _InternalRenderPipelineContext | undefined;
+  let view: GpuDrivenView | undefined;
+  let depth: TextureView | undefined;
+  let uniform: Buffer | undefined;
+  let image: ReturnType<CurrentOcclusionDepth['write']> | undefined;
+  const seed: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'occlusion-depth-pyramid-seed',
+    encode(pass) {
+      const source = active?.depthPyramidShaders?.seed;
+      const target = image?.levels[0];
+      if (
+        active === undefined ||
+        source === undefined ||
+        target === undefined ||
+        depth === undefined ||
+        uniform === undefined
+      )
+        throw computePipelineError('current camera depth pyramid seed');
+      const state = program(
+        active,
+        source,
+        input.multisampled ? SEED_MULTISAMPLED_ENTRIES : SEED_ENTRIES,
+        input.multisampled ? 'seed_furthest_multisampled' : 'seed_furthest',
+      );
+      pass.setPipeline(state.pipeline);
+      pass.setBindGroup(
+        0,
+        seedNativeBinding(
+          active.runtime.device,
+          active.bindGroupCounts,
+          state,
+          depth,
+          target,
+          uniform,
+          input.multisampled,
+        ),
+      );
+      pass.dispatchWorkgroups(Math.ceil(plan.extent.width / 8), Math.ceil(plan.extent.height / 8));
+    },
+  };
+  const reduce: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'occlusion-depth-pyramid-reduce-chain',
+    encode(pass) {
+      const source = active?.depthPyramidShaders?.reduce;
+      if (active === undefined || source === undefined || image === undefined)
+        throw computePipelineError('current camera depth pyramid reduction');
+      const state = program(active, source, REDUCE_ENTRIES, 'reduce_furthest');
+      pass.setPipeline(state.pipeline);
+      for (let level = 1; level < plan.mipLevelCount; level++) {
+        const from = image.levels[level - 1],
+          to = image.levels[level],
+          extent = plan.levels[level];
+        if (from === undefined || to === undefined || extent === undefined)
+          throw computePipelineError('current camera depth mips');
+        pass.setBindGroup(
+          0,
+          reductionNativeBinding(active.runtime.device, active.bindGroupCounts, state, from, to),
+        );
+        pass.dispatchWorkgroups(Math.ceil(extent.width / 8), Math.ceil(extent.height / 8));
+      }
+    },
+  };
+  const cull: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'gpu-driven.occlusion-cull',
+    encode(pass) {
+      if (view === undefined || image === undefined)
+        throw computePipelineError('current camera occlusion cull');
+      view.recordCameraLateCull(pass, image.sampled);
+    },
+  };
+  const finalize: RenderGraphNativePass = {
+    kind: 'compute',
+    name: 'gpu-driven.occlusion-finalize-indirect',
+    encode(pass) {
+      if (view === undefined) throw computePipelineError('current camera indirect finalization');
+      view.recordCameraLateFinalize(pass);
+    },
+  };
+  return graph.addSubgraphPass('camera-late-selection', {
+    profilePasses: () => [seed, reduce, cull, finalize, readback],
+    accesses: [
+      { resource: input.depth, usage: 'sampled-read' },
+      { resource: input.view, usage: 'uniform-read' },
+    ],
+    executeIf: () => currentView() !== undefined,
+    commandsDirect(frame, resources, issue, recording) {
+      active = frame as _InternalRenderPipelineContext;
+      try {
+        view = currentView();
+        const state = active.frameState;
+        state.currentOcclusionDepth ??= new CurrentOcclusionDepth(viewTargetTextures(active));
+        image = state.currentOcclusionDepth.write(plan);
+        depth = resources.textureView(input.depth).unwrap();
+        uniform = resources.buffer(input.view).unwrap();
+        issue(recording, seed);
+        if (plan.mipLevelCount > 1) issue(recording, reduce);
+        issue(recording, cull);
+        issue(recording, finalize);
+        issue(recording, readback);
+      } finally {
+        active = view = depth = uniform = image = undefined;
+      }
+    },
+  });
 }

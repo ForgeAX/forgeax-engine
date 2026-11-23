@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import type { PluginPackProgress } from '../plugin-contract.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
@@ -63,10 +64,7 @@ afterEach(() => {
 
 it('reports a real blocked cook before readiness and isolates observer failures', async () => {
   vi.stubEnv('FORGEAX_WORKSPACE_TIMING', '0');
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: blocked, resolve: release } = testGate();
   const events: PluginPackProgress[] = [];
   const fixture = await createPublicationFixture(async ({ guid }) => {
     await blocked;

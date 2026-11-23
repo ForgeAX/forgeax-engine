@@ -2,7 +2,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { expect, test } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
-import { meshDrawSnapshot, rotateMeshDraws } from '../mesh-draw';
+import { meshDrawSnapshot, SceneMeshDrawShapes } from '../mesh-draw';
 import { MeshFrame } from '../mesh-frame';
 
 function source(entityKey: number): RenderableSnapshot {
@@ -18,21 +18,16 @@ function source(entityKey: number): RenderableSnapshot {
   };
 }
 
-test('draw projections stay shared across consecutive reads and never stay resident per row', () => {
+test('borrows current entity fields and shares admitted mesh facts across one frame', () => {
   const meshes = new MeshFrame().with(1, createBoxGeometry(2, 2, 2).unwrap());
-  const row = source(1);
+  const row = { ...source(1) };
   const first = meshDrawSnapshot(row, meshes);
-  expect(first).not.toBe(row);
-  expect(meshDrawSnapshot(row, meshes)).toBe(first);
-  rotateMeshDraws();
-  // A read in the next generation keeps the shared projection.
-  expect(meshDrawSnapshot(row, meshes)).toBe(first);
-  rotateMeshDraws();
-  rotateMeshDraws();
-  // Two generations without a read drop it: a cold complete read is not retained.
+  row.entityKey = 2;
   const later = meshDrawSnapshot(row, meshes);
-  expect(later).not.toBe(first);
-  expect(later).toEqual(first);
+  expect(later.entityKey).toBe(2);
+  expect(first.entityKey).toBe(1);
+  expect(later.localAabb).toBe(first.localAabb);
+  expect(later.materials).toBe(first.materials);
 });
 
 test('mesh binding projection rebases the appended WaterMesh material range after slot changes', () => {
@@ -65,6 +60,13 @@ test('mesh binding projection rebases the appended WaterMesh material range afte
   };
   const originalMaterials = row.materials;
   const originalWaterSource = row.waterMeshSource;
+
+  const shapes = new SceneMeshDrawShapes();
+  const { entityKey: _entity, transform: _transform, ...content } = row;
+  const displayed = shapes.resolve(content, meshes);
+  expect(displayed.materials).toEqual([ordinary, waterNear, waterFar]);
+  expect(displayed.waterMeshSource?.materialStartIndex).toBe(1);
+  expect(shapes.resolve(content, new MeshFrame())).toBe(content);
 
   const projected = meshDrawSnapshot(row, meshes);
   const draws = projected.waterMeshSource?.views[0]?.draws;

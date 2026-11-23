@@ -5,13 +5,14 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { samplerContribution } from '../../assets/asset-decoders';
 import { Instances, MeshFilter, MeshRenderer } from '../../components';
 import { GlyphText } from '../../components/glyph-text';
 import { InstanceProjectionStore } from '../../instances';
 import { Materials } from '../../materials';
 import { SkinTasks } from '../../record/skin-tasks';
+import { MaterialSourceEntries } from '../../scene/material-source-entries';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { preparePublicationGeometry } from '../prepare-geometry';
 import { createRenderPublisher } from '../publisher';
@@ -75,6 +76,34 @@ function fixture() {
   return { world, assets, publisher, receiver, scene, instances, publish, spawn };
 }
 const matrix = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+it('publishes rotating material edits without enumerating resident material contexts', () => {
+  const f = fixture();
+  const materials = Array.from({ length: 64 }, () => {
+    const owner = f.spawn();
+    const handle = f.assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
+    f.world.set(owner, MeshRenderer, { materials: [handle] }).unwrap();
+    return handle;
+  });
+  expect(f.publish().packet.materials).toHaveLength(64);
+  const walk = vi.spyOn(MaterialSourceEntries.prototype, Symbol.iterator);
+  try {
+    for (let i = 0; i < 60; i++) {
+      const handle = required(materials[i]);
+      f.assets.update(handle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
+      if (i % 10 === 0) f.publisher.prepare(i).unwrap().discard();
+      const { packet, frame } = f.publish();
+      expect(packet.materials.map(({ value }) => value.materialHandle)).toEqual([handle]);
+      expect(frame.renderables.length).toBe(64);
+    }
+    expect(walk).not.toHaveBeenCalled();
+  } finally {
+    walk.mockRestore();
+    f.publisher.dispose();
+    f.scene.dispose();
+    f.assets.dispose();
+  }
+});
 
 it('publishes authored GlyphText edits through a stable Font without writing Mesh components', () => {
   const f = fixture();

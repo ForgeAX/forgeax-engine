@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { relative, resolve, sep } from 'node:path';
 import type { PackAuthoringError, PackParameterValue } from './pack-authoring.js';
 import {
+  assertPackSourceRevision,
   type PackDraftSource,
   type PackDraftSourceOptions,
+  PackSourceRevisionConflict,
   readPackDraftSource,
+  writePackSourceAtomically,
 } from './pack-authoring-document.js';
 import {
   PackAuthoringDraft,
@@ -15,8 +18,8 @@ import {
   type PackDraftSnapshot,
   type PackDraftUpdate,
 } from './pack-authoring-draft.js';
-import { packSourceFailure, packSourceRevision } from './pack-authoring-literals.js';
-import { readPackAuthoringParent } from './pack-authoring-parent.js';
+import { packSourceFailure } from './pack-authoring-literals.js';
+import { readPackAuthoringParent } from './pack-source-index.js';
 
 export interface FileSystemPackDraftOptions<T> extends PackDraftSourceOptions {
   readonly gameRoot: string;
@@ -35,8 +38,6 @@ function conflict(sourcePath: string, reason: string): PackAuthoringError {
   };
 }
 
-// All document managers in this host serialize the same physical source.
-const sourceSaves = new Map<string, Promise<unknown>>();
 const MAX_REFRESH_ROUNDS = 3;
 
 /** Project/connection owner retains this manager; disposing it retires only its documents. */
@@ -49,7 +50,6 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
   };
   const documents = new Map<string, Entry>();
   const paths = new Map<string, string>();
-  const saves = sourceSaves;
   const openings = new Map<string, Promise<PackDraftSnapshot>>();
   let disposed = false;
   const confined = async (sourcePath: string) => {
@@ -83,54 +83,56 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
     }
     return readPackDraftSource(path, source, sourceOptions);
   };
-  const readOpeningSource = async (path: { absolute: string; path: string }) => {
-    let text = await readFile(path.absolute, 'utf8');
+  const settleSource = async <T>(
+    absolute: string,
+    apply: (input: string | { cause: unknown }) => Promise<T>,
+  ) => {
+    const read = () => readFile(absolute, 'utf8').catch((cause: unknown) => ({ cause }));
+    let text = await read();
     for (let round = 0; ; round++) {
-      let source: PackDraftSource;
-      try {
-        source = await parse(path.path, text);
-      } catch (cause) {
-        // Initial legacy-source recovery has no draft for refreshEntry to settle.
-        // A coalesced write must not leave that opening on its truncated read.
-        const current = await readFile(path.absolute, 'utf8');
-        if (current === text || round >= MAX_REFRESH_ROUNDS) throw cause;
-        text = current;
-        continue;
-      }
-      const current = await readFile(path.absolute, 'utf8');
-      if (current === text) return source;
-      if (round >= MAX_REFRESH_ROUNDS) throw conflict(path.path, 'source changed while opening');
+      const result = await apply(text);
+      if (result === undefined) return { result, current: text, stable: false };
+      // A watcher can coalesce the completion of a write it observed mid-flight.
+      const current = await read();
+      const stable = current === text;
+      if (stable || typeof current !== 'string' || round >= MAX_REFRESH_ROUNDS)
+        return { result, current, stable };
       text = current;
     }
   };
-  const refreshEntry = async (
-    entry: Entry,
-    onPrepared?: (snapshot: PackDraftSnapshot) => void,
-  ): Promise<PackDraftSnapshot | undefined> => {
-    const read = () => readFile(entry.absolute, 'utf8').catch((cause: unknown) => ({ cause }));
-    let text = await read();
-    for (let round = 0; ; round++) {
-      let result: PackDraftSnapshot;
+
+  const readOpeningSource = async (path: { absolute: string; path: string }) => {
+    const settled = await settleSource(path.absolute, async (text) => {
+      if (typeof text !== 'string') throw text.cause;
+      return parse(path.path, text).then(
+        (source) => ({ source }),
+        (cause: unknown) => ({ cause }),
+      );
+    });
+    if (typeof settled.current !== 'string') throw settled.current.cause;
+    if ('cause' in settled.result) throw settled.result.cause;
+    if (!settled.stable) throw conflict(path.path, 'source changed while opening');
+    return settled.result.source;
+  };
+
+  const refreshEntry = async (entry: Entry, onPrepared?: (snapshot: PackDraftSnapshot) => void) => {
+    const open = () => !disposed && documents.has(entry.draft.id);
+    const settled = await settleSource(entry.absolute, async (text) => {
       try {
         if (typeof text !== 'string') throw text.cause;
         const next = await parse(entry.source.document.sourcePath, text);
-        if (disposed || !documents.has(entry.draft.id)) return undefined;
-        result = await entry.draft.refresh(next.document, (snapshot) => {
+        if (!open()) return undefined;
+        const result = await entry.draft.refresh(next.document, (snapshot) => {
           entry.source = next;
           onPrepared?.(snapshot);
         });
         entry.source = next;
-      } catch (cause) {
-        if (disposed || !documents.has(entry.draft.id)) return undefined;
-        result = entry.draft.reportFailure(cause);
-      }
-      // A watcher may report a write mid-flight (after truncation) and coalesce
-      // its completion event, so the settled state must match the current file.
-      const current = await read();
-      if (typeof current !== 'string' || current === text || round >= MAX_REFRESH_ROUNDS)
         return result;
-      text = current;
-    }
+      } catch (cause) {
+        return open() ? entry.draft.reportFailure(cause) : undefined;
+      }
+    });
+    return settled.result;
   };
 
   const refresh = (entry: Entry, onPrepared?: (snapshot: PackDraftSnapshot) => void) => {
@@ -156,43 +158,31 @@ export function createFileSystemPackDrafts<T = unknown>(options: FileSystemPackD
   ): Promise<PackDraftDocument> => {
     const entry = documents.get(id);
     if (!entry) throw new Error('Pack authoring draft is closed');
-    const previous = saves.get(entry.absolute) ?? Promise.resolve();
-    const pending = previous
-      .catch(() => {})
-      .then(async () => {
-        const { absolute } = await confined(document.sourcePath);
-        if (absolute !== entry.absolute)
-          throw conflict(document.sourcePath, 'source target changed');
-        const current = await readFile(absolute, 'utf8');
-        if (packSourceRevision(current) !== document.revision)
-          throw conflict(document.sourcePath, 'source changed since the last refresh');
-        if (changes.size === 0) return entry.source.document;
-        const source = entry.source.write(changes);
-        const next = await parse(document.sourcePath, source);
-        const temporary = resolve(dirname(absolute), `.${randomUUID()}.pack-draft.tmp`);
-        try {
-          await writeFile(temporary, source, {
-            encoding: 'utf8',
-            flag: 'wx',
-            mode: (await stat(absolute)).mode,
-          });
+    const { absolute } = await confined(document.sourcePath);
+    if (absolute !== entry.absolute) throw conflict(document.sourcePath, 'source target changed');
+    try {
+      if (changes.size === 0) {
+        await assertPackSourceRevision(absolute, document.revision);
+        return entry.source.document;
+      }
+      const source = entry.source.write(changes);
+      const next = await parse(document.sourcePath, source);
+      await writePackSourceAtomically(absolute, source, {
+        expectedRevision: document.revision,
+        async validate() {
           if (disposed || !documents.has(id))
             throw new Error('Pack authoring draft closed before save');
-          if (packSourceRevision(await readFile(absolute, 'utf8')) !== document.revision)
-            throw conflict(document.sourcePath, 'source changed while preparing the atomic write');
-          await rename(temporary, absolute);
-        } finally {
-          await rm(temporary, { force: true });
-        }
-        entry.source = next;
-        options.saved?.(document.sourcePath, next.document.revision);
-        return next.document;
+          if ((await confined(document.sourcePath)).absolute !== absolute)
+            throw conflict(document.sourcePath, 'source target changed');
+        },
       });
-    saves.set(entry.absolute, pending);
-    try {
-      return await pending;
-    } finally {
-      if (saves.get(entry.absolute) === pending) saves.delete(entry.absolute);
+      entry.source = next;
+      options.saved?.(document.sourcePath, next.document.revision);
+      return next.document;
+    } catch (cause) {
+      if (cause instanceof PackSourceRevisionConflict)
+        throw conflict(document.sourcePath, 'source changed since the last refresh');
+      throw cause;
     }
   };
 

@@ -6,7 +6,12 @@ import {
   normalizeMeshPayload,
   packMeshBin,
 } from '@forgeax/engine-geometry';
-import { ImporterRegistry, type RunImportOk, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportOk,
+  runImport,
+} from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { describe, expect, it } from 'vitest';
 import {
@@ -101,9 +106,11 @@ describe('mesh-owned card publication', () => {
     const result = await produce({ resolution: 8, maxCards: 8 });
     if (!result.ok) throw result.error;
     if ('skipped' in result.value) throw new Error('expected mesh products');
-    expect(result.value.pack.assets.map((asset) => asset.guid)).toEqual(GUIDS);
-    const { assets: runtime } = importedSource(result.value.pack);
-    for (const row of result.value.pack.assets) {
+    expect(projectImportPack(result.value.product).assets.map((asset) => asset.guid)).toEqual(
+      GUIDS,
+    );
+    const { assets: runtime } = importedSource(projectImportPack(result.value.product));
+    for (const row of projectImportPack(result.value.product).assets) {
       const bytes = row.artifacts.body?.bytes;
       expect(bytes).toBeInstanceOf(Uint8Array);
       const geometry = required(decodeMeshBinary(required(bytes), row.refs));
@@ -168,13 +175,17 @@ describe('mesh-owned card publication', () => {
       if ('skipped' in result.value) throw new Error('expected mesh products');
       outputs.push(result.value);
     }
-    const omitted = importedMesh(required(required(outputs[0]).pack.assets[0]));
+    const omitted = importedMesh(
+      required(projectImportPack(required(outputs[0]).product).assets[0]),
+    );
     expect(omitted.cardLayout).toBeUndefined();
     expect(
       new Set(outputs.map((output) => required(output.cookProducts[0]).receipt.outputDigest)).size,
     ).toBe(4);
     const layoutAt = (index: number) => {
-      const mesh = importedMesh(required(required(outputs[index]).pack.assets[0]));
+      const mesh = importedMesh(
+        required(projectImportPack(required(outputs[index]).product).assets[0]),
+      );
       return required(mesh.cardLayout);
     };
     const original = layoutAt(1),

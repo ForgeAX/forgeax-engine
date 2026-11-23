@@ -9,7 +9,6 @@ import {
   capturePluginProgramInputs,
   discoverPluginAssets,
   hasPluginSourceInput,
-  pluginSourceInputRevision,
 } from '../plugin-assets.js';
 import { pluginRuntimeProjection, pluginRuntimeQuery } from '../plugin-programs.js';
 
@@ -53,7 +52,6 @@ it('recognizes native Windows paths, current cwd and Vite slash IDs as one snaps
     const ids = process.platform === 'win32' ? [native(filename), slash(filename)] : [filename];
     for (const id of ids) {
       expect(hasPluginSourceInput(inputs, id)).toBe(true);
-      expect(pluginSourceInputRevision(inputs, id)).toBe(digest(source));
       expect(() => transform(plugin, source, id)).not.toThrow();
       expect(() => transform(plugin, source, `${id}?v=1`)).not.toThrow();
     }
@@ -113,7 +111,6 @@ it('rejects conflicting snapshots under both separator spellings and insertion o
   ];
   for (const entries of [rows, [...rows].reverse()]) {
     const inputs = new Map(entries);
-    expect(pluginSourceInputRevision(inputs, slash(filename))).toBeUndefined();
     expect(() => transform(pluginRuntimeProjection(root, inputs), source, slash(filename))).toThrow(
       'source changed',
     );

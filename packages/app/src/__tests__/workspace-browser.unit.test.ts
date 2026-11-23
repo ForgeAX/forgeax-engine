@@ -7,6 +7,7 @@ import {
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
 } from '../browser-frame-signal';
+import { levelServicePlugin } from '../levels/level-service';
 import { createAppObservation } from '../observation';
 import type { App } from '../types';
 import { engineWorkspaceBrowserPlugin } from '../workspace-browser';
@@ -192,7 +193,8 @@ describe('workspace browser plugin lifecycle', () => {
         remove() {},
       }),
     });
-    const context = await createWorldContext(world);
+    const editingLevels = { create: vi.fn(), exchangeVisual: vi.fn() };
+    const context = await createWorldContext(world, [levelServicePlugin(editingLevels)]);
     const listeners = new Set<(value: unknown) => void>();
     let releaseFrame = () => {};
     let childCreation: { entered: () => void; resume: Promise<void> } | undefined;
@@ -325,6 +327,11 @@ describe('workspace browser plugin lifecycle', () => {
               childCreation.entered();
               await childCreation.resume;
             }
+            expect(scope.get('levels')).toBeUndefined();
+            const previewLevels = { create: vi.fn(), exchangeVisual: vi.fn() };
+            const levels = await scope.plugin(levelServicePlugin(previewLevels));
+            expect(scope.get('levels')).toBe(previewLevels);
+            expect(context.get('levels')).toBe(editingLevels);
             const childAssets = new AssetRegistry();
             publishWorkspaceAssets(childAssets, [
               { guid, asset: { kind: 'scene', entities: { root: { components: {} } } } },
@@ -367,6 +374,7 @@ describe('workspace browser plugin lifecycle', () => {
                 draining = true;
                 await frame;
                 await owner.dispose();
+                await levels.dispose();
                 childAssets.dispose();
                 return { ok: true, value: undefined };
               },

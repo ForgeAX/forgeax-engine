@@ -19,7 +19,10 @@ import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-raster';
 import { createSkylightFallback, skylightBindGroupResources } from '../ibl/skylight-bind-group';
-import { buildBindGroupLayoutDescriptor } from '../pbr-pipeline';
+import {
+  buildBindGroupLayoutDescriptor,
+  buildGpuDrivenPrimitiveBindGroupLayout,
+} from '../pbr-pipeline';
 import type { PipelineSpec } from '../pipeline-spec-types';
 import { worldRenderResources } from '../publication/resource-scope';
 import {
@@ -271,7 +274,7 @@ function createShadowRig(
       .unwrap();
   const viewLayout = dynamicLayout(2);
   const materialLayout = custom?.layout ?? dynamicLayout(1);
-  const meshLayout = dynamicLayout(1);
+  const primitiveLayout = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
   const visibleLayout = dynamicLayout(0);
   const shaderModuleFactory = moduleFactory ?? {
     createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
@@ -288,12 +291,12 @@ function createShadowRig(
       pipeline: createWitnessPipeline(device, shaderModuleFactory, custom, [
         viewLayout,
         materialLayout,
-        meshLayout,
+        primitiveLayout,
         visibleLayout,
       ]),
       vertexBuffer: buffer,
       materialGroup: custom?.neutralGroup ?? group(materialLayout, 1, MATERIAL_OFFSET),
-      meshBindGroup: group(meshLayout, 1),
+      meshBindGroup: group(primitiveLayout, 0),
       visibleBindGroups: [group(visibleLayout, 0)],
       deformation: 'rigid',
     },

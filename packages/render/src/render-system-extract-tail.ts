@@ -156,8 +156,8 @@ import {
   storeMaterialSnapshot,
   tonemapParams,
 } from './render-system-extract';
+import { ScenePoseWriter } from './scene/captured-transform';
 import { captureMaterialOverrides } from './scene/mesh-materials';
-import { ownPose } from './scene/pose-slab';
 import { buildShadowFrusta } from './scene/shadow-visibility';
 import { sharedAabb } from './scene/shared-aabb';
 import type { SkinBindingInput } from './scene/skin-scene-inputs';
@@ -231,6 +231,8 @@ export function extractSource(
     readonly instanceCollections?: InstanceProjectionStore;
     /** Change-driven environment entries (a source's publisher owns one). */
     readonly environmentGate?: EnvironmentFrameGate;
+    readonly environmentLightingOnly?: boolean;
+    readonly cameraSource?: import('./extract/environment-frame-gate').EnvironmentCameraReader;
   } = {},
 ): ExtractedFrame {
   const request = options.renderables ?? 'full';
@@ -255,6 +257,8 @@ export function extractSource(
       if (options.instanceCollections !== undefined)
         input.instanceCollections = options.instanceCollections;
       if (options.environmentGate !== undefined) input.environmentGate = options.environmentGate;
+      if (options.environmentLightingOnly) input.environmentLightingOnly = true;
+      if (options.cameraSource !== undefined) input.cameraSource = options.cameraSource;
       if (typeof request === 'object') input.renderableEntities = request.entities;
       if (options.cameraEntityKey !== undefined) input.cameraEntityKey = options.cameraEntityKey;
       if (options.view !== undefined) input.view = options.view;
@@ -280,6 +284,13 @@ export function extractSource(
     return emptyExtractedFrame();
   }
   const gate = options.environmentGate;
+  if (gate !== undefined && options.environmentLightingOnly)
+    return {
+      ...frame,
+      lights: gate.finalizeLighting(world, (routedError) =>
+        finalizeLights(world, frame.lights, routedError),
+      ),
+    };
   const environment =
     gate === undefined
       ? sourceEnvironment(world, frame)
@@ -511,7 +522,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // Environment reads are owned by the retained resource projection and are
   // established at the frame boundary; record never revisits World state.
   const worldInternal = createWorldInternalView(world);
-  const gate = context.environmentGate;
+  const gate = context.environmentLightingOnly ? undefined : context.environmentGate;
   const { fog, fogFailure, environment, projectedDecals, postProcessParams } =
     gate === undefined
       ? extractEnvironmentPart(world, context, worldInternal)
@@ -599,6 +610,7 @@ function createWorldExtraction(
   worldInternal: WorldInternalView,
   lights: LightRoster,
   cameras: readonly CameraSnapshot[],
+  expectedPoseRows = context.renderableEntities?.size,
 ) {
   const renderables: RenderableSnapshot[] = [];
   const dispatch: DispatchEntry[] = [];
@@ -631,6 +643,7 @@ function createWorldExtraction(
     frustumCulled: 0,
     frustumTotal: 0,
     preparedPose: false,
+    poses: new ScenePoseWriter(expectedPoseRows),
   };
 }
 
@@ -655,6 +668,7 @@ export function extractInactiveMeshMember(
     },
     emptyExtractedFrame().lights,
     [],
+    1,
   );
   const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
   scope.preparedPose = true;
@@ -823,26 +837,63 @@ function composeWaterMeshOwnerRow(
   };
 }
 
-function replaceWaterMeshOwnerRow(scope: WorldExtraction, renderable: RenderableSnapshot): void {
-  const index = scope.renderables.findIndex((row) => row.entityKey === renderable.entityKey);
-  if (index >= 0) scope.renderables[index] = renderable;
-  else scope.renderables.push(renderable);
+/** Address just the requested water owners in the frame's ordinary output list. Derived
+ * extraction appends rows, so each suffix is joined once and ordinary insertion order survives. */
+class WaterMeshOwnerRows {
+  private readonly positions = new Map<number, number>();
+  private scanned = 0;
+
+  constructor(
+    private readonly rows: RenderableSnapshot[],
+    owners: readonly number[],
+  ) {
+    for (const entity of owners) this.include(entity);
+  }
+
+  include(entity: number): void {
+    if (this.positions.has(entity)) return;
+    this.positions.set(entity, -1);
+    this.scanned = 0;
+  }
+
+  read(entity: number): RenderableSnapshot | undefined {
+    this.include(entity);
+    while (this.scanned < this.rows.length) {
+      const index = this.scanned++;
+      const key = (this.rows[index] as RenderableSnapshot).entityKey;
+      if (this.positions.get(key) === -1) this.positions.set(key, index);
+    }
+    return this.rows[this.positions.get(entity) as number];
+  }
+
+  replace(row: RenderableSnapshot): void {
+    this.read(row.entityKey);
+    const index = this.positions.get(row.entityKey) as number;
+    if (index >= 0) this.rows[index] = row;
+    else {
+      this.positions.set(row.entityKey, this.rows.length);
+      this.rows.push(row);
+      this.scanned = this.rows.length;
+    }
+  }
 }
 
 function extractMissingWaterOwnerMeshRows(
   scope: WorldExtraction,
+  owners: WaterMeshOwnerRows,
   entities: Iterable<number>,
 ): void {
-  const missing = [...new Set(entities)].filter(
-    (entity) => !scope.renderables.some((row) => row.entityKey === entity),
-  );
-  if (missing.length === 0) return;
+  const missing = new Set<number>();
+  for (const entity of entities) {
+    if (owners.read(entity) === undefined) missing.add(entity);
+  }
+  if (missing.size === 0) return;
   extractDerivedRenderSources({
     ...scope,
     context: {
       ...scope.context,
       renderables: 'full',
-      renderableEntities: new Set(missing),
+      renderableEntities: missing,
     },
   });
   const skinComponent =
@@ -927,12 +978,34 @@ function waterMeshCameraViews(
   });
 }
 
+const EMPTY_WATER_MESH_REFRESH = Object.freeze({
+  worldId: 0,
+  system: undefined,
+  inputKey: '',
+  ownerEntityKeys: Object.freeze([]),
+  ownerSources: Object.freeze([]),
+});
+
 function extractWaterMeshSources(scope: WorldExtraction): void {
   const { world, context } = scope;
   const water = world.hasResource(WATER_SYSTEM_RESOURCE)
     ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
     : undefined;
-  const bodySnapshots = water?.snapshots() ?? [];
+  if (water === undefined) {
+    const previous = context.waterMeshSourceState;
+    if (previous?.system !== undefined) {
+      extractMissingWaterOwnerMeshRows(
+        scope,
+        new WaterMeshOwnerRows(scope.renderables, previous.ownerEntityKeys),
+        previous.ownerEntityKeys,
+      );
+      scope.waterMeshOwnerRefresh = EMPTY_WATER_MESH_REFRESH;
+    }
+    return;
+  }
+  const acceptedInput = context.waterMeshSourceState;
+  const ownerRows = new WaterMeshOwnerRows(scope.renderables, acceptedInput?.ownerEntityKeys ?? []);
+  const bodySnapshots = water.snapshots();
   const resolveWaterMeshCameraRoster = () => {
     const cameraRoster =
       context.view !== undefined
@@ -984,6 +1057,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
   const bodyFacts = bodySnapshots.map((body) => {
     const match = /^scene-entity:(\d+)$/.exec(body.guid);
     const entity = match === null ? undefined : (Number(match[1]) as EntityHandle);
+    if (entity !== undefined) ownerRows.include(entity);
     const entityLive =
       entity !== undefined &&
       Number.isSafeInteger(entity) &&
@@ -1112,7 +1186,6 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
     materialFacts,
     water?.bakedQueryRevision,
   ]);
-  const acceptedInput = context.waterMeshSourceState;
   if (
     acceptedInput !== undefined &&
     acceptedInput.system === water &&
@@ -1130,8 +1203,8 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
           scope.visibility?.effective(owner.entityKey as EntityHandle) === 'hidden'
         )
           continue;
-        const ordinary = scope.renderables.find((row) => row.entityKey === owner.entityKey);
-        replaceWaterMeshOwnerRow(scope, composeWaterMeshOwnerRow(scope, owner, ordinary));
+        const ordinary = ownerRows.read(owner.entityKey);
+        ownerRows.replace(composeWaterMeshOwnerRow(scope, owner, ordinary));
       }
     };
     restoreAcceptedWaterMeshRows(acceptedInput.ownerSources);
@@ -1144,7 +1217,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
     ownerEntityKeys: Object.freeze([]),
     ownerSources: Object.freeze([]),
   });
-  extractMissingWaterOwnerMeshRows(scope, acceptedInput?.ownerEntityKeys ?? []);
+  extractMissingWaterOwnerMeshRows(scope, ownerRows, acceptedInput?.ownerEntityKeys ?? []);
   if (water === undefined || !waterBodiesPresent || views.length === 0) return;
   const waterMeshEntities = new Set<EntityHandle>();
   const captureWaterMeshEntities = () => {
@@ -1163,7 +1236,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
   };
   captureWaterMeshEntities();
   if (waterMeshEntities.size === 0) return;
-  extractMissingWaterOwnerMeshRows(scope, waterMeshEntities);
+  extractMissingWaterOwnerMeshRows(scope, ownerRows, waterMeshEntities);
   type SelectedOwnerDraws = {
     bodyGuid: string;
     bodyGeneration: number;
@@ -1421,10 +1494,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
       )
         continue;
       const worldIdentity = world.identity;
-      const existingIndex = replacedEntities.has(entity)
-        ? -1
-        : scope.renderables.findIndex((renderable) => renderable.entityKey === entity);
-      const previousRenderable = existingIndex >= 0 ? scope.renderables[existingIndex] : undefined;
+      const previousRenderable = replacedEntities.has(entity) ? undefined : ownerRows.read(entity);
       const waterMaterialResources: MaterialResource[] = [];
       const materialIndices = new Map<number, number>();
       const pendingMaterialSources = new Map<number, number>();
@@ -1726,10 +1796,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
             },
           };
           ownerSources.set(entity, retainedSource);
-          replaceWaterMeshOwnerRow(
-            scope,
-            composeWaterMeshOwnerRow(scope, retainedSource, previousRenderable),
-          );
+          ownerRows.replace(composeWaterMeshOwnerRow(scope, retainedSource, previousRenderable));
           replacedEntities.add(entity);
         }
         continue;
@@ -1750,10 +1817,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
         materials: Object.freeze([...waterMaterialResources]),
       });
       ownerSources.set(entity, ownerSource);
-      replaceWaterMeshOwnerRow(
-        scope,
-        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
-      );
+      ownerRows.replace(composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable));
       replacedEntities.add(entity);
     }
   };
@@ -1772,9 +1836,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
           snapshot.guid === binding.zoneGuid && snapshot.generation === binding.zoneGeneration,
       );
       if (zone === undefined) continue;
-      const previousRenderable = scope.renderables.find(
-        (renderable) => renderable.entityKey === entity,
-      );
+      const previousRenderable = ownerRows.read(entity);
       const targetFormat =
         zone.asset.waterInfo.format === 'rgba32f' ? 'rgba32float' : 'rgba16float';
       const ownerSource: WaterMeshOwnerSource = Object.freeze({
@@ -1792,10 +1854,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
         materials: Object.freeze([]),
       });
       ownerSources.set(entity, ownerSource);
-      replaceWaterMeshOwnerRow(
-        scope,
-        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
-      );
+      ownerRows.replace(composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable));
       replacedEntities.add(entity);
     }
   };
@@ -1999,6 +2058,7 @@ function readMeshRendererRow(
     authorVisible: !(isRenderable && scope.visibility?.effective(entity) === 'hidden'),
     lightingChannels,
     renderLayers,
+    frustumCulled: scalar.getFieldValue(entity, MeshRenderer, 'frustumCulled') !== 0,
     preparationMesh,
     preparePipelines:
       preparationMesh !== undefined ||
@@ -2378,6 +2438,7 @@ function resolveFreshMaterial(
     textureSourceStats: scope.materialTextureSources,
     vertexColorAvailable: lane.vertexColorAvailable,
     geometry: lane.geometry,
+    previousProgramSnapshot: lane.persistent.get(handle)?.snapshot,
   });
   if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programSelections))
     return undefined;
@@ -2530,7 +2591,7 @@ function publishRenderable(
         | undefined)
     : readPresentationWorldMatrix(scope.world, read.entity);
   if (worldView === undefined) return;
-  const transform: TransformSnapshot = { world: ownPose(worldView) };
+  const transform = scope.poses.capture(worldView);
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);
   // Without authored ShadowParticipation, a mesh whose every material blends
   // (transparent, additive) casts no shadow, like Three.js castShadow=false.
@@ -2562,7 +2623,7 @@ function publishRenderable(
       scope,
       castRead,
       geometry,
-      transform.world,
+      transform,
       pending,
       pipelinePreparation !== undefined,
     )
@@ -2645,7 +2706,16 @@ function resolveSkinBinding(
     });
   }
   if (skinJoints.length === 0) return false;
-  return { skeleton: skeletonHandle, joints: Object.freeze(Array.from(skinJoints, Number)) };
+  const affinePoint = scope.world[worldRead].getFieldValue(
+    entity,
+    read.skinComponent,
+    'affinePoint',
+  );
+  return {
+    skeleton: skeletonHandle,
+    joints: Object.freeze(Array.from(skinJoints, Number)),
+    ...(affinePoint ? { affinePoint: true } : {}),
+  };
 }
 
 /**
@@ -2941,6 +3011,7 @@ function composeRenderable(
       : {}),
     lightingChannels: read.lightingChannels,
     renderLayers: read.renderLayers,
+    ...(read.frustumCulled ? {} : { frustumCulled: false as const }),
     assetHandle: Math.round(read.meshHandle ?? 0),
     transform,
     ...(geometry.lods === undefined ? {} : { lods: geometry.lods }),
@@ -3149,27 +3220,29 @@ function retainShadowCasterDispatch(pending: DispatchEntry[]): void {
 /**
  * feat-20260528-frustum-culling M3 / w10: skip the entity when a valid AABB
  * exists AND every camera frustum rejects it. Missing or malformed bounds are
- * conservative always-visible fallbacks; culling has no per-entity opt-out.
+ * conservative always-visible fallbacks. MeshRenderer can opt out of this test.
  * `false` drops the entity; a shadow-only survivor keeps only ShadowCaster work.
  */
 function admitFrustumVisibility(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   geometry: RenderableGeometry,
-  worldMatrix: Float32Array,
+  transform: TransformSnapshot,
   pending: DispatchEntry[],
   preparing: boolean,
 ): boolean {
   const { instances } = geometry;
   // No instance can contribute a visible bound; the retained snapshot still
   // records instanceCount=0 for the record stage.
-  if (geometry.localAabb === undefined || instances?.instanceCount === 0) return true;
+  if (!read.frustumCulled || geometry.localAabb === undefined || instances?.instanceCount === 0)
+    return true;
   // With no camera frustum every entity is visible, so the union bound would
   // only feed a test whose result is already known.
   if (scope.frustumPlanes.length === 0) {
     scope.frustumTotal += 1;
     return true;
   }
+  const worldMatrix = transform.world;
   const instanceBounds =
     instances === undefined
       ? undefined

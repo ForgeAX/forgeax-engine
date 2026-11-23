@@ -84,6 +84,18 @@ export interface MaterialShaderSelectionResult {
 }
 
 export interface PreparedMaterialShaderTemplate {
+  /** Prepare a single address without materializing the alternate raster program. */
+  selectAddress?(
+    request: MaterialShaderSelection,
+    address: import('@forgeax/engine-types').MaterialProgramAddress,
+  ): Result<
+    | {
+        readonly program: MaterialShaderTemplateProgram;
+        readonly rasterCoverage?: MaterialShaderSelectionResult['rasterCoverage'];
+      }
+    | undefined,
+    ShaderError
+  >;
   select(
     request: MaterialShaderSelection,
   ): Result<MaterialShaderSelectionResult | undefined, ShaderError>;

@@ -1,4 +1,4 @@
-import type { RhiDevice, TextureView } from '@forgeax/engine-rhi';
+import type { Buffer, RhiDevice, TextureView } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import type { RenderTargetHost } from '../assembly/render-target-host';
 import type { RenderTargetEnvironmentSource } from '../components/render-target-environment';
@@ -33,7 +33,7 @@ export interface RenderTargetEnvironmentLease {
 interface EnvironmentViews {
   readonly device: RhiDevice;
   readonly scope: DeviceScope;
-  readonly irradiance: TextureView;
+  readonly skySh: Buffer;
   readonly prefilter: TextureView;
 }
 const sources = new WeakMap<RenderTargetEnvironmentSource, EnvironmentViews>();
@@ -218,7 +218,7 @@ export async function filterTargetEnvironment(input: {
     sources.set(source, {
       device,
       scope,
-      irradiance: output.irradianceView,
+      skySh: output.skySh,
       prefilter: output.prefilterView,
     });
     let released = false;

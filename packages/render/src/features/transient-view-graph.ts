@@ -13,9 +13,7 @@ import {
   renderFeaturePlanRequiresPreparedResourceKey,
 } from './host';
 import type { RenderFeaturePlannedFrame } from './plan';
-import { encodeRenderFeatureGpuComputePass } from './prepared-gpu-work';
-import { throwFeatureRecordingFailure } from './recording-failure';
-import { visitRenderFeatureComputeSequence } from './render-graph-compute';
+import { issueFeatureComputeCommands } from './render-graph-compute';
 import { projectRenderFeaturePlans } from './render-graph-contribution';
 import { RenderFeatureRasterGraphProjection } from './render-graph-raster';
 import { isRenderFeatureTargetHandle } from './targets';
@@ -300,48 +298,42 @@ export function projectTransientViewPlans<F extends RenderGraphFrame>(
     // If this feature later supplies a Standard named stage, selection restores
     // its ordinary signature/prepared-key path instead of hiding that change.
     if (standardStageFilter(options.passNames) && !execution.passes.some(selectedPass)) continue;
+    const { featureIdentity, scope, order } = execution;
+    const { ports } = context;
+    const { resolveTarget, reportError } = options;
+    const metrics = inspection(context.owner);
+    const raster = new RenderFeatureRasterGraphProjection(
+      builder,
+      (reference) => {
+        const target = resolveTarget(reference);
+        if (target !== undefined && !ports.some((port) => port.resource === target.view))
+          throw portFailure();
+        return target;
+      },
+      options.resolveBindings,
+      undefined,
+      reportError,
+      options.standardSurfaceAccesses,
+      options.viewAccesses,
+    );
     const added = builder.addSubgraphPass(
       `feature-view:${key}:${names === undefined ? 'rest' : `part-${excluded.size}`}`,
       {
-        accesses: context.ports,
-        commands: ({ frame, resources, execute: run }) => {
+        accesses: ports,
+        commandsDirect: (frame, resources, issue, recording) => {
           const current = (frame as RenderFeatureExecutionFrame).featureExecutions?.find(
             (row) =>
-              row.featureIdentity === execution.featureIdentity &&
-              row.scope === execution.scope &&
-              row.order === execution.order &&
+              row.featureIdentity === featureIdentity &&
+              row.scope === scope &&
+              row.order === order &&
               (row.placement ?? 'post') === placement,
           );
           if (current === undefined || !transientViewExecutionEligible(current))
-            throw new RenderFeatureStageFailedError(
-              execution.featureIdentity,
-              execution.order,
-              'plan',
-              'next-frame',
-            );
-          const raster = new RenderFeatureRasterGraphProjection(
-            builder,
-            (reference) => {
-              const target = options.resolveTarget(reference);
-              if (
-                target !== undefined &&
-                !context.ports.some((port) => port.resource === target.view)
-              )
-                throw portFailure();
-              return target;
-            },
-            options.resolveBindings,
-            undefined,
-            options.reportError,
-            options.resolveStandardLighting,
-            options.standardSurfaceAccesses,
-            options.viewAccesses,
-          );
-          const metrics = inspection(context.owner);
+            throw new RenderFeatureStageFailedError(featureIdentity, order, 'plan', 'next-frame');
           metrics.commandFrames += 1;
           const execute = (pass: import('@forgeax/engine-render-graph').RenderGraphNativePass) => {
             metrics.commandPasses += 1;
-            run(pass);
+            issue(recording, pass);
           };
           const passes = current.passes;
           for (let index = 0; index < passes.length; ) {
@@ -362,62 +354,7 @@ export function projectTransientViewPlans<F extends RenderGraphFrame>(
               if (next === undefined || next.graphics !== undefined || !selectedPass(next)) break;
               end++;
             }
-            const visited = visitRenderFeatureComputeSequence(passes.slice(index, end), {
-              copy: (pass) => {
-                if (pass.enabled !== false)
-                  execute({
-                    kind: 'copy',
-                    name: pass.name,
-                    encode: (encoder) => {
-                      for (const copy of pass.resolvedGpuCopies ?? []) {
-                        if (copy.enabled === false) continue;
-                        encoder.copyBufferToBuffer(
-                          copy.source.buffer,
-                          copy.sourceOffset,
-                          copy.destination.buffer,
-                          copy.destinationOffset,
-                          copy.size,
-                        );
-                      }
-                    },
-                  });
-                return ok(undefined);
-              },
-              compute: (passes) => {
-                const first = passes[0];
-                if (first !== undefined && passes.some((pass) => pass.enabled !== false))
-                  execute({
-                    kind: 'compute',
-                    name: first.name,
-                    encode: (encoder) => {
-                      for (const pass of passes) {
-                        if (pass.enabled === false) continue;
-                        try {
-                          if (pass.resolvedGpuCompute === undefined)
-                            throw new RenderFeatureStageFailedError(
-                              pass.featureIdentity,
-                              pass.order,
-                              'record',
-                              'renderer-recover',
-                            );
-                          encodeRenderFeatureGpuComputePass(encoder, pass.resolvedGpuCompute);
-                        } catch (failure) {
-                          throwFeatureRecordingFailure(
-                            failure,
-                            pass.featureIdentity,
-                            pass.order,
-                            pass.name,
-                            'bindings',
-                            options.reportError,
-                          );
-                        }
-                      }
-                    },
-                  });
-                return ok(undefined);
-              },
-            });
-            if (!visited.ok) throw visited.error;
+            issueFeatureComputeCommands(passes, index, end, execute, reportError);
             index = end;
           }
         },

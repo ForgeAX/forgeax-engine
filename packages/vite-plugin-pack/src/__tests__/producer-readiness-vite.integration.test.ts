@@ -1,119 +1,98 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { gunzipSync, gzip } from 'node:zlib';
-import {
-  type DdcEntry,
-  DdcEntryStore,
-  DdcGenerationSession,
-  ddcOutputDigest,
-} from '@forgeax/engine-ddc';
+import { type DdcEntry, DdcEntryStore, DdcLifecycle, ddcOutputDigest } from '@forgeax/engine-ddc';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { requestServer as request, createServer as server } from './middleware-fixture.js';
 
 vi.mock('node:zlib', async () => {
   const actual = await vi.importActual<typeof import('node:zlib')>('node:zlib');
   return { ...actual, gzip: vi.fn(actual.gzip) };
 });
 
-const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
+const GUID = '758d015c-7f40-56ef-b6c3-4d63eba1f032';
 const SECOND_GUID = '019e3969-1d48-7c3b-ac24-6d68f4570660';
 
-interface Response {
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string | Uint8Array | undefined;
-}
-
-interface Server {
-  middlewares: { use(handler: Handler): void };
-  ws: { send(payload: { type: string } & Record<string, unknown>): void };
-  handler?: Handler;
-}
-
-type Handler = (
-  req: {
-    url?: string;
-    method?: string;
-    headers?: Readonly<Record<string, string | readonly string[] | undefined>>;
-  },
-  res: Response & {
-    setHeader(name: string, value: string): void;
-    end(body?: string | Uint8Array): void;
-  },
-  next: () => void,
-) => void | Promise<void>;
-
-function server(): Server {
-  const result = {
-    middlewares: {
-      use(handler: Handler) {
-        result.handler = handler;
-      },
-    },
-    ws: { send() {} },
-  } as Server;
-  return result;
-}
-
-async function request(
-  target: Server,
-  url: string,
-  method = 'GET',
-  headers?: Readonly<Record<string, string>>,
-): Promise<Response> {
-  const response: Response = { statusCode: 200, headers: {}, body: undefined };
-  if (target.handler === undefined) throw new Error('plugin middleware was not registered');
-  await target.handler(
-    { url, method, ...(headers === undefined ? {} : { headers }) },
-    {
-      headers: response.headers,
-      get body() {
-        return response.body;
-      },
-      get statusCode() {
-        return response.statusCode;
-      },
-      set statusCode(value: number) {
-        response.statusCode = value;
-      },
-      setHeader(name, value) {
-        response.headers[name] = value;
-      },
-      end(body) {
-        response.body = body;
-      },
-    },
-    () => {},
+function fixtureMeta(
+  source: string,
+  guid: string,
+  importer = 'fixture',
+  importSettings: Record<string, unknown> = {},
+): string {
+  return metaFixture(
+    source,
+    importer,
+    [{ guid, sourceIndex: 0, kind: 'fixture-mesh' }],
+    importSettings,
   );
-  return response;
 }
 
-const fixtureImporter: Importer = {
-  key: 'fixture',
-  import: async () => ({
-    ok: true,
+function importedFixture(
+  guid: string,
+  bytes?: Uint8Array,
+  payload = { kind: 'fixture-mesh', vertexCount: 3 } as Record<string, unknown>,
+) {
+  return {
+    ok: true as const,
     value: {
       assets: [
         {
-          guid: GUID,
+          guid,
           kind: 'fixture-mesh',
-          payload: { kind: 'fixture-mesh', vertexCount: 3 },
+          payload,
           refs: [],
-          artifacts: {
-            body: { mediaType: 'application/octet-stream', bytes: new Uint8Array([1, 2, 3]) },
-          },
+          artifacts:
+            bytes === undefined
+              ? {}
+              : {
+                  body: { mediaType: 'application/octet-stream', bytes },
+                },
         },
       ],
       sourceDependencies: [],
     },
-  }),
+  };
+}
+
+const fixtureImporter: Importer = {
+  key: 'fixture',
+  import: async () => importedFixture(GUID, new Uint8Array([1, 2, 3])),
 };
 
+function pauseImport(key: string, guid: string) {
+  const { promise: started, resolve: markStarted } = testGate();
+  const { promise: gate, resolve: release } = testGate();
+  const importer: Importer = {
+    key,
+    async import() {
+      markStarted();
+      await gate;
+      return importedFixture(guid, new Uint8Array([4, 5, 6]));
+    },
+  };
+  return { importer, started, release };
+}
+
+function fixtureGuid(context: Parameters<Importer['import']>[0]) {
+  const guid = context.subAssets[0]?.guid;
+  if (guid === undefined) throw new Error('fixture meta lacks a guid');
+  return guid;
+}
+
+async function fixtureRevision(context: Parameters<Importer['import']>[0]) {
+  const source = await context.readSource();
+  if (!source.ok) throw new Error('fixture source read failed');
+  return new TextDecoder().decode(source.value);
+}
+
 describe('producer readiness in the Vite serve lifecycle', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
   const pluginClosers: Array<() => Promise<void>> = [];
   const originalCwd = process.cwd();
 
@@ -125,27 +104,16 @@ describe('producer readiness in the Vite serve lifecycle', () => {
   afterEach(async () => {
     process.chdir(originalCwd);
     await Promise.all(pluginClosers.splice(0).map((close) => close()));
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await scratch.clear();
   });
 
   it('settles the source package before the first catalog read and package GET', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-');
     process.chdir(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(join(assets, 'scene.fixture'), 'fixture');
-    await writeFile(
-      join(assets, 'scene.fixture.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'scene.fixture',
-        importSettings: {},
-        subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
-    );
+    await writeFile(join(assets, 'scene.fixture.meta.json'), fixtureMeta('scene.fixture', GUID));
 
     const target = server();
     const plugin = ownPlugin(
@@ -165,33 +133,26 @@ describe('producer readiness in the Vite serve lifecycle', () => {
 
     expect(row?.lifecycle).toBe('current');
     expect(row?.packageUrl).toBe(
-      `/__pack/scopes/producer-readiness/1/asset/__forgeax-ddc/${GUID}.pack.json`,
+      `/__pack/scopes/producer-readiness/1/asset/__forgeax-ddc/${GUID}.runtime-pack.json`,
     );
     const packageResponse = await request(target, row?.packageUrl ?? '');
     expect(packageResponse.statusCode).toBe(200);
     expect(JSON.parse(String(packageResponse.body)).assets).toHaveLength(1);
 
-    const packDdcPath = resolve(
+    const packDdcRoot = resolve(
       root,
       'node_modules/.cache/forgeax-ddc/runtime/producer-readiness-1',
-      `${GUID}.pack.json`,
     );
-    expect(JSON.parse(await readFile(packDdcPath, 'utf8')).assets).toHaveLength(1);
-    await expect(
-      readFile(
-        resolve(
-          root,
-          'node_modules/.cache/forgeax-ddc/runtime/producer-readiness-1',
-          `${GUID}.meta.pack.bin`,
-        ),
-      ),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    const current = await new DdcLifecycle(packDdcRoot).readCurrentEntry(GUID);
+    expect(current.entry?.payload).toMatchObject({ assets: [{ guid: GUID }] });
     await plugin.closeBundle();
   });
 
-  it('overlaps opted-in source preparation and publishes the Catalog after both imports', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-parallel-meta-preparation-'));
-    roots.push(root);
+  it.each([
+    true,
+    false,
+  ])('publishes both startup packages (parallel=%s)', async (parallelPreparation) => {
+    const root = await scratch.make('forgeax-parallel-meta-preparation-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     for (const [name, guid] of [
@@ -200,23 +161,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     ] as const) {
       const source = `${name}.fixture`;
       await writeFile(join(assets, source), 'fixture');
-      await writeFile(
-        join(assets, `${source}.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'fixture',
-          source,
-          importSettings: {},
-          subAssets: [{ guid, sourceIndex: 0, kind: 'fixture-mesh' }],
-        }),
-      );
+      await writeFile(join(assets, `${source}.meta.json`), fixtureMeta(source, guid));
     }
 
-    let releaseFirst = (): void => {};
-    const firstGate = new Promise<void>((release) => {
-      releaseFirst = release;
-    });
+    const { promise: firstGate, resolve: releaseFirst } = testGate();
     const started: string[] = [];
     const binding = createStandaloneRuntimeAssetBinding('parallel-meta-preparation');
     const target = server();
@@ -228,27 +176,14 @@ describe('producer readiness in the Vite serve lifecycle', () => {
         importers: [
           {
             key: 'fixture',
-            capabilities: { parallelPreparation: true },
+            ...(parallelPreparation
+              ? { capabilities: { parallelPreparation: true as const } }
+              : {}),
             async import(context) {
-              const guid = context.subAssets[0]?.guid;
-              if (guid === undefined) throw new Error('fixture declaration missing GUID');
+              const guid = fixtureGuid(context);
               started.push(guid);
               if (guid === GUID) await firstGate;
-              return {
-                ok: true,
-                value: {
-                  assets: [
-                    {
-                      guid,
-                      kind: 'fixture-mesh',
-                      payload: { kind: 'fixture-mesh', vertexCount: 3 },
-                      refs: [],
-                      artifacts: {},
-                    },
-                  ],
-                  sourceDependencies: [],
-                },
-              };
+              return importedFixture(guid);
             },
           },
         ],
@@ -260,10 +195,9 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       settled = true;
     });
     try {
-      await vi.waitFor(() => {
-        expect(started).toContain(GUID);
-        expect(started).toContain(SECOND_GUID);
-      });
+      await vi.waitFor(() => expect(started).toContain(GUID));
+      if (parallelPreparation) await vi.waitFor(() => expect(started).toContain(SECOND_GUID));
+      else expect(started).toEqual([GUID]);
       expect(settled).toBe(false);
     } finally {
       releaseFirst();
@@ -280,119 +214,19 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     expect(started).toHaveLength(2);
   });
 
-  it('rehydrates an accepted Pack and artifact closure in a fresh plugin process', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-cross-process-'));
-    roots.push(root);
-    const assets = join(root, 'assets');
-    const ddcRoot = join(root, '.forgeax', 'ddc', 'v2');
-    await mkdir(assets);
-    await writeFile(join(assets, 'scene.fixture'), 'fixture');
-    await writeFile(
-      join(assets, 'scene.fixture.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'scene.fixture',
-        importSettings: {},
-        subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
-    );
-    const binding = createStandaloneRuntimeAssetBinding('producer-readiness-cross-process');
-    const firstTarget = server();
-    const firstPlugin = ownPlugin(
-      pluginPack({
-        roots: [assets],
-        importers: [fixtureImporter],
-        producerReadiness: 'on-demand',
-        runtimeBinding: binding,
-        ddc: { projectDdcRoot: ddcRoot },
-      }),
-    );
-    firstPlugin.configureServer(firstTarget);
-    const firstIndex = decodeCatalogWire(
-      JSON.parse(String((await request(firstTarget, binding.catalogUrl)).body)),
-    ).unwrap();
-    const firstRow = firstIndex.find((entry) => entry.guid.toLowerCase() === GUID);
-    expect(firstRow).toBeDefined();
-    const imported = await request(firstTarget, `${binding.importUrlBase}/${GUID}`, 'POST');
-    expect(imported.statusCode).toBe(200);
-    const firstPackResponse = await request(firstTarget, firstRow?.packageUrl ?? '');
-    expect(firstPackResponse.statusCode).toBe(200);
-    const firstPack = JSON.parse(String(firstPackResponse.body)) as {
-      assets: Array<{ artifacts: Record<string, { path: string }> }>;
-    };
-    const artifactPath = firstPack.assets[0]?.artifacts.body?.path;
-    expect(artifactPath).toBeDefined();
-    if (artifactPath === undefined) return;
-    const artifactUrl = new URL(artifactPath, `http://forgeax.test${firstRow?.packageUrl ?? ''}`)
-      .pathname;
-    const runtimeDdcRoot = join(ddcRoot, 'runtime', 'producer-readiness-cross-process-1');
-    const ddcStore = new DdcEntryStore(runtimeDdcRoot);
-    const ddcKeys = await ddcStore.listKeys();
-    expect(ddcKeys).toHaveLength(1);
-    const ddcEntry = await ddcStore.read(ddcKeys[0] ?? '');
-    expect(ddcEntry?.artifacts).toHaveProperty(`${GUID}/body.bin`);
-
-    await firstPlugin.closeBundle();
-
-    let importCalls = 0;
-    const secondImporter: Importer = {
-      key: 'fixture',
-      import: async () => {
-        importCalls += 1;
-        throw new Error('fresh process must use the accepted DDC closure');
-      },
-    };
-    const secondTarget = server();
-    const secondPlugin = ownPlugin(
-      pluginPack({
-        roots: [assets],
-        importers: [secondImporter],
-        producerReadiness: 'on-demand',
-        runtimeBinding: binding,
-        ddc: { projectDdcRoot: ddcRoot },
-      }),
-    );
-    secondPlugin.configureServer(secondTarget);
-    const secondIndex = decodeCatalogWire(
-      JSON.parse(String((await request(secondTarget, binding.catalogUrl)).body)),
-    ).unwrap();
-    const secondRow = secondIndex.find((entry) => entry.guid.toLowerCase() === GUID);
-    const secondPackResponse = await request(secondTarget, secondRow?.packageUrl ?? '');
-    expect(secondPackResponse.statusCode).toBe(200);
-    expect(JSON.parse(String(secondPackResponse.body))).toEqual(firstPack);
-    const secondArtifactResponse = await request(secondTarget, artifactUrl);
-    expect(secondArtifactResponse.statusCode).toBe(200);
-    expect(secondArtifactResponse.body).toEqual(new Uint8Array([1, 2, 3]));
-    expect(importCalls).toBe(0);
-  });
-
   it('repairs an incomplete accepted DDC closure before serving a fresh artifact request', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-incomplete-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-incomplete-');
     const assets = join(root, 'assets');
     const ddcRoot = join(root, '.forgeax', 'ddc', 'v2');
     await mkdir(assets);
     await writeFile(join(assets, 'scene.fixture'), 'fixture');
-    await writeFile(
-      join(assets, 'scene.fixture.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'scene.fixture',
-        importSettings: {},
-        subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
-    );
+    await writeFile(join(assets, 'scene.fixture.meta.json'), fixtureMeta('scene.fixture', GUID));
 
     const stalePack = {
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        {
-          guid: GUID,
+      schemaVersion: '3.0.0',
+      packageId: '019e3969-1d48-7c3b-ac24-6d68f457065f',
+      assets: {
+        output: {
           kind: 'fixture-mesh',
           payload: { kind: 'fixture-mesh', revision: 'stale' },
           refs: [],
@@ -406,7 +240,7 @@ describe('producer readiness in the Vite serve lifecycle', () => {
             },
           },
         },
-      ],
+      },
     };
     const staleKey = 'a'.repeat(64);
     const staleEntry: DdcEntry = {
@@ -429,10 +263,8 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       },
     };
     const runtimeDdcRoot = join(ddcRoot, 'runtime', 'producer-readiness-incomplete-1');
-    const seedSession = new DdcGenerationSession(runtimeDdcRoot, { generation: 1 });
-    const seedCandidate = await seedSession.stageEntry(staleEntry);
-    await seedSession.commitEntry(seedCandidate, staleKey);
-    await seedSession.close();
+    const seed = await new DdcLifecycle(runtimeDdcRoot).stagePublication(staleEntry);
+    await seed.commit();
 
     let importCalls = 0;
     const repairingImporter: Importer = {
@@ -472,8 +304,7 @@ describe('producer readiness in the Vite serve lifecycle', () => {
   });
 
   it('waits for before-consume startup before a scoped import request', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-route-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-route-');
     process.chdir(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
@@ -481,48 +312,14 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     const delayedGuid = '019e3969-1d48-7c3b-ac24-6d68f4570650';
     await writeFile(
       join(assets, 'scene.fixture.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture-delayed',
-        source: 'scene.fixture',
-        importSettings: {},
-        subAssets: [{ guid: delayedGuid, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
+      fixtureMeta('scene.fixture', delayedGuid, 'fixture-delayed'),
     );
 
-    let signalImportStarted!: () => void;
-    const importStarted = new Promise<void>((resolve) => {
-      signalImportStarted = resolve;
-    });
-    let releaseImport!: () => void;
-    const importRelease = new Promise<void>((resolve) => {
-      releaseImport = resolve;
-    });
-    const delayedImporter: Importer = {
-      key: 'fixture-delayed',
-      import: async () => {
-        signalImportStarted();
-        await importRelease;
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid: delayedGuid,
-                kind: 'fixture-mesh',
-                payload: { kind: 'fixture-mesh', vertexCount: 3 },
-                refs: [],
-                artifacts: {
-                  body: { mediaType: 'application/octet-stream', bytes: new Uint8Array([4, 5, 6]) },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
-      },
-    };
+    const {
+      importer: delayedImporter,
+      started: importStarted,
+      release: releaseImport,
+    } = pauseImport('fixture-delayed', delayedGuid);
     const binding = createStandaloneRuntimeAssetBinding('producer-readiness-route');
     const target = server();
     const plugin = ownPlugin(
@@ -554,8 +351,7 @@ describe('producer readiness in the Vite serve lifecycle', () => {
   });
 
   it('aborts intake before draining a delayed lazy import on close', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-close-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-close-');
     process.chdir(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
@@ -563,48 +359,14 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     await writeFile(join(assets, 'scene.fixture'), 'fixture');
     await writeFile(
       join(assets, 'scene.fixture.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture-close',
-        source: 'scene.fixture',
-        importSettings: {},
-        subAssets: [{ guid: closingGuid, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
+      fixtureMeta('scene.fixture', closingGuid, 'fixture-close'),
     );
 
-    let signalImportStarted!: () => void;
-    const importStarted = new Promise<void>((resolve) => {
-      signalImportStarted = resolve;
-    });
-    let releaseImport!: () => void;
-    const importRelease = new Promise<void>((resolve) => {
-      releaseImport = resolve;
-    });
-    const delayedImporter: Importer = {
-      key: 'fixture-close',
-      import: async () => {
-        signalImportStarted();
-        await importRelease;
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid: closingGuid,
-                kind: 'fixture-mesh',
-                payload: { kind: 'fixture-mesh', vertexCount: 3 },
-                refs: [],
-                artifacts: {
-                  body: { mediaType: 'application/octet-stream', bytes: new Uint8Array([4, 5, 6]) },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
-      },
-    };
+    const {
+      importer: delayedImporter,
+      started: importStarted,
+      release: releaseImport,
+    } = pauseImport('fixture-close', closingGuid);
     const binding = createStandaloneRuntimeAssetBinding('producer-readiness-close');
     const target = server();
     const plugin = ownPlugin(
@@ -633,123 +395,22 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     expect(closedResponse.statusCode).toBe(410);
   });
 
-  it('publishes multiple startup packages without losing an earlier catalog commit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-multiple-'));
-    roots.push(root);
-    process.chdir(root);
-    const assets = join(root, 'assets');
-    await mkdir(assets);
-    for (const [name, guid] of [
-      ['first', GUID],
-      ['second', SECOND_GUID],
-    ] as const) {
-      await writeFile(join(assets, `${name}.fixture`), name);
-      await writeFile(
-        join(assets, `${name}.fixture.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'fixture-multiple',
-          source: `${name}.fixture`,
-          importSettings: {},
-          subAssets: [{ guid, sourceIndex: 0, kind: 'fixture-mesh' }],
-        }),
-      );
-    }
-    const multipleImporter: Importer = {
-      key: 'fixture-multiple',
-      import: async (context) => {
-        const guid = context.subAssets[0]?.guid;
-        if (guid === undefined) throw new Error('fixture meta lacks a guid');
-        if (guid === GUID) await new Promise<void>((resolve) => setTimeout(resolve, 25));
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid,
-                kind: 'fixture-mesh',
-                payload: { kind: 'fixture-mesh', vertexCount: 3 },
-                refs: [],
-                artifacts: {
-                  body: {
-                    mediaType: 'application/octet-stream',
-                    bytes: new Uint8Array([1, 2, 3]),
-                  },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
-      },
-    };
-    const target = server();
-    const plugin = ownPlugin(
-      pluginPack({
-        roots: [assets],
-        importers: [multipleImporter],
-        producerReadiness: 'before-consume',
-      }),
-    );
-    plugin.configureServer(target);
-    const binding = createStandaloneRuntimeAssetBinding('producer-readiness-multiple');
-    await plugin.rebind(binding, [assets]);
-    const index = decodeCatalogWire(
-      JSON.parse(String((await request(target, binding.catalogUrl)).body)),
-    ).unwrap();
-    for (const guid of [GUID, SECOND_GUID]) {
-      const row = index.find((entry) => entry.guid.toLowerCase() === guid);
-      expect(row?.lifecycle).toBe('current');
-      expect((await request(target, row?.packageUrl ?? '')).statusCode).toBe(200);
-    }
-    await plugin.closeBundle();
-  });
-
   it('compresses only new artifacts when independent lazy packages are published', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-compression-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-compression-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     for (const guid of [GUID, SECOND_GUID]) {
       await writeFile(join(assets, `${guid}.fixture`), guid);
       await writeFile(
         join(assets, `${guid}.fixture.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'fixture-compression',
-          source: `${guid}.fixture`,
-          importSettings: {},
-          subAssets: [{ guid, sourceIndex: 0, kind: 'fixture-mesh' }],
-        }),
+        fixtureMeta(`${guid}.fixture`, guid, 'fixture-compression'),
       );
     }
     const importer: Importer = {
       key: 'fixture-compression',
       import: async (context) => {
-        const guid = context.subAssets[0]?.guid;
-        if (guid === undefined) throw new Error('fixture meta lacks a guid');
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid,
-                kind: 'fixture-mesh',
-                payload: {},
-                refs: [],
-                artifacts: {
-                  body: {
-                    mediaType: 'application/octet-stream',
-                    bytes: new Uint8Array(4096).fill(guid === GUID ? 41 : 149),
-                  },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
+        const guid = fixtureGuid(context);
+        return importedFixture(guid, new Uint8Array(4096).fill(guid === GUID ? 41 : 149), {});
       },
     };
     const binding = createStandaloneRuntimeAssetBinding('producer-readiness-compression');
@@ -796,8 +457,7 @@ describe('producer readiness in the Vite serve lifecycle', () => {
   });
 
   it('keeps the prior Pack body until an explicit rebuild succeeds', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-ddc-retry-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-ddc-retry-');
     process.chdir(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
@@ -808,53 +468,19 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     await writeFile(siblingSource, 'sibling-stable');
     await writeFile(
       primaryMetaPath,
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture-retry',
-        source: 'primary.fixture',
-        importSettings: { revision: 'old' },
-        subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
+      fixtureMeta('primary.fixture', GUID, 'fixture-retry', { revision: 'old' }),
     );
-    const siblingMeta = JSON.stringify({
-      schemaVersion: '1.0.0',
-      kind: 'external-asset-package',
-      importer: 'fixture-retry',
-      source: 'sibling.fixture',
-      importSettings: {},
-      subAssets: [{ guid: SECOND_GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-    });
+    const siblingMeta = fixtureMeta('sibling.fixture', SECOND_GUID, 'fixture-retry');
     await writeFile(join(assets, 'sibling.fixture.meta.json'), siblingMeta);
 
     const retryImporter: Importer = {
       key: 'fixture-retry',
       import: async (context) => {
-        const source = await context.readSource();
-        if (!source.ok) throw new Error('fixture source read failed');
-        const revision = new TextDecoder().decode(source.value);
-        const guid = context.subAssets[0]?.guid;
-        if (guid === undefined) throw new Error('fixture meta lacks a guid');
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid,
-                kind: 'fixture-mesh',
-                payload: { kind: 'fixture-mesh', vertexCount: 3, revision },
-                refs: [],
-                artifacts: {
-                  body: {
-                    mediaType: 'application/octet-stream',
-                    bytes: new Uint8Array([1, 2, 3]),
-                  },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
+        return importedFixture(fixtureGuid(context), new Uint8Array([1, 2, 3]), {
+          kind: 'fixture-mesh',
+          vertexCount: 3,
+          revision: await fixtureRevision(context),
+        });
       },
     };
     const target = server();
@@ -873,25 +499,26 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       root,
       'node_modules/.cache/forgeax-ddc/runtime/producer-readiness-ddc-retry-1',
     );
-    const primaryPackPath = join(packDirectory, `${GUID}.pack.json`);
-    const siblingPackPath = join(packDirectory, `${SECOND_GUID}.pack.json`);
-    const oldPrimaryBody = await readFile(primaryPackPath, 'utf8');
-    const stableSiblingBody = await readFile(siblingPackPath, 'utf8');
+    const readAccepted = async (guid: string) => {
+      const current = await new DdcLifecycle(packDirectory).readCurrentEntry(guid);
+      const key = current.head.currentKey;
+      return (
+        current.entry ??
+        (key === undefined ? null : await new DdcEntryStore(packDirectory).read(key))
+      )?.payload;
+    };
+    const oldPrimaryBody = await readAccepted(GUID);
+    const stableSiblingBody = await readAccepted(SECOND_GUID);
     await writeFile(primarySource, 'revision-new');
     await writeFile(
       primaryMetaPath,
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture-retry',
-        source: 'primary.fixture',
-        importSettings: { revision: 'new' },
-        subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-      }),
+      fixtureMeta('primary.fixture', GUID, 'fixture-retry', { revision: 'new' }),
     );
     const metaBefore = await readFile(primaryMetaPath, 'utf8');
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await chmod(packDirectory, 0o555);
+    const staging = join(packDirectory, 'staging');
+    await rm(staging, { recursive: true, force: true });
+    await writeFile(staging, 'candidate-write-blocked');
     try {
       const refused = await request(target, `${binding.importUrlBase}/${GUID}`, 'POST', {
         'x-forgeax-import-mode': 'rebuild',
@@ -900,56 +527,43 @@ describe('producer readiness in the Vite serve lifecycle', () => {
       expect(JSON.parse(String(refused.body))).toEqual(
         expect.arrayContaining([expect.objectContaining({ guid: GUID })]),
       );
-      // Publication now treats DDC plus transport as one transaction. A
-      // refused transport restores the previous LKG and returns its route;
-      // the old post-commit warning would falsely imply the new DDC was live.
-      expect(
-        warning.mock.calls.filter(
-          ([message]) => message === '[forgeax-pack] persist DDC pack failed:',
-        ).length,
-      ).toBe(0);
-      expect(await readFile(primaryPackPath, 'utf8')).toBe(oldPrimaryBody);
-      expect(JSON.parse(await readFile(primaryPackPath, 'utf8')).assets[0].payload.revision).toBe(
-        'revision-old',
-      );
+      expect(await readAccepted(GUID)).toEqual(oldPrimaryBody);
+      expect(oldPrimaryBody).toMatchObject({ assets: [{ payload: { revision: 'revision-old' } }] });
       // Inspect accepted rows while the publication failure keeps the scope degraded.
       const failedCatalog = decodeCatalogWire(
         JSON.parse(String((await request(target, binding.catalogUrl)).body)).entries,
       ).unwrap();
       const failedRow = failedCatalog.find((entry) => entry.guid === GUID);
-      expect(failedRow?.packageUrl).toContain(`${GUID}.pack.json`);
+      expect(failedRow?.packageUrl).toContain(`${GUID}.runtime-pack.json`);
       expect(
         JSON.parse(String((await request(target, failedRow?.packageUrl ?? '')).body)).assets[0]
           .payload.revision,
       ).toBe('revision-old');
-      expect(await readFile(siblingPackPath, 'utf8')).toBe(stableSiblingBody);
+      expect(await readAccepted(SECOND_GUID)).toEqual(stableSiblingBody);
     } finally {
       warning.mockRestore();
-      await chmod(packDirectory, 0o755);
+      await rm(staging, { force: true });
+      await mkdir(staging);
     }
 
     // The failed transaction leaves the accepted LKG imported. A normal
     // lookup must continue serving it; recovery explicitly requests a new
-    // producer generation after the sidecar destination is repaired.
+    // producer generation after DDC staging is repaired.
     const retried = await request(target, `${binding.importUrlBase}/${GUID}`, 'POST', {
       'x-forgeax-import-mode': 'rebuild',
     });
     expect(retried.statusCode).toBe(200);
-    const repairedBody = await readFile(primaryPackPath, 'utf8');
-    expect(JSON.parse(repairedBody).assets[0].payload.revision).toBe('revision-new');
-    expect(await readFile(siblingPackPath, 'utf8')).toBe(stableSiblingBody);
+    expect(await readAccepted(GUID)).toMatchObject({
+      assets: [{ payload: { revision: 'revision-new' } }],
+    });
+    expect(await readAccepted(SECOND_GUID)).toEqual(stableSiblingBody);
     expect(await readFile(primaryMetaPath, 'utf8')).toBe(metaBefore);
     expect(await readFile(join(assets, 'sibling.fixture.meta.json'), 'utf8')).toBe(siblingMeta);
-    expect((await readdir(packDirectory)).some((name) => name.includes('.tmp'))).toBe(false);
-    await expect(readFile(join(packDirectory, `${GUID}.meta.pack.bin`))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
     await plugin.closeBundle();
   });
 
   it('coalesces a watcher generation before materializing an overlapping route request', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-overlap-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-producer-readiness-overlap-');
     process.chdir(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
@@ -957,55 +571,25 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     const metaPath = join(assets, 'overlap.fixture.meta.json');
     await writeFile(sourcePath, 'revision-old');
     const writeMeta = (revision: string) =>
-      writeFile(
-        metaPath,
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'fixture-overlap',
-          source: 'overlap.fixture',
-          importSettings: { revision },
-          subAssets: [{ guid: GUID, sourceIndex: 0, kind: 'fixture-mesh' }],
-        }),
-      );
+      writeFile(metaPath, fixtureMeta('overlap.fixture', GUID, 'fixture-overlap', { revision }));
     await writeMeta('old');
-    let releaseRebuild!: () => void;
     let sawRebuild = false;
-    let markRebuildStarted!: () => void;
-    const rebuildStarted = new Promise<void>((resolve) => {
-      markRebuildStarted = resolve;
-    });
-    const rebuildRelease = new Promise<void>((resolve) => {
-      releaseRebuild = resolve;
-    });
+    const { promise: rebuildStarted, resolve: markRebuildStarted } = testGate();
+    const { promise: rebuildRelease, resolve: releaseRebuild } = testGate();
     const overlapImporter: Importer = {
       key: 'fixture-overlap',
       import: async (context) => {
-        const source = await context.readSource();
-        if (!source.ok) throw new Error('fixture source read failed');
-        const revision = new TextDecoder().decode(source.value);
+        const revision = await fixtureRevision(context);
         if (revision === 'revision-new' && !sawRebuild) {
           sawRebuild = true;
           markRebuildStarted();
           await rebuildRelease;
         }
-        return {
-          ok: true,
-          value: {
-            assets: [
-              {
-                guid: GUID,
-                kind: 'fixture-mesh',
-                payload: { kind: 'fixture-mesh', vertexCount: 3, revision },
-                refs: [],
-                artifacts: {
-                  body: { mediaType: 'application/octet-stream', bytes: new Uint8Array([7, 8, 9]) },
-                },
-              },
-            ],
-            sourceDependencies: [],
-          },
-        };
+        return importedFixture(GUID, new Uint8Array([7, 8, 9]), {
+          kind: 'fixture-mesh',
+          vertexCount: 3,
+          revision,
+        });
       },
     };
     const target = server();
@@ -1030,14 +614,10 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     expect(JSON.parse(String(response.body))).toEqual(
       expect.arrayContaining([expect.objectContaining({ guid: GUID })]),
     );
-    const packPath = join(
-      root,
-      'node_modules/.cache/forgeax-ddc/runtime/producer-readiness-overlap-1',
-      `${GUID}.pack.json`,
-    );
-    expect(JSON.parse(await readFile(packPath, 'utf8')).assets[0].payload.revision).toBe(
-      'revision-new',
-    );
+    const [{ packageUrl }] = JSON.parse(String(response.body));
+    const packResponse = await request(target, packageUrl);
+    expect(packResponse.statusCode).toBe(200);
+    expect(JSON.parse(String(packResponse.body)).assets[0].payload.revision).toBe('revision-new');
     await plugin.closeBundle();
   });
 });

@@ -5,27 +5,33 @@
 // The tests invoke recordSsaoCalcPass/recordSsaoBlurPass through a minimal
 // typed graph fixture and keep the GPU dispatch/binding predicates intact.
 
-import { RenderGraph } from '@forgeax/engine-render-graph';
-import type { RhiDevice, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import {
+  type GraphResourceResolver,
+  type GraphTextureView,
+  RenderGraph,
+  RenderGraphBuilder,
+} from '@forgeax/engine-render-graph';
+import type { RhiDevice, RhiRenderPassEncoder, TextureView } from '@forgeax/engine-rhi';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../../render/src/device/device-scope';
 import type { BloomPersistentBundle } from '../../../render/src/record/render-context';
-import {
-  encodeSkyboxPass,
-  recordBloomBlurPass,
-  recordBloomCompositePass,
-  recordFxaaPass,
-} from '../../../render/src/record/skybox-post-pass';
+import { encodeSkyboxPass, recordFxaaPass } from '../../../render/src/record/skybox-post-pass';
 import { VIEW_UNIFORM_BYTES } from '../../../render/src/record/view-ubo';
 import type { RenderPipelineContext } from '../../../render/src/render-contract';
 import {
   recordSsaoBlurPass,
   recordSsaoCalcPass,
 } from '../../../render/src/render-graph-primitives';
+import {
+  createRenderPipelineTarget,
+  type RenderPipelineFrame,
+} from '../../../render/src/render-pipeline';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemRuntime,
 } from '../../../render/src/render-system';
+import { addTypedBloomPasses } from '../../../render/src/typed-render-graph-primitives';
 
 // ── M8 / w35-w36-w46 GPU dispatch + intensity write RED tests ───────────────
 //
@@ -642,8 +648,8 @@ describe('recordSsaoCalcPass per-frame intensity write (M8 / w46 — RED)', () =
     // only enabled+intensity, so the parameter authority contributes the
     // documented radius/bias defaults.
     expect(data[48]).toBe(1.0);
-    expect(data[49]).toBe(0.25);
-    expect(data[50]).toBe(0);
+    expect(data[49]).toBe(2);
+    expect(data[50]).toBe(3);
     expect(data[51]).toBe(64); // Default SSAO high quality sample count.
   });
 
@@ -685,8 +691,7 @@ describe('recordSsaoCalcPass per-frame intensity write (M8 / w46 — RED)', () =
 // slot cache reused a bind group referencing the destroyed texture and hit
 // `queue-submit-failed: Destroyed texture used in a submit`. These drive the
 // real pass closures through simulated resize and assert the cache is keyed on
-// physical view identity (bloom / fxaa share the identical getOrCreateFromChain
-// mechanism via frameState.postProcessBgCache).
+// physical view identity through the producing pass.
 // ─────────────────────────────────────────────────────────────────────────
 interface PostProcessBindGroupCreate {
   label?: string;
@@ -810,12 +815,34 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
     const store = ctx.store as unknown as { getCubemapGpuView: ReturnType<typeof vi.fn> };
     store.getCubemapGpuView.mockImplementation(() => views.cubemap);
 
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    const register = vi.spyOn(graph, 'addRasterPass');
+    const names = new Map<GraphTextureView, keyof typeof views>();
+    const target = (name: keyof typeof views) => {
+      const value = createRenderPipelineTarget(graph, name, {
+        format: 'rgba16float',
+        size: 'surface',
+      }).unwrap();
+      names.set(value.view, name);
+      return value;
+    };
+    const levels = [0, 1, 2, 3, 4] as const;
+    addTypedBloomPasses(graph, {
+      scene: target('hdrColor'),
+      horizontal: levels.map((level) => target(`bloomHorizontal${level}`)),
+      vertical: levels.map((level) => target(`bloomVertical${level}`)),
+      levelDimensions: levels.map((level) => ({ width: 400 >> level, height: 300 >> level })),
+      composited: target('hdrComposited'),
+    }).unwrap();
+    const textureView = (input: GraphTextureView) => {
+      const name = names.get(input);
+      if (name === undefined) throw new Error('expected a declared Bloom input');
+      return ok(views[name] as TextureView);
+    };
+    const resources = { textureView } as GraphResourceResolver;
     const recordAll = () => {
-      for (let level = 0; level < 5; level += 1) {
-        recordBloomBlurPass(ctx, 'horizontal', resolve, undefined, level);
-        recordBloomBlurPass(ctx, 'vertical', resolve, undefined, level);
-      }
-      recordBloomCompositePass(ctx, resolve);
+      for (const [, descriptor] of register.mock.calls)
+        descriptor.encodeDirect?.(pass, ctx, resources);
       recordFxaaPass(ctx, resolve);
       encodeSkyboxPass(ctx, pass);
     };
@@ -846,7 +873,22 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
       size: VIEW_UNIFORM_BYTES,
     });
 
+    const initialReceipts = ctx.frameState.bloomFrameReceipts;
+    expect(initialReceipts).toEqual({ uploadCount: 11, bindGroupCount: 11, encodeCount: 11 });
+    const writes = vi.mocked(ctx.runtime.device.queue.writeBuffer);
+    const initialUniform = writes.mock.calls[0]?.[2];
+    expect(Array.from(initialUniform as Float32Array)).toEqual(
+      [1, 0.01, 400, 300, 0, 0, 0, 0].map(Math.fround),
+    );
+    ctx.frameState.bloomFrameReceipts = undefined;
+    Object.assign(ctx.camera, { bloomThreshold: 2, bloomIntensity: 0.75 });
+    writes.mockClear();
     recordAll();
+    expect(writes.mock.calls[0]?.[2]).toBe(initialUniform);
+    expect((initialUniform as Float32Array)[0]).toBe(2);
+    expect((writes.mock.calls[10]?.[2] as Float32Array)[0]).toBe(0.75);
+    expect(initialReceipts).toEqual({ uploadCount: 11, bindGroupCount: 11, encodeCount: 11 });
+    expect(ctx.frameState.bloomFrameReceipts).not.toBe(initialReceipts);
     expect(bindGroupCreates).toHaveLength(13);
 
     views.bloomHorizontal0 = { label: 'bloom-horizontal-0-resized' };

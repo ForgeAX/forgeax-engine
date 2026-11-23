@@ -3,7 +3,11 @@ import { decodeTangentFrame32 } from './tangent-frame32';
 import {
   deriveVertexLayoutProjection,
   elementView,
+  interleaveStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
+  type VertexAttributeArray,
   type VertexLayoutProjection,
+  vertexAttributeArrayType,
 } from './vertex-attribute-layout';
 
 export type MeshAttributeKey = keyof VertexAttributeMap;
@@ -12,11 +16,11 @@ export type MeshAttributeKey = keyof VertexAttributeMap;
  * must be skipped; the error-only lookup retains channel-specific diagnostics. */
 export function interleavedMeshFiniteFailure(
   vertices: Float32Array,
-  layout: VertexLayoutProjection,
+  layout: Pick<VertexLayoutProjection, 'arrayStride' | 'attributes'>,
 ): MeshAttributeKey | undefined {
   const stride = layout.arrayStride / 4;
   const integers = layout.attributes.filter(
-    (entry) => entry.format === 'uint16x4' || entry.format === 'uint32',
+    (entry) => vertexAttributeArrayType(entry.format) !== Float32Array,
   );
   const channel = (index: number) =>
     layout.attributes.find(
@@ -44,6 +48,25 @@ export function interleavedMeshFiniteFailure(
   return undefined;
 }
 
+/** Validate float lanes in their actual packed order without unfolding packed integer words. */
+export function staticMeshStreamsFiniteFailure(
+  vertices: Float32Array,
+  layout: VertexLayoutProjection,
+): MeshAttributeKey | undefined {
+  const plan = projectStaticMeshVertexStreams(layout, vertices.byteLength / layout.arrayStride);
+  if (plan?.layout.streams === undefined) throw new TypeError('invalid static stream projection');
+  for (const [slot, stream] of plan.layout.streams.entries()) {
+    const range = plan.ranges[slot];
+    if (range === undefined) throw new Error('missing static stream interval');
+    const issue = interleavedMeshFiniteFailure(
+      vertices.subarray(range.offset / 4, (range.offset + range.size) / 4),
+      stream,
+    );
+    if (issue !== undefined) return issue;
+  }
+  return undefined;
+}
+
 /** A numeric window, resolved once outside a CPU loop. No vertex bytes are copied.
  * Read data[offset + vertex * stride + component]. Offsets and strides are in
  * elements of data, including uint16 skin indices in mixed packed rows. */
@@ -56,7 +79,7 @@ export interface ReadonlyMeshAttributeWindow {
 }
 
 export interface MeshAttributeWindow extends ReadonlyMeshAttributeWindow {
-  readonly data: Float32Array | Uint16Array | Uint32Array;
+  readonly data: VertexAttributeArray;
 }
 
 /** One empty backing per mesh: transferring a declaration cannot detach another
@@ -65,16 +88,9 @@ export function meshAttributeLayout(attributes: VertexAttributeMap): VertexAttri
   const result: VertexAttributeMap = {};
   const storage = new ArrayBuffer(0);
   const floats = new Float32Array(storage);
-  let shorts: Uint16Array | undefined;
-  let words: Uint32Array | undefined;
   for (const entry of deriveVertexLayoutProjection(attributes).attributes) {
-    if (entry.format === 'uint16x4' && shorts === undefined) shorts = new Uint16Array(storage);
-    if (entry.format === 'uint32' && words === undefined) words = new Uint32Array(storage);
-    Reflect.set(
-      result,
-      entry.key,
-      entry.format === 'uint32' ? words : entry.format === 'uint16x4' ? shorts : floats,
-    );
+    const ArrayType = vertexAttributeArrayType(entry.format);
+    Reflect.set(result, entry.key, ArrayType === Float32Array ? floats : new ArrayType(storage));
   }
   return result;
 }
@@ -86,6 +102,13 @@ export function interleavedMesh<T extends MeshAsset>(mesh: T): T {
   return {
     ...mesh,
     attributeStorage: 'interleaved',
+    vertices:
+      mesh.attributeStorage === 'static-streams'
+        ? interleaveStaticMeshVertexStreams(
+            mesh.vertices,
+            deriveVertexLayoutProjection(mesh.attributes),
+          )
+        : mesh.vertices,
     attributes: meshAttributeLayout(mesh.attributes),
   };
 }
@@ -97,37 +120,45 @@ export function meshAttributeWindow(
   const layout = deriveVertexLayoutProjection(mesh.attributes);
   const entry = layout.attributes.find((attribute) => attribute.key === key);
   if (entry === undefined) return undefined;
-  const bytes = entry.format === 'uint16x4' ? 2 : 4;
+  const ArrayType = vertexAttributeArrayType(entry.format);
+  const bytes = ArrayType.BYTES_PER_ELEMENT;
   const components = entry.byteLength / bytes;
-  if (mesh.attributeStorage !== 'interleaved') {
+  if (mesh.attributeStorage === undefined) {
     const data = elementView(mesh.attributes[key], entry.format);
-    if (
-      data === undefined ||
-      (entry.format === 'uint16x4'
-        ? !(data instanceof Uint16Array)
-        : entry.format === 'uint32'
-          ? !(data instanceof Uint32Array)
-          : !(data instanceof Float32Array))
-    )
-      return undefined;
+    if (!(data instanceof ArrayType)) return undefined;
     return { data, offset: 0, stride: components, components, count: data.length / components };
   }
   const data =
-    bytes === 2
-      ? new Uint16Array(
+    ArrayType === Float32Array
+      ? mesh.vertices
+      : new ArrayType(
           mesh.vertices.buffer,
           mesh.vertices.byteOffset,
-          mesh.vertices.byteLength / 2,
-        )
-      : entry.format === 'uint32'
-        ? new Uint32Array(mesh.vertices.buffer, mesh.vertices.byteOffset, mesh.vertices.length)
-        : mesh.vertices;
+          mesh.vertices.byteLength / bytes,
+        );
+  const count = mesh.vertices.byteLength / layout.arrayStride;
+  if (mesh.attributeStorage === 'static-streams') {
+    const plan = projectStaticMeshVertexStreams(layout, count);
+    for (const [slot, stream] of plan?.layout.streams?.entries() ?? []) {
+      const range = plan?.ranges[slot];
+      const physical = stream.attributes.find((attribute) => attribute.key === key);
+      if (physical !== undefined && range !== undefined)
+        return {
+          data,
+          offset: (range.offset + physical.offset) / bytes,
+          stride: stream.arrayStride / bytes,
+          components,
+          count,
+        };
+    }
+    return undefined;
+  }
   return {
     data,
     offset: entry.offset / bytes,
     stride: layout.arrayStride / bytes,
     components,
-    count: mesh.vertices.byteLength / layout.arrayStride,
+    count,
   };
 }
 
@@ -161,34 +192,70 @@ export function copyMeshAttribute(
   if ((key === 'normal' || key === 'tangent') && mesh.attributes.tangentFrame !== undefined) {
     return copyDecodedTangentFrame(mesh, key, output);
   }
+  if (key === 'skinWeight') {
+    const window = meshAttributeWindow(mesh, key);
+    if (window === undefined) return undefined;
+    const { data, count, stride, offset, components } = window;
+    const scale = skinWeightDenominator(data);
+    if (scale !== 1) {
+      const out = output ?? new Float32Array(count * components);
+      if (
+        !(out instanceof Float32Array) ||
+        out.length !== count * components ||
+        out.buffer === data.buffer
+      )
+        throw new RangeError(
+          'Decoded skin weight output must be an independent matching float channel',
+        );
+      for (let row = 0; row < count; row++)
+        for (let lane = 0; lane < components; lane++)
+          out[row * components + lane] = (data[offset + row * stride + lane] as number) / scale;
+      return out;
+    }
+  }
+  return copyMeshAttributeStorage(mesh, key, output) as
+    | Float32Array
+    | Uint16Array
+    | Uint32Array
+    | undefined;
+}
+
+export function skinWeightDenominator(data: VertexAttributeArray): 1 | 255 | 65535 {
+  if (data instanceof Uint8Array) return 255;
+  if (data instanceof Uint16Array) return 65535;
+  return 1;
+}
+
+/** Copy stored components without decoding normalized formats. */
+export function copyMeshAttributeStorage(
+  mesh: Pick<MeshAsset, 'vertices' | 'attributes' | 'attributeStorage'>,
+  key: MeshAttributeKey,
+  output?: VertexAttributeArray,
+): VertexAttributeArray | undefined {
   const window = meshAttributeWindow(mesh, key);
   if (window === undefined) return undefined;
   const { data, offset, stride, components, count } = window;
   const length = count * components;
-  const out =
-    output ??
-    (data instanceof Uint16Array
-      ? new Uint16Array(length)
-      : data instanceof Uint32Array
-        ? new Uint32Array(length)
-        : new Float32Array(length));
+  const ArrayType = data.constructor as
+    | typeof Uint8Array
+    | typeof Uint16Array
+    | typeof Uint32Array
+    | typeof Float32Array;
+  const out = output ?? new ArrayType(length);
   if (out.length !== length || out.constructor !== data.constructor)
     throw new RangeError('mesh attribute output must match channel type and cardinality');
-  // A packed input can share this output's backing; avoid overwriting unread rows.
   if (out.buffer === data.buffer)
     throw new RangeError('mesh attribute output must not alias its source');
-  if (data instanceof Uint16Array) {
-    for (let row = 0; row < count; row++)
-      for (let lane = 0; lane < components; lane++)
-        out[row * components + lane] = data[offset + row * stride + lane] as number;
-  } else {
-    // Preserve signed zero and all admitted float32 bits, rather than converting lanes.
-    const source = new Uint32Array(data.buffer, data.byteOffset, data.length);
-    const target = new Uint32Array(out.buffer, out.byteOffset, out.byteLength / 4);
-    for (let row = 0; row < count; row++)
-      for (let lane = 0; lane < components; lane++)
-        target[row * components + lane] = source[offset + row * stride + lane] as number;
-  }
+  // Preserve all float bit patterns; integer lanes can be copied directly.
+  const source =
+    data instanceof Float32Array
+      ? new Uint32Array(data.buffer, data.byteOffset, data.length)
+      : data;
+  const target =
+    out instanceof Float32Array ? new Uint32Array(out.buffer, out.byteOffset, out.length) : out;
+  for (let row = 0; row < count; row++)
+    for (let lane = 0; lane < components; lane++)
+      target[row * components + lane] = source[offset + row * stride + lane] as number;
   return out;
 }
 
@@ -221,11 +288,11 @@ function copyDecodedTangentFrame(
 
 /** Authoring/cold conversion only; raster uploads and runtime edits use rows. */
 export function meshAttributeChannels(mesh: MeshAsset): VertexAttributeMap {
-  if (mesh.attributeStorage !== 'interleaved' && mesh.attributes.tangentFrame === undefined)
+  if (mesh.attributeStorage === undefined && mesh.attributes.tangentFrame === undefined)
     return mesh.attributes;
   const result: VertexAttributeMap = {};
   for (const key of Object.keys(mesh.attributes) as MeshAttributeKey[])
-    if (key !== 'tangentFrame') Reflect.set(result, key, copyMeshAttribute(mesh, key));
+    if (key !== 'tangentFrame') Reflect.set(result, key, copyMeshAttributeStorage(mesh, key));
   if (mesh.attributes.tangentFrame !== undefined) {
     const normal = copyMeshAttribute(mesh, 'normal'),
       tangent = copyMeshAttribute(mesh, 'tangent');

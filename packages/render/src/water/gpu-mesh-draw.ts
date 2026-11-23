@@ -1,21 +1,21 @@
 import { RhiError } from '@forgeax/engine-rhi';
-import { featureResourceKey } from '../features/frame-plan';
-import { getRenderFeaturePlanExecutionProjection } from '../features/host';
+import {
+  currentRenderFeaturePass,
+  type RenderFeatureExecutionFrame,
+} from '../features/frame-execution';
+import { featureResourceKey, featureScopeKey } from '../features/frame-plan';
 import type { RenderFeatureResolvedGpuBuffer } from '../features/prepared-gpu-work';
-import type { RenderSystemInternals } from '../record/render-context';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { viewFeaturePlanOf } from '../world/feature-plan-systems';
-import { renderWorldFor } from '../world/render-world';
 import {
   WATER_GPU_MESH_FEATURE,
-  waterGpuMeshBufferSizes,
   waterGpuMeshResource,
+  waterGpuMeshViewBindingBytes,
 } from './gpu-mesh-source';
 
 /** Reads physical resources from the admitted Feature execution, never a parallel GPU registry. */
 export function waterGpuMeshDrawBuffers(
-  runtime: Pick<RenderSystemInternals, 'renderWorld' | 'viewEntity'>,
-  source: RenderableSnapshot,
+  frame: RenderFeatureExecutionFrame,
+  source: Pick<RenderableSnapshot, 'waterGpuMesh' | 'waterOwner' | 'waterMeshTiles'>,
 ):
   | Readonly<{
       tiles: RenderFeatureResolvedGpuBuffer;
@@ -27,26 +27,33 @@ export function waterGpuMeshDrawBuffers(
   | undefined {
   const draw = source.waterGpuMesh;
   if (draw === undefined) return undefined;
-  const planned = viewFeaturePlanOf(renderWorldFor(runtime), runtime.viewEntity);
-  const plans = planned?.kind === 'planned' ? (planned.plan.candidate?.plans ?? []) : [];
-  const execution = plans
-    .filter((plan) => plan.featureIdentity === WATER_GPU_MESH_FEATURE)
-    .map(getRenderFeaturePlanExecutionProjection);
-  const buffers = execution.flatMap(
-    (plan) => plan?.passes.flatMap((pass) => pass.resolvedGpuCompute?.buffers ?? []) ?? [],
-  );
-  const scope = plans.find(
-    (plan) => plan.featureIdentity === WATER_GPU_MESH_FEATURE && plan.scope !== 'frame',
-  )?.scope;
-  const find = (kind: string) =>
+  // Scatter writes both outputs for exactly one zone and view. Read the execution
+  // being recorded, including a captured view with a different accepted plan.
+  const owner = source.waterOwner?.viewIdentity ?? source.waterMeshTiles?.viewIdentity;
+  const scope = owner === undefined ? undefined : { view: owner };
+  const scatter =
     scope === undefined
       ? undefined
-      : buffers.find(
-          (buffer) =>
-            buffer.name === featureResourceKey(scope, waterGpuMeshResource(draw.zoneKey, kind)),
+      : currentRenderFeaturePass(
+          frame,
+          WATER_GPU_MESH_FEATURE,
+          waterGpuMeshResource(draw.zoneKey, 'scatter'),
+          featureScopeKey(scope),
         );
-  const tiles = find('tiles'),
-    args = find('args');
+  let tiles: RenderFeatureResolvedGpuBuffer | undefined;
+  let args: RenderFeatureResolvedGpuBuffer | undefined;
+  if (
+    scatter?.enabled !== false &&
+    scatter?.resolvedGpuCompute !== undefined &&
+    scope !== undefined
+  ) {
+    const tileKey = featureResourceKey(scope, waterGpuMeshResource(draw.zoneKey, 'tiles'));
+    const argsKey = featureResourceKey(scope, waterGpuMeshResource(draw.zoneKey, 'args'));
+    for (const buffer of scatter.resolvedGpuCompute.buffers) {
+      if (buffer.name === tileKey) tiles = buffer;
+      else if (buffer.name === argsKey) args = buffer;
+    }
+  }
   if (
     !tiles ||
     !args ||
@@ -64,6 +71,6 @@ export function waterGpuMeshDrawBuffers(
     args,
     headerOffset: row * 256,
     indirectOffset: row * 20,
-    bindingBytes: waterGpuMeshBufferSizes({ ...draw, viewCount: 1 }).bindingBytes,
+    bindingBytes: waterGpuMeshViewBindingBytes(draw),
   };
 }

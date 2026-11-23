@@ -1,5 +1,9 @@
-import type { FixedPackPublication } from '@forgeax/engine-pack/runtime';
-import { createPackageResponse } from '@forgeax/engine-pack/runtime';
+import {
+  createPackageResponse,
+  type FixedPackPublication,
+  fixedPublicationDependencies,
+  matchesFixedDependency,
+} from '@forgeax/engine-pack/runtime';
 import type {
   Asset,
   AssetPublicationOutput,
@@ -50,23 +54,11 @@ export async function retainAssetPublications(
     const fixed = (
       await captureAssetPublication(row, entries, source, fetcher, { ...options, registry })
     ).unwrap();
-    const own = new Set(publication.outputs.map((output) => output.guid));
     const dependencies = new Map<string, RetainedAsset>();
-    const references = new Set([
-      ...publication.outputs.flatMap((output) => output.refs),
-      ...publication.externalEvidence
-        .filter((edge) => edge.usage !== 'content')
-        .map((edge) => edge.guid),
-    ]);
-    for (const ref of references) {
-      if (own.has(ref)) continue;
-      const pin = await retain(ref, new Set([...ancestors, row.packageUrl]));
-      const evidence = publication.externalEvidence.find((edge) => edge.guid === ref);
-      if (
-        evidence?.usage !== 'content' &&
-        ((evidence?.digest !== undefined && evidence.digest !== pin.digest) ||
-          (evidence?.generation !== undefined && evidence.generation !== pin.generation))
-      )
+    const nextAncestors = new Set([...ancestors, row.packageUrl]);
+    for (const [ref, evidence] of fixedPublicationDependencies(publication)) {
+      const pin = await retain(ref, nextAncestors);
+      if (!matchesFixedDependency(evidence, pin))
         throw new TypeError(`dependency version changed ${ref}`);
       dependencies.set(ref, pin);
     }

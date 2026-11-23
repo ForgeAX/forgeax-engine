@@ -45,16 +45,21 @@ describe('GPU-driven baseline characterization', () => {
     expect(productionRaster).not.toContain('GPU_DRIVEN_STANDARD_PBR_WGSL');
     expect(productionRaster).not.toContain('class GpuDrivenPbrRaster');
     expect(productionRaster).toContain('MaterialAbiRasterAdapter');
-    expect(productionRasterMaterial).toContain('deriveVertexBufferLayoutFromProjection');
-    expect(productionRasterMaterial).toContain('vertexLayout.arrayStride');
+    expect(productionRasterMaterial).toContain('layoutProjection.arrayStride');
+    expect(productionRasterMaterial).toContain('layoutProjection.digest');
+    expect(productionRasterMaterial).toContain(
+      'deriveVertexBufferLayoutFromProjection(layoutProjection,',
+    );
   });
 
   it('keeps CPU-only video slots out of the global GPU receipt gate', () => {
     expect(mainPass).toContain('videoTextureFields?.size');
-    expect(mainPass).toContain('prepareMaterialBinding = (slot)');
+    expect(mainPass).toMatch(
+      /prepareMaterialBinding = \(slot, standardMaterialLayoutIndex, program\)/,
+    );
     expect(mainPass).not.toContain('for (let materialSlot = 0; materialSlot < materialSlotCount;');
-    expect(productionRaster).toContain(
-      'bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot)',
+    expect(productionRaster).toMatch(
+      /bindMaterialSlot\(\s*bindings,\s*batch,\s*frameResources,\s*globalMaterialSlot\b/,
     );
     expect(productionRasterEncode).toMatch(
       /material bind group for global slot \$\{globalMaterialSlot\}/,

@@ -40,40 +40,23 @@ function receipt(overrides: Record<string, unknown> = {}): MaterialCookReceipt {
 }
 
 describe('material cook receipt', () => {
-  it('requires the v4 identity and provenance tuple', () => {
-    const v4 = {
-      schemaVersion: 'material-cook/5',
+  it('preserves source provenance and coordinator generations and requires compiler identity', () => {
+    const value = receipt();
+    const generated = receipt({
       sourceClosure: ['materials/mat.material.json', 'shaders/pbr.wgsl'],
-      profile: 'webgpu/v1',
-      compilerVersion: 'compiler/1',
       identity: {
-        materialContractDigest: 'sha256:material-contract',
-        sourceRevision: 'sha256:source-revision',
-        sourceClosureDigest: 'sha256:source-closure',
-        layoutIdentity,
-        programIdentity: 'sha256:program',
-        pipelineIdentity: 'sha256:pipeline',
-        materialPublicationIdentity: 'sha256:publication',
+        ...value.identity,
         cookIdentity: 'sha256:cook',
-        compilerFingerprint: 'sha256:compiler',
-        wasm: {
-          sourceContentKey: 'sha256:wasm-source',
-          artifactSha256: 'sha256:wasm-artifact',
-          glueSha256: 'sha256:wasm-glue',
-        },
-        artifactDigest,
         valueGeneration: 3,
         dependencyGeneration: 2,
         cookGeneration: 7,
       },
-      derivedInterface: { layoutIdentity },
-    };
-    expect(validateMaterialCookReceipt(v4)).toMatchObject({ ok: true, value: v4 });
-    expect(validateMaterialCookReceipt(receipt())).toMatchObject({ ok: true });
+    });
+    expect(validateMaterialCookReceipt(generated)).toMatchObject({ ok: true, value: generated });
     expect(
       validateMaterialCookReceipt({
-        ...v4,
-        identity: { ...v4.identity, compilerFingerprint: undefined },
+        ...generated,
+        identity: { ...generated.identity, compilerFingerprint: undefined },
       }),
     ).toMatchObject({
       ok: false,
@@ -132,17 +115,5 @@ describe('material cook receipt', () => {
         error: { code: 'material-cook-record-invalid' },
       });
     }
-  });
-
-  it('records the coordinator-owned publication generation', () => {
-    const generationReceipt = {
-      sourceClosure: ['materials/mat-root.material.json'],
-      profile: 'webgpu/v1',
-      compilerVersion: 'compiler/1',
-      identity: { ...receipt().identity, cookGeneration: 11 },
-    };
-    expect(generationReceipt).toMatchObject({
-      identity: { cookGeneration: 11 },
-    });
   });
 });

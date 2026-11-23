@@ -6,16 +6,16 @@ export function renderStateSignature(state: object): string {
 }
 
 /** Affine model parity, independent of translation and nonuniform scale magnitude. */
-export function isReflectedTransform(world: Float32Array): boolean {
-  const a = world[0] ?? 0,
-    b = world[4] ?? 0,
-    c = world[8] ?? 0;
-  const d = world[1] ?? 0,
-    e = world[5] ?? 0,
-    f = world[9] ?? 0;
-  const g = world[2] ?? 0,
-    h = world[6] ?? 0,
-    i = world[10] ?? 0;
+export function isReflectedTransform(world: Float32Array, offset = 0): boolean {
+  const a = world[offset] ?? 0,
+    b = world[offset + 4] ?? 0,
+    c = world[offset + 8] ?? 0;
+  const d = world[offset + 1] ?? 0,
+    e = world[offset + 5] ?? 0,
+    f = world[offset + 9] ?? 0;
+  const g = world[offset + 2] ?? 0,
+    h = world[offset + 6] ?? 0,
+    i = world[offset + 10] ?? 0;
   return a * (e * i - h * f) - b * (d * i - g * f) + c * (d * h - g * e) < 0;
 }
 

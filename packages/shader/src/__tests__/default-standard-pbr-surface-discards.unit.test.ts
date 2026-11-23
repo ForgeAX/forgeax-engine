@@ -15,8 +15,8 @@ const read = (file: string) =>
   readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
 const shader = read('default-standard-pbr.wgsl');
 
-function evaluateStandardSurfaceBody(source: string): string {
-  const start = source.indexOf('fn evaluateStandardSurface(');
+function surfaceInputBody(source: string): string {
+  const start = source.indexOf('fn standardSurfaceInput(');
   const end = source.indexOf('\nfn ', start + 1);
   expect(start).toBeGreaterThanOrEqual(0);
   return source.slice(start, end);
@@ -39,7 +39,7 @@ describe('Standard surface discard override', () => {
   });
 
   it('keeps the shared surface LOD coverage and view clipping calls inside the source macro', () => {
-    const body = evaluateStandardSurfaceBody(shader);
+    const body = surfaceInputBody(shader);
     expect(body).toMatch(
       /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*#if WATER_WAVES_AVAILABLE == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#else\s*applyLodCoverage\(in\.clip\.xy, in\.lodFade\);\s*#endif\s*#endif\s*#endif/,
     );
@@ -86,7 +86,10 @@ describe('Standard surface discard override', () => {
         /(?:standardForward|standardGBuffer|evaluateStandardSurface|standardAoInput)[\s\S]*if \(!standardWaterCovered\)/,
       );
     }
-    const evaluator = evaluateStandardSurfaceBody(shader);
+    expect(shader).toMatch(
+      /fn evaluateStandardSurface\([\s\S]*?let input = standardSurfaceInput\(/,
+    );
+    const evaluator = surfaceInputBody(shader);
     expect(evaluator).toContain('!(in.worldNormal.w <= 0.0)');
     expect(evaluator).toContain('waterMeshCoverageContains(');
     expect(evaluator).toContain('waterDynamicBoundsContains(');

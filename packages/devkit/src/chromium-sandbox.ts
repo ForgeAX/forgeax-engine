@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, chmod, chown, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import type { LaunchOptions } from 'playwright';
+import type { Browser, BrowserServer, LaunchOptions } from 'playwright';
 
 export function needsChromiumPrivilegeDrop(): boolean {
   return process.platform === 'linux' && process.geteuid?.() === 0;
@@ -104,4 +104,52 @@ export async function prepareUnprivilegedChromium(launch: LaunchOptions) {
     await release();
     throw cause;
   }
+}
+
+export function chromiumEnvironment(software: boolean, display?: string): Record<string, string> {
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+    ...(software ? { LIBGL_ALWAYS_SOFTWARE: '1' } : {}),
+    ...(display === undefined ? {} : { DISPLAY: display }),
+  };
+}
+
+async function launchSandboxed<T>(
+  launch: LaunchOptions,
+  start: (options: LaunchOptions) => Promise<T>,
+  onExit: (owner: T, release: () => void) => void,
+): Promise<T> {
+  const prepared = needsChromiumPrivilegeDrop()
+    ? await prepareUnprivilegedChromium(launch)
+    : undefined;
+  try {
+    const owner = await start(prepared?.options ?? launch);
+    if (prepared !== undefined) onExit(owner, () => void prepared.release().catch(() => undefined));
+    return owner;
+  } catch (cause) {
+    await prepared?.release().catch(() => undefined);
+    throw cause;
+  }
+}
+
+export function launchSandboxedBrowser(options: LaunchOptions): Promise<Browser> {
+  return launchSandboxed(
+    options,
+    async (launch) =>
+      (await import('playwright')).chromium.launch({ ...launch, chromiumSandbox: true }),
+    (browser, release) => browser.once('disconnected', release),
+  );
+}
+
+export function launchSandboxedBrowserServer(options: LaunchOptions): Promise<BrowserServer> {
+  return launchSandboxed(
+    options,
+    async (launch) =>
+      (await import('playwright')).chromium.launchServer({ ...launch, chromiumSandbox: true }),
+    (server, release) => server.once('close', release),
+  );
 }

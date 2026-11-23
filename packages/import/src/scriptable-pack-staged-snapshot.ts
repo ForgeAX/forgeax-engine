@@ -8,7 +8,10 @@ import type {
   ScriptablePackDomainError,
   ScriptablePackStagedOutput,
 } from './scriptable-pack.js';
-import { scriptablePackFingerprint as assetDigest } from './scriptable-pack-fingerprint.js';
+import {
+  scriptablePackFingerprint as assetDigest,
+  scriptablePackFingerprintAsync,
+} from './scriptable-pack-fingerprint.js';
 
 export type ScriptablePackSnapshotError =
   | AssetError
@@ -51,6 +54,44 @@ function missingOutputError(owner: string, guid: string): ScriptablePackDomainEr
     expected: `owner ${owner} to stage every declared output including ${guid}`,
     hint: 'return one output for every GUID declared by the staged owner',
     detail: { missingGuids: [guid], unexpectedSourceKeys: [], kindMismatches: [] },
+  };
+}
+
+async function snapshotOf(
+  output: ScriptablePackStagedOutput,
+  generation: number,
+  fingerprint: (asset: unknown) => string | Promise<string> = assetDigest,
+): Promise<ScriptablePackAssetSnapshot> {
+  return {
+    asset: structuredClone(output.asset),
+    generation,
+    digest: output.digest ?? (await fingerprint(output.asset)),
+  };
+}
+
+export function sourceWithPreparedPackOutputs(
+  outputs: readonly ScriptablePackStagedOutput[],
+  published: ScriptablePackAssetSnapshotSource | undefined,
+): ScriptablePackAssetSnapshotSource | undefined {
+  if (outputs.length === 0) return published;
+  const byGuid = new Map(
+    outputs.map((output) => [AssetGuid.format(output.guid).toLowerCase(), output]),
+  );
+  return {
+    async readByGuid(guid) {
+      const key = AssetGuid.format(guid).toLowerCase();
+      const output = byGuid.get(key);
+      if (output !== undefined)
+        return ok(await snapshotOf(output, 1, scriptablePackFingerprintAsync));
+      if (published !== undefined) return published.readByGuid(guid);
+      return err(
+        new AssetError({
+          code: 'asset-not-found',
+          expected: `an available Asset snapshot for ${key}`,
+          hint: 'publish the referenced Pack or repair the content dependency',
+        }),
+      );
+    },
   };
 }
 
@@ -153,11 +194,7 @@ export function createScriptablePackStagedAssetSnapshotSource(
               builds.delete(owner.id);
               return err(missingOutputError(owner.id, outputGuid));
             }
-            next.set(outputGuid, {
-              asset: structuredClone(output.asset),
-              generation: options.generation,
-              digest: output.digest ?? (await assetDigest(output.asset)),
-            });
+            next.set(outputGuid, await snapshotOf(output, options.generation));
           }
           for (const declared of owner.guids) {
             const declaredGuid = AssetGuid.format(declared).toLowerCase();

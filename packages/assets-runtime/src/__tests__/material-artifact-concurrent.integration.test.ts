@@ -8,7 +8,6 @@ import {
   bundleMaterialFixture,
   materialProductionFixture,
 } from './fixtures/material-production.js';
-import { materialRecordFixture } from './fixtures/material-publication.js';
 
 /** Production pools programs; loose transport (dev server, Runtime Packs) keeps one read each. */
 function loosenPrograms(fixture: Awaited<ReturnType<typeof materialProductionFixture>>) {
@@ -33,13 +32,13 @@ function loosenPrograms(fixture: Awaited<ReturnType<typeof materialProductionFix
 }
 
 async function deferredMaterial(loose = true) {
-  const record = materialRecordFixture({
+  const fixture = await materialProductionFixture(true, {
     passes: [
       { name: 'Forward', program: { module: 'game::first' } },
       { name: 'Shadow', program: { module: 'game::second' } },
     ],
   });
-  const fixture = await materialProductionFixture(true, record);
+  const { record } = fixture;
   if (loose) loosenPrograms(fixture);
   else {
     const report = await bundleMaterialFixture(fixture);

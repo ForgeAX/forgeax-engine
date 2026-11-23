@@ -137,7 +137,7 @@ describe('material bind-group assembly cache', () => {
     const oldBuffer = {} as Buffer;
     const newBuffer = {} as Buffer;
     const skylightResources = {
-      irradianceView: {},
+      skySh: {},
       irradianceSampler: {},
       prefilterView: {},
       prefilterSampler: {},
@@ -184,7 +184,7 @@ describe('material bind-group assembly cache', () => {
         material,
         materialBgl,
         oldBuffer,
-        { ...skylightResources, skylightPrefilterView: {} as TextureView },
+        { ...skylightResources, prefilterView: {} as TextureView },
         true,
       ),
     ).toBe(false);

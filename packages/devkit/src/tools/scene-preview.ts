@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   createEngineWorkspaceRuntime,
   type EngineWorkspaceAsset,
@@ -8,7 +8,15 @@ import {
 } from '@forgeax/engine-app';
 import type { ArtifactRef, JsonValue, ToolTerminal } from '@forgeax/engine-tool-runtime';
 import { createBrowserCapture } from '../browser-capture.js';
+import { completeCommand, failToolRun, rejectCommand } from '../types.js';
 import { createDevKitWorkspaceProvider } from '../workspace-provider.js';
+import {
+  decodeArtifactDataUri,
+  PNG_DATA_URI,
+  projectArtifactUri,
+  publishPng,
+  toolRunDirectory,
+} from './evidence-image.js';
 
 const DEFAULT_SIZE = 1024;
 const DEFAULT_BACKEND = 'auto' as const;
@@ -40,16 +48,15 @@ function failure(
   detail: Record<string, unknown> = {},
   artifacts: readonly ArtifactRef[] = [],
 ): ToolTerminal<never> {
-  return {
-    outcome: 'failed',
-    failure: {
+  return failToolRun(
+    {
       code: 'tool-domain-failed',
       expected,
       hint,
       detail: { code, payload: detail as unknown as JsonValue },
     },
     artifacts,
-  };
+  );
 }
 
 function positiveExtent(value: unknown, fallback: number): number | undefined {
@@ -64,38 +71,35 @@ function parseArgs(
   | { readonly ok: true; readonly value: ScenePreviewArgs }
   | { readonly ok: false; readonly error: ToolTerminal<never> } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return {
-      ok: false,
-      error: failure(
+    return rejectCommand(
+      failure(
         'tool-invalid-args',
         'scene preview arguments to be an object with a GUID',
         'Pass { kind: "scene", guid } and retry.',
       ),
-    };
+    );
   }
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.guid !== 'string' || candidate.guid.trim() === '') {
-    return {
-      ok: false,
-      error: failure(
+    return rejectCommand(
+      failure(
         'tool-invalid-args',
         'scene preview arguments to include a non-empty guid',
         'Pass the published SceneAsset GUID from `asset list`.',
       ),
-    };
+    );
   }
   const widthValue = positiveExtent(candidate.width, DEFAULT_SIZE);
   const heightValue = positiveExtent(candidate.height, DEFAULT_SIZE);
   if (widthValue === undefined || heightValue === undefined) {
-    return {
-      ok: false,
-      error: failure(
+    return rejectCommand(
+      failure(
         'tool-invalid-args',
         'width and height to be positive safe integers',
         'Pass positive integer viewport dimensions.',
         { width: candidate.width ?? null, height: candidate.height ?? null },
       ),
-    };
+    );
   }
   const width = widthValue;
   const height = heightValue;
@@ -106,65 +110,40 @@ function parseArgs(
     backend !== 'hardware' &&
     backend !== 'software'
   ) {
-    return {
-      ok: false,
-      error: failure(
+    return rejectCommand(
+      failure(
         'tool-invalid-args',
         'backend to be auto, hardware, or software',
         'Use backend: auto for hardware-first fallback.',
         { backend },
       ),
-    };
+    );
   }
   if (candidate.headless !== undefined && typeof candidate.headless !== 'boolean') {
-    return {
-      ok: false,
-      error: failure(
-        'tool-invalid-args',
-        'headless to be boolean',
-        'Pass headless: true or false.',
-        { headless: candidate.headless },
-      ),
-    };
+    return rejectCommand(
+      failure('tool-invalid-args', 'headless to be boolean', 'Pass headless: true or false.', {
+        headless: candidate.headless,
+      }),
+    );
   }
   if (candidate.output !== undefined && typeof candidate.output !== 'string') {
-    return {
-      ok: false,
-      error: failure(
+    return rejectCommand(
+      failure(
         'tool-invalid-args',
         'output to be a project-relative path',
         'Pass a relative PNG output path.',
         { output: candidate.output },
       ),
-    };
+    );
   }
-  return {
-    ok: true,
-    value: {
-      guid: candidate.guid,
-      width,
-      height,
-      backend: (backend as ScenePreviewBackend | undefined) ?? DEFAULT_BACKEND,
-      ...(candidate.headless === undefined ? {} : { headless: candidate.headless }),
-      ...(candidate.output === undefined ? {} : { output: candidate.output }),
-    },
-  };
-}
-
-function dataUriBytes(uri: string): Uint8Array {
-  const comma = uri.indexOf(',');
-  if (comma < 0 || !uri.startsWith('data:image/png;base64,')) {
-    throw new TypeError('workspace capture did not return a base64 PNG data URI');
-  }
-  return Buffer.from(uri.slice(comma + 1), 'base64');
-}
-
-function digest(bytes: Uint8Array): string {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function projectUri(root: string, path: string): string {
-  return relative(root, path).split(sep).join('/');
+  return completeCommand({
+    guid: candidate.guid,
+    width,
+    height,
+    backend: (backend as ScenePreviewBackend | undefined) ?? DEFAULT_BACKEND,
+    ...(candidate.headless === undefined ? {} : { headless: candidate.headless }),
+    ...(candidate.output === undefined ? {} : { output: candidate.output }),
+  });
 }
 
 function jsonCopy(value: unknown): unknown {
@@ -202,15 +181,10 @@ export async function runScenePreviewTool(
   if (!parsed.ok) return parsed.error;
   const input = parsed.value;
   const runId = `scene.preview:${randomUUID()}`;
-  const outputRoot = resolve(
-    projectRoot,
-    '.forgeax',
-    'tool-runs',
-    runId.replace(/[^a-zA-Z0-9._-]/g, '_'),
-  );
+  const outputRoot = toolRunDirectory(projectRoot, runId);
   const output = resolve(
     projectRoot,
-    input.output ?? `${projectUri(projectRoot, outputRoot)}/engine-canvas.png`,
+    input.output ?? `${projectArtifactUri(projectRoot, outputRoot)}/engine-canvas.png`,
   );
   const provider = createDevKitWorkspaceProvider({
     width: input.width,
@@ -251,7 +225,7 @@ export async function runScenePreviewTool(
       width: input.width,
       height: input.height,
       runId,
-      outputDir: projectUri(projectRoot, outputRoot),
+      outputDir: projectArtifactUri(projectRoot, outputRoot),
     });
     const assets = await runtime.listAssets({
       project: opened.project,
@@ -287,34 +261,25 @@ export async function runScenePreviewTool(
       width: input.width,
       height: input.height,
     })) as WorkspaceCapture;
-    const bytes = dataUriBytes(capture.png);
+    if (!capture.png.startsWith(PNG_DATA_URI))
+      throw new TypeError('workspace capture did not return a base64 PNG data URI');
+    const bytes = decodeArtifactDataUri(capture.png);
     await mkdir(resolve(output, '..'), { recursive: true });
-    await writeFile(output, bytes);
-    const imageDigest = digest(bytes);
+    const artifact = await publishPng(projectRoot, output, bytes);
+    engineArtifact = artifact;
     const compositorPath = resolve(outputRoot, 'compositor.png');
-    engineArtifact = {
-      kind: 'png',
-      digest: imageDigest,
-      uri: projectUri(projectRoot, output),
-      mediaType: 'image/png',
-      sizeBytes: bytes.byteLength,
-    };
     captureErrors = capture.errors;
     const compositor = await browserSession.capture(undefined, {
       purpose: 'validate',
-      output: projectUri(projectRoot, compositorPath),
+      output: projectArtifactUri(projectRoot, compositorPath),
     });
     const report = browserSession.report();
-    reportUri = projectUri(projectRoot, report.report);
-    const artifact = engineArtifact;
-    if (artifact === undefined) {
-      throw new Error('workspace Engine capture artifact was not retained');
-    }
+    reportUri = projectArtifactUri(projectRoot, report.report);
     const compositorSize = (await stat(compositorPath)).size;
     compositorArtifact = {
       kind: 'png',
       digest: compositor.digest,
-      uri: projectUri(projectRoot, compositorPath),
+      uri: projectArtifactUri(projectRoot, compositorPath),
       mediaType: 'image/png',
       sizeBytes: compositorSize,
     };
@@ -345,7 +310,7 @@ export async function runScenePreviewTool(
           frameId: capture.frameId,
           width: capture.width,
           height: capture.height,
-          digest: imageDigest,
+          digest: artifact.digest,
           uri: artifact.uri,
           ...(capture.errors === undefined ? {} : { errors: capture.errors }),
           compositor: {
@@ -367,7 +332,7 @@ export async function runScenePreviewTool(
   } catch (cause) {
     if (reportUri === undefined && browserSession !== undefined) {
       try {
-        reportUri = projectUri(projectRoot, browserSession.report().report);
+        reportUri = projectArtifactUri(projectRoot, browserSession.report().report);
       } catch {
         // The browser may fail before its diagnostic report is available.
       }

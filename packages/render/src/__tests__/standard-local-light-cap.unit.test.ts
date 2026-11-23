@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PRODUCER_RESERVATION_END_WORD } from '../cluster-binner';
 import { inspectStandardLighting } from '../pipeline/standard-lighting/inspection';
 import { LIGHT_INDEX_LIST_CAPACITY } from '../pipeline/standard-lighting/layout';
 import { capStandardLocalLights } from '../pipeline/standard-lighting/local-light-cap';
@@ -14,8 +15,8 @@ import {
 } from './standard-light-cap-fixture';
 
 /**
- * Cluster payload digests of the same fixtures before the local-light cap
- * (grid, index list, producer bounds, light slots and uniform).
+ * Cluster payload digests for rosters within the admission cap. Disjoint
+ * finite sources have an empty cell box and a canonical producer record.
  */
 const UNCAPPED_DIGESTS = [
   [
@@ -28,13 +29,36 @@ const UNCAPPED_DIGESTS = [
   ],
   [
     { point: 160, spot: 64, rect: 32 },
-    '490d889e1e65b2bb46b3d50afd8b87fd5389d7eda3827adc739e4aab0f617e52',
+    'f29496cd8506abe5b9f40566c77671466064c26479c0311bfb3962d5e4700030',
   ],
   [
     { point: 160, spot: 64, rect: 32, range: 40 },
     '2126737a1e410a8c39aa85a45aa54a1fe94f6277439c07f7285d1b6937363947',
   ],
 ] as const;
+
+// In this fixture the camera has translation only. Test the six frustum planes
+// directly against each light's view-space AABB, independently of cell projection.
+function fixtureVisibleLights(
+  payload: ReturnType<typeof clusterPayload>,
+  camera = fixtureCamera(),
+) {
+  const slopeY = Math.tan(camera.fov / 2),
+    slopeX = slopeY * camera.aspect;
+  const indices = new Set<number>();
+  for (const [index, light] of payload.prepared.local.entries()) {
+    const radius = light.range;
+    const depth = (camera.position[2] ?? 0) - (light.position[2] ?? 0);
+    if (
+      depth + radius >= camera.near &&
+      depth - radius <= camera.far &&
+      Math.abs(light.position[0] ?? 0) - radius <= (depth + radius) * slopeX &&
+      Math.abs(light.position[1] ?? 0) - radius <= (depth + radius) * slopeY
+    )
+      indices.add(index);
+  }
+  return indices;
+}
 
 function shuffled<T>(items: readonly T[], seed: number): T[] {
   const out = [...items];
@@ -71,7 +95,13 @@ describe('Standard local-light cap', () => {
   )('keeps the uncapped Cluster payload byte-identical (%j)', (counts, digest) => {
     const payload = clusterPayload(fixtureLights(counts));
     expect(payload.transport.admittedLightCount).toBe(payload.transport.requestedLightCount);
-    expect(hashPayload(payload)).toBe(digest);
+    expect(new Set(payload.indices)).toEqual(fixtureVisibleLights(payload));
+    expect(payload.bounds[PRODUCER_RESERVATION_END_WORD]).toBe(payload.indices.length);
+    // All other words retain their existing digests; this previously reserved word
+    // now closes the last cell independently of the GPU-produced count.
+    const legacyBounds = payload.bounds.slice();
+    legacyBounds[PRODUCER_RESERVATION_END_WORD] = 0;
+    expect(hashPayload({ ...payload, bounds: legacyBounds })).toBe(digest);
   });
 
   it('passes a roster within the limit through without copying', () => {
@@ -167,7 +197,12 @@ describe('Standard local-light cap', () => {
 
   it('shades 1024 lights end to end at the default budget and drops only past it', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const full = clusterPayload(fixtureLights({ point: 700, spot: 300, rect: 24 }));
+    const lights = fixtureLights({ point: 700, spot: 300, rect: 24 });
+    const mixed = clusterPayload(lights);
+    const intersecting = fixtureVisibleLights(mixed);
+    expect(intersecting.size).toBe(1010);
+    expect(new Set(mixed.indices)).toEqual(intersecting);
+    const full = clusterPayload(lights, fixtureInternals(), fixtureFrameState(), fixtureCamera(65));
     expect(full.prepared.local).toHaveLength(1024);
     expect(full.transport.admittedLightCount).toBe(1024);
     expect(full.prepared.droppedLocalLights ?? 0).toBe(0);

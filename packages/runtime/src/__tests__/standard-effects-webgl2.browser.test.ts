@@ -6,6 +6,7 @@ import {
   CAMERA_EXPOSURE_MODE_AUTO,
   CAMERA_EXPOSURE_MODE_MANUAL,
   Camera,
+  DEFAULT_STANDARD_PROFILE,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -46,8 +47,7 @@ function enableEffects(
         data: { maxDistance: 12, thickness: 0.2, maxRoughness: 0.65 },
       })
       .unwrap();
-  if (effect === 'combined')
-    world.addComponent(camera, { component: AmbientOcclusion, data: {} }).unwrap();
+  if (effect === 'combined') world.set(camera, AmbientOcclusion, { enabled: true }).unwrap();
 }
 
 async function save(name: string, bytes: Uint8Array) {
@@ -93,6 +93,10 @@ it.each([
       host = await constructRendererHost(
         canvas,
         {
+          standardProfile: {
+            ...DEFAULT_STANDARD_PROFILE,
+            ambientOcclusion: { enabled: false, method: 'gtao' },
+          },
           // Fixture-local identity runs the real format/fallback admission.
           // Reports separately retain the tested checkout/build provenance.
           ssrIdentity: {
@@ -170,6 +174,9 @@ it.each([
           },
         )
         .unwrap();
+      world
+        .addComponent(camera, { component: AmbientOcclusion, data: { enabled: false } })
+        .unwrap();
       const lease = renderValue(renderer.attach(world));
       const errors: unknown[] = [];
       const unsubscribe = renderer.subscribe((event) => {
@@ -235,7 +242,16 @@ it.each([
           expect(entryPoints).toContain('ssr_trace_fragment');
           expect(entryPoints).toContain('fs_ssr_compose_fragment');
         }
-        if (effect === 'combined') expect(entryPoints).toContain('fs_ssao_calc');
+        if (effect === 'combined') {
+          expect(entryPoints).toContain('fs_ssao_full_depth');
+          expect(inspection.standardLighting?.ambientOcclusion).toMatchObject({
+            status: 'active',
+            requestedMethod: 'gtao',
+            effectiveMethod: 'ssao',
+            levels: 1,
+          });
+          expect(inspection.standardLighting?.ambientOcclusion.output.clusterRegionBytes).toBe(0);
+        }
         let changed = 0;
         for (let index = 0; index < baseline.length; index++)
           if (index % 4 !== 3 && Math.abs((baseline[index] ?? 0) - (enabled[index] ?? 0)) > 2)

@@ -336,6 +336,31 @@ export function rebindPublicationMaterialSchemas(
   return input;
 }
 
+/** Collect the immutable producer closure for candidate rows before sending them. */
+export function captureLevelMaterialPrograms(
+  assets: AssetRegistry,
+  rows: readonly import('../render-system-extract').RenderableSnapshot[],
+  acknowledged: (key: string) => boolean,
+): RenderPublication['programs'] {
+  const programs = new Map<string, RenderPublication['programs'][number]>();
+  const materials = new Set<MaterialSnapshot>();
+  const capture = (key: string): void => {
+    if (programs.has(key) || acknowledged(key)) return;
+    const program = capturePublicationProgram(assets, key);
+    programs.set(key, program);
+    for (const reference of program.shader.variantReferences ?? []) capture(reference.identifier);
+  };
+  for (const row of rows) {
+    for (const resource of [...row.materials, ...(row.materialOverrides ?? [])]) {
+      const material = resource?.snapshot;
+      if (material === undefined || materials.has(material)) continue;
+      materials.add(material);
+      for (const key of publicationMaterialProgramKeys(material)) capture(key);
+    }
+  }
+  return [...programs.values()];
+}
+
 /** Capture one immutable program from its native declaration; callers traverse its family closure. */
 export function capturePublicationProgram(
   assets: AssetRegistry,

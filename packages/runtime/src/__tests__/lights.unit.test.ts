@@ -96,7 +96,6 @@ function spawnValidatedLight(
         pcssHigh: 5,
         pcfVogel: 6,
         pcfSoft: 7,
-        variance: 8,
       });
       expect('pcfKernelSize' in schema).toBe(false);
     });
@@ -372,11 +371,8 @@ function spawnValidatedLight(
         expect(defaults.shadowDistance).toBeCloseTo(200, 5);
         expect(defaults.shadowFilter).toBe(6);
         expect(defaults.staggerCascades).toBe(false);
+        expect(defaults.perPixelAtmosphereTransmittance).toBe(false);
 
-        // Merged component: 3 light (direction + color arrays + intensity) +
-        // 1 castShadow + 10 closed shadow-quality fields + staggerCascades + contactShadowLength + lightingChannels = 17 fields (feat-20260709 M2 collapsed
-        // direction/color from 6 per-axis scalars to 2 array<f32,3> columns;
-        // nearPlane removed — derived from camera near; farPlane -> shadowDistance)
         expect(Object.keys(componentSchema(dl)).length).toBe(29);
         expect('lightingChannels' in componentSchema(dl)).toBe(true);
         expect(componentSchema(dl).staggerCascades).toBe('bool');

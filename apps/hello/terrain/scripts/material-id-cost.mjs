@@ -16,7 +16,7 @@ const source = (await pack.build({ packageId: pack.packageId, readByGuid: async 
 } })).unwrap();
 const sourceBuildMs = performance.now() - start;
 const byGuid = new Map(Object.entries(source).map(([key, asset]) => [AssetGuid.format(AssetGuid.derive(pack.packageId, key)), asset]));
-const packagePath = `assets/${AssetGuid.format(pack.packageId)}.pack.json`;
+const packagePath = `assets/${AssetGuid.format(pack.packageId)}.runtime-pack.json`;
 const publication = JSON.parse(readFileSync(resolve(dist, packagePath)));
 const rows = new Map(publication.assets.map(row => [row.guid, row]));
 const file = path => {

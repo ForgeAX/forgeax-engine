@@ -1,3 +1,4 @@
+import type { MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import type { AssetReader } from '@forgeax/engine-assets-runtime/internal';
 import {
   runtimeAssetReference,
@@ -5,22 +6,34 @@ import {
   runtimeAssetSource,
   runtimeAssets,
 } from '@forgeax/engine-assets-runtime/internal';
-import { Time, type TimeResource, type World } from '@forgeax/engine-ecs';
+import { type EntityHandle, Time, type TimeResource, type World } from '@forgeax/engine-ecs';
 import { VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type Asset, AssetError, type AssetHandle, err } from '@forgeax/engine-types';
+import {
+  type Asset,
+  AssetError,
+  type AssetHandle,
+  err,
+  type MaterialAsset,
+} from '@forgeax/engine-types';
 import {
   getTransparentSortConfig,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
 import type { ReceivedCanvasFrame } from './canvas';
+import { drawParameterComponent, readDrawParameters } from './draw-parameters';
 
 /** One domain reader. World state is borrowed only for native service and lifecycle integration. */
 export interface RenderResourceScope extends AssetReader {
   readonly world?: World;
   /** Current accepted packet revision, present on a publication receiver. */
   readonly revision?: number;
+  readonly drawParameters?: ((entity: number) => readonly number[] | undefined) | undefined;
   assetRevision(handle: number): number | undefined;
+  resolveMaterialTemplate?(
+    handle: number,
+    revision: number,
+  ): { readonly asset: MaterialAsset; readonly projection: MaterialRenderProjection } | undefined;
   readonly time: TimeResource;
   readonly transparentSort: TransparentSortConfig;
   lookupAsset<T extends Asset>(guid: string): T | undefined;
@@ -43,6 +56,9 @@ export function worldRenderResources(world: World): RenderResourceScope {
   view = {
     identity: world.identity,
     world,
+    get drawParameters() {
+      return drawParameterComponent(world) === undefined ? undefined : readParameters;
+    },
     resolveAsset: (handle, revision) =>
       records === undefined
         ? err(
@@ -87,6 +103,12 @@ export function worldRenderResources(world: World): RenderResourceScope {
   };
   worldResources.set(world, view);
   return view;
+  function readParameters(entity: number): readonly number[] | undefined {
+    const component = drawParameterComponent(world);
+    return component === undefined
+      ? undefined
+      : readDrawParameters(world, component, entity as EntityHandle);
+  }
 }
 
 export function renderAssetRevision(

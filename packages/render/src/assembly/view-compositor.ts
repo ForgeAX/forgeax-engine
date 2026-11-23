@@ -1,11 +1,20 @@
-import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import {
+  allocateRenderPassGeneration,
+  encodeNativeRenderPass,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import type {
+  BindGroup,
   BindGroupLayout,
   RenderPipeline,
+  Result,
   RhiCommandEncoder,
-  Sampler,
+  RhiDevice,
+  RhiError,
+  RhiRenderPassEncoder,
   Texture,
   TextureFormat,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import type { cameraViewExtent } from '../components/camera-view';
 import {
@@ -13,9 +22,10 @@ import {
   renderGraphPassInstrumentationActive,
 } from '../record/frame-targets';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
-import { activeRenderProfileSession } from '../record/profile-session';
-import { beginProfiledRenderPhase, type RenderSystemInternals } from '../record/render-context';
-import type { RenderTargetDescriptor } from '../targets/contracts';
+import type { RenderSystemInternals } from '../record/render-context';
+import type { RenderTargetPhysical } from '../targets/physical';
+import { renderWorldFor } from '../world/render-world';
+import { retireAfterSubmission } from '../world/submission-systems';
 
 const SOURCE = `
 struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f }
@@ -43,332 +53,350 @@ const CHANNEL_WRITE_MASK: Readonly<Record<CompositeChannels, number>> = Object.f
   cyan: 0x2 | 0x4,
 });
 
-interface CompositeView {
+/** The produced camera picture owns its sampled binding until replaced or retired. */
+export interface CompositeSource {
   readonly texture: Texture;
-  readonly viewport: ReturnType<typeof cameraViewExtent>;
-  readonly channels?: CompositeChannels;
+  readonly width: number;
+  readonly height: number;
+  binding?: {
+    readonly layout: BindGroupLayout;
+    readonly format: TextureFormat;
+    readonly group: BindGroup;
+  };
 }
 
-/** Replace each rectangle in authored order, preserving encoded output exactly once. */
+interface CompositeView {
+  readonly source: CompositeSource | undefined;
+  readonly viewport: ReturnType<typeof cameraViewExtent>;
+  readonly channels: CompositeChannels;
+}
+
+function value<T>(result: Result<T, RhiError>): T {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
+function createCompositePrograms(
+  internals: RenderSystemInternals,
+  device: RhiDevice,
+  format: TextureFormat,
+  linear: boolean,
+) {
+  const factory = internals.immediateShaderModuleFactory;
+  if (factory === undefined) return undefined;
+  const module = value(
+    factory.createShaderModule({ code: SOURCE, label: 'camera-view-composite' }),
+  );
+  const layout = value(
+    device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
+      ],
+    }),
+  );
+  const pipelineLayout = value(device.createPipelineLayout({ bindGroupLayouts: [layout] }));
+  const sampler = value(device.createSampler({ minFilter: 'linear', magFilter: 'linear' }));
+  const pipelines: Partial<Record<CompositeChannels, RenderPipeline>> = {};
+  return {
+    device,
+    format,
+    linear,
+    layout,
+    sampler,
+    pipeline(channels: CompositeChannels): RenderPipeline {
+      pipelines[channels] ??= value(
+        device.createRenderPipeline({
+          label: `camera-view-composite:${channels}`,
+          layout: pipelineLayout,
+          vertex: { module, entryPoint: 'vertex', buffers: [] },
+          fragment: {
+            module,
+            entryPoint: linear ? 'linear_fragment' : 'fragment',
+            targets: [{ format, writeMask: CHANNEL_WRITE_MASK[channels] }],
+          },
+          primitive: { topology: 'triangle-list', cullMode: 'none' },
+        }),
+      );
+      return pipelines[channels];
+    },
+  };
+}
+
+type CompositePrograms = NonNullable<ReturnType<typeof createCompositePrograms>>;
+
+function pictureBinding(
+  programs: CompositePrograms,
+  source: CompositeSource,
+  format: TextureFormat,
+  view?: TextureView,
+): BindGroup {
+  const previous = source.binding;
+  if (previous?.layout === programs.layout && previous.format === format) return previous.group;
+  const sampled = view ?? value(programs.device.createTextureView(source.texture, { format }));
+  const group = value(
+    programs.device.createBindGroup({
+      layout: programs.layout,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: sampled } },
+        { binding: 1, resource: { kind: 'sampler', value: programs.sampler } },
+      ],
+    }),
+  );
+  source.binding = { layout: programs.layout, format, group };
+  return group;
+}
+
+function checkSource(source: CompositeSource | undefined, destination: Texture): void {
+  if (source === undefined) throw new Error('Missing camera composite input');
+  if (source.texture === destination)
+    throw new RenderGraphError({
+      code: 'access-conflict',
+      expected: 'a camera picture and its color attachment are distinct textures',
+      hint: 'compose to a separate output target',
+      detail: {
+        passName: 'camera-view-composite',
+        resourceLabel: 'display',
+        accesses: ['sampled-read', 'color-attachment'],
+      },
+    });
+}
+
+function drawPicture(
+  pass: RhiRenderPassEncoder,
+  pipeline: RenderPipeline,
+  group: BindGroup,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): void {
+  pass.setPipeline(pipeline);
+  pass.setViewport(x, y, width, height, 0, 1);
+  pass.setScissorRect(x, y, width, height);
+  pass.setBindGroup(0, group);
+  pass.draw(3);
+}
+
+interface ObservedOutput extends CompositeSource {
+  readonly device: RhiDevice;
+  readonly format: TextureFormat;
+  readonly view: TextureView;
+  readonly generation: number;
+}
+
+/** One active, copyable endpoint for a raw swapchain while readback is requested. */
+function createObservedOutput(
+  internals: RenderSystemInternals,
+  width: number,
+  height: number,
+  format: TextureFormat,
+): ObservedOutput {
+  const device = internals.device;
+  const texture = value(
+    device.createTexture({
+      label: 'observed-display',
+      size: { width, height },
+      format,
+      usage: 0x10 | 0x04 | 0x01,
+    }),
+  );
+  try {
+    const view = value(device.createTextureView(texture, { format }));
+    return {
+      device,
+      texture,
+      view,
+      width,
+      height,
+      format,
+      generation: internals.deviceScope.generation,
+    };
+  } catch (cause) {
+    device.destroyTexture(texture);
+    throw cause;
+  }
+}
+
+/** Issue the ordered rectangles directly into the destination for this frame. */
 export function createViewCompositor(internals: RenderSystemInternals) {
-  let resources:
-    | {
-        pipelines: Map<CompositeChannels, RenderPipeline>;
-        create: (channels: CompositeChannels) => RenderPipeline;
-        layout: BindGroupLayout;
-        sampler: Sampler;
-        format: TextureFormat;
-      }
-    | undefined;
-  type Frame = {
-    encoder: RhiCommandEncoder;
-    views: readonly CompositeView[];
-    output: Texture;
-    graphGeneration: number;
-  };
-  let compiled: CompiledRenderGraph<Frame> | undefined;
-  const variants = new Map<boolean, CompiledRenderGraph<Frame>>();
-  const retireGraphs = () => {
-    for (const graph of variants.values()) void graph.retire();
-    variants.clear();
-    compiled = undefined;
-  };
-  let key = '';
+  let programs: CompositePrograms | undefined;
+  let observed: ObservedOutput | undefined;
+  let generation = 0;
+  let outputWidth = 0;
+  let outputHeight = 0;
+  function releaseObserved(): void {
+    const old = observed;
+    if (old === undefined) return;
+    observed = undefined;
+    retireAfterSubmission(renderWorldFor(internals), {
+      generation: old.generation,
+      queue: old.device.queue,
+      release: () => old.device.destroyTexture(old.texture),
+    });
+  }
   return {
     get generation() {
-      return compiled?.inspect().generation ?? 0;
+      return generation;
     },
-    dispose: retireGraphs,
+    dispose(): void {
+      releaseObserved();
+      programs = undefined;
+      generation = 0;
+    },
     encode(
       encoder: RhiCommandEncoder,
-      views: readonly CompositeView[],
+      pictures: readonly CompositeView[] | CompositeSource,
       output: Texture,
-      target?: RenderTargetDescriptor,
+      target?: RenderTargetPhysical,
     ): boolean {
       const device = internals.device;
       const base = internals.getPipelineState();
       if (base === null) return false;
-      const width = target?.width ?? internals.canvas.width;
-      const height = target?.height ?? internals.canvas.height;
-      const format = target?.format ?? base.format;
-      const { observeDisplay, observeRawDisplay, displayUsage } = displayObservationRoute(
-        internals,
-        target,
-        base.surfaceProfile,
-      );
-      const value = <T>(
-        result: import('@forgeax/engine-rhi').Result<T, import('@forgeax/engine-rhi').RhiError>,
-      ): T => {
-        if (!result.ok) throw result.error;
-        return result.value;
-      };
-      if (resources === undefined || resources.format !== format) {
-        const factory = internals.immediateShaderModuleFactory;
-        if (factory === undefined) return false;
-        const module = value(
-          factory.createShaderModule({
-            code: SOURCE,
-            label: 'camera-view-composite',
-          }),
-        );
-        const layout = value(
-          device.createBindGroupLayout({
-            entries: [
-              { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
-              { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
-            ],
-          }),
-        );
-        const pipelineLayout = value(device.createPipelineLayout({ bindGroupLayouts: [layout] }));
-        const entryPoint = target === undefined ? 'fragment' : 'linear_fragment';
-        const create = (channels: CompositeChannels) =>
-          value(
-            device.createRenderPipeline({
-              label: `camera-view-composite:${channels}`,
-              layout: pipelineLayout,
-              vertex: { module, entryPoint: 'vertex', buffers: [] },
-              fragment: {
-                module,
-                entryPoint,
-                targets: [{ format, writeMask: CHANNEL_WRITE_MASK[channels] }],
-              },
-              primitive: { topology: 'triangle-list', cullMode: 'none' },
-            }),
-          );
-        resources = {
-          format,
-          pipelines: new Map(),
-          create,
-          layout,
-          sampler: value(device.createSampler({ minFilter: 'linear', magFilter: 'linear' })),
-        };
+      const width = target?.descriptor.width ?? internals.canvas.width;
+      const height = target?.descriptor.height ?? internals.canvas.height;
+      const format = target?.descriptor.format ?? base.format;
+      const linear = target !== undefined;
+      const observeRaw =
+        target === undefined &&
+        base.surfaceProfile === 'raw-only' &&
+        internals.deferFinalDisplayObservation !== true &&
+        internals.observationCaptureDomains?.includes('final-display') === true;
+      const observeDisplay =
+        target === undefined && (base.surfaceProfile !== 'raw-only' || observeRaw);
+      const replaced =
+        programs?.device !== device || programs.format !== format || programs.linear !== linear;
+      if (replaced) programs = createCompositePrograms(internals, device, format, linear);
+      const ready = programs;
+      if (ready === undefined) return false;
+      const resize = width !== outputWidth || height !== outputHeight;
+      if (replaced || resize) {
+        releaseObserved();
+        generation = allocateRenderPassGeneration();
+        outputWidth = width;
+        outputHeight = height;
       }
-      const nextKey = JSON.stringify([
-        width,
-        height,
-        format,
-        views.map((v) => [v.viewport.renderWidth, v.viewport.renderHeight, v.channels ?? 'all']),
-      ]);
-      if (key !== nextKey) {
-        retireGraphs();
-        key = nextKey;
-      }
-      // Observation demand has only two raw-surface routes. Retain both so
-      // diagnostic frames do not repeatedly compile and retire identical graphs.
-      compiled = variants.get(observeRawDisplay);
-      if (compiled === undefined) {
-        const graph = new RenderGraphBuilder<Frame>();
-        const unwrap = <T>(r: { ok: true; value: T } | { ok: false; error: unknown }): T => {
-          if (!r.ok) throw r.error;
-          return r.value;
-        };
-        const color = unwrap(
-          graph.importTexture(
-            'display',
-            {
-              format,
-              size: 'surface',
-              usage: displayUsage,
-            },
-            (frame) => frame.output,
-          ),
-        );
-        const colorView = unwrap(graph.view(color, { format }));
-        // Raw-only swapchains are render-only. Demand a copyable encoded
-        // endpoint only for observations; ordinary composition stays direct.
-        const observedColor = observeRawDisplay
-          ? unwrap(
-              graph.createTexture('observed-display', {
-                format,
-                size: 'surface',
-                usage: 0x10 | 0x04 | 0x01,
-              }),
-            )
-          : color;
-        const observedView = observeRawDisplay
-          ? unwrap(graph.view(observedColor, { format }))
-          : colorView;
-        const inputs = views.map((v, index) => {
-          const texture = unwrap(
-            graph.importTexture(
-              `camera.${index}`,
-              {
-                format: base.format,
-                size: { width: v.viewport.renderWidth, height: v.viewport.renderHeight },
-                usage: 0x04,
-              },
-              (frame) => {
-                const view = frame.views[index];
-                if (view === undefined) throw new Error('Missing camera composite input');
-                return view.texture;
-              },
-            ),
-          );
-          return unwrap(graph.view(texture, { format: base.format }));
-        });
-        const ready = resources;
-        const pipelineFor = (channels: CompositeChannels) => {
-          let pipeline = ready.pipelines.get(channels);
-          if (pipeline === undefined) {
-            pipeline = ready.create(channels);
-            ready.pipelines.set(channels, pipeline);
-          }
-          return pipeline;
-        };
-        const viewPipelines = views.map((v) => pipelineFor(v.channels ?? 'all'));
-        unwrap(
-          graph.addRasterPass('camera-view-composite', {
-            accesses: [
-              ...inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
-              { resource: observedView, usage: 'color-attachment' },
-            ],
-            colorAttachments: [
-              {
-                view: observedView,
-                loadOp: 'clear',
-                storeOp: 'store',
-                clearValue: { r: 0, g: 0, b: 0, a: 1 },
-              },
-            ],
-            encodeDirect: (pass, frame, resolved) => {
-              frame.views.forEach((view, index) => {
-                const input = inputs[index];
-                const pipeline = viewPipelines[index];
-                if (input === undefined || pipeline === undefined)
-                  throw new Error('Missing camera composite binding');
-                pass.setPipeline(pipeline);
-                const textureView = unwrap(resolved.textureView(input));
-                const group = value(
-                  device.createBindGroup({
-                    layout: ready.layout,
-                    entries: [
-                      { binding: 0, resource: { kind: 'textureView', value: textureView } },
-                      { binding: 1, resource: { kind: 'sampler', value: ready.sampler } },
-                    ],
-                  }),
-                );
-                const { x, y, width, height } = view.viewport;
-                pass.setViewport(x, y, width, height, 0, 1);
-                pass.setScissorRect(x, y, width, height);
-                pass.setBindGroup(0, group);
-                pass.draw(3);
-              });
-            },
-          }),
-        );
-        if (observeRawDisplay)
-          unwrap(
-            graph.addRasterPass('camera-view-present', {
-              accesses: [
-                { resource: observedView, usage: 'sampled-read' },
-                { resource: colorView, usage: 'color-attachment' },
+      // The composition procedure owns generation. A raw-only readback borrows
+      // a per-request physical endpoint without changing the procedure identity.
+      if (observeRaw) observed ??= createObservedOutput(internals, width, height, format);
+      else releaseObserved();
+      const endpoint = observed;
+      const outputView = target?.view ?? value(device.createTextureView(output, { format }));
+      const destination = endpoint?.texture ?? output;
+      if ('texture' in pictures) checkSource(pictures, destination);
+      else for (const picture of pictures) checkSource(picture.source, destination);
+
+      const names = internals.framePassNames;
+      const first = names?.length ?? 0;
+      const frame = { encoder, nativePassNames: names };
+      try {
+        internals.observationGraphGeneration = generation;
+        const instrumentation = renderGraphPassInstrumentationActive(internals)
+          ? createRenderGraphPassInstrumentation({ internals, owner: 'composition', generation })
+          : undefined;
+        encodeNativeRenderPass(
+          frame,
+          {
+            kind: 'raster',
+            name: 'camera-view-composite',
+            descriptor: {
+              label: 'camera-view-composite',
+              colorAttachments: [
+                {
+                  view: endpoint?.view ?? outputView,
+                  loadOp: 'clear',
+                  storeOp: 'store',
+                  clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                },
               ],
-              colorAttachments: [{ view: colorView, loadOp: 'clear', storeOp: 'store' }],
-              encodeDirect(pass, _frame, resolved) {
-                pass.setPipeline(pipelineFor('all'));
-                pass.setBindGroup(
+            },
+            encode(pass) {
+              if ('texture' in pictures) {
+                drawPicture(
+                  pass,
+                  ready.pipeline('all'),
+                  pictureBinding(ready, pictures, base.format),
                   0,
-                  value(
-                    device.createBindGroup({
-                      layout: ready.layout,
-                      entries: [
-                        {
-                          binding: 0,
-                          resource: {
-                            kind: 'textureView',
-                            value: unwrap(resolved.textureView(observedView)),
-                          },
-                        },
-                        { binding: 1, resource: { kind: 'sampler', value: ready.sampler } },
-                      ],
-                    }),
-                  ),
+                  0,
+                  pictures.width,
+                  pictures.height,
                 );
-                pass.setViewport(0, 0, width, height, 0, 1);
-                pass.setScissorRect(0, 0, width, height);
-                pass.draw(3);
+              } else {
+                for (const picture of pictures) {
+                  const source = picture.source;
+                  if (source === undefined) throw new Error('Missing camera composite input');
+                  const v = picture.viewport;
+                  drawPicture(
+                    pass,
+                    ready.pipeline(picture.channels),
+                    pictureBinding(ready, source, base.format),
+                    v.x,
+                    v.y,
+                    v.width,
+                    v.height,
+                  );
+                }
+              }
+            },
+          },
+          0,
+          instrumentation,
+        );
+        if (endpoint !== undefined) {
+          encodeNativeRenderPass(
+            frame,
+            {
+              kind: 'raster',
+              name: 'camera-view-present',
+              descriptor: {
+                label: 'camera-view-present',
+                colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store' }],
               },
-            }),
+              encode(pass) {
+                drawPicture(
+                  pass,
+                  ready.pipeline('all'),
+                  pictureBinding(ready, endpoint, format, endpoint.view),
+                  0,
+                  0,
+                  width,
+                  height,
+                );
+              },
+            },
+            1,
+            instrumentation,
           );
-        if (observeDisplay)
-          unwrap(
-            graph.addCopyPass('final-display-observation', {
-              accesses: [{ resource: observedView, usage: 'copy-src' }],
-              encodeDirect: (encoder, _frame, resolved) =>
-                encodeFrameObservationCapture(internals, encoder, {
-                  texture: unwrap(resolved.texture(observedColor)),
+        }
+        if (observeDisplay) {
+          encodeNativeRenderPass(
+            frame,
+            {
+              kind: 'copy',
+              name: 'final-display-observation',
+              encode(commands) {
+                encodeFrameObservationCapture(internals, commands, {
+                  texture: destination,
                   domain: 'final-display',
                   format: base.format,
-                  width: internals.canvas.width,
-                  height: internals.canvas.height,
-                  graphGeneration: _frame.graphGeneration,
+                  width,
+                  height,
+                  graphGeneration: generation,
                   frameNumber: internals.observationFrameId ?? 0,
-                }),
-            }),
+                });
+              },
+            },
+            endpoint === undefined ? 1 : 2,
+            instrumentation,
           );
-        const endCompile = beginProfiledRenderPhase(
-          activeRenderProfileSession(internals),
-          'graph/compile',
-        );
-        let next: CompiledRenderGraph<Frame>;
-        try {
-          next = unwrap(graph.compile({ device, surfaceSize: { width, height } }));
-        } finally {
-          endCompile?.();
         }
-        compiled = next;
-        variants.set(observeRawDisplay, next);
+        if (internals.observationFrameId !== undefined)
+          internals.observationCaptureOwner?.recordGraph(internals.observationFrameId, generation);
+      } catch (cause) {
+        if (names !== undefined) names.length = first;
+        throw cause;
       }
-      const activeGraph = compiled;
-      if (activeGraph === undefined) throw new Error('The view compositor has no compiled graph');
-      const graphGeneration = activeGraph.inspect().generation;
-      internals.observationGraphGeneration = graphGeneration;
-      const instrumentation = !renderGraphPassInstrumentationActive(internals)
-        ? undefined
-        : createRenderGraphPassInstrumentation({
-            internals,
-            graph: activeGraph,
-            owner: 'composition',
-          });
-      const executed = activeGraph.execute(
-        { encoder, views, output, graphGeneration },
-        undefined,
-        instrumentation,
-      );
-      if (!executed.ok) throw executed.error;
-      if (internals.observationFrameId !== undefined)
-        internals.observationCaptureOwner?.recordGraph(
-          internals.observationFrameId,
-          activeGraph.inspect().generation,
-        );
-      internals.framePassNames?.push(...activeGraph.inspect().passes.map((pass) => pass.name));
-      if (target === undefined)
-        internals.observationGraphGeneration = activeGraph.inspect().generation;
       return true;
     },
-  };
-}
-
-/** Native copyable surfaces retain their stable copy pass; only raw-only
- * surfaces need a distinct observation route and encoded intermediate. */
-function displayObservationRoute(
-  internals: Pick<
-    RenderSystemInternals,
-    'deferFinalDisplayObservation' | 'observationCaptureDomains'
-  >,
-  target: RenderTargetDescriptor | undefined,
-  surfaceProfile: 'dual-view' | 'raw-only' | undefined,
-) {
-  const requestedDisplay =
-    target === undefined &&
-    internals.deferFinalDisplayObservation !== true &&
-    internals.observationCaptureDomains?.includes('final-display') === true;
-  const observeRawDisplay = requestedDisplay && surfaceProfile === 'raw-only';
-  const observeDisplay =
-    target === undefined && (surfaceProfile !== 'raw-only' || observeRawDisplay);
-  return {
-    observeDisplay,
-    observeRawDisplay,
-    displayUsage: 0x10 | ((observeDisplay && !observeRawDisplay) || target?.readback ? 0x01 : 0),
   };
 }

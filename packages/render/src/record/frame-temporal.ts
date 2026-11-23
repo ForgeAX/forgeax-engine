@@ -42,6 +42,7 @@ import {
 } from './barrel-distortion-frame';
 import type { RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
+import { standardGtaoTemporalDemand } from './standard-ao-admission';
 
 export interface FrameClockSample {
   readonly deltaSeconds: number;
@@ -205,7 +206,8 @@ export function resolveFrameTemporal(
 ) {
   const previous = frameState.temporalView.accepted;
   const motionBlurDemand = motionBlurDemandFor(camera);
-  const temporalDemand = standardSceneTemporalDemand(camera, visibleSurfaceActive);
+  const gtao = standardGtaoTemporalDemand(internals, frameState);
+  const temporalDemand = standardSceneTemporalDemand(camera, visibleSurfaceActive || gtao);
   const deltaSeconds =
     temporalReset || clock.invalidSampleTime
       ? Number.NaN
@@ -258,7 +260,7 @@ export function resolveFrameTemporal(
   return {
     view,
     previous,
-    recordCamera: view.mode !== 'off' ? { ...camera, temporal: view } : camera,
+    recordCamera: view.mode !== 'off' || gtao ? { ...camera, temporal: view } : camera,
     deltaSeconds,
     motionBlurDemand,
     continuousGeometry:
@@ -349,11 +351,20 @@ export function buildFramePostProcessParams(
   targetH: number,
   barrelMapping: ReturnType<typeof resolveSubmittedBarrelMapping>,
   featureEffects: ReadonlyMap<string, PostProcessShaderEntry>,
-): Map<string, Uint8Array> {
-  const params = new Map(postProcessParams);
+  nativeDisplayGrade = false,
+): ReadonlyMap<string, Uint8Array> {
+  // Native display issues lens, white balance and output gamut from its current camera UBO.
+  // Explicit and feature-owned bytes remain addressable by other fullscreen readers.
+  // Declared and legacy graphs retain a detached writable projection for camera overrides.
+  let own = nativeDisplayGrade ? undefined : new Map(postProcessParams);
   for (const [id, effect] of featureEffects) {
-    if (effect.frameParams !== undefined && !params.has(id)) params.set(id, effect.frameParams);
+    if (effect.frameParams !== undefined && !postProcessParams.has(id)) {
+      own ??= new Map(postProcessParams);
+      own.set(id, effect.frameParams);
+    }
   }
+  if (nativeDisplayGrade) return own ?? postProcessParams;
+  const params = own ?? new Map(postProcessParams);
   stampOutputGamut(internals, postProcessParams, params);
   if (camera.motionBlur !== undefined && motionBlurDemand) {
     params.set(

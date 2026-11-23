@@ -1486,6 +1486,32 @@ it.each([
         '11.7.0',
       ),
     ).resolves.toBeUndefined();
+    if (!qualified) {
+      const linked = join(source, 'linked');
+      await mkdir(linked);
+      await writeJson(join(linked, 'package.json'), { name: 'linked-child', version: '1.0.0' });
+      await symlink(linked, join(dirname(resolved), 'linked-child'), 'junction');
+      const withChild = { ...payload, dependencies: { 'linked-child': 'file:./declared' } };
+      for (const root of [source, resolved]) await writeJson(join(root, 'package.json'), withChild);
+      const linkedLock = JSON.stringify({
+        ...lock,
+        snapshots: {
+          [snapshotKey]: { dependencies: { 'linked-child': 'link:../file-source/linked' } },
+        },
+      });
+      for (const file of ['pnpm-lock.yaml', 'node_modules/.pnpm/lock.yaml'])
+        await writeFile(join(fixture.project, file), linkedLock);
+      const inspect = () =>
+        inspectRunDependencyClosure(
+          fixture.project,
+          { schemaVersion: '1.0.0', path: fixture.engine },
+          fixture.digest,
+          '11.7.0',
+        );
+      await expect(inspect()).rejects.toMatchObject({ code: 'ENOENT' });
+      await symlink(linked, join(source, 'declared'), 'junction');
+      await expect(inspect()).resolves.toBeUndefined();
+    }
     if (qualified === 'engine') {
       const wrong = join(directory, 'wrong-engine');
       await cp(fixture.packageRoot, wrong, { recursive: true });

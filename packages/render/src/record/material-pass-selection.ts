@@ -19,6 +19,8 @@ export type MaterialRecordMode =
   | 'single-layer-medium-color'
   | 'water-prepass'
   | 'water-color'
+  | 'water-visibility'
+  | 'water-forward-color'
   | 'water-shadow'
   | 'water-velocity';
 
@@ -32,6 +34,8 @@ export function isSurfaceRecordMode(mode: MaterialRecordMode | undefined): boole
     mode === 'single-layer-medium-color' ||
     mode === 'water-prepass' ||
     mode === 'water-color' ||
+    mode === 'water-visibility' ||
+    mode === 'water-forward-color' ||
     mode === 'water-shadow' ||
     mode === 'water-velocity'
   );
@@ -52,6 +56,8 @@ export function matchesRecordMode(material: MaterialSnapshot, mode: MaterialReco
   if (
     mode === 'water-prepass' ||
     mode === 'water-color' ||
+    mode === 'water-visibility' ||
+    mode === 'water-forward-color' ||
     mode === 'water-shadow' ||
     mode === 'water-velocity'
   )
@@ -85,18 +91,22 @@ export function materialMatchesPass(
   return true;
 }
 
-/** Resolve the fixed material table already uploaded for this draw. */
-export function drawMaterial(
-  c: Pick<
-    import('./render-context')._InternalRenderPipelineContext,
-    'materialSlots' | 'materialSlotIndices'
-  >,
+/** FrameList.at also accepts negative and fractional indices. A draw address never does. */
+export function submittedMaterialRow(
+  slots: import('../scene/frame-list').FrameList<readonly number[]>,
   row: number,
+): readonly number[] | undefined {
+  return Number.isInteger(row) && row >= 0 ? slots.at(row) : undefined;
+}
+
+/** Resolve a submesh from its submitted row and the fixed, uploaded material table. */
+export function materialFromSubmittedSlots(
+  materials: readonly MaterialSnapshot[],
+  indices: readonly number[] | undefined,
   sourceSlot = 0,
 ): MaterialSnapshot {
-  const indices = Number.isInteger(row) && row >= 0 ? c.materialSlotIndices.at(row) : undefined;
   const slot = indices?.[sourceSlot] ?? indices?.[0];
-  const material = slot === undefined ? undefined : c.materialSlots[slot];
+  const material = slot === undefined ? undefined : materials[slot];
   if (material === undefined) throw new Error('Draw has no fixed submitted material slot');
   return material;
 }

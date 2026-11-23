@@ -6,9 +6,8 @@ import {
 } from './generated/schema-validators.cjs';
 import { decodeMaterialProgramWire } from './material-program-wire.js';
 export const validateMeta: ValidateFunction = metaValidator;
-export const validatePack: ValidateFunction = packValidator;
 export function validatePackV2(value: unknown): value is PackV2 {
-  if (!validatePack(value) || !isPackV2Shape(value)) return false;
+  if (!packValidator(value)) return false;
 
   const seenGuids = new Set<string>();
   for (const asset of value.assets) {
@@ -16,15 +15,6 @@ export function validatePackV2(value: unknown): value is PackV2 {
     seenGuids.add(asset.guid);
   }
   return true;
-}
-
-function isPackV2Shape(value: unknown): value is PackV2 {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'schemaVersion' in value &&
-    value.schemaVersion === '2.0.0'
-  );
 }
 
 export function parsePackV2(value: unknown): Result<PackV2, PackV2Error> {

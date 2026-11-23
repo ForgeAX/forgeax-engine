@@ -10,21 +10,20 @@ import {
   usesAccelerationStructures,
   type V7Tape,
 } from '@forgeax/engine-rhi-debug';
-import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
+import { createShaderModule, requestAdapterFrom } from '@forgeax/engine-rhi-webgpu';
 import { err } from '@forgeax/engine-types';
 import { nodeGpu } from '../node-gpu.js';
 import type { CommandResult } from '../types.js';
+import { failCommand } from '../types.js';
 import {
   type ArtifactRef,
   type RhiDebugOperationContext,
   type RhiDebugOperationInput,
+  type RhiDebugOperationName,
+  type RhiDebugOperationOutput,
   type RhiInspectInput,
-  type RhiInspectOutput,
   type RhiReadInput,
-  type RhiReadOutput,
-  type RhiSummaryOutput,
   type RhiTimingInput,
-  type RhiTimingOutput,
   runRhiDebugOperation,
 } from './operations.js';
 import type {
@@ -43,15 +42,8 @@ type ProviderResult = CommandResult<GPU>;
  */
 async function replayGpu(tape: V7Tape): Promise<ProviderResult> {
   const native = process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native';
-  const unavailable = (expected: string, hint: string, cause: string): ProviderResult => ({
-    ok: false,
-    error: {
-      code: 'replay-backend-unavailable',
-      expected,
-      hint,
-      detail: { stage: 'provider', cause },
-    },
-  });
+  const unavailable = (expected: string, hint: string, cause: string): ProviderResult =>
+    failCommand('replay-backend-unavailable', expected, hint, { stage: 'provider', cause });
   if (!native && usesAccelerationStructures(tape))
     return unavailable(
       'a replay provider with hardware Ray Query for a tape that builds acceleration structures',
@@ -127,6 +119,17 @@ function adapterInfoOf(info: GPUAdapterInfo | undefined): ReplayAdapterInfo | un
   };
 }
 
+function replayBackendFailure(stage: 'adapter' | 'device', hint: string) {
+  return failCommand(
+    'replay-backend-unavailable',
+    stage === 'adapter'
+      ? 'a fresh replay WebGPU adapter'
+      : 'a fresh replay WebGPU device satisfying the recorded tape',
+    hint,
+    { stage, cause: hint },
+  );
+}
+
 export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
   return {
     sampleHostLoad,
@@ -141,31 +144,22 @@ export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
       ),
     async readArtifact(artifact: ArtifactRef) {
       if (artifact.path === undefined) {
-        return {
-          ok: false as const,
-          error: {
-            code: 'artifact-path-missing',
-            expected: 'ArtifactRef.path to identify a readable .rhitape file',
-            hint: 'Pass the path returned by the capture host together with its digest.',
-            detail: { digest: artifact.digest },
-          },
-        };
+        return failCommand(
+          'artifact-path-missing',
+          'ArtifactRef.path to identify a readable .rhitape file',
+          'Pass the path returned by the capture host together with its digest.',
+          { digest: artifact.digest },
+        );
       }
       try {
         return { ok: true as const, value: new Uint8Array(await readFile(artifact.path)) };
       } catch (cause) {
-        return {
-          ok: false as const,
-          error: {
-            code: 'artifact-read-failed',
-            expected: 'the ArtifactRef path to be readable',
-            hint: 'Check the tape path and recapture if the artifact was removed.',
-            detail: {
-              path: artifact.path,
-              reason: cause instanceof Error ? cause.message : String(cause),
-            },
-          },
-        };
+        return failCommand(
+          'artifact-read-failed',
+          'the ArtifactRef path to be readable',
+          'Check the tape path and recapture if the artifact was removed.',
+          { path: artifact.path, reason: cause instanceof Error ? cause.message : String(cause) },
+        );
       }
     },
     async writeFile(path: string, bytes: Uint8Array) {
@@ -175,63 +169,35 @@ export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
         await writeFile(target, bytes);
         return { ok: true as const, value: target };
       } catch (cause) {
-        return {
-          ok: false as const,
-          error: {
-            code: 'artifact-write-failed',
-            expected: 'the PNG output path to be writable',
-            hint: 'Choose a writable image.png path.',
-            detail: {
-              path: target,
-              reason: cause instanceof Error ? cause.message : String(cause),
-            },
-          },
-        };
+        return failCommand(
+          'artifact-write-failed',
+          'the PNG output path to be writable',
+          'Choose a writable image.png path.',
+          { path: target, reason: cause instanceof Error ? cause.message : String(cause) },
+        );
       }
     },
     async createReplayBackend(tape: V7Tape) {
       const provider = await replayGpu(tape);
       if (!provider.ok) return provider;
-      if (!('navigator' in globalThis) || globalThis.navigator === undefined) {
-        Object.defineProperty(globalThis, 'navigator', {
-          value: {},
-          configurable: true,
-          writable: true,
-        });
-      }
-      Object.defineProperty(globalThis.navigator, 'gpu', {
-        value: provider.value,
-        configurable: true,
-        writable: true,
-      });
-      const adapter = await rhi.requestAdapter();
-      if (!adapter.ok) {
-        return {
-          ok: false as const,
-          error: {
-            code: 'replay-backend-unavailable',
-            expected: 'a fresh replay WebGPU adapter',
-            hint: adapter.error.hint,
-            detail: { stage: 'adapter', cause: adapter.error.hint },
+      let info: GPUAdapterInfo | undefined;
+      const adapter = await requestAdapterFrom(
+        {
+          async requestAdapter(options) {
+            const selected = await provider.value.requestAdapter(options);
+            info = selected?.info;
+            return selected;
           },
-        };
-      }
+        },
+        { powerPreference: 'high-performance' },
+      );
+      if (!adapter.ok) return replayBackendFailure('adapter', adapter.error.hint);
       const device = await adapter.value.requestDevice(
         replayDeviceRequest(tape, adapter.value.features, adapter.value.limits),
       );
-      if (!device.ok) {
-        return {
-          ok: false as const,
-          error: {
-            code: 'replay-backend-unavailable',
-            expected: 'a fresh replay WebGPU device satisfying the recorded tape',
-            hint: device.error.hint,
-            detail: { stage: 'device', cause: device.error.hint },
-          },
-        };
-      }
+      if (!device.ok) return replayBackendFailure('device', device.error.hint);
       const replayDevice = device.value;
-      const adapterInfo = adapterInfoOf((await provider.value.requestAdapter())?.info);
+      const adapterInfo = adapterInfoOf(info);
       // nodeGpu() creates Dawn without timestamp quantization; wgpu-native does not declare it.
       const timestampQuantization: TimestampQuantization =
         process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native' ? 'unknown' : 'disabled';
@@ -252,15 +218,10 @@ export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
   };
 }
 
-interface CliOutputs {
-  readonly 'rhi.summary': RhiSummaryOutput;
-  readonly 'rhi.inspect': RhiInspectOutput;
-  readonly 'rhi.read': RhiReadOutput;
-  readonly 'rhi.timing': RhiTimingOutput;
-}
-
 /** Resolve a file once, then retain its identity throughout decoding and replay. */
-export async function runCliRhiDebugOperation<N extends keyof CliOutputs>(
+export async function runCliRhiDebugOperation<
+  N extends Exclude<RhiDebugOperationName, 'rhi.capture'>,
+>(
   name: N,
   input: Omit<RhiInspectInput, 'artifact' | 'workIndex'> &
     Partial<Omit<RhiReadInput, 'artifact'>> &
@@ -271,7 +232,7 @@ export async function runCliRhiDebugOperation<N extends keyof CliOutputs>(
       /** `rhi timing` baseline tape path. */
       readonly compare?: string;
     },
-): Promise<CommandResult<CliOutputs[N]>> {
+): Promise<CommandResult<RhiDebugOperationOutput<N>>> {
   const context = createCliRhiDebugOperationContext();
   const files = new Map<string, CommandResult<Uint8Array>>();
   const resolveRef = async (
@@ -279,7 +240,7 @@ export async function runCliRhiDebugOperation<N extends keyof CliOutputs>(
     digest: string | undefined,
   ): Promise<CommandResult<ArtifactRef>> => {
     const source: ArtifactRef = { kind: 'rhi-tape', source: 'cli', path, digest: digest ?? '' };
-    const bytes = await context.readArtifact(source);
+    const bytes = files.get(path) ?? (await context.readArtifact(source));
     if (!bytes.ok) return bytes;
     files.set(path, bytes);
     return { ok: true, value: { ...source, digest: digest ?? tapeDigest(bytes.value) } };
@@ -294,10 +255,10 @@ export async function runCliRhiDebugOperation<N extends keyof CliOutputs>(
     artifact: artifact.value,
     ...(compare === undefined ? {} : { compare: compare.value }),
   };
-  return runRhiDebugOperation(name, resolved as RhiDebugOperationInput, {
+  return runRhiDebugOperation(name, resolved as RhiDebugOperationInput<N>, {
     ...context,
     // Each path is read once; replay keeps decoding the bytes whose digest was taken.
     readArtifact: async (ref) =>
       (ref.path === undefined ? undefined : files.get(ref.path)) ?? context.readArtifact(ref),
-  }) as Promise<CommandResult<CliOutputs[N]>>;
+  });
 }

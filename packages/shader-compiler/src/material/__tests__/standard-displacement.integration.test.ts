@@ -66,7 +66,7 @@ it('selects cooked parallax from the declared closed mode and keeps tangent and 
   expect(text).toContain('textureSampleGrad');
   expect(text).not.toContain('parallaxHeightTexture');
   // The march reads the height through the derived metallic host pair (naga-oil mangles the callee).
-  expect(text).toMatch(/= parallaxSourceUvOffset\w*\(metallicTexture, metallicTexture_sampler/);
+  expect(text).toMatch(/= \w*parallaxSourceUvOffset\w*\(metallicTexture, metallicTexture_sampler/);
   expect(text).toMatch(/let (\w+) = material\.displacementMode;\s*return \(\1 == 1u\);/);
   expect(text).toMatch(/@location\(3\)\s+tangent\s*:/);
   expect(text).toMatch(/objectBasis0/);
@@ -80,6 +80,6 @@ it('leaves a root without displacementMode on the unchanged vertex path', async 
 
 it('keeps plain normal mapping in a sparse cooked root without the metallic host pair', async () => {
   const text = await cookedForwardText(true, false);
-  expect(text).not.toMatch(/= parallaxSourceUvOffset\w*\(/);
+  expect(text).not.toMatch(/= \w*parallaxSourceUvOffset\w*\(/);
   expect(text).toMatch(/let (\w+) = material\.displacementMode;\s*return \(\1 == 1u\);/);
 }, 120_000);

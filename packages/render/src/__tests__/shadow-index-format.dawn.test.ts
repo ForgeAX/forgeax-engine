@@ -2,6 +2,7 @@ import type { Buffer, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { buildGpuDrivenPrimitiveBindGroupLayout } from '../pbr-pipeline';
 import {
   type GpuDrivenShadowSubmission,
   recordGpuDrivenShadowIndirect,
@@ -31,6 +32,10 @@ it('matches explicit index-format bindings for one shared buffer on the actual G
     }).unwrap();
     const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
     const group = device.createBindGroup({ layout, entries: [] }).unwrap();
+    const primitiveLayout = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
+    const primitiveGroup = device
+      .createBindGroup({ layout: primitiveLayout, entries: [] })
+      .unwrap();
     const dynamicLayout = device
       .createBindGroupLayout({
         entries: [
@@ -59,7 +64,7 @@ it('matches explicit index-format bindings for one shared buffer on the actual G
       .createRenderPipeline({
         layout: device
           .createPipelineLayout({
-            bindGroupLayouts: [layout, dynamicLayout, dynamicLayout, layout],
+            bindGroupLayouts: [layout, dynamicLayout, primitiveLayout, layout],
           })
           .unwrap(),
         vertex: { module: shader, entryPoint: 'vertex', buffers: [] },
@@ -91,7 +96,7 @@ it('matches explicit index-format bindings for one shared buffer on the actual G
         indexFormat,
         vertexBuffer: vertex,
         materialGroup: dynamicGroup,
-        meshBindGroup: dynamicGroup,
+        meshBindGroup: primitiveGroup,
         visibleBindGroups: [group],
         deformation: 'rigid' as const,
         indirectOffset: ordinal * 20,
@@ -149,7 +154,7 @@ function explicit(pass: RhiRenderPassEncoder, submission: GpuDrivenShadowSubmiss
     pass.setVertexBuffer(0, row.vertexBuffer);
     pass.setIndexBuffer(defined(row.indexBuffer), defined(row.indexFormat));
     pass.setBindGroup(1, row.materialGroup, [0]);
-    pass.setBindGroup(2, row.meshBindGroup, [0]);
+    pass.setBindGroup(2, row.meshBindGroup);
     pass.setBindGroup(3, defined(row.visibleBindGroups[0]));
     pass.drawIndexedIndirect(defined(submission.view.indirectBuffer), row.indirectOffset);
   }

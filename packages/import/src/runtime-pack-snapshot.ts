@@ -2,6 +2,7 @@ import {
   copyPackData,
   encodePackData,
   type FixedPackPublication,
+  fixedPublicationDependencies,
   validateFixedPackPublication,
 } from '@forgeax/engine-pack/runtime';
 import type { PackInstanceJson } from '@forgeax/engine-pack/source';
@@ -46,12 +47,25 @@ export function matchesRuntimePackPin(
 }
 
 export type RuntimePackSavedRecipe = (
-  | { readonly content: string; readonly instance?: PackInstanceJson }
-  | { readonly fixed: FixedPackPublication }
-) & {
-  readonly outputs: readonly AssetPublicationOutput[];
-  readonly dependencies: Readonly<Record<string, string>>;
-};
+  | {
+      readonly content: string;
+      readonly instance?: PackInstanceJson;
+      readonly outputs: readonly AssetPublicationOutput[];
+    }
+  | {
+      readonly fixed: FixedPackPublication;
+      /** Legacy recipe IDs still hash these stored outputs. */
+      readonly outputs?: readonly AssetPublicationOutput[];
+    }
+) & { readonly dependencies: Readonly<Record<string, string>> };
+
+export function savedRecipeOutputs(recipe: RuntimePackSavedRecipe | undefined) {
+  return (
+    recipe?.outputs ??
+    (recipe && 'fixed' in recipe ? recipe.fixed.rows[0]?.publication?.outputs : undefined) ??
+    []
+  );
+}
 
 /** Only consumer references are flattened; historical computation recipes remain separate. */
 export function collectRuntimePackDependencies(
@@ -130,9 +144,9 @@ export function saveRuntimePackSnapshot(
         ? { fixed: recipe.fixed }
         : {
             content: fingerprint(recipe.content),
+            outputs: recipe.outputs,
             ...(recipe.instance === undefined ? {} : { instance: recipe.instance }),
           }),
-      outputs: recipe.outputs,
       dependencies,
     };
     const id = fingerprint(saved);
@@ -145,13 +159,21 @@ export function saveRuntimePackSnapshot(
     bindings[fingerprint(pack.content)] = Object.fromEntries(
       [...pack.dependencies].map(([guid, pin]) => [guid, visit(guid, pin)]),
     );
-  const recipeRoots = roots.map(visitRecipe);
+  return sourceSnapshot(roots.map(visitRecipe), { contents, recipes, bindings }, packs, instances);
+}
+
+function sourceSnapshot(
+  recipeRoots: readonly string[],
+  closure: NonNullable<RuntimePackSnapshot['closure']>,
+  packs: readonly { content: RuntimePackContent }[] = [],
+  instances: readonly PackInstanceJson[] = [],
+): RuntimePackSnapshot {
   return {
-    schemaVersion: 'runtime-pack-source/2',
-    packs: packs.map((pack) => pack.content),
+    schemaVersion: 'runtime-pack-source/3',
+    packs: packs.map(({ content }) => content),
     instances,
     ...(recipeRoots.length ? { recipeRoots } : {}),
-    ...(Object.keys(recipes).length ? { closure: { contents, recipes, bindings } } : {}),
+    ...(Object.keys(closure.recipes).length ? { closure } : {}),
   };
 }
 
@@ -222,13 +244,10 @@ export async function createFixedRuntimePackSnapshot(
   const dependencies: Record<string, string> = {};
   const publication = fixed.rows[0]?.publication;
   if (!publication) throw new TypeError('missing fixed publication');
-  const own = new Set(publication.outputs.map((output) => output.guid));
-  const refs = new Set(
-    publication.outputs.flatMap((output) => output.refs).filter((guid) => !own.has(guid)),
-  );
+  const refs = fixedPublicationDependencies(publication);
   if (capturedSources.size !== refs.size)
     throw new TypeError('fixed source closure differs from runtime refs');
-  for (const guid of refs) {
+  for (const guid of refs.keys()) {
     const source = capturedSources.get(guid);
     if (!source) throw new TypeError(`missing fixed source ${guid}`);
     for (const content of source.packs)
@@ -236,21 +255,15 @@ export async function createFixedRuntimePackSnapshot(
     mergeSourceNodes(contents, source.closure?.contents);
     mergeSourceNodes(recipes, source.closure?.recipes);
     const matching = (source.recipeRoots ?? []).filter((id) =>
-      source.closure?.recipes[id]?.outputs.some((output) => output.guid === guid),
+      savedRecipeOutputs(source.closure?.recipes[id]).some((output) => output.guid === guid),
     );
     if (matching.length !== 1) throw new TypeError(`ambiguous fixed source ${guid}`);
     const root = matching[0];
     if (!root) throw new TypeError(`missing fixed source ${guid}`);
     dependencies[guid] = root;
   }
-  const recipe: RuntimePackSavedRecipe = { fixed, outputs: publication.outputs, dependencies };
+  const recipe: RuntimePackSavedRecipe = { fixed, dependencies };
   const id = await fingerprintAsync(recipe);
   recipes[id] = recipe;
-  return encodePackData({
-    schemaVersion: 'runtime-pack-source/2',
-    packs: [],
-    instances: [],
-    recipeRoots: [id],
-    closure: { contents, recipes, bindings: {} },
-  });
+  return encodePackData(sourceSnapshot([id], { contents, recipes, bindings: {} }));
 }

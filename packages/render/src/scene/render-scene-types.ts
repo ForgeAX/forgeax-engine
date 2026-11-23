@@ -1,10 +1,15 @@
 import type { RenderSceneResyncReason } from '../inspection-types';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { MaterialResource } from '../material-resource';
-import type { RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 
 export type { RenderSceneResyncReason } from '../inspection-types';
+
+/** The three temporal fields a synchronous GPU row writer consumes. */
+export type GpuSceneMotion = {
+  -readonly [K in 'motionValid' | 'reactive' | 'previousInstances']: RenderableTemporalSnapshot[K];
+};
 
 export interface RenderSceneIdentity {
   readonly entityKey: number;
@@ -80,6 +85,8 @@ export interface RenderSceneInspection {
   readonly records: readonly RenderSceneRecord[];
   readonly slotCapacity: number;
   readonly freeSlots: number;
+  /** Physical numeric storage held for the active culling bounds. */
+  readonly cullingBoundsBackingBytes?: number;
   readonly revision: number;
   readonly noChangeFrames: number;
   readonly deltaFrames: number;

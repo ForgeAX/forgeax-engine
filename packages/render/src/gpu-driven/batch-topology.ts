@@ -6,6 +6,7 @@ import type { MaterialResource } from '../material-resource';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { TreeFrame } from '../scene/frame-tree-list';
@@ -13,7 +14,7 @@ import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame } from '../scene/mesh-frame';
 import { hasRasterDemand } from '../scene/raster-demand';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
-import { projectedHeight as measureProjectedHeight } from '../scene/visibility/lod-selector';
+import { sphereProjectedHeight } from '../scene/visibility/lod-selector';
 import { type BatchGeometry, captureBatchGeometry } from './batch-execution';
 import { batchVisibleSpan } from './batch-layout';
 import { BatchSources, MemberCandidates } from './batch-members';
@@ -704,25 +705,22 @@ function membershipProjectionUncached(
 type LodHeightSource = Pick<RenderableSnapshot, 'localAabb' | 'transform'>;
 
 /** Conservative world-space bounding radius of a snapshot's local AABB; NaN without one. */
-function worldBoundsRadius(snapshot: LodHeightSource): number {
-  const aabb = snapshot.localAabb;
-  if (aabb === undefined || aabb.length < 6) return Number.NaN;
+function worldBoundsRadius(aabb: Float32Array, world: Float32Array, offset: number): number {
   const halfX = Math.abs((aabb[3] ?? 0) - (aabb[0] ?? 0)) * 0.5;
   const halfY = Math.abs((aabb[4] ?? 0) - (aabb[1] ?? 0)) * 0.5;
   const halfZ = Math.abs((aabb[5] ?? 0) - (aabb[2] ?? 0)) * 0.5;
-  const world = snapshot.transform.world;
   const worldHalfX =
-    Math.abs(world[0] ?? 0) * halfX +
-    Math.abs(world[4] ?? 0) * halfY +
-    Math.abs(world[8] ?? 0) * halfZ;
+    Math.abs(world[offset + 0] ?? 0) * halfX +
+    Math.abs(world[offset + 4] ?? 0) * halfY +
+    Math.abs(world[offset + 8] ?? 0) * halfZ;
   const worldHalfY =
-    Math.abs(world[1] ?? 0) * halfX +
-    Math.abs(world[5] ?? 0) * halfY +
-    Math.abs(world[9] ?? 0) * halfZ;
+    Math.abs(world[offset + 1] ?? 0) * halfX +
+    Math.abs(world[offset + 5] ?? 0) * halfY +
+    Math.abs(world[offset + 9] ?? 0) * halfZ;
   const worldHalfZ =
-    Math.abs(world[2] ?? 0) * halfX +
-    Math.abs(world[6] ?? 0) * halfY +
-    Math.abs(world[10] ?? 0) * halfZ;
+    Math.abs(world[offset + 2] ?? 0) * halfX +
+    Math.abs(world[offset + 6] ?? 0) * halfY +
+    Math.abs(world[offset + 10] ?? 0) * halfZ;
   return Math.hypot(worldHalfX, worldHalfY, worldHalfZ);
 }
 
@@ -745,35 +743,50 @@ export function projectedHeightForSnapshot(
 ): number {
   const aabb = snapshot.localAabb;
   if (aabb === undefined || aabb.length < 6) return Number.NaN;
+  const pose = CapturedSceneTransform.storage(snapshot.transform);
+  return projectedHeightForBounds(
+    aabb,
+    CapturedSceneTransform.column(pose),
+    camera,
+    CapturedSceneTransform.offset(pose),
+  );
+}
+
+/** Bound and matrix are read independently, including a collection's current composed matrix. */
+export function projectedHeightForBounds(
+  aabb: Float32Array,
+  world: Float32Array,
+  camera: LodHeightCamera,
+  offset = 0,
+): number {
   const centerX = ((aabb[0] ?? 0) + (aabb[3] ?? 0)) * 0.5;
   const centerY = ((aabb[1] ?? 0) + (aabb[4] ?? 0)) * 0.5;
   const centerZ = ((aabb[2] ?? 0) + (aabb[5] ?? 0)) * 0.5;
-  const world = snapshot.transform.world;
   const dx =
-    (world[0] ?? 0) * centerX +
-    (world[4] ?? 0) * centerY +
-    (world[8] ?? 0) * centerZ +
-    (world[12] ?? 0) -
+    (world[offset + 0] ?? 0) * centerX +
+    (world[offset + 4] ?? 0) * centerY +
+    (world[offset + 8] ?? 0) * centerZ +
+    (world[offset + 12] ?? 0) -
     (camera.position[0] ?? 0);
   const dy =
-    (world[1] ?? 0) * centerX +
-    (world[5] ?? 0) * centerY +
-    (world[9] ?? 0) * centerZ +
-    (world[13] ?? 0) -
+    (world[offset + 1] ?? 0) * centerX +
+    (world[offset + 5] ?? 0) * centerY +
+    (world[offset + 9] ?? 0) * centerZ +
+    (world[offset + 13] ?? 0) -
     (camera.position[1] ?? 0);
   const dz =
-    (world[2] ?? 0) * centerX +
-    (world[6] ?? 0) * centerY +
-    (world[10] ?? 0) * centerZ +
-    (world[14] ?? 0) -
+    (world[offset + 2] ?? 0) * centerX +
+    (world[offset + 6] ?? 0) * centerY +
+    (world[offset + 10] ?? 0) * centerZ +
+    (world[offset + 14] ?? 0) -
     (camera.position[2] ?? 0);
-  return measureProjectedHeight({
-    radius: worldBoundsRadius(snapshot),
-    depth: Math.hypot(dx, dy, dz),
-    projection: camera.projection,
-    fov: camera.fov,
-    orthoHeight: Math.abs(camera.orthoTop - camera.orthoBottom),
-  });
+  return sphereProjectedHeight(
+    worldBoundsRadius(aabb, world, offset),
+    Math.hypot(dx, dy, dz),
+    camera.projection,
+    camera.fov,
+    Math.abs(camera.orthoTop - camera.orthoBottom),
+  );
 }
 
 /** Stable compatibility grouping; per-view visibility never mutates this owner. */

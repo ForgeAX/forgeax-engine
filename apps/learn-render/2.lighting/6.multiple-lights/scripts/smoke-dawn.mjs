@@ -61,7 +61,7 @@ const SMOKE_WALL_BUDGET_MS = Number.parseInt(process.env.SMOKE_WALL_BUDGET_MS ??
 
 const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
 // LO 2.6 own material GUID -- last byte 03 (vs 01 LO 2.4, 02 LO 2.5).
-const CUBE_MATERIAL_GUID = '019e3969-2000-7000-8000-000000000003';
+const CUBE_MATERIAL_GUID = '5b5dd038-44f0-5bb2-b984-d04f68bd39f9';
 const LAMP_SCALE = 0.2;
 
 const CUBE_POSITIONS = [

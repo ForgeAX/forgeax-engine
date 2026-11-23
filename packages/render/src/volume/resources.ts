@@ -1,10 +1,15 @@
 import type {
+  CompiledRenderGraph,
   CompiledRenderGraphInfo,
   GraphTexture,
   GraphTextureDescriptor,
   GraphTextureView,
   RenderGraphBuilder,
   RenderGraphError,
+} from '@forgeax/engine-render-graph';
+import {
+  compiledRenderGraphGeneration,
+  compiledRenderGraphResourceDeclarations,
 } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -79,75 +84,91 @@ export interface VolumetricFogResourceFacts {
   readonly resolvedPixelCount: number;
 }
 
-/** Project graph descriptors into the volume inspection without a second ledger. */
-interface VolumetricFogResourceInspectionOptions {
-  /** Number of non-null parameter buffers retained by the frame owner. */
-  readonly parameterBufferCount?: number;
+const VOLUME_TEXTURES = [
+  'volume-froxel',
+  'volume-resolved-current',
+  'volume-history',
+  'volume-temporal',
+] as const;
+
+/** Only the four bound textures belong to the view. The frame owner supplies its live parameter slots. */
+export function bindVolumetricFogTextures(
+  graph: CompiledRenderGraph<RenderPipelineFrame>,
+): VolumetricFogResourceFacts {
+  return inspectVolumetricFogResources({
+    generation: compiledRenderGraphGeneration(graph),
+    resources: compiledRenderGraphResourceDeclarations(graph, VOLUME_TEXTURES),
+  });
+}
+
+export function withVolumetricFogParameterBuffers(
+  textures: VolumetricFogResourceFacts,
+  count: number,
+): VolumetricFogResourceFacts {
+  if (count === 0) return textures;
+  const bufferBytes = count * VOLUMETRIC_FOG_PARAMS_BYTES;
+  return Object.freeze({
+    ...textures,
+    bufferBytes,
+    liveResourceCount: textures.liveResourceCount + count,
+    physicalResourceCount: textures.physicalResourceCount + count,
+    totalBytes: textures.totalBytes + bufferBytes,
+  });
 }
 
 export function inspectVolumetricFogResources(
-  graph: CompiledRenderGraphInfo,
-  options: VolumetricFogResourceInspectionOptions = {},
+  graph: Pick<CompiledRenderGraphInfo, 'generation' | 'resources'>,
+  options?: { readonly parameterBufferCount?: number },
 ): VolumetricFogResourceFacts {
-  const volumeResources = graph.resources.filter(
-    (resource) =>
-      resource.label === 'volume-froxel' ||
-      resource.label === 'volume-resolved-current' ||
-      resource.label === 'volume-history' ||
-      resource.label === 'volume-temporal' ||
-      resource.label === 'volume-params',
-  );
-  const bytes = (label: string): number =>
-    volumeResources
-      .filter((resource) => resource.label === label)
-      .reduce((total, resource) => total + (resource.byteSize ?? 0), 0);
-  const graphParameterResources = volumeResources.filter(
-    (resource) => resource.label === 'volume-params',
-  );
-  const graphParameterBufferCount = graphParameterResources.length;
-  const parameterBufferCount = Math.max(
-    0,
-    Math.floor(options.parameterBufferCount ?? graphParameterBufferCount),
-  );
-  const froxel = volumeResources.find((resource) => resource.label === 'volume-froxel');
-  const froxelExtent = froxel?.extent;
-  const resolvedExtent = volumeResources.find(
-    (resource) => resource.label === 'volume-resolved-current',
-  )?.extent;
-  const currentBytes = bytes('volume-resolved-current');
-  // The two graph labels are ping-pong slots for one logical history volume.
-  // Report one slot and physical total separately so the budget remains honest.
-  const historyBytes = bytes('volume-history') + bytes('volume-temporal');
-  const scratchBytes = bytes('volume-froxel');
-  const bufferBytes = parameterBufferCount * VOLUMETRIC_FOG_PARAMS_BYTES;
-  const physicalAllocations = new Set<string>();
-  for (const resource of volumeResources) {
-    if (resource.label === 'volume-params') continue;
-    physicalAllocations.add(resource.physicalAllocationKey ?? resource.label);
+  let currentBytes = 0;
+  let historyBytes = 0;
+  let scratchBytes = 0;
+  let sampleCount = 0;
+  let resolvedPixelCount = 0;
+  let textureCount = 0;
+  let parameterCount = 0;
+  const allocations = new Set<string>();
+  for (const resource of graph.resources) {
+    const extent = resource.extent;
+    switch (resource.label) {
+      case 'volume-froxel':
+        scratchBytes += resource.byteSize ?? 0;
+        if (extent !== undefined)
+          sampleCount = extent.width * extent.height * extent.depthOrArrayLayers * VOLUME_PACKING_Z;
+        break;
+      case 'volume-resolved-current':
+        currentBytes += resource.byteSize ?? 0;
+        if (extent !== undefined) resolvedPixelCount = extent.width * extent.height;
+        break;
+      case 'volume-history':
+      case 'volume-temporal':
+        historyBytes += resource.byteSize ?? 0;
+        break;
+      case 'volume-params':
+        parameterCount++;
+        continue;
+      default:
+        continue;
+    }
+    textureCount++;
+    allocations.add(resource.physicalAllocationKey ?? resource.label);
   }
-  // `physicalAllocationKey` remains the authoritative lifecycle identity for
-  // counting live allocations, while category bytes report each declared
-  // history slot so the public sum stays inspectable and exact.
-  const totalBytes = currentBytes + historyBytes + scratchBytes + bufferBytes;
-  return Object.freeze({
+  const textures: VolumetricFogResourceFacts = Object.freeze({
     generation: graph.generation,
-    liveResourceCount: volumeResources.length - graphParameterBufferCount + parameterBufferCount,
+    liveResourceCount: textureCount,
     currentBytes,
     historyBytes,
     scratchBytes,
-    bufferBytes,
-    totalBytes,
-    physicalResourceCount: physicalAllocations.size + parameterBufferCount,
-    sampleCount:
-      froxelExtent === undefined
-        ? 0
-        : froxelExtent.width *
-          froxelExtent.height *
-          froxelExtent.depthOrArrayLayers *
-          VOLUME_PACKING_Z,
-    resolvedPixelCount:
-      resolvedExtent === undefined ? 0 : resolvedExtent.width * resolvedExtent.height,
+    bufferBytes: 0,
+    totalBytes: currentBytes + historyBytes + scratchBytes,
+    physicalResourceCount: allocations.size,
+    sampleCount,
+    resolvedPixelCount,
   });
+  return withVolumetricFogParameterBuffers(
+    textures,
+    Math.max(0, Math.floor(options?.parameterBufferCount ?? parameterCount)),
+  );
 }
 
 function textureDescriptor(

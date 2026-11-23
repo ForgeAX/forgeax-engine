@@ -45,6 +45,21 @@ test('an owned slot observation skips existing rows and retains deletion through
   expect(observer.isCurrent()).toBe(true);
 });
 
+test('a publisher baseline expires outstanding batches and retains subsequent external changes', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: {} }).unwrap();
+  const index = entityIndex(entity);
+  const observer = observeStateChanges(world, [Position], new Map([[index, entity]]));
+  const old = observer.read();
+  world.set(entity, Position, { x: 1 }).unwrap();
+  const { resetBaseline } = observer;
+  resetBaseline();
+  expect(() => old.accept()).toThrow();
+  expect(observer.isCurrent()).toBe(true);
+  world.set(entity, Position, { x: 2 }).unwrap();
+  expect(observer.read().indices).toEqual([index]);
+});
+
 test('value-only acceptance preserves known membership without re-reading archetypes', () => {
   const world = new World();
   const entity = world.spawn({ component: Position, data: { x: 1 } }).unwrap();

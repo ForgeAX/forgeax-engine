@@ -16,7 +16,7 @@ import {
 } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -91,12 +91,8 @@ export function viewShadowCastersOf(
   owner?: Pick<GpuDrawSelection, 'ownsAll'>,
   capture = false,
 ): readonly RenderableSnapshot[] | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewShadowCasters)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewShadowCastersState>(
-      requireViewField(world, entity, ViewShadowCasters, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewShadowCastersState>(world, entity, ViewShadowCasters);
+  if (state === undefined) return undefined;
   if (state.frame !== renderSubmission(world).frame) return undefined;
   if (!state.projected || state.owner !== owner || state.capture !== capture) {
     projectSkinShadowCasters(state.source, state.lights, state.skin, owner, capture);

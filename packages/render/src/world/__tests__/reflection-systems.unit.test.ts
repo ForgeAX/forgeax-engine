@@ -207,7 +207,7 @@ describe('view-reflection-probes', () => {
     expect(log).toEqual(['complete:false:false']);
   });
 
-  it('resets SSR and temporal history when the committed fallback generation changes', () => {
+  it('resets view temporal history when the committed fallback generation changes', () => {
     let generation = 1;
     const { world, log, frameState } = setup({
       camera: { screenSpaceReflection: {} as never },
@@ -222,7 +222,7 @@ describe('view-reflection-probes', () => {
     expect(log).toEqual([]);
     generation = 2;
     beginRenderFrame(world, 3);
-    expect(log).toEqual(['temporal.reset:signature-change', 'ssr.reset:reflection-generation']);
+    expect(log).toEqual(['temporal.reset:signature-change']);
     expect(frameState.ssrFallbackGeneration).toBe(2);
     endRenderFrame(world);
   });

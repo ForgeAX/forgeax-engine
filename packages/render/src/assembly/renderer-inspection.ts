@@ -1,11 +1,17 @@
-import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
+import {
+  type CompiledRenderGraphInfo,
+  compiledRenderGraphAllocation,
+} from '@forgeax/engine-render-graph';
 import {
   PIPELINE_LIBRARY_LIMITS,
+  type RenderPipeline,
   type RhiCanvasSurfacePresentationProof,
   type RhiDevice,
   RhiError,
   type TextureFormat,
 } from '@forgeax/engine-rhi';
+import type { DeviceScope } from '../device/device-scope';
+import { inspectPipelineViewTextures } from '../environment/bindings';
 import { dofInspection } from '../features/depth-of-field/depth-of-field-assembly';
 import { emptyBloomInspection } from '../inspection-types';
 import type { IblBindingInspection } from '../mesh-material-bindings';
@@ -15,6 +21,7 @@ import type { StandardLutState } from '../pipeline/standard-output/lut-state';
 import type { PipelineState } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import {
+  type RasterPassRequestInspection,
   type RenderInspection,
   type RenderInspectionOptions,
   type RenderOutputInspection,
@@ -233,10 +240,14 @@ function projectViewGraphInspection(
   fields: readonly (keyof RenderInspection)[] | undefined,
   want: ViewInspectionWant,
 ) {
+  const viewTargets = want('viewTargetAllocation')
+    ? inspected.frameState.viewTargetAllocation?.inspect()
+    : undefined;
+  const installed = inspected.frameState.compiledFrameGraph?.graph;
   const graphResourceAllocation =
-    deviceLost || !want('renderGraphResourceAllocation')
+    deviceLost || installed === undefined || !want('renderGraphResourceAllocation')
       ? undefined
-      : viewGraphInfo(inspected)?.resourceAllocation;
+      : compiledRenderGraphAllocation(installed);
   const graphGenerationAllocation =
     deviceLost || !want('renderGraphGenerationAllocation')
       ? undefined
@@ -272,6 +283,7 @@ function projectViewGraphInspection(
     ...projectViewCounterInspection(inspected, fields),
     ...projectInstanceCollectionInspection(inspected, fields),
     ...(want('renderScene') ? { renderScene: viewRenderScene(inspected) } : {}),
+    ...(viewTargets === undefined ? {} : { viewTargetAllocation: viewTargets }),
     ...(graphResourceAllocation === undefined
       ? {}
       : { renderGraphResourceAllocation: graphResourceAllocation }),
@@ -303,7 +315,12 @@ function projectViewLightingInspection(
     ...(diffuseGi === undefined ? {} : { diffuseGi }),
     ...(want('volumetricFog') ? { volumetricFog: viewVolumetricFog(inspected) } : {}),
     ...(want('environment')
-      ? { environment: inspected.frameState.environmentLifecycle.inspect() }
+      ? {
+          environment: Object.freeze({
+            ...inspected.frameState.environmentLifecycle.inspect(),
+            transport: inspected.frameState.compiledFrameGraph?.atmosphereTransport,
+          }),
+        }
       : {}),
     ...(want('temporal') ? { temporal: viewTemporal(inspected) } : {}),
     ...(dynamicResolution === undefined ? {} : { dynamicResolution }),
@@ -318,12 +335,15 @@ function projectViewShadowInspection(
   want: ViewInspectionWant,
 ) {
   const submitted = inspected.frameState.submittedInspection;
-  const standardLighting = deviceLost ? undefined : submitted?.standardLighting;
+  const standardLighting =
+    !deviceLost && want('standardLighting') ? submitted?.standardLighting : undefined;
   const temporalTarget = want('temporalTarget') ? viewTemporalTarget(inspected) : undefined;
   const motionBlur = want('motionBlur') ? viewMotionBlur(inspected) : undefined;
   const transmission = want('transmission') ? viewTransmission(inspected) : undefined;
   return {
-    ...(want('directionalShadow') ? { directionalShadow: viewDirectionalShadow(inspected) } : {}),
+    ...(want('directionalShadow')
+      ? { directionalShadow: projectDirectionalReceiver(inspected) }
+      : {}),
     ...(!deviceLost && want('viewConfiguration') && submitted?.viewConfiguration !== undefined
       ? {
           viewConfiguration: {
@@ -338,12 +358,16 @@ function projectViewShadowInspection(
     ...(want('depthOfField') ? dofInspection(viewDepthOfField(inspected)) : {}),
     ...projectLodInspection(inspected, fields),
     ...(transmission === undefined ? {} : { transmission }),
-    ...(standardLighting === undefined
-      ? {}
-      : { standardLighting: Object.freeze({ ...standardLighting }) }),
+    ...(standardLighting === undefined ? {} : { standardLighting }),
     ...(submitted?.capsuleShadow === undefined ? {} : { capsuleShadow: submitted.capsuleShadow }),
     ...(submitted?.transparency === undefined ? {} : { transparency: submitted.transparency }),
   };
+}
+
+function projectDirectionalReceiver(inspected: ViewSettlementOwner) {
+  const shadow = viewDirectionalShadow(inspected);
+  const receiver = inspected.frameState.submittedInspection?.forwardShadow;
+  return receiver === undefined ? shadow : { ...shadow, forwardReceiver: receiver };
 }
 
 function projectViewBindingInspection(
@@ -527,6 +551,83 @@ export function projectRecoveryEvidenceInspection(
     producerRoots: Object.freeze([...recoveryEvidence.producerRoots]),
     receipts: Object.freeze({ count: frameId, lastGeneration }),
   });
+}
+
+/** Retain bounded pass requests only for the device with an active route collection. */
+export function createPipelineLibraryCollection(buildDevice: () => RhiDevice) {
+  let collection:
+    | {
+        readonly device: RhiDevice;
+        readonly dispose: () => void;
+        readonly requests: RasterPassRequestInspection[];
+        overwritten: number;
+      }
+    | undefined;
+  const active = (device: RhiDevice) => collection?.device === device;
+  const record = (request: RasterPassRequestInspection, pipeline: RenderPipeline | null) => {
+    if (collection?.device !== buildDevice()) return;
+    if (collection.requests.length === 128) {
+      collection.requests.shift();
+      collection.overwritten++;
+    }
+    const nativeRecipe =
+      pipeline === null
+        ? undefined
+        : collection.device.pipelineLibrary?.inspectRenderPipelineIdentity?.(pipeline);
+    const viewTextures = pipeline === null ? undefined : inspectPipelineViewTextures(pipeline);
+    collection.requests.push({
+      ...request,
+      ...(nativeRecipe === undefined ? {} : { nativeRecipe }),
+      ...(viewTextures === undefined ? {} : { viewTextures }),
+    });
+  };
+  return {
+    active,
+    update(requested: boolean | undefined, device: RhiDevice, deviceScope: DeviceScope) {
+      if (requested === false) {
+        collection?.dispose();
+        collection = undefined;
+      } else if (requested === true && !active(device)) {
+        if (device.pipelineLibrary?.collect === undefined)
+          throw new RhiError({
+            code: 'feature-not-enabled',
+            expected: 'pipeline library route collection',
+            hint: 'Use a backend supporting explicit route retention.',
+          });
+        collection?.dispose();
+        const retention = device.pipelineLibrary.collect();
+        const child = deviceScope.createChild('pipeline-library-route');
+        const scope = {
+          device,
+          dispose: () => child.dispose(),
+          requests: [] as RasterPassRequestInspection[],
+          overwritten: 0,
+        };
+        collection = scope;
+        child._adopt('pipeline', retention, (value) => {
+          value.dispose();
+          if (collection === scope) collection = undefined;
+        });
+      }
+    },
+    recordForCurrentDevice() {
+      return collection === undefined ? undefined : record;
+    },
+    inspect(
+      fields: RenderInspectionOptions['fields'],
+      device: RhiDevice,
+      generation: number,
+    ): Pick<RenderInspection, 'rasterPassRequests'> {
+      if (collection?.device !== device || !fields?.includes('rasterPassRequests')) return {};
+      return {
+        rasterPassRequests: {
+          deviceGeneration: generation,
+          overwritten: collection.overwritten,
+          requests: collection.requests.slice(),
+        },
+      };
+    },
+  };
 }
 
 /** Exports the requested pipeline library, or throws when the backend has none. */

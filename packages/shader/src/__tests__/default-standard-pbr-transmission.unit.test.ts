@@ -87,6 +87,34 @@ function expectedStandardCombinations(): Map<string, Record<string, boolean>> {
   return expected;
 }
 
+function expectedCoverageKeys(): Set<string> {
+  const lanes = [
+    { storage: false, scene: false, water: false },
+    { storage: true, scene: false, water: false },
+    { storage: true, scene: true, water: false },
+    { storage: true, scene: false, water: true },
+    { storage: true, scene: true, water: true },
+  ];
+  const keys = new Set<string>();
+  for (const lane of lanes) {
+    for (const clipping of [false, true]) {
+      for (const lod of [false, true]) {
+        for (const vertexColor of [false, true]) {
+          const enabled = new Set<string>(['COVERAGE_ONLY']);
+          if (lane.storage) enabled.add('STORAGE_BUFFER_AVAILABLE');
+          if (lane.scene) enabled.add('GPU_DRIVEN_SCENE_INDEX_AVAILABLE');
+          if (lane.water) enabled.add('WATER_WAVES_AVAILABLE');
+          if (clipping) enabled.add('CLIPPING_PLANES');
+          if (lod) enabled.add('LOD_DITHER');
+          if (vertexColor) enabled.add('VERTEX_COLOR_AVAILABLE');
+          keys.add(STANDARD_AXES.map((axis) => `${axis}=${enabled.has(axis)}`).join('+'));
+        }
+      }
+    }
+  }
+  return keys;
+}
+
 describe('default Standard PBR transmission manifest contract', () => {
   beforeAll(async () => {
     ({ registry: engineRegistry } = await loadEngineTemplateRegistry());
@@ -105,11 +133,14 @@ describe('default Standard PBR transmission manifest contract', () => {
       (variant) => 'TRANSMISSION_AVAILABLE' in variant.defines,
     );
     const expected = expectedStandardCombinations();
-    // Keep the original non-Water cardinality/resource oracle intact below.
-    // The full Cartesian/key check also covers both new Water axes.
+    const expectedCoverage = expectedCoverageKeys();
+    expect(expectedCoverage).toHaveLength(40);
+    // Coverage has its own geometry matrix, independent of color capabilities.
+    // The Cartesian/key comparison below still checks the entire publication.
     const ordinary = new Map(
       [...expected].filter(
-        ([, defines]) => !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
+        ([, defines]) =>
+          !defines.COVERAGE_ONLY && !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
       ),
     );
     // Modifier-free lighting now supports the full directional receiver too.
@@ -143,25 +174,28 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(transmissionVariants).toHaveLength(expected.size);
     expect(actual.size).toBe(expected.size);
     expect(new Set(actual.keys())).toEqual(new Set(expected.keys()));
+    expect(
+      new Set(
+        transmissionVariants
+          .filter((variant) => variant.defines.COVERAGE_ONLY)
+          .map((variant) => variant.definesKey),
+      ),
+    ).toEqual(expectedCoverage);
     for (const [key, defines] of expected) {
       const variant = actual.get(key);
       expect(variant?.defines).toEqual(defines);
     }
     const directVisibleRows = [...ordinary.values()].filter(
-      (defines) =>
-        defines.VISIBLE_SURFACE_AVAILABLE &&
-        !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE &&
-        !defines.COVERAGE_ONLY,
+      (defines) => defines.VISIBLE_SURFACE_AVAILABLE && !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE,
     );
     expect(directVisibleRows).toHaveLength(4 * 2 * 2 * 2);
     // Count the contract independently of the producer and permutation helper:
     // no-storage, storage/direct, direct G-buffer, and storage/scene-index rows.
     // The direct G-buffer slice has four (projector, extended, atmosphere)
     // topologies, two probe choices, two alpha-mask choices and two independent
-    // clipping choices. Direct ordinary rows have alpha(2)*clipping(2)=4
-    // states; coverage adds visible(2)*LOD(2)*clipping(2)=8. Scene-index
-    // ordinary rows additionally have visible(2)*LOD(2), so 16+8 states.
-    const generalRows = 32 * 12 + 128 * 12 + 4 * 2 * 2 * 2 + 128 * 24;
+    // clipping choices. Direct color rows have alpha(2)*clipping(2)=4
+    // states. Scene-index color rows also have visible(2)*LOD(2), so 16 states.
+    const generalRows = 32 * 4 + 128 * 4 + 4 * 2 * 2 * 2 + 128 * 16;
     // Lean fixes the receiver/discard axes. Four lighting topologies combine
     // with GPU scene-index, cluster, vertex colour and reflection choices.
     const leanRows = 4 * 2 ** 4;
@@ -181,10 +215,10 @@ describe('default Standard PBR transmission manifest contract', () => {
     const leanInputRows = 4 * 2 ** 7 + leanRows / 2 + fullSimpleLeanInputRows;
     const leanInputProjectorPairs = 8;
     expect(legacyOrdinary.size).toBe(generalRows + leanRows + fullSimpleRows + leanInputRows);
-    // No-storage/non-Cluster/non-transmission has twelve receiver/discard
-    // states, two vertex-colour and two reflection choices; each projector pair
+    // No-storage/non-Cluster/non-transmission color has four receiver/discard
+    // states, two vertex-colour and two reflection choices. Each projector pair
     // shares code because neither the projector nor cloud map is consumed.
-    const noStorageProjectorPairs = 12 * 2 * 2;
+    const noStorageProjectorPairs = 4 * 2 * 2;
     const noStorageInactiveChoices = [...legacyOrdinary.values()].filter(
       (defines) =>
         !defines.STORAGE_BUFFER_AVAILABLE &&
@@ -218,7 +252,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     );
     const leanOrdinary = [...ordinary.values()].filter((row) => row.STANDARD_LEAN_INPUTS);
     expect(expected.size).toBe(
-      ordinary.size + 2 * storageOrdinary.length + 3 * leanOrdinary.length,
+      ordinary.size + 2 * storageOrdinary.length + 3 * leanOrdinary.length + expectedCoverage.size,
     );
     for (const waves of [true, false]) {
       for (const rgba16 of [true, false]) {

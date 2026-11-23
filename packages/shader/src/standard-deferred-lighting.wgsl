@@ -1,4 +1,5 @@
 #import forgeax_shadow::capsule::{capsuleVisibility}
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 #import forgeax_pbr::contact_shadow::{directionalContactShadow}
 #define_import_path forgeax_standard::deferred_lighting
 #pragma variant_axis CLUSTER_FORWARD_AVAILABLE
@@ -6,6 +7,8 @@
 #pragma variant_axis EXTENDED_LIGHTING_AVAILABLE
 #pragma variant_axis PROJECTOR_AVAILABLE
 #pragma variant_axis DIRECT_DFG_LUT_AVAILABLE
+#pragma variant_axis DEFERRED_DIFFUSE_GI_AVAILABLE
+#pragma variant_axis DEFERRED_LIGHT_PROBE_AVAILABLE
 
 #import forgeax_view::common::{viewDirectionToCamera, view, FullscreenOutput, fullscreen_triangle}
 #import forgeax_scene_temporal::{sceneFragmentViewZ}
@@ -14,9 +17,12 @@
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
 #import forgeax_pbr::lighting_directional::{canUseProjectedDirectionalPcf, evalProjectedDirectionalShadow}
 #endif
-#import forgeax_pbr::standard_lighting::{SkylightUniforms, StandardEnvironment, evaluateStandardEnvironmentFromRadiance, sampleSkylightRadiance, evaluateStandardDirectSplit}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, StandardEnvironment, sampleStandardDiffuseIrradiance, evaluateStandardEnvironmentFromRadiance, sampleStandardReflectionRadiance, evaluateStandardDirectSplit}
+#ifdef DEFERRED_LIGHT_PROBE_AVAILABLE
+#import forgeax_pbr::lighting_probe::{applyStandardProbeIrradiance}
+#endif
 #import forgeax_pbr::pmrem::{samplePmremArrayLayer}
-#import forgeax_pbr::ibl_sampling::{box_project, environmentDfg, environmentSingleScatteringFromDfg, environmentReflectionDirection, reflectionProbeBoundaryWeight, sampleIblRadiance}
+#import forgeax_pbr::ibl_sampling::{box_project, environmentDfg, environmentSingleScatteringFromDfg, environmentReflectionDirection}
 #import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
 
 @group(1) @binding(0) var normalRoughness : texture_2d<u32>;
@@ -35,10 +41,10 @@ struct DeferredLightingParams {
   occlusion : vec4<f32>,
 };
 @group(1) @binding(7) var<uniform> params : DeferredLightingParams;
-@group(1) @binding(8) var irradianceMap : texture_cube<f32>;
+@group(0) @binding(34) var<uniform> skySh : SkyShPolynomial;
+@group(0) @binding(35) var<uniform> viewSkylight : SkylightUniforms;
 @group(1) @binding(9) var prefilterMap : texture_2d<f32>;
 @group(1) @binding(10) var brdfLut : texture_2d<f32>;
-@group(1) @binding(11) var skylightPrefilterMap : texture_2d<f32>;
 @group(1) @binding(12) var<uniform> skylight : SkylightUniforms;
 @group(1) @binding(13) var<storage, read> capsules : array<vec4<f32>>;
 @group(1) @binding(14) var<storage, read> capsuleTiles : array<u32>;
@@ -49,13 +55,16 @@ struct DeferredLightingParams {
 fn directDfgTextureFilteringWitness() {
   let sample = textureSample(directDfgLut, linearSampler, vec2<f32>(0.0));
   let occlusion = textureSample(screenOcclusion, linearSampler, vec2<f32>(0.0));
-  let irradiance = textureSample(irradianceMap, linearSampler, vec3<f32>(0.0, 0.0, 1.0));
   let prefilter = textureSample(prefilterMap, linearSampler, vec2<f32>(0.5));
   let brdf = textureSample(brdfLut, linearSampler, vec2<f32>(0.0));
-  let skylightPrefilter = textureSample(skylightPrefilterMap, linearSampler, vec2<f32>(0.5));
 }
 #endif
+#ifdef DEFERRED_LIGHT_PROBE_AVAILABLE
 @group(3) @binding(0) var<storage, read> probeBlendRecords : array<vec4<f32>>;
+#endif
+#ifdef DEFERRED_DIFFUSE_GI_AVAILABLE
+@group(3) @binding(4) var<storage, read_write> diffuseGiBaseline : array<u32>;
+#endif
 
 struct DeferredReflectionProbe {
   centerAndIntensity : vec4<f32>,
@@ -66,10 +75,6 @@ struct DeferredReflectionProbe {
 const DEFERRED_REFLECTION_PROBE_COUNT : u32 = 16u;
 
 struct DeferredReflectionTable {
-  diffuseScale : vec4<f32>,
-  diffuseRotation : vec4<f32>,
-  ambientIrradiance : vec4<f32>,
-  ground : vec4<f32>,
   probes : array<DeferredReflectionProbe, DEFERRED_REFLECTION_PROBE_COUNT>,
 };
 @group(3) @binding(1) var reflectionClass0 : texture_2d_array<f32>;
@@ -190,7 +195,10 @@ fn loadDeferredSurface(in : FullscreenOutput, coverage : DeferredCoverage, compa
     response, dielectricSpecular, direction);
 }
 
-fn deferredEnvironment(surface : DeferredSurface, sky : SkylightUniforms, radiance : vec3<f32>) -> StandardEnvironment {
+fn deferredEnvironment(surface : DeferredSurface, radiance : vec3<f32>) -> StandardEnvironment {
+  let transmission = vec3f(0.0);
+  let skyIrradiance = sampleStandardDiffuseIrradiance(viewSkylight, surface.normal, transmission, skySh);
+#ifdef DEFERRED_LIGHT_PROBE_AVAILABLE
   var sh : array<vec4<f32>, 9>;
   var localBlend = 0.0;
   let probeRow = surface.context.x & STANDARD_GBUFFER_PROBE_ROW_MASK;
@@ -202,14 +210,21 @@ fn deferredEnvironment(surface : DeferredSurface, sky : SkylightUniforms, radian
       for (var band = 0u; band < 9u; band += 1u) { sh[band] = probeBlendRecords[base + 1u + band]; }
     }
   }
+  let irradiance = applyStandardProbeIrradiance(skyIrradiance, surface.normal, transmission, sh, localBlend);
+#else
+  let irradiance = skyIrradiance;
+#endif
   return evaluateStandardEnvironmentFromRadiance(surface.normal, surface.direction,
     surface.albedo.rgb, vec3<f32>(0.0), surface.albedo.a, surface.roughness, surface.response.rgb,
-    surface.dielectricSpecular, surface.albedo.rgb, sky, irradianceMap, linearSampler, brdfLut,
-    sh, localBlend, radiance);
+    surface.dielectricSpecular, surface.albedo.rgb, viewSkylight.ambientIrradiance.xyz, irradiance, radiance,
+#ifdef ENV_BRDF_LUT
+    brdfLut, linearSampler,
+#endif
+  );
 }
 
 fn deferredScreenOcclusion(position : vec2<f32>) -> f32 {
-  // The AO producer already applied the intensity exponent before filtering.
+  // Screen AO is final visibility, ready for indirect lighting.
   if (params.lanes.x <= 0.0) { return 1.0; }
   let uv = position / vec2<f32>(textureDimensions(sceneDepth));
   return clamp(textureSampleLevel(screenOcclusion, linearSampler, uv, 0.0).r, 0.0, 1.0);
@@ -262,7 +277,7 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
     albedo.a, roughness * roughness, response.rgb, shadow, receiveShadows, receiverChannels,
     diffuseToSubsurface,
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
-    select(0u, u32(view.fogSky.w), !compact && standardDeferredProjectedPcf),
+    select(0u, u32(view.fogSky.w) & 0xfffffu, !compact && standardDeferredProjectedPcf),
 #else
     0u,
 #endif
@@ -274,11 +289,19 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
   );
   // Add radiance to geometry-owned SceneColor; attachment blending preserves
   // its emissive and opacity without sampling the active color attachment.
-  let directAo = mix(1.0, screenAo, clamp(params.occlusion.x, 0.0, 1.0));
+#ifdef DEFERRED_DIFFUSE_GI_AVAILABLE
+  // Match the exact occluded diffuse that this pass routes to SceneColor or SSS.
+  let baseline = clamp(environment.lowFrequency * ao, vec3f(0.0), vec3f(65504.0));
+  let weight = environment.diffuseWeight * ao;
+  let index = (u32(pixel.y) * textureDimensions(sceneDepth).x + u32(pixel.x)) * 3u;
+  diffuseGiBaseline[index] = pack2x16float(vec2f(baseline.x, weight.x)) | (u32(diffuseToSubsurface) << 31u);
+  diffuseGiBaseline[index + 1u] = pack2x16float(vec2f(baseline.y, weight.y));
+  diffuseGiBaseline[index + 2u] = pack2x16float(vec2f(baseline.z, weight.z));
+#endif
   let diffuse = environment.diffuse * ao;
   let sceneDiffuse = select(diffuse, vec3<f32>(0.0), diffuseToSubsurface);
-  let subsurface = select(vec3<f32>(0.0), diffuse + direct.diffuse * directAo, diffuseToSubsurface);
-  return DeferredOutput(vec4<f32>(sceneDiffuse + environment.specular * specularAo + direct.radiance * directAo, 0.0),
+  let subsurface = select(vec3<f32>(0.0), diffuse + direct.diffuse, diffuseToSubsurface);
+  return DeferredOutput(vec4<f32>(sceneDiffuse + environment.specular * specularAo + direct.radiance, 0.0),
     vec4<f32>(environment.specular * specularAo, 1.0),
     vec4<f32>(environment.response.rgb * standardSpecularOcclusion(nDotV, response.a, roughness), environment.response.a),
     vec4<f32>(subsurface, 0.0));
@@ -287,9 +310,9 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
 fn resolveStandardDeferredSurface(in : FullscreenOutput, surface : DeferredSurface,
   receiver : vec2<u32>, compact : bool) -> DeferredOutput {
   let reflection = environmentReflectionDirection(surface.normal, surface.direction, surface.roughness);
-  let radiance = sampleSkylightRadiance(skylight, surface.position, reflection, surface.roughness,
-    prefilterMap, linearSampler, skylightPrefilterMap);
-  return shadeDeferredSurface(in, surface, deferredEnvironment(surface, skylight, radiance), receiver, compact);
+  let radiance = sampleStandardReflectionRadiance(skylight, surface.position, reflection, surface.roughness,
+    prefilterMap, linearSampler);
+  return shadeDeferredSurface(in, surface, deferredEnvironment(surface, radiance), receiver, compact);
 }
 
 fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
@@ -304,22 +327,8 @@ fn reflectionProbeClass(row : DeferredReflectionProbe) -> u32 {
   return (u32(row.extentsAndAddress.w) >> 1u) & 15u;
 }
 
-fn reflectionProbeWeight(surface : DeferredSurface, row : DeferredReflectionProbe) -> f32 {
-  return reflectionProbeBoundaryWeight(surface.position, row.centerAndIntensity.xyz, row.extentsAndAddress.xyz);
-}
-
-fn reflectionProbeSkyRadiance(direction : vec3<f32>, roughness : f32) -> vec3<f32> {
-  return sampleIblRadiance(direction, roughness, reflectionTable.diffuseRotation,
-    skylightPrefilterMap, linearSampler) * reflectionTable.diffuseScale.xyz;
-}
-
 fn reflectionProbeArrayRadiance(surface : DeferredSurface, reflection : vec3<f32>,
-  row : DeferredReflectionProbe, weight : f32, map : texture_2d_array<f32>) -> vec3<f32> {
-  var radiance = vec3<f32>(0.0);
-  if (weight < 1.0) {
-    radiance = reflectionProbeSkyRadiance(reflection, surface.roughness);
-  }
-  if (weight <= 0.0) { return radiance; }
+  row : DeferredReflectionProbe, map : texture_2d_array<f32>) -> vec3<f32> {
   let address = u32(row.extentsAndAddress.w);
   var direction = reflection;
   if ((address & 1u) != 0u) {
@@ -327,45 +336,31 @@ fn reflectionProbeArrayRadiance(surface : DeferredSurface, reflection : vec3<f32
   }
   // Local capture faces are already in world space.
   let local = samplePmremArrayLayer(map, linearSampler, address >> 5u, direction, surface.roughness);
-  return mix(radiance, local * max(-row.centerAndIntensity.w - 1.0, 0.0), weight);
+  return local * max(-row.centerAndIntensity.w - 1.0, 0.0);
 }
 
 fn resolveStandardDeferredArraySurface(in : FullscreenOutput, surface : DeferredSurface,
   receiver : vec2<u32>, compact : bool, first : texture_2d_array<f32>,
   second : texture_2d_array<f32>, baseClassCount : u32) -> DeferredOutput {
   let env = surface.context.x >> 24u;
-  var sky = skylight;
   var radiance = vec3<f32>(0.0);
   if (env == 0u || env > DEFERRED_REFLECTION_PROBE_COUNT) {
     let reflection = environmentReflectionDirection(surface.normal, surface.direction, surface.roughness);
-    radiance = sampleSkylightRadiance(sky, surface.position, reflection, surface.roughness,
-      skylightPrefilterMap, linearSampler, skylightPrefilterMap);
+    radiance = sampleStandardReflectionRadiance(skylight, surface.position, reflection, surface.roughness,
+      prefilterMap, linearSampler);
   } else {
     let row = reflectionTable.probes[env - 1u];
     let sizeClass = reflectionProbeClass(row);
-    let weight = reflectionProbeWeight(surface, row);
-    // Local captures replace only the directional PMREM. Diffuse, including
-    // the broad multiple-scattering lobe, is independent of array admission.
-    sky.intensity = row.centerAndIntensity.w;
-    sky.diffuseScale = reflectionTable.diffuseScale;
-    sky.diffuseRotation = reflectionTable.diffuseRotation;
-    sky.ambientIrradiance = reflectionTable.ambientIrradiance;
-    sky.ground = reflectionTable.ground;
-    if (weight <= 0.0) {
-      let reflection = environmentReflectionDirection(surface.normal, surface.direction, surface.roughness);
-      radiance = reflectionProbeSkyRadiance(reflection, surface.roughness);
-    } else if (sizeClass < baseClassCount) {
+    if (view.fogSky.w < 1048576.0 && sizeClass < baseClassCount) {
       let reflection = environmentReflectionDirection(surface.normal, surface.direction, surface.roughness);
       if (sizeClass == 0u) {
-        radiance = reflectionProbeArrayRadiance(surface, reflection, row, weight, first);
+        radiance = reflectionProbeArrayRadiance(surface, reflection, row, first);
       } else {
-        radiance = reflectionProbeArrayRadiance(surface, reflection, row, weight, second);
+        radiance = reflectionProbeArrayRadiance(surface, reflection, row, second);
       }
     }
-    // Positive-weight pixels of a class outside the base window are shaded
-    // by that class's bounded specular draw. Outside the box the base owns sky.
   }
-  return shadeDeferredSurface(in, surface, deferredEnvironment(surface, sky, radiance), receiver, compact);
+  return shadeDeferredSurface(in, surface, deferredEnvironment(surface, radiance), receiver, compact);
 }
 
 fn resolveStandardDeferredArrays(in : FullscreenOutput, first : texture_2d_array<f32>,
@@ -382,58 +377,31 @@ struct ReflectionOverflowVertex {
   @location(0) @interpolate(flat) sizeClass : u32,
 };
 
-fn overflowRectangle(vertex : u32, low : vec2<f32>, high : vec2<f32>) -> vec4<f32> {
-  let corner = array<vec2<f32>, 6>(vec2<f32>(0, 0), vec2<f32>(1, 0), vec2<f32>(1, 1),
-    vec2<f32>(0, 0), vec2<f32>(1, 1), vec2<f32>(0, 1))[vertex];
-  return vec4<f32>(mix(low, high, corner), 0.0, 1.0);
-}
-
 @vertex
 fn vs_standard_deferred_reflection_overflow(@builtin(vertex_index) vertex : u32,
   @builtin(instance_index) sizeClass : u32) -> ReflectionOverflowVertex {
-  var low = vec2<f32>(1e8);
-  var high = vec2<f32>(-1e8);
-  for (var i = 0u; i < DEFERRED_REFLECTION_PROBE_COUNT; i += 1u) {
-    let row = reflectionTable.probes[i];
-    if (row.centerAndIntensity.w >= 0.0 || reflectionProbeClass(row) != sizeClass) { continue; }
-    let center = row.centerAndIntensity.xyz;
-    let extents = max(row.extentsAndAddress.xyz, vec3<f32>(0.0001));
-    for (var j = 0u; j < 8u; j += 1u) {
-      let signs = select(vec3<f32>(-1.0), vec3<f32>(1.0),
-        (vec3<u32>(j) & vec3<u32>(1u, 2u, 4u)) != vec3<u32>(0u));
-      let clip = view.worldViewProj * vec4<f32>(center + signs * extents, 1.0);
-      // A box crossing the eye plane has no conservative corner bound.
-      if (!(clip.w > 0.00001)) {
-        return ReflectionOverflowVertex(overflowRectangle(vertex, vec2<f32>(-1), vec2<f32>(1)), sizeClass);
-      }
-      let p = clip.xy / clip.w;
-      if (!all(abs(p) <= vec2<f32>(1e8))) {
-        return ReflectionOverflowVertex(overflowRectangle(vertex, vec2<f32>(-1), vec2<f32>(1)), sizeClass);
-      }
-      low = min(low, p);
-      high = max(high, p);
-    }
-  }
-  if (any(low > high)) { return ReflectionOverflowVertex(vec4<f32>(2, 2, 0, 1), sizeClass); }
-  // Pad by two internal pixels for rounding at the reconstructed box boundary.
-  let margin = 4.0 / max(vec2<f32>(view.viewportWidth, view.viewportHeight), vec2<f32>(1.0));
-  return ReflectionOverflowVertex(overflowRectangle(vertex, clamp(low - margin, vec2<f32>(-1), vec2<f32>(1)),
-    clamp(high + margin, vec2<f32>(-1), vec2<f32>(1))), sizeClass);
+  // The CPU selection is per primitive. Its geometry can extend beyond a
+  // probe's box, so the packed receiver class owns overflow coverage.
+  let corner = array<vec2<f32>, 3>(vec2<f32>(-1, -1), vec2<f32>(3, -1), vec2<f32>(-1, 3));
+  return ReflectionOverflowVertex(vec4<f32>(corner[vertex], 0.0, 1.0), sizeClass);
 }
 
 fn resolveReflectionOverflow(in : ReflectionOverflowVertex, compact : bool, context : u32) -> vec3<f32> {
+  if (view.fogSky.w >= 1048576.0) { discard; }
   let coverage = loadDeferredCoverage(vec2<i32>(in.position.xy), 256u, compact, context);
   let env = coverage.context.x >> 24u;
   if (env == 0u || env > DEFERRED_REFLECTION_PROBE_COUNT) { discard; }
   let row = reflectionTable.probes[env - 1u];
   if (reflectionProbeClass(row) != in.sizeClass) { discard; }
   let surface = loadDeferredSurface(FullscreenOutput(in.position, vec2<f32>(0.0)), coverage, compact);
-  let weight = reflectionProbeWeight(surface, row);
-  if (weight <= 0.0) { discard; }
   let reflection = environmentReflectionDirection(surface.normal, surface.direction, surface.roughness);
-  let radiance = reflectionProbeArrayRadiance(surface, reflection, row, weight, reflectionClass0);
+  let radiance = reflectionProbeArrayRadiance(surface, reflection, row, reflectionClass0);
   let nDotV = max(dot(surface.normal, surface.direction), 0.0);
-  let ab = environmentDfg(max(nDotV, 0.001), surface.roughness, brdfLut, linearSampler);
+  let ab = environmentDfg(max(nDotV, 0.001), surface.roughness,
+#ifdef ENV_BRDF_LUT
+    brdfLut, linearSampler,
+#endif
+  );
   let specular = surface.dielectricSpecular;
   let dielectric = environmentSingleScatteringFromDfg(ab, specular.rgb, specular.a);
   let metal = environmentSingleScatteringFromDfg(ab, surface.albedo.rgb, specular.a);

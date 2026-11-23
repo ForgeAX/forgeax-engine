@@ -19,6 +19,10 @@ const PREVIEW_ROLE_KINDS = {
 export type PreviewArtifactRole = keyof typeof PREVIEW_ROLE_KINDS;
 export type PreviewArtifactKind = (typeof PREVIEW_ROLE_KINDS)[PreviewArtifactRole];
 
+export function isPreviewArtifactRole(value: unknown): value is PreviewArtifactRole {
+  return typeof value === 'string' && Object.hasOwn(PREVIEW_ROLE_KINDS, value);
+}
+
 export function isToolEvidenceKind(value: unknown): value is ToolEvidenceKind {
   return TOOL_EVIDENCE_KINDS.some((kind) => kind === value);
 }

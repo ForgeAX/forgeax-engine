@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { runCliGltf } from '@forgeax/engine-gltf/cli-gltf';
 import { gltfImporter } from '@forgeax/engine-gltf/node-importer';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
-import { ImporterRegistry, runImport, projectImportProductForBuild } from '@forgeax/engine-import';
+import { projectImportPack, ImporterRegistry, runImport, projectImportProductForBuild } from '@forgeax/engine-import';
 import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
@@ -33,7 +33,7 @@ const execute=async(label)=>{
  const start=performance.now(),cpuStart=process.cpuUsage(),input=inputs[label];
  const result=await runImport(input.meta,registry,{readSource:async path=>({ok:true,value:new Uint8Array(await readFile(path))}),decodeImage:imageImporter.capabilities.decodeImage},cookers);
  if(!result.ok||'skipped'in result.value)throw new Error(JSON.stringify(result));
- const cpu=process.cpuUsage(cpuStart),assets=result.value.pack.assets;
+ const cpu=process.cpuUsage(cpuStart),assets=projectImportPack(result.value.product).assets;
  if(!assets.some(asset=>asset.kind==='material'&&asset.payload.cooked))throw new Error('missing actual Material NativeCook');
  return {label,wallMs:performance.now()-start,cpuMs:(cpu.user+cpu.system)/1000,rss:process.memoryUsage().rss,processPeakRss:process.resourceUsage().maxRSS*1024,loadAverage:loadavg(),assetKinds:assets.map(asset=>asset.kind),intermediateCookJsonBytes:Buffer.byteLength(JSON.stringify(result.value.cookProducts)), projectedPackJsonBytes:Buffer.byteLength(JSON.stringify(projectImportProductForBuild(result.value.product))),artifactBytes:result.value.product.assets.reduce((sum,asset)=>sum+Object.values(asset.artifacts).reduce((sum,artifact)=>sum+artifact.bytes.length,0),0)};
 };

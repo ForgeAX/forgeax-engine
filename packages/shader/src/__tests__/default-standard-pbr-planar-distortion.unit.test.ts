@@ -47,7 +47,7 @@ describe('Standard planar reflection normal distortion', () => {
       'let lod = select(0.0, clamp(roughness, 0.0, 1.0) * (levels - 1.0), mipped);',
     );
     expect(specular).toMatch(
-      /textureSampleLevel\(standardPlanarReflectionTexture, prefilterSampler, .*, lod\)/,
+      /textureSampleLevel\(standardPlanarReflectionTexture, viewLinearSampler, .*, lod\)/,
     );
     // Only capture holes (alpha below 1) fall back to the environment.
     expect(specular).toContain('environment * (1.0 - clamp(reflected.a, 0.0, 1.0))');

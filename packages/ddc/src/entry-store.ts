@@ -67,6 +67,13 @@ interface EntryIntegrity {
   readonly entry: string;
 }
 
+interface EntryMetadata {
+  readonly schemaVersion: 'forgeax-ddc-entry/2';
+  readonly receipt: DdcReceipt;
+  readonly refs: readonly string[];
+  readonly integrity: EntryIntegrity;
+}
+
 function digest(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -152,7 +159,7 @@ function entryShape(entry: DdcEntry): Record<string, unknown> {
 
 function integrityFor(
   entry: DdcEntry,
-  readback?: Pick<EntryIntegrity, 'payload' | 'entry'>,
+  readback: Pick<EntryIntegrity, 'payload' | 'entry'>,
 ): EntryIntegrity {
   const artifacts = Object.fromEntries(
     sortedArtifacts(entry).map(([key, artifact]) => [
@@ -165,16 +172,43 @@ function integrityFor(
     ]),
   );
   return {
-    payload: readback?.payload ?? canonicalDdcDigest(entry.payload),
+    payload: readback.payload,
     refs: canonicalDdcDigest(entry.refs),
     receipt: canonicalDdcDigest(entry.receipt),
     artifacts,
-    entry: readback?.entry ?? canonicalDdcDigest(entryShape(entry)),
+    entry: readback.entry,
   };
 }
 
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
+}
+
+async function readEntryMetadata(path: string): Promise<EntryMetadata> {
+  try {
+    const metadata = await readJson<EntryMetadata>(join(path, 'entry.json'));
+    if (metadata.schemaVersion !== 'forgeax-ddc-entry/2')
+      throw new TypeError('unsupported DDC entry metadata');
+    return metadata;
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+  // Old immutable entries remain readable while new writes use a single index.
+  const [refs, receipt, integrity, manifest] = await Promise.all([
+    readJson<readonly string[]>(join(path, 'refs.json')),
+    readJson<DdcReceipt>(join(path, 'receipt.json')),
+    readJson<EntryIntegrity>(join(path, 'integrity.json')),
+    readJson<unknown>(join(path, 'artifacts.json')),
+  ]);
+  const expected = Object.fromEntries(
+    Object.entries(integrity.artifacts).map(([key, { mediaType }]) => [
+      key,
+      { mediaType, file: artifactFile(key) },
+    ]),
+  );
+  if (canonicalDdcJson(manifest) !== canonicalDdcJson(expected))
+    throw new TypeError('legacy DDC artifact index differs from integrity');
+  return { schemaVersion: 'forgeax-ddc-entry/2', refs, receipt, integrity };
 }
 
 function captureEntry(entry: DdcEntryInput): {
@@ -275,7 +309,7 @@ export class DdcEntryStore {
     // Avoid writing and then rereading a duplicate temporary entry just to
     // discover that the immutable destination already contains the same data.
     const target = join(this.entries, entry.key);
-    const receipt = await readJson<DdcReceipt>(join(target, 'receipt.json')).catch(() => undefined);
+    const { receipt } = (await readEntryMetadata(target).catch(() => undefined)) ?? {};
     if (
       receipt !== null &&
       typeof receipt === 'object' &&
@@ -292,19 +326,15 @@ export class DdcEntryStore {
     try {
       await mkdir(join(path, 'artifacts'), { recursive: true });
       await writeFile(join(path, 'payload.json'), captured.payloadJson);
-      await writeFile(join(path, 'refs.json'), canonicalDdcJson(entry.refs));
-      await writeFile(join(path, 'receipt.json'), canonicalDdcJson(entry.receipt));
-      const artifacts: Record<string, { mediaType: string; file: string }> = {};
-      for (const [key, artifact] of sortedArtifacts(entry)) {
-        const file = artifactFile(key);
-        artifacts[key] = { mediaType: artifact.mediaType, file };
-        await writeFile(join(path, 'artifacts', `${file}.bin`), artifact.bytes);
-      }
-      await writeFile(join(path, 'artifacts.json'), canonicalDdcJson(artifacts));
-      await writeFile(
-        join(path, 'integrity.json'),
-        canonicalDdcJson(integrityFor(entry, readback)),
-      );
+      for (const [key, artifact] of sortedArtifacts(entry))
+        await writeFile(join(path, 'artifacts', `${artifactFile(key)}.bin`), artifact.bytes);
+      const metadata: EntryMetadata = {
+        schemaVersion: 'forgeax-ddc-entry/2',
+        refs: entry.refs,
+        receipt: entry.receipt,
+        integrity: integrityFor(entry, readback),
+      };
+      await writeFile(join(path, 'entry.json'), canonicalDdcJson(metadata));
       return { key: entry.key, path };
     } catch (error) {
       await rm(path, { recursive: true, force: true }).catch(() => {});
@@ -399,10 +429,9 @@ export class DdcEntryStore {
     try {
       validateKey(key);
       const path = join(this.entries, key);
-      const [payloadJson, receipt, integrity] = await Promise.all([
+      const [payloadJson, { receipt, integrity }] = await Promise.all([
         readFile(join(path, 'payload.json')),
-        readJson<DdcReceipt>(join(path, 'receipt.json')),
-        readJson<EntryIntegrity>(join(path, 'integrity.json')),
+        readEntryMetadata(path),
       ]);
       const payload: unknown = JSON.parse(payloadJson.toString('utf8'));
       if (
@@ -471,17 +500,12 @@ export class DdcEntryStore {
     try {
       const payloadJson = await readFile(join(path, 'payload.json'));
       const payload: unknown = JSON.parse(payloadJson.toString('utf8'));
-      const refs = await readJson<readonly string[]>(join(path, 'refs.json'));
-      const receipt = await readJson<DdcReceipt>(join(path, 'receipt.json'));
-      const manifest = await readJson<
-        Readonly<Record<string, { mediaType: string; file: string }>>
-      >(join(path, 'artifacts.json'));
-      const integrity = await readJson<EntryIntegrity>(join(path, 'integrity.json'));
+      const { refs, receipt, integrity } = await readEntryMetadata(path);
       const artifacts: Record<string, DdcArtifact> = {};
-      for (const [key, descriptor] of Object.entries(manifest).sort(([left], [right]) =>
+      for (const [key, descriptor] of Object.entries(integrity.artifacts).sort(([left], [right]) =>
         left.localeCompare(right),
       )) {
-        const file = await readFile(join(path, 'artifacts', `${descriptor.file}.bin`));
+        const file = await readFile(join(path, 'artifacts', `${artifactFile(key)}.bin`));
         // readFile owns this storage. Keep an exact backing buffer without a
         // second artifact-sized allocation; trim pooled/subarray storage so a
         // small artifact cannot retain unrelated bytes. Expose Uint8Array,

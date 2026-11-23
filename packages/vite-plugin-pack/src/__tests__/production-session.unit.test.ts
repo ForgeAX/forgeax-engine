@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createProductionSession } from '../production/session.js';
 
 describe('ProductionSession', () => {
@@ -48,10 +49,7 @@ describe('ProductionSession', () => {
     'failed',
     'stale',
   ] as const)('materializes the accepted rebuild after a %s startup', async (startup) => {
-    let release!: () => void;
-    const barrier = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: barrier, resolve: release } = testGate();
     const materialized: string[] = [];
     const session = createProductionSession({
       inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],

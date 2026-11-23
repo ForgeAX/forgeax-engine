@@ -11,11 +11,12 @@ import {
   type ExecutionInitMessage,
   type ExecutionReadyMessage,
   type ExecutionRenderErrorMessage,
-  forwardPipelineLibraries,
+  forwardPipelinePreparation,
   forwardResourceBudgets,
   type HostToEngineMessage,
 } from './protocol';
 import { forwardRenderBackend } from './render-backend';
+import type { BrowserRenderWorkerControl } from './render-worker-browser-channel';
 import { executionTaskKinds } from './task-kinds';
 import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
@@ -158,11 +159,34 @@ export async function startEngineWorker(
       name: 'forgeax-engine',
     });
   const taskCleanups = new Map<number, () => void>();
+  const browserRenders = new Map<number, Worker>();
+  const document = options.canvas.ownerDocument;
+  const browserRenderPresentation =
+    options.diagnostics?.browserRenderPresentation === true && options.workers.render.enabled;
   let retired = false;
+  const notifyRenderVisibility = () => {
+    for (const render of browserRenders.values())
+      render.postMessage({
+        kind: 'browser-render-visibility',
+        visible: !document.hidden,
+      } satisfies BrowserRenderWorkerControl);
+  };
+  const retireBrowserRender = (workerId: number): void => {
+    const render = browserRenders.get(workerId);
+    if (render === undefined) return;
+    browserRenders.delete(workerId);
+    render.onerror = null;
+    render.terminate();
+  };
+  if (browserRenderPresentation)
+    document.addEventListener('visibilitychange', notifyRenderVisibility);
   const retirePoolWorkers = (): void => {
     retired = true;
     frameSource.connect(undefined);
     for (const cleanup of taskCleanups.values()) cleanup();
+    for (const workerId of browserRenders.keys()) retireBrowserRender(workerId);
+    if (browserRenderPresentation)
+      document.removeEventListener('visibilitychange', notifyRenderVisibility);
   };
   // Render notices arrive on a per-session port; a replacement session closes the old one.
   const frameSource = new WorkerFrameSource();
@@ -256,6 +280,38 @@ export async function startEngineWorker(
       report(String(cause));
     }
   };
+  const adoptBrowserRender = ({ workerId, port }: EngineMessage<'browser-render-open'>): void => {
+    if (retired || !browserRenderPresentation || browserRenders.has(workerId)) {
+      port.close();
+      return;
+    }
+    const report = (message: string): void => {
+      retireBrowserRender(workerId);
+      if (!retired) worker.postMessage({ kind: 'browser-render-error', workerId, message });
+    };
+    try {
+      const render = new Worker(new URL('./render-worker-runtime.mjs', import.meta.url), {
+        type: 'module',
+        name: 'forgeax-render',
+      });
+      browserRenders.set(workerId, render);
+      render.onerror = (event) => {
+        event.preventDefault();
+        report(event.message || 'Browser Render Worker could not start');
+      };
+      render.postMessage(
+        {
+          kind: 'browser-render-connect',
+          port,
+          visible: !document.hidden,
+        } satisfies BrowserRenderWorkerControl,
+        [port],
+      );
+    } catch (error) {
+      port.close();
+      report(String(error));
+    }
+  };
   const adoptRenderHostPort = (message: EngineMessage<'render-host-port'>): void => {
     closeRenderHostPort();
     const port = message.port;
@@ -302,6 +358,14 @@ export async function startEngineWorker(
     }
     if (message.kind === 'task-retire') {
       taskCleanups.get(message.workerId)?.();
+      return;
+    }
+    if (message.kind === 'browser-render-open') {
+      adoptBrowserRender(message);
+      return;
+    }
+    if (message.kind === 'browser-render-retire') {
+      retireBrowserRender(message.workerId);
       return;
     }
     if (message.kind === 'render-host-port') {
@@ -376,7 +440,7 @@ export async function startEngineWorker(
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
     ...forwardGpuStub(options),
-    ...forwardPipelineLibraries(options),
+    ...forwardPipelinePreparation(options),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),

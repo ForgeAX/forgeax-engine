@@ -51,7 +51,7 @@ it.each([
       captured: async (encoded, _pixels, covered) => {
         if (!covered) return;
         const model = buildFrameModel(decodeTape(encoded.bytes).unwrap());
-        const entry = options.renderPath === 'forward' ? 'fs_opaque' : 'fs_gbuffer';
+        const entry = options.renderPath === 'forward' ? 'fs_forward_sun_shadow' : 'fs_gbuffer';
         const draws = model.works.filter((work) =>
           work.pipeline.shaders.some(
             (shader) => shader.stage === 'fragment' && shader.entryPoint === entry,

@@ -117,13 +117,13 @@ const submoduleDejavuFontMetaPath = resolve(
     ? ['dejavu-fonts', 'DejaVuSansMono.ttf.meta.json']
     : ['forgeax-engine-assets', 'dejavu-fonts', 'DejaVuSansMono.ttf.meta.json']),
 );
-const submoduleDejavuLegacyAtlasMetaPath = resolve(
+const submoduleDejavuBakedAtlasMetaPath = resolve(
   isPublicDistribution ? publicTemplateResourceRoot : monorepoRoot,
   ...(isPublicDistribution
     ? ['dejavu-fonts', 'DejaVuSansMono.atlas.png.meta.json']
     : ['forgeax-engine-assets', 'dejavu-fonts', 'DejaVuSansMono.atlas.png.meta.json']),
 );
-const submoduleDejavuLegacyPackPath = resolve(
+const submoduleDejavuBakedPackPath = resolve(
   isPublicDistribution ? publicTemplateResourceRoot : monorepoRoot,
   ...(isPublicDistribution
     ? ['dejavu-fonts', 'DejaVuSansMono.font.pack.json']
@@ -149,8 +149,8 @@ const externalAssetRoots = isPublicDistribution
       submoduleBgmMetaPath,
       submoduleFbxDir,
       submoduleDejavuFontMetaPath,
-      submoduleDejavuLegacyAtlasMetaPath,
-      submoduleDejavuLegacyPackPath,
+      submoduleDejavuBakedAtlasMetaPath,
+      submoduleDejavuBakedPackPath,
       submoduleSpriteAtlasDir,
     ]
   : [
@@ -161,8 +161,8 @@ const externalAssetRoots = isPublicDistribution
       submoduleFbxDir,
       submoduleGlbDir,
       submoduleDejavuFontMetaPath,
-      submoduleDejavuLegacyAtlasMetaPath,
-      submoduleDejavuLegacyPackPath,
+      submoduleDejavuBakedAtlasMetaPath,
+      submoduleDejavuBakedPackPath,
       submoduleSpriteAtlasDir,
     ];
 // Each selected template carries its own declaration and external dependency

@@ -1,20 +1,15 @@
 import type {
-  AssetPublicationTuple,
   AssetRelation,
   CatalogDiagnostic,
-  CatalogEntryV2,
   CatalogLifecycle,
   CatalogSubject,
   CookExecution,
   PackIndexEntry,
-  ProducerContractDiagnostic,
-  ProducerContractResult,
   ProviderProvenance,
   ResourceRevision,
   SourceOverrideDescriptor,
 } from '@forgeax/engine-types';
 import { authoringCapabilityForAssetKind, catalogOperationsFor } from '@forgeax/engine-types';
-import { isRuntimePublicationTuple } from './runtime-projection.js';
 
 export function catalogProjectionFor(
   subject: CatalogSubject,
@@ -210,103 +205,4 @@ export function projectPackageCatalog(
       ...catalogRowProjectionFor('internal-asset', execution, lifecycle),
     };
   });
-}
-
-export interface CookedPackageProjection
-  extends Pick<PackIndexEntry, 'packageUrl' | 'cookReceiptUrl' | 'publication'>,
-    Required<Pick<PackIndexEntry, 'revision' | 'refs'>> {}
-
-/** Project one complete cooked package; navigation facts stay in the Pack owner. */
-export function projectCookedPackageEntry(
-  entry: PackIndexEntry,
-  projection: CookedPackageProjection,
-): PackIndexEntry {
-  return {
-    ...entry,
-    ...(projection.publication === undefined
-      ? {}
-      : { sourcePath: projection.publication.sourcePath }),
-    packageUrl: projection.packageUrl,
-    ...(projection.cookReceiptUrl === undefined
-      ? {}
-      : { cookReceiptUrl: projection.cookReceiptUrl }),
-    revision: projection.revision,
-    ...(projection.publication === undefined ? {} : { publication: projection.publication }),
-    ...currentProjectionFor('imported-output', 'cooked'),
-    refs: projection.refs,
-  };
-}
-
-export interface RuntimeCatalogRowInput
-  extends AssetPublicationTuple,
-    Pick<PackIndexEntry, 'guid' | 'kind' | 'packageUrl'>,
-    Partial<Pick<PackIndexEntry, 'sourcePath' | 'subject' | 'execution' | 'lifecycle'>> {
-  readonly publication?: unknown;
-}
-
-function runtimeCatalogRowError(
-  subjectId: string,
-  expected: string,
-): ProducerContractResult<never> {
-  const diagnostic: ProducerContractDiagnostic = {
-    code: 'invalid-producer-fact',
-    subject: { type: 'asset', id: subjectId },
-    expected,
-    hint: 'recook the source and publish one current runtime Catalog row',
-    authority: 'producer',
-  };
-  return { ok: false, error: diagnostic };
-}
-
-function projectRuntimeCatalogRowValue(
-  input: RuntimeCatalogRowInput,
-): ProducerContractResult<CatalogEntryV2> {
-  if (
-    input.publication !== undefined ||
-    input.guid.length === 0 ||
-    input.kind.length === 0 ||
-    input.packageUrl.length === 0 ||
-    !isRuntimePublicationTuple(input)
-  ) {
-    return runtimeCatalogRowError(
-      input.guid,
-      'one flat publication tuple and no legacy publication object',
-    );
-  }
-
-  const subject = input.subject ?? 'imported-output';
-  const execution = input.execution ?? 'cooked';
-  const lifecycle = input.lifecycle ?? 'current';
-  return {
-    ok: true,
-    value: {
-      scopeId: input.scopeId,
-      generation: input.generation,
-      digest: input.digest,
-      outputSetDigest: input.outputSetDigest,
-      guid: input.guid,
-      kind: input.kind,
-      packageUrl: input.packageUrl,
-      sourcePath: input.sourcePath ?? input.packageUrl,
-      subject,
-      execution,
-      lifecycle,
-      projection: catalogProjectionFor(subject, execution, lifecycle),
-    },
-  };
-}
-
-/** Project one row; an array is accepted only to fail closed on double rows. */
-export function projectRuntimeCatalogRow(
-  input: RuntimeCatalogRowInput | readonly RuntimeCatalogRowInput[],
-): ProducerContractResult<CatalogEntryV2> {
-  if (Array.isArray(input)) {
-    if (input.length !== 1) {
-      return runtimeCatalogRowError(input[0]?.guid ?? 'unknown', 'exactly one runtime row');
-    }
-    const [row] = input;
-    if (row === undefined) return runtimeCatalogRowError('unknown', 'exactly one runtime row');
-    return projectRuntimeCatalogRowValue(row);
-  }
-  return projectRuntimeCatalogRowValue(input as RuntimeCatalogRowInput);
 }

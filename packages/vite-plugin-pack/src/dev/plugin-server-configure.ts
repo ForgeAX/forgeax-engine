@@ -1,14 +1,20 @@
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   containsSourcePackageError,
-  normalizeSourcePackageError,
   parseProducerReadiness,
+  sourceDeclarationForCatalogPath,
 } from '@forgeax/engine-import';
-import { type CatalogBuildError, calculateCatalogDelta } from '@forgeax/engine-pack/build';
+import {
+  type CatalogBuildError,
+  calculateCatalogDelta,
+  catalogProjectionFor,
+  emptyCatalogProjection,
+} from '@forgeax/engine-pack/build';
 import type { CatalogDelta, CatalogDiagnostic, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { resolvePackBuildInputs } from '../build-inputs.js';
-import { CATALOG_DELTA_EVENT } from '../catalog-transport.js';
 import { createPluginPackFailure, projectFailureCause } from '../errors.js';
+import { CATALOG_DELTA_EVENT } from '../plugin-contract.js';
 import type { projectRuntimeDiagnostics } from '../runtime-diagnostics.js';
 import { structuredPluginError } from '../structured-plugin-error.js';
 import { createDevSession, type DevSession } from './dev-session.js';
@@ -22,9 +28,9 @@ import {
   type WatchBatch,
 } from './revision-observer.js';
 import {
-  catalogDiagnosticForSourcePackageError,
   createTransportRouteHandler,
-  projectSourcePackageFailure,
+  isMaterializedDevRow,
+  projectCatalogSourceFailure,
 } from './transport-routes.js';
 
 export interface PluginServerLifecycleState {
@@ -61,10 +67,9 @@ interface WatchBatchInput {
   readonly suppressReload?: boolean;
 }
 
-function degradedSnapshot(session: ProductionBridge['session'], state: PluginServerState) {
+function degradedSnapshot(session: ProductionBridge['session']) {
   return {
     generation: session.runtimeGeneration,
-    catalog: [...state.catalogProjection.entries],
     authority: 'degraded' as const,
     diagnostics: [],
   };
@@ -115,6 +120,87 @@ function deepestCause(error: unknown, seen = new Set<unknown>()): unknown {
   return cause === undefined ? error : deepestCause(cause, seen);
 }
 
+/** An edited Meta keeps serving its accepted body until a successful import. */
+function markMetaRowsStale(state: PluginServerState, changedPaths: ReadonlySet<string>): void {
+  const previous = state.catalogProjection.entries;
+  let entries: (typeof previous)[number][] | undefined;
+  const projection = catalogProjectionFor('imported-output', 'cooked', 'stale');
+  for (const [index, row] of previous.entries()) {
+    if (
+      !isMaterializedDevRow(row, state) ||
+      row.sourcePath.endsWith('.pack.ts') ||
+      row.sourcePath.endsWith('.pack.json') ||
+      !rowMatchesChangedPath(row, changedPaths, state)
+    )
+      continue;
+    entries ??= [...previous];
+    entries[index] = {
+      ...row,
+      lifecycle: projection.lifecycle,
+      projection: { ...projection, lastKnownGood: { packageUrl: row.packageUrl } },
+    };
+  }
+  if (entries !== undefined) state.catalogProjection = { ...state.catalogProjection, entries };
+}
+
+function watchCatalogFailure(
+  input: WatchBatchInput,
+  previousCatalog: PluginServerState['catalogProjection']['entries'],
+  changedPaths: ReadonlySet<string>,
+  error: unknown,
+) {
+  const cause = deepestCause(error);
+  console.warn('[forgeax-pack] rebuild state.catalog error:', cause);
+  const affectedRows = previousCatalog.filter((row) =>
+    rowMatchesChangedPath(row, changedPaths, input.state),
+  );
+  const first = affectedRows[0];
+  let diagnostic: CatalogDiagnostic;
+  if (first !== undefined && containsSourcePackageError(error)) {
+    const failure = projectCatalogSourceFailure(
+      { ...input.state.catalogProjection, entries: previousCatalog },
+      error,
+      affectedRows.map((row) => row.guid),
+      first.sourcePath,
+    );
+    input.state.catalogProjection = failure.catalog;
+    diagnostic = failure.diagnostic;
+  } else {
+    diagnostic = watchRebuildDiagnostic(error, cause);
+  }
+  // A degraded delta carries diagnostics while the accepted body remains readable.
+  return {
+    added: [],
+    changed: [],
+    removed: [],
+    authority: 'degraded' as const,
+    diagnostics: [diagnostic],
+  };
+}
+
+function watchRebuildDiagnostic(error: unknown, cause: unknown): CatalogDiagnostic {
+  const explanation = projectFailureCause(error);
+  const failure = cause as
+    | Partial<Pick<CatalogDiagnostic, 'code' | 'expected' | 'actual' | 'hint'>>
+    | null
+    | undefined;
+  return {
+    ...(explanation === undefined ? {} : { cause: explanation }),
+    code: typeof failure?.code === 'string' ? failure.code : 'catalog-rebuild-failed',
+    severity: 'blocking',
+    authority: 'producer',
+    expected:
+      typeof failure?.expected === 'string'
+        ? failure.expected
+        : 'the changed source to produce an accepted Catalog snapshot',
+    ...(typeof failure?.actual === 'string' ? { actual: failure.actual } : {}),
+    hint:
+      typeof failure?.hint === 'string'
+        ? failure.hint
+        : 'repair the source, rebuild, and retry the Catalog update',
+  };
+}
+
 function createWatchBatchApplier(input: WatchBatchInput) {
   return async ({ sidecars, sources }: WatchBatch): Promise<boolean> => {
     let published = false;
@@ -127,28 +213,14 @@ function createWatchBatchApplier(input: WatchBatchInput) {
     const changedPaths = new Set<string>(
       [...sidecars, ...sources].map((info) => resolve(info.filename)),
     );
-    const invalidatedPackUrls = new Set<string>();
-    for (const guid of input.state.importedGuids) {
-      const row = input.state.catalogProjection.entries.find(
-        (candidate) => candidate.guid.toLowerCase() === guid,
-      );
-      if (row === undefined) continue;
-      // Authored Pack rows are rebuilt and published by this watcher itself;
-      // removing their body here would turn a transient ScriptablePack build
-      // failure into an unrecoverable 404. Only external Meta imports need to
-      // leave the imported set and wait for an explicit reimport route.
-      if (row.sourcePath.endsWith('.pack.ts') || row.sourcePath.endsWith('.pack.json')) continue;
-      if (!rowMatchesChangedPath(row, changedPaths, input.state)) continue;
-      invalidatedPackUrls.add(row.packageUrl);
-      input.state.importedGuids.delete(guid);
-    }
-    const importedRowsInvalidated = invalidatedPackUrls.size > 0;
     let rebuildState: Awaited<ReturnType<DevSession['rebuild']>> | undefined;
     const recovering = ['degraded', 'failed'].includes(input.activeDevSession.state().status);
 
-    if (sidecars.length > 0 || sources.length > 0 || importedRowsInvalidated) {
+    if (changedPaths.size > 0) {
       const next = await input.activeDevSession.rebuild(async ({ previous }) => {
-        const previousSnapshot = previous ?? degradedSnapshot(input.session, input.state);
+        const previousSnapshot = previous ?? degradedSnapshot(input.session);
+        const previousCatalog = input.state.catalogProjection.entries;
+        markMetaRowsStale(input.state, changedPaths);
         try {
           const inventory = await input.productionBridge.inventoryForRequest(false, input.session);
           if (!input.generationActive()) return previousSnapshot;
@@ -156,20 +228,17 @@ function createWatchBatchApplier(input: WatchBatchInput) {
           // the producer. A queued notification may refer to bytes that an
           // earlier batch already published; it is not evidence of a conflict.
           // Keep the legacy revision guard for rows without that publication.
-          const affectedSourceRows = previousSnapshot.catalog.filter(
+          const affectedSourceRows = previousCatalog.filter(
             (row) =>
               row.publication === undefined &&
               rowMatchesChangedPath(row, changedPaths, input.state),
           );
           const catalogDelta = calculateCatalogDelta(
-            previousSnapshot.catalog,
+            previousCatalog,
             input.state.catalogProjection.entries,
           );
           const sourceRevisionDiagnostic: CatalogDiagnostic | undefined =
-            !recovering &&
-            changedPaths.size > 0 &&
-            affectedSourceRows.length > 0 &&
-            catalogDelta === undefined
+            !recovering && affectedSourceRows.length > 0 && catalogDelta === undefined
               ? {
                   code: 'catalog-revision-conflict',
                   severity: 'blocking',
@@ -208,109 +277,18 @@ function createWatchBatchApplier(input: WatchBatchInput) {
           }
           return {
             generation: input.session.runtimeGeneration,
-            catalog: [...input.state.catalogProjection.entries],
             authority: sourceRevisionDiagnostic === undefined ? inventory.authority : 'degraded',
             diagnostics,
           };
         } catch (error: unknown) {
           if (!input.generationActive()) return previousSnapshot;
           if (previous === undefined) throw error;
-          const diagnostic = deepestCause(error);
-          console.warn('[forgeax-pack] rebuild state.catalog error:', diagnostic);
-          const affectedSourceRows = previousSnapshot.catalog.filter((row) =>
-            rowMatchesChangedPath(row, changedPaths, input.state),
-          );
-          if (affectedSourceRows.length > 0 && containsSourcePackageError(error)) {
-            const first = affectedSourceRows[0];
-            if (first !== undefined) {
-              const sourceMeta =
-                [...input.state.catalogProjection.declarations.entries()].find(([, declaration]) =>
-                  declaration.subAssets.some(
-                    (asset) => asset.guid.toLowerCase() === first.guid.toLowerCase(),
-                  ),
-                )?.[0] ?? first.sourcePath;
-              const normalized = normalizeSourcePackageError(error, {
-                sourceMeta,
-                anchorGuid: first.guid,
-                affectedGuids: affectedSourceRows.map((row) => row.guid),
-                producer: first.provenance?.provider ?? 'plugin-pack',
-                importer:
-                  [...input.state.catalogProjection.declarations.values()].find((declaration) =>
-                    declaration.subAssets.some(
-                      (asset) => asset.guid.toLowerCase() === first.guid.toLowerCase(),
-                    ),
-                  )?.importer ??
-                  first.provenance?.provider ??
-                  'unknown',
-              });
-              const failedEntries = projectSourcePackageFailure(
-                previousSnapshot.catalog,
-                normalized,
-              );
-              input.state.catalogProjection = {
-                ...input.state.catalogProjection,
-                entries: failedEntries,
-              };
-              const sourceDiagnostic = catalogDiagnosticForSourcePackageError(normalized);
-              // Failed rows remain server-side evidence for the next repair, but a
-              // degraded delta is intentionally non-identity-bearing. Publishing
-              // failed rows would make the browser fetch the known-bad locator
-              // before it can retain its last-known-good payload.
-              emitDelta(
-                {
-                  added: [],
-                  changed: [],
-                  removed: [],
-                  authority: 'degraded',
-                  diagnostics: [sourceDiagnostic],
-                },
-                false,
-              );
-              return {
-                generation: input.session.runtimeGeneration,
-                catalog: [...failedEntries],
-                authority: 'degraded' as const,
-                diagnostics: [...previousSnapshot.diagnostics, sourceDiagnostic],
-              };
-            }
-          }
-          const failure =
-            diagnostic !== null && typeof diagnostic === 'object' ? diagnostic : undefined;
-          const cause = projectFailureCause(error);
-          const watchDiagnostic: CatalogDiagnostic = {
-            ...(cause === undefined ? {} : { cause }),
-            code:
-              failure !== undefined && 'code' in failure && typeof failure.code === 'string'
-                ? failure.code
-                : 'catalog-rebuild-failed',
-            severity: 'blocking',
-            authority: 'producer',
-            expected:
-              failure !== undefined && 'expected' in failure && typeof failure.expected === 'string'
-                ? failure.expected
-                : 'the changed source to produce an accepted Catalog snapshot',
-            ...(failure !== undefined && 'actual' in failure && typeof failure.actual === 'string'
-              ? { actual: failure.actual }
-              : {}),
-            hint:
-              failure !== undefined && 'hint' in failure && typeof failure.hint === 'string'
-                ? failure.hint
-                : 'repair the source, rebuild, and retry the Catalog update',
-          };
-          emitDelta(
-            {
-              added: [],
-              changed: [],
-              removed: [],
-              authority: 'degraded',
-              diagnostics: [watchDiagnostic],
-            },
-            false,
-          );
+          const failure = watchCatalogFailure(input, previousCatalog, changedPaths, error);
+          emitDelta(failure, false);
           return {
             ...previousSnapshot,
-            authority: 'degraded' as const,
-            diagnostics: [...previousSnapshot.diagnostics, watchDiagnostic],
+            authority: 'degraded',
+            diagnostics: [...previousSnapshot.diagnostics, ...failure.diagnostics],
           };
         }
       });
@@ -401,13 +379,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
             actual: String(readiness.error.detail.value),
             hint: readiness.error.hint,
           };
-          state.catalogProjection = {
-            ...state.catalogProjection,
-            schemaVersion: 'catalog-legacy-v1',
-            entries: [],
-            authority: 'degraded',
-            diagnostics: [diagnostic],
-          };
+          state.catalogProjection = emptyCatalogProjection([diagnostic]);
           throw createPluginPackFailure({
             code: 'config-failed',
             expected: readiness.error.expected,
@@ -436,7 +408,6 @@ export function createConfigureServer(input: ConfigureServerInput) {
         }
         return {
           generation: session.runtimeGeneration,
-          catalog: [...state.catalogProjection.entries],
           authority: inventory.authority,
           diagnostics,
         };
@@ -473,40 +444,6 @@ export function createConfigureServer(input: ConfigureServerInput) {
       !session.signal.aborted &&
       lifecycle.readyFailedEpoch !== epoch &&
       ['serving', 'rebuilding', 'degraded', 'failed'].includes(activeDevSession.state().status);
-    context.setSourceRefresh(async () => {
-      if (opts.watch === false)
-        throw structuredPluginError({
-          code: 'stale-generation',
-          expected: 'a new host session for changed author sources',
-          hint: 'wait for the host candidate build and reload',
-          detail: { stage: 'route', subject: 'source-refresh' },
-        });
-      if (!generationActive()) {
-        throw structuredPluginError({
-          code: 'cleanup-failed',
-          expected: 'the active dev generation to accept a source refresh',
-          hint: 'wait for the next Vite generation before requesting the Pack body',
-          detail: { stage: 'cleanup', subject: 'source-refresh' },
-        });
-      }
-      let result = await activeDevSession.rebuildProduction(
-        lifecycle.roots.map((sourceKey) => ({ sourceKey })),
-      );
-      if (result.status === 'stale') {
-        result = await activeDevSession.rebuildProduction(
-          lifecycle.roots.map((sourceKey) => ({ sourceKey })),
-        );
-      }
-      if (result.status === 'failed') throw structuredPluginError(result.error);
-      if (result.status === 'stale') {
-        throw structuredPluginError({
-          code: 'stale-generation',
-          expected: 'the source refresh generation to remain current',
-          hint: 'retry the Pack body request after the active generation settles',
-          detail: { stage: 'route', subject: 'source-refresh' },
-        });
-      }
-    });
     const watchBatchInput = {
       server,
       state,
@@ -544,6 +481,51 @@ export function createConfigureServer(input: ConfigureServerInput) {
       );
       return run;
     };
+    let refreshing: Promise<boolean> | undefined;
+    context.setSourceRefresh(async (url) => {
+      const row = state.catalogProjection.entries.find(
+        (entry) =>
+          entry.packageUrl === url &&
+          entry.sourcePath.endsWith('.pack.json') &&
+          entry.provenance?.provider !== 'pack-ts',
+      );
+      if (row === undefined) return;
+      const source = sourceDeclarationForCatalogPath(
+        row.sourcePath,
+        state.catalogProjection.sourceDeclarations,
+        opts.sourceIdentityFor,
+      );
+      if (source === undefined || source.declaration.format !== 'pack.json') return;
+      // A same-size overwrite can preserve every watcher stat fact. Check the
+      // addressed Direct Pack against the exact bytes accepted by the scanner.
+      if (
+        state.metaPackBodies.has(url) &&
+        source.declaration.sourceText ===
+          (await readFile(source.sourcePath, 'utf8').catch(() => undefined))
+      )
+        return;
+      if (opts.watch === false || !generationActive())
+        throw structuredPluginError({
+          code: 'stale-generation',
+          expected: 'an active host generation to publish the changed author source',
+          hint: 'wait for the host candidate build and reload',
+          detail: { stage: 'route', subject: 'source-refresh' },
+        });
+      refreshing ??= lifecycle.rebuildCatalogInPlace([source.sourcePath]).finally(() => {
+        refreshing = undefined;
+      });
+      await refreshing;
+      const next = activeDevSession.state();
+      if (next.status === 'failed') throw structuredPluginError(next.error);
+      if (next.status === 'degraded' || !state.metaPackBodies.has(url))
+        throw structuredPluginError({
+          code: 'pack-source-output-invalid',
+          expected: 'the direct Pack refresh to publish an accepted body',
+          hint: 'repair the changed source and retry the Pack request',
+          detail: { stage: 'route', sourcePath: row.sourcePath },
+          ...(next.status === 'degraded' ? { cause: next.diagnostics } : {}),
+        });
+    });
     const watchLifecycle =
       opts.watch === false
         ? undefined
@@ -571,7 +553,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
                   cause: error,
                 });
                 return {
-                  ...(previous ?? degradedSnapshot(session, state)),
+                  ...(previous ?? degradedSnapshot(session)),
                   authority: 'degraded' as const,
                   diagnostics: [
                     ...(previous?.diagnostics ?? []),
@@ -620,7 +602,6 @@ export function createConfigureServer(input: ConfigureServerInput) {
       activeDevSession,
       roots: lifecycle.roots,
       producerReadiness: opts.producerReadiness,
-      freshnessBarrier,
       state,
     });
     dispatcher.replace(
@@ -630,7 +611,7 @@ export function createConfigureServer(input: ConfigureServerInput) {
         state,
         callbacks: routeCallbacks,
         freshnessBarrier,
-        scopedPackageUrl: context.scopedPackageUrl,
+        scopedCatalogEntry: context.scopedCatalogEntry,
         scopedCatalogBody: context.scopedCatalogBody,
         devSession: activeDevSession,
       }),

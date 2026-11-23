@@ -624,7 +624,7 @@ test('same-head Core only seeds missing declaration inputs without importing JS 
   }
 });
 
-test('Three material preparation projects the two admitted strings without loading the compiler', () => {
+test('Three material preparation projects the admitted cooked publications without loading the compiler', () => {
   const root = mkdtempSync(join(tmpdir(), 'sdk-three-materials-'));
   try {
     const recipe = join(root, 'scripts', 'build-materials.mjs');
@@ -634,10 +634,13 @@ test('Three material preparation projects the two admitted strings without loadi
     writeFileSync(recipe, readFileSync('packages/three/scripts/build-materials.mjs'));
     const inputs = new Map([
       ['materials.mjs', 'materialPrograms'],
-      ['physical.mjs', 'physicalPrograms'],
+      ['physical.mjs', 'physicalIndex'],
     ]);
     for (const [file, name] of inputs)
-      writeFileSync(join(core, file), `export const ${name} = "KLUv/AAAA";\n`);
+      writeFileSync(
+        join(core, file),
+        `export const ${name} = ${name === 'physicalIndex' ? '{"forgeax-three-physical":"KLUv/AAAA"}' : '"KLUv/AAAA"'};\n`,
+      );
     const run = () =>
       execFileSync(process.execPath, [recipe], {
         env: { ...process.env, FORGEAX_THREE_PROGRAM_INPUT: core },
@@ -647,10 +650,13 @@ test('Three material preparation projects the two admitted strings without loadi
     for (const [file, name] of inputs)
       assert.ok(
         readFileSync(join(root, 'src/generated', file), 'utf8').includes(
-          `export const ${name} = "KLUv/AAAA";`,
+          `export const ${name} = ${name === 'physicalIndex' ? '{"forgeax-three-physical":"KLUv/AAAA"}' : '"KLUv/AAAA"'};`,
         ),
       );
-    writeFileSync(join(core, 'physical.mjs'), 'export const physicalPrograms = "invalid";\n');
+    writeFileSync(
+      join(core, 'physical.mjs'),
+      'export const physicalIndex = {"forgeax-three-physical":"invalid"};\n',
+    );
     assert.throws(run, /Invalid prepared Three program publication/);
   } finally {
     rmSync(root, { recursive: true, force: true });

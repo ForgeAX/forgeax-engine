@@ -1,5 +1,6 @@
 import {
   createStandaloneRuntimeAssetBinding,
+  type PackIndexEntry,
   type RuntimeAssetBinding,
 } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,7 +12,7 @@ import {
 
 const guid = '01900000-0000-7000-8000-aaaaaaaaaaaa';
 const artifactUrl = `/__forgeax-ddc/${guid}/body.bin`;
-const packUrl = `/__forgeax-ddc/${guid}.pack.json`;
+const packUrl = `/__forgeax-ddc/${guid}.runtime-pack.json`;
 
 function fixture() {
   let binding: RuntimeAssetBinding = {
@@ -31,7 +32,6 @@ function fixture() {
     startupReady: Promise.resolve(),
     state: {
       catalogProjection: { entries: [entry], declarations: new Map() },
-      importedGuids: new Set(),
       metaPackBodies: new Map([[packUrl, '{"accepted":true}']]),
       devArtifactBodies: new Map([[artifactUrl, { bytes, mimeType: 'application/octet-stream' }]]),
     },
@@ -49,7 +49,7 @@ function fixture() {
       state: () => ({ status }),
     },
     freshnessBarrier: freshness,
-    scopedPackageUrl: (_scope: RuntimeAssetBinding, url: string) => url,
+    scopedCatalogEntry: (_scope: RuntimeAssetBinding | undefined, row: PackIndexEntry) => row,
     scopedCatalogBody: () => '{"entries":[]}',
   } as unknown as TransportRouteContext;
   const handler = createTransportRouteHandler(context);

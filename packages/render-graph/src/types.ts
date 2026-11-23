@@ -53,8 +53,9 @@ export type GraphExtent =
 export interface GraphTextureDescriptor {
   readonly format: TextureFormat;
   readonly size: GraphExtent;
-  /** Cross-compile allocation lifetime. Omitted textures are transient. */
-  readonly lifetime?: 'transient' | 'persistent' | undefined;
+  /** Pass-local contents exist only between declared graph accesses. Only transient and persistent
+   * textures expose named targets outside those passes. Persistent contents can cross compilations. */
+  readonly lifetime?: 'transient' | 'persistent' | 'pass-local' | undefined;
   /** Additional RHI usage required by an external diagnostic consumer such as readback. */
   readonly usage?: number | undefined;
   readonly mipLevelCount?: number | undefined;
@@ -70,6 +71,13 @@ export interface NativeTextureImport {
   prepare(current: () => boolean): Generator<GraphPreparationStep, Texture>;
   /** Pure physical identity lookup; it never allocates, resolves a frame or renews stale facts. */
   current(): Texture | undefined;
+  /** A single-mip whole image resolved by this owner may resize between executions.
+   * The parent samples or copies the whole image. Its native child owns attachment slices. */
+  resolvedExtent?(texture: Texture): {
+    readonly width: number;
+    readonly height: number;
+    readonly depthOrArrayLayers: number;
+  };
 }
 
 export interface ImportedTextureDescriptor extends GraphTextureDescriptor {
@@ -185,14 +193,15 @@ export interface RasterColorAttachment<FrameCtx> {
   readonly depthSlice?: number | undefined;
 }
 
-export interface RasterDepthStencilAttachment {
+export interface RasterDepthStencilAttachment<FrameCtx = unknown> {
   readonly view: GraphTextureView;
   readonly depthClearValue?: number | undefined;
-  readonly depthLoadOp?: GPULoadOp | undefined;
+  /** A frame-selected load requires the depth aspect to have an earlier producer. */
+  readonly depthLoadOp?: GPULoadOp | ((frame: FrameCtx) => GPULoadOp) | undefined;
   readonly depthStoreOp?: GPUStoreOp | undefined;
   readonly depthReadOnly?: boolean | undefined;
   readonly stencilClearValue?: number | undefined;
-  readonly stencilLoadOp?: GPULoadOp | undefined;
+  readonly stencilLoadOp?: GPULoadOp | ((frame: FrameCtx) => GPULoadOp) | undefined;
   readonly stencilStoreOp?: GPUStoreOp | undefined;
   readonly stencilReadOnly?: boolean | undefined;
 }
@@ -218,7 +227,7 @@ export interface GraphPassPreparation {
 export type RasterGraphPass<FrameCtx> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly colorAttachments: readonly RasterColorAttachment<FrameCtx>[];
-  readonly depthStencilAttachment?: RasterDepthStencilAttachment | undefined;
+  readonly depthStencilAttachment?: RasterDepthStencilAttachment<FrameCtx> | undefined;
   /** Producer-owned query set, resolved once per execution when frame-dependent. */
   readonly occlusionQuerySet?: QuerySet | ((frame: FrameCtx) => QuerySet | undefined) | undefined;
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
@@ -263,7 +272,10 @@ export type CopyGraphPass<FrameCtx> = GraphPassPreparation & {
  * every borrowed texture view and shared buffer usage; child-private buffers
  * remain caller-owned. Selecting a child neither submits nor transfers ownership.
  */
-export type RenderGraphNativePass =
+export type RenderGraphNativePass = {
+  /** Stable profiling operation for frame-selected jobs. The name still identifies the physical command. */
+  readonly profileName?: string;
+} & (
   | {
       readonly kind: 'raster';
       readonly name: string;
@@ -280,7 +292,20 @@ export type RenderGraphNativePass =
       readonly kind: 'copy';
       readonly name: string;
       readonly encode: (encoder: RhiCommandEncoder) => void;
-    };
+    }
+);
+
+/** A native command is issued on the synchronous recording that supplied its number. */
+export type RenderGraphNativeIssue = (recording: number, pass: RenderGraphNativePass) => void;
+
+/** Profiling identity owned by a physical command declaration. */
+export type NativePassProfile = Pick<RenderGraphNativePass, 'name' | 'kind' | 'profileName'>;
+export type RenderGraphNativeCommands<FrameCtx> = (
+  frame: FrameCtx,
+  resources: GraphResourceResolver,
+  issue: RenderGraphNativeIssue,
+  recording: number,
+) => void;
 
 /**
  * An ordered, synchronous command domain. Every graph-owned resource is a declared
@@ -290,6 +315,10 @@ export type RenderGraphNativePass =
 export type SubgraphPass<FrameCtx extends RenderGraphFrame> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
+  /** Finite physical command roster for profiler capture admission. */
+  readonly profilePasses?: (() => readonly NativePassProfile[]) | undefined;
+  /** Physical names for this frame's ordered submission receipt. */
+  readonly appendPassNames?: (frame: FrameCtx, output: string[]) => void;
 } & (
     | {
         readonly child: (
@@ -297,14 +326,22 @@ export type SubgraphPass<FrameCtx extends RenderGraphFrame> = GraphPassPreparati
           resources: GraphResourceResolver,
         ) => CompiledRenderGraph<FrameCtx>;
         readonly commands?: never;
+        readonly commandsDirect?: never;
       }
     | {
         readonly child?: never;
+        readonly commandsDirect?: never;
         commands(context: {
           readonly frame: FrameCtx;
           readonly resources: GraphResourceResolver;
           readonly execute: (pass: RenderGraphNativePass) => void;
         }): void;
+      }
+    | {
+        readonly child?: never;
+        readonly commands?: never;
+        /** The same issuer can span frames. Its recording number expires when this call returns. */
+        readonly commandsDirect: RenderGraphNativeCommands<FrameCtx>;
       }
   );
 
@@ -357,6 +394,7 @@ export interface CompiledRenderGraphInfo {
     readonly executionIndex: number;
     /** Consecutive logical stages sharing one physical raster attachment lifetime. */
     readonly rasterBatch?: readonly string[] | undefined;
+    readonly nativeProfilePasses?: readonly NativePassProfile[] | undefined;
     readonly accesses: readonly GraphAccessInfo[];
     readonly dependencies: readonly string[];
   }[];
@@ -445,10 +483,14 @@ export interface RenderGraphGenerationAllocationInspection {
 
 export interface RenderGraphFrame {
   readonly encoder: RhiCommandEncoder;
+  /** Ordered completed command labels, including logical members of fused raster passes.
+   * The caller owns the list. A failed graph execution removes only its own suffix. */
+  readonly nativePassNames?: string[] | undefined;
 }
 
 export interface RenderGraphPassExecution {
   readonly name: string;
+  readonly profileName?: string;
   readonly kind: GraphPassKind;
   readonly executionIndex: number;
   /** Present only at a physical instrumentation boundary; never timed per member. */
@@ -493,6 +535,8 @@ export interface RenderGraphPassInstrumentation<FrameCtx extends RenderGraphFram
 export interface RenderGraphCompileOptions {
   readonly device: RhiDevice;
   readonly surfaceSize: { readonly width: number; readonly height: number };
+  /** Capture mode keeps each logical attachment separately inspectable after its last pass. */
+  readonly retainPassLocalTargets?: boolean;
   /** Share identical graph-created textures with a live graph on the same device. */
   readonly reuseResourcesFrom?: CompiledRenderGraph<RenderGraphFrame> | undefined;
 }
@@ -516,6 +560,8 @@ export interface CompiledRenderGraph<FrameCtx extends RenderGraphFrame> {
     frame: FrameCtx,
     runPass?: RenderGraphPassRunner,
     instrumentation?: RenderGraphPassInstrumentation<FrameCtx>,
+    /** Remove names as their command bodies complete. Only consume the result after success. */
+    pendingPasses?: Set<string>,
   ): Result<void, RenderGraphError>;
   /** Commit writes from successful execute() calls after their command buffer is submitted. */
   commitExecution(): void;

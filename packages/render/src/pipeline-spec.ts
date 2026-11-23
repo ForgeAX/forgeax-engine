@@ -357,18 +357,12 @@ export function standardTopologyVariantSet(
   return `${capabilityVariantSet}+PROBE_BLEND_AVAILABLE=true`;
 }
 
-/**
- * Keep a clustered frame fail-closed when its unified group(2) resource is
- * unavailable. A missing group is not evidence that the frame is direct; it
- * is an invalid prepared resource state.
- */
+/** The chosen Cluster path needs its current View resources. */
 export function standardTopologyBindGroupReady(
   topology: { readonly kind: 'no-local-lights' | 'clustered' } | undefined,
-  clusterBindGroup: unknown,
+  clusterViewReady: boolean,
 ): boolean {
-  return (
-    topology?.kind !== 'clustered' || (clusterBindGroup !== null && clusterBindGroup !== undefined)
-  );
+  return topology?.kind !== 'clustered' || clusterViewReady;
 }
 
 /** Derive the storage axis for Standard-compatible unlit material draws. */

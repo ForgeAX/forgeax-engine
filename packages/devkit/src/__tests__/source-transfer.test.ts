@@ -1,13 +1,18 @@
 // @perf-budget-skip: real filesystem transaction and Vite source closure compilation.
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { parseAllDocuments, stringify } from 'yaml';
 import { assetSourceImportCommand } from '../source-transfer.js';
 import { createToolClient } from '../tools/client.js';
 import { runUnifiedCli } from '../unified-cli.js';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...fs, cp: vi.fn(fs.cp) };
+});
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -79,6 +84,36 @@ it('imports a complete code closure and preserves identities without activating 
     'transfer must never activate',
   );
 });
+it.each([
+  'modified',
+  'removed',
+] as const)('rejects a candidate copied with a %s dependency manifest', async (change) => {
+  const { source, target } = await fixture();
+  const { cp: copy } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  vi.mocked(cp).mockImplementationOnce(async (from, to, options) => {
+    await copy(from, to, options);
+    const manifest = resolve(String(to), 'package.json');
+    if (change === 'removed') await rm(manifest);
+    else await writeFile(manifest, '{"name":"different-during-copy"}');
+  });
+  const output = resolve(target, 'assets/role');
+  const result = await assetSourceImportCommand({
+    root: target,
+    sourceRoot: source,
+    sourcePath: 'assets/role.pack.json',
+    targetPath: 'assets/role',
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      code: 'pack-source-revision-conflict',
+      detail: { reason: 'target dependencies changed during transfer' },
+    },
+  });
+  await expect(readFile(resolve(output, 'assets/role.pack.json'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+});
 it('clones the same closure with independent namespaces and rewritten references', async () => {
   const { source, target } = await fixture();
   const result = await assetSourceImportCommand({
@@ -130,6 +165,31 @@ it('rejects duplicate identities and missing modules before publishing files', a
   await expect(
     readFile(resolve(target, 'assets/missing/assets/role.pack.json')),
   ).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('does not repair a partially existing import', async () => {
+  const { source, target } = await fixture();
+  const destination = resolve(target, 'assets/role/assets');
+  await mkdir(destination, { recursive: true });
+  const pack = await readFile(resolve(source, 'assets/role.pack.json'));
+  await writeFile(resolve(destination, 'role.pack.json'), pack);
+  const result = await assetSourceImportCommand({
+    root: target,
+    sourceRoot: source,
+    sourcePath: 'assets/role.pack.json',
+    targetPath: 'assets/role',
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      code: 'pack-source-revision-conflict',
+      detail: { reason: 'existing import is incomplete' },
+    },
+  });
+  expect(await readFile(resolve(destination, 'role.pack.json'))).toEqual(pack);
+  await expect(readFile(resolve(destination, 'child.ts'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
 });
 
 it('rejects a changed expected source revision without leaving a destination', async () => {
@@ -327,6 +387,82 @@ export default { schemaVersion: '2.0.0', plugins: true,
   expect(
     await readFile(resolve(target, 'assets/behavior/assets/behavior.pack.ts'), 'utf8'),
   ).toContain('@transfer-fixture/author-helper');
+});
+
+it('uses the donor and destination Engine bindings for their respective author closures', async () => {
+  const { source, target } = await fixture();
+  const name = '@forgeax/engine';
+  for (const [root, speed] of [
+    [source, 7],
+    [target, 9],
+  ] as const) {
+    const engine = resolve(root, '../', `engine-${speed}`);
+    const enginePackage = resolve(engine, 'packages/engine');
+    await mkdir(enginePackage, { recursive: true });
+    await writeFile(
+      resolve(enginePackage, 'package.json'),
+      JSON.stringify({
+        name,
+        version: '0.0.0',
+        type: 'module',
+        exports: { './transfer-helper': './helper.mjs' },
+      }),
+    );
+    await writeFile(resolve(enginePackage, 'helper.mjs'), `export const speed = ${speed};`);
+    // Either project would detect a duplicate if it evaluated the Pack with the other's Engine.
+    await writeFile(
+      resolve(root, 'assets/guard.pack.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        packageId: `01900000-0000-7000-8000-00000000000${speed === 7 ? 9 : 7}`,
+        assets: {},
+      }),
+    );
+    await mkdir(resolve(root, '.forgeax'));
+    await writeFile(
+      resolve(root, '.forgeax/engine-binding.json'),
+      JSON.stringify({
+        schemaVersion: '1.0.0',
+        path: engine,
+      }),
+    );
+    await writeFile(
+      resolve(root, 'package.json'),
+      JSON.stringify({
+        name: 'scriptable-transfer',
+        dependencies: { [name]: '0.0.0' },
+      }),
+    );
+    await writeFile(
+      resolve(root, 'pnpm-lock.yaml'),
+      stringify({
+        lockfileVersion: '9.0',
+        importers: { '.': { dependencies: { [name]: { specifier: '0.0.0', version: '0.0.0' } } } },
+        packages: { [`${name}@0.0.0`]: { resolution: { integrity: 'sha512-fixture' } } },
+        snapshots: { [`${name}@0.0.0`]: {} },
+      }),
+    );
+  }
+  await writeFile(
+    resolve(source, 'assets/behavior.pack.ts'),
+    `
+import { speed } from '@forgeax/engine/transfer-helper';
+export default { schemaVersion: '2.0.0', plugins: true,
+  packageId: new Uint8Array([1,144,0,0,0,0,112,0,128,0,0,0,0,0,0,speed]),
+  build: () => ({ ok: true, value: { 'plugin/root': {
+    kind: 'plugin', module: { specifier: './child.ts' }, config: { speed },
+  } } }) }; `,
+  );
+  const result = await assetSourceImportCommand({
+    root: target,
+    sourceRoot: source,
+    sourcePath: 'assets/behavior.pack.ts',
+    targetPath: 'assets/behavior',
+  });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+  expect(
+    await readFile(resolve(target, 'assets/behavior/assets/behavior.pack.ts'), 'utf8'),
+  ).toContain('@forgeax/engine/transfer-helper');
 });
 
 it('clones project shader identities with their material references before publication', async () => {

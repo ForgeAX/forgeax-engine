@@ -25,6 +25,7 @@ import { prepareAssetPayload } from './prepare-payload';
 export function prepareRuntimeAsset(
   input: Asset,
   source: (guid: string) => Asset | undefined,
+  meshStorage?: 'render-transfer',
 ): Result<Asset, AssetError | MaterialError> {
   const prepared = prepareAssetPayload(input);
   if (prepared.ok && prepared.value.kind === 'mesh') {
@@ -37,7 +38,11 @@ export function prepareRuntimeAsset(
           hint: 'supply complete finite mesh channels and matching interleaved vertices',
         }),
       );
-    return ok(interleavedMesh(prepared.value));
+    return ok(
+      meshStorage === 'render-transfer' && prepared.value.attributeStorage === 'static-streams'
+        ? prepared.value
+        : interleavedMesh(prepared.value),
+    );
   }
   if (prepared.ok && prepared.value.kind === 'texture-generator')
     return validateTextureGenerator(prepared.value);

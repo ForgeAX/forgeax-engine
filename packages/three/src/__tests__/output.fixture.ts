@@ -89,10 +89,17 @@ export async function verifyOutput(
     previous = pixels;
     await verifyReplay(frame);
   }
-  // Native Camera requires positive exposure. Keep this owner boundary explicit;
-  // accepting zero would otherwise submit an invalid native Camera.
   renderer.toneMappingExposure = 0;
-  expect(() => renderer.render(scene, camera)).toThrow('Zero exposure requires native Camera');
+  await readyFrames(renderer, scene, camera);
+  const zeroExposure = displayPixels(await renderer.captureFrame(scene, camera));
+  expect(pixelAt(zeroExposure, -1, 0.3)).toEqual([0, 0, 0, 255]);
+  if (oracle !== undefined)
+    comparePixels(zeroExposure, await oracle(scene, camera, renderer.toneMapping, 0));
+  renderer.toneMapping = THREE.NoToneMapping;
+  await readyFrames(renderer, scene, camera);
+  const untoneMapped = displayPixels(await renderer.captureFrame(scene, camera));
+  expect(equalBytes(untoneMapped, baseline)).toBe(true);
+  renderer.toneMapping = THREE.ReinhardToneMapping;
   renderer.toneMappingExposure = 1;
   // r187 WebGPU applies output conversion to the completed frame; toneMapped is ignored.
   const before = displayPixels(await renderer.captureFrame(scene, camera));

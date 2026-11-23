@@ -17,3 +17,9 @@ export function coreDeferredCoverageFiles(environment = process.env) {
     (file) => !/\.(?:browser|dawn)\.test\.ts$/.test(file),
   );
 }
+
+// Whole authored demonstrations remain useful to their Modeling developer.
+export const localModelingShowcases = Object.freeze([
+  'packages/modeling/examples/maid-whale/__tests__/g7-charts.integration.test.ts',
+  'packages/modeling/examples/limb-choreography/__tests__/choreo.unit.test.ts',
+]);

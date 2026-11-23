@@ -5,11 +5,11 @@ import {
   standardTransmissionAdmission,
 } from '../../assembly/device-feature-admission';
 import type { DispatchEntry } from '../../render-system-extract';
+import { selectSubmittedMaterialProgram } from '../gpu-draw-receipts';
 import {
   authoredTransparentDepthWrite,
   geometryRenderStateForPass,
   sameOpaqueTemporalDraw,
-  selectSubmittedMaterialProgram,
   variantSetForCoveragePass,
 } from '../main-pass-geometry';
 import { geometryRenderStateForTopology } from '../main-pass-material';
@@ -233,11 +233,16 @@ describe('Standard transmission sampled-texture admission', () => {
         {
           materialShaderId: 'forgeax::default-standard-pbr',
           paramSnapshot: { transmission: 1 },
-          standardTextureMask: mask('metallicTexture', 'alphaTexture', 'transmissionTexture'),
+          standardTextureMask: mask(
+            'metallicTexture',
+            'roughnessTexture',
+            'alphaTexture',
+            'transmissionTexture',
+          ),
         },
         16,
       ),
-    ).toEqual({ kind: 'exceeded', conflicts: ['metallicTexture', 'alphaTexture'] });
+    ).toEqual({ kind: 'exceeded', conflicts: ['metallicTexture', 'roughnessTexture'] });
   });
 });
 

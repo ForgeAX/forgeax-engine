@@ -6,6 +6,7 @@ import {
   type CatalogDelta,
   type CatalogEntry,
   type CatalogRevisionPoint,
+  catalogDeltaDigest,
   type ImportTransport,
   type ResourceRevision,
   type RuntimeAssetBinding,
@@ -74,29 +75,8 @@ export function createCatalogSource(options: {
     ...(options.fetch === undefined ? {} : { openPackage: () => options.fetch }),
     async enumerate() {
       if (entries !== undefined) {
-        if (options.expectedRevision === undefined) return ok(entries);
-        const actualRevisions = entries.flatMap((entry) =>
-          entry.revision === undefined ? [] : [entry.revision],
-        );
-        const matches =
-          actualRevisions.length > 0 &&
-          actualRevisions.every(
-            (revision) =>
-              revision.digest === options.expectedRevision?.digest &&
-              revision.observedAt === options.expectedRevision?.observedAt &&
-              revision.rootId === options.expectedRevision?.rootId,
-          );
-        if (!matches) {
-          return err(
-            new AssetError({
-              code: 'asset-parse-failed',
-              expected: 'static catalog entries to carry the expected producer revision',
-              hint: 'restore a verified catalog revision before applying the source',
-              detail: { expectedRevision: options.expectedRevision, actualRevisions } as never,
-            }),
-          );
-        }
-        return ok(entries);
+        const error = checkExpectedRevision(entries, options.expectedRevision, true);
+        return error ? err(error) : ok(entries);
       }
       if (options.url === undefined) {
         return err(
@@ -121,12 +101,7 @@ export function createCatalogSource(options: {
         );
         if (!result.ok) return result;
         expectedScope ??= result.value.scope;
-        return ok(
-          [...result.value.entries].map(([guid, entry]) => ({
-            guid,
-            ...entry,
-          })) as readonly CatalogEntry[],
-        );
+        return ok(result.value.entries as readonly CatalogEntry[]);
       });
       pending = read;
       const release = () => {
@@ -204,12 +179,20 @@ export interface CatalogHotChannel {
 /** Fold `forgeax:catalog-delta` into an open catalog source. Invalid deltas leave the replica unchanged. */
 export function createCatalogHotSubscription(
   hot: CatalogHotChannel | undefined,
+  onInvalid?: () => void,
 ): (listener: CatalogListener) => () => void {
   return (listener) => {
     if (hot === undefined) return () => {};
+    let lastDigest: string | undefined;
     const onDelta = (data: unknown): void => {
       const validation = validateCatalogDelta(data);
-      if (!validation.ok) return;
+      if (!validation.ok) {
+        onInvalid?.();
+        return;
+      }
+      const digest = catalogDeltaDigest(validation.value);
+      if (digest === lastDigest) return;
+      lastDigest = digest;
       listener(validation.value);
     };
     hot.on('forgeax:catalog-delta', onDelta);

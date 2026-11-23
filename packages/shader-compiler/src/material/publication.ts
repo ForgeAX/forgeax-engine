@@ -1,7 +1,6 @@
 import {
   type CookedMaterialRecord,
   collectMaterialCookRefs,
-  createMaterialArtifactDigest,
   createMaterialCookIdentity,
   createMaterialProgramSetDigest,
   type MaterialCookProgram,
@@ -10,8 +9,8 @@ import {
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
 import type { RaySurfaceProgram } from '@forgeax/engine-shader';
-import { type MaterialAsset, projectMaterialParameterSchema } from '@forgeax/engine-types';
-import type { MaterialCookedPass } from './cook.js';
+import { type MaterialAsset, projectMaterialParameterSchema, sha256 } from '@forgeax/engine-types';
+import { type MaterialCookedPass, selectionAbi } from './cook.js';
 import { lowerMaterialProgramVariantContext } from './variant-context.js';
 
 const MATERIAL_COOK_PROFILE = 'webgpu/v1';
@@ -32,12 +31,8 @@ function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
 }
 
-export function selectionAbi(
-  abi: MaterialCookedPass['abi'],
-  compile: MaterialCookedPass['compile'],
-): MaterialCookedPass['abi'] {
-  const entryPoints = compile.reflection.entryPoints;
-  return { ...abi, ...(entryPoints === undefined ? {} : { entryPoints }) };
+function publicationDigest(value: string | Uint8Array): string {
+  return `sha256:${sha256(value)}`;
 }
 
 export function materialPrograms(
@@ -47,6 +42,7 @@ export function materialPrograms(
 ): readonly MaterialCookProgram[] {
   const programs = new Map<string, MaterialCookProgram>();
   const artifactDigests = new Map<string, string>();
+  const encoder = new TextEncoder();
   for (const pass of passes) {
     // Runtime compares the complete projected schema for each immutable key.
     // Defaults belong to the material root, while color-space policy remains
@@ -69,38 +65,35 @@ export function materialPrograms(
       if (entry === undefined)
         throw new TypeError('compiled scene-index program requires its reflected entry');
       const wgsl = variant.compile.wgsl;
-      const bytes = new TextEncoder().encode(wgsl);
       // Several selectors can publish the same WGSL. Hash its content once
       // within this publication while retaining independently owned bytes.
       let digest = artifactDigests.get(wgsl);
       if (digest === undefined) {
-        digest = createMaterialArtifactDigest(bytes);
+        digest = publicationDigest(wgsl);
         artifactDigests.set(wgsl, digest);
       }
       // Entry/ABI facts belong to each selection. Shared module bytes remain
       // one program even when color and shadow select different entries.
-      const specializationKey = createMaterialArtifactDigest(
-        new TextEncoder().encode(
-          JSON.stringify({
-            module: pass.module,
-            sourceClosure: pass.sourceClosureDigest,
-            layout: pass.layoutIdentity,
-            parameters: parameterSchema,
-            surface: pass.abi.surface,
-            bindings: pass.abi.bindings ?? 'render-material',
-            systemInputs: pass.abi.systemInputs,
-            forwardFog: pass.abi.forwardFog,
-            gbuffer: pass.abi.gbuffer,
-            sceneDepth: pass.abi.sceneDepth,
-            defines: lowerMaterialProgramVariantContext(pass.context, pass.abi.bindings),
-            artifact: digest,
-            profile: pass.context.profile,
-            toolchain: pass.context.toolchain,
-            compiler:
-              input.compilerFingerprint ?? input.compilerVersion ?? MATERIAL_COOK_COMPILER_VERSION,
-            wasm: input.wasm,
-          }),
-        ),
+      const specializationKey = publicationDigest(
+        JSON.stringify({
+          module: pass.module,
+          sourceClosure: pass.sourceClosureDigest,
+          layout: pass.layoutIdentity,
+          parameters: parameterSchema,
+          surface: pass.abi.surface,
+          bindings: pass.abi.bindings ?? 'render-material',
+          systemInputs: pass.abi.systemInputs,
+          forwardFog: pass.abi.forwardFog,
+          gbuffer: pass.abi.gbuffer,
+          sceneDepth: pass.abi.sceneDepth,
+          defines: lowerMaterialProgramVariantContext(pass.context, pass.abi.bindings),
+          artifact: digest,
+          profile: pass.context.profile,
+          toolchain: pass.context.toolchain,
+          compiler:
+            input.compilerFingerprint ?? input.compilerVersion ?? MATERIAL_COOK_COMPILER_VERSION,
+          wasm: input.wasm,
+        }),
       );
       const existing = programs.get(specializationKey);
       if (existing === undefined && pass.vertexColorAvailable !== undefined)
@@ -120,7 +113,7 @@ export function materialPrograms(
           mediaType: 'text/wgsl',
           path: `materials/programs/${digest.slice(7)}.wgsl`,
           digest,
-          bytes,
+          bytes: encoder.encode(wgsl),
         },
         selections: [...(existing?.selections ?? []), ...selections],
       });
@@ -138,7 +131,7 @@ export function rayMaterialProgram(
   if (program.context === 'raster-probe')
     throw new Error('raster-probe is a diagnostic context, not a material publication');
   const bytes = new TextEncoder().encode(program.wgsl);
-  const digest = createMaterialArtifactDigest(bytes);
+  const digest = publicationDigest(bytes);
   const context = {
     backend: 'webgpu',
     capability: 'storage-buffer',
@@ -149,18 +142,16 @@ export function rayMaterialProgram(
     toolchain: 'naga-oil',
     instrumentation: 'none',
   } as const;
-  const specializationKey = createMaterialArtifactDigest(
-    new TextEncoder().encode(
-      JSON.stringify({
-        context,
-        sourceClosure: program.sourceClosureDigest,
-        layout: program.paramSchema,
-        artifact: digest,
-        compiler:
-          input.compilerFingerprint ?? input.compilerVersion ?? MATERIAL_COOK_COMPILER_VERSION,
-        wasm: input.wasm,
-      }),
-    ),
+  const specializationKey = publicationDigest(
+    JSON.stringify({
+      context,
+      sourceClosure: program.sourceClosureDigest,
+      layout: program.paramSchema,
+      artifact: digest,
+      compiler:
+        input.compilerFingerprint ?? input.compilerVersion ?? MATERIAL_COOK_COMPILER_VERSION,
+      wasm: input.wasm,
+    }),
   );
   return {
     specializationKey,
@@ -187,28 +178,22 @@ export function cookedRecord(
 ): CookedMaterialRecord {
   const artifactDigest = createMaterialProgramSetDigest(programs, resolved.passes ?? []);
   const materialSpecializationKey = artifactDigest;
-  const materialContractDigest = createMaterialArtifactDigest(
-    new TextEncoder().encode(
-      JSON.stringify({
-        parameters: resolved.parameters ?? [],
-        layerPlanIdentity,
-        surface: resolved.surface ?? null,
-        staticSwitches: resolved.staticSwitches ?? null,
-      }),
-    ),
+  const materialContractDigest = publicationDigest(
+    JSON.stringify({
+      parameters: resolved.parameters ?? [],
+      layerPlanIdentity,
+      surface: resolved.surface ?? null,
+      staticSwitches: resolved.staticSwitches ?? null,
+    }),
   );
-  const programIdentity = createMaterialArtifactDigest(
-    new TextEncoder().encode(
-      JSON.stringify(programs.map((program) => program.specializationKey).sort()),
-    ),
+  const programIdentity = publicationDigest(
+    JSON.stringify(programs.map((program) => program.specializationKey).sort()),
   );
-  const pipelineIdentity = createMaterialArtifactDigest(
-    new TextEncoder().encode(
-      JSON.stringify({
-        programIdentity,
-        passes: resolved.passes ?? [],
-      }),
-    ),
+  const pipelineIdentity = publicationDigest(
+    JSON.stringify({
+      programIdentity,
+      passes: resolved.passes ?? [],
+    }),
   );
   const identity = createMaterialCookIdentity({
     materialContractDigest,
@@ -217,8 +202,8 @@ export function cookedRecord(
     layoutIdentity,
     programIdentity,
     pipelineIdentity,
-    materialPublicationIdentity: createMaterialArtifactDigest(
-      new TextEncoder().encode(JSON.stringify({ guid: input.guid, values: resolved.values ?? {} })),
+    materialPublicationIdentity: publicationDigest(
+      JSON.stringify({ guid: input.guid, values: resolved.values ?? {} }),
     ),
     compilerFingerprint: input.compilerFingerprint ?? 'unavailable',
     wasm: input.wasm ?? {

@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { buildScriptablePack } from '../scriptable-pack-build.js';
-import { createStandardAssetOutputProducerRegistry } from '../standard-output-producers.js';
+import {
+  buildScriptablePack,
+  createStandardAssetOutputProducerRegistry,
+} from '../scriptable-pack-build.js';
 
 it('retains one copy of equal native programs before Pack product persistence', async () => {
   const packageId = definePackageId('01900000-0000-7000-8000-0000000000d7');

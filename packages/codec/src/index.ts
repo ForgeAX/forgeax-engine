@@ -67,5 +67,6 @@ export {
   decodeDocumentText,
   decompressRetainedZstd,
   decompressZstd,
+  prepareRetainedZstdDecoder,
   retainedZstdBytes,
 } from './zstd.js';

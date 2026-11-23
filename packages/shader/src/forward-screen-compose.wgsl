@@ -28,7 +28,7 @@ fn bilinear(source: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
     var contact = 1.0;
     if (params.enabled.x != 0u) { ao = bilinear(ambientOcclusion, uv).r; }
     if (params.enabled.y != 0u) { contact = textureLoad(contactVisibility, vec2<i32>(pixel), 0).r; }
-    return vec4<f32>(ao, contact, 0.0, 0.0);
+    return vec4<f32>(0.0, contact, 0.0, ao);
   }
   if (params.enabled.z == 0u) { return vec4<f32>(0.0); }
   if (layer == 1u) { return textureLoad(decalColor, vec2<i32>(pixel), 0); }

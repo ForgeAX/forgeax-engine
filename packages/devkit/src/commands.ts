@@ -1,16 +1,19 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
+import { readFile, rm } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { startVitest } from 'vitest/node';
-import { createZip } from './archive.js';
+import {
+  createZip,
+  GAME_PACKAGE_DOCUMENT_PATHS,
+  publishChecksummedFile,
+  readGamePackageDocuments,
+} from './archive.js';
 import type { PluginSourceInventory } from './build/plugin-assets.js';
 import { prepareDist, retainPlayerDist } from './delivery-dist.js';
-import { readDeliverySource } from './delivery-identity.js';
-import { verifyDist } from './dist.js';
+import { readDeliverySource, verifyDeliverySource } from './delivery-identity.js';
+import { DIST_MANIFEST_FILE, verifyDist } from './dist.js';
 import { engineStatusCommand } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { buildProject, startDevProjectWithHost, startPreviewProjectWithHost } from './host.js';
-import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from './package-documents.js';
 import { commandError, readProjectFacts } from './project.js';
 import {
   bundleSingleHtmlEntry,
@@ -19,6 +22,7 @@ import {
   writeSingleHtml,
 } from './single-html.js';
 import { installedProjectSkillDirectories } from './skill-install.js';
+import { completeCommand, failCommand } from './types.js';
 
 export { assetGuidCommand } from './asset-guid.js';
 export {
@@ -44,29 +48,6 @@ export {
 } from './plugin-authoring.js';
 export { projectLintCommand } from './project/lint.js';
 export { createCliRhiDebugOperationContext } from './rhi-debug/cli-context.js';
-export type {
-  ArtifactRef,
-  CapturedRhiTape,
-  ReplayBackendLease,
-  RhiCaptureFrameValue,
-  RhiDebugOperationContext,
-  RhiDebugOperationDescriptor,
-  RhiDebugOperationInput,
-  RhiDebugOperationName,
-  RhiDebugOperationOutput,
-  RhiInspectInput,
-  RhiInspectOutput,
-  RhiSummaryInput,
-  RhiSummaryOutput,
-} from './rhi-debug/operations.js';
-export {
-  createRhiDebugOperationContext,
-  discoverRhiDebugOperations,
-  RHI_DEBUG_OPERATION_MANIFEST,
-  recoverRhiDebugError,
-  renderRhiDebugHelp,
-  runRhiDebugOperation,
-} from './rhi-debug/operations.js';
 export { sdkInstallCommand } from './sdk-install.js';
 export { shaderCheckCommand } from './shader-check.js';
 export { skillInstallCommand, skillVerifyCommand } from './skill-install.js';
@@ -76,7 +57,6 @@ import type {
   CommandResult,
   PackageFormat,
   PackageOptions,
-  PreviewOptions,
   ProjectCommandOptions,
   ProjectFacts,
 } from './types.js';
@@ -122,33 +102,49 @@ function packageOutput(
   }
   const distRoot = resolve(facts.root, 'dist');
   if (isFilesystemPathWithin(distRoot, output)) {
-    return {
-      ok: false,
-      error: {
-        code: 'release-output-inside-dist',
-        expected: 'the release artifact to live outside the derived dist directory',
-        hint: 'Use --output release/<game>-web.zip or release/<game>-offline.html.',
-        detail: { output, distRoot, format },
-      },
-    };
+    return failCommand(
+      'release-output-inside-dist',
+      'the release artifact to live outside the derived dist directory',
+      'Use --output release/<game>-web.zip or release/<game>-offline.html.',
+      { output, distRoot, format },
+    );
   }
   return { ok: true, value: { format, output, distRoot } };
 }
 
 function invalidPackageOptions(options: PackageOptions): CommandResult<never> | undefined {
+  const nativeOptions = [
+    options.arch,
+    options.publisher,
+    options.version,
+    options.channel,
+    options.nodeDist,
+    options.vcRuntime,
+    options.signThumbprint,
+    options.signStore,
+    options.timestampUrl,
+    options.bundleId,
+    options.signIdentity,
+    options.notaryKeychainProfile,
+  ];
+  if (options.format !== 'native' && nativeOptions.some((value) => value !== undefined)) {
+    return failCommand(
+      'package-options-invalid',
+      'native installer options only with the native format',
+      'Use --format native with --platform windows or macos.',
+      {},
+    );
+  }
   if (
-    options.format !== 'tauri' &&
-    (options.platform !== undefined || options.prepareOnly !== undefined)
+    (options.format !== 'tauri' && options.prepareOnly !== undefined) ||
+    (options.format !== 'tauri' && options.format !== 'native' && options.platform !== undefined)
   ) {
-    return {
-      ok: false,
-      error: {
-        code: 'package-options-invalid',
-        expected: 'platform and prepareOnly only with the tauri format',
-        hint: 'Use --format tauri --platform windows|macos|linux|android|ios.',
-        detail: {},
-      },
-    };
+    return failCommand(
+      'package-options-invalid',
+      'platform and prepareOnly only with the tauri format',
+      'Use --format tauri --platform windows|macos|linux|android|ios.',
+      {},
+    );
   }
   return undefined;
 }
@@ -160,6 +156,10 @@ export async function packageCommand(
   if (invalid !== undefined) return invalid;
   const facts = await readProjectFacts(options.root);
   if (!facts.ok) return facts;
+  if (options.format === 'native') {
+    const { packageNativeProject } = await import('./native-package.js');
+    return packageNativeProject(facts.value, options);
+  }
   if (options.format === 'tauri') {
     const { packageTauriProject } = await import('./tauri-package.js');
     return packageTauriProject(facts.value, options);
@@ -184,10 +184,6 @@ export async function packageCommand(
   if (!built.ok) return built;
   const verified = await verifyDist(distRoot);
   if (!verified.ok) return verified;
-  const archive = output;
-  const temporaryArchive = `${archive}.partial-${process.pid}`;
-  const checksumPath = `${archive}.sha256`;
-  const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let playerRoot: string | undefined;
   try {
     const player = await prepareDist(distRoot, verified.value, {
@@ -210,79 +206,57 @@ export async function packageCommand(
     }
     const paths = [
       ...player.manifest.artifacts.map((artifact) => artifact.path),
-      'forgeax-dist.json',
+      DIST_MANIFEST_FILE,
     ];
     const entries = await Promise.all(
       paths.map(async (path) => ({ path, bytes: await readFile(resolve(player.root, path)) })),
     );
     const bytes = createZip([...entries, ...packageDocuments.value]);
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
-    const finalSource = await readDeliverySource(facts.value.root);
-    if (JSON.stringify(source) !== JSON.stringify(finalSource)) {
-      return {
-        ok: false,
-        error: {
-          code: 'package-source-changed',
-          expected: 'the source identity to remain fixed during packaging',
-          hint: 'Finish source edits and rerun packaging from one stable source tree.',
-          detail: { before: source, after: finalSource },
-        },
-      };
-    }
+    const unchanged = await verifyDeliverySource(facts.value.root, source);
+    if (!unchanged.ok) return unchanged;
     const retained = await retainPlayerDist(player.root, facts.value.root);
     if (!retained.ok) return retained;
     const { root: servedDirectory, manifestSha256: distManifestSha256 } = retained.value;
-    await mkdir(dirname(archive), { recursive: true });
-    await writeFile(temporaryArchive, bytes);
-    await writeFile(temporaryChecksum, `${sha256}  ${basename(archive)}\n`);
-    await rename(temporaryChecksum, checksumPath);
-    await rename(temporaryArchive, archive);
-    return {
-      ok: true,
-      value: {
-        schemaVersion: '1.0.0',
-        format: 'forgeax-web-game',
-        target: 'web',
-        project: verified.value.project,
-        base: verified.value.base,
-        engine: {
-          mode: engine.value.mode,
-          version: engine.value.resolved.version,
-          runtimeDigest: engine.value.workspace?.digest ?? null,
-          delivery: 'bundled-runtime',
-          wasm: verified.value.artifacts.some((artifact) => artifact.path.endsWith('.wasm')),
-        },
-        archive: { path: archive, bytes: bytes.byteLength, sha256 },
-        files: player.manifest.artifacts.length,
-        bundles: player.bundles,
-        documents: [...GAME_PACKAGE_DOCUMENT_PATHS],
-        checksumPath,
-        distManifestSha256,
-        source,
-        delivery: { type: 'player', servedDirectory, diagnosticDirectory: distRoot },
-        run: {
-          local: `forgeax project preview --root ${shellArgument(facts.value.root)} --dist ${shellArgument(servedDirectory)}`,
-          localArgv: [
-            'forgeax',
-            'project',
-            'preview',
-            '--root',
-            facts.value.root,
-            '--dist',
-            servedDirectory,
-          ],
-          shared: 'upload the ZIP to an HTTPS static or HTML-game host and share its URL',
-        },
+    const { checksumPath, ...archive } = await publishChecksummedFile(output, bytes);
+    return completeCommand({
+      schemaVersion: '1.0.0',
+      format: 'forgeax-web-game',
+      target: 'web',
+      project: verified.value.project,
+      base: verified.value.base,
+      engine: {
+        mode: engine.value.mode,
+        version: engine.value.resolved.version,
+        runtimeDigest: engine.value.workspace?.digest ?? null,
+        delivery: 'bundled-runtime',
+        wasm: verified.value.artifacts.some((artifact) => artifact.path.endsWith('.wasm')),
       },
-    };
+      archive,
+      files: player.manifest.artifacts.length,
+      bundles: player.bundles,
+      documents: [...GAME_PACKAGE_DOCUMENT_PATHS],
+      checksumPath,
+      distManifestSha256,
+      source,
+      delivery: { type: 'player', servedDirectory, diagnosticDirectory: distRoot },
+      run: {
+        local: `forgeax project preview --root ${shellArgument(facts.value.root)} --dist ${shellArgument(servedDirectory)}`,
+        localArgv: [
+          'forgeax',
+          'project',
+          'preview',
+          '--root',
+          facts.value.root,
+          '--dist',
+          servedDirectory,
+        ],
+        shared: 'upload the ZIP to an HTTPS static or HTML-game host and share its URL',
+      },
+    });
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'game-package-failed') };
   } finally {
-    await Promise.all([
-      rm(temporaryArchive, { force: true }),
-      rm(temporaryChecksum, { force: true }),
-      ...(playerRoot === undefined ? [] : [rm(playerRoot, { recursive: true, force: true })]),
-    ]);
+    if (playerRoot !== undefined) await rm(playerRoot, { recursive: true, force: true });
   }
 }
 
@@ -292,11 +266,7 @@ export async function devCommand(
   return startDevProjectWithHost(options);
 }
 
-export async function previewCommand(
-  options: PreviewOptions = {},
-): Promise<CommandResult<unknown>> {
-  return startPreviewProjectWithHost(options);
-}
+export { startPreviewProjectWithHost as previewCommand };
 
 export async function testCommand(
   options: ProjectCommandOptions = {},
@@ -324,28 +294,22 @@ export async function testCommand(
       { stdout: process.stderr, stderr: process.stderr },
     );
     if (context === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: 'test-runner-unavailable',
-          expected: 'Vitest to create a project test context',
-          hint: 'Inspect the project test configuration.',
-          detail: { root: facts.value.root },
-        },
-      };
+      return failCommand(
+        'test-runner-unavailable',
+        'Vitest to create a project test context',
+        'Inspect the project test configuration.',
+        { root: facts.value.root },
+      );
     }
     const failed = context.state.getFiles().filter((file) => file.result?.state === 'fail');
     await context.close();
     if (failed.length > 0) {
-      return {
-        ok: false,
-        error: {
-          code: 'project-tests-failed',
-          expected: 'all project tests to pass',
-          hint: 'Repair the failing game test before building a release.',
-          detail: { files: failed.map((file) => file.filepath) },
-        },
-      };
+      return failCommand(
+        'project-tests-failed',
+        'all project tests to pass',
+        'Repair the failing game test before building a release.',
+        { files: failed.map((file) => file.filepath) },
+      );
     }
     return { ok: true, value: { root: facts.value.root } };
   } catch (cause) {

@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { type TransferListItem, Worker } from 'node:worker_threads';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
@@ -10,13 +9,17 @@ import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { createTaskPool } from '@forgeax/engine-platform';
 import { expect, it } from 'vitest';
+import { createDesktopRuntimePackTasks } from '../desktop-platform.js';
 import { createNodePackProgramHost } from '../pack-program-host.js';
 import { createNodePackProgramImports } from '../pack-program-imports.js';
 
 it.each([
   'instance',
   'authored',
-] as const)('loads a native multi-module %s Pack Mesh produced by a Node Task Worker', async (mode) => {
+  'authored-inline',
+  'authored-inline-pool',
+  'authored-worker-required',
+] as const)('routes a native multi-module %s Pack to its selected realm', async (mode) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-node-task-pack-'));
   const workerModule = new URL(
     `data:text/javascript,${encodeURIComponent(`
@@ -26,23 +29,11 @@ it.each([
       serveTaskWorker(parentPort, runtimePackTaskKinds);
     `)}`,
   );
-  const terminations: Promise<number>[] = [];
-  const tasks = createTaskPool({
-    kinds: runtimePackTaskKinds,
-    workers: 1,
-    workerFactory(listener) {
-      const worker = new Worker(workerModule);
-      worker.on('message', listener.message);
-      worker.on('error', listener.error);
-      return {
-        postMessage: (message, transfer) =>
-          worker.postMessage(message, transfer as TransferListItem[] | undefined),
-        terminate: () => {
-          terminations.push(worker.terminate());
-        },
-      };
-    },
-  });
+  const useWorker = mode === 'instance' || mode === 'authored';
+  const inlinePool = mode === 'authored-inline-pool';
+  const tasks = inlinePool
+    ? createTaskPool({ kinds: runtimePackTaskKinds })
+    : createDesktopRuntimePackTasks(workerModule.href);
   const assets = new AssetRegistry();
   const context = await createWorldContext(new World({ assets }), []);
   const assembly = createAssetRuntimeAssembly(assets, {
@@ -63,8 +54,8 @@ it.each([
           import { isMainThread } from 'node:worker_threads';
           import { ok } from '@forgeax/engine/types';
           import { box } from './shape.js';
-          if (isMainThread || !import.meta.url.startsWith('file:'))
-            throw new Error('Expected the native module to load only in the Task Worker');
+          if (isMainThread !== ${!useWorker} || !import.meta.url.startsWith('file:'))
+            throw new Error('Expected the native module to load in its selected realm');
           export function build({ values }) { return ok({ box: box(values?.width ?? 4) }); }
         `,
         'shape.js': `
@@ -84,13 +75,20 @@ it.each([
       packageId: generatorId,
     } as const;
     const authored =
-      mode === 'authored'
+      mode !== 'instance'
         ? [
             {
               source: {
                 ...source,
                 packageId: instanceId,
-                runtime: { export: 'build', outputs: { box: 'mesh' }, dependencies: [] },
+                runtime: {
+                  export: 'build',
+                  outputs: { box: 'mesh' },
+                  dependencies: [],
+                  ...(mode === 'authored-worker-required'
+                    ? { execution: 'task-worker' as const }
+                    : {}),
+                },
               } as const,
               program: artifact,
             },
@@ -99,7 +97,7 @@ it.each([
     const runtime = assembleRuntimePacks(context, assembly, {
       scopeId: 'node-task-pack',
       authored,
-      tasks,
+      ...(useWorker || inlinePool ? { tasks } : {}),
       imports,
       programHost: createNodePackProgramHost(root),
     });
@@ -126,6 +124,17 @@ it.each([
       expect(generated.rows).toHaveLength(1);
     }
     const guid = AssetGuid.format(AssetGuid.derive(definePackageId(instanceId), 'box'));
+    if (mode === 'authored-worker-required') {
+      expect(await assets.load(guid, 'mesh')).toMatchObject({
+        ok: false,
+        error: {
+          code: 'asset-package-invalid',
+          detail: { reason: expect.stringContaining('runtime-pack-execution-failed') },
+        },
+      });
+      expect(runtime.producer.rows()).toEqual([]);
+      return;
+    }
     const handle = (await assets.load(guid, 'mesh')).unwrap();
     const mesh = assets.read(handle).unwrap();
     expect(mesh.vertices).toBeInstanceOf(Float32Array);
@@ -133,7 +142,6 @@ it.each([
     assets.release(handle).unwrap();
   } finally {
     tasks.dispose();
-    await Promise.all(terminations);
     assets.clearCatalogSource();
     await context.fiber.dispose();
     assembly.dispose();

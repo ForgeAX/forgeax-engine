@@ -43,6 +43,8 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_material::surface_v1': read('surface_v1.wgsl'),
     'forgeax_material::surface_sampling': read('surface-sampling.wgsl'),
     'forgeax_material::default_standard_surface': read('default_standard_surface.wgsl'),
+    'forgeax_material::standard_physical_inputs': read('material/standard-physical-inputs.wgsl'),
+    'forgeax_material::standard_surface_maps': read('material/standard-surface-maps.wgsl'),
     'forgeax_material::slot::surface': read('default_standard_surface.wgsl').replace(
       /^\s*#define_import_path\s+[^\n]+/m,
       '#define_import_path forgeax_material::slot::surface',
@@ -75,6 +77,7 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_pbr::lighting_directional': read('lighting-directional.wgsl'),
     'forgeax_pbr::lighting_punctual': read('lighting-punctual.wgsl'),
     'forgeax_pbr::lighting_probe': read('lighting-probe.wgsl'),
+    'forgeax_pbr::sky_sh_polynomial': read('sky-sh-polynomial.wgsl'),
     'forgeax_pbr::standard_lighting': read('standard-lighting.wgsl'),
     'forgeax_pbr::gbuffer': read('standard-gbuffer.wgsl'),
     'forgeax_pbr::gbuffer_output': read('standard-gbuffer-output.wgsl'),
@@ -248,7 +251,10 @@ describe('built-in standard-PBR single-UV + multi-UV pathway regression (F-3 + F
     const source = readFileSync(srcPath, 'utf8');
     // Each entry samples once before its coverage gate and shared lighting.
     expect(source).toMatch(
-      /fn fs_main[^]*?prepareStandardForwardSurface\(capped, facing, false\);[^]*?standardSurfaceRejected\(prepared.surface\)[^]*?standardForwardLitSurface\(capped, facing, false, prepared\);/,
+      /fn fs_main[^]*?prepareStandardForwardSurface\(capped, facing, false, array<vec4<f32>, 3>\(\)\);[^]*?standardSurfaceRejected\(prepared.surface\)[^]*?standardForwardRawLitSurface\(capped, facing, false, prepared\);/,
+    );
+    expect(source).toMatch(
+      /fn standardForwardRawLitSurface[^]*?standardForwardLitSurface\(in, frontFacing, prepared, normal, visibility, readStandardForwardAo\(\)\);/,
     );
     const fragmentStart = source.indexOf('fn prepareStandardForwardSurface(');
     const fragmentEnd = source.indexOf('fn fs_gbuffer');
@@ -262,7 +268,11 @@ describe('built-in standard-PBR single-UV + multi-UV pathway regression (F-3 + F
     // The authored material now carries one UV transform per texture slot;
     // the composed shader resolves each slot through that shared helper.
     expect(fragmentBody).toMatch(/evaluateStandardSurface\s*\(\s*in\s*,\s*frontFacing\s*,\s*geometricNormal\s*\)/);
-    expect(defaultSurface).toMatch(
+    const surfaceMaps = readFileSync(
+      join(import.meta.dirname, '..', '..', 'shader', 'src', 'material/standard-surface-maps.wgsl'),
+      'utf8',
+    );
+    expect(surfaceMaps).toMatch(
       /surfaceSample\s*\(\s*baseColorTexture\s*,[^;]*materialValue\.baseColorTextureCoordinatesTransform/,
     );
     expect(defaultSurface).toMatch(

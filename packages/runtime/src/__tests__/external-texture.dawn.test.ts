@@ -152,11 +152,15 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
-    const draw = async (count: number) => {
+    const draw = async (count: number, expectPresented = true) => {
       for (let i = 0; i < count; i++) {
         world.update(1 / 60).unwrap();
         const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
         renderValue(await receipt.completed);
+        if (receipt.preparationCompleted !== undefined)
+          renderValue(await receipt.preparationCompleted);
+        if (i === count - 1 && expectPresented)
+          expect(receipt.presentation, receipt.presentationPendingReason?.code).toBe('ready');
       }
     };
     await draw(60);
@@ -201,7 +205,7 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
     }
 
     renderValue(handle.release());
-    await draw(2);
+    await draw(2, false);
     expect(errors.map(details)).toEqual([
       { operation: 'bind', reason: 'released', generation: expect.any(Number) },
     ]);

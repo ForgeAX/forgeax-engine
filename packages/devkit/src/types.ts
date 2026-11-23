@@ -1,6 +1,6 @@
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
 import type { GameProjectRoots } from '@forgeax/engine-project';
-import type { ArtifactRef } from '@forgeax/engine-tool-runtime';
+import type { ArtifactRef, JsonValue, ToolRuntimeError } from '@forgeax/engine-tool-runtime';
 import type { BrowserCarrierAdapter, BrowserCarrierRunIdentity } from './tools/display-carrier.js';
 
 /** Physical preview root that a browser host boots. */
@@ -20,6 +20,37 @@ export type CommandResult<T> =
       readonly error: CommandError;
       readonly artifacts?: readonly ArtifactRef[];
     };
+
+/** Keep command errors as plain, serializable protocol results. */
+export function failCommand<Code extends string, Detail extends Readonly<Record<string, unknown>>>(
+  code: Code,
+  expected: string,
+  hint: string,
+  detail?: Detail,
+) {
+  return {
+    ok: false,
+    error: { code, expected, hint, detail: detail === undefined ? {} : detail },
+  } as const;
+}
+
+export function rejectCommand<Failure>(error: Failure) {
+  return { ok: false, error } as const;
+}
+
+export function completeCommand<Value>(value: Value) {
+  return { ok: true, value } as const;
+}
+
+export function toolCommandValue<T>(result: CommandResult<T>) {
+  return result.ok
+    ? result.value
+    : rejectCommand({ ...result.error, detail: result.error.detail as unknown as JsonValue });
+}
+
+export function failToolRun(failure: ToolRuntimeError, artifacts: readonly ArtifactRef[]) {
+  return { outcome: 'failed', failure, artifacts } as const;
+}
 
 /** One forge.json `assetLibraries` entry and the read-only asset directory it mounts. */
 export interface ProjectAssetLibrary {
@@ -84,7 +115,10 @@ export interface BuildOptions extends ProjectCommandOptions {
   readonly htmlHead?: string;
   /** Validation-only storage-capable WebGPU raster programs; omitted publishes portable variants. */
   readonly materialProfile?: 'webgpu-storage';
-  readonly target?: 'browser' | 'wechat' | 'tauri';
+  readonly target?: 'browser' | 'wechat' | 'tauri' | 'native';
+  /** Native addon destination. Defaults to the current build machine. */
+  readonly platform?: 'windows' | 'macos' | 'linux';
+  readonly arch?: 'x64' | 'arm64';
   /** WeChat application identity; omitted opens the developer-tool tourist project. */
   readonly appid?: string;
   readonly base?: string;
@@ -98,15 +132,27 @@ export interface BuildOptions extends ProjectCommandOptions {
 export interface PackageOptions extends ProjectCommandOptions {
   readonly output?: string;
   readonly format?: PackageFormat;
-  /** Tauri destination; defaults to the current desktop OS. */
+  /** Destination platform. Native packages support Windows x64 and macOS arm64. */
   readonly platform?: TauriPlatform;
+  readonly arch?: 'x64' | 'arm64';
+  readonly publisher?: string;
+  readonly version?: string;
+  readonly channel?: string;
+  readonly nodeDist?: string;
+  readonly vcRuntime?: string;
+  readonly signThumbprint?: string;
+  readonly signStore?: 'user' | 'machine';
+  readonly timestampUrl?: string;
+  readonly bundleId?: string;
+  readonly signIdentity?: string;
+  readonly notaryKeychainProfile?: string;
   /** Export the Tauri project without installing or invoking native toolchains. */
   readonly prepareOnly?: boolean;
   /** Store large Web ZIP JSON documents zstd-compressed; `false` keeps plain JSON. Defaults to true. */
   readonly compress?: boolean;
 }
 
-export type PackageFormat = 'web-zip' | 'single-html' | 'tauri';
+export type PackageFormat = 'web-zip' | 'single-html' | 'tauri' | 'native';
 export type TauriPlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios';
 
 export type CaptureBackend = 'auto' | 'software' | 'hardware';
@@ -148,6 +194,7 @@ export interface AssetListOptions extends ProjectCommandOptions {
 }
 
 export interface AssetInspectOptions extends ProjectCommandOptions {
+  readonly catalog?: string;
   readonly parametersOnly?: boolean;
   readonly subject: string;
   /** Select one output when subject is a Pack source path. */

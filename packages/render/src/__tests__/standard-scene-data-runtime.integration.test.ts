@@ -3,6 +3,7 @@ import { type AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import {
   attachRecorder,
   buildFrameModel,
@@ -35,7 +36,6 @@ import { SceneDataUnavailableError } from '../errors/render';
 import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
 import { extractSource } from '../render-system-extract-tail';
-import { SceneSlotFrame } from '../scene/scene-slots';
 import {
   SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
@@ -44,7 +44,7 @@ import {
   sceneDataTargetOwner,
 } from '../temporal/scene-data';
 import type { SceneDataCatalog } from '../temporal/scene-data-catalog';
-import { standardSceneDataContributorForDispatch } from '../temporal/standard-scene-data-admission';
+import * as surfaceAdmission from '../temporal/standard-scene-data-admission';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -72,8 +72,8 @@ struct ClusterUniform {
   texture: vec4<u32>,
   cluster_layout: vec4<u32>,
 }
-@group(2) @binding(3) var cluster_data_texture: texture_2d<u32>;
-@group(2) @binding(6) var<uniform> cluster_uniform: ClusterUniform;
+@group(0) @binding(30) var cluster_data_texture: texture_2d<u32>;
+@group(0) @binding(33) var<uniform> cluster_uniform: ClusterUniform;
 @vertex fn vs_main(input: CandidateVertex) -> @builtin(position) vec4<f32> {
   return vec4<f32>(input.position, 1.0);
 }
@@ -122,10 +122,10 @@ const testCompilerProfile = {
 const reflectedClusterTexture = {
   ...reflectedClusterAbi,
   boundGlobals: reflectedClusterAbi.boundGlobals.map((global) =>
-    global.group === 2 && global.binding === 3
+    global.group === 0 && global.binding === 30
       ? {
-          group: 2,
-          binding: 3,
+          group: 0,
+          binding: 30,
           addressSpace: 'handle',
           resourceKind: 'texture',
           resourceAccess: 'read-only',
@@ -543,8 +543,10 @@ type SceneDataRuntimeFixture = Awaited<ReturnType<typeof createSceneDataRuntime>
 type SceneDataAoTargetName =
   | 'scene-depth'
   | 'gbuffer-normal-roughness'
-  | 'ssao-raw'
-  | 'ssao-blurred';
+  | 'hdrp-depth'
+  | 'ssao-calc'
+  | 'gtao-calc'
+  | 'gtao-resolve';
 
 function sceneDataAoTargetSnapshot(
   host: SceneDataRuntimeFixture['host'],
@@ -575,11 +577,14 @@ function sceneDataAoGraphSnapshot(
   const targets = [
     sceneDataAoTargetSnapshot(
       fixture.host,
-      // Forward SSAO reads a depth-only prepass (normals reconstructed from depth).
-      renderPath === 'deferred' ? 'gbuffer-normal-roughness' : 'scene-depth',
+      renderPath === 'deferred' ? 'hdrp-depth' : 'scene-depth',
     ),
-    sceneDataAoTargetSnapshot(fixture.host, 'ssao-raw'),
-    sceneDataAoTargetSnapshot(fixture.host, 'ssao-blurred'),
+    ...(ao.effectiveMethod === 'gtao'
+      ? [
+          sceneDataAoTargetSnapshot(fixture.host, 'gtao-calc'),
+          sceneDataAoTargetSnapshot(fixture.host, 'gtao-resolve'),
+        ]
+      : [sceneDataAoTargetSnapshot(fixture.host, 'ssao-calc')]),
   ];
   const target = targets[0];
   if (target === undefined) throw new Error('Current AO graph target identity is absent');
@@ -595,7 +600,7 @@ function sceneDataAoGraphSnapshot(
     installedGraphGeneration: target.graphGeneration,
     ambientOcclusionGeneration: ao.graphGeneration,
     deviceGeneration: ao.deviceGeneration,
-    directLightingStrength: ao.numerical.directLightingStrength,
+    intensity: ao.numerical.intensity,
     passNames: [...renderer.output.graphPassNames],
     targets,
   };
@@ -738,6 +743,7 @@ async function captureClusterFrameEvidence(fixture: SceneDataRuntimeFixture) {
       if (bindingHandle === null) continue;
       const sourceHandle = textureViewSources.get(bindingHandle) ?? bindingHandle;
       if (clusterResourceIds.has(sourceHandle)) {
+        expect([binding.groupIndex, binding.binding]).toEqual([0, 30]);
         consumers.add(sourceHandle);
         consumerBindingHandle = bindingHandle;
       }
@@ -879,7 +885,6 @@ function expectStableClusterFrame(
   });
   expect(current.graphTarget.textureIdentity).toBe(previous.graphTarget.textureIdentity);
   expect(current.consumerTextureHandle).toBe(previous.consumerTextureHandle);
-  expect(current.graphTarget.graphGeneration).toBe(previous.graphTarget.graphGeneration);
   expect(current.clusterWork.clusterTransportGeneration).toBe(
     previous.clusterWork.clusterTransportGeneration,
   );
@@ -895,7 +900,7 @@ function expectStableClusterFrame(
   expect(current.writer.bytes).toBe(0);
 }
 
-it('initializes the no-storage Cluster target on the first ready AO layout frame', async () => {
+it('initializes the no-storage Cluster target once across AO toggles', async () => {
   const fixture = await createSceneDataRuntime(undefined, {
     ao: false,
     algorithm: 'gtao',
@@ -932,12 +937,13 @@ it('initializes the no-storage Cluster target on the first ready AO layout frame
     const aoEnabled = await captureClusterFrameEvidence(fixture);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
     });
-    expectFirstClusterUpload(aoEnabled);
-    expect(aoEnabled.clusterWork.clusterTransportGeneration).not.toBe(
-      initialOffStable.clusterWork.clusterTransportGeneration,
+    expect(aoEnabled.graphTarget.graphGeneration).not.toBe(
+      initialOffStable.graphTarget.graphGeneration,
     );
+    expectStableClusterFrame(initialOffStable, aoEnabled);
     const aoEnabledStable = await captureClusterFrameEvidence(fixture);
     expectStableClusterFrame(aoEnabled, aoEnabledStable);
 
@@ -945,10 +951,7 @@ it('initializes the no-storage Cluster target on the first ready AO layout frame
     fixture.update();
     const aoDisabled = await captureClusterFrameEvidence(fixture);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion?.status).toBe('off');
-    expectFirstClusterUpload(aoDisabled);
-    expect(aoDisabled.clusterWork.clusterTransportGeneration).not.toBe(
-      aoEnabledStable.clusterWork.clusterTransportGeneration,
-    );
+    expectStableClusterFrame(aoEnabledStable, aoDisabled);
     const aoDisabledStable = await captureClusterFrameEvidence(fixture);
     expectStableClusterFrame(aoDisabled, aoDisabledStable);
   } finally {
@@ -982,7 +985,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
   const unsubscribe = fixture.renderer.subscribe((event) => {
     if (event.kind !== 'error') return;
     rendererEvents.push(event.error);
-    const target = fixture.host.getCurrentGraphTarget('ssao-raw');
+    const target = fixture.host.getCurrentGraphTarget('ssao-calc');
     candidateSnapshots.push({
       error: event.error,
       inspection: fixture.renderer.inspect(),
@@ -1007,7 +1010,8 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
     expect(accepted.ambientOcclusionGeneration).toBe(accepted.installedGraphGeneration);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
       output: { extent: { width: 64, height: 64 } },
     });
     expect(acceptedTrace).toMatchObject({
@@ -1024,10 +1028,12 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
         (target) => target.graphGeneration === accepted.installedGraphGeneration,
       ),
     ).toBe(true);
-    expect(accepted.passNames).toEqual(expect.arrayContaining(['ssao-calc', 'ssao-blur']));
+    expect(accepted.passNames).toEqual(
+      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
+    );
 
-    const requestedExtent = { width: 48, height: 48 };
-    fixture.world.set(camera, AmbientOcclusion, { resolutionScale: 0.75 }).unwrap();
+    const requestedExtent = { width: 64, height: 64 };
+    fixture.world.set(camera, AmbientOcclusion, { quality: 100 }).unwrap();
     fixture.update();
     fixture.host.armGtaoCandidatePreparationFailureForConformance();
     const failedReceipt = await completeObservedSceneDataFrame(fixture, 'final-display');
@@ -1043,7 +1049,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
           detail: {
             phase: 'post-allocation-before-promotion',
             candidateGeneration: expect.any(Number),
-            passNames: expect.arrayContaining(['ssao-calc', 'ssao-blur']),
+            passNames: expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
             resourceAllocation: { liveBytes: expect.any(Number) },
           },
         },
@@ -1076,7 +1082,8 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
     expect(failed.targets).toEqual(accepted.targets);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
       output: { extent: { width: 64, height: 64 } },
     });
     expect(failedTrace).toMatchObject({
@@ -1103,7 +1110,8 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
     expect(retry.compiledGraphGeneration).toBeGreaterThan(candidateGeneration);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
       output: { extent: requestedExtent },
     });
     expect(retryTrace).toMatchObject({
@@ -1115,12 +1123,13 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
         completion: 'completed',
       },
     });
-    expect(retry.passNames).toEqual(expect.arrayContaining(['ssao-calc', 'ssao-blur']));
+    expect(retry.passNames).toEqual(
+      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
+    );
     expect(
       retry.targets.every((target) => target.graphGeneration === retry.installedGraphGeneration),
     ).toBe(true);
     expect(retry.targets.slice(1).map((target) => target.descriptor.size)).toEqual([
-      requestedExtent,
       requestedExtent,
     ]);
     await expect
@@ -1164,7 +1173,11 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
 });
 
 it('switches the real AO graph from compute GTAO through fragment SSAO and back', async () => {
-  const fixture = await createSceneDataRuntime(undefined, { ao: false, algorithm: 'gtao' });
+  const fixture = await createSceneDataRuntime(undefined, {
+    ao: false,
+    algorithm: 'gtao',
+    renderPath: 'deferred',
+  });
   const camera = fixture.cameraEntity;
   if (camera === undefined) throw new Error('AO transition fixture is missing its camera');
   try {
@@ -1183,6 +1196,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     };
     const drawTransitionFrame = async (phase: string) => {
       try {
+        await completeReadyFrame(() => fixture.drawFrame().unwrap(), { timeoutMs: 15_000 });
         return await completeObservedSceneDataFrame(fixture, 'final-display');
       } catch (error) {
         const detail =
@@ -1208,7 +1222,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
       .unwrap();
     fixture.update();
     const computeReceipt = await drawTransitionFrame('GTAO compute');
-    const compute = sceneDataAoGraphSnapshot(fixture, 'forward');
+    const compute = sceneDataAoGraphSnapshot(fixture, 'deferred');
     expectInstalledFrameIdentity(computeReceipt, compute);
     expect(compute.passNames).toContain('gtao-calc-compute');
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
@@ -1227,9 +1241,9 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     ).toBe(true);
     fixture.update();
     const ssaoReceipt = await drawTransitionFrame('SSAO fragment');
-    const ssao = sceneDataAoGraphSnapshot(fixture, 'forward');
+    const ssao = sceneDataAoGraphSnapshot(fixture, 'deferred');
     expectInstalledFrameIdentity(ssaoReceipt, ssao);
-    expect(ssao.passNames).toEqual(expect.arrayContaining(['ssao-calc', 'ssao-blur']));
+    expect(ssao.passNames).toEqual(expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']));
     expect(ssao.passNames).not.toContain('gtao-calc-compute');
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
@@ -1241,7 +1255,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     expect(fixture.renderer.setProfile(profile).ok).toBe(true);
     fixture.update();
     const restoredReceipt = await drawTransitionFrame('restored GTAO compute');
-    const restored = sceneDataAoGraphSnapshot(fixture, 'forward');
+    const restored = sceneDataAoGraphSnapshot(fixture, 'deferred');
     expectInstalledFrameIdentity(restoredReceipt, restored);
     expect(restored.passNames).toContain('gtao-calc-compute');
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
@@ -1287,7 +1301,8 @@ it.each([
     );
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm,
+      requestedMethod: algorithm,
+      effectiveMethod: 'ssao',
     });
     expect(fixture.errors).toEqual([]);
   } finally {
@@ -1298,7 +1313,7 @@ it.each([
 it.each([
   'forward',
   'deferred',
-] as const)('keeps same-demand AO graph resources stable across direct strength and recorder boundaries (%s)', async (renderPath) => {
+] as const)('keeps same-demand SSAO graph resources stable across intensity and recorder boundaries (%s)', async (renderPath) => {
   const fixture = await createSceneDataRuntime(undefined, {
     ao: false,
     recording: true,
@@ -1315,7 +1330,7 @@ it.each([
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { directLightingStrength: 0 },
+        data: { intensity: 0.5 },
       })
       .unwrap();
     // Initial Deferred shader preparation can precede the first observable frame.
@@ -1326,8 +1341,8 @@ it.each([
     expect(ao0Receipt.observationDomains).toEqual(['final-display']);
     expect(ao0Receipt.graphGeneration).toBe(ao0.installedGraphGeneration);
     expect(ao0Receipt.deviceGeneration).toBe(ao0.deviceGeneration);
-    expect(ao0.directLightingStrength).toBe(0);
-    expect(ao0.passNames).toEqual(expect.arrayContaining(['ssao-calc', 'ssao-blur']));
+    expect(ao0.intensity).toBe(0.5);
+    expect(ao0.passNames).toEqual(expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']));
     expect(ao0.passNames).toContain(renderPath === 'deferred' ? 'lighting' : 'main');
 
     const ao0StableReceipt = await completeObservedSceneDataFrame(fixture, 'final-display');
@@ -1348,27 +1363,25 @@ it.each([
     expectSameSceneDataAoGraph(ao0, recordedGraph);
 
     const authoredAo0 = { ...fixture.world.get(camera, AmbientOcclusion).unwrap() };
-    fixture.world.set(camera, AmbientOcclusion, { directLightingStrength: 1 }).unwrap();
+    fixture.world.set(camera, AmbientOcclusion, { intensity: 1 }).unwrap();
     const authoredAo1 = { ...fixture.world.get(camera, AmbientOcclusion).unwrap() };
-    expect({ ...authoredAo1, directLightingStrength: authoredAo0.directLightingStrength }).toEqual(
-      authoredAo0,
-    );
+    expect({ ...authoredAo1, intensity: authoredAo0.intensity }).toEqual(authoredAo0);
     const ao1Receipt = await completeObservedSceneDataFrame(fixture, 'final-display');
     const ao1 = sceneDataAoGraphSnapshot(fixture, renderPath);
     expect(ao1Receipt.presentation).toBe('ready');
     expect(ao1Receipt.observationDomains).toEqual(['final-display']);
     expect(ao1Receipt.graphGeneration).toBe(ao1.installedGraphGeneration);
     expect(ao1Receipt.deviceGeneration).toBe(ao1.deviceGeneration);
-    expect(ao1.directLightingStrength).toBe(1);
+    expect(ao1.intensity).toBe(1);
     expectSameSceneDataAoGraph(ao0, ao1);
 
-    fixture.world.set(camera, AmbientOcclusion, { directLightingStrength: 0 }).unwrap();
+    fixture.world.set(camera, AmbientOcclusion, { intensity: 0.5 }).unwrap();
     const restoredReceipt = await completeObservedSceneDataFrame(fixture, 'final-display');
     const restored = sceneDataAoGraphSnapshot(fixture, renderPath);
     expect(restoredReceipt.presentation).toBe('ready');
     expect(restoredReceipt.observationDomains).toEqual(['final-display']);
     expect(restoredReceipt.graphGeneration).toBe(restored.installedGraphGeneration);
-    expect(restored.directLightingStrength).toBe(0);
+    expect(restored.intensity).toBe(0.5);
     expectSameSceneDataAoGraph(ao0, restored);
 
     const explicitProfile = fixture.renderer.inspect().profile;
@@ -1379,7 +1392,7 @@ it.each([
     expect(reinstalledReceipt.presentation).toBe('ready');
     expect(reinstalledReceipt.observationDomains).toEqual(['final-display']);
     expect(reinstalledReceipt.graphGeneration).toBe(reinstalledGraph.installedGraphGeneration);
-    expect(reinstalledGraph.directLightingStrength).toBe(0);
+    expect(reinstalledGraph.intensity).toBe(0.5);
 
     const linearReceipt = await completeObservedSceneDataFrame(fixture, 'linear-hdr');
     const linearGraph = sceneDataAoGraphSnapshot(fixture, renderPath);
@@ -1452,7 +1465,11 @@ async function cookMaterialIntoRegistry(
   source: MaterialAsset,
   roots: readonly string[] = [],
 ) {
-  const output = await createMaterialPackCooker(roots).cook({ guid, source });
+  // These views use a storage-buffer device. Cook the complete publication for that backend.
+  const output = await createMaterialPackCooker(roots, { profile: 'webgpu-storage' }).cook({
+    guid,
+    source,
+  });
   const record = validateCookedMaterialRecord(
     (output.payload as { readonly cooked: unknown }).cooked,
   ).unwrap();
@@ -1501,7 +1518,19 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
       variant.composedWgsl += noStorageClusterConsumer
         ? clusterTextureConsumerRaster
         : fullscreenRaster;
-      variant.entryPoints = fullscreenRasterEntryPoints;
+      variant.entryPoints = noStorageClusterConsumer
+        ? fullscreenRasterEntryPoints.map((entry) =>
+            entry.name === 'fs_opaque'
+              ? {
+                  ...entry,
+                  bindings: [
+                    { group: 0, binding: 30 },
+                    { group: 0, binding: 33 },
+                  ],
+                }
+              : entry,
+          )
+        : fullscreenRasterEntryPoints;
       variant.hash = 'cafe1234';
       variant.sourceDigest = 'a'.repeat(64);
       variant.compilerProfile = testCompilerProfile;
@@ -1513,6 +1542,22 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
         noStorageClusterConsumer ? reflectedClusterTexture : reflectedClusterAbi,
       );
     }
+  }
+  const pyramidStages = [
+    ['depth_pyramid_seed', 'compute', 'depth_pyramid_seed_furthest'],
+    ['depth_pyramid_reduce', 'compute', 'depth_pyramid_reduce_furthest'],
+    ['depth_pyramid_seed_fragment', 'fragment', 'depth_pyramid_seed_furthest_fragment'],
+    ['depth_pyramid_reduce_fragment', 'fragment', 'depth_pyramid_reduce_furthest_fragment'],
+  ] as const;
+  for (const [entry, kind, furthest] of pyramidStages) {
+    const wgsl = [entry, furthest]
+      .map((name) =>
+        kind === 'compute'
+          ? `@compute @workgroup_size(8, 8) fn ${name}() {}`
+          : `@fragment fn ${name}() -> @location(0) f32 { return 0.0; }`,
+      )
+      .join('\n');
+    manifest.entries.push({ hash: `fixture-${entry}`, wgsl, glsl: '', bindings: '[]' });
   }
   manifest.entries.push({
     hash: 'fixture-ssao',
@@ -1526,6 +1571,15 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
       }
       @fragment fn fs_ssao_calc() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
       @fragment fn fs_ssao_blur() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_ssao_full_depth() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_ssao_full_normal() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_ssao_full_normal_upsample() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_ssao_setup() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+      @fragment fn fs_ssao_coarse() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_gtao_spatial() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_gtao_temporal_velocity() -> @location(0) f32 { return 1.0; }
+      @fragment fn fs_gtao_resolve() -> @location(0) f32 { return 1.0; }
+      @compute @workgroup_size(8, 8) fn cs_gtao_depth() {}
       @fragment fn fs_ssao_cluster_pack() -> @location(0) vec4<u32> { return vec4<u32>(1u); }
     `,
     glsl: '',
@@ -1722,7 +1776,7 @@ it('admits a real cooked Standard Registry snapshot through production surface s
     const publicationProgram = material.snapshot.materialPublication?.programs.find(
       (program) => program.pass === pass.name,
     );
-    const contributor = standardSceneDataContributorForDispatch(
+    const contributor = surfaceAdmission.standardSceneDataContributorForDispatch(
       row,
       {
         materialHandle: Number(cooked.handle),
@@ -1787,6 +1841,7 @@ it.each([
       catalog = current;
     },
   );
+  const compile = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
   const fixture = await createSceneDataRuntime(feature, {
     unlit: true,
     temporal,
@@ -1821,6 +1876,13 @@ it.each([
     });
     expect(producerIndex).toBeGreaterThanOrEqual(0);
     expect(consumerIndex).toBeGreaterThan(producerIndex);
+    const replayedViewDeclarations = compile.mock.results.some(
+      (result) =>
+        result.type === 'return' &&
+        result.value.ok &&
+        result.value.value.inspect().passes.some((pass) => pass.name === 'temporal-data-consumer'),
+    );
+    expect(replayedViewDeclarations).toBe(false);
     // Forward keeps one exact scene-depth attachment from the prepass to
     // read-only main shading with AO off; no depth-seed copy remains.
     expect(passNames).toContain('standard-scene-surface-data');
@@ -1837,6 +1899,7 @@ it.each([
       expect(passNames).not.toContain('motion-blur');
     }
   } finally {
+    compile.mockRestore();
     await fixture.host.dispose();
   }
 });
@@ -1844,7 +1907,7 @@ it.each([
 it.each([
   ['SSAO', 'ssao'],
   ['GTAO', 'gtao'],
-] as const)('admits %s Standard Morph and rejects incomplete custom AO inputs', async (_label, algorithm) => {
+] as const)('admits %s Standard Morph and keeps depth-only AO with incomplete normals', async (_label, algorithm) => {
   for (const consumer of ['none', 'no-op', 'surface'] as const) {
     const requireErrors: unknown[] = [];
     const feature =
@@ -1880,30 +1943,12 @@ it.each([
         .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
         .unwrap();
       fixture.update();
-      const unsupported = fixture.drawFrame();
-      expect(unsupported.ok, JSON.stringify({ algorithm, consumer, errors: fixture.errors })).toBe(
-        false,
-      );
-      if (unsupported.ok) expect((await unsupported.value.completed).ok).toBe(true);
-      const aoError = [...fixture.errors]
-        .reverse()
-        .find(
-          (error: unknown) =>
-            typeof error === 'object' &&
-            error !== null &&
-            'code' in error &&
-            error.code === 'scene-data-unavailable',
-        );
-      expect({ algorithm, consumer, aoError }).toMatchObject({
-        aoError: {
-          code: 'scene-data-unavailable',
-          detail: {
-            schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
-            reason: 'coverage-incomplete',
-            missingContributorIds: expect.arrayContaining([expect.any(String)]),
-            recovery: 'next-frame',
-          },
-        },
+      const unsupported = await completeSceneDataFrame(fixture);
+      expect(unsupported.frameId).toBeGreaterThan(lastReadyFrameId);
+      lastReadyFrameId = unsupported.frameId;
+      expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
+        status: 'active',
+        input: { normalSchema: 'depth-reconstruction' },
       });
       if (consumer === 'surface') {
         expect(requireErrors.at(-1)).toMatchObject({
@@ -1913,8 +1958,9 @@ it.each([
             reason: 'coverage-incomplete',
           },
         });
+      } else {
+        expect(fixture.errors).toEqual([]);
       }
-      expect(fixture.renderer.inspect().frame.frameId).toBe(lastReadyFrameId);
 
       fixture.world
         .set(fixture.entity, MeshRenderer, { materials: [fixture.standardMaterial] })
@@ -1931,7 +1977,8 @@ it.each([
       const inspection = fixture.renderer.inspect();
       expect(inspection.standardLighting?.ambientOcclusion).toMatchObject({
         status: 'active',
-        algorithm,
+        requestedMethod: algorithm,
+        effectiveMethod: 'ssao',
         execution: 'fragment',
       });
       expect(inspection.output.graphPassNames).toContain('ssao-calc');
@@ -1941,7 +1988,7 @@ it.each([
   }
 });
 
-it('reports a wrapped invalid AO radius and recovers the active GTAO graph', async () => {
+it('reports a wrapped invalid AO radius and recovers the active SSAO graph', async () => {
   const fixture = await createSceneDataRuntime(undefined, { ao: false, algorithm: 'gtao' });
   const camera = fixture.cameraEntity;
   if (camera === undefined) throw new Error('AO recovery fixture is missing its camera');
@@ -1961,7 +2008,8 @@ it('reports a wrapped invalid AO radius and recovers the active GTAO graph', asy
     await completeSceneDataFrame(fixture);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
       execution: 'fragment',
     });
     expect(rendererErrors).toEqual([]);
@@ -1981,9 +2029,7 @@ it('reports a wrapped invalid AO radius and recovers the active GTAO graph', asy
         cause: {
           code: 'ssao-radius-non-positive',
           expected: 'SSAO radius must be > 0',
-          hint: expect.stringMatching(
-            /radius.*positive value.*remove AmbientOcclusion.*disable AO/i,
-          ),
+          hint: expect.stringMatching(/radius.*positive value.*disable AO/i),
           detail: { paramName: 'radius', value: 0 },
         },
       },
@@ -2005,11 +2051,12 @@ it('reports a wrapped invalid AO radius and recovers the active GTAO graph', asy
     expect(rendererErrors).toEqual([]);
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
-      algorithm: 'gtao',
+      requestedMethod: 'gtao',
+      effectiveMethod: 'ssao',
       execution: 'fragment',
     });
     expect(fixture.renderer.inspect().output.graphPassNames).toEqual(
-      expect.arrayContaining(['ssao-calc', 'ssao-blur']),
+      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
     );
   } finally {
     unsubscribe();
@@ -2057,7 +2104,40 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
   }
 });
 
-it('repeats the admitted SceneData walk across consecutive World pose publications', async () => {
+it('issues changing ordinary frames and reads their allocation totals without expanding graph inspection', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const seed = RenderGraphBuilder.procedure({ device, surfaceSize: { width: 1, height: 1 } })
+    .bindResources()
+    .unwrap();
+  const implementation = Object.getPrototypeOf(seed) as Pick<typeof seed, 'inspect'>;
+  (await seed.retire()).unwrap();
+  const fixture = await createSceneDataRuntime(undefined, { ao: false });
+  try {
+    const initial = await completeSceneDataFrame(fixture);
+    const inspect = vi.spyOn(implementation, 'inspect');
+    try {
+      for (let frame = 0; frame < 60; frame++) {
+        fixture.world.set(fixture.entity, Transform, { pos: [frame / 100, 0, 0] }).unwrap();
+        fixture.update();
+        const receipt = await completeSceneDataFrame(fixture);
+        expect(receipt.presentation).toBe('ready');
+        expect(receipt.graphGeneration).toBe(initial.graphGeneration);
+        expect(
+          fixture.renderer.inspect({ fields: ['renderGraphResourceAllocation'] })
+            .renderGraphResourceAllocation?.liveBytes,
+        ).toBeGreaterThan(0);
+      }
+      expect(inspect).not.toHaveBeenCalled();
+    } finally {
+      inspect.mockRestore();
+    }
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    await fixture.host.dispose();
+  }
+});
+
+it('visits each admitted surface row once with stationary and changing World poses', async () => {
   const catalogs: SceneDataCatalog[] = [];
   const feature = sceneDataConsumer(
     () => {},
@@ -2068,14 +2148,15 @@ it('repeats the admitted SceneData walk across consecutive World pose publicatio
   try {
     await completeSceneDataFrame(fixture);
     await completeSceneDataFrame(fixture);
-    const read = vi.spyOn(SceneSlotFrame.prototype, 'readContentAt');
+    const read = vi.spyOn(surfaceAdmission, 'standardSceneDataContributorFromColumns');
     try {
-      for (let frame = 1; frame <= 3; frame++) {
-        fixture.world.set(fixture.entity, Transform, { pos: [frame / 10, 0, 0] }).unwrap();
+      for (let frame = 0; frame <= 3; frame++) {
+        if (frame > 0)
+          fixture.world.set(fixture.entity, Transform, { pos: [frame / 10, 0, 0] }).unwrap();
         fixture.update();
         read.mockClear();
         await completeSceneDataFrame(fixture);
-        expect(read).not.toHaveBeenCalled();
+        expect(read).toHaveBeenCalledTimes(1);
         expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA).status).toBe(
           'available',
         );
@@ -2089,7 +2170,7 @@ it('repeats the admitted SceneData walk across consecutive World pose publicatio
   }
 });
 
-it('rejects unsupported visible programs and recovers on the next admitted candidate', async () => {
+it('rejects unsupported surface tokens and recovers the feature without interrupting AO', async () => {
   const requireErrors: unknown[] = [];
   const catalogs: SceneDataCatalog[] = [];
   const priorValidations: boolean[] = [];
@@ -2144,23 +2225,8 @@ it('rejects unsupported visible programs and recovers on the next admitted candi
       .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
       .unwrap();
     fixture.update();
-    const unsupported = fixture.drawFrame();
-    expect(unsupported).toMatchObject({
-      ok: false,
-      error: {
-        code: 'device-operation-failed',
-        detail: {
-          cause: {
-            code: 'scene-data-unavailable',
-            detail: {
-              schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
-              reason: 'coverage-incomplete',
-              recovery: 'next-frame',
-            },
-          },
-        },
-      },
-    });
+    const unsupported = await completeSceneDataFrame(fixture);
+    expect(unsupported.frameId).toBeGreaterThan(frameIdBeforeUnsupported);
     expect(requireErrors.at(-1)).toMatchObject({
       code: 'scene-data-unavailable',
       detail: {
@@ -2179,7 +2245,6 @@ it('rejects unsupported visible programs and recovers on the next admitted candi
       },
     );
     expect(priorValidations.at(-1)).toBe(false);
-    expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
 
     fixture.world
       .set(fixture.entity, MeshRenderer, { materials: [fixture.standardMaterial] })
@@ -2247,23 +2312,8 @@ it('reports the exact visible MorphWeights custom contributor as incomplete cove
       .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
       .unwrap();
     fixture.update();
-    const morphed = fixture.drawFrame();
-    expect(morphed).toMatchObject({
-      ok: false,
-      error: {
-        code: 'device-operation-failed',
-        detail: {
-          cause: {
-            code: 'scene-data-unavailable',
-            detail: {
-              schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
-              reason: 'coverage-incomplete',
-              recovery: 'next-frame',
-            },
-          },
-        },
-      },
-    });
+    const morphed = await completeSceneDataFrame(fixture);
+    expect(morphed.frameId).toBeGreaterThan(frameIdBeforeUnsupported);
 
     const unavailable = requireErrors.at(-1);
     expect(unavailable).toMatchObject({
@@ -2294,7 +2344,6 @@ it('reports the exact visible MorphWeights custom contributor as incomplete cove
       }),
     ]);
     expect(contributor[2]).toEqual(expect.any(Number));
-    expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
   } finally {
     await fixture.host.dispose();
   }

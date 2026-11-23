@@ -245,7 +245,7 @@ locators without preloading every image and font before the UI root can activate
 Parsed HTML/CSS URL nodes let the receiving DOM load media when it uses it. A mounted
 UI does not assert that all companions loaded or passed byte-level integrity;
 capture still checks native resources and fonts. Explicit artifact verification
-still reads complete bodies, and `verifyByGuid` reports the injected evidence
+still reads complete bodies, and `inspect(guid)` reports the injected evidence
 source's result rather than inferring verification from UI readiness.
 
 The standalone DevKit host includes `createUiImporter()` in its default

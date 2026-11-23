@@ -176,11 +176,14 @@ function viewOwner() {
 
 describe('render-standard-lighting system', () => {
   it.each([
-    'scene',
-    'candidate',
-  ] as const)("derives the lighting profile from this view's %s SLW demand and restores the author profile", (source) => {
+    { source: 'scene', renderPath: 'forward' },
+    { source: 'scene', renderPath: 'deferred' },
+    { source: 'candidate', renderPath: 'forward' },
+    { source: 'candidate', renderPath: 'deferred' },
+  ] as const)('retains $renderPath with $source SLW demand', ({ source, renderPath }) => {
     const { owner, frameState } = viewOwner();
-    owner.internals.standardProfile = DEFAULT_STANDARD_PROFILE;
+    const profile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+    owner.internals.standardProfile = profile;
     const resource = new MaterialResource({
       ...defaultMaterialSnapshot(),
       surfaceModel: 'single-layer-water',
@@ -204,11 +207,11 @@ describe('render-standard-lighting system', () => {
     } as unknown as ExtractedFrame;
     const { world } = setup(() => ({ kind: 'not-admitted' }), owner, {} as ViewLights, frame);
     beginRenderFrame(world, 1);
-    expect(frameState.cameraStandardProfile?.renderPath).toBe('deferred');
+    expect(frameState.cameraStandardProfile).toBe(profile);
     endRenderFrame(world);
     materials = materials.with(resource, 0);
     beginRenderFrame(world, 2);
-    expect(frameState.cameraStandardProfile).toBe(DEFAULT_STANDARD_PROFILE);
+    expect(frameState.cameraStandardProfile).toBe(profile);
     endRenderFrame(world);
   });
   it('ignores unselected shared SLW materials when the view projection has no Water', () => {

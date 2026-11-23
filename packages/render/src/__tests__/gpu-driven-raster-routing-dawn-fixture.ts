@@ -34,6 +34,7 @@ export async function verifyRetainedRasterRouting(input: {
   readonly persistentFrame: ExtractedFrame;
   readonly viewBindGroup: BindGroup;
   readonly materialBindGroup: BindGroup;
+  readonly reflection: import('../reflection/primitive-bindings').PrimitiveReflection;
 }): Promise<void> {
   const { device } = input;
   const originalMesh = input.prepareInput.meshBySlot?.values().next().value;
@@ -102,7 +103,9 @@ export async function verifyRetainedRasterRouting(input: {
                     (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
                     (slot: number) => {
                       const group = groups[slot];
-                      return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                      return group === undefined
+                        ? undefined
+                        : { group, byteOffset: slot * 1280, reflection: input.reflection };
                     }
                   )([input.materialBindGroup]),
                 },

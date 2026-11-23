@@ -12,17 +12,21 @@ import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's attachments and the matching raw unit-receiver D. */
-interface RayDiffuseCompositeInputs {
+type RayDiffuseCompositeInputs = {
   readonly irradiance: Buffer;
   readonly depth: TextureView;
   readonly normal: TextureView;
-  readonly albedoMetallic: TextureView;
-  readonly dielectricSpecular: TextureView;
-  readonly reflectionResponse?: TextureView;
   readonly compactGbuffer?: true;
-  readonly subsurface?: true;
-  readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
-}
+} & (
+  | { readonly baseline: Buffer; readonly subsurface: boolean }
+  | {
+      readonly baseline?: undefined;
+      readonly albedoMetallic: TextureView;
+      readonly dielectricSpecular: TextureView;
+      readonly reflectionResponse?: TextureView;
+      readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
+    }
+);
 
 /** Record into the caller's linear HDR pass; never owns submission or scene color.
  * The graph owner declares every borrowed read and retires inputs after completion. */
@@ -31,18 +35,24 @@ export function createRayDiffuseComposite(
   module: ShaderModule,
   signal: 'raw' | 'reconstructed',
 ) {
-  const createPipeline = (reflections: boolean, compact: boolean, subsurface: boolean) => {
+  const createPipeline = (
+    mode: 'add' | 'reflections' | 'replace' | 'replace_subsurface',
+    compact: boolean,
+  ) => {
+    const replacement = mode === 'replace' || mode === 'replace_subsurface';
     const layout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: 2, buffer: { type: 'read-only-storage' } },
         { binding: 1, visibility: 2, texture: { sampleType: 'depth' } },
-        ...[2, 3, 4].map((binding) => ({
+        ...(replacement ? [2] : [2, 3, 4]).map((binding) => ({
           binding,
           visibility: 2,
           texture: { sampleType: 'uint' as const },
         })),
-        { binding: 5, visibility: 2, buffer: { type: 'uniform' } },
-        ...(reflections
+        ...(replacement
+          ? [{ binding: 7, visibility: 2, buffer: { type: 'read-only-storage' as const } }]
+          : [{ binding: 5, visibility: 2, buffer: { type: 'uniform' as const } }]),
+        ...(mode === 'reflections'
           ? [{ binding: 6, visibility: 2, texture: { sampleType: 'float' as const } }]
           : []),
       ],
@@ -56,21 +66,15 @@ export function createRayDiffuseComposite(
       vertex: { module, entryPoint: 'vs_ray_diffuse', buffers: [] },
       fragment: {
         module,
-        entryPoint: `${signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'}${reflections ? '_reflections' : ''}`,
-        ...(compact ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS } : {}),
-        targets: Array.from({ length: subsurface ? 2 : 1 }, () => ({
-          format: 'rgba16float' as const,
+        entryPoint: `${signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'}${mode === 'add' ? '' : `_${mode}`}`,
+        ...(compact && !replacement
+          ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS }
+          : {}),
+        targets: Array.from({ length: mode === 'replace_subsurface' ? 2 : 1 }, () => ({
+          format: 'rgba16float',
           blend: {
-            color: {
-              srcFactor: 'one' as const,
-              dstFactor: 'one' as const,
-              operation: 'add' as const,
-            },
-            alpha: {
-              srcFactor: 'zero' as const,
-              dstFactor: 'one' as const,
-              operation: 'add' as const,
-            },
+            color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
           },
         })),
       },
@@ -79,9 +83,7 @@ export function createRayDiffuseComposite(
     if (!pipeline.ok) return pipeline;
     return ok({ layout: layout.value, pipeline: pipeline.value });
   };
-  const base = createPipeline(false, false, false);
-  if (!base.ok) return base;
-  const variants = new Map<number, ReturnType<typeof createPipeline>>();
+  const pipelines = new Map<string, ReturnType<typeof createPipeline>>();
   return ok({
     record(pass: RhiRenderPassEncoder, input: RayDiffuseCompositeInputs, pixelCount: number) {
       const stride = signal === 'raw' ? RAY_ACCUMULATION_STRIDE : 16;
@@ -94,20 +96,23 @@ export function createRayDiffuseComposite(
           'expected a positive diffuse receiver count within the storage binding limit',
           true,
         );
-      let selected = base.value;
-      const reflections = input.reflectionResponse !== undefined;
+      const mode =
+        input.baseline !== undefined
+          ? input.subsurface === true
+            ? 'replace_subsurface'
+            : 'replace'
+          : input.reflectionResponse !== undefined
+            ? 'reflections'
+            : 'add';
       const compact = input.compactGbuffer === true;
-      if (reflections || compact) {
-        const subsurface = input.subsurface === true;
-        const key = Number(reflections) + 2 * Number(compact) + 4 * Number(subsurface);
-        let variant = variants.get(key);
-        if (variant === undefined) {
-          variant = createPipeline(reflections, compact, subsurface);
-          if (variant.ok) variants.set(key, variant);
-        }
-        if (!variant.ok) return variant;
-        selected = variant.value;
+      const key = `${mode}:${compact}`;
+      let pipeline = pipelines.get(key);
+      if (pipeline === undefined) {
+        pipeline = createPipeline(mode, compact);
+        pipelines.set(key, pipeline);
       }
+      if (!pipeline.ok) return pipeline;
+      const selected = pipeline.value;
       const bindings = device.createBindGroup({
         layout: selected.layout,
         entries: [
@@ -121,14 +126,22 @@ export function createRayDiffuseComposite(
               },
             },
           },
-          ...[input.depth, input.normal, input.albedoMetallic, input.dielectricSpecular].map(
-            (value, i) => ({
-              binding: i + 1,
-              resource: { kind: 'textureView' as const, value },
-            }),
-          ),
-          { binding: 5, resource: { kind: 'buffer', value: input.view } },
-          ...(input.reflectionResponse === undefined
+          ...(input.baseline === undefined
+            ? [input.depth, input.normal, input.albedoMetallic, input.dielectricSpecular]
+            : [input.depth, input.normal]
+          ).map((value, i) => ({
+            binding: i + 1,
+            resource: { kind: 'textureView' as const, value },
+          })),
+          ...(input.baseline === undefined
+            ? [{ binding: 5, resource: { kind: 'buffer' as const, value: input.view } }]
+            : [
+                {
+                  binding: 7,
+                  resource: { kind: 'buffer' as const, value: { buffer: input.baseline } },
+                },
+              ]),
+          ...(input.baseline !== undefined || input.reflectionResponse === undefined
             ? []
             : [
                 {

@@ -7,6 +7,10 @@ import { SDK_SOURCE_GIT_DEPENDENCIES, SDK_SOURCE_WASM } from '../forgeax/sdk-lib
 import { prepareEngineWithoutViewContent } from './engine-without-view-source.mjs';
 import { runViewSourceCommand } from './view-source-command.mjs';
 
+// This projection must produce its own shaders even when its paired parent
+// has admitted a manifest from the checkout.
+delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+
 const root = resolve(import.meta.dirname, '../..');
 const scratch =
   process.env.FORGEAX_ENGINE_WITHOUT_VIEW_ROOT ??

@@ -1,6 +1,8 @@
 import type { CatalogDelta, CatalogEntry } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { type CatalogListener, createCatalogSource } from '../catalog-source.js';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
+import { createCatalogSource } from '../catalog-source.js';
+import { catalogChannel } from './fixtures/catalog-pack';
 
 const entry: CatalogEntry = {
   guid: '11111111-1111-4111-8111-111111111111',
@@ -10,10 +12,7 @@ const entry: CatalogEntry = {
 };
 
 function gate() {
-  let release: () => void = () => {};
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise, resolve: release } = testGate();
   return { promise, release };
 }
 
@@ -80,7 +79,7 @@ it('retries enumeration after a shared malformed-body failure settles', async ()
 it('retires pending identity before forwarding a delta and ignores old settlement', async () => {
   const oldGate = gate();
   const newGate = gate();
-  let emit: CatalogListener = () => {};
+  const { emit, subscribe } = catalogChannel();
   let requests = 0;
   const fetcher = vi.fn(async () => {
     const generation = ++requests;
@@ -90,10 +89,7 @@ it('retires pending identity before forwarding a delta and ignores old settlemen
   const source = createCatalogSource({
     url: '/pack-index.json',
     fetch: fetcher,
-    subscribe(listener) {
-      emit = listener;
-      return () => {};
-    },
+    subscribe,
   });
   let forwarded: ReturnType<typeof source.enumerate> | undefined;
   const delta: CatalogDelta = { added: [], changed: [entry], removed: [] };
@@ -116,7 +112,7 @@ it('retires pending identity before forwarding a delta and ignores old settlemen
 
 it('starts a fresh baseline for two distinct updates reusing the same delta object', async () => {
   const held = gate();
-  let emit: CatalogListener = () => {};
+  const { emit, subscribe } = catalogChannel();
   let requests = 0;
   const fetcher = vi.fn(async () => {
     const generation = ++requests;
@@ -126,10 +122,7 @@ it('starts a fresh baseline for two distinct updates reusing the same delta obje
   const source = createCatalogSource({
     url: '/pack-index.json',
     fetch: fetcher,
-    subscribe(listener) {
-      emit = listener;
-      return () => {};
-    },
+    subscribe,
   });
   const listener = vi.fn();
   const stop = source.subscribe(listener);

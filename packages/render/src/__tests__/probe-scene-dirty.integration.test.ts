@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ProbeBlendSceneProjection,
   type ProbeSceneObjectInput,
@@ -120,6 +120,23 @@ describe('PersistentRenderScene probe projection', () => {
     expect(moved.affectedObjectKeys).toEqual([7]);
   });
 
+  it('observes in-place manual positions and radiance without mutating an issued read', () => {
+    const projection = new ProbeBlendSceneProjection();
+    const position: [number, number, number] = [0, 0, 0];
+    const irradiance = new Float32Array(27).fill(1);
+    const objects = [{ objectKey: 7, generation: 1, position }, object(10)];
+    const inputs = { objects, probes: [{ ...probe('p'), irradiance }] };
+    const original = projection.apply(inputs).records;
+    const read = projection.captureRecordLookup();
+    position[0] = 0.5;
+    expect(projection.apply(inputs).affectedObjectKeys).toEqual([7]);
+    expect(projection.getRecord(10)).toBe(original[1]);
+    irradiance[5] = 4;
+    expect(projection.apply(inputs).affectedObjectKeys).toEqual([7, 10]);
+    expect(projection.getRecord(10)?.shPreblend[5]).toBe(4);
+    expect(read(10)?.shPreblend[5]).toBe(1);
+  });
+
   it('packs SH9 as nine vec4 lanes with zero padding', () => {
     const projection = new ProbeBlendSceneProjection();
     const coefficients = Array.from({ length: 27 }, (_, index) => index + 1);
@@ -132,6 +149,84 @@ describe('PersistentRenderScene probe projection', () => {
 
     expect(Array.from(values.slice(4, 13))).toEqual([1, 2, 3, 0, 4, 5, 6, 0, 7]);
     expect(result.records[0]?.shPreblend).toEqual(coefficients);
+  });
+
+  it('packs changed SH into the record without allocating a typed array per scalar', () => {
+    const projection = new ProbeBlendSceneProjection();
+    const probes = [probe('light')];
+    let scalarArrays = 0;
+    vi.stubGlobal(
+      'Float32Array',
+      new Proxy(Float32Array, {
+        construct(target, args, receiver) {
+          if (Array.isArray(args[0]) && args[0].length === 1) scalarArrays++;
+          return Reflect.construct(target, args, receiver);
+        },
+      }),
+    );
+    try {
+      for (let frame = 0; frame < 4; frame++) {
+        const result = projection.apply({
+          objects: Array.from({ length: 8 }, (_, key) => object(key, 0, frame / 8)),
+          probes,
+        });
+        expect(result.uploads).toBe(8);
+        expect(result.records[7]?.localBlendFraction).toBe(Math.fround(1 - (frame / 16) ** 2));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(scalarArrays).toBe(0);
+  });
+
+  it('reports live receivers and their errors across edits and removal of a different slot', () => {
+    const projection = new ProbeBlendSceneProjection();
+    const probes = [
+      ...Array.from({ length: 65 }, (_, key) => probe(String(key))),
+      probe('far', 10),
+    ];
+    const first = object(2),
+      far = object(9, 0, 10);
+    projection.apply({ objects: [first, far], probes });
+    const before = projection.captureRecordLookup()(2);
+    const edited = projection.apply({ objects: [first, object(9, 0, 10.5)], probes });
+    expect(edited.visits).toBe(1);
+    expect(edited.error?.code).toBe('capacity-exceeded');
+    expect(edited.activeContributorCount).toBe(65);
+    expect(projection.getRecord(2)).toBe(before);
+    const retired = projection.apply({ objects: [object(9, 0, 10.5)], probes });
+    expect(retired.visits).toBe(0);
+    expect(retired.error).toBeUndefined();
+    expect(retired.receipt.activeIdentities).toEqual(['far']);
+    expect(projection.inspect().coverage).toBe(1 - 0.25 ** 2);
+    expect(edited.receipt.activeIdentities).toHaveLength(65);
+  });
+
+  it('evaluates only intersecting finite probe spheres as receivers and sources move', () => {
+    const projection = new ProbeBlendSceneProjection();
+    const probes = Array.from({ length: 512 }, (_, key) => probe(String(key), key * 8));
+    const rows = (step: number) =>
+      Array.from({ length: 32 }, (_, key) => object(key, 0, key * 8 + step / 8));
+    const distance = vi.spyOn(Math, 'hypot');
+    try {
+      for (let step = 0; step < 8; step++) {
+        distance.mockClear();
+        const result = projection.apply({ objects: rows(step), probes });
+        expect(distance).toHaveBeenCalledTimes(32);
+        expect(result.records).toHaveLength(32);
+        expect(result.records.every((row) => row.accepted)).toBe(true);
+      }
+      probes[511] = { ...probe('extra', 0), irradiance: new Float32Array(27).fill(NaN) };
+      expect(projection.apply({ objects: rows(8), probes }).receipt.activeIdentities).toEqual([
+        '0',
+      ]);
+      probes[511] = probe('extra', 0);
+      const revised = projection.apply({ objects: rows(9), probes });
+      expect(revised.receipt.activeIdentities).toEqual(['0', 'extra']);
+      expect(projection.getRecord(31)?.accepted).toBe(true);
+    } finally {
+      distance.mockRestore();
+    }
   });
 
   it('uses no-LKG and outside-radius sentinels without inventing sky contributors', () => {

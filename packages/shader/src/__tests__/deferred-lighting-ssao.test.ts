@@ -13,7 +13,7 @@ describe('Standard ambient occlusion consumer contract', () => {
     expect(code).toMatch(
       /sampleStandardAmbientOcclusion\((?:in\.worldPos|standardPositionWS), view\.worldViewProj,/,
     );
-    expect(code).toContain('ssaoBlurredTexture, ssaoBlurredSampler');
+    expect(code).toContain('forwardScreenSurface, viewLinearSampler');
     expect(code).not.toMatch(/ssaoFactor\s*\*\s*ao/);
   });
   it('treats zero strength as disabled and never reapplies the producer exponent', () => {
@@ -29,19 +29,16 @@ describe('Standard ambient occlusion consumer contract', () => {
   });
 });
 
-it('keeps material and environment AO independent from the opt-in direct AO lane', () => {
+it('applies screen AO to indirect lighting and preserves direct radiance', () => {
   const code = source('standard-deferred-lighting');
   expect(code).toContain('lanes : vec4<f32>');
   expect(code).toContain('occlusion : vec4<f32>');
   expect(code).toContain('let ao = response.a * screenAo;');
-  expect(code).toContain('mix(1.0, screenAo, clamp(params.occlusion.x, 0.0, 1.0))');
   expect(code).toContain('let specularAo = standardSpecularOcclusion(nDotV, ao, roughness);');
   expect(code).toContain('let diffuse = environment.diffuse * ao;');
   expect(code).toContain(
     'let sceneDiffuse = select(diffuse, vec3<f32>(0.0), diffuseToSubsurface);',
   );
-  expect(code).toContain(
-    'sceneDiffuse + environment.specular * specularAo + direct.radiance * directAo',
-  );
-  expect(code).toContain('diffuse + direct.diffuse * directAo, diffuseToSubsurface');
+  expect(code).toContain('sceneDiffuse + environment.specular * specularAo + direct.radiance');
+  expect(code).toContain('diffuse + direct.diffuse, diffuseToSubsurface');
 });

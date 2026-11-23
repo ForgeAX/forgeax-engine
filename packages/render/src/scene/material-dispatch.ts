@@ -1,4 +1,5 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { DEFAULT_STANDARD_SURFACE_MODULE, isEngineMaterialModule } from '@forgeax/engine-shader';
 import {
   assertRenderResidencySelection,
   type RenderResidencyGroup,
@@ -10,7 +11,8 @@ import {
   ownedMaterialValues,
 } from '../material-resource';
 import type { MaterialSourceSnapshot } from '../material-source';
-import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
+import { getOpaqueResourceIdentity, type ValidatedRenderable } from '../record/frame-snapshot';
 import { isMediumMaterial, matchesRecordMode } from '../record/material-pass-selection';
 import {
   appendMaterialDispatchEntries,
@@ -21,7 +23,6 @@ import {
 import { dispatchEntry } from './dispatch-entry';
 import { type FrameList, FrameListBase } from './frame-list';
 import { at, changes, type Node, nodes, put, range, remove } from './frame-tree';
-import { GenerationalWeakMap } from './generational-weak-map';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   captureMaterialOverrides,
@@ -30,11 +31,19 @@ import {
   type MeshMaterialGeometry,
   type MeshMaterialResolver,
   meshMaterialGeometry,
+  meshMaterialSourceHandle,
   prepareMeshMaterialBindings,
   retainMeshMaterialBindings,
 } from './mesh-materials';
 import type { SceneSlotFrame } from './scene-slots';
-import { type Roster, RosterCursor, rosterMerge, rosterRemove, rosterValues } from './slot-roster';
+import {
+  type Roster,
+  RosterCursor,
+  rosterLastKey,
+  rosterMerge,
+  rosterRankBefore,
+  rosterRemove,
+} from './slot-roster';
 
 /** Ordered frame work; arrays and shared execution groups have the same consumption surface. */
 export type DispatchList = FrameList<DispatchEntry>;
@@ -80,30 +89,72 @@ const PREPARED = 4;
  * Per-slot binding facts as numeric columns: member trees hold the slot
  * address only, so a binding allocates no object of its own.
  */
+const BINDING_PAGE_SIZE = 64;
+const bindingPageId = (slot: number) => Math.floor(slot / BINDING_PAGE_SIZE);
+const bindingOffset = (slot: number) => (slot % BINDING_PAGE_SIZE) * 2;
+
+interface BindingPage {
+  data: Float64Array;
+  live: number;
+}
+
 class BindingColumns {
   groups: (BindingGroup | undefined)[] = [];
-  identity = new Float64Array(64);
-  layer = new Float64Array(64);
   flags = new Uint8Array(64);
   count = 0;
-
-  ensure(slot: number): void {
-    if (slot < this.flags.length) return;
-    let capacity = this.flags.length;
-    while (capacity <= slot) capacity *= 2;
-    const identity = new Float64Array(capacity);
-    identity.set(this.identity);
-    this.identity = identity;
-    const layer = new Float64Array(capacity);
-    layer.set(this.layer);
-    this.layer = layer;
-    const flags = new Uint8Array(capacity);
-    flags.set(this.flags);
-    this.flags = flags;
-  }
+  private readonly pages: (BindingPage | undefined)[] = [];
+  private readonly changedPages = new Set<number>();
+  private root: Node<Float64Array> | undefined;
 
   entity(slot: number): number {
-    return this.identity[slot] ?? 0;
+    return this.pages[bindingPageId(slot)]?.data[bindingOffset(slot)] ?? 0;
+  }
+  layer(slot: number): number {
+    return this.pages[bindingPageId(slot)]?.data[bindingOffset(slot) + 1] ?? 0;
+  }
+  add(slot: number, entity: number, layer: number): void {
+    if (slot >= this.flags.length) {
+      const flags = new Uint8Array(2 ** Math.ceil(Math.log2(slot + 1)));
+      flags.set(this.flags);
+      this.flags = flags;
+    }
+    const id = bindingPageId(slot);
+    let page = this.pages[id];
+    if (page === undefined) {
+      page = { data: new Float64Array(BINDING_PAGE_SIZE * 2), live: 0 };
+      this.pages[id] = page;
+    } else if (!this.changedPages.has(id)) page.data = page.data.slice();
+    page.live++;
+    this.changedPages.add(id);
+    const offset = bindingOffset(slot);
+    page.data[offset] = entity;
+    page.data[offset + 1] = layer;
+  }
+  remove(slot: number): void {
+    const id = bindingPageId(slot);
+    const page = this.pages[id];
+    // Absent lanes are unreachable from the captured pass membership. No
+    // numeric copy is needed to release a member while its page is still live.
+    if (page !== undefined && --page.live === 0) {
+      this.pages[id] = undefined;
+      this.changedPages.add(id);
+    }
+  }
+  clear(): void {
+    this.groups.length = 0;
+    this.pages.length = 0;
+    if (this.flags.length > 64) this.flags = new Uint8Array(64);
+    this.root = undefined;
+    this.changedPages.clear();
+  }
+  capture(): Node<Float64Array> | undefined {
+    for (const id of this.changedPages) {
+      const page = this.pages[id];
+      this.root =
+        page === undefined ? remove(this.root, 0, id) : put(this.root, page.data, 0, id, 1);
+    }
+    this.changedPages.clear();
+    return this.root;
   }
 }
 /** The binding group key; equal keys select the same held materials and members. */
@@ -157,7 +208,7 @@ export interface DispatchPassWork {
   readonly count: number;
   entries(): Iterable<DispatchEntry>;
   /** Captured physical addresses, before materializing entries or deriving frame ranks. */
-  slots?(): Iterable<number>;
+  visitSlots?(visit: (slot: number) => void): void;
 }
 interface QueryWork {
   members: Node<Roster> | undefined;
@@ -174,6 +225,26 @@ export interface AcceptedMaterial {
   readonly bindings: number;
 }
 
+/** Follow authored module ownership even for content-addressed cooked keys. */
+export function shadowDispatchRequiresPreparation(
+  material: MaterialSnapshot,
+  pass: MaterialDispatchPass,
+): boolean {
+  if (pass.tags.LightMode !== 'ShadowCaster') return false;
+  if (
+    pass.materialShaderId === 'forgeax::default-standard-pbr' ||
+    pass.materialShaderId === SHADOW_CASTER_SHADER_ID
+  )
+    return true;
+  const program = material.passes[pass.passIndex]?.program;
+  return (
+    program === undefined ||
+    !isEngineMaterialModule(program.module) ||
+    (program.moduleSlots?.surface !== undefined &&
+      program.moduleSlots.surface !== DEFAULT_STANDARD_SURFACE_MODULE)
+  );
+}
+
 interface MaterialDemandCounts {
   readonly water: number;
   readonly transmission: number;
@@ -183,6 +254,7 @@ interface MaterialDemandCounts {
   readonly unfogged: number;
   readonly borrowed: number;
   readonly foldableSprites: number;
+  readonly shadowPreparation: number;
 }
 const EMPTY_DEMAND: MaterialDemandCounts = {
   water: 0,
@@ -193,6 +265,7 @@ const EMPTY_DEMAND: MaterialDemandCounts = {
   unfogged: 0,
   borrowed: 0,
   foldableSprites: 0,
+  shadowPreparation: 0,
 };
 
 function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCounts {
@@ -221,6 +294,10 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
     // Zero-binding accepted entries can still be consumed by actual Pass queries.
     foldableSprites:
       owned && snapshot.transparent === true && materialUsesSpriteGeometry(snapshot) ? 1 : 0,
+    shadowPreparation:
+      owned && material.passes.some((pass) => shadowDispatchRequiresPreparation(snapshot, pass))
+        ? 1
+        : 0,
   };
 }
 
@@ -240,6 +317,7 @@ function replaceDemand(
     unfogged: counts.unfogged - old.unfogged + current.unfogged,
     borrowed: counts.borrowed - old.borrowed + current.borrowed,
     foldableSprites: counts.foldableSprites - old.foldableSprites + current.foldableSprites,
+    shadowPreparation: counts.shadowPreparation - old.shadowPreparation + current.shadowPreparation,
   };
 }
 
@@ -254,6 +332,7 @@ function passDefinition(passes: MaterialSnapshot['passes']): string {
 }
 
 function sameMaterialPasses(previous: MaterialSnapshot, next: MaterialSnapshot): boolean {
+  if ((previous.materialHandle ?? 0) !== (next.materialHandle ?? 0)) return false;
   // Worker transport changes object identity without changing the accepted program contract.
   if (
     previous.passes !== next.passes &&
@@ -274,6 +353,10 @@ function sameMaterialPasses(previous: MaterialSnapshot, next: MaterialSnapshot):
 /** Fixed shared material roots; capturing or adopting a version never copies bindings. */
 export class MaterialFrame {
   readonly #programRoot = true;
+
+  static provesNoShadowPreparation(frame: unknown): boolean {
+    return MaterialFrame.fixedProgramRoot(frame)?.counts.shadowPreparation === 0;
+  }
 
   /** Native fixed program root; proxies and borrowed/custom read protocols stay observable. */
   static fixedProgramRoot(frame: unknown): MaterialFrame | undefined {
@@ -380,7 +463,12 @@ export class MaterialFrame {
     }[] = [];
     for (const draw of draws) {
       const identity = draw.source.entityKey;
-      this.drawEntries(draw, (entry, pass) => entries.push({ pass, identity, entry }));
+      const selection =
+        draw.materials ??
+        (draw.source.materials.length === 0 ? [draw.source.material] : draw.source.materials);
+      this.drawEntries(draw.source, draw.renderableIndex, selection, (entry, pass) =>
+        entries.push({ pass, identity, entry }),
+      );
     }
     entries.sort(
       (a, b) =>
@@ -397,27 +485,43 @@ export class MaterialFrame {
    * Draw order is (queue, Pass identity, entity identity, draw index).
    */
   drawEntries(
-    draw: {
-      readonly source: RenderableSnapshot;
-      readonly renderableIndex: number;
-      readonly materials?: readonly MaterialResource[];
-    },
+    source: RenderableSnapshot,
+    renderableIndex: number,
+    selection: readonly MaterialResource[] | Pick<ValidatedRenderable, 'mesh' | 'submeshIndices'>,
     visit: (entry: DispatchEntry, pass: number) => void,
   ): void {
-    for (const resource of new Set(
-      draw.materials ??
-        (draw.source.materials.length === 0 ? [draw.source.material] : draw.source.materials),
-    )) {
+    const bySubmesh = 'mesh' in selection;
+    const count = bySubmesh
+      ? (selection.submeshIndices?.length ?? selection.mesh.submeshes.length)
+      : selection.length;
+    let first: MaterialResource | undefined;
+    let others: Set<MaterialResource> | undefined;
+    for (let index = 0; index < count; index++) {
+      let resource: MaterialResource;
+      if (bySubmesh) {
+        const submesh = selection.mesh.submeshes[selection.submeshIndices?.[index] ?? index];
+        if (submesh === undefined) throw new Error('Direct draw has no selected submesh');
+        resource = source.materials[submesh.materialSlot] ?? source.material;
+      } else {
+        resource = selection[index] as MaterialResource;
+      }
+      if (resource === first) continue;
+      if (first === undefined) first = resource;
+      else {
+        others ??= new Set();
+        if (others.has(resource)) continue;
+        others.add(resource);
+      }
       const accepted = this.get(resource);
       if (accepted === undefined) throw new Error('Direct draw has no accepted material version');
       for (const pass of accepted.passes) {
-        if (pass.tags.LightMode === 'ShadowCaster' && draw.source.shadowCaster === false) continue;
+        if (pass.tags.LightMode === 'ShadowCaster' && source.shadowCaster === false) continue;
         visit(
           {
             ...pass,
-            entityIndex: draw.source.entityKey as EntityHandle,
-            renderableIndex: draw.renderableIndex,
-            layer: draw.source.layer ?? 0,
+            entityIndex: source.entityKey as EntityHandle,
+            renderableIndex,
+            layer: source.layer ?? 0,
           },
           getOpaqueResourceIdentity(pass),
         );
@@ -450,244 +554,304 @@ const MATERIAL_FRAME_BORROWED = Object.getOwnPropertyDescriptor(
   'hasBorrowedValues',
 )?.get;
 
-// Only a completed real traversal can populate this cache. Fixed Work is
-// retained across parameter adoption, so later draws and slices reuse its order.
-// Work nodes are rebuilt with their dispatch; see GenerationalWeakMap.
-const consumedBindings = new GenerationalWeakMap<Work, readonly number[]>();
-
-function workBindings(work: Work, start = 0, end = Infinity): Iterable<number> {
-  const cached = consumedBindings.get(work);
-  if (cached !== undefined) return new BindingWindow(cached, start, end);
-  if (start > 0 || end < work.groups.count) return mergeWorkBindings(work, start, end);
-  return new BindingCapture(work);
+/** The immutable binding groups contain the actual order. Each reader holds only its page cursors. */
+function workSlots(work: Work, rank = 0): RosterCursor | MergedBindings {
+  return work.groups.size === 1
+    ? new RosterCursor(work.groups.value, rank)
+    : new MergedBindings(work, rank);
 }
 
-/** One private result per walk; consumers observe each numeric member before advancing. */
-class BindingWindow implements IterableIterator<number> {
-  private index: number;
-  private readonly end: number;
-  private readonly result: { value: number | undefined; done: boolean } = {
-    value: undefined,
-    done: false,
-  };
-  constructor(
-    private readonly bindings: readonly number[],
-    start: number,
-    end: number,
-  ) {
-    this.index = Math.max(0, start);
-    this.end = Math.min(end, bindings.length);
-  }
-  next(): IteratorResult<number> {
-    while (this.index < this.end) {
-      const value = this.bindings[this.index++];
-      if (value !== undefined) {
-        this.result.value = value;
-        return this.result as IteratorResult<number>;
-      }
+/** Walk the physical page values without retaining a flattened copy of the pass. */
+function visitWorkBindings(work: Work, visit: (slot: number) => void): void {
+  if (work.groups.size === 1) {
+    for (const { value: page } of nodes(work.groups.value)) {
+      const values = page.values;
+      for (let i = 0; i < values.length; i++) visit(values[i] as number);
     }
-    return this.return();
-  }
-  return(): IteratorResult<number> {
-    this.index = this.end;
-    this.result.value = undefined;
-    this.result.done = true;
-    return this.result as IteratorResult<number>;
-  }
-  [Symbol.iterator](): IterableIterator<number> {
-    return this;
-  }
-}
-
-/** Only complete private walks publish membership; each active reader owns its cursor. */
-class BindingCapture implements IterableIterator<number> {
-  private finished = false;
-  private captured: number[] | undefined = [];
-  private iterator: Iterator<number> | RosterCursor | undefined;
-  private readonly result: { value: number | undefined; done: boolean } = {
-    value: undefined,
-    done: false,
-  };
-  constructor(private work: Work | undefined) {
-    const groups = (work as Work).groups;
-    this.iterator =
-      groups.left === undefined && groups.right === undefined
-        ? new RosterCursor(groups.value)
-        : mergeWorkBindings(work as Work);
-  }
-  next(): IteratorResult<number> {
-    if (this.finished) return this.result as IteratorResult<number>;
-    try {
-      const iterator = this.iterator;
-      let value: number;
-      if (iterator instanceof RosterCursor) {
-        if (!iterator.next()) return this.complete();
-        value = iterator.value;
-      } else {
-        const step = (iterator as Iterator<number>).next();
-        if (step.done) return this.complete();
-        value = step.value;
-      }
-      (this.captured as number[]).push(value);
-      this.result.value = value;
-      return this.result as IteratorResult<number>;
-    } catch (cause) {
-      this.return();
-      throw cause;
-    }
-  }
-  private complete(): IteratorResult<number> {
-    consumedBindings.set(this.work as Work, this.captured as number[]);
-    return this.return();
-  }
-  return(): IteratorResult<number> {
-    const iterator = this.iterator;
-    this.finished = true;
-    this.work = undefined;
-    this.iterator = undefined;
-    this.captured = undefined;
-    this.result.value = undefined;
-    this.result.done = true;
-    if (iterator !== undefined && !(iterator instanceof RosterCursor)) iterator.return?.();
-    return this.result as IteratorResult<number>;
-  }
-  [Symbol.iterator](): IterableIterator<number> {
-    return this;
-  }
-}
-
-/** Merge shared member trees only while their actual draw work is consumed. */
-function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<number> {
-  if (work.groups.left === undefined && work.groups.right === undefined) {
-    yield* rosterValues(work.groups.value, start, end);
     return;
   }
-  type Cursor = { binding: number; iterator: RosterCursor; key: number };
-  const heap: Cursor[] = [];
-  const push = (cursor: Cursor) => {
-    let index = heap.length;
-    heap.push(cursor);
-    while (index > 0) {
-      const parent = Math.floor((index - 1) / 2);
-      const before = heap[parent];
-      if (before === undefined || before.key <= cursor.key) break;
-      heap[index] = before;
-      index = parent;
-    }
-    heap[index] = cursor;
-  };
-  for (const { value: root } of nodes(work.groups)) {
-    const iterator = new RosterCursor(root);
-    if (iterator.next()) push({ binding: iterator.value, iterator, key: iterator.key });
+  const merged = new MergedBindings(work);
+  while (merged.next()) visit(merged.value);
+}
+
+/** Seek a deep slice by the group page counts, without merging and discarding its entire prefix. */
+function mergedStartKey(groups: Node<Roster>, rank: number): number | undefined {
+  if (rank <= groups.size) return undefined;
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const { value } of nodes(groups)) {
+    let first = value;
+    while (first.left !== undefined) first = first.left;
+    low = Math.min(low, first.key);
+    high = Math.max(high, rosterLastKey(value));
   }
-  let index = 0;
-  while (heap.length > 0 && index < end) {
+  // Engine entities have safe integer identities. Foreign numeric rosters can still walk in order.
+  if (
+    !Number.isSafeInteger(low) ||
+    !Number.isSafeInteger(high) ||
+    !Number.isSafeInteger(high - low)
+  )
+    return undefined;
+  while (low < high) {
+    const pivot = low + Math.ceil((high - low) / 2);
+    let before = 0;
+    for (const { value } of nodes(groups)) {
+      before += rosterRankBefore(value, pivot);
+      if (before > rank) break;
+    }
+    if (before > rank) high = pivot - 1;
+    else low = pivot;
+  }
+  return low;
+}
+
+/** One page cursor per material binding group, merged in the original entity order. */
+class MergedBindings {
+  private readonly heap: RosterCursor[] = [];
+  value = 0;
+
+  constructor(work: Work, rank = 0) {
+    const startKey = mergedStartKey(work.groups, rank);
+    let remaining = rank;
+    for (const { value: root } of nodes(work.groups)) {
+      const start = startKey === undefined ? 0 : rosterRankBefore(root, startKey);
+      remaining -= start;
+      const cursor = new RosterCursor(root, start);
+      if (cursor.next()) this.push(cursor);
+    }
+    for (let i = 0; i < remaining; i++) this.next();
+  }
+
+  private push(cursor: RosterCursor): void {
+    let i = this.heap.length;
+    this.heap.push(cursor);
+    while (i > 0) {
+      const parent = (i - 1) >>> 1;
+      const prior = this.heap[parent] as RosterCursor;
+      if (prior.key <= cursor.key) break;
+      this.heap[i] = prior;
+      i = parent;
+    }
+    this.heap[i] = cursor;
+  }
+
+  next(): boolean {
+    const heap = this.heap;
     const first = heap[0];
-    const last = heap.pop();
-    if (first === undefined || last === undefined) break;
-    if (heap.length > 0) {
-      let current = 0;
-      while (current * 2 + 1 < heap.length) {
-        let child = current * 2 + 1;
-        if (
-          child + 1 < heap.length &&
-          (heap[child + 1]?.key ?? Infinity) < (heap[child]?.key ?? Infinity)
-        )
-          child++;
-        const next = heap[child];
-        if (next === undefined || next.key >= last.key) break;
-        heap[current] = next;
-        current = child;
-      }
-      heap[current] = last;
+    if (first === undefined) return false;
+    this.value = first.value;
+    const next = first.next() ? first : (heap.pop() as RosterCursor);
+    if (heap.length === 0) return true;
+    let i = 0;
+    for (let child = 1; child < heap.length; child = i * 2 + 1) {
+      if (
+        child + 1 < heap.length &&
+        (heap[child + 1] as RosterCursor).key < (heap[child] as RosterCursor).key
+      )
+        child++;
+      const smaller = heap[child] as RosterCursor;
+      if (smaller.key >= next.key) break;
+      heap[i] = smaller;
+      i = child;
     }
-    if (index++ >= start) yield first.binding;
-    const iterator = first.iterator;
-    if (iterator.next()) {
-      first.binding = iterator.value;
-      first.key = iterator.key;
-      push(first);
+    heap[i] = next;
+    return true;
+  }
+}
+
+/** Publicly materialized entries have one owner per 32 physical slots of a Pass.
+ * A sparse page keeps its one entry inline. Most rendering consumers read only numeric slots. */
+class ObservedPassPage {
+  used = 0;
+  previous = 0;
+  address = 0;
+  proven = 0;
+  currentNext: ObservedPassPage | undefined;
+  previousNext: ObservedPassPage | undefined;
+  private singleLane = -1;
+  private single: DispatchEntry | undefined;
+  private many: (DispatchEntry | undefined)[] | undefined;
+
+  constructor(
+    readonly pass: Pass,
+    readonly id: number,
+  ) {}
+
+  read(lane: number): DispatchEntry | undefined {
+    return this.singleLane === lane ? this.single : this.many?.[lane];
+  }
+  write(lane: number, entry: DispatchEntry): void {
+    if (this.many !== undefined) this.many[lane] = entry;
+    else if (this.singleLane === -1 || this.singleLane === lane) {
+      this.singleLane = lane;
+      this.single = entry;
+    } else {
+      this.many = [];
+      this.many[this.singleLane] = this.single;
+      this.many[lane] = entry;
+      this.singleLane = -1;
+      this.single = undefined;
+    }
+  }
+  retirePrevious(): void {
+    this.proven &= this.used;
+    const rows = this.many;
+    if (rows === undefined) return;
+    if ((this.used & (this.used - 1)) === 0) {
+      this.singleLane = 31 - Math.clz32(this.used);
+      this.single = rows[this.singleLane];
+      this.many = undefined;
+      return;
+    }
+    let expired = this.previous & ~this.used;
+    while (expired !== 0) {
+      rows[31 - Math.clz32(expired & -expired)] = undefined;
+      expired &= expired - 1;
     }
   }
 }
 
-/**
- * Dispatch entries keyed by (Pass, slot). An entry keeps its identity while
- * consecutive generations read it; one no generation read is dropped, so a
- * cold complete traversal never stays resident per binding.
- */
-interface StampedDispatchEntry {
-  entry: DispatchEntry;
-  generation: number;
-}
-
-/** Each slot keeps one observation while consecutive queries read it. */
 class DispatchEntries {
-  generation = 0;
-  private readonly entries = new Map<number, StampedDispatchEntry>();
+  private nextAddress = 0;
+  private readonly passes = new Map<Pass, Map<number, ObservedPassPage>>();
+  private current: ObservedPassPage | undefined;
+  private previous: ObservedPassPage | undefined;
+  private pass: Pass | undefined;
+  private pages: Map<number, ObservedPassPage> | undefined;
 
-  constructor(private readonly columns: BindingColumns) {}
+  issueAddress(): number {
+    return ++this.nextAddress;
+  }
+
+  private pagesOf(pass: Pass): Map<number, ObservedPassPage> | undefined {
+    if (this.pass !== pass) {
+      this.pass = pass;
+      this.pages = this.passes.get(pass);
+    }
+    return this.pages;
+  }
 
   rotate(): void {
-    this.generation++;
-    this.entries.forEach(expireDispatchEntry, this);
-  }
-
-  expire(stamped: StampedDispatchEntry, key: number): void {
-    if (stamped.generation < this.generation - 1) this.entries.delete(key);
-  }
-
-  get(pass: Pass, slot: number, renderableIndex: number): DispatchEntry {
-    const key = getOpaqueResourceIdentity(pass) * 4294967296 + slot;
-    const entityIndex = this.columns.entity(slot) as EntityHandle;
-    const layer = this.columns.layer[slot] ?? 0;
-    let stamped = this.entries.get(key);
-    let entry = stamped?.entry;
-    if (
-      entry === undefined ||
-      entry.renderableIndex !== renderableIndex ||
-      entry.entityIndex !== entityIndex ||
-      entry.layer !== layer
-    )
-      entry = dispatchEntry(pass, entityIndex, renderableIndex, layer);
-    if (stamped === undefined) {
-      stamped = { entry, generation: this.generation };
-      this.entries.set(key, stamped);
-    } else {
-      stamped.entry = entry;
-      stamped.generation = this.generation;
+    let page = this.previous;
+    while (page !== undefined) {
+      const next = page.previousNext;
+      page.previousNext = undefined;
+      if (page.used === 0) {
+        const pages = this.passes.get(page.pass);
+        pages?.delete(page.id);
+        if (pages?.size === 0) this.passes.delete(page.pass);
+      } else page.retirePrevious();
+      page = next;
     }
+    page = this.current;
+    this.previous = page;
+    this.current = undefined;
+    this.pass = undefined;
+    this.pages = undefined;
+    while (page !== undefined) {
+      page.previous = page.used;
+      page.used = 0;
+      page.previousNext = page.currentNext;
+      page.currentNext = undefined;
+      page = page.previousNext;
+    }
+  }
+
+  /** An observed row already carries its rank for this particular issuing frame. */
+  rank(frame: FrameDispatch, pass: Pass, slot: number): number | undefined {
+    const page = this.pagesOf(pass)?.get(Math.floor(slot / 32));
+    const lane = slot & 31;
+    return page?.address === frame.address && (page.proven & (1 << lane)) !== 0
+      ? page.read(lane)?.renderableIndex
+      : frame.slots.indexOfSlot(slot);
+  }
+
+  get(frame: FrameDispatch, pass: Pass, slot: number): DispatchEntry {
+    const id = Math.floor(slot / 32);
+    const lane = slot & 31;
+    const bit = 1 << lane;
+    let page = this.pagesOf(pass)?.get(id);
+    let entry = page?.read(lane);
+    if (
+      page === undefined ||
+      page.address !== frame.address ||
+      (page.proven & bit) === 0 ||
+      entry === undefined
+    ) {
+      entry = frame.resolveEntry(pass, slot, entry);
+      // Resolve can throw or re-enter through a foreign slot accessor. Publish only after it returns.
+      let pages = this.pagesOf(pass);
+      if (pages === undefined) {
+        pages = new Map();
+        this.pages = pages;
+        this.passes.set(pass, pages);
+      }
+      page = pages.get(id);
+      if (page === undefined) {
+        page = new ObservedPassPage(pass, id);
+        pages.set(id, page);
+      }
+      if (page.address !== frame.address) {
+        page.address = frame.address;
+        page.proven = 0;
+      }
+      page.write(lane, entry);
+      page.proven |= bit;
+    }
+    if (page.used === 0) {
+      page.currentNext = this.current;
+      this.current = page;
+    }
+    page.used |= bit;
     return entry;
   }
 
   clear(): void {
-    this.entries.clear();
-    this.generation++;
+    this.passes.clear();
+    this.current = undefined;
+    this.previous = undefined;
+    this.pass = undefined;
+    this.pages = undefined;
   }
 }
 
-function expireDispatchEntry(
-  this: DispatchEntries,
-  stamped: StampedDispatchEntry,
-  key: number,
-): void {
-  this.expire(stamped, key);
-}
-
 class FrameDispatch extends FrameListBase<DispatchEntry> {
+  readonly address: number;
   readonly length: number;
   constructor(
     private readonly root: Node<Work> | undefined,
     readonly slots: SceneSlotFrame,
     private readonly dispatchEntries: DispatchEntries,
+    private readonly bindingRoot: Node<Float64Array> | undefined,
   ) {
     super();
+    this.address = dispatchEntries.issueAddress();
     this.length = root?.count ?? 0;
   }
+  private pageId = -1;
+  private addresses: Float64Array | undefined;
   entry(pass: Pass, slot: number): DispatchEntry {
-    const renderableIndex = this.slots.indexOfSlot(slot);
-    if (renderableIndex === undefined) throw new Error('Missing material binding frame address');
-    return this.dispatchEntries.get(pass, slot, renderableIndex);
+    return this.dispatchEntries.get(this, pass, slot);
+  }
+
+  resolveEntry(pass: Pass, slot: number, prior?: DispatchEntry): DispatchEntry {
+    const rank = this.slots.indexOfSlot(slot);
+    if (rank === undefined) throw new Error('Missing material binding frame address');
+    const id = bindingPageId(slot);
+    if (this.pageId !== id) {
+      let node = this.bindingRoot;
+      while (node !== undefined && node.key !== id) node = id < node.key ? node.left : node.right;
+      this.addresses = node?.value;
+      this.pageId = id;
+    }
+    const page = this.addresses;
+    if (page === undefined) throw new Error('Missing captured material binding page');
+    const offset = bindingOffset(slot);
+    const entity = page[offset] as number;
+    const layer = page[offset + 1] as number;
+    return prior?.entityIndex === entity && prior.renderableIndex === rank && prior.layer === layer
+      ? prior
+      : dispatchEntry(pass, entity, rank, layer);
   }
   /** Complete synchronous consumers need no cursor for each already captured Pass roster. */
   override forEach(consume: (value: DispatchEntry, index: number) => void): void {
@@ -696,54 +860,38 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
       forEachCustomDispatch(this, iterator, consume);
       return;
     }
-    const cached = this.readTraversal();
-    if (cached !== undefined) {
-      for (let index = 0; index < cached.length; index++)
-        consume(cached[index] as DispatchEntry, index);
-      return;
-    }
-    const captured: DispatchEntry[] = [];
     let index = 0;
-    for (const node of nodes(this.root)) {
-      const work = node.value;
-      const bindings = consumedBindings.get(work);
-      if (bindings === undefined) {
-        for (const binding of workBindings(work)) {
-          const entry = this.entry(work.pass, binding);
-          captured.push(entry);
-          consume(entry, index++);
-        }
-      } else {
-        for (let cursor = 0; cursor < bindings.length; cursor++) {
-          const binding = bindings[cursor];
-          if (binding === undefined) continue;
-          const entry = this.entry(work.pass, binding);
-          captured.push(entry);
-          consume(entry, index++);
-        }
-      }
+    let pass: Pass;
+    const read = (slot: number) => consume(this.entry(pass, slot), index++);
+    for (const { value: work } of nodes(this.root)) {
+      pass = work.pass;
+      visitWorkBindings(work, read);
     }
-    this.completeTraversal(captured);
   }
-  /** Complete traversals are fixed for this root, slot roster and entry generation. */
-  private traversed: readonly DispatchEntry[] | undefined;
-  private traversedGeneration = -1;
   [Symbol.iterator](): IterableIterator<DispatchEntry> {
     return new FrameDispatchIterator(this, this.root);
   }
-  readTraversal(): readonly DispatchEntry[] | undefined {
-    if (
-      this.traversed !== undefined &&
-      this.traversedGeneration === this.dispatchEntries.generation
-    )
-      return this.traversed;
-    this.traversed = undefined;
-    return undefined;
+  /** Camera and shadow membership use the same captured physical addresses. */
+  visitPassRanks(lane: 'display' | 'shadow', visit: (index: number) => void): void {
+    const shadow = lane === 'shadow';
+    let pass: Pass;
+    const rank = (slot: number): void => {
+      const index = this.dispatchEntries.rank(this, pass, slot);
+      if (index === undefined) throw new Error('Missing material binding frame address');
+      visit(index);
+    };
+    for (const node of nodes(this.root)) {
+      const work = node.value;
+      pass = work.pass;
+      if ((pass.tags.LightMode === 'ShadowCaster') === shadow) visitWorkBindings(work, rank);
+    }
   }
-  completeTraversal(entries: readonly DispatchEntry[]): void {
-    this.traversed = entries;
-    this.traversedGeneration = this.dispatchEntries.generation;
+  somePass(matches: (pass: MaterialDispatchPass, material: MaterialResource) => boolean): boolean {
+    for (const { value } of nodes(this.root))
+      if (value.groups.count > 0 && matches(value.pass, value.resource)) return true;
+    return false;
   }
+
   /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
   *passWork(): Generator<DispatchPassWork> {
     for (const { value: work } of nodes(this.root)) yield this.passWorkOf(work);
@@ -757,9 +905,10 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
       pass: work.pass,
       resource: work.resource,
       count: work.groups.count,
-      slots: () => workBindings(work),
+      visitSlots: (visit) => visitWorkBindings(work, visit),
       *entries() {
-        for (const binding of workBindings(work)) yield dispatch.entry(work.pass, binding);
+        const slots = workSlots(work);
+        while (slots.next()) yield dispatch.entry(work.pass, slots.value);
       },
     };
   }
@@ -784,18 +933,32 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     for (const { value, key, queue } of nodes(this.root))
       yield [`${queue}:${key}`, this.passWorkOf(value)];
   }
+  /** Number of ordinary commands before a producer appended at the end of this queue. */
+  endOfQueue(queue: number): number {
+    let rank = 0;
+    for (let node = this.root; node !== undefined; ) {
+      if (node.queue > queue) node = node.left;
+      else {
+        rank += (node.left?.count ?? 0) + node.weight;
+        node = node.right;
+      }
+    }
+    return rank;
+  }
   at(index: number): DispatchEntry | undefined {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
     if (index < 0 || index >= this.length) return undefined;
     const work = at(this.root, index);
     if (work === undefined) return undefined;
-    const bindings = consumedBindings.get(work.node.value);
-    const member =
-      bindings === undefined
-        ? mergeWorkBindings(work.node.value, work.offset, work.offset + 1).next().value
-        : bindings[work.offset];
-    return member === undefined ? undefined : this.entry(work.node.value.pass, member);
+    const current = work.node.value;
+    if (current.groups.size === 1) {
+      const row = at(current.groups.value, work.offset);
+      const slot = row?.node.value.values[row.offset];
+      return slot === undefined ? undefined : this.entry(current.pass, slot);
+    }
+    const slots = new MergedBindings(current, work.offset);
+    return slots.next() ? this.entry(current.pass, slots.value) : undefined;
   }
   override slice(start = 0, end = this.length): DispatchEntry[] {
     start = Math.trunc(start) || 0;
@@ -803,19 +966,116 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     start = start < 0 ? Math.max(0, this.length + start) : Math.min(start, this.length);
     end = end < 0 ? Math.max(0, this.length + end) : Math.min(end, this.length);
     const result: DispatchEntry[] = [];
-    for (const work of range(this.root, start, end))
-      for (const member of workBindings(work.value, work.start, work.end))
-        result.push(this.entry(work.value.pass, member));
+    for (const { value, start: first, end: last } of range(this.root, start, end)) {
+      const slots = workSlots(value, first);
+      for (let i = first; i < last && slots.next(); i++)
+        result.push(this.entry(value.pass, slots.value));
+    }
     return result;
   }
 }
 
-/** One private completion cursor per walk; only a complete walk publishes its rows. */
+/** Each walk owns its cursor and reads the issuing frame. */
 const nativeDispatchIterator = FrameDispatch.prototype[Symbol.iterator];
+const nativeDispatchAt = FrameDispatch.prototype.at;
+
+/** One generated queue inserted into the captured material commands at its stable tie boundary. */
+class GeneratedQueue extends FrameListBase<DispatchEntry> {
+  readonly length: number;
+  constructor(
+    private readonly base: FrameDispatch,
+    private readonly offset: number,
+    private readonly added: readonly DispatchEntry[],
+  ) {
+    super();
+    this.length = base.length + added.length;
+  }
+  at(index: number): DispatchEntry | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    if (index < 0 || index >= this.length) return undefined;
+    if (index < this.offset) return this.base.at(index);
+    if (index < this.offset + this.added.length) return this.added[index - this.offset];
+    return this.base.at(index - this.added.length);
+  }
+  *[Symbol.iterator](): IterableIterator<DispatchEntry> {
+    let rank = 0;
+    for (const entry of this.base) {
+      if (rank++ === this.offset) yield* this.added;
+      yield entry;
+    }
+    if (rank === this.offset) yield* this.added;
+  }
+}
+
+/** A custom traversal publishes its original draw rows before the view producer runs. */
+export function captureGeneratedQueueSource(base: DispatchList): DispatchList {
+  return base instanceof FrameDispatch &&
+    nativePassRoster(base) !== undefined &&
+    !Object.hasOwn(base, 'at') &&
+    Object.getOwnPropertyDescriptor(FrameDispatch.prototype, 'at')?.value === nativeDispatchAt
+    ? base
+    : [...base];
+}
+
+/** Keep the source pass order and append equal-queue generated commands after existing ties. */
+export function appendGeneratedQueue(
+  base: DispatchList,
+  added: readonly DispatchEntry[],
+): DispatchList {
+  const queue = added[0]?.queue;
+  if (base instanceof FrameDispatch) {
+    if (queue === undefined) return base;
+    if (Number.isFinite(queue) && added.every((entry) => entry.queue === queue))
+      return new GeneratedQueue(base, base.endOfQueue(queue), added);
+  }
+  return [...base, ...added].sort((a, b) => a.queue - b.queue);
+}
 
 /** A captured root with the native walk: one identity always lists the same Pass members. */
 export function isCapturedDispatch(list: DispatchList): boolean {
   return list instanceof FrameDispatch && list[Symbol.iterator] === nativeDispatchIterator;
+}
+
+/** Classify the occupied pass rows without expanding their member instances. */
+export function someCapturedMaterialPass(
+  list: Iterable<DispatchEntry>,
+  matches: (pass: MaterialDispatchPass, material: MaterialResource) => boolean,
+): boolean | undefined {
+  return list instanceof FrameDispatch && list[Symbol.iterator] === nativeDispatchIterator
+    ? list.somePass(matches)
+    : undefined;
+}
+
+/** Native pass ranks address this exact captured physical row roster. */
+export function capturedDispatchAddresses(list: DispatchList, slots: SceneSlotFrame): boolean {
+  const roster = nativePassRoster(list);
+  return (
+    roster !== undefined && roster.identities === slots.identities && roster.length === slots.length
+  );
+}
+
+function nativePassRoster(list: DispatchList): SceneSlotFrame | undefined {
+  if (
+    !(list instanceof FrameDispatch) ||
+    Object.getPrototypeOf(list) !== FrameDispatch.prototype ||
+    Object.hasOwn(list, Symbol.iterator) ||
+    Object.getOwnPropertyDescriptor(FrameDispatch.prototype, Symbol.iterator)?.value !==
+      nativeDispatchIterator
+  )
+    return undefined;
+  return list.slots;
+}
+
+/** A borrowed or overridden iterator keeps its own observable traversal. */
+export function visitCapturedPassRanks(
+  list: DispatchList,
+  lane: 'display' | 'shadow',
+  visit: (index: number) => void,
+): boolean {
+  if (!(list instanceof FrameDispatch) || nativePassRoster(list) === undefined) return false;
+  list.visitPassRanks(lane, visit);
+  return true;
 }
 
 /** Preserve a custom iterator's single lookup, receiver and IteratorClose. */
@@ -830,80 +1090,43 @@ function forEachCustomDispatch(
 }
 
 class FrameDispatchIterator implements IterableIterator<DispatchEntry> {
-  private started = false;
-  private done = false;
-  private cached: readonly DispatchEntry[] | undefined;
-  private index = 0;
-  private captured: DispatchEntry[] | undefined;
-  private works: Iterator<Node<Work>> | undefined;
-  private work: Work | undefined;
-  private bindings: Iterator<number> | undefined;
+  private works: IterableIterator<Node<Work>> | undefined;
+  private pass: Pass | undefined;
+  private slots: RosterCursor | MergedBindings | undefined;
   private readonly result: { value: DispatchEntry | undefined; done: boolean } = {
     value: undefined,
     done: false,
   };
   constructor(
     private frame: FrameDispatch | undefined,
-    private root: Node<Work> | undefined,
-  ) {}
+    root: Node<Work> | undefined,
+  ) {
+    this.works = nodes(root);
+  }
   next(): IteratorResult<DispatchEntry> {
-    if (this.done) return this.result as IteratorResult<DispatchEntry>;
-    const frame = this.frame as FrameDispatch;
-    if (!this.started) {
-      this.started = true;
-      this.cached = frame.readTraversal();
-      if (this.cached === undefined) {
-        this.captured = [];
-        this.works = nodes(this.root);
-      }
-      this.root = undefined;
-    }
-    if (this.cached !== undefined) {
-      if (this.index >= this.cached.length) return this.return();
-      this.result.value = this.cached[this.index++];
-      return this.result as IteratorResult<DispatchEntry>;
-    }
+    if (this.works === undefined) return this.result as IteratorResult<DispatchEntry>;
     try {
-      return this.advance(frame);
+      while (this.slots === undefined || !this.slots.next()) {
+        const next = this.works.next();
+        if (next.done) return this.return();
+        const work = next.value.value;
+        this.pass = work.pass;
+        this.slots = workSlots(work);
+      }
+      this.result.value = (this.frame as FrameDispatch).entry(this.pass as Pass, this.slots.value);
+      return this.result as IteratorResult<DispatchEntry>;
     } catch (cause) {
       this.return();
       throw cause;
     }
   }
-  private advance(frame: FrameDispatch): IteratorResult<DispatchEntry> {
-    for (;;) {
-      if (this.bindings !== undefined) {
-        const binding = this.bindings.next();
-        if (!binding.done) {
-          const entry = frame.entry((this.work as Work).pass, binding.value);
-          (this.captured as DispatchEntry[]).push(entry);
-          this.result.value = entry;
-          return this.result as IteratorResult<DispatchEntry>;
-        }
-        this.bindings = undefined;
-      }
-      const step = (this.works as Iterator<Node<Work>>).next();
-      if (step.done) {
-        frame.completeTraversal(this.captured as DispatchEntry[]);
-        return this.return();
-      }
-      this.work = step.value.value;
-      this.bindings = workBindings(this.work)[Symbol.iterator]();
-    }
-  }
   return(): IteratorResult<DispatchEntry> {
-    const bindings = this.bindings;
-    this.done = true;
     this.frame = undefined;
-    this.root = undefined;
-    this.cached = undefined;
-    this.captured = undefined;
     this.works = undefined;
-    this.work = undefined;
-    this.bindings = undefined;
+    this.slots = undefined;
+    this.pass = undefined;
     this.result.value = undefined;
     this.result.done = true;
-    bindings?.return?.();
     return this.result as IteratorResult<DispatchEntry>;
   }
   [Symbol.iterator](): IterableIterator<DispatchEntry> {
@@ -968,7 +1191,8 @@ interface BindingGroup {
   readonly source: MaterialBinding;
   readonly worldId: number;
   readonly identity: number;
-  readonly mesh: MeshExpression | undefined;
+  readonly meshHandle: number | undefined;
+  sourceHandles: ReadonlySet<number> | undefined;
   readonly held: readonly MaterialResource[];
   readonly key: string;
   readonly geometry: MeshMaterialGeometry;
@@ -987,10 +1211,29 @@ interface BindingGroup {
   /** Ascending joins not yet appended to each roster; see {@link stageJoin}. */
   readonly staged: Record<GroupRoster, number[]>;
 }
-interface MeshExpression {
-  readonly handle: number;
-  holders: number;
+function attachGroup(
+  index: Map<number, Set<BindingGroup>>,
+  key: number,
+  group: BindingGroup,
+): void {
+  let groups = index.get(key);
+  if (groups === undefined) {
+    groups = new Set();
+    index.set(key, groups);
+  }
+  groups.add(group);
 }
+
+function detachGroup(
+  index: Map<number, Set<BindingGroup>>,
+  key: number,
+  group: BindingGroup,
+): void {
+  const groups = index.get(key);
+  groups?.delete(group);
+  if (groups?.size === 0) index.delete(key);
+}
+
 type GroupRoster = 'members' | 'ownCasters' | 'prepared';
 const GROUP_ROSTERS: readonly GroupRoster[] = ['members', 'ownCasters', 'prepared'];
 /**
@@ -1142,29 +1385,32 @@ interface BindingInputs {
 }
 /** A derived phase over the one binding authority; it owns no bindings or holds. */
 class MaterialDemandProjection {
-  readonly entries: DispatchEntries;
+  readonly entries = new DispatchEntries();
   queryRoot: Node<Work> | undefined;
   queryDirty = true;
   queryWork = new Map<MaterialResource, QueryWork>();
   groupResources = new Map<BindingGroup, readonly MaterialResource[]>();
   readonly dirtyGroups = new Set<BindingGroup>();
+  readonly dirtyPasses = new Set<MaterialResource>();
   fullQuery = true;
   previous: FrameDispatch | undefined;
   materialFrame = new MaterialFrame(undefined);
   selection: RenderResidencySelection | undefined;
 
-  constructor(
-    readonly phase: RenderResidencySelection['phase'],
-    bindings: BindingColumns,
-  ) {
-    this.entries = new DispatchEntries(bindings);
-  }
+  constructor(readonly phase: RenderResidencySelection['phase']) {}
   invalidate(): void {
     this.queryDirty = true;
     this.queryRoot = undefined;
     this.previous = undefined;
     this.fullQuery = true;
     this.dirtyGroups.clear();
+    this.dirtyPasses.clear();
+  }
+  invalidatePasses(resource: MaterialResource): void {
+    if (this.fullQuery || !this.queryWork.has(resource)) return;
+    this.queryDirty = true;
+    this.previous = undefined;
+    this.dirtyPasses.add(resource);
   }
   invalidateGroup(group: BindingGroup): void {
     this.queryDirty = true;
@@ -1191,6 +1437,8 @@ class MaterialDemandProjection {
     this.materialFrame = updated.materials;
     this.groupResources.delete(group);
     this.dirtyGroups.delete(group);
+    for (const resource of affected.keys())
+      if (!this.queryWork.has(resource)) this.dirtyPasses.delete(resource);
     this.previous = undefined;
   }
   clear(): void {
@@ -1220,15 +1468,16 @@ export class MaterialDispatch {
     if (this.querying) throw new Error('Pass sources changed during material query');
   }
   private readonly groups = new Map<string, BindingGroup>();
-  private readonly meshes = new Map<string, MeshExpression>();
+  private readonly meshGroups = new Map<number, Set<BindingGroup>>();
+  private readonly materialSourceGroups = new Map<number, Set<BindingGroup>>();
   private readonly bindings = new BindingColumns();
   private readonly holds = new Map<MaterialResource, number>();
   private readonly unpublished = new Set<MaterialResource>();
   private meshFrame: MeshFrame | undefined;
   private revision = 0;
   private sourceMaterials = new MaterialFrame(undefined);
-  private readonly active = new MaterialDemandProjection('active', this.bindings);
-  private readonly resident = new MaterialDemandProjection('resident', this.bindings);
+  private readonly active = new MaterialDemandProjection('active');
+  private readonly resident = new MaterialDemandProjection('resident');
 
   private select(
     projection: MaterialDemandProjection,
@@ -1299,7 +1548,7 @@ export class MaterialDispatch {
     }
   }
 
-  /** Adopt named Mesh changes without visiting their binding groups or members. */
+  /** Mesh topology changes reach the live binding expressions that consume that Mesh. */
   prepare(meshes: MeshFrame): void {
     this.assertSourceWritable();
     const changed = (
@@ -1308,8 +1557,8 @@ export class MaterialDispatch {
     ) => {
       const source = after ?? before;
       if (source === undefined) return;
-      const expression = this.meshes.get(`${source.handle}`);
-      if (expression === undefined) return;
+      const groups = this.meshGroups.get(source.handle);
+      if (groups === undefined) return;
       if (after === undefined) throw new Error('Bound Mesh has no accepted geometry version');
       if (
         before?.materials === after.materials &&
@@ -1319,13 +1568,22 @@ export class MaterialDispatch {
         retainMeshMaterialBindings(before, after);
         return;
       }
-      this.invalidateQuery();
+      for (const group of groups) {
+        this.updateSourceHandles(group, after);
+        this.invalidateGroup(group);
+      }
       this.revision++;
     };
     if (this.meshFrame === undefined) {
-      // First adoption reads the actual bound Mesh sources, never their groups.
-      for (const expression of this.meshes.values())
-        changed(undefined, meshes.get(expression.handle));
+      if (this.meshGroups.size > 0) {
+        if (this.resolveMaterial !== undefined)
+          for (const [handle, groups] of this.meshGroups) {
+            const mesh = meshes.get(handle);
+            for (const group of groups) this.updateSourceHandles(group, mesh);
+          }
+        this.invalidateQuery();
+        this.revision++;
+      }
     } else if (this.meshFrame !== meshes) meshes.changesSince(this.meshFrame, changed);
     this.meshFrame = meshes;
     for (const resource of this.unpublished)
@@ -1335,6 +1593,26 @@ export class MaterialDispatch {
         this.retireUnheldMaterial(this.resident, resource);
       }
     this.unpublished.clear();
+  }
+
+  /** Index actual resolver inputs. Direct materials already have a resource-addressed Pass roster. */
+  private updateSourceHandles(group: BindingGroup, mesh: MeshGeometry | undefined): void {
+    if (this.resolveMaterial === undefined) return;
+    const previous = group.sourceHandles;
+    let next: Set<number> | undefined;
+    if (mesh !== undefined) {
+      for (let slot = 0; slot < mesh.materialSlots.length; slot++) {
+        const handle = meshMaterialSourceHandle(mesh, slot, group.source.materialOverrides?.[slot]);
+        if (handle === undefined) continue;
+        next ??= new Set();
+        next.add(handle);
+        if (!previous?.has(handle)) attachGroup(this.materialSourceGroups, handle, group);
+      }
+    }
+    if (previous !== undefined)
+      for (const handle of previous)
+        if (!next?.has(handle)) detachGroup(this.materialSourceGroups, handle, group);
+    group.sourceHandles = next;
   }
 
   adopt(material: MaterialResource): void {
@@ -1348,11 +1626,24 @@ export class MaterialDispatch {
       current,
       resident?.bindings ?? 0,
     );
-    if (resident !== undefined && resident.passes !== current.passes) this.resident.invalidate();
     this.sourceMaterials = this.sourceMaterials.withAccepted(current, 0);
     this.unpublished.add(material);
-    if (previous !== undefined && current.passes !== previous.passes) {
-      this.invalidateQuery();
+    const previousHandle = (previous ?? resident)?.snapshot.materialHandle;
+    const handle = current.snapshot.materialHandle;
+    const passChanged =
+      (previous !== undefined && previous.passes !== current.passes) ||
+      (resident !== undefined && resident.passes !== current.passes);
+    if (passChanged || previousHandle !== handle) {
+      this.active.invalidatePasses(material);
+      this.resident.invalidatePasses(material);
+      if (previousHandle !== undefined && previousHandle !== handle)
+        for (const group of this.materialSourceGroups.get(previousHandle) ?? []) {
+          this.updateSourceHandles(group, this.meshFrame?.get(group.meshHandle));
+          this.invalidateGroup(group);
+        }
+      if (handle !== undefined)
+        for (const group of this.materialSourceGroups.get(handle) ?? [])
+          this.invalidateGroup(group);
       this.revision++;
     }
   }
@@ -1378,8 +1669,8 @@ export class MaterialDispatch {
       // Pose-only republication keeps every material and membership fact; the
       // retained query root, ranks and dispatch entries stay valid.
       if (
-        columns.identity[slot] === identity &&
-        columns.layer[slot] === (snapshot.layer ?? 0) &&
+        columns.entity(slot) === identity &&
+        columns.layer(slot) === (snapshot.layer ?? 0) &&
         columns.flags[slot] === flags &&
         group.key === tryMaterialBindingKey(snapshot)
       ) {
@@ -1398,18 +1689,7 @@ export class MaterialDispatch {
       let group = this.groups.get(key);
       if (group === undefined) {
         const createMaterialBindingGroup = (): BindingGroup => {
-          let mesh: MeshExpression | undefined;
-          if (overrides !== undefined && snapshot.assetHandle !== undefined) {
-            const meshKey = `${snapshot.assetHandle}`;
-            mesh = this.meshes.get(meshKey);
-            if (mesh === undefined) {
-              mesh = {
-                handle: snapshot.assetHandle,
-                holders: 0,
-              };
-              this.meshes.set(meshKey, mesh);
-            }
-          }
+          const meshHandle = overrides === undefined ? undefined : snapshot.assetHandle;
           const source: MaterialBinding = {
             material: snapshot.material,
             materials: direct,
@@ -1417,7 +1697,7 @@ export class MaterialDispatch {
             ...(overrides === undefined ? {} : { materialOverrides: overrides }),
           };
           const held =
-            overrides === undefined || mesh === undefined
+            overrides === undefined || meshHandle === undefined
               ? direct
               : [
                   ...new Set(
@@ -1433,7 +1713,8 @@ export class MaterialDispatch {
             source,
             worldId: 0,
             identity: getOpaqueResourceIdentity(source),
-            mesh,
+            meshHandle,
+            sourceHandles: undefined,
             held,
             key,
             geometry,
@@ -1445,7 +1726,10 @@ export class MaterialDispatch {
             staged: { members: [], ownCasters: [], prepared: [] },
           };
           this.groups.set(key, created);
-          if (mesh !== undefined) mesh.holders++;
+          if (meshHandle !== undefined) {
+            attachGroup(this.meshGroups, meshHandle, created);
+            this.updateSourceHandles(created, this.meshFrame?.get(meshHandle));
+          }
           return created;
         };
         group = createMaterialBindingGroup();
@@ -1456,9 +1740,7 @@ export class MaterialDispatch {
         this.unpublished.delete(resource);
       }
       group.holders++;
-      columns.ensure(slot);
-      columns.identity[slot] = identity;
-      columns.layer[slot] = snapshot.layer ?? 0;
+      columns.add(slot, identity, snapshot.layer ?? 0);
       columns.flags[slot] = flags;
       columns.groups[slot] = group;
       columns.count++;
@@ -1518,14 +1800,13 @@ export class MaterialDispatch {
     const columns = this.bindings;
     const group = columns.groups[slot];
     if (group === undefined) return;
-    leaveGroup(group, columns.flags[slot] ?? 0, columns.identity[slot] ?? 0);
+    leaveGroup(group, columns.flags[slot] ?? 0, columns.entity(slot));
+    columns.remove(slot);
     if (--group.holders === 0) {
       this.groups.delete(group.key);
-      const mesh = group.mesh;
-      if (mesh !== undefined) {
-        if (--mesh.holders === 0) {
-          this.meshes.delete(`${mesh.handle}`);
-        }
+      if (group.meshHandle !== undefined) {
+        detachGroup(this.meshGroups, group.meshHandle, group);
+        this.updateSourceHandles(group, undefined);
       }
       for (const resource of group.held) this.release(resource);
     }
@@ -1538,7 +1819,7 @@ export class MaterialDispatch {
 
   private clearEmptyMaterialRoots(): void {
     if (this.bindings.count === 0) {
-      this.bindings.groups.length = 0;
+      this.bindings.clear();
       this.active.clear();
       this.resident.clear();
       this.recentBinding = undefined;
@@ -1619,7 +1900,12 @@ export class MaterialDispatch {
         (projection.previous.slots !== slots &&
           projection.previous.slots.identities !== slots.identities)
       )
-        projection.previous = new FrameDispatch(projection.queryRoot, slots, projection.entries);
+        projection.previous = new FrameDispatch(
+          projection.queryRoot,
+          slots,
+          projection.entries,
+          this.bindings.capture(),
+        );
       assertResidencySelection(selection, projection.phase);
       projection.selection = selection;
       return projection.previous;
@@ -1685,13 +1971,14 @@ export class MaterialDispatch {
     projection.queryWork = work;
     projection.groupResources = groupResources;
     projection.dirtyGroups.clear();
+    projection.dirtyPasses.clear();
     projection.fullQuery = false;
     projection.queryDirty = false;
     projection.previous = undefined;
   }
 
   /**
-   * Re-project only groups whose membership changed since the last query.
+   * Re-project changed Passes and groups whose effective bindings or membership changed.
    * Equivalent to a complete query: same effective resources (including Mesh
    * expression bindings), member roots, Pass roots and binding counts.
    */
@@ -1706,25 +1993,39 @@ export class MaterialDispatch {
     const sources = this.sourceMaterials;
     const resolve = this.resolveMaterial;
     const pendingBindings: MeshMaterialBindingWrite[] = [];
-    const work = new Map(projection.queryWork);
-    const groupResources = new Map(projection.groupResources);
+    // Stage only touched keys. Readers and a failed source fence keep observing the
+    // last admitted association tables until this transaction publishes its roots.
+    const work = new Map<MaterialResource, QueryWork>();
+    const groupResources = new Map<BindingGroup, readonly MaterialResource[]>();
     const affected = new Map<MaterialResource, readonly Pass[]>();
     let materials = projection.materialFrame;
+    for (const resource of projection.dirtyPasses) {
+      const value = projection.queryWork.get(resource);
+      if (value === undefined) continue;
+      affected.set(resource, value.passes);
+      work.set(resource, value);
+    }
     for (const group of dirty) {
-      for (const resource of groupResources.get(group) ?? []) {
-        const value = work.get(resource);
+      for (const resource of projection.groupResources.get(group) ?? []) {
+        const value = work.get(resource) ?? projection.queryWork.get(resource);
         if (value === undefined) continue;
         if (!affected.has(resource)) affected.set(resource, value.passes);
         work.set(resource, removeGroupWork(value, group.identity));
       }
-      groupResources.delete(group);
       if (this.groups.get(group.key) !== group || !this.hasDemand(group, selection)) continue;
       const { mesh, resources } = this.effectiveResources(group, meshes, resolve, pendingBindings);
       groupResources.set(group, resources);
       for (const resource of resources) {
-        const value = work.get(resource);
-        if (value === undefined)
+        const value = work.get(resource) ?? projection.queryWork.get(resource);
+        if (value === undefined) {
           materials = this.admit(projection, materials, resource, mesh, resolve);
+        } else if (
+          mesh !== undefined &&
+          resolve !== undefined &&
+          materials.get(resource)?.snapshot !== resource.snapshot
+        ) {
+          materials = materials.with(resource);
+        }
         if (!affected.has(resource)) affected.set(resource, value?.passes ?? []);
         work.set(resource, addGroupWork(value ?? EMPTY_WORK, group));
       }
@@ -1747,11 +2048,20 @@ export class MaterialDispatch {
       throw new Error('Pass sources changed during material query');
     validate?.();
     for (const { contexts, geometry, value } of pendingBindings) contexts.set(geometry, value);
+    for (const resource of affected.keys()) {
+      const value = work.get(resource);
+      if (value === undefined) projection.queryWork.delete(resource);
+      else projection.queryWork.set(resource, value);
+    }
+    for (const group of dirty) {
+      const resources = groupResources.get(group);
+      if (resources === undefined) projection.groupResources.delete(group);
+      else projection.groupResources.set(group, resources);
+    }
     projection.queryRoot = root;
     projection.materialFrame = materials;
-    projection.queryWork = work;
-    projection.groupResources = groupResources;
     projection.dirtyGroups.clear();
+    projection.dirtyPasses.clear();
     projection.previous = undefined;
     return true;
   }
@@ -1763,8 +2073,8 @@ export class MaterialDispatch {
     resolve: MeshMaterialResolver | undefined,
     pending: MeshMaterialBindingWrite[],
   ): { mesh: MeshGeometry | undefined; resources: MaterialResource[] } {
-    const mesh = group.mesh === undefined ? undefined : meshes?.get(group.mesh.handle);
-    if (group.mesh !== undefined && mesh === undefined)
+    const mesh = group.meshHandle === undefined ? undefined : meshes?.get(group.meshHandle);
+    if (group.meshHandle !== undefined && mesh === undefined)
       throw new Error('Mesh Pass query requires accepted geometry');
     const effective =
       mesh === undefined

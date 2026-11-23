@@ -141,6 +141,24 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
       return undefined;
     return list.#rowReader;
   }
+  /** User-provided iterators, sources or mapping functions keep their ordinary read order. */
+  static iterationReaderOf(list: Iterable<unknown>): object | undefined {
+    if (!(#rowReader in list)) return undefined;
+    const prototype = Object.getPrototypeOf(list);
+    if (
+      (prototype !== FrameProjection.prototype &&
+        prototype !== RetainedFrameProjection.prototype) ||
+      Object.getOwnPropertyDescriptor(list, Symbol.iterator) !== undefined ||
+      (prototype === RetainedFrameProjection.prototype &&
+        Object.getOwnPropertyDescriptor(prototype, Symbol.iterator) !== undefined) ||
+      Object.getOwnPropertyDescriptor(FrameProjection.prototype, Symbol.iterator)?.value !==
+        frameProjectionIterator ||
+      Object.getOwnPropertyDescriptor(list, 'source')?.value !== list.#source ||
+      Object.getOwnPropertyDescriptor(list, 'project')?.value !== list.#project
+    )
+      return undefined;
+    return list.#rowReader;
+  }
   get length(): number {
     return this.source.length;
   }
@@ -157,6 +175,7 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
 }
 
 const frameProjectionAt = FrameProjection.prototype.at;
+const frameProjectionIterator = FrameProjection.prototype[Symbol.iterator];
 const frameProjectionLength = Object.getOwnPropertyDescriptor(
   FrameProjection.prototype,
   'length',
@@ -194,10 +213,18 @@ export class ProjectionIterator<T, U> implements IterableIterator<U> {
 }
 
 /** Sparse source facts the retained scene root indexes while writing its rows. */
-export type SparseRowKind = 'terrain' | 'capsule' | 'skin' | 'pointsLines' | 'raster';
+export type SparseRowKind =
+  | 'terrain'
+  | 'capsule'
+  | 'skin'
+  | 'pointsLines'
+  | 'raster'
+  | 'viewSource';
 
 export interface RetainedRowFacts<U> {
   readonly lodCandidateCount: number;
+  readonly terrainRowCount?: number | undefined;
+  readonly allDefaultRenderLayers?: boolean;
   /** Captured raster membership proof; absent for ordinary/custom projections. */
   readonly rasterRowCount?: number | undefined;
   /** Rows carrying the sparse source fact, in row order. */

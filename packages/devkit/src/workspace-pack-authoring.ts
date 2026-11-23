@@ -150,6 +150,37 @@ export function createWorkspacePackAuthoring(options: {
     }
     return prepared;
   };
+  const requireCatalog = () => {
+    const catalog = options.catalog?.();
+    if (!catalog) throw new Error('Generation requires an accepted project asset source');
+    return catalog;
+  };
+  const publicationLookup = (
+    catalog: CatalogSource,
+    signal: AbortSignal,
+    registry?: AssetRegistry,
+  ) => {
+    const enumerate = async () =>
+      (await (registry?.enumerateCatalog() ?? catalog.enumerate())).unwrap();
+    let rows: Awaited<ReturnType<typeof enumerate>> | undefined;
+    return async (guid: string) => {
+      rows ??= await enumerate();
+      const entry = () => registry?.catalogEntry(guid) ?? rows?.find((row) => row.guid === guid);
+      if (!entry()?.publication && catalog.get) {
+        (await catalog.get(guid)).unwrap();
+        signal.throwIfAborted();
+        if (registry !== undefined) (await registry.reconcileCatalog()).unwrap();
+        rows = await enumerate();
+      }
+      signal.throwIfAborted();
+      const row = entry();
+      return {
+        rows,
+        row,
+        digest: row?.publication?.outputs.find((output) => output.guid === guid)?.digest,
+      };
+    };
+  };
   const generate = async ({
     document,
     values,
@@ -184,18 +215,9 @@ export function createWorkspacePackAuthoring(options: {
         }
       }
       if (refs.size) {
-        const catalog = options.catalog?.();
-        if (!catalog) throw new Error('Generation requires an accepted project asset source');
-        let entries = (await catalog.enumerate()).unwrap();
+        const publication = publicationLookup(requireCatalog(), signal);
         for (const ref of refs) {
-          let row = entries.find((entry) => entry.guid === ref);
-          if (!row?.publication && catalog.get) {
-            (await catalog.get(ref)).unwrap();
-            entries = (await catalog.enumerate()).unwrap();
-            row = entries.find((entry) => entry.guid === ref);
-          }
-          signal.throwIfAborted();
-          const digest = row?.publication?.outputs.find((output) => output.guid === ref)?.digest;
+          const { row, digest } = await publication(ref);
           if (!digest || !row) throw new Error(`Missing saved dependency ${ref}`);
           dependencies[ref] = digest;
           observe(document.sourcePath, row.sourcePath);
@@ -258,22 +280,17 @@ export function createWorkspacePackAuthoring(options: {
           const text = AssetGuid.format(guid);
           let read = reads.get(text);
           if (!read) {
-            const catalog = options.catalog?.();
-            if (!catalog) throw new Error('Generation requires an accepted project asset source');
+            const catalog = requireCatalog();
             if (!registry) {
               registry = new AssetRegistry();
               reader = createAssetRuntimeAssembly(undefined, { registry, catalogSource: catalog });
               reader.unwrap();
             }
-            let entries = (await registry.enumerateCatalog()).unwrap();
-            if (!registry.catalogEntry(text)?.publication && catalog.get) {
-              (await catalog.get(text)).unwrap();
-              signal.throwIfAborted();
-              (await registry.reconcileCatalog()).unwrap();
-              entries = (await registry.enumerateCatalog()).unwrap();
-            }
-            const row = registry.catalogEntry(text);
-            const digest = row?.publication?.outputs.find((output) => output.guid === text)?.digest;
+            const { rows: entries, digest } = await publicationLookup(
+              catalog,
+              signal,
+              registry,
+            )(text);
             if (!digest) throw new Error(`Generation dependency has no saved publication: ${text}`);
             if (!reader) throw new Error('Generation asset reader is unavailable');
             const retained = await retainAssetPublications(

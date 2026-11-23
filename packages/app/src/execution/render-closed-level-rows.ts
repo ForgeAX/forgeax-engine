@@ -4,6 +4,7 @@ import {
   type ClosedLevelAssetPublication,
   decodeClosedLevelRows,
   publicationDependencies,
+  type RenderPublication,
   type RenderPublicationRows,
   sameClosedLevelRows,
 } from '@forgeax/engine-render/internal';
@@ -15,6 +16,7 @@ import {
   type ClosedLevelRowRequest,
   sameClosedLevelRowIdentity,
 } from './closed-level-row-protocol';
+import { serializableDetail } from './worker-error';
 
 type Rows = ReturnType<ReturnType<typeof decodeClosedLevelRows>['unwrap']>;
 type Admission = ClosedLevelRowReceipt['result'];
@@ -51,6 +53,7 @@ export class RenderClosedLevelRows {
     private readonly retainAsset: (
       asset: ClosedLevelAssetPublication,
     ) => ClosedLevelAssetHold | undefined,
+    private readonly installPrograms?: (programs: RenderPublication['programs']) => void,
   ) {}
 
   receive({ id, serial, operation }: ClosedLevelRowRequest): ClosedLevelRowReceipt {
@@ -168,6 +171,15 @@ export class RenderClosedLevelRows {
     for (const [handle, revision] of stream.requiredVersions)
       if (stream.assets.get(handle)?.version !== revision) return reject('assets');
     if (!this.assetsCurrent(stream)) return reject('assets');
+    if (operation.programs !== undefined) {
+      if (this.installPrograms === undefined || !Array.isArray(operation.programs))
+        return reject('assets');
+      try {
+        this.installPrograms(operation.programs);
+      } catch (cause) {
+        return { ok: false, reason: 'assets', detail: serializableDetail(cause) };
+      }
+    }
     stream.sealed = true;
     return accepted;
   }

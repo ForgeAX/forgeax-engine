@@ -41,14 +41,15 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['assetHandle']>().toEqualTypeOf<AssetHandle<'mesh'>>();
   });
 
-  it('MeshRenderer data shape carries materials, lighting and pipeline preparation', () => {
+  it('MeshRenderer data shape carries materials, lighting, culling and pipeline preparation', () => {
     type Data = ShapeOf<SchemaOf<typeof MeshRenderer>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers' | 'frustumCulled'
     >();
     expectTypeOf<Data['materials']>().toEqualTypeOf<readonly AssetHandle<'material'>[]>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
     expectTypeOf<Data['renderLayers']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['frustumCulled']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['preparePipelines']>().toEqualTypeOf<boolean>();
   });
 
@@ -74,6 +75,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     type Data = ShapeOf<SchemaOf<typeof Camera>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
       | 'cullMask'
+      | 'orderOpaqueByLayer'
       | 'taaFlickering'
       | 'fov'
       | 'aspect'
@@ -113,6 +115,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     >();
     expectTypeOf<Data['fov']>().toEqualTypeOf<number>();
     expectTypeOf<Data['cullMask']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['orderOpaqueByLayer']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['far']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projection']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projectionOffset']>().toEqualTypeOf<Float32Array>();
@@ -145,7 +148,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['target']>().toEqualTypeOf<Handle<'RenderTarget', 'shared'>>();
   });
 
-  it('DirectionalLight data shape includes closed shadow quality fields', () => {
+  it('DirectionalLight data shape includes shadow quality and atmosphere fields', () => {
     // feat-20260621: DirectionalLightShadow merged into DirectionalLight via castShadow toggle.
     // shadowDistance replaced the nearPlane/farPlane pair (near derives from camera).
     // feat-20260709 M2: direction/color collapsed to array<f32,3> columns.
@@ -159,6 +162,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'mapSize'
       | 'cascadeCount'
       | 'sourceAngle'
+      | 'perPixelAtmosphereTransmittance'
       | 'splitLambda'
       | 'cascadeBlend'
       | 'depthBias'
@@ -179,12 +183,12 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'shadowBiasMode'
       | 'shadowRadius'
       | 'shadowIntensity'
-      | 'shadowBlurSamples'
     >();
     expectTypeOf<Data['direction']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['color']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['intensity']>().toEqualTypeOf<number>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['perPixelAtmosphereTransmittance']>().toEqualTypeOf<boolean>();
     // bool column narrows to boolean, not number.
     expectTypeOf<Data['castShadow']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['staggerCascades']>().toEqualTypeOf<boolean>();
@@ -212,7 +216,7 @@ describe('w7 type-level - component name literal types are preserved', () => {
     // `switch (mat.shadingModel)` in the canonical dispatch site.
     expectTypeOf<typeof MeshRenderer.name>().toEqualTypeOf<'MeshRenderer'>();
     expectTypeOf<keyof SchemaOf<typeof MeshRenderer>>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers' | 'frustumCulled'
     >();
   });
 

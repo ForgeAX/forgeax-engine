@@ -9,6 +9,14 @@ AI-first TypeScript game engine; AI is the primary user. Reduce the concepts a r
 - Read the affected package README and implemented contract. `@forgeax/engine` is the public runtime/CLI umbrella; `packages/<owner>` retains implementation ownership. Do not infer APIs from architecture summaries.
 - Never switch the primary checkout's branch. Commit in an isolated `.worktrees/<branch>` worktree; preserve unrelated changes, active sessions and shared resources. Remove your clean worktree after delivery.
 
+## Runtime architecture and performance
+
+- Design for continuous partial change. Every admitted frame runs its normal stages for zero, sparse and dense edits. Reject scene-wide or subsystem-wide unchanged shortcuts. Process known edits at their source by row, range and affected consumers, or use a bounded sequential traversal. Count the cost of discovering changes.
+- Keep one authority for World state, render scene data and each device submission queue. Give each handoff explicit ownership. Advance source publication after successful transfer, visual history and effects after actual submission, and recycle storage after its last reader.
+- Built-in pipelines should emit ordered passes from current view dependencies. Keep the direct path viable on cold frames and repeated invalidation. Optional bundles, shadow copies and other accelerators default off and require a proven net benefit on changing inputs, a byte budget and a retirement event.
+- Within established capacity, aim for zero engine allocations per entity, draw and pass. Bound scratch, transfers, pending work and retained resources by their owners and bytes. Include simultaneous old and new resources at replacement.
+- Judge optimizations on rotating partial edits, dense updates, cold starts and sustained game motion at matched quality and completed work. Report changed-frame CPU, completion intervals, tails, natural GC and retained memory. Target parity with or better than a pinned Three.js release for renderer CPU and completed-frame intervals on equivalent workloads. Report both engines' timings and any gap. A static-frame speedup alone cannot qualify a change.
+
 ## Implementation
 
 - ESM-only TypeScript, strict flags from `tsconfig.base.json`. Schemas declare components/resources/events. Expected failures return structured `Result`; closed error-code unions and discriminated details remain source-owned and exhaustively handled.

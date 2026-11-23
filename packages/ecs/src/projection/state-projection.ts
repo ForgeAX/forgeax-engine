@@ -70,8 +70,11 @@ export type StateChangeObservation = Pick<StateProjection, 'isCurrent' | 'read'>
 export function observeStateChanges(
   world: World,
   components: readonly Component[],
-  indices: ReadonlySet<number>,
-): StateChangeObservation {
+  indices: Pick<ReadonlySet<number>, 'has'>,
+): StateChangeObservation & {
+  /** Start observing after the caller's own successful synchronous publication. */
+  resetBaseline(): void;
+} {
   return new CurrentStateProjection(world, components, [], indices);
 }
 
@@ -102,7 +105,7 @@ class CurrentStateProjection implements StateProjection {
     world: World,
     components: readonly Component[],
     candidates: readonly Component[],
-    observedIndices?: ReadonlySet<number>,
+    observedIndices?: Pick<ReadonlySet<number>, 'has'>,
   ) {
     this.#world = world;
     this.#components = Object.freeze(components.slice());
@@ -131,11 +134,21 @@ class CurrentStateProjection implements StateProjection {
       this.#invalid = false;
     }
     // Public callbacks keep their original detached-call behavior and identity.
+    this.resetBaseline = this.resetBaseline.bind(this);
     this.isCurrent = this.isCurrent.bind(this);
     this.read = this.read.bind(this);
     this.entity = this.entity.bind(this);
     this.changed = this.changed.bind(this);
     this.invalidate = this.invalidate.bind(this);
+  }
+
+  resetBaseline(): void {
+    this.assertReadable();
+    const poisoned = worldPoisonedError(this.#world.execution);
+    if (poisoned !== undefined) throw poisoned;
+    this.#readToken++;
+    this.#acceptedEpoch = this.#owner.getMutationEpoch();
+    this.#acceptedStructure = this.#owner.getStructureEpoch();
   }
 
   #inputsUnchangedSince(epoch: number): boolean {

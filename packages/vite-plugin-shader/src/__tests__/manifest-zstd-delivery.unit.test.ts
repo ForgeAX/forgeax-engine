@@ -14,11 +14,11 @@ interface EmittedAsset {
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 const sourcePath = normalizePath(
-  resolve(repoRoot, 'apps/hello/custom-shader/src/pulse-material.wgsl'),
+  resolve(repoRoot, 'apps/hello/m8-integrated-capstone/src/pulse-material.wgsl'),
 );
 const packagePath = resolve(
   repoRoot,
-  'apps/hello/custom-shader/src/pulse-material.shader.pack.json',
+  'apps/hello/m8-integrated-capstone/src/pulse-material.pack.json',
 );
 
 async function emitManifest(

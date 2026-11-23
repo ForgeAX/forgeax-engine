@@ -12,7 +12,8 @@ import { canonicalJson, type MaterialAsset } from '@forgeax/engine-types';
 type MaterialShaderRegistry = Pick<
   ShaderRegistry,
   'findMaterialArtifact' | 'materialShaderManifestEntry'
->;
+> &
+  Partial<Pick<ShaderRegistry, 'preparedSurfaceSourceRows'>>;
 
 export interface ForwardGtaoMaterialLineage {
   readonly shaderIdentifier: string;
@@ -78,6 +79,7 @@ export function resolveForwardGtaoMaterialLineage(
     capturedFragmentEntryPoints,
     ...selectedProgramFacts(
       publication,
+      registry,
       capturedSource,
       shaderIdentifier,
       capturedFragmentEntryPoints,
@@ -87,6 +89,7 @@ export function resolveForwardGtaoMaterialLineage(
 
 function selectedProgramFacts(
   publication: MaterialPublication,
+  registry: MaterialShaderRegistry,
   capturedSource: string,
   shaderIdentifier: string,
   capturedFragmentEntryPoints: readonly string[],
@@ -100,11 +103,15 @@ function selectedProgramFacts(
   const singleProgram = native
     ? materialShaderAxes(publication).length === 0
     : variants.length === 0;
-  const matches = singleProgram
+  const admittedMatches = singleProgram
     ? publication.composedWgsl === capturedSource
       ? [undefined]
       : []
     : variants.filter((variant) => variant.composedWgsl === capturedSource);
+  const matches =
+    admittedMatches.length === 0 && native
+      ? (registry.preparedSurfaceSourceRows?.(shaderIdentifier, capturedSource) ?? [])
+      : admittedMatches;
   if (matches.length === 0) {
     throw new Error(
       `captured forward shader source must match exactly one admitted variant or shared program for ${shaderIdentifier}; matches=0`,

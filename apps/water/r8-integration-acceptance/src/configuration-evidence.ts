@@ -398,7 +398,7 @@ export function configurationEvidence(
     if (
       !facts.singleLayerOptics ||
       !facts.noWaterSceneCopy ||
-      !facts.waterSurfaceDepthNormalVelocity ||
+      !facts.waterSurfaceVisibility ||
       !facts.deferredLighting ||
       !facts.captureSky ||
       (candidate.mode === 'Q2' ? facts.waterSurfaceSsr : !facts.waterSurfaceSsr)

@@ -268,7 +268,7 @@ it('serves Lite reflections from the directional radiance cache under field gath
       work.pipeline.shaders.some(
         (shader) =>
           shader.stage === 'fragment' &&
-          shader.entryPoint === 'fs_ray_diffuse_reconstructed_reflections',
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
       ),
     );
     assert(diffuseComposite, 'frame contains the broad multiple-scattering composite');

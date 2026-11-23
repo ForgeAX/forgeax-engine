@@ -218,8 +218,8 @@ describe('reference diffuse GI profile', () => {
     expect(frozen.diffuseGi?.environment).not.toBe(diffuseGi.environment);
     expect(Object.isFrozen(frozen.diffuseGi?.environment)).toBe(true);
   });
-  it('rejects duplicate environment lighting and unbounded reference settings', () => {
-    expect(validateRenderProfile({ ...profile, ibl: true })).toContain('IBL disabled');
+  it('accepts specular IBL alongside diffuse GI and rejects unbounded settings', () => {
+    expect(validateRenderProfile({ ...profile, ibl: true })).toBeUndefined();
     expect(validateRenderProfile({ ...profile, renderPath: 'forward' })).toContain('deferred');
     for (const invalid of [
       null,

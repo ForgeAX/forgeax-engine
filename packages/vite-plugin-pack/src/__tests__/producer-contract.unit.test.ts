@@ -1,228 +1,78 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
-import { buildCatalogResult } from '@forgeax/engine-import';
-import type { AssetPublicationEnvelope, AssetPublicationOutput } from '@forgeax/engine-types';
-import { assetPublicationOutputSetDigest } from '@forgeax/engine-types';
+import { catalogImporterPolicyFor, sourceDeclarationForCatalogPath } from '@forgeax/engine-import';
+import { buildCatalogProjection } from '@forgeax/engine-pack/build';
 import { afterEach, describe, expect, it } from 'vitest';
-import { sourceDeclarationForCatalogPath } from '../dev/source-path.js';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 
-const roots: string[] = [];
+const scratch = temporaryDirectories();
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
+
+async function writeImportedFixture(
+  root: string,
+  source: string,
+  facts: {
+    readonly packageId: string;
+    readonly provenance: {
+      readonly provider: string;
+      readonly version: string;
+      readonly source?: string;
+    };
+    readonly revision?: {
+      readonly digest: string;
+      readonly observedAt: number;
+      readonly rootId: string;
+    };
+    readonly diagnostics?: readonly {
+      readonly code: string;
+      readonly severity: string;
+      readonly recoveryIntents: readonly string[];
+    }[];
+    readonly subAssets: readonly {
+      readonly guid: string;
+      readonly kind: string;
+      readonly sourceKey: string;
+      readonly sourceIndex: number;
+    }[];
+  },
+): Promise<void> {
+  await writeFile(join(root, source), 'producer fixture');
+  await writeFile(
+    join(root, `${source}.meta.json`),
+    JSON.stringify({
+      schemaVersion: '1.0.0',
+      kind: 'external-asset-package',
+      importer: facts.provenance.provider,
+      source,
+      importSettings: {},
+      ...facts,
+    }),
+  );
+}
 
 describe('producer-owned catalog contract', () => {
-  function envelope(generation: number): AssetPublicationEnvelope {
-    const outputs: AssetPublicationOutput[] = [
-      {
-        guid: '01890000-0000-7000-8000-111111111111',
-        sourceKey: 'mesh/main',
-        kind: 'mesh',
-        digest: `sha256:mesh-${generation}`,
-        refs: [],
-      },
-      {
-        guid: '01890000-0000-7000-8000-222222222222',
-        sourceKey: 'scene/main',
-        kind: 'scene',
-        digest: `sha256:scene-${generation}`,
-        refs: ['01890000-0000-7000-8000-111111111111'],
-      },
-    ];
-    const outputSetDigest = assetPublicationOutputSetDigest(outputs);
-    const externalEvidence = [] as const;
-    return {
-      schemaVersion: 'asset-publication/1',
-      sourcePath: 'fixture.pack.ts',
-      sourceRevision: `sha256:source-${generation}`,
-      generation,
-      digest: `sha256:publication-${generation}`,
-      outputSetDigest,
-      outputs,
-      receipt: {
-        schemaVersion: 'asset-publication-receipt/1',
-        sourcePath: 'fixture.pack.ts',
-        sourceRevision: `sha256:source-${generation}`,
-        inputFingerprint: `sha256:input-${generation}`,
-        outputDigest: `sha256:publication-${generation}`,
-        outputSetDigest,
-        externalEvidence,
-      },
-      externalEvidence,
-    };
-  }
-
-  it('commits one complete generation and preserves current/LKG on stale or failed routes', async () => {
-    const store = createAcceptedPublicationStore();
-    const firstEnvelope = envelope(1);
-    expect(store.stage(firstEnvelope.sourcePath, { envelope: firstEnvelope }).ok).toBe(true);
-    const first = await store.commit(
-      firstEnvelope.sourcePath,
-      { envelope: firstEnvelope },
-      () => undefined,
-    );
-    expect(first.ok).toBe(true);
-    expect(store.observe(firstEnvelope.sourcePath).current?.generation).toBe(1);
-
-    let routeCommits = 0;
-    const secondEnvelope = envelope(2);
-    expect(store.stage(secondEnvelope.sourcePath, { envelope: secondEnvelope }).ok).toBe(true);
-    const second = await store.commit(
-      secondEnvelope.sourcePath,
-      { envelope: secondEnvelope },
-      () => {
-        routeCommits += 1;
-      },
-    );
-    expect(second.ok).toBe(true);
-    expect(store.observe(secondEnvelope.sourcePath).current?.generation).toBe(2);
-
-    const staleEnvelope = envelope(1);
-    const stale = store.stage(staleEnvelope.sourcePath, { envelope: staleEnvelope });
-    expect(stale).toMatchObject({
-      ok: false,
-      error: { code: 'asset-publication-stale', stage: 'cancelled' },
-    });
-    expect(routeCommits).toBe(1);
-    expect(store.observe(secondEnvelope.sourcePath).current?.generation).toBe(2);
-
-    const failedEnvelope = envelope(3);
-    expect(store.stage(failedEnvelope.sourcePath, { envelope: failedEnvelope }).ok).toBe(true);
-    const failed = await store.commit(
-      failedEnvelope.sourcePath,
-      { envelope: failedEnvelope },
-      () => {
-        routeCommits += 1;
-        throw new Error('route unavailable');
-      },
-    );
-    expect(failed).toMatchObject({
-      ok: false,
-      error: {
-        code: 'asset-publication-route-failed',
-        stage: 'route',
-        recovery: { preserveCurrent: true, useLastKnownGood: true },
-      },
-    });
-    expect(routeCommits).toBe(2);
-    expect(store.observe(failedEnvelope.sourcePath).current?.generation).toBe(2);
-    expect(store.observe(failedEnvelope.sourcePath).lastKnownGood?.generation).toBe(1);
-  });
-
-  it('accepts an exact same-generation tuple as an idempotent republish', async () => {
-    const store = createAcceptedPublicationStore();
-    const first = envelope(1);
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    expect((await store.commit(first.sourcePath, { envelope: first }, () => undefined)).ok).toBe(
-      true,
-    );
-
-    let routeCommits = 0;
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    const repeated = await store.commit(first.sourcePath, { envelope: first }, () => {
-      routeCommits += 1;
-    });
-
-    expect(repeated).toMatchObject({ ok: true, value: { current: { generation: 1 } } });
-    expect(routeCommits).toBe(1);
-    expect(store.observe(first.sourcePath).failure).toBeUndefined();
-  });
-
-  it('keeps an overlapping identical tuple owned by the current candidate', async () => {
-    const store = createAcceptedPublicationStore();
-    const staleOwner = envelope(1);
-    const currentOwner = envelope(1);
-
-    expect(store.stage(staleOwner.sourcePath, { envelope: staleOwner }).ok).toBe(true);
-    expect(store.stage(currentOwner.sourcePath, { envelope: currentOwner }).ok).toBe(true);
-    store.discard(staleOwner.sourcePath, staleOwner);
-
-    const committed = await store.commit(
-      currentOwner.sourcePath,
-      { envelope: currentOwner },
-      () => undefined,
-    );
-
-    expect(committed.ok).toBe(true);
-    expect(store.observe(currentOwner.sourcePath).current?.generation).toBe(1);
-  });
-
-  it('discards a staged candidate without changing the accepted DDC snapshot', async () => {
-    const store = createAcceptedPublicationStore();
-    const first = envelope(1);
-    const second = envelope(2);
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    expect((await store.commit(first.sourcePath, { envelope: first }, () => undefined)).ok).toBe(
-      true,
-    );
-    expect(store.stage(second.sourcePath, { envelope: second }).ok).toBe(true);
-
-    store.discard(second.sourcePath, second);
-
-    const restored = store.observe(first.sourcePath);
-    expect(restored).toMatchObject({ current: { generation: 1, digest: first.digest } });
-    expect(restored.lastKnownGood).toBeUndefined();
-    expect(restored.failure).toBeUndefined();
-  });
-
-  it('restores the accepted publication snapshot after a failed generation commit', async () => {
-    const store = createAcceptedPublicationStore();
-    const first = envelope(1);
-    const second = envelope(2);
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    expect((await store.commit(first.sourcePath, { envelope: first }, () => undefined)).ok).toBe(
-      true,
-    );
-    const previous = store.observe(first.sourcePath);
-
-    expect(store.stage(second.sourcePath, { envelope: second }).ok).toBe(true);
-    expect((await store.commit(second.sourcePath, { envelope: second }, () => undefined)).ok).toBe(
-      true,
-    );
-    expect(store.observe(second.sourcePath).current?.generation).toBe(2);
-
-    store.restore(second.sourcePath, previous);
-
-    expect(store.observe(second.sourcePath)).toEqual(previous);
-  });
-
   it('does not expose a parallel material completion contract', async () => {
     const source = await readFile(new URL('../plugin-pack.ts', import.meta.url), 'utf8');
     expect(source).not.toContain("from './material/");
   });
 
-  it('publishes package, provenance, revision, relations, diagnostics, and topology key', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-producer-'));
-    roots.push(root);
+  it('publishes Meta package, provenance, revision, diagnostics, and topology key', async () => {
+    const root = await scratch.make('forgeax-vpp-producer-');
     const guid = '01890000-0000-7000-8000-aaaaaaaaaaaa';
-    const dep = '01890000-0000-7000-8000-bbbbbbbbbbbb';
-    await writeFile(
-      join(root, 'materials.pack.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        packageId: 'pkg/materials',
-        provenance: { provider: 'fixture-importer', version: '2.3.0', source: 'fixture' },
-        revision: { digest: 'sha256:fixture', observedAt: 123, rootId: 'root-a' },
-        diagnostics: [
-          { code: 'fixture-warning', severity: 'warning', recoveryIntents: ['reimport'] },
-        ],
-        assets: [
-          {
-            guid,
-            kind: 'material',
-            sourceKey: 'material/main',
-            payload: {},
-            refs: [dep],
-          },
-        ],
-      }),
-    );
+    await writeImportedFixture(root, 'materials.source', {
+      packageId: 'pkg/materials',
+      provenance: { provider: 'fixture-importer', version: '2.3.0', source: 'fixture' },
+      revision: { digest: 'sha256:fixture', observedAt: 123, rootId: 'root-a' },
+      diagnostics: [
+        { code: 'fixture-warning', severity: 'warning', recoveryIntents: ['reimport'] },
+      ],
+      subAssets: [{ guid, kind: 'material', sourceKey: 'material/main', sourceIndex: 0 }],
+    });
 
-    const result = await buildCatalogResult([root]);
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set(['fixture-importer'])),
+    });
     expect(result.diagnostics).toEqual([]);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]).toMatchObject({
@@ -232,13 +82,6 @@ describe('producer-owned catalog contract', () => {
       revision: { digest: 'sha256:fixture', observedAt: 123, rootId: 'root-a' },
       sourceKey: 'material/main',
       sourceIndex: 0,
-      relations: [
-        {
-          from: { type: 'asset', id: guid },
-          to: { type: 'asset', id: dep },
-          type: 'references',
-        },
-      ],
       diagnostics: [
         { code: 'fixture-warning', severity: 'warning', recoveryIntents: ['reimport'] },
       ],
@@ -246,66 +89,51 @@ describe('producer-owned catalog contract', () => {
   });
 
   it('keeps an open host importer neutral without a concrete-kind branch', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-host-'));
-    roots.push(root);
-    await writeFile(
-      join(root, 'host.pack.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        packageId: 'pkg/host',
-        provenance: { provider: 'host-fixture', version: '1.0.0' },
-        assets: [
-          {
-            guid: '01890000-0000-7000-8000-cccccccccccc',
-            kind: 'host/blob',
-            sourceKey: 'blob/main',
-            sourceIndex: 0,
-            payload: {},
-            refs: [],
-          },
-        ],
-      }),
-    );
-    const result = await buildCatalogResult([root]);
+    const root = await scratch.make('forgeax-vpp-host-');
+    await writeImportedFixture(root, 'host.source', {
+      packageId: 'pkg/host',
+      provenance: { provider: 'host-fixture', version: '1.0.0' },
+      subAssets: [
+        {
+          guid: '01890000-0000-7000-8000-cccccccccccc',
+          kind: 'host/blob',
+          sourceKey: 'blob/main',
+          sourceIndex: 0,
+        },
+      ],
+    });
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set(['host-fixture'])),
+    });
     expect(result.diagnostics).toEqual([]);
     expect(result.entries[0]).toMatchObject({ kind: 'host/blob', sourceKey: 'blob/main' });
   });
 
   it('returns one authoritative result and derives the legacy array from it', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-result-'));
-    roots.push(root);
-    await writeFile(
-      join(root, 'result.pack.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        packageId: 'pkg/result',
-        provenance: { provider: 'result-fixture', version: '1.0.0' },
-        revision: { digest: 'sha256:result', observedAt: 7, rootId: 'root-result' },
-        assets: [
-          {
-            guid: '01890000-0000-7000-8000-dddddddddddd',
-            kind: 'host/result',
-            sourceKey: 'result/main',
-            sourceIndex: 0,
-            payload: {},
-            refs: [],
-          },
-        ],
-      }),
-    );
-
-    const result = await buildCatalogResult([root]);
+    const root = await scratch.make('forgeax-vpp-result-');
+    await writeImportedFixture(root, 'result.source', {
+      packageId: 'pkg/result',
+      provenance: { provider: 'result-fixture', version: '1.0.0' },
+      revision: { digest: 'sha256:result', observedAt: 7, rootId: 'root-result' },
+      subAssets: [
+        {
+          guid: '01890000-0000-7000-8000-dddddddddddd',
+          kind: 'host/result',
+          sourceKey: 'result/main',
+          sourceIndex: 0,
+        },
+      ],
+    });
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set(['result-fixture'])),
+    });
     expect(result).toMatchObject({ authority: 'authoritative', diagnostics: [] });
     expect(result.entries).toHaveLength(1);
     expect({
-      schemaVersion: 'catalog-legacy-v1',
       authority: 'authoritative',
       diagnostics: [],
       entries: [...result.entries],
     }).toEqual({
-      schemaVersion: 'catalog-legacy-v1',
       authority: 'authoritative',
       diagnostics: [],
       entries: result.entries,
@@ -318,39 +146,37 @@ describe('producer-owned catalog contract', () => {
   });
 
   it('projects catalog locators through a stable host identity without changing scan paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-source-identity-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-vpp-source-identity-');
+    const dep = '01890000-0000-7000-8000-aaaaaaaaaaaa';
     await writeFile(
       join(root, 'portable.pack.json'),
       JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '01890000-0000-7000-8000-eeeeeeeeeeee',
-            kind: 'mesh',
-            payload: {},
-            refs: [],
-          },
-        ],
+        schemaVersion: '3.0.0',
+        packageId: '01890000-0000-7000-8000-eeeeeeeeeeee',
+        assets: { 'mesh/main': { kind: 'mesh', payload: {}, refs: [dep] } },
       }),
     );
 
     const sourceIdentityFor = (sourcePath: string) =>
       sourcePath.endsWith('portable.pack.json') ? '@shared/portable.pack.json' : sourcePath;
-    const result = await buildCatalogResult(
-      [root],
-      '/',
-      new Set(),
-      {},
-      () => true,
-      sourceIdentityFor,
-    );
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set()),
+      visibility: () => true,
+      sourceIdentityFor: sourceIdentityFor,
+    });
 
     expect(result.authority).toBe('authoritative');
     expect(result.entries[0]).toMatchObject({
       sourcePath: '@shared/portable.pack.json',
       packageUrl: '/@shared/portable.pack.json',
+      sourceKey: 'mesh/main',
+      relations: [
+        {
+          from: { type: 'asset', id: result.entries[0]?.guid },
+          to: { type: 'asset', id: dep },
+          type: 'references',
+        },
+      ],
     });
     expect(result.sourceDeclarations.keys().next().value).toBe(join(root, 'portable.pack.json'));
     expect(
@@ -363,32 +189,31 @@ describe('producer-owned catalog contract', () => {
   });
 
   it('keeps producer identity and revision facts when a locator moves', async () => {
-    const firstRoot = await mkdtemp(join(tmpdir(), 'forgeax-vpp-locator-a-'));
-    const secondRoot = await mkdtemp(join(tmpdir(), 'forgeax-vpp-locator-b-'));
-    roots.push(firstRoot, secondRoot);
-    const pack = (source: string) => ({
-      schemaVersion: '1.0.0',
-      kind: 'internal-text-package',
+    const firstRoot = await scratch.make('forgeax-vpp-locator-a-');
+    const secondRoot = await scratch.make('forgeax-vpp-locator-b-');
+    const facts = {
       packageId: 'pkg/relocated',
       provenance: { provider: 'relocation-fixture', version: '1.0.0' },
       revision: { digest: 'sha256:relocated', observedAt: 8, rootId: 'root-relocated' },
-      assets: [
+      subAssets: [
         {
           guid: '01890000-0000-7000-8000-eeeeeeeeeeee',
           kind: 'host/relocated',
           sourceKey: 'relocated/main',
           sourceIndex: 0,
-          payload: { source },
-          refs: [],
         },
       ],
-    });
-    await writeFile(join(firstRoot, 'old.pack.json'), JSON.stringify(pack('old')));
-    await writeFile(join(secondRoot, 'new.pack.json'), JSON.stringify(pack('new')));
+    };
+    await writeImportedFixture(firstRoot, 'old.source', facts);
+    await writeImportedFixture(secondRoot, 'new.source', facts);
 
     const [oldResult, newResult] = await Promise.all([
-      buildCatalogResult([firstRoot]),
-      buildCatalogResult([secondRoot]),
+      buildCatalogProjection([firstRoot], {
+        importerPolicy: catalogImporterPolicyFor(new Set(['relocation-fixture'])),
+      }),
+      buildCatalogProjection([secondRoot], {
+        importerPolicy: catalogImporterPolicyFor(new Set(['relocation-fixture'])),
+      }),
     ]);
     expect(oldResult.entries[0]).toMatchObject({
       packageId: 'pkg/relocated',

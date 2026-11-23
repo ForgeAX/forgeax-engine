@@ -8,7 +8,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fetchWithRetry, streamFile, verifySdkViewRuntime } from './sdk-lib.mjs';
-import { SDK_NPM_PARTITIONS } from './sdk-pr-preflight.mjs';
+import { SDK_NPM_CONSUMER_PARTITIONS } from './sdk-pr-preflight.mjs';
 import { verifySdkSource } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
@@ -63,7 +63,7 @@ const output = resolve(root, value('--output') ?? 'artifacts/sdk');
 const version = value('--version');
 if (version === undefined) throw new Error('npm-consumer-version-missing');
 const partition = value('--partition') ?? 'all';
-if (partition !== 'all' && !Object.hasOwn(SDK_NPM_PARTITIONS, partition))
+if (partition !== 'all' && !Object.hasOwn(SDK_NPM_CONSUMER_PARTITIONS, partition))
   throw new Error(`npm-consumer-unknown-partition:${partition}`);
 const packageRoot = resolve(output, 'npm', 'packages');
 const carrierPath = resolve(output, 'npm', `forgeax-engine-sdk-${version}.tgz`);
@@ -294,6 +294,8 @@ async function verifyInstalledNpmOwners(installedSdk, consumerEnv, output, parti
       ),
     );
     workloads.push('diagnostics');
+  }
+  if (partition === 'all' || partition === 'diagnostics' || partition === 'game3d')
     workloads.push(
       ...(await verifySdkViewRuntime({
         sdkRoot: installedSdk,
@@ -302,8 +304,7 @@ async function verifyInstalledNpmOwners(installedSdk, consumerEnv, output, parti
         group: 'game3d',
       })),
     );
-  }
-  if (partition !== 'diagnostics')
+  if (partition === 'all' || partition === 'js')
     workloads.push(
       ...(await verifySdkViewRuntime({
         sdkRoot: installedSdk,
@@ -398,7 +399,7 @@ try {
     verifySdkSource(installedSdk, installedSdkManifest),
   );
   let sourceEdit;
-  if (partition !== 'diagnostics') {
+  if (partition === 'all' || partition === 'js') {
     const sourceRoot = resolve(installedSdk, installedSdkManifest.source.root);
     const { packageManager } = JSON.parse(
       await readFile(resolve(sourceRoot, 'package.json'), 'utf8'),

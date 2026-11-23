@@ -30,6 +30,7 @@ const imports = Object.fromEntries(
     'shadow-pcf',
     'standard-gbuffer',
     'standard-lighting',
+    'sky-sh-polynomial',
     'standard-cluster',
     'view-atmosphere',
     'common',
@@ -392,7 +393,6 @@ it('SLW capture selects its source direction through real PMREM and probe fallba
 #import forgeax_pbr::ibl_sampling::{environmentReflectionDirection}
 #import forgeax_pbr::pmrem::{samplePmrem}
 @group(0) @binding(101) var mediumPrefilterMap: texture_2d<f32>;
-@group(0) @binding(102) var skylightPrefilterMap: texture_2d<f32>;
 @group(0) @binding(103) var mediumPrefilterSampler: sampler;
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
 struct Input { positionWS: vec3<f32> }
@@ -406,7 +406,7 @@ fn capture(sky: SkylightUniforms, normal: vec3<f32>, toCamera: vec3<f32>, roughn
 ${capture}
   return vec4<f32>(captureSky, reflectionWeight);
 }
-fn standardCapture(sky: SkylightUniforms, normal: vec3<f32>, direction: vec3<f32>, roughness: f32, worldPosition: vec3<f32>, prefilterMap: texture_2d<f32>, prefilterSampler: sampler, skylightPrefilterMap: texture_2d<f32>) -> vec3<f32> {
+fn standardCapture(sky: SkylightUniforms, normal: vec3<f32>, direction: vec3<f32>, roughness: f32, worldPosition: vec3<f32>, prefilterMap: texture_2d<f32>, prefilterSampler: sampler) -> vec3<f32> {
 ${standardLookup}
   return specular;
 }
@@ -429,15 +429,12 @@ ${standardLookup}
   // Water golden directions at r=0, 0.6, 1. Standard retains its separate direction.
   let waterDirection = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), vec3<f32>(-0.59392, 0.70304, 0.0), normal)[select(index, 1u, probe)];
   let standardGolden = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), normalize(vec3<f32>(-0.69632, 0.65184, 0.0)), normal)[select(index, 1u, probe)];
-  let weight = select(1.0, array<f32, 3>(1.0, 0.5, 0.0)[index], probe);
   let skyScale = select(vec3<f32>(1.6, 1.2, 0.8), sky.diffuseScale.xyz, probe);
   result[id.x * 4u] = capture(sky, normal, toCamera, roughness, position);
-  result[id.x * 4u + 1u] = vec4<f32>(standardCapture(sky, normal, toCamera, roughness, position, mediumPrefilterMap, mediumPrefilterSampler, skylightPrefilterMap), 1.0);
+  result[id.x * 4u + 1u] = vec4<f32>(standardCapture(sky, normal, toCamera, roughness, position, mediumPrefilterMap, mediumPrefilterSampler), 1.0);
   var waterGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, vec3<f32>(-waterDirection.z, -waterDirection.y, waterDirection.x), roughness) * skyScale;
   var standardGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, vec3<f32>(-standardGolden.z, -standardGolden.y, standardGolden.x), roughness) * skyScale;
   if (probe) {
-    waterGlobal = samplePmrem(skylightPrefilterMap, mediumPrefilterSampler, vec3<f32>(-waterDirection.z, -waterDirection.y, waterDirection.x), roughness) * skyScale;
-    standardGlobal = samplePmrem(skylightPrefilterMap, mediumPrefilterSampler, vec3<f32>(-standardGolden.z, -standardGolden.y, standardGolden.x), roughness) * skyScale;
     var waterLocal = waterDirection;
     var standardLocal = standardGolden;
     if (mode == 2u && index < 2u) {
@@ -445,8 +442,8 @@ ${standardLookup}
       waterLocal = position + waterDirection * (2.0 / waterDirection.y);
       standardLocal = position + standardGolden * (2.0 / standardGolden.y);
     }
-    waterGlobal = mix(waterGlobal, samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, waterLocal, roughness), weight);
-    standardGlobal = mix(standardGlobal, samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, standardLocal, roughness), weight);
+    waterGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, waterLocal, roughness);
+    standardGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, standardLocal, roughness);
   }
   result[id.x * 4u + 2u] = vec4<f32>(waterGlobal, 0.075);
   result[id.x * 4u + 3u] = vec4<f32>(standardGlobal, 1.0);
@@ -454,15 +451,15 @@ ${standardLookup}
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Water optical regression requires Dawn');
   const device = await adapter.requestDevice();
+  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
   const local = directionAtlas(device, 0);
-  const global = directionAtlas(device, 0.1);
   try {
     const actual = await dispatch(
       device,
       code,
       [
+        { binding: 0, resource: { buffer: view } },
         { binding: 101, resource: local.createView() },
-        { binding: 102, resource: global.createView() },
         {
           binding: 103,
           resource: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }),
@@ -482,8 +479,8 @@ ${standardLookup}
       }
     }
   } finally {
+    view.destroy();
     local.destroy();
-    global.destroy();
     device.destroy();
   }
 });
@@ -499,7 +496,7 @@ it('SLW volume uses fixed ground solar and an independent surface cloud sample o
   const code = await compose(
     `
 #import forgeax_view::common::{View, AtmosphereMedium, atmosphereTransmittance}
-#import forgeax_cloud::layer::{cloud_direct_solar_factor, cloudShadowSampler}
+#import forgeax_cloud::layer::{cloud_direct_solar_factor, viewLinearSampler}
 #import forgeax_atmosphere::optics::{atmosphere_solar_transmittance}
 ${solarNames.length === 0 ? '' : `#import forgeax_view::atmosphere::{${solarNames.join(', ')}}`}
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
@@ -523,7 +520,7 @@ struct Input { positionWS: vec3<f32> }
   let integral = vec3<f32>(0.7);
   let ambient = vec3<f32>(0.03);
 ${solar}
-  let ground = atmosphere_solar_transmittance(view.atmosphere, vec3<f32>(0.0, 6360.5, 0.0), vec3<f32>(0.8, 0.6, 0.0), atmosphereTransmittance, cloudShadowSampler);
+  let ground = atmosphere_solar_transmittance(view.atmosphere, vec3<f32>(0.0, 6360.5, 0.0), vec3<f32>(0.8, 0.6, 0.0), atmosphereTransmittance, viewLinearSampler);
   let expectedAtmosphere = select(vec3<f32>(1.0), ground, atmosphereEnabled);
   let expectedCloud = cloud_direct_solar_factor(input.positionWS, view.cloudShadowOrigin.xyz, view.cloudShadowRight.xyz, view.cloudShadowUp.xyz, view.cloudShadowProjection);
   result[id.x * 2u] = vec4<f32>(scattered, 1.0);

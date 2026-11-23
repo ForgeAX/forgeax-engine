@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DdcEntryStore, DdcLifecycle, DdcStoreError, ddcOutputDigest } from '@forgeax/engine-ddc';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import {
   commitImportPublication,
-  discardImportPublication,
   type ImportPublicationInput,
   readImportPublication,
   stageImportPublication,
@@ -64,17 +63,22 @@ function input(root: string, desiredKey = KEY): ImportPublicationInput {
   };
 }
 
+async function acceptedStage(publication: ImportPublicationInput) {
+  const result = await stageImportPublication(publication);
+  if (!result.ok) throw result.error;
+  return result.candidate;
+}
+
 describe('source package publication concurrency', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await scratch.clear();
   });
 
-  it('restores an unchanged publication without a lease, staging or sidecar writes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-reuse-'));
-    roots.push(root);
+  it('restores an unchanged publication without a lease or staging', async () => {
+    const root = await scratch.make('forgeax-source-publication-reuse-');
     const candidateBytes = new Uint8Array(ARTIFACT_BYTES);
     const pack = {
       ...closurePack(),
@@ -86,19 +90,12 @@ describe('source package publication concurrency', () => {
     const publicationInput = {
       ...input(root),
       pack,
-      transport: {
-        path: join(root, `${GUID}.pack.json`),
-        body: JSON.stringify(pack),
-        artifacts: [{ ...validArtifact, bytes: candidateBytes }],
-      },
+      artifacts: [{ ...validArtifact, bytes: candidateBytes }],
     };
-    const staged = await stageImportPublication(publicationInput);
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
-    const published = await commitImportPublication(staged.candidate);
+    const staged = await acceptedStage(publicationInput);
+    const published = await commitImportPublication(staged);
     expect(published.ok).toBe(true);
     const before = await readFile(join(root, 'heads', `${GUID}.json`), 'utf8');
-    await rm(publicationInput.transport.path);
     const stage = vi.spyOn(DdcEntryStore.prototype, 'stage');
     const begin = vi.spyOn(DdcLifecycle.prototype, 'beginWithSnapshot');
     const checked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
@@ -116,8 +113,6 @@ describe('source package publication concurrency', () => {
     const restored = await readImportPublication({
       ...publicationInput,
       pack: { ...pack, generation: 9 },
-      // Restoration adopts validated DDC bytes, never this discarded sidecar body.
-      transport: { ...publicationInput.transport, body: 'discarded untrusted transport' },
     });
 
     expect(restored).toMatchObject({ key: KEY, head: { state: 'current', revision: 1 } });
@@ -127,27 +122,19 @@ describe('source package publication concurrency', () => {
     expect(begin).not.toHaveBeenCalled();
     expect(checked).toHaveBeenCalledExactlyOnceWith(KEY);
     expect(await readFile(join(root, 'heads', `${GUID}.json`), 'utf8')).toBe(before);
-    expect(await readFile(publicationInput.transport.path).catch(() => undefined)).toBeUndefined();
     expect(await readdir(join(root, 'staging'))).toEqual([]);
   });
 
   it('keeps changed, corrupt and actively leased publications on the ordinary path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-reuse-controls-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-source-publication-reuse-controls-');
     const pack = closurePack();
     const publicationInput = {
       ...input(root),
       pack,
-      transport: {
-        path: join(root, `${GUID}.pack.json`),
-        body: JSON.stringify(pack),
-        artifacts: [validArtifact],
-      },
+      artifacts: [validArtifact],
     };
-    const staged = await stageImportPublication(publicationInput);
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
-    expect(await commitImportPublication(staged.candidate)).toMatchObject({ ok: true });
+    const staged = await acceptedStage(publicationInput);
+    expect(await commitImportPublication(staged)).toMatchObject({ ok: true });
     expect(
       await readImportPublication({ ...publicationInput, desiredKey: 'b'.repeat(64) }),
     ).toBeUndefined();
@@ -157,7 +144,7 @@ describe('source package publication concurrency', () => {
     expect(
       await readImportPublication({
         ...publicationInput,
-        transport: { ...publicationInput.transport, artifacts: [] },
+        artifacts: [],
       }),
     ).toBeUndefined();
     const lifecycle = new DdcLifecycle(root);
@@ -174,8 +161,7 @@ describe('source package publication concurrency', () => {
   });
 
   it('enables publication timing only from an explicit host input', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-timing-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-source-timing-');
     const previous = process.env.FORGEAX_WORKSPACE_TIMING;
     process.env.FORGEAX_WORKSPACE_TIMING = '1';
     const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -184,14 +170,12 @@ describe('source package publication concurrency', () => {
         .map(([line]) => String(line))
         .filter((line) => line.startsWith('[forgeax.meta-publication.timing]'));
     try {
-      const quiet = await stageImportPublication(input(root));
-      expect(quiet.ok).toBe(true);
-      if (quiet.ok) await discardImportPublication(quiet.candidate);
+      const quiet = await acceptedStage(input(root));
+      await quiet.ddc.discard();
       expect(records()).toEqual([]);
       process.env.FORGEAX_WORKSPACE_TIMING = '0';
-      const traced = await stageImportPublication({ ...input(root), traceTiming: true });
-      expect(traced.ok).toBe(true);
-      if (traced.ok) await discardImportPublication(traced.candidate);
+      const traced = await acceptedStage({ ...input(root), traceTiming: true });
+      await traced.ddc.discard();
       expect(records().map((line) => JSON.parse(line.slice(line.indexOf('{'))).stage)).toEqual([
         'artifact-closure',
         'immutable-payload',
@@ -205,24 +189,17 @@ describe('source package publication concurrency', () => {
   });
 
   it('returns the accepted head without rereading the committed artifact closure', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-source-publication-');
     const pack = closurePack();
-    const staged = await stageImportPublication({
+    const staged = await acceptedStage({
       ...input(root),
       pack,
-      transport: {
-        path: join(root, 'runtime', `${GUID}.pack.json`),
-        body: JSON.stringify(pack),
-        artifacts: [validArtifact],
-      },
+      artifacts: [validArtifact],
     });
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
     const read = vi.spyOn(DdcEntryStore.prototype, 'read');
     const readChecked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
 
-    const result = await commitImportPublication(staged.candidate);
+    const result = await commitImportPublication(staged);
 
     expect(result).toMatchObject({
       ok: true,
@@ -232,22 +209,17 @@ describe('source package publication concurrency', () => {
         state: 'current',
         currentKey: KEY,
         revision: 1,
-        generation: staged.candidate.ddc.lease.generation,
+        generation: staged.ddc.lease.generation,
       },
       revision: { digest: KEY, rootId: root },
-      transportPersisted: true,
     });
     expect(read).not.toHaveBeenCalled();
     expect(readChecked).not.toHaveBeenCalled();
-    expect(await readFile(join(root, 'runtime', `${GUID}.pack.json`), 'utf8')).toBe(
-      JSON.stringify(pack),
-    );
   });
 
   it('keeps a later writer out of the head and revision returned for this publication', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const staged = await stageImportPublication({
+    const root = await scratch.make('forgeax-source-publication-');
+    const staged = await acceptedStage({
       ...input(root),
       nextCatalog: [
         {
@@ -258,8 +230,6 @@ describe('source package publication concurrency', () => {
         },
       ],
     });
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
     const nextKey = 'b'.repeat(64);
     const commit = DdcLifecycle.prototype.commit;
     vi.spyOn(DdcLifecycle.prototype, 'commit').mockImplementation(async function (
@@ -271,15 +241,13 @@ describe('source package publication concurrency', () => {
       const result = await commit.call(this, lease, key, entry);
       if (result.result === 'current' && key === KEY) {
         // Another producer wins after this CAS, before Import receives its result.
-        const next = await stageImportPublication(input(root, nextKey));
-        expect(next.ok).toBe(true);
-        if (next.ok)
-          expect(await commitImportPublication(next.candidate)).toMatchObject({ ok: true });
+        const next = await acceptedStage(input(root, nextKey));
+        expect(await commitImportPublication(next)).toMatchObject({ ok: true });
       }
       return result;
     });
 
-    const result = await commitImportPublication(staged.candidate);
+    const result = await commitImportPublication(staged);
 
     expect(result).toMatchObject({
       ok: true,
@@ -288,7 +256,7 @@ describe('source package publication concurrency', () => {
         desiredKey: KEY,
         currentKey: KEY,
         revision: 1,
-        generation: staged.candidate.ddc.lease.generation,
+        generation: staged.ddc.lease.generation,
       },
       revision: { digest: KEY },
       catalog: [{ guid: GUID, revision: { digest: KEY } }],
@@ -301,21 +269,17 @@ describe('source package publication concurrency', () => {
     });
   });
 
-  it('waits for an equivalent newer owner after a strict stale commit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
+  it('waits for an equivalent newer owner when commit loses its lease', async () => {
+    const root = await scratch.make('forgeax-source-publication-');
     const publicationInput = input(root);
-    const first = await stageImportPublication(publicationInput);
-    const second = await stageImportPublication(publicationInput);
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
+    const first = await acceptedStage(publicationInput);
+    const second = await acceptedStage(publicationInput);
 
     const winner = (async () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
-      return commitImportPublication(second.candidate);
+      return commitImportPublication(second);
     })();
-    const loser = await commitImportPublication(first.candidate);
+    const loser = await commitImportPublication(first);
     const winnerResult = await winner;
 
     expect(loser).toMatchObject({ ok: true, head: { state: 'current', currentKey: KEY } });
@@ -323,39 +287,35 @@ describe('source package publication concurrency', () => {
   });
 
   it('keeps a stale publication with a different desired key fail-closed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const first = await stageImportPublication(input(root, 'a'.repeat(64)));
-    const second = await stageImportPublication(input(root, 'b'.repeat(64)));
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
+    const root = await scratch.make('forgeax-source-publication-');
+    const first = await acceptedStage(input(root, 'a'.repeat(64)));
+    const second = await acceptedStage(input(root, 'b'.repeat(64)));
 
-    const result = await commitImportPublication(first.candidate);
-    await discardImportPublication(second.candidate);
+    const result = await commitImportPublication(first);
+    await second.ddc.discard();
 
     expect(result).toMatchObject({
       ok: false,
-      error: { code: 'source-package-ddc-failed', detail: 'DDC lifecycle commit returned stale' },
+      error: {
+        code: 'source-package-ddc-failed',
+        detail: 'DDC lifecycle commit returned lease-lost',
+      },
     });
     if (!result.ok) {
       expect(result.error.hint).toContain('retry');
       expect(result.error.hint).not.toContain('discard');
-      expect(result.error.diagnostic.detail.ddcCommitResult).toBe('stale');
+      expect(result.error.diagnostic.detail.ddcCommitResult).toBe('lease-lost');
       expect(result.error.diagnostic.detail.ddcError).toBeUndefined();
     }
   });
 
   it('retains the lease failure and retry guidance when the published entry is valid', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const staged = await stageImportPublication(input(root));
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
-    const expiredAt = staged.candidate.ddc.lease.expiresAt + 1;
+    const root = await scratch.make('forgeax-source-publication-');
+    const staged = await acceptedStage(input(root));
+    const expiredAt = staged.ddc.lease.expiresAt + 1;
     vi.spyOn(Date, 'now').mockReturnValue(expiredAt);
 
-    const result = await commitImportPublication(staged.candidate);
+    const result = await commitImportPublication(staged);
 
     expect(result).toMatchObject({
       ok: false,
@@ -367,7 +327,7 @@ describe('source package publication concurrency', () => {
             reason: 'cook lease expired before commit fencing',
             ddcError: {
               code: 'ddc-lease-expired',
-              lease: staged.candidate.ddc.lease.attempt,
+              lease: staged.ddc.lease.attempt,
               owner: 'engine-ddc',
               recoveryActions: [{ kind: 'release-lease' }, { kind: 'retry' }],
             },
@@ -379,21 +339,16 @@ describe('source package publication concurrency', () => {
   });
 
   it('keeps an immutable conflict diagnostic and the verified existing entry', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const first = await stageImportPublication(input(root));
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(await commitImportPublication(first.candidate)).toMatchObject({ ok: true });
+    const root = await scratch.make('forgeax-source-publication-');
+    const first = await acceptedStage(input(root));
+    expect(await commitImportPublication(first)).toMatchObject({ ok: true });
     const existing = await new DdcEntryStore(root).read(KEY);
-    const competing = await stageImportPublication({
+    const competing = await acceptedStage({
       ...input(root),
       pack: { schemaVersion: '2.0.0', assets: [{ guid: GUID, payload: { value: 'different' } }] },
     });
-    expect(competing.ok).toBe(true);
-    if (!competing.ok) return;
 
-    const result = await commitImportPublication(competing.candidate);
+    const result = await commitImportPublication(competing);
 
     expect(result).toMatchObject({
       ok: false,
@@ -406,8 +361,7 @@ describe('source package publication concurrency', () => {
   });
 
   it('retains staging recovery evidence without exposing host-only targets', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-source-publication-');
     const failure = new DdcStoreError({
       code: 'ddc-entry-invalid',
       detail: 'entry integrity mismatch',
@@ -430,196 +384,72 @@ describe('source package publication concurrency', () => {
     expect(JSON.stringify(result)).not.toContain('/private/cache/entry');
   });
 
-  it('persists concurrent equivalent transports without sharing a temporary path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const transport = {
-      path: join(root, 'runtime', `${GUID}.pack.json`),
-      body: JSON.stringify({ guid: GUID, value: 'concurrent' }),
-    };
+  it('commits concurrent equivalent DDC publications', async () => {
+    const root = await scratch.make('forgeax-source-publication-');
     const staged = await Promise.all(
-      Array.from({ length: 8 }, () => stageImportPublication({ ...input(root), transport })),
+      Array.from({ length: 8 }, () => stageImportPublication(input(root))),
     );
-    expect(staged.every((candidate) => candidate.ok)).toBe(true);
-    if (staged.some((candidate) => !candidate.ok)) return;
-
     const results = await Promise.all(
-      staged.map((candidate) =>
-        candidate.ok ? commitImportPublication(candidate.candidate) : Promise.resolve(candidate),
+      staged.map((item) => (item.ok ? commitImportPublication(item.candidate) : item)),
+    );
+    expect(results).toEqual(
+      Array.from({ length: 8 }, () =>
+        expect.objectContaining({
+          ok: true,
+          key: KEY,
+          head: expect.objectContaining({ currentKey: KEY }),
+        }),
       ),
     );
-    expect(results, 'every equivalent publication must persist its transport').toEqual(
-      Array.from({ length: staged.length }, () =>
-        expect.objectContaining({ ok: true, transportPersisted: true }),
-      ),
-    );
-    expect(await readFile(transport.path, 'utf8')).toBe(transport.body);
-    expect((await readdir(join(root, 'runtime'))).some((name) => name.includes('.tmp'))).toBe(
-      false,
-    );
+    expect(await new DdcEntryStore(root).listKeys()).toEqual([KEY]);
   });
 
-  it('publishes the complete transport artifact closure into the DDC entry', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const pack = closurePack();
-    const publicationInput = {
-      ...input(root),
-      pack,
-      transport: {
-        path: join(root, 'runtime', `${GUID}.pack.json`),
-        body: JSON.stringify(pack),
-        artifacts: [validArtifact],
-      },
-    };
-
-    const staged = await stageImportPublication(publicationInput);
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
-    await expect(commitImportPublication(staged.candidate)).resolves.toMatchObject({ ok: true });
-
-    const entry = await new DdcEntryStore(root).read(KEY);
-    expect(entry?.artifacts[ARTIFACT_PATH]).toMatchObject({
-      mediaType: validArtifact.mediaType,
-      bytes: validArtifact.bytes,
-    });
-  });
-
-  it.skipIf(process.platform !== 'win32').each([true, false])(
-    'admits a Windows EPERM destination only when bytes are equivalent: %s',
-    async (equivalent) => {
-      const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-      roots.push(root);
-      const directory = join(root, 'runtime');
-      await mkdir(directory);
-      const destination = join(directory, `${GUID}.pack.json`);
-      const body = JSON.stringify({ value: 'published' });
-      const existing = equivalent ? body : JSON.stringify({ value: 'different' });
-      await writeFile(destination, existing);
-      await chmod(destination, 0o444);
-      try {
-        const probe = join(directory, 'probe.tmp');
-        await writeFile(probe, body);
-        await expect(rename(probe, destination)).rejects.toMatchObject({ code: 'EPERM' });
-        await rm(probe);
-        const staged = await stageImportPublication({
-          ...input(root),
-          transport: { path: destination, body },
-        });
-        expect(staged.ok).toBe(true);
-        if (!staged.ok) return;
-        const result = await commitImportPublication(staged.candidate);
-        expect(result.ok).toBe(equivalent);
-        if (result.ok) expect(result.transportPersisted).toBe(true);
-        else {
-          expect(result.error.code).toBe('source-package-publication-invalid');
-          expect(result.head.state).toBe('missing');
-        }
-        expect(await readFile(destination, 'utf8')).toBe(existing);
-        expect((await readdir(directory)).some((name) => name.includes('.tmp'))).toBe(false);
-      } finally {
-        await chmod(destination, 0o666);
-      }
-    },
-  );
-
-  it('reuses the runtime Pack body when its semantic output is unchanged', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const pack = {
-      ...(input(root).pack as {
-        readonly assets: readonly unknown[];
-        readonly schemaVersion: '2.0.0';
-      }),
-      kind: 'internal-text-package' as const,
-      scopeId: 'editor-main',
-      generation: 17,
+  it.each([
+    false,
+    true,
+  ])('stores the same immutable closure across publication generations (shared DDC=%s)', async (shared) => {
+    const firstRoot = await scratch.make('forgeax-source-publication-');
+    const secondRoot = shared ? firstRoot : await scratch.make('forgeax-source-publication-');
+    const semantic = {
+      ...closurePack(),
       digest: 'sha256:semantic',
       outputSetDigest: 'sha256:outputs',
     };
-    const staged = await stageImportPublication({ ...input(root), pack });
-    expect(staged.ok).toBe(true);
-    if (!staged.ok) return;
-    await expect(commitImportPublication(staged.candidate)).resolves.toMatchObject({ ok: true });
+    const firstPack = { ...semantic, scopeId: 'first-scope', generation: 1114181571 };
+    const secondPack = { ...semantic, scopeId: 'second-scope', generation: 2018541951 };
 
-    const entry = await new DdcEntryStore(root).read(KEY);
-    expect(entry?.payload).toEqual({
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: (pack as unknown as { readonly assets: unknown }).assets,
-      digest: pack.digest,
-      outputSetDigest: pack.outputSetDigest,
+    const first = await acceptedStage({
+      ...input(firstRoot),
+      pack: firstPack,
+      artifacts: [validArtifact],
     });
-    expect(entry?.receipt.publicationGeneration).toBe(pack.generation);
-  });
-
-  it('keeps fresh DDC payload bytes independent from publication generation', async () => {
-    const firstRoot = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    const secondRoot = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(firstRoot, secondRoot);
-    const basePack = input(firstRoot).pack as Record<string, unknown>;
-    const firstPack = {
-      ...basePack,
-      kind: 'internal-text-package' as const,
-      scopeId: 'first-scope',
-      generation: 1114181571,
-      digest: 'sha256:semantic',
-      outputSetDigest: 'sha256:outputs',
-    };
-    const secondPack = { ...firstPack, scopeId: 'second-scope', generation: 2018541951 };
-
-    const first = await stageImportPublication({ ...input(firstRoot), pack: firstPack });
-    const second = await stageImportPublication({ ...input(secondRoot), pack: secondPack });
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
-    await expect(commitImportPublication(first.candidate)).resolves.toMatchObject({ ok: true });
-    await expect(commitImportPublication(second.candidate)).resolves.toMatchObject({ ok: true });
+    const second = await acceptedStage({
+      ...input(secondRoot),
+      pack: secondPack,
+      artifacts: [validArtifact],
+    });
+    // In one DDC, the newer lease wins and the older writer reuses its accepted closure.
+    expect(await commitImportPublication(second)).toMatchObject({ ok: true });
+    expect(await commitImportPublication(first)).toMatchObject({ ok: true });
 
     const firstEntry = await new DdcEntryStore(firstRoot).read(KEY);
     const secondEntry = await new DdcEntryStore(secondRoot).read(KEY);
-    expect(firstEntry?.payload).toEqual(secondEntry?.payload);
-    expect(firstEntry?.payload).not.toHaveProperty('scopeId');
-    expect(firstEntry?.payload).not.toHaveProperty('generation');
-    expect(firstEntry?.receipt.publicationGeneration).toBe(firstPack.generation);
+    expect(firstEntry?.payload).toEqual(semantic);
+    expect(secondEntry?.payload).toEqual(semantic);
+    expect(firstEntry?.artifacts[ARTIFACT_PATH]).toMatchObject({
+      mediaType: validArtifact.mediaType,
+      bytes: validArtifact.bytes,
+    });
+    expect(secondEntry?.artifacts).toEqual(firstEntry?.artifacts);
+    expect(firstEntry?.receipt.publicationGeneration).toBe(
+      shared ? secondPack.generation : firstPack.generation,
+    );
     expect(secondEntry?.receipt.publicationGeneration).toBe(secondPack.generation);
     expect(firstEntry?.receipt.outputDigest).toBe(secondEntry?.receipt.outputDigest);
   });
 
-  it('accepts concurrent semantic candidates with different publication generations', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const basePack = input(root).pack as Record<string, unknown>;
-    const firstPack = {
-      ...basePack,
-      kind: 'internal-text-package' as const,
-      scopeId: 'first-scope',
-      generation: 1114181571,
-      digest: 'sha256:semantic',
-      outputSetDigest: 'sha256:outputs',
-    };
-    const secondPack = { ...firstPack, scopeId: 'second-scope', generation: 2018541951 };
-    const first = await stageImportPublication({ ...input(root), pack: firstPack });
-    const second = await stageImportPublication({ ...input(root), pack: secondPack });
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
-
-    const winner = await commitImportPublication(second.candidate);
-    const loser = await commitImportPublication(first.candidate);
-    expect(winner).toMatchObject({ ok: true });
-    expect(loser).toMatchObject({ ok: true });
-    await expect(new DdcEntryStore(root).read(KEY)).resolves.toMatchObject({
-      payload: expect.not.objectContaining({
-        scopeId: expect.anything(),
-        generation: expect.anything(),
-      }),
-    });
-  });
-
   it('reuses a legacy runtime payload when only its publication generation changes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-source-publication-');
     const oldPack = {
       ...(input(root).pack as {
         readonly assets: readonly unknown[];
@@ -654,10 +484,8 @@ describe('source package publication concurrency', () => {
     ).resolves.toMatchObject({ result: 'published' });
 
     const nextPack = { ...oldPack, scopeId: 'new-scope', generation: 2018541951 };
-    const second = await stageImportPublication({ ...input(root), pack: nextPack });
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    await expect(commitImportPublication(second.candidate)).resolves.toMatchObject({ ok: true });
+    const second = await acceptedStage({ ...input(root), pack: nextPack });
+    await expect(commitImportPublication(second)).resolves.toMatchObject({ ok: true });
 
     await expect(new DdcEntryStore(root).read(KEY)).resolves.toMatchObject({ payload: oldPack });
   });
@@ -710,27 +538,16 @@ describe('source package publication concurrency', () => {
         },
       ],
     },
-    {
-      label: 'transport body mismatch',
-      pack: closurePack(),
-      body: JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [] }),
-      artifacts: [validArtifact],
-    },
-  ] as const)('rejects $label before advancing the DDC head', async ({ pack, artifacts, body }) => {
+  ] as const)('rejects $label before advancing the DDC head', async ({ pack, artifacts }) => {
     for (const wire of [false, true]) {
       const publishedPack = wire
         ? { schemaVersion: 'pack-material-programs/2', pack, programs: [], abis: [] }
         : pack;
-      const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-      roots.push(root);
+      const root = await scratch.make('forgeax-source-publication-');
       const publicationInput: ImportPublicationInput = {
         ...input(root),
         pack: publishedPack,
-        transport: {
-          path: join(root, 'runtime', `${GUID}.pack.json`),
-          body: body ?? JSON.stringify(publishedPack),
-          artifacts,
-        },
+        artifacts,
       };
 
       const staged = await stageImportPublication(publicationInput);

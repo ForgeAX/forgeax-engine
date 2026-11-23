@@ -1,3 +1,4 @@
+import { projectedProbeCount } from '../scene/probe-blend';
 // Frame admission and scene-input decisions made before any GPU-driven
 // preparation: which camera records, whether the device/pipeline may record,
 // whether the frame defers to a preparation barrier, and which material,
@@ -365,7 +366,7 @@ export function projectFrameVisibleSurface(
 function manualProbeBlendRecords(renderables: FrameList<RenderableSnapshot>) {
   return renderables.flatMap((source) => {
     const record = source.probeBlendRecord;
-    return record === undefined ? [] : [{ cacheKey: source.entityKey, record }];
+    return record === undefined ? [] : [{ cacheKey: record.objectKey, record }];
   });
 }
 
@@ -376,18 +377,24 @@ export function prepareDeferredProbeBuffer(
   standard: StandardTopologyInputValue,
   scene: PersistentGpuDrivenState | undefined,
   renderables: FrameList<RenderableSnapshot>,
+  hasLightProbes: boolean | undefined,
 ): Buffer | undefined {
-  if (standard.prepared.renderPath !== 'deferred') return undefined;
+  frameState.deferredLightProbes = false;
+  if (standard.prepared.renderPath !== 'deferred' || hasLightProbes === false) return undefined;
   const projection = scene?.probeBlend;
-  const records = projection?.records ?? manualProbeBlendRecords(renderables);
+  const direct = projection === undefined ? manualProbeBlendRecords(renderables) : undefined;
+  if ((direct?.length ?? projectedProbeCount(projection)) === 0) return undefined;
   const capacity =
     projection?.capacity ??
-    records.reduce((max, { record }) => Math.max(max, record.objectKey + 2), 1);
+    direct?.reduce((max, { record }) => Math.max(max, record.objectKey + 2), 1) ??
+    1;
   if (capacity > 0x1000000)
     throw new RhiError({
       code: 'rhi-descriptor-invalid',
       expected: 'deferred probe rows fit 24 bits',
       hint: 'reduce the retained probe object roster',
     });
-  return ensureProbeBlendRecordBuffer(internals.device, frameState, projection ?? records);
+  const buffer = ensureProbeBlendRecordBuffer(internals.device, frameState, projection ?? direct);
+  frameState.deferredLightProbes = true;
+  return buffer;
 }

@@ -64,7 +64,7 @@ describe('Standard clearcoat root contract', () => {
     );
   });
 
-  it('keeps the built-in Standard IBL ABI stable when physical maps are appended', () => {
+  it('appends physical maps to Standard without reserving material environment slots', () => {
     const schema = [
       ...STANDARD_PIPELINE_PARAM_SCHEMA,
       { name: 'clearcoatTexture', type: 'texture2d' as const },
@@ -80,26 +80,24 @@ describe('Standard clearcoat root contract', () => {
       { kind: 'pbr-material-merged', materialParamSchema: schema },
     );
 
-    // IBL follows the schema-derived user region; scene and physical bindings
-    // retain their reserved identities. The bump pair aliases the normal pair.
     const userEnd = derive(STANDARD_PIPELINE_PARAM_SCHEMA).userRegionBindingEnd;
-    const userEntries = userEnd - 2;
-    expect(descriptor.entries).toHaveLength(userEntries + 13);
-    expect(descriptor.entries.slice(0, userEntries).map((entry) => entry.binding)).toEqual(
-      Array.from({ length: userEnd }, (_, binding) => binding).filter(
-        (binding) => ![15, 16].includes(binding),
-      ),
+    // The bump pair aliases the normal pair. Environment inputs belong to View/Primitive.
+    const surfaceSlots = Array.from({ length: userEnd }, (_, binding) => binding).filter(
+      (binding) => ![15, 16].includes(binding),
     );
-    expect(descriptor.entries[userEntries]?.texture).toMatchObject({ viewDimension: 'cube' });
-    expect(descriptor.entries[userEntries + 2]?.texture).toMatchObject({ viewDimension: '2d' });
-    expect(descriptor.entries[userEntries + 6]?.texture).toMatchObject({ viewDimension: '2d' });
-    expect(
-      descriptor.entries.slice(userEntries + 7, userEntries + 11).map((entry) => entry.binding),
-    ).toEqual([48, 49, 52, 53]);
-    expect(descriptor.entries.find((entry) => entry.binding === 47)).toMatchObject({
-      binding: 47,
-      texture: { sampleType: 'float', viewDimension: '2d' },
-    });
+    expect(descriptor.entries.map((entry) => entry.binding)).toEqual([
+      ...surfaceSlots,
+      48,
+      49,
+      52,
+      53,
+      46,
+    ]);
+    for (const binding of [49, 53]) {
+      expect(descriptor.entries.find((entry) => entry.binding === binding)?.texture).toMatchObject({
+        viewDimension: '2d',
+      });
+    }
     expect(descriptor.entries.find((entry) => entry.binding === 46)).toMatchObject({
       binding: 46,
       visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
@@ -126,13 +124,12 @@ describe('Standard clearcoat root contract', () => {
       visibility: 3,
       buffer: { type: 'uniform', hasDynamicOffset: true },
     });
-    expect(descriptor.entries[1]?.texture).toMatchObject({ viewDimension: 'cube' });
+    expect(descriptor.entries[1]?.buffer).toMatchObject({ type: 'uniform', minBindingSize: 112 });
     // PBR layouts keep the producer-owned scene-material row at binding 46,
     // even when an authored schema has no numeric parameters.
     expect(descriptor.entries.map((entry) => entry.binding)).toEqual([
       ...Array.from({ length: 9 }, (_, binding) => binding),
       46,
-      47,
     ]);
   });
 
@@ -154,7 +151,6 @@ describe('Standard clearcoat root contract', () => {
     expect(descriptor.entries.map((entry) => entry.binding)).toEqual([
       ...Array.from({ length: 17 }, (_, binding) => binding),
       46,
-      47,
     ]);
     expect(descriptor.entries[9]).toMatchObject({
       sampler: { type: 'non-filtering' },
@@ -174,9 +170,7 @@ describe('Standard clearcoat root contract', () => {
     expect(descriptor.entries[14]).toMatchObject({
       texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
     });
-    expect(descriptor.entries.find((entry) => entry.binding === 47)).toMatchObject({
-      texture: { sampleType: 'float', viewDimension: '2d' },
-    });
+    expect(descriptor.entries.some((entry) => entry.binding === 47)).toBe(false);
 
     // The medium is a project material artifact with an explicit empty
     // paramSchema. Its per-shader user region is therefore the reserved UBO
@@ -194,7 +188,7 @@ describe('Standard clearcoat root contract', () => {
     expect(source).toContain('@group(1) @binding(12) var surfaceNearestLayerTexture');
     expect(source).toContain('@group(1) @binding(13) var surfaceNearestDepthSampler');
     expect(source).toContain('@group(1) @binding(14) var surfaceNearestDepthTexture');
-    expect(source).toContain('@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>');
+    expect(source).not.toContain('@group(1) @binding(47) var');
   });
 
   it.each([1, 3])('places medium optical resources after %i authored texture pairs', (count) => {
@@ -217,8 +211,9 @@ describe('Standard clearcoat root contract', () => {
     expect(descriptor.entries.find((entry) => entry.binding === 2)?.texture).toMatchObject({
       viewDimension: '2d',
     });
-    expect(descriptor.entries.find((entry) => entry.binding === start)?.texture).toMatchObject({
-      viewDimension: 'cube',
+    expect(descriptor.entries.find((entry) => entry.binding === start)?.buffer).toMatchObject({
+      type: 'uniform',
+      minBindingSize: 112,
     });
     expect(descriptor.entries.find((entry) => entry.binding === start + 9)?.texture).toMatchObject({
       sampleType: 'unfilterable-float',

@@ -2,6 +2,7 @@ import type { ImportContext, ImportResult } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type RunImportMeta, runImport } from '../import-runner.js';
 import { ImporterRegistry } from '../importer-registry.js';
+import { projectImportPack } from '../pack-value.js';
 
 const MESH_GUID = '019e2cc6-0c86-79da-aa76-b0984c86d45c';
 const TEXTURE_GUID = '019e2cc6-0c86-79da-aa76-b0984c86d45d';
@@ -48,9 +49,10 @@ describe('asset-local ImportProduct contract', () => {
       return result.value;
     };
     const native = await run(source);
-    const published = JSON.parse(JSON.stringify(native.pack.assets[0]?.payload));
+    const nativePack = projectImportPack(native.product, meta);
+    const published = JSON.parse(JSON.stringify(nativePack.assets[0]?.payload));
     const transported = await run(published);
-    expect(transported.pack).toEqual(native.pack);
+    expect(projectImportPack(transported.product, meta)).toEqual(nativePack);
     expect(transported.cookProducts[0]?.digest).toBe(native.cookProducts[0]?.digest);
     published.vertices[1] = 0.2;
     expect((await run(published)).cookProducts[0]?.digest).not.toBe(native.cookProducts[0]?.digest);
@@ -100,8 +102,8 @@ describe('asset-local ImportProduct contract', () => {
       expect(result.value.product.artifacts).toHaveProperty(`${MESH_GUID}/body`);
       expect(result.value.product.receipts).toHaveLength(2);
       expect(result.value.product.sourceRevision).toBe('source:fixture.source');
-      expect(result.value.pack.assets[0]?.artifacts).toHaveProperty('body');
-      expect(result.value.pack.assets[1]?.artifacts).toHaveProperty('body');
+      expect(projectImportPack(result.value.product).assets[0]?.artifacts).toHaveProperty('body');
+      expect(projectImportPack(result.value.product).assets[1]?.artifacts).toHaveProperty('body');
     }
   });
 

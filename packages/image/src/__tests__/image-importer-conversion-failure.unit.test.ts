@@ -1,7 +1,12 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basisEncode } from '@forgeax/engine-codec/encode';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import type { ImportContext } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -195,12 +200,12 @@ describe('image importer conversion failure through the public runner', () => {
 
     expect(repaired.ok).toBe(true);
     if (!repaired.ok || 'skipped' in repaired.value) return;
-    expect(repaired.value.pack.assets).toHaveLength(1);
-    expect(repaired.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(repaired.value.product).assets).toHaveLength(1);
+    expect(projectImportPack(repaired.value.product).assets[0]).toMatchObject({
       guid: GUID,
       artifacts: { body: { mediaType: 'application/x-forgeax-rgba8' } },
     });
-    expect(repaired.value.pack).not.toHaveProperty('diagnostics');
+    expect(projectImportPack(repaired.value.product)).not.toHaveProperty('diagnostics');
     expect(state.reads).toBe(4);
 
     const repeated = await runImport(input, importerRegistry, { readSource });
@@ -220,7 +225,7 @@ describe('image importer conversion failure through the public runner', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack.assets[0]?.payload).toMatchObject({
+    expect(projectImportPack(result.value.product).assets[0]?.payload).toMatchObject({
       colorSpace: input.colorSpace,
       format: input.format,
       mips: { kind: 'none' },
@@ -245,7 +250,7 @@ describe('image importer conversion failure through the public runner', () => {
 
     expect(repaired.ok).toBe(true);
     if (!repaired.ok || 'skipped' in repaired.value) return;
-    expect(repaired.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(repaired.value.product).assets[0]).toMatchObject({
       guid: GUID,
       payload: {
         colorSpace: 'linear',
@@ -293,7 +298,7 @@ describe('image importer conversion failure through the public runner', () => {
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok || 'skipped' in repaired.value) return;
-    expect(repaired.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(repaired.value.product).assets[0]).toMatchObject({
       guid: GUID,
       payload: {
         colorSpace: 'linear',

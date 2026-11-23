@@ -56,6 +56,15 @@ it('consumes prepared layer membership through a new source wrapper without a fi
   try {
     storage.accept().unwrap();
     const sourcePlan = Object.freeze({ ...input.sourcePlan });
+    expect(f.first.pool.sourceLayerPlan(input.identity, sourcePlan, f.first.scene)).toBe(
+      layer.plan,
+    );
+    expect(
+      f.first.pool.sourceLayerPlan(input.identity, sourcePlan, f.second.scene),
+    ).toBeUndefined();
+    expect(
+      f.first.pool.sourceLayerPlan({ ...input.identity, index: 8 }, sourcePlan, f.first.scene),
+    ).toBeUndefined();
     const updated = f.first.pool
       .update({ ...input, sourcePlan, inputReads: resources.inputReads() }, sourcePlan)
       .unwrap();

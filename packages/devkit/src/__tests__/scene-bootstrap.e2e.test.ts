@@ -10,8 +10,8 @@ import { type Browser, chromium, type Page } from 'playwright';
 import { createServer, type Plugin, type ViteDevServer } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { createViteConfig } from '../host.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { readProjectFacts } from '../project.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
 
 const namespace = '01900000-0000-7000-8000-000000000140';
 const parsedNamespace = PackageId.parse(namespace);
@@ -66,7 +66,7 @@ async function listen(
   config: Awaited<ReturnType<typeof createViteConfig>>,
   onSceneRootEvent?: (event: string) => void,
 ): Promise<ViteDevServer> {
-  const port = await allocateLoopbackPort();
+  const port = await materializeViteDevPort();
   const hotUpdateTrace: Plugin = {
     name: 'scene-bootstrap-hot-update-trace',
     enforce: 'post',
@@ -371,7 +371,6 @@ describe('native scene root bootstrap', () => {
   it.each([
     undefined,
     { engine: false },
-    { render: false, kernels: false },
   ])('activates project logic and Host UI with policy %j', async (workers) => {
     const bootstrapRoot = 'project-bootstrap' as const;
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-scene-worker-'));

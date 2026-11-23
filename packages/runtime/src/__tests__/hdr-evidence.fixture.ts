@@ -32,6 +32,7 @@ export function offscreenCanvas(width: number, height = width) {
         currentTexture();
       },
       unconfigure: () => {},
+      getConfiguration: () => configuration ?? null,
       getCurrentTexture: currentTexture,
     }),
   };
@@ -51,16 +52,23 @@ export function encodeRgbaPng(source: Uint8Array, sourceSize: number, zoom = 4):
 }
 
 /** Reinhard + sRGB preview of a linear luminance image; `scale` exposes it. */
-export function luminancePng(luminance: Float32Array, size: number, scale = 4): Buffer {
-  const rgba = new Uint8Array(size * size * 4);
-  for (let i = 0; i < size * size; i++) {
+export function luminancePng(
+  luminance: Float32Array,
+  width: number,
+  scale = 4,
+  height = width,
+): Buffer {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
     const v = (luminance[i] ?? 0) * scale;
     const mapped = v / (1 + v);
     const srgb = linearChannelToSrgb(mapped);
     const byte = Math.round(Math.min(1, Math.max(0, srgb)) * 255);
     rgba.set([byte, byte, byte, 255], i * 4);
   }
-  return encodeRgbaPng(rgba, size);
+  return width === height
+    ? encodeRgbaPng(rgba, width)
+    : Buffer.from(encodePng(width, height, rgba));
 }
 
 /** Red = darkened by the feature, blue = brightened (must stay empty). */

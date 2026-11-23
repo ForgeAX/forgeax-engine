@@ -18,6 +18,7 @@ import {
 } from '@forgeax/engine-pack/source';
 import { type MeshAsset, ok, type PackV2 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import {
   prepareRuntimePackAnchor,
   prepareRuntimePackContent,
@@ -70,6 +71,15 @@ function producer(
   });
   return value;
 }
+async function expectPositions(
+  assets: AssetRegistry,
+  guid: string,
+  expected: ReturnType<typeof copyMeshAttribute>,
+) {
+  const mesh = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
+  expect(copyMeshAttribute(mesh, 'position')).toEqual(expected);
+}
+
 function reader(source: RuntimePackProducer) {
   const assets = new AssetRegistry({ scopeId: 'test-runtime', shaderRegistry: {} as never });
   assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
@@ -105,6 +115,60 @@ function generator(delay = ''): RuntimePackContent {
     },
   };
 }
+type PublishedOutput = { guid: string; digest: string };
+
+function firstOutput<T extends PublishedOutput>(result: {
+  readonly publication?: { readonly outputs: readonly T[] };
+}) {
+  return defined(defined(result.publication).outputs[0]);
+}
+
+function dependingOn(
+  content: RuntimePackContent,
+  packageId: string,
+  dependency: PublishedOutput,
+): RuntimePackContent {
+  return {
+    ...content,
+    source: {
+      ...content.source,
+      packageId,
+      runtime: { dependencies: [dependency.guid] },
+    } as RuntimePackContent['source'],
+    dependencies: { [dependency.guid]: dependency.digest },
+  };
+}
+
+async function publishBox(source: RuntimePackProducer, width: number) {
+  const content = (
+    await prepareRuntimePackContent(other, {
+      box: createBoxGeometry(width, 2, 3).unwrap(),
+    })
+  ).unwrap();
+  return firstOutput((await source.admit(content)).unwrap());
+}
+
+async function admitDirect(
+  source: RuntimePackProducer,
+  ...content: Parameters<typeof prepareRuntimePackContent>
+) {
+  return (await source.admit((await prepareRuntimePackContent(...content)).unwrap())).unwrap();
+}
+
+const behaviorModule = { specifier: './behavior.js' };
+
+function behaviorPrograms(body = 'export default { apply() {} };') {
+  return {
+    'project:behavior.js#default': {
+      artifact: preparePackProgram({
+        entry: 'behavior.js',
+        export: 'default',
+        modules: { 'behavior.js': body },
+      }).unwrap(),
+    },
+  };
+}
+
 function outputGuid(packageId: string) {
   return AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
 }
@@ -129,10 +193,12 @@ it('returns a standalone static Mesh artifact with the Task Worker transfer', as
   if (!('assets' in built.value.source)) throw new Error('expected a direct output');
   const box = defined(built.value.source.assets.box);
   expect(box.payload).toEqual({ kind: 'mesh' });
-  expect(box.artifacts?.body).toMatchObject({ assetCodec: { name: 'mesh-binary' } });
+  expect(box.artifacts?.body).toMatchObject({ assetCodec: { name: 'mesh-binary', version: '7' } });
   const [bytes] = Object.values(built.value.blobs ?? {});
   if (!(bytes instanceof Uint8Array)) throw new Error('expected a private binary body');
-  expect(bytes).toEqual(packMeshBin(createBoxGeometry(2, 2, 3).unwrap(), 'box').unwrap());
+  expect(bytes).toEqual(
+    packMeshBin(createBoxGeometry(2, 2, 3).unwrap(), 'box', [], 'static-streams').unwrap(),
+  );
   expect(built.transfer).toEqual([bytes.buffer]);
   const delivered = structuredClone(built.value, { transfer: [bytes.buffer] });
   expect(bytes.byteLength).toBe(0);
@@ -196,19 +262,12 @@ it('loads a selected output while a sibling requires a decoder owned by another 
     decoders: new DecoderRegistry(),
   });
   assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
-  const program = preparePackProgram({
-    entry: 'behavior.js',
-    export: 'default',
-    modules: { 'behavior.js': 'export default { apply() {} };' },
-  }).unwrap();
-  const programs = { 'project:behavior.js#default': { artifact: program } };
-  const module = { specifier: './behavior.js' };
+  const programs = behaviorPrograms();
+  const module = behaviorModule;
   try {
-    const dependency = (
-      await prepareRuntimePackContent(id, { behavior: { kind: 'plugin', module } }, { programs })
-    ).unwrap();
-    const published = (await source.admit(dependency)).unwrap();
-    const external = defined(defined(published.publication).outputs[0]);
+    const external = firstOutput(
+      await admitDirect(source, id, { behavior: { kind: 'plugin', module } }, { programs }),
+    );
     const combined = (
       await prepareRuntimePackContent(
         other,
@@ -330,12 +389,7 @@ describe('resolved runtime parameter anchors', () => {
       const copy = { ...changed, packageId: other };
       (await source.generate(copy)).unwrap();
       const expected = createBoxGeometry(2, 2, 3).unwrap().attributes.position;
-      expect(
-        copyMeshAttribute(
-          (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap(),
-          'position',
-        ),
-      ).toEqual(expected);
+      await expectPositions(assets, outputGuid(other), expected);
       expect(cache.size).toBe(3);
       (await source.generate(copy)).unwrap();
       expect(cache.size).toBe(3);
@@ -348,24 +402,14 @@ describe('resolved runtime parameter anchors', () => {
       source.dispose();
       (await restored.restore(saved)).unwrap();
       for (const packageId of [id, other])
-        expect(
-          copyMeshAttribute(
-            (await loadFixtureAsset(recovered, outputGuid(packageId), 'mesh')).unwrap(),
-            'position',
-          ),
-        ).toEqual(expected);
+        await expectPositions(recovered, outputGuid(packageId), expected);
       (await restored.generate(selection)).unwrap();
       (
         await recovered.reload(defined(runtimeAssetReference(recovered, outputGuid(id))), {
           conflict: 'overwrite',
         })
       ).unwrap();
-      expect(
-        copyMeshAttribute(
-          (await loadFixtureAsset(recovered, outputGuid(id), 'mesh')).unwrap(),
-          'position',
-        ),
-      ).toEqual(copyMeshAttribute(defaults, 'position'));
+      await expectPositions(recovered, outputGuid(id), copyMeshAttribute(defaults, 'position'));
       expect(
         await restored.generate({ ...selection, packageId: parent, parent: id }),
       ).toMatchObject({ ok: false });
@@ -435,12 +479,11 @@ describe('resolved runtime parameter anchors', () => {
       const saved = JSON.parse(JSON.stringify(source.snapshot()));
       source.dispose();
       (await restored.restore(saved)).unwrap();
-      expect(
-        copyMeshAttribute(
-          (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap(),
-          'position',
-        ),
-      ).toEqual(copyMeshAttribute(createBoxGeometry(3, 2, 3).unwrap(), 'position'));
+      await expectPositions(
+        assets,
+        outputGuid(id),
+        copyMeshAttribute(createBoxGeometry(3, 2, 3).unwrap(), 'position'),
+      );
     } finally {
       source.dispose();
       restored.dispose();
@@ -471,12 +514,11 @@ describe('resolved runtime parameter anchors', () => {
         (
           await source.generate({ schemaVersion: '3.0.0', packageId, parent: anchor, values: {} })
         ).unwrap();
-        expect(
-          copyMeshAttribute(
-            (await loadFixtureAsset(assets, outputGuid(packageId), 'mesh')).unwrap(),
-            'position',
-          ),
-        ).toEqual(copyMeshAttribute(createBoxGeometry(width, 2, 3).unwrap(), 'position'));
+        await expectPositions(
+          assets,
+          outputGuid(packageId),
+          copyMeshAttribute(createBoxGeometry(width, 2, 3).unwrap(), 'position'),
+        );
       }
       expect(source.programEntries().size).toBe(1);
     } finally {
@@ -645,52 +687,21 @@ describe('durable runtime Pack input', () => {
   });
 });
 
-it('rejects an external root recipe that rebuilds an additional output', async () => {
-  const external = producer();
-  const assets = reader(external);
-  const marker = '__runtimePackExternalRootOutputSet';
-  const globals = globalThis as unknown as Record<string, unknown>;
-  delete globals[marker];
-  const source = producer(undefined, {
-    exportSource: (versions) => external.exportSource(versions),
-  });
-  try {
-    (
-      await external.admit(
-        generator(
-          `if (globalThis.${marker}) return { ok: true, value: { box: createBoxGeometry(values.width, 2, 3).unwrap(), extra: createBoxGeometry(1, 1, 1).unwrap() } }; globalThis.${marker} = true;`,
-        ),
-      )
-    ).unwrap();
-    const output = defined(
-      (await external.generate(instance(id, 2))).unwrap().publication?.outputs[0],
-    );
-    const content = generator();
-    const result = await source.admit({
-      ...content,
-      source: {
-        ...content.source,
-        packageId: other,
-        runtime: { dependencies: [output.guid] },
-      } as RuntimePackContent['source'],
-      dependencies: { [output.guid]: output.digest },
-    });
-    expect(result.ok).toBe(false);
-    expect(source.rows()).toEqual([]);
-  } finally {
-    assets.clearCatalogSource();
-    source.dispose();
-    external.dispose();
-    delete globals[marker];
-  }
-});
-
-it('rejects a recovered fixed recipe that unexpectedly adds an output', async () => {
+it.each([
+  'external admission',
+  'saved restore',
+] as const)('rejects an unexpected output during %s', async (route) => {
   const source = producer();
-  const marker = '__runtimePackOutputSetRegression';
+  const recovered = producer(
+    undefined,
+    route === 'external admission'
+      ? {
+          exportSource: (versions) => source.exportSource(versions),
+        }
+      : undefined,
+  );
+  const marker = '__runtimePackExtraOutput';
   const globals = globalThis as unknown as Record<string, unknown>;
-  delete globals[marker];
-  const recovered = producer();
   try {
     (
       await source.admit(
@@ -699,30 +710,24 @@ it('rejects a recovered fixed recipe that unexpectedly adds an output', async ()
         ),
       )
     ).unwrap();
-    const output = defined(
-      (await source.generate(instance(id, 2))).unwrap().publication?.outputs[0],
-    );
-    const content = generator();
-    (
-      await source.admit({
-        ...content,
-        source: {
-          ...content.source,
-          packageId: other,
-          program: 'project:output-set-consumer.js#build',
-          runtime: { dependencies: [output.guid] },
-        } as RuntimePackContent['source'],
-        dependencies: { [output.guid]: output.digest },
-        programs: {
-          'project:output-set-consumer.js#build': defined(
-            content.programs?.['project:runtime/generator.js#build'],
-          ),
-        },
-      })
-    ).unwrap();
-    source.withdraw(parent);
-    const saved = source.snapshot();
-    expect((await recovered.restore(saved)).ok).toBe(false);
+    const output = firstOutput((await source.generate(instance(id, 2))).unwrap());
+    const dependent = dependingOn(generator(), other, output);
+    if (route === 'external admission') {
+      expect((await recovered.admit(dependent)).ok).toBe(false);
+    } else {
+      const program = 'project:output-set-consumer.js#build';
+      (
+        await source.admit({
+          ...dependent,
+          source: { ...dependent.source, program } as RuntimePackContent['source'],
+          programs: {
+            [program]: defined(dependent.programs?.['project:runtime/generator.js#build']),
+          },
+        })
+      ).unwrap();
+      source.withdraw(parent);
+      expect((await recovered.restore(source.snapshot())).ok).toBe(false);
+    }
     expect(recovered.rows()).toEqual([]);
   } finally {
     delete globals[marker];
@@ -730,20 +735,13 @@ it('rejects a recovered fixed recipe that unexpectedly adds an output', async ()
     source.dispose();
   }
 });
+
 it.each([
   'legacy',
   'runtime',
 ])('fences %s cached and fresh definitions against a transitive reference change', async (mode) => {
   const source = producer();
-  const program = {
-    artifact: preparePackProgram({
-      entry: 'behavior.js',
-      export: 'default',
-      modules: {
-        'behavior.js': 'export default { apply() {} };',
-      },
-    }).unwrap(),
-  };
+  const programs = behaviorPrograms();
   const publish = async (
     packageId: string,
     dependency?: {
@@ -758,7 +756,7 @@ it.each([
         {
           behavior: {
             kind: 'plugin',
-            module: { specifier: './behavior.js' },
+            module: behaviorModule,
             config: {
               revision,
               ...(dependency ? { target: { $asset: dependency.guid } } : {}),
@@ -766,15 +764,15 @@ it.each([
           },
         },
         {
-          programs: { 'project:behavior.js#default': program },
+          programs,
           ...(dependency ? { dependencies: { [dependency.guid]: dependency.digest } } : {}),
         },
       )
     ).unwrap();
     return (await source.admit(content)).unwrap();
   };
-  const c1 = defined(defined((await publish(other)).publication).outputs[0]);
-  const b1 = defined(defined((await publish(id, c1)).publication).outputs[0]);
+  const c1 = firstOutput(await publish(other));
+  const b1 = firstOutput(await publish(id, c1));
   const a = await publish(parent, b1);
   const guid = defined(a.rows[0]).guid;
   expect(defined(a.publication).externalEvidence).toContainEqual({
@@ -795,8 +793,8 @@ it.each([
   expect((await read()).ok).toBe(true);
   source.withdraw(id);
   source.withdraw(other);
-  const c2 = defined(defined((await publish(other, undefined, 2)).publication).outputs[0]);
-  const b2 = defined(defined((await publish(id, c2)).publication).outputs[0]);
+  const c2 = firstOutput(await publish(other, undefined, 2));
+  const b2 = firstOutput(await publish(id, c2));
   expect(b2.digest).toBe(b1.digest);
   expect(c2.digest).not.toBe(c1.digest);
   expect((await read()).ok).toBe(false);
@@ -814,53 +812,17 @@ it.each([
 });
 it('keeps different historical computation versions private and rejects substitution into an admitted source', async () => {
   const source = producer();
-  const leaf = async (width: number) =>
-    defined(
-      defined(
-        (
-          await source.admit(
-            (
-              await prepareRuntimePackContent(other, {
-                box: createBoxGeometry(width, 2, 3).unwrap(),
-              })
-            ).unwrap(),
-          )
-        ).unwrap().publication,
-      ).outputs[0],
-    );
-  const dependent = (
-    packageId: string,
-    dependency: {
-      guid: string;
-      digest: string;
-    },
-  ) => {
-    const content = generator();
-    return {
-      ...content,
-      source: {
-        ...content.source,
-        packageId,
-        runtime: { dependencies: [dependency.guid] },
-      } as RuntimePackContent['source'],
-      dependencies: { [dependency.guid]: dependency.digest },
-    };
-  };
   const consumerId = '01900000-0000-7000-8000-000000000104';
   const consumerInstanceId = '01900000-0000-7000-8000-000000000105';
   const originals = [];
   for (const width of [1, 4]) {
-    const c = await leaf(width);
-    (await source.admit(dependent(parent, c))).unwrap();
-    const x = defined(
-      defined((await source.generate(instance(id, 2))).unwrap().publication).outputs[0],
-    );
-    const definition = dependent(consumerId, x);
+    const c = await publishBox(source, width);
+    (await source.admit(dependingOn(generator(), parent, c))).unwrap();
+    const x = firstOutput((await source.generate(instance(id, 2))).unwrap());
+    const definition = dependingOn(generator(), consumerId, x);
     (await source.admit(definition)).unwrap();
     const instanceRecord = { ...instance(consumerInstanceId, width), parent: consumerId };
-    const output = defined(
-      defined((await source.generate(instanceRecord)).unwrap().publication).outputs[0],
-    );
+    const output = firstOutput((await source.generate(instanceRecord)).unwrap());
     originals.push(await source.exportSource(new Map([[output.guid, output.digest]])));
     source.withdraw(consumerId);
     source.withdraw(parent);
@@ -953,11 +915,7 @@ it('keeps different historical computation versions private and rejects substitu
 });
 it('refuses a root removed synchronously by an observer during a runtime cache hit', async () => {
   const source = producer();
-  const mesh = (
-    await source.admit(
-      (await prepareRuntimePackContent(id, { box: createBoxGeometry(1, 2, 3).unwrap() })).unwrap(),
-    )
-  ).unwrap();
+  const mesh = await admitDirect(source, id, { box: createBoxGeometry(1, 2, 3).unwrap() });
   const guid = defined(mesh.rows[0]).guid;
   const runtime = createAssetSource({
     decoders: new DecoderRegistry(),
@@ -989,48 +947,28 @@ it.each([
   'runtime',
 ])('fences a %s definition when a referenced dependency changes during its read', async (mode) => {
   const source = producer();
-  const mesh = (
-    await source.admit(
-      (
-        await prepareRuntimePackContent(other, { box: createBoxGeometry(1, 2, 3).unwrap() })
-      ).unwrap(),
-    )
-  ).unwrap();
-  const dependency = defined(defined(mesh.publication).outputs[0]);
+  const mesh = await admitDirect(source, other, { box: createBoxGeometry(1, 2, 3).unwrap() });
+  const dependency = firstOutput(mesh);
   const content = (
     await prepareRuntimePackContent(
       id,
       {
         behavior: {
           kind: 'plugin',
-          module: { specifier: './behavior.js' },
+          module: behaviorModule,
           config: { target: { $asset: dependency.guid } },
         },
       },
       {
         dependencies: { [dependency.guid]: dependency.digest },
-        programs: {
-          'project:behavior.js#default': {
-            artifact: preparePackProgram({
-              entry: 'behavior.js',
-              export: 'default',
-              modules: { 'behavior.js': 'export default { apply() {} };' },
-            }).unwrap(),
-          },
-        },
+        programs: behaviorPrograms(),
       },
     )
   ).unwrap();
   const accepted = (await source.admit(content)).unwrap();
   const row = defined(accepted.rows[0]);
-  let enter!: () => void;
-  const entered = new Promise<void>((resolve) => {
-    enter = resolve;
-  });
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: entered, resolve: enter } = testGate();
+  const { promise: gate, resolve: resume } = testGate();
   const catalog: CatalogSource = {
     ...source.catalog,
     openPackage(url) {
@@ -1058,13 +996,7 @@ it.each([
         : runtime.readPluginDefinition(row.guid);
     await entered;
     source.withdraw(other);
-    (
-      await source.admit(
-        (
-          await prepareRuntimePackContent(other, { box: createBoxGeometry(4, 2, 3).unwrap() })
-        ).unwrap(),
-      )
-    ).unwrap();
+    await admitDirect(source, other, { box: createBoxGeometry(4, 2, 3).unwrap() });
     resume();
     expect((await pending).ok).toBe(false);
   } finally {
@@ -1099,15 +1031,14 @@ describe('runtime Pack production through real codecs and readers', () => {
     const restored = producer();
     expect((await restored.restore(JSON.parse(saved))).ok).toBe(true);
     const restoredAssets = reader(restored);
-    expect(
-      copyMeshAttribute(
-        (await loadFixtureAsset(restoredAssets, guid, 'mesh')).unwrap(),
-        'position',
-      ),
-    ).toEqual(copyMeshAttribute(mesh, 'position'));
+    const recovered = (await loadFixtureAsset(restoredAssets, guid, 'mesh')).unwrap();
+    expect(recovered.vertices).toEqual(mesh.vertices);
+    expect(recovered.indices).toEqual(mesh.indices);
+    expect(copyMeshAttribute(recovered, 'position')).toEqual(copyMeshAttribute(mesh, 'position'));
     restored.dispose();
     assets.clearCatalogSource();
     restoredAssets.clearCatalogSource();
+    restoredAssets.invalidateAll();
   });
   it('executes new JS, isolates instance caches and restores accepted parameters after a failed edit', async () => {
     const cache = new Map<string, RuntimePackCacheEntry>();
@@ -1140,12 +1071,7 @@ describe('runtime Pack production through real codecs and readers', () => {
     const result = await restored.restore(saved);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const recoveredAssets = reader(restored);
-    expect(
-      copyMeshAttribute(
-        (await loadFixtureAsset(recoveredAssets, guid, 'mesh')).unwrap(),
-        'position',
-      ),
-    ).toEqual(copyMeshAttribute(next, 'position'));
+    await expectPositions(recoveredAssets, guid, copyMeshAttribute(next, 'position'));
     restored.dispose();
     assets.clearCatalogSource();
     recoveredAssets.clearCatalogSource();
@@ -1178,23 +1104,14 @@ it('captures external producer originals during admission and recovers after tha
     await prepareRuntimePackContent(other, { box: createBoxGeometry(3, 4, 5).unwrap() })
   ).unwrap();
   const publication = (await external.admit(direct)).unwrap();
-  const output = defined(defined(publication.publication).outputs[0]);
+  const output = firstOutput(publication);
   const assets = reader(external);
   const assetSource: NonNullable<RuntimePackProducerOptions['assetSource']> = {
     exportSource: (versions) => external.exportSource(versions),
   };
   const source = producer(undefined, assetSource);
   const original = generator();
-  (
-    await source.admit({
-      ...original,
-      source: {
-        ...original.source,
-        runtime: { dependencies: [output.guid] },
-      } as RuntimePackContent['source'],
-      dependencies: { [output.guid]: output.digest },
-    })
-  ).unwrap();
+  (await source.admit(dependingOn(original, parent, output))).unwrap();
   const saved = source.snapshot();
   expect(
     Object.values(defined(saved.closure).contents).some((content) => content.blobs !== undefined),
@@ -1220,69 +1137,33 @@ it('captures external producer originals during admission and recovers after tha
 });
 it('captures an external PluginAsset whose saved source retains another asset reference', async () => {
   const external = producer();
-  const mesh = defined(
-    defined(
-      (
-        await external.admit(
-          (
-            await prepareRuntimePackContent(other, {
-              box: createBoxGeometry(3, 4, 5).unwrap(),
-            })
-          ).unwrap(),
-        )
-      ).unwrap().publication,
-    ).outputs[0],
-  );
-  const program = 'project:behavior.js#default';
-  const plugin = defined(
-    defined(
-      (
-        await external.admit(
-          (
-            await prepareRuntimePackContent(
-              id,
-              {
-                behavior: {
-                  kind: 'plugin',
-                  module: { specifier: './behavior.js' },
-                  config: { mesh: { $asset: mesh.guid } },
-                },
-              },
-              {
-                dependencies: { [mesh.guid]: mesh.digest },
-                programs: {
-                  [program]: {
-                    artifact: preparePackProgram({
-                      entry: 'behavior.js',
-                      export: 'default',
-                      modules: {
-                        'behavior.js':
-                          'export default { apply() { throw new Error("definition read must not activate"); } };',
-                      },
-                    }).unwrap(),
-                  },
-                },
-              },
-            )
-          ).unwrap(),
-        )
-      ).unwrap().publication,
-    ).outputs[0],
+  const shape = createBoxGeometry(3, 4, 5).unwrap();
+  const mesh = firstOutput(await admitDirect(external, other, { box: shape }));
+  const plugin = firstOutput(
+    await admitDirect(
+      external,
+      id,
+      {
+        behavior: {
+          kind: 'plugin',
+          module: behaviorModule,
+          config: { mesh: { $asset: mesh.guid } },
+        },
+      },
+      {
+        dependencies: { [mesh.guid]: mesh.digest },
+        programs: behaviorPrograms(
+          'export default { apply() { throw new Error("definition read must not activate"); } };',
+        ),
+      },
+    ),
   );
   const externalReader = reader(external);
   const pluginOriginal = await external.exportSource(new Map([[plugin.guid, plugin.digest]]));
   const source = producer(undefined, {
     exportSource: (versions) => external.exportSource(versions),
   });
-  const content = generator();
-  const admitted = await source.admit({
-    ...content,
-    source: {
-      ...content.source,
-      runtime: { dependencies: [plugin.guid] },
-    } as RuntimePackContent['source'],
-    dependencies: { [plugin.guid]: plugin.digest },
-  });
+  const admitted = await source.admit(dependingOn(generator(), parent, plugin));
   expect(admitted.ok, JSON.stringify(admitted)).toBe(true);
   const saved = JSON.parse(JSON.stringify(source.snapshot()));
   externalReader.clearCatalogSource();
@@ -1301,26 +1182,15 @@ it('captures an external PluginAsset whose saved source retains another asset re
   expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
   const consumerReader = reader(consumer);
   expect((await consumerReader.readPluginDefinition(plugin.guid)).ok).toBe(true);
-  expect(
-    copyMeshAttribute(
-      (await loadFixtureAsset(consumerReader, mesh.guid, 'mesh')).unwrap(),
-      'position',
-    ),
-  ).toEqual(copyMeshAttribute(createBoxGeometry(3, 4, 5).unwrap(), 'position'));
+  await expectPositions(consumerReader, mesh.guid, copyMeshAttribute(shape, 'position'));
   consumerReader.clearCatalogSource();
   consumer.dispose();
 });
 it('refuses a seeded old dependency that overlaps a candidate output', async () => {
   const source = producer();
-  const publication = (
-    await source.admit(
-      (
-        await prepareRuntimePackContent(id, {
-          box: createBoxGeometry(2, 3, 4).unwrap(),
-        })
-      ).unwrap(),
-    )
-  ).unwrap();
+  const publication = await admitDirect(source, id, {
+    box: createBoxGeometry(2, 3, 4).unwrap(),
+  });
   const result = await validateAssetPublication(publication.rows, source.fetch, undefined, {
     ...{
       dependencies: new Map([
@@ -1337,50 +1207,18 @@ it('refuses a seeded old dependency that overlaps a candidate output', async () 
 });
 it('preserves distinct transitive recipes even when the pinned GUID and output bytes are identical', async () => {
   const source = producer();
-  const publishDependency = async (width: number) => {
-    const result = (
-      await source.admit(
-        (
-          await prepareRuntimePackContent(other, { box: createBoxGeometry(width, 2, 3).unwrap() })
-        ).unwrap(),
-      )
-    ).unwrap();
-    return defined(defined(result.publication).outputs[0]);
-  };
-  const dependent = (
-    packageId: string,
-    dependency: {
-      guid: string;
-      digest: string;
-    },
-  ): RuntimePackContent => {
-    const content = generator();
-    return {
-      ...content,
-      source: {
-        ...content.source,
-        packageId,
-        runtime: { dependencies: [dependency.guid] },
-      } as RuntimePackContent['source'],
-      dependencies: { [dependency.guid]: dependency.digest },
-    };
-  };
-  const oldDependency = await publishDependency(1);
-  (await source.admit(dependent(parent, oldDependency))).unwrap();
-  const first = defined(
-    defined((await source.generate(instance(id, 2))).unwrap().publication).outputs[0],
-  );
-  const consumer1 = dependent('01900000-0000-7000-8000-000000000104', first);
+  const oldDependency = await publishBox(source, 1);
+  (await source.admit(dependingOn(generator(), parent, oldDependency))).unwrap();
+  const first = firstOutput((await source.generate(instance(id, 2))).unwrap());
+  const consumer1 = dependingOn(generator(), '01900000-0000-7000-8000-000000000104', first);
   (await source.admit(consumer1)).unwrap();
   source.withdraw(parent);
   source.withdraw(other);
-  const newDependency = await publishDependency(4);
-  (await source.admit(dependent(parent, newDependency))).unwrap();
-  const second = defined(
-    defined((await source.generate(instance(id, 2))).unwrap().publication).outputs[0],
-  );
+  const newDependency = await publishBox(source, 4);
+  (await source.admit(dependingOn(generator(), parent, newDependency))).unwrap();
+  const second = firstOutput((await source.generate(instance(id, 2))).unwrap());
   expect(second.digest).toBe(first.digest);
-  const consumer2 = dependent('01900000-0000-7000-8000-000000000105', second);
+  const consumer2 = dependingOn(generator(), '01900000-0000-7000-8000-000000000105', second);
   (await source.admit(consumer2)).unwrap();
   const saved = source.snapshot();
   const left = defined(defined(saved.closure).bindings[scriptablePackFingerprint(consumer1)])[
@@ -1401,17 +1239,13 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   const source = producer();
   (await source.admit(generator())).unwrap();
   const first = (await source.generate(instance(id, 2))).unwrap();
-  const dependency = defined(defined(first.publication).outputs[0]);
+  const dependency = firstOutput(first);
   const base = generator();
   const programId = 'project:fixed.js#build';
+  const input = dependingOn(base, other, dependency);
   const dependent: RuntimePackContent = {
-    source: {
-      ...base.source,
-      packageId: other,
-      program: programId,
-      runtime: { dependencies: [dependency.guid] },
-    } as RuntimePackContent['source'],
-    dependencies: { [dependency.guid]: dependency.digest },
+    ...input,
+    source: { ...input.source, program: programId } as RuntimePackContent['source'],
     programs: {
       [programId]: {
         artifact: preparePackProgram({
@@ -1428,27 +1262,11 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   (await source.admit(dependent)).unwrap();
   const dependentId = '01900000-0000-7000-8000-000000000104';
   const dependentInstance = { ...instance(dependentId, 1), parent: other };
-  {
-    const result = await source.generate(dependentInstance);
-    expect(
-      result.ok,
-      JSON.stringify(result, (_, value) =>
-        value instanceof Error ? { ...value, message: value.message } : value,
-      ),
-    ).toBe(true);
-  }
+  (await source.generate(dependentInstance)).unwrap();
   (await source.generate(instance(id, 4))).unwrap();
   source.withdraw(parent);
   // The admitted generator continues using its exact old snapshot.
-  {
-    const result = await source.generate(dependentInstance);
-    expect(
-      result.ok,
-      JSON.stringify(result, (_, value) =>
-        value instanceof Error ? { ...value, message: value.message } : value,
-      ),
-    ).toBe(true);
-  }
+  (await source.generate(dependentInstance)).unwrap();
   const saved = JSON.parse(JSON.stringify(source.snapshot()));
   expect(saved.packs).toHaveLength(1);
   expect(Object.values(saved.closure.contents)).toHaveLength(1);
@@ -1471,14 +1289,8 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   restored.dispose();
 });
 it('fences concurrent direct admission against an instance claiming the same identity', async () => {
-  let entered!: () => void;
-  const started = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: started, resolve: entered } = testGate();
+  const { promise: gate, resolve: resume } = testGate();
   let first = true;
   const source: RuntimePackProducer = new RuntimePackProducer({
     scopeId: 'race',
@@ -1518,14 +1330,8 @@ it.each([
   'withdraw',
   'request',
 ] as const)('cancels admission via %s while validation is in flight', async (mode) => {
-  let entered!: () => void;
-  const started = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: started, resolve: entered } = testGate();
+  const { promise: gate, resolve: resume } = testGate();
   const source = new RuntimePackProducer({
     scopeId: 'withdraw',
     validate: async (state, fetcher) => {
@@ -1578,18 +1384,16 @@ it('discards corrupted or cross-instance cache entries and rebuilds from preserv
   });
   (await source.generate(instance(id, 2))).unwrap();
   const assets = reader(source);
-  expect(
-    copyMeshAttribute(
-      (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap(),
-      'position',
-    ),
-  ).toEqual(copyMeshAttribute(createBoxGeometry(2, 2, 3).unwrap(), 'position'));
-  expect(
-    copyMeshAttribute(
-      (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap(),
-      'position',
-    ),
-  ).toEqual(copyMeshAttribute(createBoxGeometry(4, 2, 3).unwrap(), 'position'));
+  await expectPositions(
+    assets,
+    outputGuid(id),
+    copyMeshAttribute(createBoxGeometry(2, 2, 3).unwrap(), 'position'),
+  );
+  await expectPositions(
+    assets,
+    outputGuid(other),
+    copyMeshAttribute(createBoxGeometry(4, 2, 3).unwrap(), 'position'),
+  );
   source.dispose();
   assets.clearCatalogSource();
 });
@@ -1599,14 +1403,8 @@ it('does not start another saved generator after cancellation during recovery pr
   counters.runtimePackRestoreStarts = 0;
   const original = producer();
   let restored: RuntimePackProducer | undefined;
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
-  let enter!: () => void;
-  const entered = new Promise<void>((resolve) => {
-    enter = resolve;
-  });
+  const { promise: gate, resolve: resume } = testGate();
+  const { promise: entered, resolve: enter } = testGate();
   try {
     (await original.admit(generator('globalThis.runtimePackRestoreStarts++;'))).unwrap();
     (await original.generate(instance(id, 2))).unwrap();
@@ -1644,11 +1442,31 @@ it('does not start another saved generator after cancellation during recovery pr
     delete counters.runtimePackRestoreStarts;
   }
 });
+it('builds each saved generator instance once before publishing it', async () => {
+  const counters = globalThis as typeof globalThis & { runtimePackRestoreStarts?: number };
+  const original = producer();
+  const restored = producer(new Map());
+  counters.runtimePackRestoreStarts = 0;
+  try {
+    (await original.admit(generator('globalThis.runtimePackRestoreStarts++;'))).unwrap();
+    (await original.generate(instance(id, 2))).unwrap();
+    (await original.generate(instance(other, 3))).unwrap();
+    counters.runtimePackRestoreStarts = 0;
+    (await restored.restore(original.snapshot())).unwrap();
+    expect(counters.runtimePackRestoreStarts).toBe(2);
+    expect(restored.rows().map((row) => row.guid)).toEqual([outputGuid(id), outputGuid(other)]);
+  } finally {
+    restored.dispose();
+    original.dispose();
+    delete counters.runtimePackRestoreStarts;
+  }
+});
+
 it('restores dependencies and retains old artifacts only in bound in-flight publications', async () => {
   const source = producer();
   (await source.admit(generator())).unwrap();
   const first = (await source.generate(instance(id, 2))).unwrap();
-  const dependency = defined(defined(first.publication).outputs[0]);
+  const dependency = firstOutput(first);
   const content = generator();
   const dependent: RuntimePackContent = {
     ...content,
@@ -1686,14 +1504,8 @@ it.each([
   (await source.admit(generator())).unwrap();
   const published = (await source.generate(instance(id, 2))).unwrap();
   const row = defined(published.rows[0]);
-  let enter!: () => void;
-  const entered = new Promise<void>((resolve) => {
-    enter = resolve;
-  });
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: entered, resolve: enter } = testGate();
+  const { promise: gate, resolve: resume } = testGate();
   let opens = 0;
   // This reader owns a stable snapshot while the producer moves to a newer one.
   const catalog: CatalogSource = {
@@ -1778,28 +1590,6 @@ it('rejects unsupported source tool contracts instead of silently publishing a p
     expect(source.snapshot().packs).toEqual([]);
   } finally {
     source.dispose();
-  }
-});
-
-// Publication data stays JSON-durable without one JavaScript property per byte.
-it('keeps generated binary content compact through admission and JSON restore', async () => {
-  const mesh = createBoxGeometry(2, 3, 4).unwrap();
-  const content = (await prepareRuntimePackContent(id, { box: mesh })).unwrap();
-  expect(Object.values(content.blobs ?? {}).every((blob) => typeof blob === 'string')).toBe(true);
-  const source = producer();
-  const restored = producer();
-  try {
-    (await source.admit(content)).unwrap();
-    (await restored.restore(JSON.parse(JSON.stringify(source.snapshot())))).unwrap();
-    const assets = reader(restored);
-    const result = (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap();
-    expect(result.vertices).toEqual(mesh.vertices);
-    expect(result.indices).toEqual(mesh.indices);
-    assets.clearCatalogSource();
-    assets.invalidateAll();
-  } finally {
-    source.dispose();
-    restored.dispose();
   }
 });
 
@@ -1904,16 +1694,10 @@ it.each([
   'cancel',
 ] as const)('captures sibling dependency outputs in one owned batch (%s)', async (mode) => {
   const external = producer();
-  const state = (
-    await external.admit(
-      (
-        await prepareRuntimePackContent(other, {
-          left: { kind: 'sampler' },
-          right: { kind: 'sampler' },
-        })
-      ).unwrap(),
-    )
-  ).unwrap();
+  const state = await admitDirect(external, other, {
+    left: { kind: 'sampler' },
+    right: { kind: 'sampler' },
+  });
   const outputs = defined(state.publication).outputs;
   const versions = new Map(outputs.map((output) => [output.guid, output.digest]));
   const controller = new AbortController();
@@ -1937,7 +1721,11 @@ it.each([
         const recipe = defined(saved.closure?.recipes[rootId]);
         const changed = {
           ...recipe,
-          outputs: recipe.outputs.map((output) => ({
+          outputs: (
+            recipe.outputs ??
+            ('fixed' in recipe ? recipe.fixed.rows[0]?.publication?.outputs : undefined) ??
+            []
+          ).map((output) => ({
             ...output,
             digest: `sha256:${'f'.repeat(64)}`,
           })),
@@ -2030,7 +1818,14 @@ it('retains a prepared mesh distance field through native publication, JSON tran
     expect(wire.distanceField?.meshDigest).toBe(field.meshDigest);
     expect(wire.distanceField?.values).toEqual(field.values);
     expect(wire.distanceField).toMatchObject({ artifact });
-    (await restored.restore(JSON.parse(JSON.stringify(source.snapshot())))).unwrap();
+    const saved = JSON.parse(JSON.stringify(source.snapshot())) as ReturnType<
+      typeof source.snapshot
+    >;
+    const buffers = defined(saved.binary).buffers;
+    expect(buffers.some((buffer) => decodePackBlob(buffer).byteLength === encoded.byteLength)).toBe(
+      true,
+    );
+    (await restored.restore(saved)).unwrap();
     const recovered = reader(restored);
     try {
       const mesh = (await loadFixtureAsset(recovered, row.guid, 'mesh')).unwrap();

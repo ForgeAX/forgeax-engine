@@ -1,7 +1,21 @@
-import { parseAst, Visitor } from 'vite';
+import { type ESTree, parseAst, Visitor } from 'vite';
 import type { SingleHtmlBundleArtifact } from './single-html.js';
 
-const PREFIX = '__forgeax-bundle/';
+export const GENERATED_PREFIX = '__forgeax-bundle/';
+
+export function isImportMetaUrl(
+  node: ESTree.Expression | ESTree.SpreadElement | undefined,
+): boolean {
+  return (
+    node?.type === 'MemberExpression' &&
+    !node.computed &&
+    node.object.type === 'MetaProperty' &&
+    node.object.meta.name === 'import' &&
+    node.object.property.name === 'meta' &&
+    node.property.type === 'Identifier' &&
+    node.property.name === 'url'
+  );
+}
 
 /** Relocate native static ESM specifiers; execution and live bindings remain browser-owned. */
 export function linkSingleHtmlModules(
@@ -14,13 +28,15 @@ export function linkSingleHtmlModules(
     const imports: { kind: 'import' | 'url'; start: number; end: number; path: string }[] = [];
     const link = (node: { start: number; end: number; value?: unknown } | null | undefined) => {
       if (typeof node?.value !== 'string' || !/^(?:\.\/|\.\.\/)/.test(node.value)) return;
-      const canonical = resource.path.startsWith(PREFIX)
-        ? resource.path.slice(PREFIX.length)
+      const canonical = resource.path.startsWith(GENERATED_PREFIX)
+        ? resource.path.slice(GENERATED_PREFIX.length)
         : resource.path;
       const target = decodeURIComponent(
         new URL(node.value, `https://forgeax.invalid/${canonical}`).pathname,
       ).slice(1);
-      const generated = resource.path.startsWith(PREFIX) ? `${PREFIX}${target}` : target;
+      const generated = resource.path.startsWith(GENERATED_PREFIX)
+        ? `${GENERATED_PREFIX}${target}`
+        : target;
       const path = paths.has(generated) ? generated : target;
       if (!paths.has(path))
         throw new Error(
@@ -31,14 +47,7 @@ export function linkSingleHtmlModules(
     const ast = parseAst(code);
     new Visitor({
       MemberExpression(node) {
-        if (
-          !node.computed &&
-          node.object.type === 'MetaProperty' &&
-          node.object.meta.name === 'import' &&
-          node.object.property.name === 'meta' &&
-          node.property.type === 'Identifier' &&
-          node.property.name === 'url'
-        )
+        if (isImportMetaUrl(node))
           imports.push({ kind: 'url', start: node.start, end: node.end, path: resource.path });
       },
       ImportDeclaration(node) {

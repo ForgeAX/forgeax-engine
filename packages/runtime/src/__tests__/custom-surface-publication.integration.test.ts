@@ -2,15 +2,19 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
 import { Materials, materialContribution } from '@forgeax/engine-render';
+import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry';
 import {
   materialParametersToParamSchema,
   selectMaterialPassProgram,
 } from '../../../assets-runtime/src/material/runtime-shader';
-import { normaliseForPack } from '../../../import/src/import-runner';
+import { normaliseForPack } from '../../../import/src/pack-value';
 import { AssetGuid } from '../../../pack/src/guid';
 import {
   type CookedMaterialRecord,
@@ -21,7 +25,6 @@ import {
   materialSceneIndexProgramKeysForMaterial,
 } from '../../../render/src/render-system-extract';
 import { ShaderRegistry } from '../../../shader/src/index';
-import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { derive, type MaterialAsset, selectMaterialStaticContract } from '../../../types/src/index';
 
 const GUID = '019f0000-0000-7000-8000-0000000007a1';
@@ -318,8 +321,10 @@ describe('custom Surface publication path', () => {
             ]),
           );
         }
-        if (url.endsWith('.pack.json'))
-          return new Response(JSON.stringify(normaliseForPack(publication.pack)));
+        if (url.endsWith('.pack.json')) {
+          const wire = encodeMaterialProgramWire(publication.pack);
+          return new Response(JSON.stringify(normaliseForPack(wire)));
+        }
         return new Response('not found', { status: 404 });
       });
       globalThis.fetch = fetcher as typeof fetch;

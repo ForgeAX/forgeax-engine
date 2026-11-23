@@ -113,7 +113,7 @@ async function setup() {
       1,
       f.meshGroup,
       f.meshGroup,
-      () => f.materialGroup,
+      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
       'forward',
       undefined,
       ['rgba8unorm'],
@@ -176,7 +176,7 @@ it('uses the identical selection for preparation and visible direct drawing', as
       1,
       f.meshGroup,
       f.meshGroup,
-      () => f.materialGroup,
+      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
       'forward',
       [{ ...f.authoredPass, entityIndex: 1, renderableIndex: 0 }],
       ['rgba8unorm'],
@@ -339,6 +339,69 @@ it('prepares visible residual authored casters before recording their shadow vie
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);
     expect(f.entry.source.authorVisible).toBe(true);
     expect(f.receipts).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('uses accepted material demand before walking native residual shadow rows', async () => {
+  const f = await setup();
+  const material = f.entry.source.material;
+  const shadow = {
+    name: 'ShadowCaster',
+    program: { module: 'forgeax::default-shadow-caster' },
+    renderState: { tags: { LightMode: 'ShadowCaster' } },
+  };
+  const stock = {
+    ...material.snapshot,
+    immutableValues: true as const,
+    passes: [shadow],
+  };
+  material.adopt({ ...stock, passes: [] });
+  f.acceptMaterials();
+  Object.assign(f.entry.source, { authorVisible: true, pipelinePreparation: undefined });
+  const rows = [f.entry];
+  const visit = vi.spyOn(rows, Symbol.iterator);
+  Object.assign(f.c, {
+    shadowValidatedOrdered: rows,
+    pipelinePreparationEntries: [],
+    shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+  });
+  const lookup = vi.fn().mockReturnValue(null);
+  Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: lookup });
+  try {
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+
+    material.adopt(stock);
+    f.acceptMaterials();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookup.mock.calls[0]?.[0]).toBe('forgeax::default-shadow-caster');
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+
+    visit.mockClear();
+    lookup.mockClear();
+    f.c.frameState.pipelinePreparationPending = false;
+    material.adopt({
+      ...stock,
+      passes: [{ ...shadow, program: { module: 'test::prepared' } }],
+      materialProgramKeys: { ShadowCaster: 'test::prepared' },
+    });
+    f.acceptMaterials();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+
+    const { immutableValues: _owned, ...borrowed } = stock;
+    material.adopt(borrowed);
+    f.acceptMaterials();
+    visit.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
   } finally {
     f.dispose();
   }

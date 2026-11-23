@@ -42,14 +42,14 @@ describe('Direct DFG production shader publication', { timeout: 30_000 }, () => 
     const lutPass = lut.passes[0];
     expect(fitPass).toBeDefined();
     expect(lutPass).toBeDefined();
-    const fitGroup = fitPass?.compile.bindings.find((group) => group.label === '@group(1)');
-    const lutGroup = lutPass?.compile.bindings.find((group) => group.label === '@group(1)');
+    const fitGroup = fitPass?.compile.bindings.find((group) => group.label === '@group(0)');
+    const lutGroup = lutPass?.compile.bindings.find((group) => group.label === '@group(0)');
+    const materialGroup = lutPass?.compile.bindings.find((group) => group.label === '@group(1)');
     expect(
-      fitGroup?.entries.some((entry) => entry.binding === STANDARD_DIRECT_DFG_LUT_BINDING),
+      materialGroup?.entries.some((entry) => entry.binding === STANDARD_DIRECT_DFG_LUT_BINDING),
     ).toBe(false);
-    expect(
-      lutGroup?.entries.find((entry) => entry.binding === STANDARD_DIRECT_DFG_LUT_BINDING),
-    ).toMatchObject({
+    expect(fitGroup?.entries.some((entry) => entry.binding === 40)).toBe(false);
+    expect(lutGroup?.entries.find((entry) => entry.binding === 40)).toMatchObject({
       texture: { sampleType: 'float', viewDimension: '2d' },
     });
     expect(lutGroup?.entries.filter((entry) => entry.sampler).length).toBe(

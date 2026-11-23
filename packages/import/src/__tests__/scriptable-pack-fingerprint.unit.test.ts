@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { createMeshBuilder } from '@forgeax/engine-geometry';
-import { definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
@@ -9,6 +8,7 @@ import {
   scriptablePackFingerprint,
   scriptablePackFingerprintAsync,
 } from '../scriptable-pack-fingerprint.js';
+import { packDefinition } from './fixtures/pack-definition.js';
 
 it('batches numeric JSON tokens while preserving the published fingerprint encoding', () => {
   const values = Array.from({ length: 256 * 1024 }, (_, index) => index & 255);
@@ -37,11 +37,9 @@ it('fingerprints mesh buffers without enumerating a JSON property for every floa
     version: 'test',
     produce: () => ok({ payload: mesh, refs: [], artifacts: {} }),
   });
-  const definition = definePack({
-    schemaVersion: '2.0.0',
-    packageId: definePackageId('01900000-0000-7000-8000-000000000089'),
-    build: () => ok({ 'mesh/large': mesh }),
-  });
+  const definition = packDefinition('01900000-0000-7000-8000-000000000089', () =>
+    ok({ 'mesh/large': mesh }),
+  );
   const keys = Object.keys;
   let enumeratedBuffers = 0;
   const spy = vi.spyOn(Object, 'keys').mockImplementation((value) => {
@@ -102,11 +100,7 @@ it('retains the published binary lane encoding in both hash implementations', as
 
 it('fingerprints a Pack by its relative layout and bytes, not its checkout location', async () => {
   const outputs = new AssetOutputProducerRegistry();
-  const definition = definePack({
-    schemaVersion: '2.0.0',
-    packageId: definePackageId('01900000-0000-7000-8000-00000000008a'),
-    build: () => ok({}),
-  });
+  const definition = packDefinition('01900000-0000-7000-8000-00000000008a', () => ok({}));
   const at = async (root: string, helperDigest = 'sha256:helper') => {
     const result = await buildScriptablePack({
       definition,

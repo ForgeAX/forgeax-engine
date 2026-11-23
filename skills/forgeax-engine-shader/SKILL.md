@@ -21,6 +21,13 @@ and execute the nearest production Dawn gate before claiming pixels accepted.
 
 ## Contract index
 
+For draw-varying numeric values in a custom direct mesh shader, use
+`MeshDrawParameters` from `@forgeax/engine/render`. Use the render components
+plugin or register it directly in a standalone World. Read its two float vectors through `meshes[0]`
+and pass them to the fragment stage through flat varyings. See the
+[render contract](../../packages/render/README.md#direct-mesh-draw-parameters)
+for scope and lifetime.
+
 Ordinary `.pack.ts` materials ship a resolved source template and its WGSL
 imports. Check asset admission first, then the program picked by the actual
 render pass, geometry and device. Use the GPU capture to verify the selected
@@ -87,8 +94,13 @@ is unavailable without a lighting-owned producer.
 
 The shader compiler composes real module slots, reflects the closed compiler
 context, and records actual WASM provenance. The runtime template path uses the
-host-supplied portable compiler for selected Engine programs. Cooked MaterialAsset
-programs retain their Pack producer. Material
+host-supplied portable compiler for selected Engine programs. Source-template
+MaterialAssets request one Pass, device context and raster address at a time.
+The producer validates the selected entry and its bindings. Pack cook validates
+all addresses it publishes, including the paired vertex contract. Inspect
+per-address compilation through the
+[pipeline audit](../forgeax-engine-performance/SKILL.md#audit-shader-and-pipeline-work).
+Cooked MaterialAsset programs retain their Pack producer. Material
 identity is layered across `materialContractDigest`, `sourceClosureDigest`,
 `layoutIdentity`, `programIdentity`, `cookIdentity`, and
 `materialPublicationIdentity`. The runtime receives the Pack projection for

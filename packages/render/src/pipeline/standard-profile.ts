@@ -1,5 +1,6 @@
 import type { GlobalSdfGrid } from '../raytracing/global-sdf';
 import type { GlobalSdfQueryOptions } from '../raytracing/global-sdf-query';
+import type { RenderPipelineTopology } from '../render-pipeline';
 import { type AmbientOcclusionSettings, DEFAULT_AMBIENT_OCCLUSION_METHOD } from '../ssao-config';
 import type { StandardOutputContract } from './standard-output/types';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
@@ -206,8 +207,18 @@ export interface StandardProbePlacement {
   readonly global?: StandardProbeGlobal;
 }
 
+export interface StandardAtmosphereProfile {
+  readonly aerialPerspectiveQuality?: 'fast' | 'rgb';
+  /** Fast volume integration starts no closer than the camera near plane. */
+  readonly aerialPerspectiveStartM?: number;
+  readonly aerialPerspectiveRangeM?: number;
+  readonly traceSampleCountScale?: number;
+  readonly sampleCountMaxPerSlice?: number;
+  readonly skyAtmosphereAffectsHeightFog?: boolean;
+}
+
 export interface StandardProfile {
-  /** App configuration revision captured by compiled scene graphs and frame receipts. */
+  /** App configuration revision acknowledged by a submitted scene using this profile. */
   readonly configurationRevision?: number;
   /** Concrete budgets derived from the active engine quality selection. */
   readonly quality?: import('../quality').RenderQualityBudgets;
@@ -223,8 +234,16 @@ export interface StandardProfile {
   readonly renderPath: 'forward' | 'deferred';
   /** Fixed GBuffer contract for every view using this Deferred profile. */
   readonly gbufferFormat?: 'default';
+  /** Fast AP stores RGB inscatter and scalar transmittance in a single volume. */
+  readonly atmosphere?: StandardAtmosphereProfile | undefined;
   /** Opt-in projected receiver for automatically biased Deferred directional Vogel PCF. */
   readonly deferredDirectionalShadowReceiver?: 'projected';
+  /** Screen projection is the default for eligible Forward views. */
+  readonly forwardDirectionalShadowReceiver?: 'screen';
+  /** Fade local projected shadows by their estimated screen texel demand. */
+  readonly forwardShadowViewFade?: true;
+  /** Select the fixed comparison Gather kernel for default square Spot shadows. */
+  readonly forwardShadowSpotFilter?: 'gather';
   /** Subsurface kernel samples: low=13, high=25 per axis; defaults to high. */
   readonly subsurfaceQuality?: 'low' | 'high';
   /** Rigid deferred surface identity/geometry attachment for transport and inspection. */
@@ -232,6 +251,7 @@ export interface StandardProfile {
   readonly diffuseGi?: StandardDiffuseGi;
   readonly probePlacement?: StandardProbePlacement;
   readonly pbr: boolean;
+  /** Sample directional environment reflections. Sky SH and diffuse GI are independent. */
   readonly ibl: boolean;
   readonly ambientOcclusion: AmbientOcclusionSettings;
   /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted is off for Forward, on for Deferred. */
@@ -255,7 +275,7 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   outputContract: 'standard-output-v2',
   pbr: true,
   ibl: true,
-  ambientOcclusion: Object.freeze({ enabled: false, method: DEFAULT_AMBIENT_OCCLUSION_METHOD }),
+  ambientOcclusion: Object.freeze({ enabled: true, method: DEFAULT_AMBIENT_OCCLUSION_METHOD }),
   postStages: STANDARD_POST_STAGE_NAMES,
 });
 
@@ -263,4 +283,26 @@ export function resolveVolumetricFogProfile(
   profile: Pick<StandardProfile, 'volumetricFog'>,
 ): StandardVolumetricFogProfile {
   return profile.volumetricFog ?? { quality: 'high', depth: 64, tileSize: 4 };
+}
+
+export function standardTopology(
+  topology: RenderPipelineTopology,
+  profile: StandardProfile = topology.standardProfile ?? DEFAULT_STANDARD_PROFILE,
+): RenderPipelineTopology {
+  if (
+    topology.pipelineId === STANDARD_PIPELINE_ID &&
+    topology.standardProfile === profile &&
+    topology.config?.ambientOcclusion !== undefined
+  )
+    return topology;
+  const config = {
+    ...(topology.config ?? {}),
+    ambientOcclusion: topology.config?.ambientOcclusion ?? profile.ambientOcclusion,
+  };
+  return {
+    ...topology,
+    pipelineId: STANDARD_PIPELINE_ID,
+    standardProfile: profile,
+    config,
+  };
 }

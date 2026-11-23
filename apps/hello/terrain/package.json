@@ -70,6 +70,7 @@
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-platform-browser": "workspace:*",
     "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-physics-rapier3d": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",

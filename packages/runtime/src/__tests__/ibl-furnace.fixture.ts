@@ -3,6 +3,7 @@ import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
+  LightProbe,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -31,19 +32,61 @@ import { rewriteShaderTemplateSources } from './shader-manifest-url.fixture';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
 
 export type RenderPath = 'forward' | 'deferred';
+type FurnaceLayout = 'metal' | 'dielectric' | 'sweep';
+type FurnaceSurface = FurnaceLayout | 'dielectric-gray' | 'sweep-gray';
 
-/** White metal, mirror to fully rough: the furnace roster. */
-export const FURNACE_ROUGHNESS = [0, 0.2, 0.4, 0.6, 0.8, 1] as const;
+interface FurnaceSphere {
+  readonly center: readonly [number, number, number];
+  readonly roughness: number;
+  readonly metallic: 0 | 1;
+}
+
+const FURNACE_ROUGHNESS = [0, 0.2, 0.4, 0.6, 0.8, 1] as const;
 export const FURNACE_SIZE = 192;
+export const SWEEP_WIDTH = 768;
 const FOV = Math.PI / 3;
 const DEPTH = 6;
+const SWEEP_DEPTH = 32;
 const RADIUS = 0.9;
 const SPACING = 2.2;
-const CENTERS = FURNACE_ROUGHNESS.map((_, i) => [
-  ((i % 3) - 1) * SPACING,
-  (i < 3 ? 1 : -1) * (SPACING / 2),
-  -DEPTH,
-]);
+const LAYOUTS: Record<
+  FurnaceLayout,
+  {
+    readonly width: number;
+    readonly depth: number;
+    readonly interior: number;
+    readonly spheres: readonly FurnaceSphere[];
+  }
+> = {
+  metal: {
+    width: FURNACE_SIZE,
+    depth: DEPTH,
+    interior: 0.8,
+    spheres: FURNACE_ROUGHNESS.map((roughness, i) => ({
+      center: [((i % 3) - 1) * SPACING, (i < 3 ? 1 : -1) * (SPACING / 2), -DEPTH],
+      roughness,
+      metallic: 1,
+    })),
+  },
+  dielectric: {
+    width: FURNACE_SIZE,
+    depth: DEPTH,
+    interior: 0.98,
+    spheres: [{ center: [0, 0, -DEPTH], roughness: 1, metallic: 0 }],
+  },
+  sweep: {
+    width: SWEEP_WIDTH,
+    depth: SWEEP_DEPTH,
+    interior: 0.98,
+    spheres: ([1, 0] as const).flatMap((metallic) =>
+      Array.from({ length: 11 }, (_, i) => ({
+        center: [(i - 5) * SPACING, (metallic === 1 ? 1 : -1) * (SPACING / 2), -SWEEP_DEPTH],
+        roughness: i / 10,
+        metallic,
+      })),
+    ),
+  },
+};
 
 /** Both authored and Naga-emitted shaders call the same multiple-scattering helper. */
 const COMPENSATED =
@@ -80,22 +123,23 @@ function uniformEquirect(world: World) {
     .unwrap();
 }
 
-function buildFurnaceScene(world: World) {
-  const sphere = testAssets(world)
+function buildFurnaceScene(world: World, layout: FurnaceLayout = 'metal', base = 1) {
+  const geometry = testAssets(world)
     .create(createSphereGeometry(RADIUS, 96, 64).unwrap())
     .unwrap();
-  FURNACE_ROUGHNESS.forEach((roughness, i) => {
-    const metal = testAssets(world)
-      .create(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }))
+  const { spheres, width, depth } = LAYOUTS[layout];
+  for (const { center, roughness, metallic } of spheres) {
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [base, base, base, 1], metallic, roughness }))
       .unwrap();
     world
       .spawn(
-        { component: Transform, data: { pos: CENTERS[i] as [number, number, number] } },
-        { component: MeshFilter, data: { assetHandle: sphere } },
-        { component: MeshRenderer, data: { materials: [metal] } },
+        { component: Transform, data: { pos: [...center] } },
+        { component: MeshFilter, data: { assetHandle: geometry } },
+        { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
-  });
+  }
   const equirect = uniformEquirect(world);
   world.spawn({ component: Skylight, data: { equirect, intensity: 1 } }).unwrap();
   world
@@ -107,10 +151,10 @@ function buildFurnaceScene(world: World) {
       {
         component: Camera,
         data: {
-          fov: FOV,
-          aspect: 1,
+          fov: 2 * Math.atan((Math.tan(FOV / 2) * DEPTH) / depth),
+          aspect: width / FURNACE_SIZE,
           near: 0.1,
-          far: 30,
+          far: depth + 24,
           antialias: 0,
           bloom: 0,
           tonemap: TONEMAP_LINEAR,
@@ -121,24 +165,28 @@ function buildFurnaceScene(world: World) {
 }
 
 /**
- * Analytic pixel classes: `spheres[i]` keeps the inner 80% of sphere i's
- * silhouette radius (grazing texels whose LUT row is noisiest excluded) and
- * `background` sees only the skybox with a two-pixel margin.
+ * Analytic pixel classes: retain the requested interior fraction of each
+ * projected sphere and sample the skybox outside a two-pixel margin.
  */
-function furnaceRegions() {
-  const tangent = Math.tan(FOV / 2);
-  const margin = 2 * ((2 * DEPTH * tangent) / FURNACE_SIZE);
-  const spheres = CENTERS.map(() => [] as number[]);
+function furnaceRegions({
+  width,
+  depth,
+  interior,
+  spheres: subjects,
+}: (typeof LAYOUTS)[FurnaceLayout]) {
+  const tangent = (Math.tan(FOV / 2) * DEPTH) / depth;
+  const margin = 2 * ((2 * depth * tangent) / FURNACE_SIZE);
+  const spheres = subjects.map(() => [] as number[]);
   const background: number[] = [];
   for (let y = 0; y < FURNACE_SIZE; y++)
-    for (let x = 0; x < FURNACE_SIZE; x++) {
+    for (let x = 0; x < width; x++) {
       const direction = [
-        (((x + 0.5) / FURNACE_SIZE) * 2 - 1) * tangent,
+        (((x + 0.5) / width) * 2 - 1) * tangent * (width / FURNACE_SIZE),
         (1 - ((y + 0.5) / FURNACE_SIZE) * 2) * tangent,
         -1,
       ];
       const length = Math.hypot(...direction);
-      const distances = CENTERS.map((center) => {
+      const distances = subjects.map(({ center }) => {
         const along = center.reduce(
           (sum, value, axis) => sum + (value * (direction[axis] ?? 0)) / length,
           0,
@@ -147,50 +195,57 @@ function furnaceRegions() {
           ...center.map((value, axis) => value - (along * (direction[axis] ?? 0)) / length),
         );
       });
-      const index = y * FURNACE_SIZE + x;
+      const index = y * width + x;
       distances.forEach((distance, i) => {
-        if (distance < RADIUS * 0.8) spheres[i]?.push(index);
+        if (distance < RADIUS * interior) spheres[i]?.push(index);
       });
       if (Math.min(...distances) > RADIUS + margin) background.push(index);
     }
   return { spheres, background };
 }
 
-const REGIONS = furnaceRegions();
+const REGIONS = {
+  metal: furnaceRegions(LAYOUTS.metal),
+  dielectric: furnaceRegions(LAYOUTS.dielectric),
+  sweep: furnaceRegions(LAYOUTS.sweep),
+};
 
 /** Linear luminance from a tightly or row-padded rgba16float image. */
-export function linearLuminance(bytes: Uint8Array, bytesPerRow = FURNACE_SIZE * 8) {
+function linearLuminance(bytes: Uint8Array, bytesPerRow = FURNACE_SIZE * 8, width = FURNACE_SIZE) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const out = new Float32Array(FURNACE_SIZE * FURNACE_SIZE);
+  const out = new Float32Array(width * FURNACE_SIZE);
   for (let y = 0; y < FURNACE_SIZE; y++)
-    for (let x = 0; x < FURNACE_SIZE; x++) {
+    for (let x = 0; x < width; x++) {
       const at = (channel: number) =>
         halfFloat.f16ToF32(view.getUint16(y * bytesPerRow + x * 8 + channel * 2, true));
-      out[y * FURNACE_SIZE + x] = 0.2126 * at(0) + 0.7152 * at(1) + 0.0722 * at(2);
+      out[y * width + x] = 0.2126 * at(0) + 0.7152 * at(1) + 0.0722 * at(2);
     }
   return out;
 }
 
-const stats = (image: Float32Array, pixels: readonly number[]) => {
-  const values = pixels.map((i) => image[i] ?? Number.NaN);
-  return {
-    pixels: values.length,
-    mean: values.reduce((sum, value) => sum + value, 0) / values.length,
-    min: Math.min(...values),
-    max: Math.max(...values),
-  };
-};
+function stats(image: Float32Array, pixels: readonly number[]) {
+  let sum = 0;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const i of pixels) {
+    const value = image[i] ?? Number.NaN;
+    sum += value;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return { pixels: pixels.length, mean: sum / pixels.length, min, max };
+}
 
-/** Per-sphere albedo relative to the environment the skybox shows. */
-export function furnaceMetrics(image: Float32Array) {
-  const background = stats(image, REGIONS.background);
+/** Per-sphere response relative to the environment the skybox shows. */
+export function furnaceMetrics(image: Float32Array, layout: FurnaceLayout = 'metal') {
+  const regions = REGIONS[layout];
+  const background = stats(image, regions.background);
   return {
     background,
-    spheres: REGIONS.spheres.map((pixels, i) => ({
-      roughness: FURNACE_ROUGHNESS[i] ?? Number.NaN,
-      ...stats(image, pixels),
-      albedo: stats(image, pixels).mean / background.mean,
-    })),
+    spheres: LAYOUTS[layout].spheres.map(({ roughness, metallic }, i) => {
+      const sample = stats(image, regions.spheres[i] ?? []);
+      return { roughness, metallic, ...sample, albedo: sample.mean / background.mean };
+    }),
   };
 }
 
@@ -226,19 +281,47 @@ async function drawUntilIblActive(
 }
 
 /** Renders the furnace once the Skylight IBL is resident; returns linear luminance. */
-export async function renderFurnace(renderer: Renderer, renderPath: RenderPath) {
+export async function renderFurnace(
+  renderer: Renderer,
+  renderPath: RenderPath,
+  surface: FurnaceSurface = 'metal',
+  options: { readonly blackProbe?: true; readonly gbufferFormat?: 'default' } = {},
+) {
   const world = new World();
-  buildFurnaceScene(world);
+  const layout =
+    surface === 'sweep-gray' ? 'sweep' : surface === 'dielectric-gray' ? 'dielectric' : surface;
+  const width = LAYOUTS[layout].width;
+  const base = surface === 'sweep-gray' || surface === 'dielectric-gray' ? 0.5 : 1;
+  buildFurnaceScene(world, layout, base);
+  if (options.blackProbe === true)
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, -DEPTH] } },
+        { component: LightProbe, data: { irradiance: new Float32Array(27), radius: 20 } },
+      )
+      .unwrap();
   const lease = unwrap(renderer.attach(world));
   const original = renderer.inspect().profile;
   try {
-    unwrap(renderer.setProfile({ ...original, renderPath }));
+    unwrap(
+      renderer.setProfile({
+        ...original,
+        renderPath,
+        ...(options.gbufferFormat === undefined ? {} : { gbufferFormat: options.gbufferFormat }),
+        ibl: true,
+        ambientOcclusion: { enabled: false },
+      }),
+    );
     const receipt = await drawUntilIblActive(renderer, world, lease, true);
     const observed = unwrap(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');
     if (observed === undefined) throw new Error('missing linear HDR observation');
-    return linearLuminance(observed.bytes, observed.metadata.bytesPerRow);
+    if (observed.metadata.width !== width || observed.metadata.height !== FURNACE_SIZE)
+      throw new Error(
+        `Unexpected furnace HDR dimensions: ${observed.metadata.width} × ${observed.metadata.height}`,
+      );
+    return linearLuminance(observed.bytes, observed.metadata.bytesPerRow, width);
   } finally {
     lease.dispose();
     unwrap(renderer.setProfile(original));
@@ -276,7 +359,13 @@ export async function replayFurnace(
   const lease = unwrap(renderer.attach(world));
   const original = renderer.inspect().profile;
   try {
-    unwrap(renderer.setProfile({ ...original, renderPath: 'forward' }));
+    unwrap(
+      renderer.setProfile({
+        ...original,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: false },
+      }),
+    );
     await drawUntilIblActive(renderer, world, lease, false);
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();

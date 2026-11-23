@@ -1,4 +1,5 @@
-import { buildCatalogResult } from '@forgeax/engine/import';
+import { catalogImporterPolicyFor } from '@forgeax/engine/import';
+import { buildCatalogProjection } from '@forgeax/engine/pack/build';
 import { defineFeature } from '../../lab/feature';
 import { type FixtureFiles, imageMeta, PNG_SIGNATURE, withFixture } from './support/fixture';
 
@@ -27,7 +28,9 @@ const clean: FixtureFiles = {
 
 async function project(files: FixtureFiles, importers: readonly string[] = []) {
   return withFixture(files, async (root) => {
-    const result = await buildCatalogResult([root], '/', new Set(importers));
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set(importers)),
+    });
     return {
       authority: result.authority,
       codes: result.diagnostics.map((item) => item.code),

@@ -20,10 +20,11 @@ import {
   createMaterialLoader,
   installMaterialReadyShaders,
   MaterialGenerationCache,
+  type MaterialReady,
 } from '@forgeax/engine-assets-runtime';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { readbackTexturePixels } from '@forgeax/engine-rhi-debug';
 import type { CookedMaterialRecord } from '@forgeax/engine-pack';
+import { decodeMaterialProgramWire, type RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
   AssetHandle,
   MaterialAsset,
@@ -36,8 +37,6 @@ import { err, ok } from '@forgeax/engine-types';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
-import './pulse-material.wgsl';
-import pulsePackUrl from '../assets/pulse-material.pack.json?url';
 
 declare global {
   var __forgeaxMaterialEvidence:
@@ -103,14 +102,15 @@ declare global {
       materialGeneration?: {
         runStale: () => Promise<unknown>;
         publishRecooked: () => Promise<unknown>;
+        presentedFrame?: { frameId: number; materialHandle: number };
       };
     }
     | undefined;
 }
 
 const PULSE_MATERIAL_SHADER_PATH = 'my-game::pulse-material';
-const ROOT_MATERIAL_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd02';
-const DERIVED_MATERIAL_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd03';
+const ROOT_MATERIAL_GUID = '330a8d22-5e43-5aab-8cd4-5d920045f7a8';
+const DERIVED_MATERIAL_GUID = '3cb62ea4-3628-5912-83b0-d4f2ee2ae351';
 const materialQuery = new URLSearchParams(globalThis.location?.search ?? '');
 const ACTIVE_ROOT_MATERIAL_GUID = materialQuery.get('materialGuid') ?? ROOT_MATERIAL_GUID;
 const ACTIVE_DERIVED_MATERIAL_GUID = materialQuery.get('derivedMaterialGuid') ?? DERIVED_MATERIAL_GUID;
@@ -127,8 +127,8 @@ const UV0_SAMPLING_INPUT = {
   normalUvTransform: [0, 0, 1, 1],
 } as const;
 
-const BASE_COLOR_TEXTURE_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd11';
-const NORMAL_TEXTURE_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd12';
+const BASE_COLOR_TEXTURE_GUID = '3acd39d8-0434-5941-8ee5-385cb024d91d';
+const NORMAL_TEXTURE_GUID = '2382ad16-6ed8-5602-8d9e-74a0f8fea0cb';
 
 function materialFromCookedRecord(
   record: CookedMaterialRecord,
@@ -263,43 +263,46 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const baseColorTextureHandle = (await assets.load(BASE_COLOR_TEXTURE_GUID, 'texture')).unwrap();
   const normalTextureHandle = (await assets.load(NORMAL_TEXTURE_GUID, 'texture')).unwrap();
   const baseColorTexturePayload = assets.read(baseColorTextureHandle).unwrap();
-  const rootGuid = AssetGuid.parse(ACTIVE_ROOT_MATERIAL_GUID);
-  const derivedGuid = AssetGuid.parse(ACTIVE_DERIVED_MATERIAL_GUID);
-  if (!rootGuid.ok || !derivedGuid.ok) throw new Error('[custom-shader] material GUID is malformed');
-  const catalogMaterialPair =
-    ACTIVE_ROOT_MATERIAL_GUID === ROOT_MATERIAL_GUID &&
-    ACTIVE_DERIVED_MATERIAL_GUID === DERIVED_MATERIAL_GUID
-      ? await Promise.all([
-          assets.load(rootGuid.value, 'material'),
-          assets.load(derivedGuid.value, 'material'),
-        ])
-      : undefined;
-  if (catalogMaterialPair !== undefined && (!catalogMaterialPair[0].ok || !catalogMaterialPair[1].ok)) {
-    const [rootLoaded, derivedLoaded] = catalogMaterialPair;
-    console.error('[custom-shader] material catalog load failed', {
-      root: rootLoaded.ok
-        ? undefined
-        : { code: rootLoaded.error.code, expected: rootLoaded.error.expected, hint: rootLoaded.error.hint, detail: rootLoaded.error.detail },
-      derived: derivedLoaded.ok
-        ? undefined
-        : { code: derivedLoaded.error.code, expected: derivedLoaded.error.expected, hint: derivedLoaded.error.hint, detail: derivedLoaded.error.detail },
-    });
-    throw new Error('[custom-shader] runtime catalog did not load the material inheritance pair');
-  }
-
-  if (catalogMaterialPair !== undefined) {
-    for (const loaded of catalogMaterialPair) if (loaded.ok) assets.release(loaded.value).unwrap();
-  }
-
   const materialCache = new MaterialGenerationCache();
   let packRead = 0;
   let lastMaterialGeneration: MaterialGenerationVector | undefined;
-  const loadCookedMaterial = async (guid: string) => {
-    const requestedPackUrl = materialQuery.get('materialPack') ?? pulsePackUrl;
+  let catalogPack: { digest: string; body: Promise<RuntimePackEnvelope> } | undefined;
+  type MaterialPublication = Pick<MaterialReady, 'record'> & {
+    readonly projection: ReturnType<typeof installMaterialReadyShaders>;
+  };
+  const loadCookedMaterial = async (guid: string): Promise<MaterialPublication> => {
+    const requestedPackUrl = materialQuery.get('materialPack');
+    if (requestedPackUrl === null) {
+      const handle = (await assets.load(guid, 'material')).unwrap();
+      try {
+        const entry = assets.catalogEntry(guid);
+        if (entry?.publication === undefined) throw new Error(`[custom-shader] material is missing from the catalog: ${guid}`);
+        const url = entry.packageUrl;
+        const digest = entry.publication.digest;
+        if (catalogPack?.digest !== digest) {
+          const body = (async () => {
+            const response = await assets.openPackage(url)(url);
+            if (!response.ok) throw new Error(`[custom-shader] runtime pack fetch failed: ${url}`);
+            const pack = decodeMaterialProgramWire(await response.json()).unwrap() as RuntimePackEnvelope;
+            if (pack.digest !== digest) throw new Error('[custom-shader] runtime pack changed after material load');
+            return pack;
+          })();
+          catalogPack = { digest, body };
+        }
+        const row = (await catalogPack.body).assets.find((asset) => asset.guid === guid);
+        const record = (row?.payload as { cooked?: MaterialReady['record'] } | undefined)?.cooked;
+        if (record?.artifactDigest === undefined) throw new Error(`[custom-shader] missing cooked record: ${guid}`);
+        const projection = assets.getMaterialProjection(handle).unwrap();
+        if (projection === undefined) throw new Error(`[custom-shader] material program is not ready: ${guid}`);
+        return { record, projection };
+      } finally {
+        assets.release(handle).unwrap();
+      }
+    }
     const packUrl = new URL(requestedPackUrl, globalThis.location.href);
     packUrl.searchParams.set('forgeax-material-generation', String(++packRead));
     const packResponse = await fetch(packUrl, { cache: 'no-store' });
-    if (!packResponse.ok) throw new Error('[custom-shader] authored pack fetch failed');
+    if (!packResponse.ok) throw new Error('[custom-shader] runtime test pack fetch failed');
     const pack = (await packResponse.json()) as {
       assets?: readonly { guid?: unknown; payload?: { cooked?: unknown } }[];
     };
@@ -333,8 +336,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     if (loaded.status !== 'Ready') {
       throw new Error(`[custom-shader] cooked material load failed: ${loaded.error.code}`);
     }
-    installMaterialReadyShaders(assets.shaderRegistry, loaded, assets.materialArtifactRegistry);
-    return loaded;
+    const projection = installMaterialReadyShaders(assets.shaderRegistry, loaded, assets.materialArtifactRegistry);
+    return { record: loaded.record, projection };
   };
   const loadCachedMaterial = (guid: string, destabilize = false) =>
     materialCache.resolve(guid, guid, () =>
@@ -388,10 +391,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (typeof materialModule !== 'string') {
     throw new Error('[custom-shader] cooked material has no authored shader module identity');
   }
-  const materialArtifact = assets.shaderRegistry.findMaterialArtifact(materialModule);
-  if (!materialArtifact.ok) {
-    throw new Error('[custom-shader] cooked shader module is absent from the build manifest');
-  }
+  const createMaterialInstance = (material: MaterialAsset, publication: MaterialPublication) => {
+    assets.materialPayloadProjections.set(material, publication.projection);
+    return assets.create(material).unwrap();
+  };
 
   const liveSwapNormalTexturePayload: TextureAsset = {
     ...baseColorTexturePayload,
@@ -494,11 +497,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     baseColor: inheritanceReplacementTextureHandles[0],
     normal: inheritanceReplacementTextureHandles[1],
   });
-  const rootMaterialHandle = assets.create(rootMaterial).unwrap();
-  const derivedMaterialHandle = assets.create(derivedMaterial).unwrap();
-  const liveSwapMaterialHandle = assets.create(liveSwapMaterial).unwrap();
-  const liveTwoSlotSwapMaterialHandle = assets.create(liveTwoSlotSwapMaterial).unwrap();
-  const inheritanceReplacementMaterialHandle = assets.create(inheritanceReplacementMaterial).unwrap();
+  const rootMaterialHandle = createMaterialInstance(rootMaterial, rootReady);
+  const derivedMaterialHandle = createMaterialInstance(derivedMaterial, derivedReady);
+  const liveSwapMaterialHandle = createMaterialInstance(liveSwapMaterial, derivedReady);
+  const liveTwoSlotSwapMaterialHandle = createMaterialInstance(liveTwoSlotSwapMaterial, derivedReady);
+  const inheritanceReplacementMaterialHandle = createMaterialInstance(inheritanceReplacementMaterial, derivedReady);
   const liveReplacementMaterialHandle = liveTwoSlotSwap
     ? liveTwoSlotSwapMaterialHandle
       : liveNormalSlotSwap
@@ -674,7 +677,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         ...declaredMaterialValues(fresh.value.record, gltfTextureValues),
       },
     };
-    const freshHandle = assets.create(freshMaterial).unwrap();
+    const freshHandle = createMaterialInstance(freshMaterial, fresh.value);
     const mutation = world.set(derivedEntity, MeshRenderer, { materials: [freshHandle] });
     if (!mutation.ok) {
       assets.release(freshHandle);
@@ -714,6 +717,26 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     };
   }
 
+  function recordPresentedMaterial(frameId: number, presentation: string): void {
+    if (presentation !== 'ready') return;
+    const generation = globalThis.__forgeaxMaterialEvidence?.materialGeneration;
+    if (
+      generation === undefined ||
+      generation.presentedFrame?.materialHandle === currentDerivedHandle
+    ) {
+      return;
+    }
+    const binding = renderer.inspect().meshMaterialBindings.find(
+      (row) => row.worldIdentity === world.identity && row.entityKey === derivedEntity,
+    );
+    if (
+      binding?.bindings[0]?.handle === currentDerivedHandle &&
+      binding.residency[0]?.readiness === 'ready'
+    ) {
+      generation.presentedFrame = { frameId, materialHandle: currentDerivedHandle };
+    }
+  }
+
   // Animate the runtime material values to exercise the cooked shader path.
   const startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const frame = (): void => {
@@ -730,6 +753,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       drawErrorCodes.push(r.error.code);
       console.error('[custom-shader] draw error:', r.error);
     } else {
+      recordPresentedMaterial(r.value.frameId, r.value.presentation);
       void renderer.observe(r.value, { include: ['draws', 'bindings'] }).then((observed) => {
         if (observed.ok) {
           frameObservationCount += 1;

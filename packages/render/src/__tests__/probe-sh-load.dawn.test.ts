@@ -9,10 +9,7 @@ function required<T>(value: T | undefined): T {
 
 function probePreblendSource(templateSource: string): string {
   const start = templateSource.indexOf('  var probeShPreblend :');
-  const environment = /^ {2}(?:let|var) environment = evaluateStandardEnvironment\(/m.exec(
-    templateSource.slice(start),
-  );
-  const end = environment === null ? -1 : start + environment.index;
+  const end = templateSource.indexOf('  let irradiance = applyStandardProbeIrradiance(', start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return templateSource.slice(start, end);
@@ -33,6 +30,7 @@ const imports = Object.fromEntries(
     'ibl-sampling',
     'ibl-pmrem',
     'ibl-shared',
+    'sky-sh-polynomial',
     'lighting-attenuation',
     'lighting-directional',
     'lighting-ies-profile',
@@ -69,14 +67,15 @@ for (const template of ['default-standard-pbr.wgsl', 'default-standard-pbr-skin.
       expect([...productionBlock.matchAll(coefficientRead)]).toHaveLength(9);
       const block = productionBlock.replace(coefficientRead, 'readCoefficient($1)');
       const compiled = await compiler.compileShader(
-        `#import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment}
+        `#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleStandardDiffuseIrradiance, evaluateStandardEnvironment}
+#import forgeax_pbr::lighting_probe::{applyStandardProbeIrradiance}
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 struct Input { materialAddress: vec4<u32> };
 struct Parameters { address: vec4<u32>, expected: vec4<f32> };
 @group(0) @binding(100) var<storage, read> probeBlendRecords: array<vec4<f32>>;
 @group(0) @binding(101) var<uniform> parameters: Parameters;
-@group(0) @binding(102) var irradiance: texture_cube<f32>;
+@group(0) @binding(102) var<uniform> skySh: SkyShPolynomial;
 @group(0) @binding(103) var prefilter: texture_2d<f32>;
-@group(0) @binding(104) var brdf: texture_2d<f32>;
 @group(0) @binding(105) var sampleState: sampler;
 var<private> coefficientReads: u32;
 fn readCoefficient(index: u32) -> vec4<f32> {
@@ -86,10 +85,13 @@ fn readCoefficient(index: u32) -> vec4<f32> {
 fn environment(sh: array<vec4<f32>, 9>, blend: f32) -> vec3<f32> {
   let sky = SkylightUniforms(0.55, 1.0, 1.0, 1.0,
     vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(1.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0), vec4<f32>(0.0));
+  let normal = vec3<f32>(0.0, 0.0, 1.0);
+  let transmission = vec3<f32>(0.4, 0.2, 0.1) * parameters.expected.y;
+  let irradiance = applyStandardProbeIrradiance(sampleStandardDiffuseIrradiance(sky, normal, transmission, skySh), normal, transmission, sh, blend);
   let result = evaluateStandardEnvironment(vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 1.0),
     vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.7, 0.5, 0.3),
-    vec3<f32>(0.4, 0.2, 0.1) * parameters.expected.y, 0.0, 0.6, vec3<f32>(0.04),
-    vec4<f32>(0.04, 0.04, 0.04, 1.0), vec3<f32>(0.7, 0.5, 0.3), sky, irradiance, sampleState, prefilter, sampleState, brdf, prefilter, sh, blend);
+    transmission, 0.0, 0.6, vec3<f32>(0.04),
+    vec4<f32>(0.04, 0.04, 0.04, 1.0), vec3<f32>(0.7, 0.5, 0.3), sky, sky.ambientIrradiance.xyz, irradiance, prefilter, sampleState);
   return result.diffuse + result.specular;
 }
 fn candidate() -> vec4<f32> {
@@ -136,6 +138,14 @@ fn reference() -> vec4<f32> {
         size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
+      const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
+      const skySh = device.createBuffer({
+        size: 112,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const polynomial = new Float32Array(28);
+      for (const channel of [0, 1, 2]) polynomial[channel * 4 + 3] = 128 / 255;
+      device.queue.writeBuffer(skySh, 0, polynomial);
       const readback = device.createBuffer({
         size: 256,
         usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -145,24 +155,18 @@ fn reference() -> vec4<f32> {
         format: 'rgba32float',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
-      const textures = [6, 1, 1].map((layers) =>
-        device.createTexture({
-          size: [1, 1, layers],
-          format: 'rgba8unorm',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-        }),
-      );
+      const prefilter = device.createTexture({
+        size: [1, 1],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
       try {
-        for (const [i, texture] of textures.entries()) {
-          const bytes = new Uint8Array((i === 0 ? 6 : 1) * 4);
-          for (let j = 0; j < bytes.length; j += 4)
-            bytes.set(i === 2 ? [128, 64, 0, 255] : [128, 128, 128, 255], j);
-          device.queue.writeTexture({ texture }, bytes, { bytesPerRow: 4, rowsPerImage: 1 }, [
-            1,
-            1,
-            i === 0 ? 6 : 1,
-          ]);
-        }
+        device.queue.writeTexture(
+          { texture: prefilter },
+          new Uint8Array([128, 128, 128, 255]),
+          { bytesPerRow: 4, rowsPerImage: 1 },
+          [1, 1, 1],
+        );
         const module = device.createShaderModule({ code: compiled.value.wgsl });
         const pipeline = await device.createRenderPipelineAsync({
           layout: 'auto',
@@ -172,11 +176,11 @@ fn reference() -> vec4<f32> {
         const group = device.createBindGroup({
           layout: pipeline.getBindGroupLayout(0),
           entries: [
+            { binding: 0, resource: { buffer: view } },
             { binding: 100, resource: { buffer: record } },
             { binding: 101, resource: { buffer: uniform } },
-            { binding: 102, resource: required(textures[0]).createView({ dimension: 'cube' }) },
-            { binding: 103, resource: required(textures[1]).createView({ dimension: '2d' }) },
-            { binding: 104, resource: required(textures[2]).createView() },
+            { binding: 102, resource: { buffer: skySh } },
+            { binding: 103, resource: prefilter.createView({ dimension: '2d' }) },
             {
               binding: 105,
               resource: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }),
@@ -263,10 +267,12 @@ fn reference() -> vec4<f32> {
           ).toBeGreaterThan(0.01);
         }
       } finally {
-        for (const texture of textures) texture.destroy();
+        prefilter.destroy();
         output.destroy();
         record.destroy();
         uniform.destroy();
+        skySh.destroy();
+        view.destroy();
         readback.destroy();
         device.destroy();
       }

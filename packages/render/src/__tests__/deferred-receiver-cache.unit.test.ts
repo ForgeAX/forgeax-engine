@@ -5,8 +5,15 @@ import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
+import {
+  projectViewLayout,
+  retainPipelineView,
+  retainViewLayout,
+  viewForPipeline,
+} from '../environment/bindings';
 import { getOrCreateHdrpBuffers, resetHdrpBuffers } from '../hdrp-buffers';
 import { MaterialResource } from '../material-resource';
+import { buildPbrViewBglEntries } from '../pbr-pipeline';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
 import { buildPerFrameBindGroups, buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
@@ -60,14 +67,15 @@ async function fixture(options: { readonly clustered?: boolean } = {}) {
   );
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
-      irradianceView: stable,
+      skySh: buffer,
+      irradianceSampler: sampler,
       prefilterView: stable,
       brdfLutView: stable,
-      irradianceSampler: sampler,
       prefilterSampler: sampler,
       intensityBuffer: buffer,
     },
-  } as ReturnType<typeof prepareMaterialSkylight>);
+    activeViews: undefined,
+  });
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const raster = vi.spyOn(graph, 'addRasterPass');
   const target = (name: string) => {
@@ -193,7 +201,8 @@ it('rebinds Deferred geometry when only the receiver texture view changes', asyn
     kind: 'textureView',
     value: replacement,
   });
-  expect(context.pass.setBindGroup).toHaveBeenCalledTimes(12);
+  expect(context.pass.setBindGroup).toHaveBeenCalledTimes(6);
+  expect(vi.mocked(context.pass.setBindGroup).mock.calls.some(([slot]) => slot === 3)).toBe(false);
   dispose();
 });
 
@@ -413,7 +422,7 @@ it('keeps full geometry preparation flags and View failure ordering', async () =
     const noView = f.full(true, false);
     expect(noView.viewBindGroup).toBeNull();
     expect(noView.meshBindGroup).not.toBeNull();
-    expect(noView.hdrpClusterBindGroup).not.toBeNull();
+    expect(noView.clusterViewReady).toBe(true);
   } finally {
     f.dispose();
   }
@@ -478,12 +487,80 @@ it('rebinds actual Deferred View and buffer groups on current physical replaceme
     expect(
       Array.from(views()[1]?.[0].entries ?? []).find((entry) => entry.binding === 8)?.resource,
     ).toEqual({ kind: 'textureView', value: f.replacement });
-    const bound = vi.mocked(f.context.pass.setBindGroup).mock.calls.filter(([slot]) => slot === 3);
+    const bound = vi.mocked(f.context.pass.setBindGroup).mock.calls.filter(([slot]) => slot === 1);
+    expect(bound).toHaveLength(3);
     expect(bound[2]?.[1]).not.toBe(bound[1]?.[1]);
     expect(f.context.pass.draw).toHaveBeenCalledTimes(3);
     expect(f.error).not.toHaveBeenCalled();
   } finally {
     f.dispose();
     f.device.destroyBuffer(next).unwrap();
+  }
+});
+
+it('shares the Cluster View binding across mesh replacement and tracks a different View payload', async () => {
+  const f = await actualBindingFixture();
+  const replacement = f.device.createBuffer({ size: 256, usage: 0x40 | 0x80 }).unwrap();
+  const caps = { storageBuffer: true, extendedLighting: false, projectorAvailable: false };
+  const entries = buildPbrViewBglEntries(caps);
+  const base = f.device.createBindGroupLayout({ entries }).unwrap();
+  retainViewLayout(base, entries, true);
+  Object.assign(f.frame.pipelineState, { viewBindGroupLayout: base });
+  const view = projectViewLayout(
+    f.device,
+    base,
+    new Map([
+      [30, 2],
+      [31, 2],
+      [32, 2],
+      [33, 2],
+    ]),
+  );
+  const pipeline = {} as import('@forgeax/engine-rhi').RenderPipeline;
+  retainPipelineView(pipeline, view);
+  const resolve = () => {
+    const groups = f.full(true, true);
+    if (groups.viewBindGroup === null || groups.meshBindGroup === null)
+      throw new Error('expected real View and Mesh bindings');
+    return {
+      view: viewForPipeline(f.device, pipeline, groups.viewBindGroup),
+      mesh: groups.meshBindGroup,
+    };
+  };
+  try {
+    const original = resolve();
+    f.meshReads.mockReturnValue({ buffer: replacement, sizeInBytes: 256 });
+    const movedMesh = resolve();
+    expect(movedMesh.mesh).not.toBe(original.mesh);
+    expect(movedMesh.view).toBe(original.view);
+
+    // The same mesh remains drawable with a different camera's Cluster buffers.
+    const secondViewRuntime = Object.create(f.frame.runtime) as RenderSystemInternals;
+    const cluster = getOrCreateHdrpBuffers(secondViewRuntime);
+    if (cluster === null) throw new Error('expected the second Cluster payload');
+    try {
+      const second = buildViewBindGroup(
+        secondViewRuntime,
+        f.frame.frameState,
+        f.frame.pipelineState,
+        f.frame.bindGroupCounts,
+        { cluster },
+      );
+      if (second === null) throw new Error('expected a second View binding');
+      const secondProjected = viewForPipeline(f.device, pipeline, second);
+      expect(secondProjected).not.toBe(original.view);
+      const writes = f.createGroup.mock.calls
+        .flatMap(([descriptor]) => [...descriptor.entries])
+        .filter((entry) => entry.binding === 33);
+      expect(writes.at(-1)?.resource).toEqual({
+        kind: 'buffer',
+        value: { buffer: cluster.clusterUniformBuffer },
+      });
+    } finally {
+      resetHdrpBuffers(secondViewRuntime);
+    }
+  } finally {
+    f.dispose();
+    f.device.destroyBuffer(replacement).unwrap();
   }
 });

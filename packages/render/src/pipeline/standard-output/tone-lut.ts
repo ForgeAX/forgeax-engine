@@ -16,7 +16,12 @@ import type { DeviceScope } from '../../device/device-scope';
 import { postProcessShaderModuleLabel } from '../../fullscreen-post-process-pass';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../../render-contract';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import {
+  frameOutputDither,
+  type OutputDither,
+  type RenderPipelineFrame,
+  type RenderPipelineTarget,
+} from '../../render-pipeline';
 import { recordContext } from '../../world/view-record-context';
 import type { StandardLutGraphProjection } from './lut-gpu';
 
@@ -64,10 +69,12 @@ export function addStandardToneLutPass(
   input: RenderPipelineTarget,
   output: RenderPipelineTarget,
   lut: StandardLutGraphProjection,
-  dither: boolean,
+  dither: OutputDither,
 ): Result<void, RenderGraphError> {
   // Unscoped test/backends may retain this graph's objects only.
   const localPrograms: ToneLutProgram[] = [];
+  const payload = new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize);
+  const values = new DataView(payload.buffer);
   let retainedBinding:
     | {
         program: ToneLutProgram;
@@ -99,6 +106,7 @@ export function addStandardToneLutPass(
       const params = frame.postProcessParams.get(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
       const paramsBuffer = runtime.getPostProcessParamsBuffer?.(
         STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
+        'write',
       );
       if (
         factory === undefined ||
@@ -179,10 +187,17 @@ export function addStandardToneLutPass(
       }
       const extent = resources.textureViewExtent(output.view);
       if (!extent.ok) throw extent.error;
-      const payload = params.slice();
-      const values = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      values.setFloat32(TONEMAP_PARAMS_LAYOUT.ditherOffset, dither ? 1 : 0, true);
-      values.setFloat32(TONEMAP_PARAMS_LAYOUT.outputGamutOffset + 4, lut.strength, true);
+      payload.set(params);
+      values.setFloat32(
+        TONEMAP_PARAMS_LAYOUT.ditherOffset,
+        frameOutputDither(dither, frame) ? 1 : 0,
+        true,
+      );
+      values.setFloat32(
+        TONEMAP_PARAMS_LAYOUT.outputGamutOffset + 4,
+        binding.strength ?? lut.strength,
+        true,
+      );
       values.setFloat32(TONEMAP_PARAMS_LAYOUT.outputWidthOffset, extent.value.width, true);
       values.setFloat32(TONEMAP_PARAMS_LAYOUT.outputHeightOffset, extent.value.height, true);
       const written = device.queue.writeBuffer(paramsBuffer, 0, payload);

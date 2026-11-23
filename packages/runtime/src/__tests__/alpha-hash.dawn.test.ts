@@ -227,7 +227,9 @@ it.each([
             work.pipeline.shaders.some(
               (shader) =>
                 shader.stage === 'fragment' &&
-                (shader.entryPoint === 'fs_main' || shader.entryPoint === 'fs_opaque'),
+                (shader.entryPoint === 'fs_main' ||
+                  shader.entryPoint === 'fs_opaque' ||
+                  shader.entryPoint === 'fs_forward_sun_shadow'),
             ) && work.vertexBuffers.length > 0,
         );
         expect(geometry.length).toBeGreaterThan(0);

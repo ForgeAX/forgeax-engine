@@ -1,6 +1,16 @@
 import type { PlatformEvent } from '@forgeax/engine-platform';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  verifyFileStore,
+  verifyRecordStore,
+} from '../../../platform/src/__tests__/storage-contract.fixture';
+import { createBrowserFileStore } from '../file-storage';
 import { createBrowserPlatform } from '../index.js';
+import {
+  createBrowserRecordStore,
+  createBrowserSaveRecords,
+  createIndexedDbTransaction,
+} from '../record-storage';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -127,4 +137,43 @@ describe('real browser native platform', () => {
     expect(platform.display().ok).toBe(false);
     expect(events.some((event) => event.kind === 'surface-lost')).toBe(true);
   });
+});
+
+it('reopens IndexedDB records and reads bounded OPFS ranges in a separate Worker', async () => {
+  const project = crypto.randomUUID();
+  const records = () => createBrowserSaveRecords(() => indexedDB, project);
+  const signal = new AbortController().signal;
+  const first = createBrowserFileStore(project, 'contract');
+  const reopened = createBrowserFileStore(project, 'contract');
+  await verifyFileStore(first, reopened);
+
+  const record = new TextEncoder().encode('{"version":1,"data":{"zone":3}}');
+  const legacy = createIndexedDbTransaction(() => indexedDB, 'forgeax-game-saves', 'slots');
+  await legacy('readwrite', signal, (store) => {
+    store.put(new TextDecoder().decode(record), [project, 'slot']);
+  });
+  const writer = (await first.beginWrite(4, signal)).unwrap();
+  (await writer.append(Uint8Array.of(10, 20, 30, 40), signal)).unwrap();
+  const ref = (await writer.commit(signal)).unwrap();
+  const worker = new Worker(new URL('./storage-worker.fixture.ts', import.meta.url), {
+    type: 'module',
+  });
+  try {
+    const reply = new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) =>
+        data?.error ? reject(new Error(data.error)) : resolve(data);
+      worker.onerror = reject;
+    });
+    worker.postMessage({ project, ref });
+    expect(await reply).toEqual({ record: [...record], range: [20, 30] });
+    const binaryRecords = () => createBrowserRecordStore(project, 'contract');
+    await verifyRecordStore(binaryRecords(), binaryRecords());
+    (await binaryRecords().replace('binary', Uint8Array.of(255, 0), signal)).unwrap();
+    expect((await binaryRecords().read('binary', signal)).unwrap()).toEqual(Uint8Array.of(255, 0));
+    (await binaryRecords().remove('binary', signal)).unwrap();
+  } finally {
+    worker.terminate();
+    (await reopened.remove(ref, signal)).unwrap();
+    (await records().remove('slot', signal)).unwrap();
+  }
 });

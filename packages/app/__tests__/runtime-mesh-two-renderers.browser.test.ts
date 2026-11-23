@@ -2,7 +2,9 @@ import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runti
 import { assetDataBytes, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { prepareRuntimePackContent } from '@forgeax/engine-import';
+import { meshAssetOutputProducer } from '@forgeax/engine-import';
+import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
+import { MESH_BIN_HEADER_BYTES } from '@forgeax/engine-pack/mesh-bin-contract';
 import {
   ANTIALIAS_NONE,
   BLOOM_DISABLED,
@@ -91,10 +93,22 @@ async function openReceiver(name: string, world: World, assets: AssetRegistry) {
     if (event.kind === 'error') errors.push(event.error);
   });
   const channel = new MessageChannel();
+  const meshTransfers = new Map<string, Uint8Array>();
   const source = new SourceMeshResidency(world, () => ({
     ...identity,
     generation: renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration,
-    post: (message, transfers) => channel.port1.postMessage(message, [...(transfers ?? [])]),
+    post: (message, transfers) => {
+      if (message.kind === 'mesh-prepare' && message.input.mesh.attributeStorage === 'static-streams') {
+        const { mesh, meshHandle, revision } = message.input;
+        if (transfers?.some((buffer) => buffer === mesh.vertices.buffer)) {
+          meshTransfers.set(
+            `${meshHandle}:${revision}`,
+            new Uint8Array(mesh.vertices.buffer, mesh.vertices.byteOffset, mesh.vertices.byteLength).slice(),
+          );
+        }
+      }
+      channel.port1.postMessage(message, [...(transfers ?? [])]);
+    },
   }));
   const receiver = new RenderMeshResidency(renderer, identity, (message) =>
     channel.port2.postMessage(message),
@@ -136,7 +150,7 @@ async function openReceiver(name: string, world: World, assets: AssetRegistry) {
         void lease.release(true)?.catch((cause: unknown) => errors.push(cause));
       },
     });
-  });
+  }, { confirmsTransfer: true });
   let frame = 0;
   const preparedReferences = new Set<string>();
   const fixedPreparedReferences = new Set<string>();
@@ -167,6 +181,7 @@ async function openReceiver(name: string, world: World, assets: AssetRegistry) {
   };
   return {
     prepareMesh: source.prepare,
+    meshTransfers,
     holdsPrepared: (handle: number, revision: number) => source.holdsPrepared(handle, revision),
     referencedPreparedMesh: (handle: number, revision: number) =>
       preparedReferences.has(`${handle}:${revision}`),
@@ -227,12 +242,40 @@ it('draws the same pinned Runtime Pack Mesh in two WebGPU Renderers after its so
   assets.setCatalogSource(runtime.catalog, runtime.fetcher);
   const packageId = '01900000-0000-7000-8000-000000000901';
   const initialMesh = createBoxGeometry(2, 1, 1).unwrap();
-  const content = async (mesh: typeof initialMesh) =>
-    (await prepareRuntimePackContent(packageId, { mesh })).unwrap();
+  const content = async (mesh: typeof initialMesh) => {
+    const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'mesh'));
+    const product = (await meshAssetOutputProducer.produce({ guid, sourceKey: 'mesh', asset: mesh })).unwrap();
+    const body = product.artifacts.body;
+    if (body === undefined) throw new Error('Cook did not produce a mesh body');
+    expect(body.assetCodec).toEqual({ name: 'mesh-binary', version: '7' });
+    const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(body.bytes));
+    const digest = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return {
+      source: {
+        schemaVersion: '3.0.0' as const,
+        packageId,
+        assets: { mesh: {
+          kind: 'mesh',
+          payload: { kind: 'mesh' },
+            refs: product.refs.map(({ guid }) => guid),
+          artifacts: { body: {
+            path: 'mesh.bin',
+            mediaType: body.mediaType,
+            byteLength: body.bytes.byteLength,
+            contentEncoding: 'identity',
+            integrity: { algorithm: 'sha256', digest: `sha256:${digest}` },
+            assetCodec: body.assetCodec,
+          } },
+        } },
+      },
+      blobs: { 'mesh.bin': body.bytes },
+    };
+  };
   let primary: Awaited<ReturnType<typeof openReceiver>> | undefined;
   let secondary: Awaited<ReturnType<typeof openReceiver>> | undefined;
   try {
-    const receipt = (await runtime.producer.admit(await content(initialMesh))).unwrap();
+    const initial = await content(initialMesh);
+    const receipt = (await runtime.producer.admit(initial)).unwrap();
     const row = receipt.rows[0];
     const published = receipt.publication;
     if (row === undefined || published === undefined) throw new Error('Missing mesh publication');
@@ -240,6 +283,11 @@ it('draws the same pinned Runtime Pack Mesh in two WebGPU Renderers after its so
     const handle = (await assets.load(row.guid, 'mesh', { usage: 'render' })).unwrap();
     const revision = assets.revision(handle).unwrap();
     expect(assets.meshCpuResidency(handle).unwrap()).toMatchObject({ mode: 'render', revision });
+    const cookedVertices = initial.blobs['mesh.bin'].subarray(
+      MESH_BIN_HEADER_BYTES,
+      MESH_BIN_HEADER_BYTES + initialMesh.vertices.byteLength,
+    );
+    expect(primary.meshTransfers.get(`${handle}:${revision}`)).toEqual(cookedVertices);
     expect(assets.read(handle)).toMatchObject({
       ok: false,
       error: { code: 'asset-cpu-data-unavailable' },
@@ -257,6 +305,13 @@ it('draws the same pinned Runtime Pack Mesh in two WebGPU Renderers after its so
       initialMesh.vertices,
     );
     assets.clearCatalogSource();
+
+    await primary.dispose();
+    primary = undefined;
+    primary = await openReceiver('restarted', world, assets);
+    await assets.recoverMeshPresentations();
+    expect(assets.meshCpuResidency(handle).unwrap()).toMatchObject({ mode: 'render', revision });
+    expect(primary.meshTransfers.get(`${handle}:${revision}`)).toEqual(cookedVertices);
 
     secondary = await openReceiver('secondary', world, assets);
     await assets.recoverMeshPresentations();

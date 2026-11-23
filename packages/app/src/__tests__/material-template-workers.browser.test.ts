@@ -1,4 +1,5 @@
 import { createApp } from '@forgeax/engine-app/browser';
+import type { RenderInspection } from '@forgeax/engine-render';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { observeReadyPictures } from '../../__tests__/ready-picture-count';
@@ -52,6 +53,28 @@ it('renders a source-only Pack material through the Engine and Render Workers', 
     ).data;
     bitmap.close();
     expect(Array.from(color)).toEqual([255, 0, 0, 255]);
+    if (app.remoteEval === undefined) throw new Error('Missing public worker inspection');
+    const { audit, engineTemplates } = (await app.remoteEval(
+      'return { audit: await execution.inspectRenderer({ fields: ["shaderTemplates", "pipelineLibrary"], runtimeRequests: true }), engineTemplates: assets.shaderRegistry.programTemplateInspection() };',
+    )) as {
+      audit:
+        | { ok: true; value: Pick<RenderInspection, 'shaderTemplates' | 'pipelineLibrary'> }
+        | { ok: false; error: unknown };
+      engineTemplates: RenderInspection['shaderTemplates'];
+    };
+    if (!audit.ok) throw audit.error;
+    expect(audit.value.shaderTemplates).toBeDefined();
+    const addressed = audit.value.shaderTemplates?.sourceMaterialCompiles;
+    const engineAddressed = engineTemplates?.sourceMaterialCompiles;
+    expect(
+      (addressed?.direct?.completed ?? 0) + (engineAddressed?.direct?.completed ?? 0),
+      JSON.stringify({ addressed, engineAddressed }),
+    ).toBeGreaterThan(0);
+    expect(
+      (addressed?.['scene-index']?.completed ?? 0) +
+        (engineAddressed?.['scene-index']?.completed ?? 0),
+    ).toBe(0);
+    expect(audit.value.pipelineLibrary?.runtimeRequests).toBeDefined();
     expect(app.execution.report().fault).toBeNull();
   } finally {
     readyPictures.dispose();

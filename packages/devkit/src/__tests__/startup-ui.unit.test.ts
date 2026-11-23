@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { runInNewContext } from 'node:vm';
+import { parseHtmlAuthoring } from '@forgeax/engine-ui/authoring';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 import { type StartupUiOptions, validateStartupUi } from '../host/startup-ui.js';
@@ -51,6 +52,15 @@ afterEach(() => {
 });
 
 describe('project startup presentation', () => {
+  it('accepts the complete shared startup document in portable UI authoring', () => {
+    expect(
+      parseHtmlAuthoring(hostStartupDocument('Portable game'), 'startup.html', {
+        portableOnly: true,
+        context: 'document',
+      }).diagnostics,
+    ).toEqual([]);
+  }, 5000);
+
   it.each([
     false,
     true,

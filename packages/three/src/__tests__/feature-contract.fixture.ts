@@ -57,7 +57,16 @@ export function testFeaturePartition(partition: 0 | 1 | 2 | 3): void {
             : await renderReference(scene, camera, { stencil: name === 'stencil' });
         await saveBrowserEvidence(`feature-${name}-${phase}`, capture, reference);
         comparePixels(displayPixels(capture), reference);
-        if (['skin', 'skin-lit', 'morph', 'instance-colors-morph', 'batch'].includes(name)) {
+        if (
+          [
+            'skin',
+            'skin-lit',
+            'skin-lit-rigid',
+            'morph',
+            'instance-colors-morph',
+            'batch',
+          ].includes(name)
+        ) {
           const actual = displayPixels(capture);
           let intersection = 0,
             union = 0;

@@ -1,13 +1,14 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
-import { readDeliverySource } from './delivery-identity.js';
+import { sha256 } from '@forgeax/engine-types';
+import { readDeliverySource, verifyDeliverySource } from './delivery-identity.js';
 import { verifyDist, writeDistManifest } from './dist.js';
 import { buildProject } from './host.js';
 import { commandError } from './project.js';
 import type { CommandResult, PackageOptions, ProjectFacts, TauriPlatform } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 export const TAURI_PLATFORMS = ['windows', 'macos', 'linux', 'android', 'ios'] as const;
 
@@ -91,7 +92,9 @@ async function exists(path: string): Promise<boolean> {
 async function planTauriPackage(
   facts: ProjectFacts,
   options: PackageOptions,
-): Promise<CommandResult<{ platform: TauriPlatform; output: string }>> {
+): Promise<
+  CommandResult<{ platform: TauriPlatform; output: string; status: 'prepared' | 'built' }>
+> {
   const platform = options.platform ?? tauriHostPlatform();
   if (
     platform === undefined ||
@@ -99,40 +102,32 @@ async function planTauriPackage(
     (options.prepareOnly !== undefined && typeof options.prepareOnly !== 'boolean') ||
     options.compress !== undefined
   ) {
-    return {
-      ok: false,
-      error: {
-        code: 'tauri-package-options-invalid',
-        expected: 'a supported Tauri platform and optional boolean prepareOnly',
-        hint: 'Use --format tauri --platform windows|macos|linux|android|ios [--prepare-only]. Web compression belongs to web-zip.',
-        detail: {},
-      },
-    };
+    return failCommand(
+      'tauri-package-options-invalid',
+      'a supported Tauri platform and optional boolean prepareOnly',
+      'Use --format tauri --platform windows|macos|linux|android|ios [--prepare-only]. Web compression belongs to web-zip.',
+      {},
+    );
   }
-  if (!options.prepareOnly && !canBuildTauriPlatform(platform)) {
-    return {
-      ok: false,
-      error: {
-        code: 'tauri-build-host-unsupported',
-        expected: `${platform} native packaging prerequisites on a supported host`,
-        hint: 'Use --prepare-only to export the project, then run its build script on the target desktop OS (iOS requires macOS).',
-        detail: { platform, host: process.platform },
-      },
-    };
+  const status = options.prepareOnly ? 'prepared' : 'built';
+  if (status === 'built' && !canBuildTauriPlatform(platform)) {
+    return failCommand(
+      'tauri-build-host-unsupported',
+      `${platform} native packaging prerequisites on a supported host`,
+      'Use --prepare-only to export the project, then run its build script on the target desktop OS (iOS requires macOS).',
+      { platform, host: process.platform },
+    );
   }
   const slug = facts.id.toLowerCase().replace(/[^a-z0-9-]/g, '-') || 'game';
   const output = resolve(facts.root, options.output ?? `release/${slug}-tauri-${platform}`);
   if (await exists(output))
-    return {
-      ok: false,
-      error: {
-        code: 'tauri-package-output-exists',
-        expected: 'a new output directory',
-        hint: 'Choose a new --output directory; existing packages are preserved.',
-        detail: { output },
-      },
-    };
-  return { ok: true, value: { platform, output } };
+    return failCommand(
+      'tauri-package-output-exists',
+      'a new output directory',
+      'Choose a new --output directory; existing packages are preserved.',
+      { output },
+    );
+  return { ok: true, value: { platform, output, status } };
 }
 
 interface TauriPackageArtifact {
@@ -185,9 +180,7 @@ async function buildTauriPackages(
         ? {
             path: relative(project, destination),
             bytes: info.size,
-            sha256: createHash('sha256')
-              .update(await readFile(destination))
-              .digest('hex'),
+            sha256: sha256(await readFile(destination)),
           }
         : { path: relative(project, destination) },
     );
@@ -206,7 +199,7 @@ export async function packageTauriProject(
   try {
     const planned = await planTauriPackage(facts, options);
     if (!planned.ok) return planned;
-    const { platform, output } = planned.value;
+    const { platform, output, status } = planned.value;
     const source = await readDeliverySource(facts.root);
     const work = resolve(facts.root, '.forgeax');
     await mkdir(work, { recursive: true });
@@ -221,49 +214,38 @@ export async function packageTauriProject(
     if (!built.ok) return built;
     const verified = await verifyDist(project);
     if (!verified.ok) return verified;
-    const artifacts = options.prepareOnly ? [] : await buildTauriPackages(project, platform);
-    if (!options.prepareOnly) {
+    let artifacts: TauriPackageArtifact[] = [];
+    if (status === 'built') {
+      artifacts = await buildTauriPackages(project, platform);
       await writeDistManifest(facts, './', project, 'tauri');
       const sealed = await verifyDist(project);
       if (!sealed.ok) return sealed;
     }
-    const finalSource = await readDeliverySource(facts.root);
-    if (JSON.stringify(source) !== JSON.stringify(finalSource))
-      return {
-        ok: false,
-        error: {
-          code: 'package-source-changed',
-          expected: 'the source identity to remain fixed during packaging',
-          hint: 'Finish source edits and rerun packaging from one stable source tree.',
-          detail: { before: source, after: finalSource },
-        },
-      };
+    const unchanged = await verifyDeliverySource(facts.root, source);
+    if (!unchanged.ok) return unchanged;
     await mkdir(dirname(output), { recursive: true });
     if (await exists(output))
       throw new Error('Tauri output appeared while packaging; choose a new output directory');
     await rename(project, output);
-    return {
-      ok: true,
-      value: {
-        format: 'forgeax-tauri-game',
-        platform,
-        status: options.prepareOnly ? 'prepared' : 'built',
-        directory: output,
-        artifacts,
-        source,
-        run: {
-          cwd: output,
-          install: 'pnpm install',
-          build: `pnpm build:${platform}`,
-          smoke: platform === 'android' || platform === 'ios' ? null : 'pnpm smoke',
-        },
-        verification: {
-          distribution: 'passed',
-          nativeBuild: options.prepareOnly ? 'not-run' : 'passed',
-          runtime: 'not-run',
-        },
+    return completeCommand({
+      format: 'forgeax-tauri-game',
+      platform,
+      status,
+      directory: output,
+      artifacts,
+      source,
+      run: {
+        cwd: output,
+        install: 'pnpm install',
+        build: `pnpm build:${platform}`,
+        smoke: platform === 'android' || platform === 'ios' ? null : 'pnpm smoke',
       },
-    };
+      verification: {
+        distribution: 'passed',
+        nativeBuild: status === 'built' ? 'passed' : 'not-run',
+        runtime: 'not-run',
+      },
+    });
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'tauri-package-failed') };
   } finally {

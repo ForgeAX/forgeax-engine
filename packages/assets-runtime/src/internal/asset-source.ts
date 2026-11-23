@@ -57,7 +57,7 @@ export interface AssetSourceOptions {
 
 export interface AssetLoadOptions {
   readonly signal?: AbortSignal;
-  /** Prefer split Render residency for a recoverable static Mesh. */
+  /** Prefer split Render residency for a static Mesh or a scene's draw-only Mesh references. */
   readonly usage?: 'render';
 }
 
@@ -172,11 +172,14 @@ export interface AssetSource {
     decoderIdentities: ReadonlyMap<string, symbol | undefined>,
   ): void;
   trimReadCache(): void;
+  canTakeMesh(root: string, guid: string, entry: SourceEntry): boolean;
+  takeMesh(guid: string): void;
   retainMeshArtifact(
     guid: string,
     expected: AssetPublicationTuple,
     decoderIdentity: symbol | undefined,
     signal?: AbortSignal,
+    bodyEnvelope?: SourceEntry['meshBody'],
   ): Promise<Result<FixedMeshArtifact, MeshArtifactFailure>>;
   invalidate(guid: string): void;
   revision(guid: string): number;
@@ -573,7 +576,19 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         : Promise.resolve(validated);
     },
     readArtifact: storedArtifact,
-    retainMeshArtifact: async (guid, expected, decoderIdentity, signal = lifetime.signal) => {
+    canTakeMesh: (root, guid, entry) =>
+      entry.meshBody !== undefined &&
+      decoders.uses('mesh', meshAssetDecoder) &&
+      entry.decoderIdentity === decoders.identity('mesh') &&
+      graph.canTakeReady(root, guid, entry),
+    takeMesh: (guid) => graph.takeReady(guid),
+    retainMeshArtifact: async (
+      guid,
+      expected,
+      decoderIdentity,
+      signal = lifetime.signal,
+      bodyEnvelope,
+    ) => {
       if (
         signal.aborted ||
         !decoders.uses('mesh', meshAssetDecoder) ||
@@ -584,14 +599,16 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       const decoded = graph.entry(guid);
       if (
         row === undefined ||
-        decoded === undefined ||
-        decoded.decoderIdentity !== decoderIdentity ||
+        (bodyEnvelope === undefined &&
+          (decoded === undefined || decoded.decoderIdentity !== decoderIdentity)) ||
         !checkCurrent(guid, expected).ok
       )
         return err('source-unavailable');
       const fetcher = sourceFetcher(row.packageUrl);
       const envelope =
-        decoded.meshBody ?? (await generatedMeshBody(row, decoded, guid, signal, fetcher));
+        bodyEnvelope ??
+        decoded?.meshBody ??
+        (decoded && (await generatedMeshBody(row, decoded, guid, signal, fetcher)));
       const body = envelope?.artifacts.body;
       if (envelope === undefined || body === undefined) return err('source-unavailable');
       const pinned = await retainStandaloneMeshBody(
@@ -612,7 +629,9 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       }
       return ok({
         ...pinned.value,
-        releaseDecodedSource: () => graph.discardReady(guid, decoded),
+        releaseDecodedSource: () => {
+          if (decoded) graph.discardReady(guid, decoded);
+        },
       });
     },
     trimReadCache: () => {
@@ -651,50 +670,53 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       }
       graph.prepare(prepared);
     },
-    readMeshGeometry: async (guid, loadOptions = {}) => {
-      if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
-      const signal = loadOptions.signal ?? lifetime.signal;
-      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
-      const started = await startCatalog(guid);
-      if (!started.ok) return started;
-      // Demand only this published output's metadata. References remain checked,
-      // but a CPU source read never admits their render dependency closures.
-      const admitted = await session.require(guid);
-      if (!admitted.ok) return admitted;
-      if (admitted.value.kind !== 'mesh') return err(mismatch(guid, 'mesh', admitted.value.kind));
-      const before = validatePublicationReferences(guid, admitted.value, (key) => session.get(key));
-      if (!before.ok) return before;
-      // First demand may publish the declared output. Capture invalidation only
-      // after that admission, just as ordinary source loads do.
-      const revision = graph.revision(guid);
-      const decoderIdentity = decoders.identity('mesh');
-      const decoded = await graph.readOutput(
-        guid,
-        signal,
-        (entry) => decoderIdentity !== undefined && entry.decoderIdentity === decoderIdentity,
-      );
-      if (!decoded.ok) return decoded;
-      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
-      const requested = admitted.value.publication;
-      const actual = decoded.value.publication;
-      if (
-        graph.revision(guid) !== revision ||
-        decoded.value.decoderIdentity !== decoders.identity('mesh') ||
-        actual.generation !== requested.generation ||
-        actual.digest !== requested.digest ||
-        actual.outputSetDigest !== requested.outputSetDigest
-      )
-        return err({
-          code: 'asset-superseded',
-          expected: 'the source read to remain current until completion',
-          hint: 'retry the current Mesh publication',
-          detail: { guid, generation: revision },
-        });
-      const current = checkCurrent(guid, actual);
-      if (!current.ok) return current;
-      // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
-      return copyCpuMeshGeometry(guid, decoded.value.value);
-    },
+    readMeshGeometry: (guid, loadOptions = {}) =>
+      graph.withDecodedClosure(guid, async () => {
+        if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
+        const signal = loadOptions.signal ?? lifetime.signal;
+        if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+        const started = await startCatalog(guid);
+        if (!started.ok) return started;
+        // Demand only this published output's metadata. References remain checked,
+        // but a CPU source read never admits their render dependency closures.
+        const admitted = await session.require(guid);
+        if (!admitted.ok) return admitted;
+        if (admitted.value.kind !== 'mesh') return err(mismatch(guid, 'mesh', admitted.value.kind));
+        const before = validatePublicationReferences(guid, admitted.value, (key) =>
+          session.get(key),
+        );
+        if (!before.ok) return before;
+        // First demand may publish the declared output. Capture invalidation only
+        // after that admission, just as ordinary source loads do.
+        const revision = graph.revision(guid);
+        const decoderIdentity = decoders.identity('mesh');
+        const decoded = await graph.readOutput(
+          guid,
+          signal,
+          (entry) => decoderIdentity !== undefined && entry.decoderIdentity === decoderIdentity,
+        );
+        if (!decoded.ok) return decoded;
+        if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+        const requested = admitted.value.publication;
+        const actual = decoded.value.publication;
+        if (
+          graph.revision(guid) !== revision ||
+          decoded.value.decoderIdentity !== decoders.identity('mesh') ||
+          actual.generation !== requested.generation ||
+          actual.digest !== requested.digest ||
+          actual.outputSetDigest !== requested.outputSetDigest
+        )
+          return err({
+            code: 'asset-superseded',
+            expected: 'the source read to remain current until completion',
+            hint: 'retry the current Mesh publication',
+            detail: { guid, generation: revision },
+          });
+        const current = checkCurrent(guid, actual);
+        if (!current.ok) return current;
+        // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
+        return copyCpuMeshGeometry(guid, decoded.value.value);
+      }),
     readPluginDefinition: async (guid) => {
       const loaded = await registry.load(guid, 'plugin');
       if (!loaded.ok) return loaded;
@@ -904,17 +926,19 @@ function copyCpuMeshGeometry(guid: string, payload: unknown): Result<MeshGeometr
   const geometry = prepareMeshData(decodedMesh, guid);
   if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
   const mesh = interleavedMesh(decodedMesh);
-  // A custom decoder can retain its buffers. The public CPU read owns its storage.
-  return ok(
-    copyAssetData({
-      vertices: mesh.vertices,
-      attributes: mesh.attributes,
-      ...(mesh.attributeStorage === undefined ? {} : { attributeStorage: mesh.attributeStorage }),
-      submeshes: mesh.submeshes,
-      ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
-      ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
-    }),
-  );
+  // A custom decoder can retain its buffers. Reuse only storage just created
+  // by the physical-to-canonical projection.
+  const details = copyAssetData({
+    attributes: mesh.attributes,
+    attributeStorage: 'interleaved' as const,
+    submeshes: mesh.submeshes,
+    ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+    ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+  });
+  return ok({
+    ...details,
+    vertices: mesh.vertices === decodedMesh.vertices ? copyAssetData(mesh.vertices) : mesh.vertices,
+  });
 }
 
 function resolveArtifactUrl(packageUrl: string, path: string): string {

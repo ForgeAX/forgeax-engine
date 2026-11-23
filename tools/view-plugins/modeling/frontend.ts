@@ -51,7 +51,8 @@ export default {
     const reply = await client.transport.request<{ projectId: string }, { sources?: { sourcePath: string }[] }>(VIEW_PACK_SOURCES_SERVICE, { projectId });
     return [...new Set((reply.sources ?? []).map(s => projectRelative(s.sourcePath, root)).filter(p => p.endsWith('.pack.ts')))].sort();
    },
-   operations: modelingOperations((service, payload) => client.transport.request(service, payload)),
+   operations: modelingOperations((service, payload, signal) =>
+    client.transport.request(service, payload, signal === undefined ? undefined : { signal })),
    async readImage(path) {
     const file = await client.transport.request<{ path: string }, { dataUrl?: string }>(VIEW_FILE_GET_SERVICE, { path });
     return file.dataUrl;

@@ -1,4 +1,9 @@
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import { describe, expect, it } from 'vitest';
 import {
   importedMesh,
@@ -52,7 +57,9 @@ describe('real FBX BlendShape import through ufbx WASM', () => {
     const result = await runImport(meta(), registry, fs);
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) throw new Error('expected FBX DDC pack');
-    const entry = result.value.pack.assets.find((asset) => asset.guid === MESH_GUID);
+    const entry = projectImportPack(result.value.product).assets.find(
+      (asset) => asset.guid === MESH_GUID,
+    );
     expect(entry?.kind).toBe('mesh');
     if (!entry) throw new Error('missing mesh');
     expect(entry.payload).toEqual({ kind: 'mesh' });
@@ -62,7 +69,7 @@ describe('real FBX BlendShape import through ufbx WASM', () => {
     expect(Array.from(payload.morphWeights ?? [])).toEqual([0.25, 0.5]);
     expect(payload.vertices.length).toBe(3 * 12);
 
-    const { assets } = importedSource(result.value.pack);
+    const { assets } = importedSource(projectImportPack(result.value.product));
     const handle = (await assets.load(MESH_GUID, 'mesh')).unwrap();
     const loaded = assets.read(handle).unwrap();
     expect(loaded.kind).toBe('mesh');
@@ -81,7 +88,9 @@ describe('real FBX BlendShape import through ufbx WASM', () => {
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
     expect(
-      result.value.pack.assets.filter((asset) => asset.kind === 'animation-clip'),
+      projectImportPack(result.value.product).assets.filter(
+        (asset) => asset.kind === 'animation-clip',
+      ),
     ).toHaveLength(0);
   });
 });

@@ -24,6 +24,7 @@ export function shadowSourceSnapshot(
   world[12] = x;
   return {
     assetHandle,
+    mobility: 'static',
     transform: { world },
     localAabb: Float32Array.of(-1, -1, -1, 1, 1, 1),
     material,

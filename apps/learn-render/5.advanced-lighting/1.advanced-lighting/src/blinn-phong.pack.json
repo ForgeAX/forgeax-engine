@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "cc1beeb0-5b8e-5720-96e6-d7e6064f2c20",
+  "schemaVersion": "3.0.0",
+  "packageId": "bfdd0377-a365-5321-8f87-132ac10e699b",
+  "assets": {
+    "blinn-phong.wgsl": {
       "kind": "material",
-      "sourceKey": "blinn-phong.wgsl",
-      "execution": "cooked",
       "payload": {
         "kind": "material",
         "passes": [
@@ -38,5 +35,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

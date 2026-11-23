@@ -1,3 +1,5 @@
+import { DIST_MANIFEST_FILE } from '../dist.js';
+
 export const tauriBuildScript = `import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -69,7 +71,7 @@ const status = await exit;
 const report = JSON.parse(await readFile(resolve(reportDir, 'report.json'), 'utf8'));
 const digest = async path => createHash('sha256').update(await readFile(path)).digest('hex');
 report.artifact = { executable, executableSha256: await digest(executable),
-  distributionSha256: await digest(resolve(root, 'forgeax-dist.json')),
+  distributionSha256: await digest(resolve(root, '${DIST_MANIFEST_FILE}')),
   cargoLockSha256: await digest(resolve(root, 'src-tauri/Cargo.lock')) };
 await writeFile(resolve(reportDir, 'report.json'), JSON.stringify(report, null, 2) + '\\n');
 if (status.code !== 0 || report.phase !== 'closed' || report.cleanup !== 'completed' || report.presented < 60 || report.errors.length || !report.permissionDenied || (process.platform === 'darwin' && !captured)) {
@@ -84,6 +86,7 @@ console.log(JSON.stringify({ executable, reportDir, completed: report.completed,
 export const tauriLibrarySource = String.raw`use std::path::PathBuf;
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
 use tauri::Manager;
+mod storage;
 
 #[cfg(any(target_os = "windows", target_os = "android"))]
 mod asset_server;
@@ -263,7 +266,8 @@ pub fn run() {
     });
     builder
         .manage(HostState { report_dir, report: Mutex::new(serde_json::json!({ "phase": "launching" })), closing: AtomicBool::new(false) })
-        .invoke_handler(tauri::generate_handler![smoke_report, finish_close, request_close])
+        .manage(storage::StorageState::default())
+        .invoke_handler(tauri::generate_handler![smoke_report, finish_close, request_close, storage::storage_io])
         .on_page_load(move |window, payload| {
             if smoke {
                 eprintln!("[forgeax.tauri.page] {:?} {}", payload.event(), payload.url());

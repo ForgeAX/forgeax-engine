@@ -66,6 +66,10 @@ export function classifyWatchedPath(filename: string): DevWatchClassification {
   return { kind: isSidecar ? 'sidecar' : 'source' };
 }
 
+function statFact({ dev, ino, mode, mtimeMs, size }: StatFact): StatFact {
+  return { dev, ino, mode, mtimeMs, size };
+}
+
 function snapshotEqual(left: StatFact | undefined, right: StatFact | undefined): boolean {
   return (
     left?.dev === right?.dev &&
@@ -109,13 +113,7 @@ async function collectSnapshot(roots: readonly string[], io?: SnapshotIo): Promi
           if (children !== undefined) {
             for (const child of children) pending.push(resolve(path, child.name));
           } else if (entry.isFile()) {
-            snapshot.set(resolve(absoluteRoot, path), {
-              dev: entry.dev,
-              ino: entry.ino,
-              mode: entry.mode,
-              mtimeMs: entry.mtimeMs,
-              size: entry.size,
-            });
+            snapshot.set(path, statFact(entry));
           }
         }
       }
@@ -151,15 +149,7 @@ function collectSnapshotSync(roots: readonly string[]): Snapshot {
       }
       return;
     }
-    if (entry.isFile()) {
-      snapshot.set(resolve(root, path), {
-        dev: entry.dev,
-        ino: entry.ino,
-        mode: entry.mode,
-        mtimeMs: entry.mtimeMs,
-        size: entry.size,
-      });
-    }
+    if (entry.isFile()) snapshot.set(path, statFact(entry));
   };
   for (const root of roots) visit(resolve(root), resolve(root));
   return snapshot;

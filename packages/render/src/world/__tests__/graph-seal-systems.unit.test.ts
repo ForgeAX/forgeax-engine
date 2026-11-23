@@ -13,6 +13,7 @@ import {
   renderSubmission,
   runRenderRecord,
 } from '../render-world';
+import { viewComposition } from '../view-output-systems';
 
 async function fixture() {
   const world = createRenderWorld();
@@ -147,6 +148,55 @@ it('encodes in capture then view order and contains a capture failure without po
   } finally {
     seal.mockRestore();
     captures.mockRestore();
+    encode.mockRestore();
+    endRenderFrame(f.world);
+  }
+});
+
+it('shares the submitted presentation order from capture through display and releases it for the next frame', async () => {
+  const f = await fixture();
+  const first = f.world
+    .resolveUniqueRef<{ prepared: unknown }>(f.world.get(f.view, ViewGraphSeal).unwrap().state)
+    .unwrap();
+  const other = { internals: {}, frameState: { pipelinePreparationPending: false } };
+  const second = f.world
+    .spawn({
+      component: ViewGraphSeal,
+      data: { state: f.world.allocUniqueRef('ViewGraphSeal', { frame: 1, prepared: other }) },
+    })
+    .unwrap();
+  const composition = viewComposition(f.world);
+  composition.recorded.push({ entity: second } as (typeof composition.recorded)[number]);
+  const events: string[] = [];
+  const seal = vi.spyOn(frame, 'sealCompiledViewGraph').mockReturnValue({
+    kind: 'sealed',
+    graph: {},
+    value: {},
+  } as never);
+  const capture = vi.spyOn(frame, 'encodePreparedFrameCaptures').mockImplementation((view) => {
+    events.push(view === first.prepared ? 'capture-primary' : 'capture-second');
+    composition.recorded.length = 0;
+    return { kind: 'ready' };
+  });
+  const encode = vi.spyOn(frame, 'encodePreparedViewGraph').mockImplementation((view) => {
+    events.push(view === first.prepared ? 'display-primary' : 'display-second');
+    return { kind: 'rejected' };
+  });
+  try {
+    expect(f.record().ok).toBe(true);
+    expect(events).toEqual([
+      'capture-second',
+      'capture-primary',
+      'display-second',
+      'display-primary',
+    ]);
+    endRenderFrame(f.world);
+    Object.assign(renderSubmission(f.world), { frame: 2, open: true });
+    expect(f.record().ok).toBe(true);
+    expect(encode).toHaveBeenCalledTimes(2);
+  } finally {
+    seal.mockRestore();
+    capture.mockRestore();
     encode.mockRestore();
     endRenderFrame(f.world);
   }

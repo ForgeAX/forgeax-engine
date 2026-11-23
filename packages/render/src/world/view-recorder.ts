@@ -1,5 +1,4 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { Texture } from '@forgeax/engine-rhi';
 import { createViewCompositor } from '../assembly/view-compositor';
 import type { StereoEye } from '../components/stereo-camera';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -74,7 +73,7 @@ export function createViewRecorder(
       target,
       output: undefined,
       picture: {
-        texture: undefined as unknown as Texture,
+        source: undefined,
         viewport,
         channels: viewChannels(facts.channels),
       },

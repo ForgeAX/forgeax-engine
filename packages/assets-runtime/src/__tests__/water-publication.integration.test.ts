@@ -1,5 +1,4 @@
 import { createWorldContext, defineComponent, World } from '@forgeax/engine-ecs';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { definePackageId } from '@forgeax/engine-pack/source';
 import {
   sceneAssetContribution,
@@ -22,10 +21,11 @@ import {
   WaterSystem,
   waterAssetDecoderContributions,
 } from '@forgeax/engine-water';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
+import { catalogPack } from './fixtures/catalog-pack';
 import { publishRuntimeAssets } from './fixtures/runtime-publication';
 
 function requiredFixtureValue<T>(value: T | null | undefined): T {
@@ -158,20 +158,17 @@ describe('water source and Registry integration', () => {
       { guid: bodyGuid, asset: childBody, refs: [childMaterialGuid, zoneGuid] },
       { guid: zoneGuid, asset: zone, refs: [] },
     ]);
-    try {
-      const bodyHandle = (await assets.load(bodyGuid, 'water-body')).unwrap();
-      const materialHandle = (await assets.load(childMaterialGuid, 'material')).unwrap();
-      expect(assets.read(bodyHandle).unwrap()).toMatchObject({
-        surfaceMaterialGuid: childMaterialGuid,
-      });
-      expect(assets.read(materialHandle).unwrap()).toMatchObject({
-        kind: 'material',
-        passes: [{ name: 'main' }],
-        values: { roughness: 0.25 },
-      });
-    } finally {
-      assets.dispose();
-    }
+    onTestFinished(() => assets.dispose());
+    const bodyHandle = (await assets.load(bodyGuid, 'water-body')).unwrap();
+    const materialHandle = (await assets.load(childMaterialGuid, 'material')).unwrap();
+    expect(assets.read(bodyHandle).unwrap()).toMatchObject({
+      surfaceMaterialGuid: childMaterialGuid,
+    });
+    expect(assets.read(materialHandle).unwrap()).toMatchObject({
+      kind: 'material',
+      passes: [{ name: 'main' }],
+      values: { roughness: 0.25 },
+    });
   });
 
   it('admits a deferred Zone body, binds on arrival, and invalidates retired Zone indices', async () => {
@@ -208,82 +205,78 @@ describe('water source and Registry integration', () => {
     const liveZones = new Map<string, { generation: number; worldMatrixM: readonly number[] }>();
     let zoneGeneration = 0;
     const water = new WaterSystem((guid) => liveZones.get(guid));
-    try {
-      const bodyHandle = (await assets.load(bodyGuid, 'water-body')).unwrap();
-      const bodyVersion = runtimeAssets(assets).version(bodyHandle).unwrap();
-      const acceptedBody = assets.read(bodyHandle).unwrap();
-      expect(
-        assets.replace(bodyHandle, {
-          ...acceptedBody,
-          spline: {
-            ...acceptedBody.spline,
-            points: [{ ...requiredFixtureValue(acceptedBody.spline.points[0]), positionM: [0, 0] }],
-          },
-        } as unknown as Asset),
-      ).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
-      expect(runtimeAssets(assets).version(bodyHandle).unwrap()).toBe(bodyVersion);
-      const accepted = water
-        .mountBody(bodyGuid, bodyVersion, assets.read(bodyHandle).unwrap())
-        .unwrap();
-      expect(accepted.binding).toEqual({
-        kind: 'zone-unbound',
-        requestedGuid: zoneGuid,
-        retryOnCatalogChange: true,
-      });
-      expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
-      for (const [guid, type] of [
-        [lakeGuid, 'lake'],
-        [oceanGuid, 'ocean'],
-        [customGuid, 'custom'],
-      ] as const) {
-        const handle = (await assets.load(guid, 'water-body')).unwrap();
-        const version = runtimeAssets(assets).version(handle).unwrap();
-        expect(
-          water.mountBody(guid, version, assets.read(handle).unwrap()).unwrap().asset.type,
-        ).toBe(type);
-      }
-      expect(water.snapshots()).toHaveLength(4);
-      expect(water.snapshots().every((snapshot) => snapshot.binding.kind === 'zone-unbound')).toBe(
-        true,
+    onTestFinished(() => assets.dispose());
+    const bodyHandle = (await assets.load(bodyGuid, 'water-body')).unwrap();
+    const bodyVersion = runtimeAssets(assets).version(bodyHandle).unwrap();
+    const acceptedBody = assets.read(bodyHandle).unwrap();
+    expect(
+      assets.replace(bodyHandle, {
+        ...acceptedBody,
+        spline: {
+          ...acceptedBody.spline,
+          points: [{ ...requiredFixtureValue(acceptedBody.spline.points[0]), positionM: [0, 0] }],
+        },
+      } as unknown as Asset),
+    ).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
+    expect(runtimeAssets(assets).version(bodyHandle).unwrap()).toBe(bodyVersion);
+    const accepted = water
+      .mountBody(bodyGuid, bodyVersion, assets.read(bodyHandle).unwrap())
+      .unwrap();
+    expect(accepted.binding).toEqual({
+      kind: 'zone-unbound',
+      requestedGuid: zoneGuid,
+      retryOnCatalogChange: true,
+    });
+    expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
+    for (const [guid, type] of [
+      [lakeGuid, 'lake'],
+      [oceanGuid, 'ocean'],
+      [customGuid, 'custom'],
+    ] as const) {
+      const handle = (await assets.load(guid, 'water-body')).unwrap();
+      const version = runtimeAssets(assets).version(handle).unwrap();
+      expect(water.mountBody(guid, version, assets.read(handle).unwrap()).unwrap().asset.type).toBe(
+        type,
       );
-
-      let zoneHandle = (await assets.load(zoneGuid, 'water-zone')).unwrap();
-      zoneGeneration += 1;
-      liveZones.set(zoneGuid, { generation: zoneGeneration, worldMatrixM: zoneWorldMatrixM });
-      expect(water.snapshot(bodyGuid)?.binding).toMatchObject({
-        kind: 'bound',
-        zoneGuid,
-        zoneGeneration,
-        worldMatrixM: zoneWorldMatrixM,
-      });
-      const boundAfterZoneLoad = water.snapshot(bodyGuid)?.binding;
-      if (boundAfterZoneLoad?.kind === 'bound')
-        expect(boundAfterZoneLoad.worldMatrixM[12]).toBe(12);
-      expect(water.snapshots().every((snapshot) => snapshot.binding.kind === 'bound')).toBe(true);
-      water.bindZoneIndex(bodyGuid, zoneGuid, zoneGeneration, 7).unwrap();
-      expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBe(7);
-
-      assets.release(zoneHandle).unwrap();
-      liveZones.delete(zoneGuid);
-      zoneGeneration += 1;
-      expect(water.snapshot(bodyGuid)?.binding.kind).toBe('zone-unbound');
-      expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration - 1)).toBeUndefined();
-
-      zoneHandle = (await assets.load(zoneGuid, 'water-zone')).unwrap();
-      liveZones.set(zoneGuid, { generation: ++zoneGeneration, worldMatrixM: zoneWorldMatrixM });
-      expect(water.snapshot(bodyGuid)?.binding).toMatchObject({
-        kind: 'bound',
-        zoneGuid,
-        zoneGeneration,
-        worldMatrixM: zoneWorldMatrixM,
-      });
-      expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBeUndefined();
-      water.bindZoneIndex(bodyGuid, zoneGuid, zoneGeneration, 3).unwrap();
-      expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBe(3);
-      assets.release(zoneHandle).unwrap();
-    } finally {
-      assets.dispose();
     }
+    expect(water.snapshots()).toHaveLength(4);
+    expect(water.snapshots().every((snapshot) => snapshot.binding.kind === 'zone-unbound')).toBe(
+      true,
+    );
+
+    let zoneHandle = (await assets.load(zoneGuid, 'water-zone')).unwrap();
+    zoneGeneration += 1;
+    liveZones.set(zoneGuid, { generation: zoneGeneration, worldMatrixM: zoneWorldMatrixM });
+    expect(water.snapshot(bodyGuid)?.binding).toMatchObject({
+      kind: 'bound',
+      zoneGuid,
+      zoneGeneration,
+      worldMatrixM: zoneWorldMatrixM,
+    });
+    const boundAfterZoneLoad = water.snapshot(bodyGuid)?.binding;
+    if (boundAfterZoneLoad?.kind === 'bound') expect(boundAfterZoneLoad.worldMatrixM[12]).toBe(12);
+    expect(water.snapshots().every((snapshot) => snapshot.binding.kind === 'bound')).toBe(true);
+    water.bindZoneIndex(bodyGuid, zoneGuid, zoneGeneration, 7).unwrap();
+    expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBe(7);
+
+    assets.release(zoneHandle).unwrap();
+    liveZones.delete(zoneGuid);
+    zoneGeneration += 1;
+    expect(water.snapshot(bodyGuid)?.binding.kind).toBe('zone-unbound');
+    expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration - 1)).toBeUndefined();
+
+    zoneHandle = (await assets.load(zoneGuid, 'water-zone')).unwrap();
+    liveZones.set(zoneGuid, { generation: ++zoneGeneration, worldMatrixM: zoneWorldMatrixM });
+    expect(water.snapshot(bodyGuid)?.binding).toMatchObject({
+      kind: 'bound',
+      zoneGuid,
+      zoneGeneration,
+      worldMatrixM: zoneWorldMatrixM,
+    });
+    expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBeUndefined();
+    water.bindZoneIndex(bodyGuid, zoneGuid, zoneGeneration, 3).unwrap();
+    expect(water.zoneIndex(bodyGuid, zoneGuid, zoneGeneration)).toBe(3);
+    assets.release(zoneHandle).unwrap();
   });
 
   it('rejects a declared Zone edge whose target has the wrong published kind', async () => {
@@ -305,63 +298,55 @@ describe('water source and Registry integration', () => {
         refs: [],
       },
     ]);
-    try {
-      const loaded = await assets.load(bodyGuid, 'water-body');
-      expect(loaded).toMatchObject({
-        ok: false,
-        error: {
-          code: 'asset-decode-failed',
-          expected: expect.stringContaining('zoneGuid'),
-          detail: {
-            guid: bodyGuid,
-            cause: {
-              detail: {
-                guid: bodyGuid,
-                dependencyGuid: zoneGuid,
-                expectedKind: 'water-zone',
-                actualKind: 'texture',
-              },
+    onTestFinished(() => assets.dispose());
+    const loaded = await assets.load(bodyGuid, 'water-body');
+    expect(loaded).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-decode-failed',
+        expected: expect.stringContaining('zoneGuid'),
+        detail: {
+          guid: bodyGuid,
+          cause: {
+            detail: {
+              guid: bodyGuid,
+              dependencyGuid: zoneGuid,
+              expectedKind: 'water-zone',
+              actualKind: 'texture',
             },
           },
         },
-      });
-    } finally {
-      assets.dispose();
-    }
+      },
+    });
   });
 
   it('demands the late Zone catalog row without decoding its payload', async () => {
     const packageUrl = 'https://water.invalid/deferred.pack.json';
     const sourcePath = 'deferred.pack.ts';
-    const produced = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath,
-      sourceRevision: '1',
-      packageUrl,
-      pack: {
-        assets: [
-          {
-            guid: materialGuid,
+    const produced = catalogPack(
+      [
+        {
+          guid: materialGuid,
+          kind: 'material',
+          refs: [],
+          artifacts: {},
+          payload: {
             kind: 'material',
-            refs: [],
-            artifacts: {},
-            payload: {
-              kind: 'material',
-              passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
-              values: { roughness: 1 },
-            },
+            passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
+            values: { roughness: 1 },
           },
-          {
-            guid: bodyGuid,
-            kind: 'water-body',
-            refs: [materialGuid, zoneGuid],
-            artifacts: {},
-            payload: body,
-          },
-          { guid: zoneGuid, kind: 'water-zone', refs: [], artifacts: {}, payload: zone },
-        ],
-      },
-    });
+        },
+        {
+          guid: bodyGuid,
+          kind: 'water-body',
+          refs: [materialGuid, zoneGuid],
+          artifacts: {},
+          payload: body,
+        },
+        { guid: zoneGuid, kind: 'water-zone', refs: [], artifacts: {}, payload: zone },
+      ],
+      { sourcePath, packageUrl },
+    );
     const row = (guid: string, kind: string) => ({
       guid,
       kind,
@@ -403,15 +388,12 @@ describe('water source and Registry integration', () => {
         },
       }),
     );
-    try {
-      const loaded = await assets.load(bodyGuid, 'water-body');
-      expect(loaded.ok).toBe(true);
-      expect(catalogDemand).toEqual([zoneGuid]);
-      expect(zoneDecodes).toEqual([]);
-      expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
-    } finally {
-      assets.dispose();
-    }
+    onTestFinished(() => assets.dispose());
+    const loaded = await assets.load(bodyGuid, 'water-body');
+    expect(loaded.ok).toBe(true);
+    expect(catalogDemand).toEqual([zoneGuid]);
+    expect(zoneDecodes).toEqual([]);
+    expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
   });
 
   it('reloads a newer Water Pack publication and keeps the accepted closure when a dependency is missing', async () => {
@@ -483,12 +465,10 @@ describe('water source and Registry integration', () => {
       payload: terrainRoot,
     });
     const terrainPackageUrl = 'https://water.invalid/catalog-refresh-terrain.pack.json';
-    const terrainPublication = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
+    const terrainPublication = catalogPack(terrainPackAssets, {
       sourcePath: 'terrain-base.pack.ts',
       sourceRevision: 'terrain-r0-1',
       packageUrl: terrainPackageUrl,
-      pack: { assets: terrainPackAssets },
     });
     const terrainEntries = terrainPackAssets.map((entry) => ({
       guid: entry.guid,
@@ -500,76 +480,71 @@ describe('water source and Registry integration', () => {
     }));
     const makePublication = (revision: number, sourceBody: Asset, bodyRefs: string[]) => {
       const packageUrl = `https://water.invalid/catalog-refresh-${revision}.pack.json`;
-      const produced = createRuntimePackPublication({
-        scopeId: 'asset-runtime',
-        sourcePath: 'water-r0.pack.ts',
-        sourceRevision: String(revision),
-        packageUrl,
-        pack: {
-          assets: [
-            {
-              guid: materialGuid,
+      const produced = catalogPack(
+        [
+          {
+            guid: materialGuid,
+            kind: 'material',
+            refs: [],
+            artifacts: {},
+            payload: {
               kind: 'material',
-              refs: [],
-              artifacts: {},
-              payload: {
-                kind: 'material',
-                passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
-                values: {},
-              },
+              passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
+              values: {},
             },
-            { guid: zoneGuid, kind: 'water-zone', refs: [], artifacts: {}, payload: zone },
-            {
-              guid: waveGuid,
+          },
+          { guid: zoneGuid, kind: 'water-zone', refs: [], artifacts: {}, payload: zone },
+          {
+            guid: waveGuid,
+            kind: 'water-wave-set',
+            refs: [],
+            artifacts: {},
+            payload: {
               kind: 'water-wave-set',
-              refs: [],
-              artifacts: {},
-              payload: {
-                kind: 'water-wave-set',
-                sourceMode: 'predefined',
-                waves: [{ directionXZ: [1, 0], wavelengthM: 8, amplitudeM: 1 }],
-                depthMaskM: 1,
-                maxWaveHeightM: 1,
-                timeSource: 'fixed-step',
-              },
+              sourceMode: 'predefined',
+              waves: [{ directionXZ: [1, 0], wavelengthM: 8, amplitudeM: 1 }],
+              depthMaskM: 1,
+              maxWaveHeightM: 1,
+              timeSource: 'fixed-step',
             },
-            {
-              guid: bodyGuid,
-              kind: 'water-body',
-              refs: bodyRefs,
-              artifacts: {},
-              payload: sourceBody,
-            },
-            {
-              guid: brushGuid,
+          },
+          {
+            guid: bodyGuid,
+            kind: 'water-body',
+            refs: bodyRefs,
+            artifacts: {},
+            payload: sourceBody,
+          },
+          {
+            guid: brushGuid,
+            kind: 'water-brush-recipe',
+            refs: [bodyGuid, terrainGuid],
+            artifacts: {},
+            payload: {
               kind: 'water-brush-recipe',
-              refs: [bodyGuid, terrainGuid],
-              artifacts: {},
-              payload: {
-                kind: 'water-brush-recipe',
-                baseTerrainGuid: terrainGuid,
-                sourceBodyGuids: [bodyGuid],
-                orderedActors: ['river/main'],
-                terrainCapture: {
-                  worldMatrixM: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-                  boundsXZ: { minM: [-0.5, -0.5], maxM: [7.5, 7.5] },
-                  resolutionPx: [8, 8],
-                  layerNameToIndex: { water: 0 },
-                },
-                curves: [],
-                textures: [],
-                outputTerrainSourceKey: 'terrain/derived',
-                rules: {
-                  falloff: { type: 'smooth', widthM: 2, strength: 1 },
-                  blend: { type: 'alpha', alpha: 1 },
-                  heightRules: { mode: 'offset', offsetM: 0, velocityMPerSec: 0 },
-                  weightRules: { layer: 'water', value: 1, blend: 'replace' },
-                },
+              baseTerrainGuid: terrainGuid,
+              sourceBodyGuids: [bodyGuid],
+              orderedActors: ['river/main'],
+              terrainCapture: {
+                worldMatrixM: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                boundsXZ: { minM: [-0.5, -0.5], maxM: [7.5, 7.5] },
+                resolutionPx: [8, 8],
+                layerNameToIndex: { water: 0 },
+              },
+              curves: [],
+              textures: [],
+              outputTerrainSourceKey: 'terrain/derived',
+              rules: {
+                falloff: { type: 'smooth', widthM: 2, strength: 1 },
+                blend: { type: 'alpha', alpha: 1 },
+                heightRules: { mode: 'offset', offsetM: 0, velocityMPerSec: 0 },
+                weightRules: { layer: 'water', value: 1, blend: 'replace' },
               },
             },
-          ],
-        },
-      });
+          },
+        ],
+        { sourcePath: 'water-r0.pack.ts', sourceRevision: String(revision), packageUrl },
+      );
       const entries = produced.pack.assets.map((entry) => ({
         guid: entry.guid,
         kind: entry.kind,
@@ -590,82 +565,78 @@ describe('water source and Registry integration', () => {
               : Response.json(published.produced.pack),
         }),
       );
-    try {
-      const initial = makePublication(1, { ...body, waveSetGuid: waveGuid }, [
-        materialGuid,
-        zoneGuid,
-        waveGuid,
-      ]);
-      usePublication(initial);
-      (await assets.reconcileCatalog()).unwrap();
-      expect(terrainRoot).toMatchObject({ columns: 8, rows: 8, spacing: 1 });
-      expect(assets.catalogEntry(terrainGuid)).toMatchObject({
-        kind: 'terrain',
-        refs: expect.arrayContaining([
-          ...terrainRoot.grids,
-          ...terrainRoot.sections.flatMap((section) => [
-            section.heightTexture,
-            section.weightTexture,
-            section.material,
-          ]),
+    onTestFinished(() => assets.dispose());
+    const initial = makePublication(1, { ...body, waveSetGuid: waveGuid }, [
+      materialGuid,
+      zoneGuid,
+      waveGuid,
+    ]);
+    usePublication(initial);
+    (await assets.reconcileCatalog()).unwrap();
+    expect(terrainRoot).toMatchObject({ columns: 8, rows: 8, spacing: 1 });
+    expect(assets.catalogEntry(terrainGuid)).toMatchObject({
+      kind: 'terrain',
+      refs: expect.arrayContaining([
+        ...terrainRoot.grids,
+        ...terrainRoot.sections.flatMap((section) => [
+          section.heightTexture,
+          section.weightTexture,
+          section.material,
         ]),
-      });
-      expect(assets.catalogEntry(brushGuid)).toMatchObject({
-        kind: 'water-brush-recipe',
-        refs: expect.arrayContaining([bodyGuid, terrainGuid]),
-      });
-      const handle = (await assets.load(bodyGuid, 'water-body')).unwrap();
-      const first = assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>;
-      const firstSource = requiredFixtureValue(assets.source(handle).unwrap());
-      expect(first.spline.points[0]?.widthM).toBe(1);
-      expect(firstSource.publication).toMatchObject({
-        sourceRevision: '1',
-        generation: initial.produced.publication.generation,
-        digest: initial.produced.publication.digest,
-      });
+      ]),
+    });
+    expect(assets.catalogEntry(brushGuid)).toMatchObject({
+      kind: 'water-brush-recipe',
+      refs: expect.arrayContaining([bodyGuid, terrainGuid]),
+    });
+    const handle = (await assets.load(bodyGuid, 'water-body')).unwrap();
+    const first = assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>;
+    const firstSource = requiredFixtureValue(assets.source(handle).unwrap());
+    expect(first.spline.points[0]?.widthM).toBe(1);
+    expect(firstSource.publication).toMatchObject({
+      sourceRevision: '1',
+      generation: initial.produced.publication.generation,
+      digest: initial.produced.publication.digest,
+    });
 
-      const unavailable = makePublication(
-        2,
-        { ...body, surfaceMaterialGuid: missingMaterialGuid, waveSetGuid: waveGuid },
-        [missingMaterialGuid, zoneGuid, waveGuid],
-      );
-      usePublication(unavailable);
-      (await assets.reconcileCatalog()).unwrap();
-      expect((await assets.reload(handle, { conflict: 'overwrite' })).ok).toBe(false);
-      expect(
-        (assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>)
-          .surfaceMaterialGuid,
-      ).toBe(first.surfaceMaterialGuid);
-      expect(assets.source(handle).unwrap()?.publication).toMatchObject({
-        sourceRevision: '1',
-        generation: initial.produced.publication.generation,
-      });
+    const unavailable = makePublication(
+      2,
+      { ...body, surfaceMaterialGuid: missingMaterialGuid, waveSetGuid: waveGuid },
+      [missingMaterialGuid, zoneGuid, waveGuid],
+    );
+    usePublication(unavailable);
+    (await assets.reconcileCatalog()).unwrap();
+    expect((await assets.reload(handle, { conflict: 'overwrite' })).ok).toBe(false);
+    expect(
+      (assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>).surfaceMaterialGuid,
+    ).toBe(first.surfaceMaterialGuid);
+    expect(assets.source(handle).unwrap()?.publication).toMatchObject({
+      sourceRevision: '1',
+      generation: initial.produced.publication.generation,
+    });
 
-      const accepted = makePublication(
-        3,
-        {
-          ...body,
-          waveSetGuid: waveGuid,
-          spline: {
-            ...body.spline,
-            points: body.spline.points.map((point) => ({ ...point, widthM: 4 })),
-          },
+    const accepted = makePublication(
+      3,
+      {
+        ...body,
+        waveSetGuid: waveGuid,
+        spline: {
+          ...body.spline,
+          points: body.spline.points.map((point) => ({ ...point, widthM: 4 })),
         },
-        [materialGuid, zoneGuid, waveGuid],
-      );
-      usePublication(accepted);
-      (await assets.reconcileCatalog()).unwrap();
-      (await assets.reload(handle, { conflict: 'overwrite' })).unwrap();
-      const reloaded = assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>;
-      expect(reloaded.spline.points[0]?.widthM).toBe(4);
-      expect(assets.source(handle).unwrap()?.publication).toMatchObject({
-        sourceRevision: '3',
-        generation: accepted.produced.publication.generation,
-        digest: accepted.produced.publication.digest,
-      });
-    } finally {
-      assets.dispose();
-    }
+      },
+      [materialGuid, zoneGuid, waveGuid],
+    );
+    usePublication(accepted);
+    (await assets.reconcileCatalog()).unwrap();
+    (await assets.reload(handle, { conflict: 'overwrite' })).unwrap();
+    const reloaded = assets.read(handle).unwrap() as Extract<Asset, { kind: 'water-body' }>;
+    expect(reloaded.spline.points[0]?.widthM).toBe(4);
+    expect(assets.source(handle).unwrap()?.publication).toMatchObject({
+      sourceRevision: '3',
+      generation: accepted.produced.publication.generation,
+      digest: accepted.produced.publication.digest,
+    });
   });
 
   it('instantiates Scene body and Zone bindings through typed ECS components', async () => {

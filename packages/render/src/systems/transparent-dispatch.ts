@@ -3,6 +3,7 @@ import type { FrameCacheCounters } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type { DispatchEntry, DispatchList, MaterialSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform, type ScenePoseStorage } from '../scene/captured-transform';
 import { SortedPhase, type SortedPhaseWork } from './sorted-phase';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
@@ -36,28 +37,30 @@ export interface TransparentSortOptions {
  * (back-to-front); layer modes return the configured layer-local value.
  */
 export function transparentSortValue(
-  w: Float32Array | undefined,
+  pose: ScenePoseStorage | undefined,
   material: MaterialSnapshot | undefined,
   mode: number,
   yzAlpha: number,
   camera: CameraSnapshot | undefined,
 ): number {
+  const w = pose === undefined ? undefined : CapturedSceneTransform.column(pose);
+  const offset = pose === undefined ? 0 : CapturedSceneTransform.offset(pose);
   if (mode === TRANSPARENT_SORT_MODE_DISTANCE) {
     if (w === undefined || camera === undefined) return 0;
     const camPos = camera.position;
-    const dx = (w[12] ?? 0) - (camPos[0] ?? 0);
-    const dy = (w[13] ?? 0) - (camPos[1] ?? 0);
-    const dz = (w[14] ?? 0) - (camPos[2] ?? 0);
+    const dx = (w[offset + 12] ?? 0) - (camPos[0] ?? 0);
+    const dy = (w[offset + 13] ?? 0) - (camPos[1] ?? 0);
+    const dz = (w[offset + 14] ?? 0) - (camPos[2] ?? 0);
     return -(dx * dx + dy * dy + dz * dz);
   }
-  const posY = w?.[13] ?? 0;
-  const posZ = w?.[14] ?? 0;
+  const posY = w?.[offset + 13] ?? 0;
+  const posZ = w?.[offset + 14] ?? 0;
   if (mode === TRANSPARENT_SORT_MODE_LAYER_Z) return posZ;
   const pivotAndSize = material?.paramSnapshot?.pivotAndSize as readonly number[] | undefined;
   const pivotY = pivotAndSize?.[1] ?? 0.5;
-  const wy4 = w?.[4] ?? 0;
-  const wy5 = w?.[5] ?? 1;
-  const wy6 = w?.[6] ?? 0;
+  const wy4 = w?.[offset + 4] ?? 0;
+  const wy5 = w?.[offset + 5] ?? 1;
+  const wy6 = w?.[offset + 6] ?? 0;
   const sizeY = Math.sqrt(wy4 * wy4 + wy5 * wy5 + wy6 * wy6);
   const footY = posY - pivotY * sizeY;
   if (mode === TRANSPARENT_SORT_MODE_LAYER_Y) return -footY;
@@ -78,6 +81,9 @@ export interface TransparentSortWork extends SortedPhaseWork {
   /** Sort values evaluated (unchanged immutable sources are not). */
   evaluated: number;
 }
+
+const EMPTY_IDS = new Int32Array(0);
+const EMPTY_VALUES = new Float64Array(0);
 
 function growInt32(array: Int32Array<ArrayBuffer>, length: number): Int32Array<ArrayBuffer> {
   if (array.length >= length) return array;
@@ -109,25 +115,25 @@ function growFloat64(array: Float64Array<ArrayBuffer>, length: number): Float64A
  * record caches on their reuse path.
  */
 export class TransparentSortCache {
-  private phase = new SortedPhase('layered');
-  private poses: (Float32Array | undefined)[] = [];
+  private readonly phase = new SortedPhase('layered');
+  private poses: (ScenePoseStorage | undefined)[] = [];
   private pivots: (MaterialSnapshot | undefined)[] = [];
   /** This frame's slot facts, read once from each source; overwritten next frame. */
-  private readonly slotPoses: (Float32Array | undefined)[] = [];
+  private readonly slotPoses: (ScenePoseStorage | undefined)[] = [];
   private readonly slotPivots: (MaterialSnapshot | undefined)[] = [];
-  private seen = new Int32Array(0);
+  private seen = EMPTY_IDS;
   private epoch = 0;
-  private slotPositions = new Int32Array(0);
-  private slotIds = new Int32Array(0);
-  private slotKeys = new Float64Array(0);
-  private slotValues = new Float64Array(0);
-  private slotTies = new Float64Array(0);
-  private changedSlots = new Int32Array(0);
-  private prevKeys = new Float64Array(0);
-  private prevIds = new Int32Array(0);
+  private slotPositions = EMPTY_IDS;
+  private slotIds = EMPTY_IDS;
+  private slotKeys = EMPTY_VALUES;
+  private slotValues = EMPTY_VALUES;
+  private slotTies = EMPTY_VALUES;
+  private changedSlots = EMPTY_IDS;
+  private prevKeys = EMPTY_VALUES;
+  private prevIds = EMPTY_IDS;
   private prevCount = 0;
   /** Slot index of each id in the previous frame. */
-  private prevPosition = new Int32Array(0);
+  private prevPosition = EMPTY_IDS;
   private mode = -1;
   private yzAlpha = Number.NaN;
   private readonly eye = new Float64Array([Number.NaN, Number.NaN, Number.NaN]);
@@ -158,14 +164,18 @@ export class TransparentSortCache {
   ): DispatchList {
     const cfg = world.transparentSort;
     const mode = cfg.mode;
+    const camera = cameras[0];
+    if (mode === TRANSPARENT_SORT_MODE_DISTANCE && camera === undefined) {
+      this.retireUnusedRows(0);
+      return dispatch;
+    }
     // Native arrays index directly; a retained FrameList is read once.
     const entries: readonly DispatchEntry[] = Array.isArray(dispatch)
       ? (dispatch as readonly DispatchEntry[])
       : dispatch.slice();
     const n = this.select(entries, options.sortAll === true);
+    this.retireUnusedRows(n);
     if (n <= 1) return dispatch;
-    const camera = cameras[0];
-    if (mode === TRANSPARENT_SORT_MODE_DISTANCE && camera === undefined) return dispatch;
     const valuesDirty = this.configure(mode, cfg.yzAlpha, camera);
     const scanned = this.scan(
       entries,
@@ -199,8 +209,8 @@ export class TransparentSortCache {
 
   /** Dispatch positions of the sorted slots; returns their count. */
   private select(dispatch: readonly DispatchEntry[], sortAll: boolean): number {
-    this.slotPositions = growInt32(this.slotPositions, dispatch.length);
-    const slotPositions = this.slotPositions;
+    let positions = this.slotPositions;
+    let first = 0;
     let n = 0;
     for (let i = 0; i < dispatch.length; i++) {
       const entry = dispatch[i];
@@ -208,9 +218,18 @@ export class TransparentSortCache {
         sortAll ||
         entry?.queue === RenderQueue.Transparent ||
         entry?.renderState?.blend !== undefined
-      )
-        slotPositions[n++] = i;
+      ) {
+        if (n === 0) first = i;
+        else {
+          if (n >= positions.length)
+            positions = growInt32(positions, sortAll ? dispatch.length : n + 1);
+          if (n === 1) positions[0] = first;
+          positions[n] = i;
+        }
+        n++;
+      }
     }
+    this.slotPositions = positions;
     return n;
   }
 
@@ -283,7 +302,8 @@ export class TransparentSortCache {
       const row = entityKey >= 0 && entityKey < 4294967296 ? entityKey : -1 - entry.renderableIndex;
       ordinal = row === previousRow ? ordinal + 1 : 0;
       previousRow = row;
-      const pose = source?.transform.world;
+      const pose =
+        source === undefined ? undefined : CapturedSceneTransform.storage(source.transform);
       const pivot = readsPivot ? source?.material : undefined;
       slotPoses[k] = pose;
       slotPivots[k] = pivot;
@@ -472,7 +492,7 @@ export class TransparentSortCache {
         const source = renderables.at(
           (dispatch[this.slotPositions[k] as number] as DispatchEntry).renderableIndex,
         );
-        pose = source?.transform.world;
+        pose = source === undefined ? undefined : CapturedSceneTransform.storage(source.transform);
         pivot = readsPivot ? source?.material : undefined;
       }
       values[k] = transparentSortValue(pose, pivot, mode, yzAlpha, camera);
@@ -483,12 +503,36 @@ export class TransparentSortCache {
     return freshOrder(dispatch, this.slotPositions, n, values, mode);
   }
 
+  /** Keep numeric scratch proportional to active sort work and release departed frame owners. */
+  private retireUnusedRows(n: number): void {
+    // Geometric hysteresis bounds retained slack without reallocating for small count changes.
+    const contracted =
+      Math.max(this.slotIds.length, this.slotPositions.length, this.seen.length) >
+      Math.max(256, n * 8);
+    if (contracted || (n <= 1 && (this.prevCount !== 0 || this.slotPoses.length !== 0)))
+      this.reset();
+    if (contracted) {
+      this.slotPositions = n > 1 ? this.slotPositions.slice(0, n) : EMPTY_IDS;
+      this.slotIds = EMPTY_IDS;
+      this.changedSlots = EMPTY_IDS;
+      this.prevIds = EMPTY_IDS;
+      this.seen = EMPTY_IDS;
+      this.prevPosition = EMPTY_IDS;
+      this.slotKeys = EMPTY_VALUES;
+      this.slotValues = EMPTY_VALUES;
+      this.slotTies = EMPTY_VALUES;
+      this.prevKeys = EMPTY_VALUES;
+    }
+    if (this.slotPoses.length > n) this.slotPoses.length = n;
+    if (this.slotPivots.length > n) this.slotPivots.length = n;
+  }
+
   private reset(): void {
-    this.phase = new SortedPhase(this.phase.order);
-    this.poses = [];
-    this.pivots = [];
-    this.seen = new Int32Array(0);
-    this.prevPosition = new Int32Array(0);
+    this.phase.clear();
+    this.poses.length = 0;
+    this.pivots.length = 0;
+    this.slotPoses.length = 0;
+    this.slotPivots.length = 0;
     this.prevCount = 0;
     this.source = undefined;
     this.value = undefined;

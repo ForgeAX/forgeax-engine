@@ -6,11 +6,11 @@ import {
   ATMOSPHERE_SKY_FACES,
   AtmosphereLutPass,
   AtmosphereRasterLutPass,
-  atmosphereIrradiancePass,
   atmospherePrefilterCopyPass,
   atmospherePrefilterPass,
   atmosphereSkyCubePass,
   SkyPass,
+  SkyShPass,
 } from './sky-pass-names';
 
 export type SkyGpuPassTimingGroup =
@@ -42,10 +42,8 @@ const atmosphereAndFogPasses: ReadonlySet<string> = new Set([
   SkyPass.volumeIntegrate,
   SkyPass.volumeTemporal,
   SkyPass.volumeComposite,
-  ...Array.from({ length: ATMOSPHERE_SKY_FACES }, (_, face) => [
-    atmosphereSkyCubePass(face),
-    atmosphereIrradiancePass(face),
-  ]).flat(),
+  ...Object.values(SkyShPass),
+  ...Array.from({ length: ATMOSPHERE_SKY_FACES }, (_, face) => atmosphereSkyCubePass(face)),
   ...Array.from({ length: pmremLevelCount(ATMOSPHERE_PREFILTER_SIZE) }, (_, level) => [
     atmospherePrefilterPass(level),
     atmospherePrefilterCopyPass(level),

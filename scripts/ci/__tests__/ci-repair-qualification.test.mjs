@@ -416,6 +416,26 @@ test('a stronger validation scope requires its original completed execution step
   assert.equal((await qualify()).reused, true);
 });
 
+test('primary-pnpm reuse requires all three moved declaration checks', async () => {
+  const f = fixture();
+  f.input.jobKey = 'primary-pnpm';
+  f.input.checkName = 'primary-pnpm';
+  f.job.name = 'primary-pnpm';
+  const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  const checks = workflow.jobs['primary-pnpm'].steps
+    .filter((step) => step.run?.includes('node node_modules/typescript/bin/tsc -b'))
+    .map(({ name }) => ({ name, status: 'completed', conclusion: 'success' }));
+  assert.equal(checks.length, 3);
+
+  for (const omitted of checks) {
+    f.job.steps = checks.filter((step) => step !== omitted);
+    const result = await ciRepairQualification(f.input, f.api);
+    assert.equal(result.reason, 'required-execution-step-unqualified', omitted.name);
+  }
+  f.job.steps = checks;
+  assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
+});
+
 test('changed check membership can require fresh execution while retaining other successes', async () => {
   const fresh = fixture();
   fresh.pr.body += '\nCI-Repair-Rerun: vitest-browser-shard-3, vitest-dawn-4-of-4';
@@ -954,7 +974,12 @@ test('SDK repair reuses each successful consumer even when a peer or aggregate f
   );
 });
 
-const metricProducers = ['webkit-fallback', 'metrics-validate-browser', 'metrics-validate-runtime'];
+const metricProducers = ['metrics-validate-browser', 'metrics-validate-runtime'];
+const fallbackStep = {
+  name: 'Chromium fallback color-lighting parity sentinel matrix (Xvfb headed)',
+  status: 'completed',
+  conclusion: 'success',
+};
 function metricsFixture() {
   const f = fixture();
   f.run.run_attempt = 1;
@@ -966,14 +991,11 @@ function metricsFixture() {
       id: 30 + index,
       name,
       run_attempt: 1,
+      steps: name === 'metrics-validate-browser' ? [fallbackStep] : [],
     })),
   );
-  f.input.jobKey = f.input.checkName = 'webkit-fallback';
-  const names = [
-    'chromium-fallback-color-lighting-status',
-    'metrics-validate-browser-evidence-a1',
-    'metrics-report',
-  ];
+  f.input.jobKey = f.input.checkName = 'metrics-validate-browser';
+  const names = ['metrics-validate-browser-evidence-a1', 'metrics-report'];
   const artifacts = names.map((name, index) => ({
     id: 50 + index,
     name,
@@ -1002,7 +1024,7 @@ test('metrics reuse preserves one complete original artifact cohort without rela
     assert.deepEqual(Object.keys(result.sourceArtifactSuite), metricProducers);
     assert.deepEqual(
       Object.values(result.sourceArtifactSuite).map((row) => row.id),
-      [50, 51, 52],
+      [50, 51],
     );
   }
 });
@@ -1039,7 +1061,7 @@ test('metrics reuse rejects expired, missing, duplicate or foreign artifact evid
     'attempt',
   ]) {
     const f = metricsFixture();
-    const artifact = f.artifacts[1];
+    const artifact = f.artifacts[0];
     if (invalid === 'expired') artifact.expired = true;
     if (invalid === 'missing') artifact.name = 'different';
     if (invalid === 'duplicate') f.artifacts.push({ ...artifact, id: 88 });
@@ -1047,7 +1069,7 @@ test('metrics reuse rejects expired, missing, duplicate or foreign artifact evid
     if (invalid === 'foreign-sha') artifact.workflow_run.head_sha = newSha;
     if (invalid === 'digest') artifact.digest = '';
     if (invalid === 'empty') artifact.size_in_bytes = 0;
-    if (invalid === 'attempt') f.jobs[1].run_attempt = 2;
+    if (invalid === 'attempt') f.jobs[0].run_attempt = 2;
     assert.equal((await ciRepairQualification(f.input, f.api)).reused, false, invalid);
   }
 });
@@ -1080,6 +1102,15 @@ test('fresh current metrics providers keep downstream consumers in the fresh coh
   }
 });
 
+test('older Metrics evidence cannot qualify the newly owned Chromium pixels', async () => {
+  const f = metricsFixture();
+  f.jobs[0].steps = [];
+  for (const name of metricProducers) {
+    f.input.jobKey = f.input.checkName = name;
+    assert.equal((await ciRepairQualification(f.input, f.api)).reused, false);
+  }
+});
+
 test('the combined Bevy projection always observes its current workers instead of reusing an old projection', async () => {
   const f = fixture();
   f.input.jobKey = 'bevy-smoke-fleet';
@@ -1092,21 +1123,49 @@ test('the combined Bevy projection always observes its current workers instead o
   assert.ok(repairReusableJobs['ci.yml'].includes('smoke-fleet'));
 });
 
+test('the expanded fallback job reuses only completed MSAA and reconnect acceptance', async () => {
+  const names = [
+    'MSAA paired P2 proof (real OFF/ON captures)',
+    'Multiplayer snake browser E2E (M16 reconnect/resync)',
+  ];
+  const f = fixture();
+  f.job.name = f.input.jobKey = f.input.checkName = 'webkit-fallback';
+  f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+  assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
+  f.job.steps.pop();
+  const result = await ciRepairQualification(f.input, f.api);
+  assert.equal(result.reused, false);
+  assert.equal(result.reason, 'required-execution-step-unqualified');
+});
+
 test('a moved Runtime Pack owner requires its complete original View execution', async () => {
   const names = [
     'Prepare verified paired consumer inputs',
     'Runtime Pack Worker dev/build JS/TS browser gate',
   ];
   for (const shard of [0, 2, 3]) {
-    for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {
+    for (const state of [
+      'complete',
+      'missing',
+      'skipped',
+      'failed',
+      'duplicate',
+      ...(shard === 3 ? [] : ['old-roster']),
+    ]) {
       const f = fixture();
       f.job.name = `view-integration-${shard}`;
       Object.assign(f.input, { jobKey: 'view-integration-shards', checkName: f.job.name });
       f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+      if (shard !== 3 && state !== 'old-roster')
+        f.job.steps.unshift({
+          name: 'Verify paired candidate and resource-preview roster',
+          status: 'completed',
+          conclusion: 'success',
+        });
       if (state === 'missing') f.job.steps.pop();
-      if (state === 'skipped') f.job.steps[1].conclusion = 'skipped';
-      if (state === 'failed') f.job.steps[1].conclusion = 'failure';
-      if (state === 'duplicate') f.job.steps.push(f.job.steps[1]);
+      if (state === 'skipped') f.job.steps.at(-1).conclusion = 'skipped';
+      if (state === 'failed') f.job.steps.at(-1).conclusion = 'failure';
+      if (state === 'duplicate') f.job.steps.push(f.job.steps.at(-1));
       const result = await ciRepairQualification(f.input, f.api);
       assert.equal(result.reused, state === 'complete', state);
       if (state !== 'complete') assert.equal(result.reason, 'required-execution-step-unqualified');
@@ -1188,10 +1247,7 @@ test('all integrated consumers preserve checkout, explicit provenance and step g
     '${{ inputs.target-sha }}',
   );
   const ci = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
-  for (const [name, provider] of [
-    ['metrics-validate-browser', 'webkit-fallback'],
-    ['metrics-validate-runtime', 'metrics-validate-browser'],
-  ]) {
+  for (const [name, provider] of [['metrics-validate-runtime', 'metrics-validate-browser']]) {
     const qualifier = ci.jobs[name].steps.find((step) => step.id === 'ci-repair');
     assert.equal(
       qualifier.with['artifact-suite-provider-reused'],

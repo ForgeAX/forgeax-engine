@@ -23,7 +23,6 @@ import { createPreparedResolver } from '../features/prepared-resolver';
 import { featureUsesSurfaceData } from '../features/surface-data-usage';
 import { renderFeatureViewIdentity } from '../features/view';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
-import type { MaterialResource } from '../material-resource';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from '../publication/resource-scope';
 import { leanLightingFrame } from '../record/directional-shadow-simple';
@@ -32,12 +31,7 @@ import { resolveMaterialSkylight } from '../record/main-pass-material';
 import type { PipelineState } from '../record/render-context';
 import { cloudShadowProjectionFor } from '../record/view-topology';
 import type { CameraSnapshot } from '../render-contract';
-import type {
-  DispatchEntry,
-  ExtractedFrame,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { featureCameraSelection } from '../render-system-projections';
 import {
   resolveFeatureTargets,
@@ -45,6 +39,7 @@ import {
 } from '../render-system-record-attempt';
 import type { FrameList } from '../scene/frame-list';
 import {
+  capturedDispatchAddresses,
   type DispatchList,
   dispatchPassWork,
   isCapturedDispatch,
@@ -60,13 +55,15 @@ import {
 import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import type { StandardSceneSurfaceAdmission } from '../temporal/scene-data';
 import {
+  CurrentSceneSurfaceInput,
   createStandardSceneSurfaceAdmission,
-  ProducedStandardSceneDataAdmissionInput,
+  missingStandardSurfaceProducer,
   type StandardSceneDataAdmissionInput,
   type StandardSceneDataContributor,
+  selectSceneDataDispatchPass,
   standardSceneDataContributorForDispatch,
   standardSceneDataContributorFromColumns,
-  standardSceneSurfaceContributorBaseline,
+  standardSurfaceProducerPath,
 } from '../temporal/standard-scene-data-admission';
 import { captureWaterFluidFoamMaterials } from '../water/fluid-foam';
 import {
@@ -177,65 +174,18 @@ type SceneDataRows = NonNullable<ReturnType<typeof sceneSurfaceRowsOf>>;
 
 /** Whether the stock view or any feature may consume Standard surface schemas. */
 export function needsSceneSurfaceAdmission(
-  profile: Pick<StandardProfile, 'renderPath' | 'ambientOcclusion'> | undefined,
+  renderPath: StandardProfile['renderPath'] | undefined,
   standardPipeline: boolean,
-  installedSsao: boolean | undefined,
   host: Pick<RenderFeatureHost, 'features'> | undefined,
   conformanceTrace = false,
 ): boolean {
   return (
     !standardPipeline ||
-    profile?.renderPath !== 'forward' ||
-    profile.ambientOcclusion.enabled ||
-    installedSsao === true ||
+    renderPath !== 'forward' ||
     conformanceTrace ||
     host === undefined ||
     host.features.some(featureUsesSurfaceData)
   );
-}
-
-/**
- * Everything one complete contributor walk read. A later frame whose inputs
- * are these exact values derives the same admission, so it keeps the walk's
- * admission instead of judging every dispatched row again.
- */
-interface SceneDataWalk {
-  readonly header: SceneDataHeader;
-  readonly lane: 'forward' | 'deferred';
-  readonly dispatch: DispatchList;
-  readonly rows: SceneDataRows;
-  /** Each material a walked row carried, with the live snapshot it answered with. */
-  readonly materials: readonly MaterialResource[];
-  readonly snapshots: readonly MaterialSnapshot[];
-}
-
-const sceneDataWalks = new WeakMap<StandardSceneSurfaceAdmission, SceneDataWalk>();
-
-function repeatsSceneDataWalk(
-  walk: SceneDataWalk,
-  header: SceneDataHeader,
-  lane: 'forward' | 'deferred',
-  dispatch: DispatchList,
-  rows: SceneDataRows,
-): boolean {
-  const before = walk.header;
-  if (
-    walk.dispatch !== dispatch ||
-    walk.lane !== lane ||
-    before.viewIdentity !== header.viewIdentity ||
-    before.generation !== header.generation ||
-    before.deviceGeneration !== header.deviceGeneration ||
-    before.standardPipeline !== header.standardPipeline ||
-    before.cameraAvailable !== header.cameraAvailable ||
-    before.lane !== header.lane ||
-    before.renderPath !== header.renderPath ||
-    (walk.rows !== rows && !walk.rows.readsSameContent(rows))
-  )
-    return false;
-  const { materials, snapshots } = walk;
-  for (let index = 0; index < materials.length; index++)
-    if ((materials[index] as MaterialResource).snapshot !== snapshots[index]) return false;
-  return true;
 }
 
 /** The staged view facts a Feature frame input derives from. */
@@ -249,28 +199,21 @@ function prepareFeatureFrameInput(
   view: FeatureInputView,
 ): ViewFeatureFrameInput {
   const { internals, frameState } = owner;
-  const pipelineState = recordContext(internals).getPipelineState();
   const { frame } = view;
   const topology = viewTopologyOf(world, entity);
   const cloudLayer = topology?.kind === 'planned' ? topology.topology.cloudLayer : undefined;
   const camera = view.cameras[0];
   const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
   const context = recordContext(internals);
+  const pipelineState = context.getPipelineState();
   if (
     needsSceneSurfaceAdmission(
-      profile,
+      profile?.renderPath,
       frameState.activePipeline === context.standardPipeline,
-      frameState.installedPipelineConfig?.ambientOcclusion?.enabled,
       context.featureHost,
       context.featureGraphConformanceTrace !== undefined,
     )
   ) {
-    const projection = owner.scene.projectVisibility(
-      view.source,
-      frame.renderables,
-      frame.dispatch,
-      frame.gpuOwned?.slots,
-    );
     const header: SceneDataHeader = {
       viewIdentity: featureViewIdentity(view.mode, camera),
       generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
@@ -289,22 +232,15 @@ function prepareFeatureFrameInput(
           : undefined,
     };
     const lane = profile?.renderPath === 'deferred' ? 'deferred' : 'forward';
-    const rows = sceneSurfaceRowsOf(projection.renderables, projection.renderables.at);
-    const admitted = frameState.standardSceneSurfaceAdmission;
-    const walk = admitted === undefined ? undefined : sceneDataWalks.get(admitted);
-    if (
-      walk === undefined ||
-      rows === undefined ||
-      !repeatsSceneDataWalk(walk, header, lane, projection.dispatch, rows)
-    )
-      frameState.standardSceneSurfaceAdmission = walkSceneDataContributors(
-        header,
-        lane,
-        projection.renderables,
-        projection.dispatch,
-        rows,
-        admitted,
-      );
+    const rows = sceneSurfaceRowsOf(frame.renderables, frame.renderables.at);
+    frameState.standardSceneSurfaceAdmission = walkSceneDataContributors(
+      header,
+      lane,
+      frame.renderables,
+      frame.dispatch,
+      rows,
+      frameState.standardSceneSurfaceAdmission,
+    );
   } else {
     // Never expose a proof from a prior consuming frame after demand disappears.
     frameState.standardSceneSurfaceAdmission = undefined;
@@ -361,7 +297,7 @@ function prepareFeatureFrameInput(
   };
 }
 
-/** Judge every dispatched row; a walk over captured roots is remembered with what it read. */
+/** Evaluate surface coverage in current dispatch order, sharing material facts across pass members. */
 export function walkSceneDataContributors(
   header: SceneDataHeader,
   lane: 'forward' | 'deferred',
@@ -370,57 +306,49 @@ export function walkSceneDataContributors(
   rows: SceneDataRows | undefined,
   previous: StandardSceneSurfaceAdmission | undefined,
 ): StandardSceneSurfaceAdmission {
-  const admission = new ProducedStandardSceneDataAdmissionInput();
-  const contributors = admission.contributors;
-  admission.capture(header);
-  const previousContributors = standardSceneSurfaceContributorBaseline(previous);
+  if (standardSurfaceProducerPath(header) === undefined)
+    return missingStandardSurfaceProducer(header);
+  const admission = new CurrentSceneSurfaceInput(header, previous);
   if (rows === undefined) {
     dispatch.forEach((entry) => {
       const contributor = standardSceneDataContributorAt(
         renderables,
         entry,
         lane,
-        previousContributors?.[contributors.length],
+        admission.previousRow,
       );
-      if (contributor !== undefined) contributors.push(contributor);
+      admission.append(contributor);
     });
     return createStandardSceneSurfaceAdmission(admission, previous);
   }
-  const materials: MaterialResource[] = [];
-  const snapshots: MaterialSnapshot[] = [];
-  const seen = new Set<unknown>();
-  const observe = (material: MaterialResource): void => {
-    if (seen.has(material)) return;
-    seen.add(material);
-    materials.push(material);
-    snapshots.push(material.snapshot);
-  };
+  let group: ReturnType<typeof selectSceneDataDispatchPass> | undefined;
   let entry: Parameters<typeof standardSceneDataContributorFromColumns>[3] | undefined;
   const judge = (
     entityKey: number,
     content: Parameters<typeof standardSceneDataContributorFromColumns>[0],
     carried: Parameters<typeof standardSceneDataContributorFromColumns>[1],
-  ): StandardSceneDataContributor | undefined => {
-    if (carried !== undefined && !seen.has(carried)) {
-      seen.add(carried);
-      for (const material of carried.materials) observe(material);
-      observe(carried.material);
-    }
-    return standardSceneDataContributorFromColumns(
+  ): void => {
+    const contributor = standardSceneDataContributorFromColumns(
       content,
       carried,
       entityKey,
       entry as Parameters<typeof standardSceneDataContributorFromColumns>[3],
       lane,
-      previousContributors?.[contributors.length],
+      admission.previousRow,
+      group,
     );
+    admission.append(contributor);
   };
+  const walk = rows.surfaceWalk(judge);
   const consume = (value: DispatchEntry) => {
     entry = value;
-    const contributor = rows.read(value.renderableIndex, judge);
-    if (contributor !== undefined) contributors.push(contributor);
+    walk.readRank(value.renderableIndex);
   };
   const shared = isCapturedDispatch(dispatch) ? dispatchPassWork(dispatch) : undefined;
+  const sharedAddresses =
+    shared !== undefined &&
+    walk.roster !== undefined &&
+    capturedDispatchAddresses(dispatch, walk.roster);
   if (shared === undefined) dispatch.forEach(consume);
   else
     for (const work of shared.work) {
@@ -432,18 +360,13 @@ export function walkSceneDataContributors(
         !(lane === 'deferred' && matchPass(work.pass.tags, DEFERRED_PASS_SELECTOR))
       )
         continue;
-      if (shared.source === rows.source && work.slots !== undefined) {
+      group = selectSceneDataDispatchPass(work.resource, work.pass, lane);
+      if (sharedAddresses && work.visitSlots !== undefined) {
         entry = work.pass;
-        for (const slot of work.slots()) {
-          const contributor = rows.readSlot(slot, judge);
-          if (contributor !== undefined) contributors.push(contributor);
-        }
+        work.visitSlots(walk.readSlot);
       } else for (const value of work.entries()) consume(value);
     }
-  const admitted = createStandardSceneSurfaceAdmission(admission, previous);
-  if (isCapturedDispatch(dispatch))
-    sceneDataWalks.set(admitted, { header, lane, dispatch, rows, materials, snapshots });
-  return admitted;
+  return createStandardSceneSurfaceAdmission(admission, previous);
 }
 
 /** Read the selected Scene row for the same contributor judgement used by Feature preparation. */
@@ -456,17 +379,22 @@ export function standardSceneDataContributorAt(
   const at = renderables.at;
   const index = dispatch.renderableIndex;
   const columns = sceneSurfaceRowsOf(renderables, at);
-  if (columns !== undefined)
-    return columns.read(index, (entityKey, content, materials) =>
-      standardSceneDataContributorFromColumns(
-        content,
-        materials,
-        entityKey,
-        dispatch,
-        lane,
-        previous,
-      ),
-    );
+  if (columns !== undefined) {
+    let contributor: StandardSceneDataContributor | undefined;
+    columns
+      .surfaceWalk((entityKey, content, materials) => {
+        contributor = standardSceneDataContributorFromColumns(
+          content,
+          materials,
+          entityKey,
+          dispatch,
+          lane,
+          previous,
+        );
+      })
+      .readRank(index);
+    return contributor;
+  }
   return standardSceneDataContributorForDispatch(
     Reflect.apply(at, renderables, [index]),
     dispatch,
@@ -564,6 +492,9 @@ function featureFrameInput(
     },
     world: view.world,
     ...(sourceFeatures === undefined ? {} : { sourceFeatures }),
+    ...(source?.resolveMaterialTemplate === undefined
+      ? {}
+      : { resolveMaterialTemplate: source.resolveMaterialTemplate }),
     resolveAsset: (handle, revision) => {
       return source === undefined
         ? err(new Error('Missing feature asset source'))

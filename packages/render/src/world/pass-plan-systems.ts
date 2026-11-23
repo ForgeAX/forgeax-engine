@@ -55,6 +55,8 @@ export interface PassPlanInput {
    */
   readonly dispatch: DispatchList;
   readonly materialSceneDepth?: true;
+  readonly forwardColorWritesDepth?: true;
+  readonly forwardShadowCoverage?: true;
   /** Whether this view staged `dispatch` for `render-phase-sort` this attempt. */
   readonly phaseSorted: boolean;
   /** The view's accepted material frame. */
@@ -99,10 +101,14 @@ export interface OpaquePassPlan {
 
 /** The pass families graph compile reads for one view. */
 export interface ViewPassPlan {
+  /** Camera policy before the current GPU roster refines actual late execution. */
+  readonly requestedLateOcclusion?: boolean;
   /** The accepted material frame has opaque draws that opt out of analytic fog. */
   readonly unfoggedOpaque: boolean;
   /** A visible material samples the renderer-owned scene depth. */
   readonly materialSceneDepth?: true;
+  readonly forwardColorWritesDepth?: true;
+  readonly forwardShadowCoverage?: true;
   readonly transparent: TransparencyViewResolution;
   readonly transmission: TransmissionPassPlan;
   /** Undefined only for an unplanned recording, which plans with {@link planOpaque}. */
@@ -177,6 +183,7 @@ export function passPlanMissingMessage(missing: PassPlanMissing): string {
 
 /** One view's staged pass-plan input and the families planned from it. */
 export class ViewPassPlanQueue {
+  requestedLateOcclusion: boolean | undefined;
   staged: PassPlanInput | undefined;
   transparent: TransparencyViewResolution | undefined;
   transmission: TransmissionPassPlan | undefined;
@@ -188,6 +195,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
   }
 
   /**
@@ -204,8 +212,13 @@ export class ViewPassPlanQueue {
       transparent,
       transmission,
       opaque,
+      ...(this.requestedLateOcclusion === undefined
+        ? {}
+        : { requestedLateOcclusion: this.requestedLateOcclusion }),
       unfoggedOpaque: staged.materials.hasUnfoggedOpaque,
       ...(staged.materialSceneDepth === true ? { materialSceneDepth: true } : {}),
+      ...(staged.forwardColorWritesDepth === true ? { forwardColorWritesDepth: true } : {}),
+      ...(staged.forwardShadowCoverage === true ? { forwardShadowCoverage: true } : {}),
     });
   }
 
@@ -215,6 +228,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
   }
 
   /** Direct plan harness: read the plan and end the attempt. */
@@ -225,6 +239,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
     return read.value;
   }
 }
@@ -300,10 +315,12 @@ export function planSourcePasses(
     | 'materials'
     | 'renderPath'
     | 'gpuOcclusion'
+    | 'forwardShadowCoverage'
   >,
 ): ViewPassPlan {
   return {
     unfoggedOpaque: input.materials.hasUnfoggedOpaque,
+    ...(input.forwardShadowCoverage === true ? { forwardShadowCoverage: true } : {}),
     opaque: planOpaque({ ...input, clearOnly: false }),
     transparent: resolveTransparencyView({
       ...input,

@@ -8,9 +8,47 @@ import { moduleResolve } from 'import-meta-resolve';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import { normalizePath, type Plugin, type Rollup, searchForWorkspaceRoot } from 'vite';
-import { moduleSpecifierEdits } from './module-specifiers.js';
+import { literalMarkerSpans, moduleSpecifierEdits } from './module-specifiers.js';
 import { moduleUrlResources } from './module-url-resources.js';
 import { PACK_PROGRAM_ENGINE_IMPORTS, runtimeProgramIdentity } from './pack-program-imports.js';
+
+function emitRuntimeEntry(
+  context: Pick<Rollup.PluginContext, 'emitFile'>,
+  id: string,
+  name: string,
+) {
+  const reference = context.emitFile({ type: 'chunk', id, name, preserveSignature: 'strict' });
+  return `import.meta.ROLLUP_FILE_URL_${reference}`;
+}
+
+/** Link the URL-loaded bootstrap into the same content-addressed module graph as the page. */
+export function executionBootstrapEntry(generatedRoot: string): Plugin {
+  const host = normalizePath(resolve(generatedRoot, 'main.ts'));
+  const bootstrap = resolve(generatedRoot, 'execution-bootstrap.ts');
+  return {
+    name: 'forgeax:execution-bootstrap-entry',
+    apply: 'build',
+    enforce: 'pre',
+    transform(code, id) {
+      if (normalizePath(id.split('?')[0] ?? id) !== host) return null;
+      const pattern =
+        /new URL\(\s*(['"])\.\/execution-bootstrap\.ts\1\s*,\s*import\.meta\.url\s*,?\s*\)/g;
+      const matches = [...code.matchAll(pattern)];
+      if (matches.length === 0) return null;
+      const reference = emitRuntimeEntry(this, bootstrap, 'execution-bootstrap');
+      const output = new MagicString(code);
+      for (const match of matches) {
+        if (match.index === undefined) continue;
+        output.overwrite(
+          match.index,
+          match.index + match[0].length,
+          `new URL(${reference}, import.meta.url)`,
+        );
+      }
+      return { code: output.toString(), map: output.generateMap({ hires: true }) };
+    },
+  };
+}
 
 const require = createRequire(import.meta.url);
 async function canonicalModuleId(id: string): Promise<string> {
@@ -91,6 +129,7 @@ export function executionWorkerEntries(
   delivery: 'browser' | 'native' = 'browser',
   hostRoot?: string,
   workers: ExecutionWorkersOptions = {},
+  expectedRuntimeIdentity?: string,
 ): Plugin {
   let building = false;
   let base = '/';
@@ -104,8 +143,13 @@ export function executionWorkerEntries(
   ): Promise<string> => {
     if (!engineManifest || engineManifest.external)
       throw new Error('Engine manifest unavailable from the Vite host');
-    runtimeIdentity = await runtimeProgramIdentity(engineManifest.id);
-    return runtimeIdentity;
+    const selected = await runtimeProgramIdentity(engineManifest.id);
+    if (expectedRuntimeIdentity !== undefined && expectedRuntimeIdentity !== selected)
+      throw new Error(
+        'The Engine changed after Runtime Pack preparation. Finish building the Engine, then retry the project build.',
+      );
+    runtimeIdentity = selected;
+    return selected;
   };
   const externalPrefix = 'forgeax-host-import:';
   const hostPrefix = hostRoot === undefined ? undefined : `${normalizePath(resolve(hostRoot))}/`;
@@ -329,20 +373,7 @@ export function loadImport(specifier) {
             const path = posix.relative(posix.dirname(chunk.fileName), this.getFileName(reference));
             return `${JSON.stringify(specifier)}: { identity: ${JSON.stringify(runtimeIdentity)}, url: new URL(${JSON.stringify(path.startsWith('./') || path.startsWith('../') ? path : `./${path}`)}, import.meta.url).href }`;
           });
-        const file = ts.createSourceFile(
-          chunk.fileName,
-          code,
-          ts.ScriptTarget.Latest,
-          true,
-          ts.ScriptKind.JS,
-        );
-        const edits: { start: number; end: number }[] = [];
-        const visit = (node: ts.Node) => {
-          if (ts.isStringLiteralLike(node) && node.text === importTableMarker)
-            edits.push({ start: node.getStart(file), end: node.end });
-          ts.forEachChild(node, visit);
-        };
-        visit(file);
+        const edits = literalMarkerSpans(code, chunk.fileName, importTableMarker);
         for (const edit of edits) output.overwrite(edit.start, edit.end, `{ ${fields.join(',')} }`);
       }
       const edges = { imports: [] as string[], dynamicImports: [] as string[] };
@@ -538,17 +569,8 @@ export function loadImport(specifier) {
         }
         const resolved = await this.resolve(source, id, { skipSelf: true });
         if (resolved === null) this.error(`Cannot resolve execution Worker ${source} from ${id}`);
-        const reference = this.emitFile({
-          type: 'chunk',
-          id: resolved.id,
-          name: basename(source, '.mjs'),
-          preserveSignature: 'strict',
-        });
-        output.overwrite(
-          match.index,
-          match.index + match[0].length,
-          `new Worker(import.meta.ROLLUP_FILE_URL_${reference}`,
-        );
+        const reference = emitRuntimeEntry(this, resolved.id, basename(source, '.mjs'));
+        output.overwrite(match.index, match.index + match[0].length, `new Worker(${reference}`);
       }
       return { code: output.toString(), map: output.generateMap({ hires: true }) };
     },

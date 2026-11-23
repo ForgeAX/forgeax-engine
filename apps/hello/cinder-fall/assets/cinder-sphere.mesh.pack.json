@@ -1,9 +1,8 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "2cce5d80-5960-4e4e-82f7-feaf5608eb60",
+  "schemaVersion": "3.0.0",
+  "packageId": "8fb075fb-04d6-5b9c-80f0-943c4c265a13",
+  "assets": {
+    "mesh/cinder-sphere": {
       "kind": "mesh",
       "name": "cinder-sphere",
       "payload": {
@@ -6405,8 +6404,7 @@
           1
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

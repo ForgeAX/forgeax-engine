@@ -36,7 +36,7 @@ describe('direct medium geometry pipeline layout', () => {
   const state = {
     meshBindGroupLayout: mesh,
     hdrpMeshBindGroupLayout: cluster,
-    gpuDrivenClusterMeshBindGroupLayout: cluster,
+    gpuDrivenPrimitiveBindGroupLayout: { label: 'scene-primitive' } as never,
     pbrSkinMeshBindGroupLayout: null,
     hdrpSkinMeshBindGroupLayout: null,
     instancesBindGroupLayout: probe as never,
@@ -142,7 +142,6 @@ describe('direct medium geometry pipeline layout', () => {
     const layouts = resolveMaterialPipelineBindGroups(
       call?.[15] ?? (clustered ? 'hdrp-pbr' : 'pbr'),
       state,
-      clustered,
       program.probeBlendRecordRequired,
     );
     expect(layouts?.instancesLayout).toBe(directAddress ? direct : probe);
@@ -153,9 +152,7 @@ describe('direct medium geometry pipeline layout', () => {
   });
 
   it('keeps the ordinary probe and scene-index address contracts separate', () => {
-    expect(resolveMaterialPipelineBindGroups('pbr', state, false, true)?.instancesLayout).toBe(
-      probe,
-    );
+    expect(resolveMaterialPipelineBindGroups('pbr', state, true)?.instancesLayout).toBe(probe);
     expect(probe.entries.some((entry) => entry.binding === 6)).toBe(false);
     expect(resolveMaterialPipelineBindGroups('gpu-driven-pbr', state)?.instancesLayout).toBe(scene);
     expect(scene.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe(

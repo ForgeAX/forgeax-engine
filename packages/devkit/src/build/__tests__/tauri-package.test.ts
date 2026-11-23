@@ -54,6 +54,15 @@ it('embeds unchanged browser resources with one native close owner and no native
     expect(source).toContain('await globalThis.__forgeaxTauriDispose?.()');
     expect(source).toContain('observation?.execution?.frame?.completed');
     expect(source).toContain('api.prevent_close()');
+    expect(source).toContain('storage::storage_io');
+    const capability = JSON.parse(
+      await readFile(resolve(root, 'src-tauri/capabilities/main.json'), 'utf8'),
+    );
+    expect(capability.windows).toEqual(['main']);
+    expect(capability.permissions).toContain('allow-storage-io');
+    const storage = await readFile(resolve(root, 'src-tauri/src/storage.rs'), 'utf8');
+    expect(storage).toContain('paths.app_local_data_dir()');
+    expect(storage).toContain('request_bytes(request.body())?');
     const server = await readFile(resolve(root, 'src-tauri/src/asset_server.rs'), 'utf8');
     expect(server).toContain('TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))');
     expect(server).toContain('assets.get_for_scheme(path, false)');

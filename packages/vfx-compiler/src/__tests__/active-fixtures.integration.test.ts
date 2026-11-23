@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import type { MaterialParticleInput } from '@forgeax/engine-types';
-import type { ParticleEffectSourceV3 } from '@forgeax/engine-vfx';
+import { type ParticleEffectSourceV3, parseParticleEffectSourceV3 } from '@forgeax/engine-vfx';
 import { describe, expect, it } from 'vitest';
 import { cookParticleCodeEffect, type ParticleCodeModuleSet } from '../code-program.js';
 
@@ -20,43 +21,30 @@ const ACTIVE_PACKS = [
   'apps/showcase/brotato-3d/assets/brotato-impact-vfx.pack.json',
 ] as const;
 
-interface PackEntry {
-  readonly kind?: string;
-  readonly payload?: unknown;
-}
-
-function entriesFromPack(value: unknown): readonly PackEntry[] {
-  if (typeof value !== 'object' || value === null) return [];
-  const assets = (value as { assets?: unknown }).assets;
-  if (Array.isArray(assets)) return assets as PackEntry[];
-  if (typeof assets === 'object' && assets !== null) {
-    return Object.values(assets) as PackEntry[];
-  }
-  return [];
+function entriesFromPack(packPath: string) {
+  const value = JSON.parse(readFileSync(resolve(repoRoot, packPath), 'utf8')) as unknown;
+  const pack = parsePackSourceJson(value).unwrap();
+  if (pack.format !== 'direct') throw new Error(`active fixture ${packPath} must be a direct Pack`);
+  return projectDirectPackJson(pack).assets;
 }
 
 function particleSource(packPath: string): ParticleEffectSourceV3 {
-  const raw = JSON.parse(readFileSync(resolve(repoRoot, packPath), 'utf8')) as unknown;
-  const entry = entriesFromPack(raw).find((candidate) => candidate.kind === 'particle-effect');
+  const entry = entriesFromPack(packPath).find((candidate) => candidate.kind === 'particle-effect');
   if (entry?.payload === undefined) {
     throw new Error(`active fixture ${packPath} does not contain a particle-effect payload`);
   }
-  return entry.payload as ParticleEffectSourceV3;
+  return parseParticleEffectSourceV3(entry.payload).unwrap();
 }
 
 function materialInputs(): Readonly<Record<string, readonly MaterialParticleInput[]>> {
   const packPath = 'apps/hello/cinder-fall/assets/cinder-materials.pack.json';
-  const raw = JSON.parse(readFileSync(resolve(repoRoot, packPath), 'utf8')) as unknown;
   const catalog: Record<string, readonly MaterialParticleInput[]> = {};
-  for (const entry of entriesFromPack(raw)) {
+  for (const entry of entriesFromPack(packPath)) {
     if (entry.kind !== 'material' || typeof entry.payload !== 'object' || entry.payload === null) {
       continue;
     }
     const payload = entry.payload as { particleInputs?: readonly MaterialParticleInput[] };
-    const guid = (entry as { guid?: unknown }).guid;
-    if (typeof guid === 'string' && payload.particleInputs !== undefined) {
-      catalog[guid] = payload.particleInputs;
-    }
+    if (payload.particleInputs !== undefined) catalog[entry.guid] = payload.particleInputs;
   }
   return catalog;
 }

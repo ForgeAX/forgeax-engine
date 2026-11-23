@@ -1,6 +1,7 @@
 import type { BindGroupLayout, PipelineLayout, RhiDevice, TextureView } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
+import { projectViewLayout, type viewEntryReads } from '../environment/bindings';
 import { createHdrpBindGroupLayoutDescriptor } from '../pbr-pipeline';
 import type { PipelineState } from '../render-system';
 import { isOwnedWaterMeshAdmissionUpload } from '../water/mesh-source-admission';
@@ -111,7 +112,14 @@ export function createWaterFrameLayouts(
   const waterWavesBindGroupLayouts = new WeakMap<object, Map<string, BindGroupLayout>>();
   const waterWavesPipelineLayouts = new WeakMap<
     object,
-    Map<string, { readonly pipelineLayout: PipelineLayout; readonly group2Layout: BindGroupLayout }>
+    Map<
+      string,
+      {
+        readonly pipelineLayout: PipelineLayout;
+        readonly group2Layout: BindGroupLayout;
+        readonly view: BindGroupLayout;
+      }
+    >
   >();
 
   function waterMaterialFrameLayout(
@@ -142,6 +150,9 @@ export function createWaterFrameLayouts(
     return created.value;
   }
 
+  // A View can render several WaterInfo targets. The selected target follows
+  // the Body draw offsets, so the Water system entries share its physical group
+  // while the camera's View binding stays usable across every Body in the pass.
   function waterMaterialGroup2Layout(
     state: PipelineState,
     layoutKind: LayoutKind,
@@ -182,23 +193,11 @@ export function createWaterFrameLayouts(
     return created.value;
   }
 
-  function waterWavesPipelineLayout(
-    state: PipelineState | null,
+  function admitsWaterWavesLayout(
+    meshLayoutKind: 'pbr' | 'hdrp-pbr',
     layoutKind: LayoutKind,
-    probeBlend: boolean,
     waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-    materialBgl: BindGroupLayout | undefined,
-    shaderIdentity: string,
-    entryPoints?: readonly ShaderEntryPointReads[],
-  ): { readonly pipelineLayout: PipelineLayout; readonly group2Layout: BindGroupLayout } | null {
-    if (state === null) return null;
-    const meshLayoutKind =
-      layoutKind === 'hdrp-pbr' || layoutKind === 'surface-direct-cluster-pbr'
-        ? 'hdrp-pbr'
-        : layoutKind === 'pbr' || layoutKind === 'surface-direct-pbr'
-          ? 'pbr'
-          : undefined;
-    if (meshLayoutKind === undefined) return null;
+  ): boolean {
     const limits = currentBuildDevice().limits;
     const requiredLimits = {
       maxBindingsPerBindGroup:
@@ -222,38 +221,58 @@ export function createWaterFrameLayouts(
           hint: `use a device satisfying the ${layoutKind} water layout limit ${name} >= ${required}; current value is ${actual} for ${waterInfoFormat}`,
         }),
       );
-      return null;
+      return false;
     }
+    return true;
+  }
+
+  function waterWavesPipelineLayout(
+    state: PipelineState | null,
+    layoutKind: LayoutKind,
+    probeBlend: boolean,
+    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
+    materialBgl: BindGroupLayout | undefined,
+    shaderIdentity: string,
+    entryPoints?: readonly ShaderEntryPointReads[],
+    reads?: ReturnType<typeof viewEntryReads>,
+  ) {
+    if (state === null) return null;
+    const meshLayoutKind =
+      layoutKind === 'hdrp-pbr' || layoutKind === 'surface-direct-cluster-pbr'
+        ? 'hdrp-pbr'
+        : layoutKind === 'pbr' || layoutKind === 'surface-direct-pbr'
+          ? 'pbr'
+          : undefined;
+    if (meshLayoutKind === undefined) return null;
+    if (!admitsWaterWavesLayout(meshLayoutKind, layoutKind, waterInfoFormat)) return null;
     let layouts = waterWavesPipelineLayouts.get(state as object);
     if (layouts === undefined) {
       layouts = new Map();
       waterWavesPipelineLayouts.set(state as object, layouts);
     }
-    const key = `${shaderIdentity}:${layoutKind}:${probeBlend}:${waterInfoFormat}`;
+    const view =
+      reads === undefined
+        ? state.viewBindGroupLayout
+        : projectViewLayout(currentBuildDevice(), state.viewBindGroupLayout, reads);
+    const key = `${shaderIdentity}:${layoutKind}:${probeBlend}:${waterInfoFormat}:${[...(reads ?? [])].map(([slot, stage]) => `${slot}:${stage}`).join(',')}`;
     const cached = layouts.get(key);
     if (cached !== undefined) return cached;
     const group2 = waterMaterialGroup2Layout(state, meshLayoutKind, waterInfoFormat, entryPoints);
     const group3 = resolveMaterialPipelineBindGroups(
       layoutKind,
       state,
-      false,
       probeBlend,
     )?.instancesLayout;
     if (group2 === undefined || group3 == null) return null;
     const created = currentBuildDevice().createPipelineLayout({
       label: `water-waves-${layoutKind}-pipeline-layout`,
-      bindGroupLayouts: [
-        state.viewBindGroupLayout,
-        materialBgl ?? state.materialBindGroupLayout,
-        group2,
-        group3,
-      ],
+      bindGroupLayouts: [view, materialBgl ?? state.materialBindGroupLayout, group2, group3],
     });
     if (!created.ok) {
       internals.errorRegistry.fire(created.error);
       return null;
     }
-    const layout = { pipelineLayout: created.value, group2Layout: group2 };
+    const layout = { pipelineLayout: created.value, group2Layout: group2, view };
     layouts.set(key, layout);
     return layout;
   }

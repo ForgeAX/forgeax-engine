@@ -15,6 +15,71 @@ type DynamicState = 'setViewport' | 'setScissorRect' | 'setBlendConstant' | 'set
 export interface RenderBundleCounters {
   hits: number;
   misses: number;
+  /** Draw calls visited by the recorder in cacheable segments, including hits. */
+  visitedDraws?: number;
+  /** Retained native bundles executed without emitting the retained geometry commands again. */
+  preparedHits?: number;
+  geometry?: GeometryRecordingTotals;
+}
+
+export type GeometryRecordingReason =
+  | 'direct'
+  | 'transient'
+  | 'first'
+  | 'layout'
+  | 'resources'
+  | 'pipeline'
+  | 'replayed';
+
+export type GeometryRecordingTotals = Record<
+  string,
+  Partial<Record<GeometryRecordingReason, { ranges: number; draws: number }>>
+>;
+
+/** Counts exact direct draw calls or their replayed equivalents, under an active record profile. */
+export function geometryRecordingObserver(
+  counters: RenderBundleCounters | undefined,
+  pass: string,
+): ((reason: GeometryRecordingReason, draws: number) => void) | undefined {
+  if (counters === undefined) return undefined;
+  counters.geometry ??= {};
+  const totals = counters.geometry;
+  totals[pass] ??= {};
+  const reasons = totals[pass];
+  return (reason, draws) => {
+    reasons[reason] ??= { ranges: 0, draws: 0 };
+    const total = reasons[reason];
+    total.ranges++;
+    total.draws += draws;
+  };
+}
+
+/** CPU work retained by a native command producer. The producer validates it before replay. */
+export interface PreparedSceneCommands {
+  readonly key: readonly unknown[];
+}
+
+export interface PreparedSceneReplay {
+  begin(index: number): PreparedSceneCommands | undefined;
+  record(retain?: boolean): void;
+  finish(prepared: PreparedSceneCommands | undefined): void;
+  execute(): void;
+}
+
+type ReplayOperation =
+  | { readonly kind: 'bindings'; readonly commands: readonly Command[]; readonly from: number }
+  | { readonly kind: 'stencil'; readonly value: number }
+  | { readonly kind: 'bundles'; readonly bundles: readonly RenderBundle[] };
+
+function preparedOperations(operations: ReplayOperation[]): readonly ReplayOperation[] {
+  let lastBundle = operations.length - 1;
+  while (lastBundle >= 0 && operations[lastBundle]?.kind !== 'bundles') lastBundle--;
+  // Every draw of an admitted range is in a self-contained bundle. Plain
+  // pass bindings before the last bundle cannot affect those draws or any
+  // later draw because executing the bundle resets them. Keep trailing state.
+  return operations.filter(
+    (operation, index) => operation.kind !== 'bindings' || index > lastBundle,
+  );
 }
 
 /** A view retains only scene passes observed in its current or preceding rendered frame. */
@@ -73,10 +138,17 @@ export function retireSceneRenderBundleCache(state: SceneRenderBundleState, name
 
 interface Segment {
   readonly commands: Command[];
+  readonly drawCount: number;
   readonly preludeLength: number;
   /** Pipeline of the run this segment belongs to, and its ordinal within that run. */
   readonly run: { readonly pipeline: unknown; readonly ordinal: number } | undefined;
   bundle: RenderBundle | undefined;
+}
+
+interface PreparedSegment {
+  readonly prepared: PreparedSceneCommands;
+  readonly operations: readonly ReplayOperation[];
+  readonly segments: readonly Segment[];
 }
 
 /** Consecutive frames with more changed than matching drawing segments before backing off. */
@@ -194,7 +266,8 @@ function recordBundle(segment: Segment, target: RhiRenderCommands): void {
  * replay their preludes, so a pass split into many small bundles costs more
  * queue time than direct encoding, on top of the proxy's per-command
  * compare. A pass with at least as many matching as changed segments resets
- * the backoff.
+ * the backoff. An admitted prepared range also keeps the cache active when
+ * it skips more draw setup than the changing segments record.
  */
 export class RenderBundleCache {
   private device: RhiDevice | undefined;
@@ -202,6 +275,7 @@ export class RenderBundleCache {
   private idleFrames = 0;
   private bypassFrames = 0;
   private backoff = 0;
+  private preparedReplay: readonly (PreparedSegment | undefined)[] | undefined;
   private readonly descriptor: RenderBundleEncoderDescriptor & {
     readonly colorFormats: readonly (TextureFormat | null | undefined)[];
   };
@@ -228,8 +302,9 @@ export class RenderBundleCache {
   encode(
     device: RhiDevice,
     pass: RhiRenderPassEncoder,
-    record: (pass: RhiRenderPassEncoder) => void,
+    record: (pass: RhiRenderPassEncoder, replay?: PreparedSceneReplay) => void,
     counters?: RenderBundleCounters,
+    prepareReplay = false,
   ): void {
     if (this.device !== device) {
       this.device = device;
@@ -240,6 +315,16 @@ export class RenderBundleCache {
       record(pass);
       return;
     }
+    const previousReplay = this.preparedReplay;
+    this.preparedReplay = undefined;
+    const nextReplay: (PreparedSegment | undefined)[] | undefined = prepareReplay ? [] : undefined;
+    // Null denotes an open transient range. It shares the same ordering
+    // barriers as a retained range without collecting replay operations.
+    let replayOperations: ReplayOperation[] | null | undefined;
+    let reusable = false;
+    let replayRequested = false;
+    let replayIndex = -1;
+    let replayStart = 0;
     const retainedSegments = this.segments;
     // Built only after an ordinal miss. The actual buffer/offset finds a
     // candidate; its complete command stream remains the reuse authority.
@@ -299,8 +384,9 @@ export class RenderBundleCache {
     const nextSegments: Segment[] = [];
     const pending: RenderBundle[] = [];
     let reusedSegments = 0;
-    let drawSegments = 0;
     let missedSegments = 0;
+    let missedDraws = 0;
+    let preparedDraws = 0;
 
     // Tracked pass state, used as each segment's inherited prelude.
     let pipeline: Command | undefined;
@@ -311,6 +397,7 @@ export class RenderBundleCache {
     // the last direct emission), so a direct segment may skip its prelude.
     let passStateCurrent = true;
     let inOcclusion = false;
+    let stencilReference: number | undefined;
 
     let open = false;
     // The current pipeline run: its pipeline handle and next segment ordinal.
@@ -324,6 +411,14 @@ export class RenderBundleCache {
     let drawCount = 0;
     let recoveredBoundary = -1;
 
+    const clearTrackedBindings = () => {
+      pipeline = undefined;
+      runPipeline = undefined;
+      groups.length = 0;
+      vertexBuffers.length = 0;
+      indexBuffer = undefined;
+      passStateCurrent = true;
+    };
     const push = (method: Method, args: readonly unknown[]): Command => {
       if (fresh === undefined) {
         const old = retained?.commands[cursor];
@@ -361,30 +456,40 @@ export class RenderBundleCache {
     };
     const flushBundles = () => {
       if (pending.length === 0) return;
-      const executed = pass.executeBundles(pending.splice(0));
+      const bundles = pending.splice(0);
+      const executed = pass.executeBundles(bundles);
       if (!executed.ok) throw executed.error;
+      replayOperations?.push({ kind: 'bundles', bundles });
       passStateCurrent = false;
     };
     const emitDirect = (commands: readonly Command[], prelude: number) => {
       flushBundles();
-      replay(commands, pass, passStateCurrent ? prelude : 0);
+      const from = passStateCurrent ? prelude : 0;
+      replay(commands, pass, from);
+      if (drawCount > 0) reusable = false;
+      else if (commands.length > from) replayOperations?.push({ kind: 'bindings', commands, from });
       passStateCurrent = true;
     };
-    const closeSegment = () => {
-      if (!open) return;
-      open = false;
-      let matched =
+    const matchesOpenSegment = () => {
+      return (
         fresh === undefined &&
         retained !== undefined &&
         cursor === retained.commands.length &&
         preludeLength === retained.preludeLength &&
         retained.run?.pipeline === segmentRun?.pipeline &&
-        retained.run?.ordinal === segmentRun?.ordinal;
+        retained.run?.ordinal === segmentRun?.ordinal
+      );
+    };
+    const closeSegment = () => {
+      if (!open) return;
+      open = false;
+      let matched = matchesOpenSegment();
       const segment: Segment =
         matched && retained !== undefined
           ? retained
           : {
               commands: fresh ?? retained?.commands.slice(0, cursor) ?? [],
+              drawCount,
               preludeLength,
               run: segmentRun,
               bundle: undefined,
@@ -405,7 +510,7 @@ export class RenderBundleCache {
       }
       // Direct-only work cannot admit a bundle on the following frame.
       nextSegments.push(segment);
-      drawSegments += 1;
+      if (counters?.visitedDraws !== undefined) counters.visitedDraws += drawCount;
       if (matched) {
         reusedSegments += 1;
         if (segment.bundle !== undefined) {
@@ -423,6 +528,7 @@ export class RenderBundleCache {
         return;
       }
       missedSegments += 1;
+      missedDraws += drawCount;
       if (counters !== undefined) counters.misses += 1;
       emitDirect(segment.commands, preludeLength);
     };
@@ -479,6 +585,10 @@ export class RenderBundleCache {
     const state = (method: DynamicState, args: unknown[]) => {
       barrier();
       Reflect.apply(pass[method], pass, args);
+      if (method === 'setStencilReference') {
+        stencilReference = args[0] as number;
+        replayOperations?.push({ kind: 'stencil', value: stencilReference });
+      } else reusable = false;
     };
     const proxy: RhiRenderPassEncoder = {
       setPipeline: (...args) => bundled('setPipeline', args),
@@ -504,6 +614,7 @@ export class RenderBundleCache {
           // Preserve the backend's original overload and validation. Never clamp
           // invalid slices into a different, potentially valid binding.
           barrier();
+          reusable = false;
           Reflect.apply(pass.setBindGroup, pass, [index, group, offsets, start, length]);
           return;
         }
@@ -542,14 +653,17 @@ export class RenderBundleCache {
       drawIndexedIndirect: (...args) => bundled('drawIndexedIndirect', args),
       pushDebugGroup: (...args) => {
         barrier();
+        reusable = false;
         pass.pushDebugGroup(...args);
       },
       popDebugGroup: () => {
         barrier();
+        reusable = false;
         pass.popDebugGroup();
       },
       insertDebugMarker: (...args) => {
         barrier();
+        reusable = false;
         pass.insertDebugMarker(...args);
       },
       setViewport: (...args) => state('setViewport', args),
@@ -559,45 +673,141 @@ export class RenderBundleCache {
       // Query regions stay on the direct path: their draws are never bundled.
       beginOcclusionQuery: (...args) => {
         barrier();
+        reusable = false;
         inOcclusion = true;
         return pass.beginOcclusionQuery(...args);
       },
       endOcclusionQuery: () => {
         barrier();
+        reusable = false;
         inOcclusion = false;
         return pass.endOcclusionQuery();
       },
       executeBundles: (bundles) => {
         barrier();
+        reusable = false;
         // WebGPU clears pipeline, bind group and vertex/index state here.
-        pipeline = undefined;
-        runPipeline = undefined;
-        groups.length = 0;
-        vertexBuffers.length = 0;
-        indexBuffer = undefined;
-        passStateCurrent = true;
+        clearTrackedBindings();
         return pass.executeBundles(bundles);
       },
       end: () => {
         barrier();
+        reusable = false;
         pass.end();
       },
     };
+    const nativeReplay: PreparedSceneReplay | undefined =
+      nextReplay === undefined
+        ? undefined
+        : {
+            begin: (index) => {
+              if (open || inOcclusion || replayRequested || replayOperations !== undefined)
+                throw new Error('Prepared scene capture requires a closed command segment');
+              if (index !== replayIndex + 1 || (index === 0 && nextSegments.length > 0))
+                throw new Error('Prepared scene captures must follow draw order');
+              replayIndex = index;
+              replayStart = nextSegments.length;
+              replayRequested = true;
+              return previousReplay?.[index]?.prepared;
+            },
+            record: (retain = true) => {
+              if (!replayRequested || open || nextSegments.length !== replayStart)
+                throw new Error('Prepared scene capture must record its current range');
+              // Already queued replay belongs to preceding ranges. Flush it
+              // before starting a capture of the current range's own work.
+              flushBundles();
+              // Each native range records its own initial bindings. Do not
+              // inherit the old range's state, which may have been replayed.
+              clearTrackedBindings();
+              reusable = retain;
+              replayOperations = retain ? [] : null;
+              replayRequested = false;
+            },
+            finish: (prepared) => {
+              if (replayOperations === undefined)
+                throw new Error('No prepared scene capture to finish');
+              barrier();
+              if (
+                replayOperations !== null &&
+                reusable &&
+                prepared !== undefined &&
+                nextSegments.length > replayStart
+              )
+                nextReplay[replayIndex] = {
+                  prepared,
+                  operations: preparedOperations(replayOperations),
+                  segments: nextSegments.slice(replayStart),
+                };
+              replayOperations = undefined;
+              reusable = false;
+            },
+            execute: () => {
+              const segment = previousReplay?.[replayIndex];
+              if (
+                segment === undefined ||
+                !replayRequested ||
+                open ||
+                nextSegments.length !== replayStart
+              )
+                throw new Error(
+                  'Prepared scene commands must execute before recording their range',
+                );
+              for (const operation of segment.operations) {
+                switch (operation.kind) {
+                  case 'bindings':
+                    flushBundles();
+                    replay(operation.commands, pass, operation.from);
+                    break;
+                  case 'stencil':
+                    if (stencilReference !== operation.value) {
+                      flushBundles();
+                      pass.setStencilReference(operation.value);
+                      stencilReference = operation.value;
+                    }
+                    break;
+                  case 'bundles': {
+                    for (const bundle of operation.bundles) pending.push(bundle);
+                    if (counters !== undefined) {
+                      counters.hits += operation.bundles.length;
+                      counters.preparedHits =
+                        (counters.preparedHits ?? 0) + operation.bundles.length;
+                    }
+                    break;
+                  }
+                }
+              }
+              for (const retained of segment.segments) {
+                nextSegments.push(retained);
+                preparedDraws += retained.drawCount;
+              }
+              reusedSegments += segment.segments.length;
+              nextReplay[replayIndex] = segment;
+              replayRequested = false;
+              clearTrackedBindings();
+              // A later direct segment must restore bindings after this
+              // queued work resets them, even if no range follows it.
+              passStateCurrent = false;
+            },
+          };
     try {
-      record(proxy);
+      record(proxy, nativeReplay);
+      if (replayRequested || replayOperations !== undefined)
+        throw new Error('Prepared scene capture was not closed');
       barrier();
     } catch (error) {
       this.reset();
       throw error;
     }
     this.segments = nextSegments;
-    if (drawSegments > 0 && missedSegments > reusedSegments) {
+    this.preparedReplay = nextReplay;
+    if (missedSegments > reusedSegments && missedDraws >= preparedDraws) {
       this.idleFrames += 1;
       if (this.idleFrames >= IDLE_FRAMES_BEFORE_BACKOFF) {
         this.bypassFrames = Math.min(MAX_BYPASS_FRAMES, IDLE_FRAMES_BEFORE_BACKOFF << this.backoff);
         this.backoff += 1;
         this.idleFrames = 0;
         this.segments = [];
+        this.preparedReplay = undefined;
       }
     } else if (reusedSegments > 0) {
       this.idleFrames = 0;
@@ -606,6 +816,7 @@ export class RenderBundleCache {
   }
 
   private reset(): void {
+    this.preparedReplay = undefined;
     this.segments = [];
     this.idleFrames = 0;
     this.bypassFrames = 0;

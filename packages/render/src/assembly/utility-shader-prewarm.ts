@@ -29,7 +29,6 @@ export const DEPTH_PYRAMID_SHADER_STAGES = [
 
 export const SSR_SHADER_STAGES = [
   ['trace', 'ssr_trace', 'ssr_trace', 'forgeax_ssr::trace'],
-  ['temporal', 'ssr_temporal', 'ssr_temporal', 'forgeax_ssr::temporal'],
   ['compose', 'ssr_compose', 'vs_ssr_compose', 'forgeax_ssr::compose'],
 ] as const satisfies readonly UtilityShaderStage<
   Exclude<keyof SsrShaderSources, 'gbuffer' | 'compactGbuffer'>
@@ -51,7 +50,6 @@ const DEPTH_PYRAMID_FRAGMENT_STAGES = [
 ] as const;
 const SSR_FRAGMENT_STAGES = [
   ['trace', 'ssr_trace_fragment', 'ssr_trace_fragment', 'forgeax::ssr-trace-fragment'],
-  ['temporal', 'ssr_temporal_fragment', 'ssr_temporal_fragment', 'forgeax::ssr-temporal-fragment'],
   ['compose', 'ssr_compose_fragment', 'vs_ssr_compose_fragment', 'forgeax::ssr-compose-fragment'],
 ] as const;
 
@@ -71,7 +69,6 @@ export const ATMOSPHERE_SHADER_STAGES = [
     'atmosphere_background_vs',
     'forgeax_environment::background',
   ],
-  ['ibl', 'atmosphere_ibl', 'atmosphere_ibl_vs', 'forgeax_environment::ibl'],
 ] as const satisfies readonly UtilityShaderStage<keyof AtmosphereShaderSources>[];
 
 export const VOLUMETRIC_FOG_SHADER_STAGES = [
@@ -121,14 +118,14 @@ export async function prewarmUtilityShaders<Key extends string>(
 
 /**
  * Prewarm SSR together with the depth pyramid it traces against. The two
- * bundles compile independently, but SSR installs only with a pyramid.
+ * bundles compile independently. AO can install the pyramid by itself.
  */
 export async function prewarmSsrWithDepthPyramid(
   entries: readonly ManifestEntry[],
   compile: (label: string, source: string | ShaderSource, bundle: string) => Promise<ShaderModule>,
   seed: SeedShaderModule,
   execution: 'compute' | 'fragment' = 'compute',
-): Promise<{ ssr: SsrShaderSources; pyramid: DepthPyramidShaderSources } | undefined> {
+): Promise<{ ssr?: SsrShaderSources; pyramid: DepthPyramidShaderSources } | undefined> {
   const pyramid = await prewarmUtilityShaders(
     'depth pyramid',
     execution === 'fragment' ? DEPTH_PYRAMID_FRAGMENT_STAGES : DEPTH_PYRAMID_SHADER_STAGES,
@@ -143,7 +140,15 @@ export async function prewarmSsrWithDepthPyramid(
     (label, source) => compile(label, source, 'SSR'),
     seed,
   );
-  if (ssr === undefined) return undefined;
+  if (ssr === undefined) {
+    if (pyramid === undefined) return undefined;
+    return {
+      pyramid:
+        execution === 'compute'
+          ? pyramid
+          : { ...pyramid, seedFragment: pyramid.seed, reduceFragment: pyramid.reduce },
+    };
+  }
   const required = execution === 'fragment' ? SSR_FRAGMENT_STAGES : SSR_SHADER_STAGES;
   const compatible = required.every(
     ([, , entryPoint, id]) =>
@@ -175,7 +180,6 @@ export async function prewarmSsrWithDepthPyramid(
         ssr: {
           ...admittedSsr,
           traceFragment: ssr.trace,
-          temporalFragment: ssr.temporal,
           composeFragment: ssr.compose,
         },
         pyramid: { ...pyramid, seedFragment: pyramid.seed, reduceFragment: pyramid.reduce },

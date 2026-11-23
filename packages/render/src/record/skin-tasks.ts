@@ -171,6 +171,7 @@ export class SkinTasks {
   private previous = new Float32Array(0);
   private readonly matrix = mat4.create();
   private readonly inverse = mat4.create();
+  private readonly translation = new Float32Array(4);
   private readonly words = new Uint32Array(8);
   /** Last physical submission on this one device; an aborted recording keeps its fence. */
   private completion: Promise<void> | undefined;
@@ -233,6 +234,29 @@ export class SkinTasks {
     this.data.begin();
     this.auxiliary.begin();
   }
+  private writeAffineTranslation(
+    frame: SkinSceneFrame,
+    record: RenderSceneSlot,
+    slot: number,
+    poseFlags: number,
+    auxiliary: Buffer,
+    auxiliaryOffset: number,
+  ): void {
+    if (!record.snapshot.skinBinding?.affinePoint) return;
+    const previous = frame.previousSlots?.slotAt(slot);
+    const world =
+      poseFlags === 3 && previous?.entityKey === record.entityKey
+        ? previous.snapshot.transform.world
+        : record.snapshot.transform.world;
+    const floats = this.translation;
+    floats[0] = world[12] as number;
+    floats[1] = world[13] as number;
+    floats[2] = world[14] as number;
+    this.device.queue
+      .writeBuffer(auxiliary, auxiliaryOffset + 255 * 64, floats.buffer, 0, 16)
+      .unwrap();
+  }
+
   demand(record: RenderSceneSlot): SkinTaskBinding | undefined {
     const slot = record.slot;
     const frame = this.frame;
@@ -264,7 +288,7 @@ export class SkinTasks {
     // A palette composed for frames with the same inputs is the previous pose.
     const history = this.stalePalettes.get(slot) ?? this.palettes.get(slot);
     const previousRoot = frame.previous?.inputRoot();
-    const flags = frame.current.palettes(
+    const poseFlags = frame.current.palettes(
       slot,
       frame.previous,
       this.current,
@@ -278,17 +302,18 @@ export class SkinTasks {
         ? history.palette
         : undefined,
     );
-    if (flags !== 0) this.rememberPalette(slot, frame.current.inputRoot(), count, history);
-    if (flags === 0) {
+    if (poseFlags === 0) {
       this.demanded.set(slot, -1);
       return undefined;
     }
+    this.rememberPalette(slot, frame.current.inputRoot(), count, history);
+    const flags = poseFlags | (selected.snapshot.skinBinding.affinePoint ? 4 : 0);
     const dataOffset = this.data.reserve(
       this.storage ? 32 + count * 128 : 16336,
       this.dataAlignment,
     );
     const auxiliaryOffset = this.auxiliary.reserve(
-      this.storage ? 16 : 16320,
+      this.storage ? 16 : 16336,
       this.auxiliaryAlignment,
     );
     const data = this.data.buffer,
@@ -326,6 +351,7 @@ export class SkinTasks {
       queue.writeBuffer(data, dataOffset + 255 * 64, this.words.buffer, 0, 16).unwrap();
       queue.writeBuffer(auxiliary, auxiliaryOffset, this.previous.buffer, 0, count * 64).unwrap();
       this.paletteUploadBytes += count * 64;
+      this.writeAffineTranslation(frame, record, slot, poseFlags, auxiliary, auxiliaryOffset);
     }
     let row = this.rows[this.count];
     if (row === undefined) {
@@ -344,7 +370,7 @@ export class SkinTasks {
     row.dataOffset = this.storage ? 0 : dataOffset;
     row.auxiliaryOffset = auxiliaryOffset;
     row.dataSize = this.storage ? this.data.capacity : 16336;
-    row.auxiliarySize = this.storage ? 16 : 16320;
+    row.auxiliarySize = this.storage ? 16 : 16336;
     this.demanded.set(slot, this.count++);
     return row;
   }
@@ -378,7 +404,9 @@ export class SkinTasks {
       throw invalid('the actual capsule task belongs to this fixed Skin frame');
     const known = this.capsuleDemanded.get(slot);
     if (known !== undefined) return known;
-    const count = frame.current.capsuleCount(slot);
+    const count = record.snapshot.skinBinding?.affinePoint
+      ? undefined
+      : frame.current.capsuleCount(slot);
     let state: CapsuleShadowSnapshot;
     if (!frame.current.available(slot)) state = POSE_UNAVAILABLE;
     else if (count === undefined || count === 0) state = NO_CAPSULES;

@@ -15,6 +15,7 @@ import {
   AssetError,
   type AssetEvidence,
   type AssetEvidenceError,
+  type AssetEvidenceInputs,
   type AssetHandle,
   type AssetKind,
   type AssetLoadError,
@@ -38,6 +39,7 @@ import {
   materialGuidText,
   type ParticleEffectAsset,
   type ParticleEffectInput,
+  projectAssetEvidence,
   type RuntimeAssetBinding,
   type SceneAsset,
   type TranscodeCaps,
@@ -64,6 +66,7 @@ import {
   type AssetSourceOptions,
   createAssetSource,
   decodeStandaloneMeshBody,
+  type SourceEntry,
   standaloneMeshBody,
 } from './internal/asset-source';
 import { DecoderRegistry } from './internal/decoder-registry';
@@ -86,6 +89,7 @@ import {
 } from './runtime-terrain';
 import { prepareRuntimeTextureRange, type TextureRegion } from './runtime-texture';
 import { linkRuntimeTileset } from './runtime-tileset';
+import { extractSceneEntityHandleGuids } from './scene-handle-fields';
 import { prepareRuntimeTerrain } from './terrain-closure.js';
 import {
   type PublicationPreparationServices,
@@ -116,12 +120,7 @@ import {
   type PrepareMaterialSourceProgram,
   projectMaterialTemplate,
 } from './material/runtime-shader.js';
-import {
-  createRuntimeAssetEvidenceAdapter,
-  type RuntimeAssetEvidenceAdapter,
-  type RuntimeEvidenceSource,
-} from './registry/asset-evidence.js';
-import type { CatalogReplica, CatalogReplicaSnapshot } from './registry/catalog-state.js';
+import type { CatalogReplicaSnapshot } from './registry/catalog-state.js';
 import {
   instantiateFlat as instantiateFlatImpl,
   instantiate as instantiateImpl,
@@ -233,6 +232,43 @@ export interface AssetRegistryOptions extends Partial<Omit<AssetSourceOptions, '
 
 export type RuntimeAssetError = AssetError | AssetLoadError | ImageError | RhiError | MaterialError;
 
+function materialBindingKind(value: unknown): 'texture' | 'source' | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const texture = Object.hasOwn(value, 'texture');
+  const source = Object.hasOwn(value, 'source');
+  if (texture === source) return undefined;
+  return texture ? 'texture' : 'source';
+}
+
+function materialValuePatchKind(
+  descriptors: PropertyDescriptorMap,
+  current: MaterialAsset['values'],
+  textureNames: ReadonlySet<string>,
+): 'numeric' | 'binding' | undefined {
+  let kind: 'numeric' | 'binding' = 'numeric';
+  for (const name of Reflect.ownKeys(descriptors)) {
+    if (typeof name !== 'string') return undefined;
+    const entry = descriptors[name];
+    if (!entry?.enumerable || !Object.hasOwn(entry, 'value')) return undefined;
+    const previous = current?.[name];
+    const binding = materialBindingKind(previous);
+    if (binding !== undefined && materialBindingKind(entry.value) === binding) {
+      kind = 'binding';
+      continue;
+    }
+    if (
+      textureNames.has(name) ||
+      typeof previous === 'string' ||
+      (previous !== null && typeof previous === 'object' && !Array.isArray(previous)) ||
+      (typeof entry.value !== 'number' &&
+        typeof entry.value !== 'boolean' &&
+        !Array.isArray(entry.value))
+    )
+      return undefined;
+  }
+  return kind;
+}
+
 export interface AssetReloadOptions extends AssetLoadOptions {
   /** Reject gameplay edits, or explicitly replace edits made before this request. */
   readonly conflict: 'reject' | 'overwrite';
@@ -262,6 +298,8 @@ interface SourceIngestionOperation {
   readonly records: AssetAdoption;
   readonly staged: Map<string, AssetHandle>;
   readonly visiting: Set<string>;
+  readonly ownedMeshes: Map<string, SourceEntry>;
+  readonly renderMeshes: ReadonlySet<string>;
   readonly contentKeys: ReadonlyMap<string, string | undefined>;
   readonly signal: AbortSignal | undefined;
   readonly policy: SourceAdoption | undefined;
@@ -293,6 +331,13 @@ function includeRuntimeDependencies<T, E>(
     : linked;
 }
 
+/** Runtime evidence supplied by the host. */
+export interface RuntimeEvidenceSource {
+  readonly evidence: (
+    guid: string,
+  ) => Promise<AssetEvidenceInputs | Result<AssetEvidenceInputs, AssetEvidenceError>>;
+}
+
 export class AssetRegistry implements AssetReferenceOwner {
   static readonly #sourceRead = AssetRegistry.prototype.sourceOf;
   static readonly #catalogRead = AssetRegistry.prototype.catalogEntry;
@@ -302,7 +347,16 @@ export class AssetRegistry implements AssetReferenceOwner {
   readonly #decoders: DecoderRegistry;
   #source: AssetSource | undefined;
   readonly #meshRestores = new WeakMap<MeshPresentation, MeshCpuRestore>();
-  readonly #meshPreparations = new Set<AssetHandle>();
+  readonly #meshPreparations = new Map<
+    AssetHandle,
+    {
+      readonly controller: AbortController;
+      readonly result: Promise<Result<void, RuntimeAssetError>>;
+      waiters: number;
+    }
+  >();
+  readonly #sceneRenderMeshes = new WeakMap<SceneAsset, ReadonlySet<number>>();
+  readonly #ownedMeshBodies = new WeakMap<TypesMeshAsset, NonNullable<SourceEntry['meshBody']>>();
   #disposed = false;
   readonly #runtime: AssetRecords;
   /** Derived Terrain content can be copied, but only its author root may replace it. */
@@ -515,6 +569,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     component?: (name: string) => Component | undefined,
     checkSource?: () => Result<void, AssetError>,
     sceneRefs?: readonly string[],
+    meshStorage?: 'render-transfer',
   ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
     const kind =
       input !== null && typeof input === 'object'
@@ -551,7 +606,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     const prepare = (owned: T) => {
       if (requiresOwnerPreparation(owned.kind))
         return this.prepareWithDecoder(owned.kind, owned, sources, reader, checkSource);
-      const prepared = prepareRuntimeAsset(owned, sourceContent);
+      const prepared = prepareRuntimeAsset(owned, sourceContent, meshStorage);
       if (!prepared.ok) return prepared;
       if (prepared.value.kind === 'tileset') {
         const linked = linkRuntimeTileset(
@@ -945,7 +1000,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     return ok(undefined);
   }
 
-  private updateNumericMaterialValues(
+  private updateMaterialValues(
     handle: AssetHandle,
     current: MaterialAsset,
     patch: Readonly<Record<string, unknown>>,
@@ -965,28 +1020,16 @@ export class AssetRegistry implements AssetReferenceOwner {
       !Array.isArray(values.value)
     ) {
       const contract = this.materialValueContracts.get(current);
-      const valueDescriptors = Object.getOwnPropertyDescriptors(values.value);
-      const numeric =
-        contract !== undefined &&
-        Reflect.ownKeys(valueDescriptors).every((name) => {
-          if (typeof name !== 'string' || contract.textures.has(name)) return false;
-          const entry = valueDescriptors[name];
-          if (!entry?.enumerable || !Object.hasOwn(entry, 'value')) return false;
-          const previous = current.kind === 'material' ? current.values?.[name] : undefined;
-          // Changing a binding must transfer its holds through complete dependency preparation.
-          if (
-            typeof previous === 'string' ||
-            (previous !== null && typeof previous === 'object' && !Array.isArray(previous))
-          )
-            return false;
-          return (
-            typeof entry.value === 'number' ||
-            typeof entry.value === 'boolean' ||
-            Array.isArray(entry.value)
-          );
-        });
-      if (numeric)
-        return this.#runtime.update(handle, values.value, {
+      const kind =
+        contract === undefined
+          ? undefined
+          : materialValuePatchKind(
+              Object.getOwnPropertyDescriptors(values.value),
+              current.values,
+              contract.textures,
+            );
+      if (contract !== undefined && kind !== undefined) {
+        const result = this.#runtime.update<AssetError | MaterialError>(handle, values.value, {
           field: 'values',
           prepare: (_current, owned) => {
             const valid = validateMaterialValues(
@@ -994,11 +1037,47 @@ export class AssetRegistry implements AssetReferenceOwner {
               owned as Record<string, MaterialValue>,
               contract.parameters,
             );
-            return valid.ok ? ok({ value: owned }) : valid;
+            if (!valid.ok) return valid;
+            return kind === 'binding'
+              ? this.prepareMaterialBindingValues(current, owned, contract.textures)
+              : ok({ value: owned });
           },
         });
+        if (result.ok) {
+          const next = this.#runtime.borrow<MaterialAsset>(handle).unwrap();
+          if (next !== current) {
+            this.materialValueContracts.set(next, contract);
+            const projection = this.materialPayloadProjections.get(current);
+            if (projection !== undefined) this.materialPayloadProjections.set(next, projection);
+          }
+        }
+        return result;
+      }
     }
     return undefined;
+  }
+
+  /** Existing texture slots can keep the program contract and atomically transfer their holds. */
+  private prepareMaterialBindingValues(
+    current: MaterialAsset,
+    patch: Record<string, unknown>,
+    textures: ReadonlySet<string>,
+  ): Result<{ value: Record<string, unknown>; dependencies: readonly number[] }, AssetError> {
+    const linked = this.linkMaterial(
+      {
+        ...current,
+        values: { ...current.values, ...patch } as Record<string, MaterialValue | null>,
+      },
+      this.#runtimeByGuid,
+      textures,
+    );
+    if (!linked.ok) return linked;
+    return ok({
+      value: Object.fromEntries(
+        Object.keys(patch).map((name) => [name, linked.value.value.values?.[name]]),
+      ),
+      dependencies: linked.value.dependencies,
+    });
   }
 
   private prepareContentPatch(
@@ -1098,8 +1177,8 @@ export class AssetRegistry implements AssetReferenceOwner {
       return adopted.ok ? ok(undefined) : adopted;
     }
     if (current.value.kind === 'material') {
-      const numeric = this.updateNumericMaterialValues(handle, current.value, patch);
-      if (numeric !== undefined) return numeric;
+      const values = this.updateMaterialValues(handle, current.value, patch);
+      if (values !== undefined) return values;
     }
     let projection: MaterialRenderProjection | undefined;
     let textures: ReadonlySet<string> | undefined;
@@ -1495,14 +1574,29 @@ export class AssetRegistry implements AssetReferenceOwner {
     }
     const kind = this.#runtime.kind(handle);
     if (!kind.ok) return kind;
-    if (kind.value === 'mesh' && options.usage === 'render') {
-      if (!this.#meshPreparations.has(handle) && this.#runtime.canPresentMesh(handle))
-        await this.prepareMeshPresentation(guid, handle as AssetHandle<'mesh'>, options.signal);
-      if (!options.signal?.aborted) return this.liveLoadGrant(handle);
+    if (options.usage === 'render' && kind.value === 'mesh') {
+      const prepared = await this.waitForMeshPresentation(
+        guid,
+        handle as AssetHandle<'mesh'>,
+        options.signal,
+      );
+      if (prepared.ok) return this.liveLoadGrant(handle);
       this.#runtime.release(handle);
-      return err(assetLoadCancelled(guid));
+      return prepared;
     }
-    const restores = this.requireMeshCpuClosure(handle, options.signal);
+    const scene =
+      kind.value === 'scene' && options.usage === 'render'
+        ? this.#runtime.borrow<SceneAsset>(handle).unwrap()
+        : undefined;
+    const renderMeshes = scene === undefined ? undefined : this.#sceneRenderMeshes.get(scene);
+    const restores = this.requireMeshCpuClosure(handle, options.signal, renderMeshes);
+    for (const mesh of renderMeshes ?? []) {
+      const origin = this.#runtimeGuids.get(mesh as AssetHandle);
+      if (origin !== undefined)
+        restores.push(
+          this.waitForMeshPresentation(origin.guid, mesh as AssetHandle<'mesh'>, options.signal),
+        );
+    }
     if (restores.length === 0) return ok(handle);
     const recovery = Promise.all(restores).then(
       (results) => results.find((result) => !result.ok) ?? ok(undefined),
@@ -1524,11 +1618,14 @@ export class AssetRegistry implements AssetReferenceOwner {
   private requireMeshCpuClosure(
     root: AssetHandle,
     signal?: AbortSignal,
+    renderMeshes?: ReadonlySet<number>,
   ): Promise<Result<void, RuntimeAssetError>>[] {
     const pending = new Set<AssetHandle>([root]);
     const restores: Promise<Result<void, RuntimeAssetError>>[] = [];
     for (const handle of pending) {
-      const presentation = this.#runtime.requireMeshCpu(handle);
+      const presentation = renderMeshes?.has(handle)
+        ? undefined
+        : this.#runtime.requireMeshCpu(handle);
       if (presentation !== undefined)
         restores.push(this.restoreMeshPresentation(handle, presentation, 'cpu-required', signal));
       for (const dependency of this.#runtime.dependencies(handle).unwrap())
@@ -1537,93 +1634,159 @@ export class AssetRegistry implements AssetReferenceOwner {
     return restores;
   }
 
-  private async prepareMeshPresentation(
+  private async waitForMeshPresentation(
     guid: string,
     handle: AssetHandle<'mesh'>,
     signal?: AbortSignal,
-  ): Promise<void> {
-    const revision = this.#runtime.version(handle);
-    if (!revision.ok || signal?.aborted) return;
-    this.#meshPreparations.add(handle);
-    let reason: MeshCpuFallback | undefined = 'render-preparation-failed';
-    try {
-      reason = await this.tryPresentMesh(guid, handle, revision.value, signal);
-    } catch {
-      // The ordinary adopted Mesh remains usable if this optional preparation fails.
-    } finally {
-      this.#meshPreparations.delete(handle);
-      if (reason !== undefined && !signal?.aborted)
-        this.#runtime.noteMeshCpuFallback(handle, revision.value, reason);
+  ): Promise<Result<void, RuntimeAssetError>> {
+    if (signal?.aborted) return err(assetLoadCancelled(guid));
+    let pending = this.#meshPreparations.get(handle);
+    if (pending === undefined) {
+      if (!this.#runtime.canPresentMesh(handle)) {
+        const existing = this.#runtime.meshPresentation(handle);
+        return existing !== undefined && !existing.lease.isCurrent()
+          ? this.restoreMeshPresentation(handle, existing, 'render-recovery', signal)
+          : ok(undefined);
+      }
+      const controller = new AbortController();
+      const result = Promise.resolve()
+        .then(() => this.prepareMeshPresentation(guid, handle, controller.signal))
+        .finally(() => this.#meshPreparations.delete(handle));
+      pending = { controller, result, waiters: 0 };
+      this.#meshPreparations.set(handle, pending);
     }
+    if (pending.controller.signal.aborted) {
+      const settled = await (signal === undefined
+        ? pending.result
+        : waitForAsset(pending.result, signal, guid));
+      if (signal?.aborted) return settled;
+      return this.waitForMeshPresentation(guid, handle, signal);
+    }
+    pending.waiters++;
+    try {
+      return await (signal === undefined
+        ? pending.result
+        : waitForAsset(pending.result, signal, guid));
+    } finally {
+      if (--pending.waiters === 0) pending.controller.abort();
+    }
+  }
+
+  private async prepareMeshPresentation(
+    guid: string,
+    handle: AssetHandle<'mesh'>,
+    signal: AbortSignal,
+  ): Promise<Result<void, RuntimeAssetError>> {
+    const revision = this.#runtime.version(handle);
+    if (!revision.ok) return revision;
+    if (signal.aborted) return err(assetLoadCancelled(guid));
+    const reason = await this.tryPresentMesh(guid, handle, revision.value, signal);
+    if (!reason.ok) return reason;
+    if (reason.value !== undefined && !signal.aborted)
+      this.#runtime.noteMeshCpuFallback(handle, revision.value, reason.value);
+    return ok(undefined);
   }
 
   private async tryPresentMesh(
     guid: string,
     handle: AssetHandle<'mesh'>,
     revision: number,
-    signal?: AbortSignal,
-  ): Promise<MeshCpuFallback | undefined> {
+    signal: AbortSignal,
+  ): Promise<Result<MeshCpuFallback | undefined, RuntimeAssetError>> {
     const present = this.#runtime.meshPresenter;
-    if (present === undefined) return this.#runtime.meshReceiverFallback();
+    if (present === undefined) return ok(this.#runtime.meshReceiverFallback());
+    if (!this.#runtime.meshPresenterReady) return ok('render-not-ready');
     const origin = this.meshPresentationOrigin(handle, revision);
-    if (!origin.ok) return origin.error;
-    const { source, publication, decoderIdentity, bytes: meshBytes } = origin.value;
+    if (!origin.ok) return ok(origin.error);
+    const { source, publication, decoderIdentity, mesh, bytes } = origin.value;
+    const body = this.#ownedMeshBodies.get(mesh);
     const retained = await source
-      .retainMeshArtifact(guid, publication, decoderIdentity, signal)
+      .retainMeshArtifact(guid, publication, decoderIdentity, signal, body)
       .catch(() => err('source-unavailable' as const));
-    if (!retained.ok) return retained.error;
+    if (!retained.ok) return ok(retained.error);
     const fixed = retained.value;
     let accepted = false;
     let physical: MeshPresentationLease | undefined;
-    try {
-      const current = this.#runtime.version(handle);
-      if (!current.ok || current.value !== revision || signal?.aborted || this.#source !== source)
-        return 'source-unavailable';
-      if (this.#runtime.meshPresenter !== present) return this.#runtime.meshReceiverFallback();
+    let handoff: MeshPresentation | undefined;
+    let sent = false;
+    let preparing = true;
+    const current = () =>
+      this.#runtime.version(handle).ok &&
+      this.#runtime.version(handle).unwrap() === revision &&
+      this.#source === source &&
+      this.#runtime.meshPresenter === present &&
+      !signal.aborted;
+    const presentation = (
+      lease: MeshPresentationLease,
+      ownership: 'transfer' | 'copy',
+    ): MeshPresentation => ({
+      handoff: ownership,
+      bytes: fixed.bytes,
+      storage: fixed.storage,
+      read: fixed.read,
+      lease,
+      release() {
+        fixed.release();
+        this.lease.release();
+      },
+    });
+    const prepare = async (): Promise<MeshCpuFallback | undefined> => {
+      if (!current()) return this.#runtime.meshReceiverFallback();
       const result = await present(
         handle,
         revision,
         {
-          bytes: meshBytes,
+          bytes,
           capture: () => {
-            if (
-              this.#runtime.version(handle).unwrap() !== revision ||
-              this.#source !== source ||
-              this.#runtime.meshPresenter !== present ||
-              signal?.aborted ||
-              !this.#runtime.canPresentMesh(handle)
-            )
+            if (!current() || !this.#runtime.canPresentMesh(handle))
               throw new Error('Mesh presentation changed before its reserved capture');
+            if (body !== undefined && this.#runtime.canTransferMesh) {
+              const pending = presentation(
+                { isCurrent: () => preparing, release() {} },
+                'transfer',
+              );
+              if (this.#runtime.retainMeshPresentation(handle, revision, pending)) {
+                handoff = pending;
+                this.#ownedMeshBodies.delete(mesh);
+                return mesh;
+              }
+            }
             return this.#runtime.read<TypesMeshAsset>(handle).unwrap();
+          },
+          sent: () => {
+            sent = true;
           },
         },
         signal,
       );
       if (!result.ok) return result.error;
       physical = result.value;
-      if (this.#runtime.meshPresenter !== present) return this.#runtime.meshReceiverFallback();
-      if (!physical.isCurrent() || signal?.aborted) return 'render-preparation-failed';
-      if (this.#source !== source) return 'source-unavailable';
-      const lease = physical;
-      const { bytes, storage, read, release } = fixed;
-      accepted = this.#runtime.retainMeshPresentation(handle, revision, {
-        bytes,
-        storage,
-        read,
-        lease,
-        release() {
-          release();
-          this.lease.release();
-        },
-      });
-      if (accepted) fixed.releaseDecodedSource();
+      if (!current() || !physical.isCurrent()) return this.#runtime.meshReceiverFallback();
+      accepted =
+        handoff !== undefined
+          ? this.#runtime.rebindMeshPresentation(handle, handoff, physical)
+          : this.#runtime.retainMeshPresentation(handle, revision, presentation(physical, 'copy'));
+      if (accepted && handoff === undefined) fixed.releaseDecodedSource();
       return accepted ? undefined : 'render-preparation-failed';
-    } finally {
-      if (!accepted) {
-        fixed.release();
-        physical?.release();
+    };
+    const reason = await prepare().catch(() => 'render-preparation-failed' as const);
+    preparing = false;
+    if (accepted) return ok(reason);
+    physical?.release();
+    const pending = handoff as MeshPresentation | undefined;
+    if (pending === undefined) fixed.release();
+    else if (
+      this.#runtime.meshPresentation(handle) === pending &&
+      (sent || !this.#runtime.cancelMeshHandoff(handle, pending, mesh))
+    ) {
+      if (signal.aborted) {
+        if (this.#runtimeByGuid.get(guid) === handle) this.unload(guid);
+      } else {
+        const restored = await this.restoreMeshPresentation(handle, pending, 'render-recovery');
+        if (!restored.ok && this.#runtime.meshPresentation(handle) === pending) return restored;
       }
     }
+    return ok(reason);
   }
 
   private meshPresentationOrigin(handle: AssetHandle<'mesh'>, revision: number) {
@@ -1631,12 +1794,13 @@ export class AssetRegistry implements AssetReferenceOwner {
     const origin = this.#runtimeGuids.get(handle);
     if (!source || origin?.source !== source || !origin.publication || origin.revision !== revision)
       return err('source-unavailable' as const);
-    const mesh = this.#runtime.borrow<TypesMeshAsset>(handle);
+    const mesh = this.#runtime.borrowMeshForPresentation(handle);
     if (!mesh.ok || !isStandaloneStaticMesh(mesh.value)) return err('unsupported-mesh' as const);
     return ok({
       source,
       publication: origin.publication,
       decoderIdentity: origin.decoderIdentity,
+      mesh: mesh.value,
       bytes: assetDataBytes(mesh.value, undefined, 'copy'),
     });
   }
@@ -1661,6 +1825,16 @@ export class AssetRegistry implements AssetReferenceOwner {
       if (!restored.ok && this.#runtime.meshPresentation(handle) === presentation)
         throw restored.error;
     }
+    if (!this.#runtime.meshPresenterReady) return;
+    await Promise.all(
+      this.#runtime.deferredMeshPresentations().map(async (handle) => {
+        const mesh = handle as AssetHandle<'mesh'>;
+        const origin = this.#runtimeGuids.get(mesh);
+        if (origin === undefined) return;
+        const prepared = await this.waitForMeshPresentation(origin.guid, mesh);
+        if (!prepared.ok) throw prepared.error;
+      }),
+    );
   }
 
   private async reprepareMeshPresentation(
@@ -1670,7 +1844,10 @@ export class AssetRegistry implements AssetReferenceOwner {
     const present = this.#runtime.meshPresenter;
     if (present === undefined) return false;
     try {
-      const mesh = await this.readMeshPresentation(presentation);
+      const mesh = await this.readMeshPresentation(
+        presentation,
+        this.#runtime.canTransferMesh ? 'render-transfer' : undefined,
+      );
       if (!mesh.ok) return false;
       const restored = this.#runtime.restoreMeshReferences(handle, presentation, mesh.value);
       const current = this.#runtime.version(handle);
@@ -1702,10 +1879,13 @@ export class AssetRegistry implements AssetReferenceOwner {
 
   private async readMeshPresentation(
     presentation: MeshPresentation,
+    meshStorage?: 'render-transfer',
   ): Promise<Result<TypesMeshAsset, RuntimeAssetError>> {
     try {
-      const restored = prepareRuntimeAsset(await presentation.read(), (guid) =>
-        this.runtimeSource(guid),
+      const restored = prepareRuntimeAsset(
+        await presentation.read(),
+        (guid) => this.runtimeSource(guid),
+        meshStorage,
       );
       if (!restored.ok) return restored;
       if (restored.value.kind !== 'mesh') throw new TypeError('expected restored Mesh');
@@ -2116,6 +2296,32 @@ export class AssetRegistry implements AssetReferenceOwner {
     );
   }
 
+  private sourceRenderMeshes(key: string, inputs: SourceIngestionInputs): Set<string> {
+    const entry = inputs.entries.get(key);
+    if (entry?.kind === 'mesh') return new Set([key]);
+    if (entry?.kind !== 'scene') return new Set();
+    const scene = inputs.borrow(key).unwrap().value as SceneAsset;
+    if (Object.values(scene.entities).some((entity) => entity.instance !== undefined))
+      return new Set();
+    const components = new Map<string, Component>();
+    for (const [name, component] of inputs.schemas) {
+      if (component === undefined) return new Set();
+      components.set(name, component);
+    }
+    const draw = new Set<string>();
+    const other = new Set<string>();
+    for (const field of extractSceneEntityHandleGuids(components, scene.entities, entry.refs)) {
+      const guid = field.guidString.toLowerCase();
+      if (field.componentName === 'MeshFilter' && field.fieldName === 'assetHandle') draw.add(guid);
+      else other.add(guid);
+    }
+    for (const [guid, descendant] of inputs.entries)
+      if (guid !== key) for (const ref of descendant.inputReferences) other.add(ref);
+    return new Set(
+      [...draw].filter((guid) => !other.has(guid) && inputs.entries.get(guid)?.kind === 'mesh'),
+    );
+  }
+
   private beginSourceIngestion(
     source: AssetSource,
     key: string,
@@ -2151,6 +2357,11 @@ export class AssetRegistry implements AssetReferenceOwner {
       staged: new Map(),
       visiting: new Set(),
       contentKeys,
+      ownedMeshes: new Map(),
+      renderMeshes:
+        options.usage === 'render' && policy === undefined
+          ? this.sourceRenderMeshes(key, inputs)
+          : new Set(),
       signal: options.signal,
       policy,
       failure: undefined,
@@ -2216,6 +2427,16 @@ export class AssetRegistry implements AssetReferenceOwner {
         decoderIdentity: entry.decoderIdentity,
       });
     }
+    // Another closure can start during an ingestion yield. In that case keep
+    // its decoded storage intact and commit our own ordinary copy.
+    for (const [guid, entry] of operation.ownedMeshes) {
+      if (operation.source.canTakeMesh(operation.root, guid, entry)) continue;
+      const handle = operation.staged.get(guid);
+      if (handle === undefined) throw new Error('Ingestion lost its staged Mesh');
+      const detached = operation.records.copyStagedMesh(handle);
+      if (!detached.ok) return detached;
+      operation.ownedMeshes.delete(guid);
+    }
     const committed = operation.records.commit();
     if (!committed.ok) return err(operation.failure ?? committed.error);
     operation.committed = true;
@@ -2231,7 +2452,27 @@ export class AssetRegistry implements AssetReferenceOwner {
             previous?.revision === revision ? previous.decoderIdentity : origin.decoderIdentity,
           revision,
         });
+        const ownedMesh = operation.ownedMeshes.get(guid)?.meshBody;
+        if (ownedMesh !== undefined) {
+          this.#ownedMeshBodies.set(
+            this.#runtime.borrowMeshForPresentation(handle).unwrap(),
+            ownedMesh,
+          );
+          operation.source.takeMesh(guid);
+        }
         if (origin.kind === 'texture-generator') this.hasTextureGenerators = true;
+      }
+      if (operation.renderMeshes.size > 0) {
+        const root = operation.staged.get(operation.root);
+        if (root !== undefined && operation.inputs.entries.get(operation.root)?.kind === 'scene') {
+          const scene = this.#runtime.borrow<SceneAsset>(root).unwrap();
+          const meshes = new Set<number>();
+          for (const guid of operation.renderMeshes) {
+            const mesh = this.#runtimeByGuid.get(guid);
+            if (mesh !== undefined) meshes.add(mesh);
+          }
+          this.#sceneRenderMeshes.set(scene, meshes);
+        }
       }
     } catch (cause) {
       // Records have been published; a metadata fault requires owner termination.
@@ -2477,18 +2718,38 @@ export class AssetRegistry implements AssetReferenceOwner {
       }
       return ok(existing as AssetHandle);
     }
+    const ownedMesh = this.takeSourceIngestionMesh(key, operation, existing, content, entry);
     return this.createRuntimeContent(
       content,
       [...dependencies],
       staged,
       existing as AssetHandle<BuiltinAssetKind> | undefined,
       (guid) => this.sourceIngestionContent(operation, guid, content.kind),
-      'copy',
+      ownedMesh ? 'take' : 'copy',
       records,
       (name) => inputs.schemas.get(name),
       () => this.ingestionGuard(operation),
       entry.refs,
+      ownedMesh ? 'render-transfer' : undefined,
     );
+  }
+
+  private takeSourceIngestionMesh(
+    key: string,
+    operation: SourceIngestionOperation,
+    existing: AssetHandle | undefined,
+    content: Asset,
+    entry: SourceEntry,
+  ): boolean {
+    const ownedMesh =
+      existing === undefined &&
+      content.kind === 'mesh' &&
+      operation.renderMeshes.has(key) &&
+      this.#runtime.canTransferMesh &&
+      isStandaloneStaticMesh(content) &&
+      operation.source.canTakeMesh(operation.root, key, entry);
+    if (ownedMesh) operation.ownedMeshes.set(key, entry);
+    return ownedMesh;
   }
 
   private prepareSourceIngestionScene(
@@ -2716,6 +2977,11 @@ export class AssetRegistry implements AssetReferenceOwner {
     );
   }
 
+  /** Check the consuming context before reusing a previously prepared publication. */
+  isPreparedPublicationCurrent(pack: RuntimePackEnvelope): boolean {
+    return this.publicationCandidateCurrent(this.#publicationCandidates.get(pack));
+  }
+
   /** Consume private preparation once, before the producer publishes its Catalog delta. */
   commitPreparedPublication(pack: RuntimePackEnvelope, beforeCommit?: () => void): void {
     const candidate = this.#publicationCandidates.get(pack);
@@ -2885,7 +3151,10 @@ export class AssetRegistry implements AssetReferenceOwner {
       replacements.get(guid.toLowerCase()) ??
       candidate.assets.get(guid.toLowerCase()) ??
       this.preparedSource(guid);
-    const adopt = (guid: string): Result<AssetHandle, RuntimeAssetError> => {
+    const adopt = (
+      guid: string,
+      records: AssetAdoption,
+    ): Result<AssetHandle, RuntimeAssetError> => {
       const key = guid.toLowerCase();
       const complete = staged.get(key);
       if (complete !== undefined) return ok(complete);
@@ -2930,34 +3199,30 @@ export class AssetRegistry implements AssetReferenceOwner {
       const dependencies: number[] = [];
       if (row.kind !== 'plugin' && this.#decoders.referencePolicy(row.kind) !== 'deferred')
         for (const ref of row.refs ?? []) {
-          const linked = adopt(ref);
+          const linked = adopt(ref, records);
           if (!linked.ok) return linked;
           dependencies.push(linked.value);
         }
       if (row.kind === 'material') this.installAdoptedMaterialProjection(asset, sourceContent);
-      let content = asset;
-      if (row.kind === 'scene') {
-        // Scene decoder leaves schema-dependent reference indices in source form.
-        // Resolve against this candidate's table before treating numbers as handles.
-        const linked = this.linkScene(asset as SceneAsset, staged, envelopes.get(key)?.refs);
-        if (!linked.ok) return linked;
-        content = linked.value.value;
-        dependencies.push(...linked.value.dependencies);
-      }
       const created = isBuiltinAssetKind(row.kind)
         ? this.createRuntimeContent(
-            content,
+            asset,
             dependencies,
             staged,
-            existing as AssetHandle<Asset['kind']> | undefined,
+            existing as AssetHandle<BuiltinAssetKind> | undefined,
             sourceContent,
+            'copy',
+            records,
+            undefined,
+            undefined,
+            envelopes.get(key)?.refs,
           )
-        : this.#runtime.adopt(
+        : records.adopt(
             row.kind,
-            content,
+            asset,
             dependencies,
             this.#decoders.canPrepare(row.kind) || replacements.has(key)
-              ? (owned: unknown) => this.prepareWithDecoder(row.kind, owned, staged)
+              ? (owned: unknown) => this.prepareWithDecoder(row.kind, owned, staged, records.reader)
               : undefined,
             existing,
           );
@@ -2966,10 +3231,10 @@ export class AssetRegistry implements AssetReferenceOwner {
       visiting.delete(key);
       return created;
     };
-    const result = this.#runtime.adoptClosure(
-      () => {
+    const result = this.#runtime.adoptPreparedClosure(
+      (records) => {
         for (const guid of rows.keys()) {
-          const value = adopt(guid);
+          const value = adopt(guid, records);
           if (!value.ok) return value;
         }
         // Scene compilation is pure. Validate nested bindings against the candidate
@@ -2977,7 +3242,7 @@ export class AssetRegistry implements AssetReferenceOwner {
         if (this.#world)
           for (const [guid, handle] of staged) {
             if (rows.get(guid)?.kind !== 'scene') continue;
-            const asset = this.#runtime.borrow<SceneAsset>(handle).unwrap();
+            const asset = records.reader.borrow<SceneAsset>(handle).unwrap();
             const compiled = compileKeyedSceneAsset(
               this.#world,
               handle as AssetHandle<'scene'>,
@@ -2992,7 +3257,7 @@ export class AssetRegistry implements AssetReferenceOwner {
                     ? err(new Error('Missing scene dependency'))
                     : ok(value as AssetHandle<'scene'>);
                 },
-                resolveAsset: (source) => this.#runtime.borrow<SceneAsset>(source),
+                resolveAsset: (source) => records.reader.borrow<SceneAsset>(source),
                 stack: new Set([Number(handle)]),
               },
             );
@@ -3020,6 +3285,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     if (!result.ok) return result;
     for (const [guid, handle] of staged) {
       this.#runtimeByGuid.set(guid, handle);
+      if (rows.get(guid)?.kind === 'texture-generator') this.hasTextureGenerators = true;
       if (!this.#runtimeGuids.has(handle)) {
         const row = rows.get(guid);
         if (row === undefined) throw new TypeError(`Missing staged catalog row ${guid}`);
@@ -3064,8 +3330,6 @@ export class AssetRegistry implements AssetReferenceOwner {
   }
   private catalogEnumerating: Promise<Result<readonly CatalogEntry[], AssetError>> | undefined;
   private readonly catalogListeners = new Set<CatalogListener>();
-  private catalogSourceDispose: (() => void) | undefined;
-  private catalogReplica: CatalogReplica | undefined;
 
   /** Owner-injected component catalog used for scene breadcrumb projection. */
   readonly componentCatalog: ReadonlyMap<string, Component>;
@@ -3073,7 +3337,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   runtimeBinding: RuntimeAssetBinding | undefined = undefined;
   readonly materialArtifactRegistry = new MaterialArtifactRegistry();
   readonly materialPayloadProjections = new WeakMap<object, MaterialRenderProjection>();
-  private assetEvidenceAdapter: RuntimeAssetEvidenceAdapter = createRuntimeAssetEvidenceAdapter();
+  private assetEvidenceSource?: RuntimeEvidenceSource;
 
   // Optional owner metrics shared with the renderer at assembly. Material
   // preparation and drawing record diagnostics when this sink is installed.
@@ -3181,11 +3445,11 @@ export class AssetRegistry implements AssetReferenceOwner {
 
   /**
    * Inject authoritative runtime evidence without importing CLI or Node policy.
-   * `inspect(guid)` and `verifyByGuid(guid)` return the shared state model; an
+   * `inspect(guid)` returns the shared state model; an
    * omitted capability remains an explicit structured error, never a pass.
    */
   configureAssetEvidence(source: RuntimeEvidenceSource): void {
-    this.assetEvidenceAdapter = createRuntimeAssetEvidenceAdapter(source);
+    this.assetEvidenceSource = source;
   }
 
   /**
@@ -3221,7 +3485,7 @@ export class AssetRegistry implements AssetReferenceOwner {
 
   /** Read one accepted navigation row without enumerating the Catalog. */
   catalogEntry(guid: string): CatalogEntry | undefined {
-    return this.catalogReplica?.get(guid);
+    return this.#source?.catalog?.get(guid);
   }
 
   /** Runtime content owns its accepted program projection; no source traversal occurs here. */
@@ -3345,8 +3609,8 @@ export class AssetRegistry implements AssetReferenceOwner {
       decoders: this.#decoders,
       ...(fetcher === undefined ? {} : { fetcher }),
     });
-    this.catalogReplica = this.#source.catalog;
-    this.catalogSourceDispose = this.catalogReplica.subscribe((delta) => {
+    const replica = this.#source.catalog;
+    replica.subscribe((delta) => {
       for (const listener of this.catalogListeners) {
         try {
           listener(delta);
@@ -3355,7 +3619,7 @@ export class AssetRegistry implements AssetReferenceOwner {
         }
       }
     });
-    void this.catalogReplica.start();
+    void replica.start();
   }
 
   clearCatalogSource(): void {
@@ -3363,22 +3627,19 @@ export class AssetRegistry implements AssetReferenceOwner {
     if (conflict !== undefined) throw conflict;
     this.#source?.dispose();
     this.#source = undefined;
-    this.catalogSourceDispose?.();
-    this.catalogSourceDispose = undefined;
     this.assetFetcher = undefined;
-    this.catalogReplica = undefined;
     this.catalogEnumerating = undefined;
   }
 
   enumerateCatalog(): Promise<Result<readonly CatalogEntry[], AssetError>> {
     if (this.catalogEnumerating !== undefined) return this.catalogEnumerating;
-    if (this.catalogSource === undefined || this.catalogReplica === undefined) {
+    const replica = this.#source?.catalog;
+    if (replica === undefined) {
       return Promise.resolve(catalogSourceUnconfigured());
     }
-    const replica = this.catalogReplica;
     const pending = replica.start();
     const promise = pending.then((result): Result<readonly CatalogEntry[], AssetError> => {
-      if (replica !== this.catalogReplica)
+      if (replica !== this.#source?.catalog)
         return err(
           new AssetError({
             code: 'asset-invalidated',
@@ -3398,11 +3659,11 @@ export class AssetRegistry implements AssetReferenceOwner {
 
   /** Read the immutable catalog projection folded by this registry. */
   catalogSnapshot(): CatalogReplicaSnapshot | undefined {
-    return this.catalogReplica?.snapshot();
+    return this.#source?.catalog?.snapshot();
   }
 
   reconcileCatalog(): Promise<CatalogReconcileResult> {
-    return this.catalogReplica?.reconcile() ?? Promise.resolve(catalogSourceUnconfigured());
+    return this.#source?.catalog?.reconcile() ?? Promise.resolve(catalogSourceUnconfigured());
   }
 
   subscribeCatalog(listener: CatalogListener): () => void {
@@ -3588,7 +3849,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   /** Return joined source/cook/package/runtime evidence for one GUID. */
   inspect(guid: string): Promise<Result<AssetEvidence, AssetEvidenceError>>;
   inspect(guid?: string): InspectSnapshot | Promise<Result<AssetEvidence, AssetEvidenceError>> {
-    if (guid !== undefined) return this.assetEvidenceAdapter.inspect(guid);
+    if (guid !== undefined) return this.inspectEvidence(guid);
     const assets: InspectEntry[] = [];
     for (const [guid, handle] of this.#runtimeByGuid) {
       const kind = this.#runtime.kind(handle);
@@ -3598,9 +3859,18 @@ export class AssetRegistry implements AssetReferenceOwner {
     return { assets };
   }
 
-  /** Verify the same GUID evidence chain through the injected SDK capability. */
-  verifyByGuid(guid: string): Promise<Result<AssetEvidence, AssetEvidenceError>> {
-    return this.assetEvidenceAdapter.verifyByGuid(guid);
+  private async inspectEvidence(guid: string): Promise<Result<AssetEvidence, AssetEvidenceError>> {
+    if (this.assetEvidenceSource === undefined) {
+      return err({
+        code: 'asset-evidence-capability-missing',
+        expected: 'an injected runtime evidence source',
+        hint: 'configure an evidence source before calling inspect(guid)',
+        detail: { capability: 'runtime evidence source', stage: `guid:${guid}` },
+      });
+    }
+    const input = await this.assetEvidenceSource.evidence(guid);
+    if ('ok' in input) return input.ok ? projectAssetEvidence(input.value) : input;
+    return projectAssetEvidence(input);
   }
 
   listCatalog(): readonly CatalogEntry[] {

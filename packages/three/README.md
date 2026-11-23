@@ -6,9 +6,7 @@ Material, Skin and managed assets. Forgeax owns the render graph, GPU submission
 resource lifetime and RHI capture. The package does not ship a Three GPU renderer
 or a runtime shader compiler.
 
-This is a bounded compatibility surface, not complete Three conformance. See
-COMPATIBILITY.md for defaults, supported source operations,
-measured rendering differences and the specific native contracts still missing.
+Start with the package design and maintenance guide for ownership, field synchronization, proposed direct ECS access and the evidence for a compatibility claim. The [package design map](#package-design-map) below links directly to this revision's code. The earlier compatibility review records version-specific measurements and physical texture recipes.
 WebGL backends are outside the target. The supported Three post-processing
 addon sequence is described below. The 118 public CPU addon subpaths share
 the facade's original constructor family and import no native renderer or cooked
@@ -140,6 +138,30 @@ resets both to zero; RendererUtils save/restore preserves them. They select no G
 subresource on the default framebuffer. The ordered target contract below covers
 non-null targets.
 
+## Package design map
+
+| When changing | Start in this package | Behavior to preserve |
+|:--|:--|:--|
+| r187 exports, declarations, loaders and CPU addons | [Public facade](src/index.ts), [CPU exports](src/cpu.ts), [bundled Three sources](tsup.config.ts), [API inventory](scripts/audit-api.mjs) | Imports must resolve to the same constructor family. A name or type match establishes API availability. Native consumption needs a behavioral check. |
+| Rendering or mounting into an existing World | [Renderer](src/renderer.ts), [mount](src/interop.ts), [scene projection](src/scene.ts) | Both entrances project the same source semantics. The host of a mixed World controls simulation and submission. See [World ownership](#share-a-native-world). |
+| Draw preparation and view selection | [Frame state](src/scene-state.ts), [mesh planning](src/scene-mesh-planning.ts), [view selection and order](src/scene-view.ts) | Scene projection owns ECS publication. Planning selects draw inputs and the view applies Three-specific ordering where required. |
+| Direct Three field edits, hierarchy, camera and view-dependent draws | [Change observation](src/source-changes.ts), [field storage](src/source-fields.ts), [owned collections](src/source-collections.ts), [camera](src/camera.ts) | Strict reads and opt-in tracking preserve source identity, publication order and visibility. Each projection consumes changes independently. See [tracking](#change-driven-scene-projection). |
+| Geometry, instances, animation poses and lights | [Geometry](src/geometry.ts), [instances](src/instance-geometry.ts), [skinning](src/skinning.ts), [shared skeletons](src/skeleton-changes.ts), [shadows](src/shadow.ts) | Publish native inputs. Keep Three-specific view selection and ordering where observable. Native Render owns eligible culling and command recording. |
+| Materials, live inputs, textures and leases | [Material projection](src/material.ts), [Surface producer](src/build/surface.ts), [Surface binding](src/node-surface.ts), [textures](src/texture.ts), [resource cache](src/shared-assets.ts) | Cook structural shader changes in the build. Publish admitted live values at runtime and retire shared assets through their owner. See [Surface contracts](#cooked-surface-expressions). |
+| Composer, targets, readback and environment capture | [Composer](src/addons/postprocessing/EffectComposer.ts), [render targets](src/render-targets.ts), [environment](src/environment.ts) | Preserve pass order, target readiness and the point where results become visible to later consumers. See [Composer](#three-addon-post-processing) and [target ordering](#ordered-hdr-targets-and-cube-environments). |
+
+**Hierarchy and transforms.** Scene consumes finite authored local TRS and preserves the source hierarchy with `ChildOf`. Scene derives `Children` and composes `GlobalTransform`, including affine world transforms inherited from non-uniformly scaled parents. The same pass writes back to the Three matrix cache. Rounded source quaternions are accepted as authored.
+
+A finite nonsingular manual local matrix publishes its decomposed TRS at the same position in the hierarchy. The original local matrix remains writable. A warning reports discarded authored shear without changing pose ownership. Scenes with frozen world matrices or custom update methods use source-driven projection. Explicit camera view overrides still require a rigid transform.
+
+Tracked stock `Points` can keep their draw and material observers across position or color version changes. With native transparent ordering and a previously accepted full-range, single-material point layout, content edits update the submitted geometry and its bounds directly. Changes to layout, point style or binding follow normal admission.
+
+In a standalone renderer, a full-range point list with stock, unnormalized Float32 position and optional RGB or RGBA color can reuse an accepted packed layout across content revisions. Each publication owns its vertex rows. The projection refreshes position, color and local bounds while reusing the static vertex lanes and index sequence. Custom readers, ranged or indexed geometry and shared native Worlds use general geometry projection.
+
+For ordinary contiguous unsigned geometry indices, projection can read the original typed buffer directly during admission. The published mesh owns its index bytes so a later source edit becomes visible on the next admitted revision. Group remapping, wireframe, normalized indices and custom getters use the general reader. A persistent alias from a Three field into a live ECS column remains a proposal.
+
+When changing behavior, update the corresponding contract in this README and the owning section of the design guide. Keep revision-specific measurements and game-port evidence in the linked design records.
+
 ## Use
 
 Install `@forgeax/engine` and add its shader plugin to the application's Vite
@@ -173,7 +195,10 @@ await renderer.setAnimationLoop(() => renderer.render(scene, camera));
 ```
 
 Rendering requires HTTPS or localhost. `init()` admits the renderer and packaged
-native material programs. Subsequent asset preparation can still be pending;
+compressed material publications. The first use of a packaged Physical recipe or
+the skinned-unlit family decodes and installs its programs synchronously. Mounts
+sharing an AssetRegistry reuse the installation. An ordinary Basic or Standard
+draw leaves these recipes compressed. Subsequent asset preparation can still be pending;
 `renderer.inspect().receipt.presentation` reports readiness. `render()` submits
 synchronously and does not advance an AnimationMixer or simulation clock.
 `renderAsync()` additionally admits borrowed GPU/video texture inputs before
@@ -198,15 +223,107 @@ The compatibility fixtures compare opaque and blended output against r187,
 including unpremultiplication before tone/color conversion and premultiplication
 afterward. Authored clear colors use the same premultiplied coverage law.
 
+### Change-driven scene projection
+
+Enable source tracking at the ForgeaX integration entry before constructing a scene.
+The scope covers new facade-owned scenes and containers, including assets constructed
+later while the scope is active. Call the returned function on game teardown. A scene
+created in the scope keeps its tracking policy after the scope ends.
+
+```ts
+import { enableThreeSourceTracking } from '@forgeax/engine/three';
+
+const endTrackingScope = enableThreeSourceTracking();
+const game = createGame(); // Ordinary Three constructors and field assignments.
+game.start();
+// On teardown, dispose the renderer or mount and close the creation scope.
+game.dispose();
+endTrackingScope();
+```
+
+The first successful projection indexes the hierarchy and shared resources. Both
+`renderer.render()` and `mountThreeScene().sync()` consume subsequent changes.
+An edit wakes the affected objects or shared resource users. Each projection
+consumes the changes independently. Existing references to colors, vectors,
+children arrays, matrix elements and geometry attributes retain their identity.
+Three's `needsUpdate` contract still applies to typed-array contents.
+Stock Matrix4 write kernels use the owned array storage and notify observers
+once per operation. The exposed elements array still observes direct writes.
+
+| Input | Work on subsequent submissions |
+|:--|:--|
+| Ordinary opaque meshes and transforms | Keep the native binding. The standalone renderer stages validated local TRS once and commits changed hierarchy links separately. Scene propagates the f32 world matrices, and the bridge reflects changed results to the existing Three caches. A mixed mount leaves propagation to its host. Explicit source-matrix and callback paths retain their source semantics. Publish changes to a shared material once per affected variant. |
+| Transparent meshes, lines, points, sprites, ordinary instances and grouped meshes | Keep eligible geometry and material bindings as the camera moves. The standalone renderer delegates mesh, line and point frustum visibility and default transparent order to Render. Stock sparse instance updates borrow a validated input window until the ECS range write. Tracked Sprites keep their bindings while the view controls submission. Pose-only edits skip material work. Re-entry restores the draw with its current material. Point size follows its projection inputs. Mixed World mounts and custom comparators retain the source ordering path. |
+| Basic and Standard NodeMaterial model fields | Original models with ordinary fields and inactive node inputs can retain the same native mesh binding as stock materials. Color and scalar edits patch the material parameters. Assigning a node input invalidates the binding and runs the current leaf or cooked-surface admission. |
+| Hidden ordinary draws | Keep accepted source resources pinned to the tracked binding while attached. Replacement, removal and source disposal retire the affected cache leases. Edits made while hidden are applied as the draw becomes visible. LOD-owned branches use the LOD selection rules. |
+| Explicit order and clipping | A single-material transparent Mesh or InstancedMesh with explicit order keeps a local view-dependent path. Its visibility changes do not require re-indexing the scene. A visible drawable outside every clipping group proves that a common camera plane cannot apply. Reevaluate this witness on visibility, hierarchy and layer changes. |
+| Stock texture and camera inputs | Observe CanvasTexture uploads through the source version. An active mesh can publish a texture revision independently of camera frustum visibility. If only out-of-view Sprites use a texture, the next admitted Sprite consumes the latest version. Eligible sRGB RGBA CanvasTexture revisions use the native Canvas producer on the default browser backend. Other revisions use the managed bytes route. Compatible Textures with one Source can share accepted managed bytes while preserving independent revisions and samplers. An ordinary camera can be a parent of retained draws. The cached view inverse comes from the Scene world matrix for an eligible rigid camera. |
+| Ambient, point, directional, spot and rectangular area lights | Propagate edits to light parameters, layers, pose and target. Retain the ambient sum for an unchanged camera mask. Observable stock shadow lights publish projection changes and manual refresh requests. Render owns the shadow map update policy. |
+| Camera, fog and background | Reuse an unchanged tracked camera descriptor and simple fog or background values. Dynamic texture sources retain their update rules. |
+| LOD, morphs, skinning and batched draws | Observe owned LOD levels and morph-weight arrays. For stock LODs reuse settled distance selections. A tracked bone layout directs world-matrix notifications to each mesh sharing the skeleton. Native palettes patch the changed joints. Foreign arrays retain matrix comparisons; opaque callback-driven matrix updates preserve Three traversal. BatchedMesh uses Three's selected draws and rebuilds geometry when its evaluated selection changes. |
+| Existing scenes, foreign arrays and live callbacks | `setThreeSceneTracking(scene, true)` enrolls existing objects. Containers with external aliases keep local comparisons. Custom callbacks and live Surface inputs are evaluated on submission. |
+| Structure, global ordering and external edits | Enroll or release changed branches. The default native order path keeps the existing bindings of unaffected source branches. Ambiguous indexed edits reconcile the affected parent. Global ordering, clipping and scene overrides can require a full projection. A mount consumes World changes for its owned entity slots, restores affected bindings and checks native pose-writer conflicts. |
+| First use of an equivalent stock material | A texture-free Basic or Standard mesh may reuse an admitted material definition of the same layout and render state. Its new handle has independently writable values and follows the source material's lifetime. |
+
+Tracked standard groups, bones and skinned meshes reuse resolved matrices across
+synchronous Three updates. Source-driven renderer preparation shares that result. A local pose edit invalidates composition, while a
+derived world write only publishes the new world result. Existing Three matrix
+objects, update flags and custom update dispatch retain their roles. A direct
+world edit remains visible to a child that updates without refreshing its
+parents.
+
+Attached skins use existing ECS joint entities when those rows represent the
+current source joint matrices and the attached bind cancels the mesh transform.
+Tracked standalone draws with ECS-owned joints keep their geometry, material,
+and skeleton bindings while the pose changes. Edits to joint identity, inverse
+binds, or draw inputs invalidate the binding. Foreign inverse-bind matrix
+arrays remain observable through comparisons. Detached bind, foreign or stale
+joint rows, and transforms that need a per-mesh correction use the projected
+pose path.
+
+Within an explicit construction scope, each new Object3D position, scale and quaternion receives shared component accessors before Three initializes the values. They remain instances of the original constructors. The public axes are enumerable; reflection can see accessors and private backing symbols before the first mount. Standalone math objects and objects created outside that scope start with the upstream descriptors. Late enrollment checks their existing fields. Each mount subscribes independently and the last release restores writable data fields for the tuples it observed.
+
+Tracking installs instance accessors on other observable fields. Select the default
+strict path with `setThreeSceneTracking(scene, false)` and synchronize before
+reflective edits such as deleting fields, redefining accessors, changing prototypes,
+or freezing observed objects. If objects are shared, switch every observing
+projection to strict mode before these operations. Final release restores the
+property descriptors with their current values.
+
+Inspect `renderer.inspect().sourceWork` or `mount.sourceWork()` for the last successful
+projection. It reports the mode, world-pose authority, resident nodes, retained view bindings, source nodes prepared
+(excluding the scene root and active camera), mesh plans, distinct material uses,
+changed transforms, moved draws checked for view reuse (`viewPoseChecks`), retained transparent ranks shifted by dynamic draws (`retainedRankUpdates`), tracked joint matrices examined (`jointReads`), foreign-input checks and parent-roster entries examined.
+These counts describe CPU compatibility work. Native rendering and per-view GPU
+work have their own measurements. After building this package, reproduce CPU
+samples and retained heap for each combination of scene and mode from the repository root.
+
+```sh
+node --expose-gc packages/three/scripts/measure-source-projection.mjs mixed tracked
+```
+
+The script accepts `meshes`, `mixed`, `lod`, `lod-posed`, `indices` or `custom-indices` and `strict`, `tracked` or `tracked-existing`. The last mode constructs ordinary objects first and opts in the completed scene. The two index workloads publish the same 300,000-index geometry after a version change. The custom case installs the stock getter as an own method to exercise general dispatch. The `lod` workload places one LOD with a moving transparent mesh beside 9,999 static transparent meshes. The `lod-posed` variant gives each static mesh a distinct starting rotation and position. Run each mode in a fresh process. `totalMiB` measures the JS heap increment from before scene creation through mount after GC. `retainedMiB` isolates the mount increment. The script also times
+source edits plus `mount.sync()` with a real World and a stub presentation endpoint.
+
 The source objects own their mutable state. Use ordinary `needsUpdate`, geometry
 attributes, material properties, skeleton poses, morph weights and disposal.
 Source color morphs rebuild existing vertex-color bytes only when geometry,
 targets or weights change; RGB/RGBA and relative/absolute targets retain source
 data. They currently require ordinary Mesh color attributes; per-instance color
-morphs remain explicit gaps. Source skinning for lit materials and instance
-expansion for per-instance colors,
-morphs and BatchedMesh trade CPU work and upload memory for compatibility. They
-are not claims of Three's instancing performance. Native Skylight continues to own
+morphs remain explicit gaps. Stock Standard skins can use the native GPU skin
+and shadow path when the joint transforms are compatible, the world scale is
+positive and uniform, and morph targets are absent. ForgeaX applies Three's
+point transform after skinning, including for non-unit weight sums. Contiguous
+stock normalized Uint8 and Uint16 weights retain their packed storage through
+GPU vertex fetch. Other lit skins reuse projected rest geometry and bake
+changed poses on the CPU. Instances sharing one RGB
+tint and ordinary orientation-preserving TRS matrices use one colored geometry
+and native instance transforms. Varying instance
+colors, instance morphs and BatchedMesh reuse the projected base geometry and
+expand the affected draw on a source revision.
+An InstancedMesh can hide pooled slots using finite affine matrices with all
+three scale axes collapsed to zero. Later matrix revisions can reactivate them.
+These paths have different costs from Three's native instancing. Native Skylight continues to own
 both diffuse environment lighting and reflections.
 
 ## Three addon post-processing
@@ -216,9 +333,13 @@ display sequence of `RenderPass`, optional `GTAOPass`, optional
 `UnrealBloomPass`, and final `OutputPass`. Pass `enabled` settings control their
 native graph work. The renderer owns scene MSAA, AO, HDR Bloom, and output
 encoding. Parameters map to the native filter and composition methods.
+The adapter multiplies r187 `UnrealBloomPass.strength` by nine at submission so
+the native HDR composite applies the same gain to the filtered levels.
 
-This route uses default GTAO output and internal geometry inputs. The active
-renderer supplies the display size and GPU outputs. Caller-owned targets,
+The GTAOPass adapter requests Standard GTAO with internal geometry inputs.
+Deferred uses GTAO and Forward uses Standard SSAO. Radius and intensity map
+to the active Standard method, and AO contributes to indirect lighting.
+The active renderer supplies the display size and GPU outputs. Caller-owned targets,
 pass-owned GPU texture reads, custom passes and GLSL are outside this sequence.
 
 ## Ordered HDR targets and cube environments
@@ -439,7 +560,9 @@ constructors share the existing unlit/Lambert/Normal/Matcap/PBR projection and s
 programs; source objects and material handles keep their original identity.
 Admission reads a fixed list of r187 node inputs and source-derived shader-hook
 references; it never walks or compiles a graph. Ordinary Material sources skip
-that scan. Unsupported graph inputs are rejected before publishing assets or World changes.
+that scan. Unsupported graph inputs reject the draw and leave the accepted asset revisions
+and existing draw bindings intact. Source entities, local poses, and parent links
+can already be published when resource admission fails.
 Physical diffuseRoughness and retroreflectivity remain unsupported, alongside the
 existing dispersion and nonuniform clearcoat-normal-scale boundary.
 
@@ -479,6 +602,12 @@ all QuadMesh instances. The r187 output route selects one premultiplied-alpha
 fragment entry in the existing output pass. It adds no binding layout, render pass or per-source
 shadow registry. Native straight-alpha output entries keep their existing path.
 
+Camera and mesh layer masks project into the native view and mesh components.
+An admitted ordinary opaque Basic or Standard mesh retains its binding across
+camera changes on the default ordering path. First use and source replacement
+still use view admission. Geometry and material edits continue to be observed.
+The native renderer consumes the source `frustumCulled` setting in both draw lanes.
+
 ## Share a native World
 
 `mountThreeScene({ world, renderer, scene, camera })` projects into an existing
@@ -511,15 +640,15 @@ static colliders and business components may be attached to source entities.
 Native references retain shared assets after unmount through the existing asset
 owner. Source removal also removes any components attached to that source entity.
 
-This initial surface allows one mount, one Three camera and one global Three
-environment per World. It rejects native hierarchy links and dynamic physics
-writers on source entities; repair those conflicts before retrying removal or
-unmount. CPU-backed resources follow the compatibility contract. Mixed mode does
+This surface allows one mount, one Three camera and one global Three
+environment per World. The mount owns the native edges mirrored from the Three
+hierarchy. Read `Transform` for the projected local pose and `GlobalTransform`
+after host propagation for the world pose. The mount rejects externally edited
+hierarchy edges, native children on source entities, and dynamic physics writers
+on source entities. CPU-backed resources follow the compatibility contract. Mixed mode does
 not provide external/video texture import, custom Scene render callbacks,
 reverse Object3D proxies, automatic pose writeback or Worker object transport.
-Direct property edits still require source discovery; unchanged component writes
-and resource replacements are skipped, and native mesh populations are not
-projected again. This is an experimental, bounded interoperation surface.
+Strict synchronization discovers direct source edits during submission. Opt-in tracking consumes field notifications and reevaluates the inputs that require a view or an explicit check. Both routes skip unchanged component writes and resource replacements. Native entities outside the mount retain their own update path. This is an experimental, bounded interoperation surface.
 
 ## Pending textures and shadows
 
@@ -542,14 +671,6 @@ texture.needsUpdate = true;
 `source.dataReady` alone does not upload new pixels. `texture.onUpdate` runs when
 the version is admitted to a ready native submission.
 
-The small-map variance startup tests retain Three's zero bias/normalBias defaults.
-Variance rendering also admits shadow receivers as casters, matching Three.
-Both references can therefore contain self-shadow stripes from forward-depth
-RG16F moments and zero comparison separation. Passing cross-renderer parity is
-not an acne-free quality verdict; native shadow quality uses independent
-shadow-on/off lighting and known-unoccluded receiver oracles. Increasing bias
-can suppress stripes while detaching contacts, so both conditions need checking.
-
 Shadows remain off until explicitly enabled:
 
 ```ts
@@ -565,12 +686,11 @@ sun.shadow.camera.updateProjectionMatrix();
 
 PCFSoftShadowMap is rejected, following its removal from r187 WebGPU.
 Directional shadows use the authored shadow camera. Point and spot shadows,
-Basic/PCF/VSM selection, shadow side/layers, bias, normal bias, radius,
+Basic/PCF selection, shadow side/layers, bias, normal bias, radius,
 intensity and manual `autoUpdate`/`needsUpdate` project to the native renderer.
 As in r187, point lights use Vogel filtering for every non-Basic selection.
 The adapter explicitly owns Three's shadow-sidedness policy: a null
-`shadowSide` reverses single-sided color culling for non-VSM shadows, while VSM
-uses the color side. An explicit `shadowSide` overrides either default. This
+`shadowSide` reverses single-sided color culling. An explicit `shadowSide` overrides this default. This
 projection stays independent of native generated casters, which preserve
 authored culling for contact correctness.
 Native Forgeax CSM defaults and the Game3D template's shadow distance are unchanged.
@@ -599,6 +719,55 @@ node packages/three/scripts/audit-api.mjs --output artifacts/three-compat/api-au
 The API inventory reports names and TypeScript admission, including unsupported
 native-dependent surfaces. It is not a compatibility percentage. Its full-surface
 `--check` remains deliberately red while those interfaces are missing.
+
+### Profile a render loop
+
+Use the existing Renderer profiler and GPU pass timing options to sample the CPU
+and GPU of an ordinary Three render loop. The Engine checkout provides the
+browser-side [frame capture helper](../../skills/forgeax-engine-performance/scripts/three_frame_capture.mjs).
+Import it from the local tools directory in the project running the capture.
+
+```ts
+import { readThreeFrame, WebGPURenderer } from '@forgeax/engine/three';
+import { createProfiler } from '@forgeax/engine-profiler';
+import { createThreeFrameCapture } from './tools/three_frame_capture.mjs';
+
+const profiler = createProfiler();
+const renderer = new WebGPURenderer({
+  canvas,
+  forgeax: { renderer: { profiler, gpuPassTiming: {} } },
+});
+
+// Start after normal scene preparation has completed.
+const capture = createThreeFrameCapture({
+  profiler,
+  readFrame: () => readThreeFrame(renderer),
+  frameLimit: 24,
+});
+
+function recordFrame() {
+  capture.recordFrame((measure) => {
+    measure('game update', updateGame);
+    measure('render', () => renderer.render(scene, camera));
+  });
+}
+
+// Call recordFrame for 24 animation callbacks, then save this as JSON.
+const profile = await capture.finish();
+```
+
+> [!NOTE]
+> The helper records the latest submission from each synchronous callback. Use
+> one display submission per callback, including an ordinary
+> `EffectComposer.render()`. Call `readThreeFrame` immediately after a different
+> draw when you need to observe that draw independently.
+
+The result preserves unsubmitted and pending callbacks. Its `cpu` value is the
+original Engine Profiler artifact for `forgeax profile summary`. Each completed
+ready submission carries its own GPU timing status and frame identity. Feed a
+chosen frame's `submission.observation.timings.frame` into the performance
+skill's `gpu.mjs timing` command. CPU wall time and GPU timestamps have
+independent clocks.
 
 ## TSL authoring and bounded material inputs
 
@@ -901,7 +1070,7 @@ Pure expressions are canonicalized by typed content, so upstream constant
 interning does not affect a host-neutral recipe's identity. Distinct mutable
 inputs retain separate reflected slots.
 A missing cooked program or unmatched recipe fails explicitly.
-Provide publications for all structural revisions through `forgeax.materialPrograms`.
+Provide publications for all structural revisions through `forgeax.materialPrograms`. Reuse the same publication list when mounting the same programs in the same asset registry. Each mount selects its own list, and edits to a reused list are checked on the next mount. The build emits base64-encoded Zstandard data containing an FXM1 header, validated material records and deduplicated binary shader artifacts. The player also reads earlier JSON-array publications. Ship a matching player when rebuilding assets in the new format.
 A promise for the publications lets loading overlap device startup. Await
 `renderer.init()` before drawing. The producer cooks new recipes, and the player
 loads the resulting publications before binding them.

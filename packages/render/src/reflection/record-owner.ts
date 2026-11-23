@@ -689,7 +689,6 @@ export class ReflectionProbeRecordOwner {
                   generation: array.generation,
                   size: array.size,
                   format: this.outputFormat,
-                  diffusePayload: resource.diffusePayload,
                 },
               }
             : {}),
@@ -1536,7 +1535,7 @@ export class ReflectionProbeRecordOwner {
     const diffuseAvailable =
       skylight !== undefined &&
       (skylight.equirectHandle === 0 ||
-        (cache?.irradianceView !== undefined &&
+        (cache?.skySh !== undefined &&
           cache.prefilterView !== undefined &&
           cache.brdfLutView !== undefined));
     const diffuse =

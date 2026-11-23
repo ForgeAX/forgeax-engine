@@ -1,9 +1,19 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Materials } from '../../materials';
+import { worldRenderResources } from '../../publication/resource-scope';
+import type { ValidatedRenderable } from '../../record/frame-snapshot';
+import type { RenderSystemInternals } from '../../record/render-context';
 import { writePointsLinesViewUbo } from '../../record/view-ubo';
 import type { CameraSnapshot } from '../../render-contract';
+import { RenderView } from '../../world/render-views';
+import { createRenderWorld } from '../../world/render-world';
+import { adoptViewPointsLines } from '../../world/view-points-lines';
 import { PointsLinesExpansionCache } from '../expansion-cache';
 import type { PointsLinesStyle } from '../snapshot';
 import { createPreparedPointsLinesSnapshot } from './snapshot-fixture';
@@ -89,6 +99,73 @@ describe('Point sprites', () => {
       );
     }
     expect(cache.size).toBe(1);
+  });
+
+  it('shares quad indices across equal point counts without changing held vertices', () => {
+    const cache = new PointsLinesExpansionCache();
+    const first = cache.getOrCreate(
+      snapshot(1),
+      cloud({ position: new Float32Array([1, 2, 3]), color: new Float32Array([1, 0, 0, 1]) }),
+    );
+    const next = cache.getOrCreate(
+      snapshot(2),
+      cloud({ position: new Float32Array([4, 5, 6]), color: new Float32Array([0, 1, 0, 1]) }),
+    );
+    const resized = cache.getOrCreate(
+      snapshot(3),
+      cloud({ position: new Float32Array([4, 5, 6, 7, 8, 9]) }),
+    );
+    expect(next.indices).toBe(first.indices);
+    expect(resized.indices).not.toBe(next.indices);
+    expect([...resized.indices]).toEqual([0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]);
+    expect(vertex(first.vertices, 0, 0)).toEqual([1, 2, 3, 1, 0, 0, -1, -1, 1, 0, 0, 1]);
+    expect(vertex(next.vertices, 0, 0)).toEqual([4, 5, 6, 1, 0, 0, -1, -1, 0, 1, 0, 1]);
+  });
+
+  it('uploads only vertices for a resident same-count edit and uploads resized indices', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const writes = vi.spyOn(device.queue, 'writeBuffer');
+    const renderWorld = createRenderWorld();
+    const view = renderWorld.spawn({ component: RenderView, data: { primary: true } }).unwrap();
+    const owner = adoptViewPointsLines(renderWorld, view, { device } as RenderSystemInternals);
+    const mesh = assets.create(cloud({ position: new Float32Array([1, 2, 3]) })).unwrap();
+    const material = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
+    const entry = {
+      source: {
+        assetHandle: mesh,
+        pointsLines: { ...snapshot(1), meshHandle: mesh, materialHandle: material },
+      },
+      world: worldRenderResources(world),
+    } as unknown as ValidatedRenderable;
+    try {
+      const first = owner.prepare(entry, false);
+      expect(first).toBeDefined();
+      if (first === undefined) throw new Error('expected drawable points');
+      expect(writes.mock.calls.map(([buffer]) => buffer)).toEqual([
+        first.vertexBuffer,
+        first.indexBuffer,
+      ]);
+
+      writes.mockClear();
+      assets.replace(mesh, cloud({ position: new Float32Array([4, 5, 6]) })).unwrap();
+      expect(owner.prepare(entry, false)?.indexBuffer).toBe(first.indexBuffer);
+      expect(writes.mock.calls.map(([buffer]) => buffer)).toEqual([first.vertexBuffer]);
+
+      writes.mockClear();
+      assets.replace(mesh, cloud({ position: new Float32Array([4, 5, 6, 7, 8, 9]) })).unwrap();
+      const resized = owner.prepare(entry, false);
+      expect(resized).toBeDefined();
+      expect(resized?.indexBuffer).not.toBe(first.indexBuffer);
+      expect(writes.mock.calls.map(([buffer]) => buffer)).toEqual([
+        resized?.vertexBuffer,
+        resized?.indexBuffer,
+      ]);
+    } finally {
+      owner.dispose();
+      assets.dispose();
+    }
   });
 
   it('uploads world-size attenuation and the soft shape label', () => {

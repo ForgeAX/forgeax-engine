@@ -3,9 +3,10 @@ import {
   transmissionBackdropAvailable,
 } from '../assembly/device-feature-admission';
 import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
-import { planarReflectionMaterialEntries } from '../capture/planar-material';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
+import { GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import { derivedRenderState } from '../material-render-state';
 import { materialResource } from '../material-resource';
 import { materialSourceScope } from '../material-source';
@@ -16,7 +17,7 @@ import { recordContext } from '../world/view-record-context';
 import {
   type GraphBindingViews,
   graphBindingViewsCurrent,
-  graphBindingViewsMatch,
+  materialBindingViewsCurrent,
   sameGraphBindingViews,
 } from './graph-binding-views';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
@@ -92,7 +93,8 @@ import {
   omittedStandardMaterialBindings,
   physicalTextureFields,
   programDeclaresTransmissionBackdrop,
-  projectSurfaceMaterialBindings,
+  projectedStandardMaterialLayout,
+  projectMaterialLayoutEntries,
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
@@ -509,7 +511,7 @@ export function materialCanvasTextureView(
   if (!isCanvasTextureSource(source) || store === undefined) return undefined;
   const local = canvasTextureState(source);
   const published = world.canvasFrame?.(renderTextureSourceKey(source));
-  const image = local?.canvas ?? published?.frame;
+  const image = local?.frame ?? local?.canvas ?? published?.frame;
   const key = local ?? published?.key;
   if (key === undefined) return undefined;
   if (image === undefined) return store.getView(key);
@@ -1170,12 +1172,9 @@ function projectIblMaterialBinding(
   iblStart: number,
   retain: boolean,
 ): IblBindingInspection['material'] {
-  const start = entries.findIndex((entry) => entry.binding === iblStart);
-  if (start < 0) return undefined;
   const projected: IblBindingEntryInspection[] = [];
-  for (let i = start; i < Math.min(entries.length, start + 6); i++) {
-    const entry = entries[i];
-    if (entry === undefined) continue;
+  for (const entry of entries) {
+    if (entry.binding < iblStart || entry.binding >= iblStart + 6) continue;
     const { kind } = entry.resource;
     if (kind === 'externalTexture' || kind === 'accelerationStructure') continue;
     const value = kind === 'buffer' ? entry.resource.value.buffer : entry.resource.value;
@@ -1188,12 +1187,13 @@ function projectIblMaterialBinding(
       projected.push(retain ? Object.freeze(fact) : fact);
     }
   }
+  if (projected.length === 0) return undefined;
   const bindings = projected.map((entry) => entry.binding);
   const fact: NonNullable<IblBindingInspection['material']> = {
     bindGroupIdentity: getOpaqueResourceIdentity(bindGroup),
     materialBglIdentity: getOpaqueResourceIdentity(materialBgl),
     cache: retain ? 'hit' : 'miss',
-    skylightBindingStart: entries[start]?.binding ?? 0,
+    skylightBindingStart: iblStart,
     entries: retain ? Object.freeze(projected) : projected,
     reflectionBindings: retain ? Object.freeze(bindings) : bindings,
   };
@@ -1284,6 +1284,7 @@ function materialBindingCurrency(
   perShader: BindGroupLayout | undefined,
   runtime: RenderSystemRuntime,
   pipeline: PipelineState,
+  standardMaterialLayoutIndex: number,
 ): () => boolean {
   const owner = materialResource(material);
   const sources: MaterialSnapshot = {
@@ -1312,11 +1313,15 @@ function materialBindingCurrency(
       runtime.shaderRegistry === registry &&
       sameMaterialProgramDeclaration(declaration, current) &&
       sameMaterialFallback(fallback, pipeline.skylightFallback) &&
-      (perShader === undefined
-        ? pipeline.materialBindGroupLayout === bgl
-        : shaderId !== undefined &&
+      (perShader === undefined ||
+        (shaderId !== undefined &&
           runtime.lookupMaterialBindGroupLayout?.(shaderId, sources.materialParamSchema) ===
-            perShader)
+            perShader)) &&
+      resolveSubmeshMaterialLayout(
+        pipeline.materialBindGroupLayout,
+        perShader,
+        standardMaterialLayoutIndex,
+      ) === bgl
     );
   };
 }
@@ -1324,7 +1329,7 @@ function materialBindingCurrency(
 function sameMaterialFallback(a: SkylightFallback | null, b: SkylightFallback | null): boolean {
   if (a === null || b === null) return a === b;
   return (
-    a.irradianceView === b.irradianceView &&
+    a.skySh === b.skySh &&
     a.prefilterView === b.prefilterView &&
     a.brdfLutView === b.brdfLutView &&
     a.sampler === b.sampler &&
@@ -1425,10 +1430,9 @@ function sameSkylightBindings(
   b: SkylightBindGroupResources,
 ): boolean {
   return (
-    a.irradianceView === b.irradianceView &&
+    a.skySh === b.skySh &&
     a.irradianceSampler === b.irradianceSampler &&
     a.prefilterView === b.prefilterView &&
-    a.skylightPrefilterView === b.skylightPrefilterView &&
     a.prefilterSampler === b.prefilterSampler &&
     a.brdfLutView === b.brdfLutView &&
     a.intensityBuffer === b.intensityBuffer
@@ -1456,12 +1460,13 @@ export function isMaterialBgAssemblyCacheHit(
   // physical view. Resolve those views each frame; the lower binding cache is
   // keyed by the actual GPU resources and still reuses unchanged bindings.
   if (
-    !graphBindingViewsMatch(graphViews, [
-      ['backdrop', transmissionBackdropView],
-      ['raw-depth', surfaceRawDepthView],
-      ['nearest-layer', surfaceNearestLayerView],
-      ['nearest-depth', surfaceNearestDepthView],
-    ]) ||
+    !materialBindingViewsCurrent(
+      graphViews,
+      transmissionBackdropView,
+      surfaceRawDepthView,
+      surfaceNearestLayerView,
+      surfaceNearestDepthView,
+    ) ||
     (material.textureSources?.size ?? 0) > 0 ||
     (material.videoTextureFields?.size ?? 0) > 0
   )
@@ -1469,7 +1474,6 @@ export function isMaterialBgAssemblyCacheHit(
   return (
     cached !== undefined &&
     sameGraphBindingViews(cached.graphViews, graphViews) &&
-    (graphViews === undefined || graphBindingViewsCurrent(graphViews)) &&
     sameMaterialBindingSources(cached.material, material) &&
     resourcesCurrent &&
     cached.materialBgl === materialBgl &&
@@ -1512,6 +1516,7 @@ interface MaterialBgAssembly {
     | undefined;
   resident: boolean;
   missingBaseColor: boolean;
+  readonly standardMaterialLayoutIndex?: number;
 }
 
 function materialBindingSampler(assembly: MaterialBgAssembly, field: string | undefined): Sampler {
@@ -1578,6 +1583,58 @@ function materialBindingGroup(
       );
 }
 
+/** Physical group and address prepared together from the accepted material resources. */
+export function resolveMaterialReflection(
+  deps: PerSubmeshMaterialBgDeps,
+  material: MaterialSnapshot,
+  world: RenderResourceScope,
+  entityKey: number | undefined,
+  resourceClass: string | undefined,
+) {
+  return deps.resolveReflectionProbeResources?.(
+    materialSourceScope(world, material.sourceAssets),
+    entityKey,
+    resourceClass,
+  );
+}
+
+export interface MainPassMaterialBinding {
+  readonly group: BindGroup;
+  readonly byteOffset: number;
+  readonly dynamicOffsetCount: 0 | 1;
+  readonly reflection?: import('../reflection/primitive-bindings').PrimitiveReflection;
+}
+
+export type MainPassMaterialBindingResolver = (
+  slot: number,
+  material: MaterialSnapshot,
+  entityKey: number | undefined,
+  world: RenderResourceScope,
+  shader?: string,
+  standardMaterialLayoutIndex?: number,
+) => MainPassMaterialBinding;
+
+function recordCachedMaterialIbl(
+  frame: PerSubmeshMaterialBgDeps['frameState'],
+  cached: MaterialBgAssemblyCacheEntry,
+): void {
+  if (frame.iblBindingInspection !== undefined) {
+    let material = cached.iblMaterial;
+    if (material === undefined) {
+      material = projectIblMaterialBinding(
+        cached.materialBgl,
+        cached.bindGroup,
+        cached.descriptor.entries,
+        cached.skylightBindingStart,
+        true,
+      );
+      cached.iblMaterial = material;
+    }
+    if (material !== undefined)
+      publishIblBindingReceipt(frame, frame.iblBindingInspection, material);
+  }
+}
+
 export function buildPerSubmeshMaterialBg(
   deps: PerSubmeshMaterialBgDeps,
   submeshMaterial: MaterialSnapshot,
@@ -1586,18 +1643,22 @@ export function buildPerSubmeshMaterialBg(
   materialShaderId: string | undefined = submeshMaterial.materialShaderId,
   _materialSlot = 0,
   resourceClass?: string,
+  standardMaterialLayoutIndex = 0,
+  reflection?: ReturnType<typeof resolveMaterialReflection> | null,
 ): BindGroup {
   materialWorld = materialSourceScope(materialWorld, submeshMaterial.sourceAssets);
-  const { runtime, pipelineState, store, transmissionBackdropView } = deps;
+  const { runtime, pipelineState, store } = deps;
   const materialBuffer = meshSsboBuffer(
     pipelineState.materialUniformBuffer,
     materialUniformSlot(runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
   );
-  const selectedProbe = deps.resolveReflectionProbeResources?.(
-    materialWorld,
-    entityKey,
-    resourceClass,
-  );
+  const primitiveReflection = isCanonicalStandardPbrMaterialShader(materialShaderId);
+  const transmissionBackdropView = primitiveReflection ? undefined : deps.transmissionBackdropView;
+  const selectedProbe = primitiveReflection
+    ? undefined
+    : reflection === undefined
+      ? deps.resolveReflectionProbeResources?.(materialWorld, entityKey, resourceClass)
+      : (reflection ?? undefined);
   const effectiveSkylightResources = selectedProbe?.resources ?? deps.skylightResources;
   const smMaterialHandle = submeshMaterial.materialHandle;
   const probeIndex = selectedProbe?.probeIndex;
@@ -1608,10 +1669,9 @@ export function buildPerSubmeshMaterialBg(
     materialShaderId,
     effectiveSkylightResources,
   );
-  const graphViews = materialAssemblyGraphViews(
-    deps.graphViews,
-    surfaceMediumResources !== undefined,
-  );
+  const graphViews = primitiveReflection
+    ? undefined
+    : materialAssemblyGraphViews(deps.graphViews, surfaceMediumResources !== undefined);
   const surfaceGraphInputs = surfaceMediumResources === undefined ? undefined : deps;
   const fluidSimulation = resolveWaterFluidResources(deps, materialShaderId);
   // The cooked shader schema owns the resource ABI. A material snapshot may
@@ -1625,7 +1685,11 @@ export function buildPerSubmeshMaterialBg(
     materialShaderId !== undefined
       ? runtime.getMaterialBindGroupLayout?.(materialShaderId, smSchema)
       : undefined;
-  const smMaterialBgl = smPerShaderBgl ?? pipelineState.materialBindGroupLayout;
+  const smMaterialBgl = resolveSubmeshMaterialLayout(
+    pipelineState.materialBindGroupLayout,
+    smPerShaderBgl,
+    standardMaterialLayoutIndex,
+  );
   const sceneMaterialBuffer = directSceneMaterialBuffer(deps);
   if (smMaterialHandle !== undefined && !smHasVideoFields && fluidSimulation === undefined) {
     const cached = deps.materialBgAssemblyCache.get(
@@ -1634,6 +1698,7 @@ export function buildPerSubmeshMaterialBg(
       materialShaderId,
       probeIndex,
       graphViews,
+      standardMaterialLayoutIndex,
     );
     if (
       isMaterialBgAssemblyCacheHit(
@@ -1654,21 +1719,7 @@ export function buildPerSubmeshMaterialBg(
         surfaceGraphInputs?.surfaceNearestDepthView,
       )
     ) {
-      if (deps.frameState.iblBindingInspection !== undefined) {
-        let material = cached.iblMaterial;
-        if (material === undefined) {
-          material = projectIblMaterialBinding(
-            cached.materialBgl,
-            cached.bindGroup,
-            cached.descriptor.entries,
-            cached.skylightBindingStart,
-            true,
-          );
-          cached.iblMaterial = material;
-        }
-        if (material !== undefined)
-          publishIblBindingReceipt(deps.frameState, deps.frameState.iblBindingInspection, material);
-      }
+      recordCachedMaterialIbl(deps.frameState, cached);
       const slot = prepareMaterialUniform(
         deps,
         submeshMaterial,
@@ -1693,6 +1744,7 @@ export function buildPerSubmeshMaterialBg(
       smPerShaderBgl,
       runtime,
       pipelineState,
+      standardMaterialLayoutIndex,
     ),
     material: submeshMaterial,
     entityKey,
@@ -1709,6 +1761,7 @@ export function buildPerSubmeshMaterialBg(
     graphViews,
     perShaderBgl: smPerShaderBgl,
     bgl: smMaterialBgl,
+    standardMaterialLayoutIndex,
     store,
     runtime,
     pipelineState,
@@ -1717,6 +1770,14 @@ export function buildPerSubmeshMaterialBg(
     missingBaseColor: false,
   };
   return assembleMaterialBg(deps, assembly, materialBuffer, fluidSimulation);
+}
+
+function resolveSubmeshMaterialLayout(
+  full: BindGroupLayout,
+  perShader: BindGroupLayout | undefined,
+  layoutIndex: number,
+): BindGroupLayout {
+  return projectedStandardMaterialLayout(full, layoutIndex) ?? perShader ?? full;
 }
 
 /** Storage-capable devices bind the shared scene Material table (or its neutral placeholder). */
@@ -1856,7 +1917,8 @@ function assembleMaterialBg(
   materialBuffer: Buffer,
   fluidSimulation: WaterFluidBindGroupResources | undefined,
 ): BindGroup {
-  const { runtime, pipelineState, materialSlice, transmissionBackdropView } = deps;
+  const { runtime, pipelineState, materialSlice } = deps;
+  const ownsBackdrop = !isCanonicalStandardPbrMaterialShader(assembly.shaderId);
   const { skylight: effectiveSkylightResources, surfaceMediumResources } = assembly;
   const derivedSchema = assembly.schema === undefined ? undefined : derive(assembly.schema);
   // The admitted schema owns the same fixed physical slots as the BGL builder.
@@ -1917,15 +1979,8 @@ function assembleMaterialBg(
         fluidSimulation,
       );
   compactMaterialEntries(smMergedEntries, omittedTransmissionBindings);
-  if (!litMaterial && derivedSchema?.parameterTypes.get('planarReflection') === 'u32')
-    smMergedEntries.push(
-      ...planarReflectionMaterialEntries(
-        pipelineState.viewUniformBuffer,
-        deps.planarReflectionView,
-        effectiveSkylightResources.brdfLutView,
-      ),
-    );
-  if (!litMaterial) appendSharedMaterialTables(smMergedEntries, deps, derivedSchema);
+  if (!litMaterial)
+    appendSharedMaterialTables(smMergedEntries, deps, derivedSchema, assembly.shaderId);
   const uniformResources = materialUniformResources([
     ...smBaseEntries.slice(1).map(extractEntryResourceHandle),
     ...physicalTextureInjections.flatMap((entry) => [entry.sampler, entry.view]),
@@ -1949,11 +2004,7 @@ function assembleMaterialBg(
         value: { buffer: uniformBuffer, offset: 0, size: materialSlice },
       },
     };
-  smMergedEntries = projectSurfaceMaterialBindings(
-    smMergedEntries,
-    runtime.shaderRegistry,
-    assembly.shaderId,
-  );
+  smMergedEntries = projectMaterialLayoutEntries(assembly.bgl, smMergedEntries);
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
   requireCurrentGraphViews(deps.graphViews);
   const smBindGroup = materialBindingGroup(
@@ -1963,7 +2014,7 @@ function assembleMaterialBg(
     deps.materialBgShared,
     assembly.shaderId,
     materialCacheHandles,
-    transmissionBackdropView != null,
+    ownsBackdrop && deps.transmissionBackdropView != null,
     deps.bindGroupCounts,
   );
   requireCurrentGraphViews(deps.graphViews);
@@ -2122,22 +2173,6 @@ function appendUserRegionEntries(
     const canonicalSlot = fields[fi];
     const sharedResource = sharedSlots ? sharedTransmissionResource(canonicalSlot) : undefined;
     const samplerBinding = userRegionSamplerBinding(derivedSchema, storageBound, canonicalSlot, fi);
-    if (sharedResource === 'transmissionBackdropTexture') {
-      entries.push(
-        {
-          binding: samplerBinding,
-          resource: { kind: 'sampler', value: pipelineState.defaultSampler },
-        },
-        {
-          binding: samplerBinding + 1,
-          resource: {
-            kind: 'textureView',
-            value: deps.transmissionBackdropView ?? pipelineState.defaultWhiteTextureView,
-          },
-        },
-      );
-      continue;
-    }
     const slot = sharedResource ?? canonicalSlot;
     const field =
       slot !== undefined && isStandardPbrMaterialShader(assembly.shaderId)
@@ -2457,8 +2492,15 @@ function appendSharedMaterialTables(
   entries: BindGroupEntry[],
   deps: PerSubmeshMaterialBgDeps,
   derivedSchema: ReturnType<typeof derive> | undefined,
+  shaderId: string | undefined,
 ): void {
-  if (derivedSchema?.parameterTypes.get('directMultiscatteringLut') === 'u32') {
+  if (
+    derivedSchema?.parameterTypes.get('directMultiscatteringLut') === 'u32' &&
+    !isCanonicalStandardPbrMaterialShader(shaderId) &&
+    sharedMaterialBindingDeclarations(deps.runtime.shaderRegistry, shaderId)?.includes(
+      STANDARD_DIRECT_DFG_LUT_BINDING,
+    ) !== false
+  ) {
     const lut = getOrCreateDirectDfgLut(
       deps.runtime.device,
       recordContext(deps.runtime).deviceScope,
@@ -2511,18 +2553,19 @@ function retainMaterialBgAssembly(
     assembly.hasVideoFields ||
     (material.textureSources?.size ?? 0) > 0 ||
     !assembly.resident ||
-    !graphBindingViewsMatch(graphViews, [
-      ['backdrop', deps.transmissionBackdropView],
-      ['raw-depth', surfaceGraphInputs?.surfaceRawDepthView],
-      ['nearest-layer', surfaceGraphInputs?.surfaceNearestLayerView],
-      ['nearest-depth', surfaceGraphInputs?.surfaceNearestDepthView],
-    ]) ||
+    !materialBindingViewsCurrent(
+      graphViews,
+      isCanonicalStandardPbrMaterialShader(assembly.shaderId)
+        ? undefined
+        : deps.transmissionBackdropView,
+      surfaceGraphInputs?.surfaceRawDepthView,
+      surfaceGraphInputs?.surfaceNearestLayerView,
+      surfaceGraphInputs?.surfaceNearestDepthView,
+    ) ||
     scopeIdentity === undefined
   )
     return;
-  const planar =
-    assembly.schema !== undefined &&
-    derive(assembly.schema).parameterTypes.get('planarReflection') === 'u32';
+  const planar = surfaceMediumResources !== undefined;
   const sceneMaterialBuffer = directSceneMaterialBuffer(deps);
   const resourceFacts = {
     material,
@@ -2577,6 +2620,7 @@ function retainMaterialBgAssembly(
         : {}),
       bindGroup,
     },
+    assembly.standardMaterialLayoutIndex,
   );
 }
 
@@ -2592,9 +2636,22 @@ function materialEnvironmentIbl(
   if (skylight?.featureEnvironment) {
     const source = skylight.featureEnvironment,
       owner = recordContext(runtime as RenderSystemRuntime).sharedFeatureGpuWork;
-    const irradiance = owner?.resolveTextureCube(source.feature, source.irradiance),
-      prefilter = owner?.resolveTexture(source.feature, source.prefilter);
-    environmentIbl = irradiance && prefilter ? { irradiance, prefilter } : undefined;
+    const skySh = owner?.resolveNamedBuffer(source.feature, source.skySh);
+    const prefilter = owner?.resolveTexture(source.feature, source.prefilter);
+    if (
+      skySh !== undefined &&
+      (skySh.size !== SKY_SH_BYTES || (skySh.physicalUsage & GPU_BUFFER_USAGE_UNIFORM) === 0)
+    ) {
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'feature Skylight Sky SH is a 112-byte uniform buffer',
+        hint: 'Publish seven packed vec4 coefficients with uniform usage before lighting.',
+      });
+    }
+    environmentIbl =
+      skySh !== undefined && prefilter !== undefined
+        ? { skySh: skySh.buffer, prefilter }
+        : undefined;
   }
   if (skylight?.targetEnvironment !== undefined) {
     environmentIbl = resolveTargetEnvironment(skylight.targetEnvironment, runtime.device);
@@ -2635,7 +2692,7 @@ export function resolveMaterialSkylight(
   }
   // Select only the completed output of this scene's authored image. Pipeline
   // caching is device-wide; image radiance is scoped to its source resource.
-  let activeViews: { irr: TextureView; pref: TextureView; brdf: TextureView } | undefined;
+  let activeViews: { skySh: Buffer; pref: TextureView; brdf: TextureView } | undefined;
   const uniformPayload = ZERO_SKYLIGHT_PAYLOAD.slice();
   if (
     skylight !== undefined &&
@@ -2644,7 +2701,7 @@ export function resolveMaterialSkylight(
     imageIbl !== undefined
   ) {
     activeViews = {
-      irr: imageIbl.irradianceView,
+      skySh: imageIbl.skySh,
       pref: imageIbl.prefilterView,
       brdf: imageIbl.brdfLutView,
     };
@@ -2652,7 +2709,7 @@ export function resolveMaterialSkylight(
   environmentIbl = materialEnvironmentIbl(runtime, skylight, environmentIbl);
   if (environmentIbl !== undefined && skylight !== undefined && skylight.equirectHandle === 0) {
     activeViews = {
-      irr: environmentIbl.irradiance,
+      skySh: environmentIbl.skySh,
       pref: environmentIbl.prefilter,
       brdf: activeViews?.brdf ?? skylightFallback.brdfLutView,
     };

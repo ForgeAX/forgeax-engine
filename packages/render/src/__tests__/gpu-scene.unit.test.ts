@@ -29,6 +29,7 @@ import {
   GpuScene,
   type GpuSceneResourceFrame,
 } from '../gpu-scene';
+import { PrimitiveAllocations, SlotWrite } from '../gpu-scene-allocations';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from '../material-row';
@@ -41,6 +42,7 @@ import type {
   RenderableSnapshot,
 } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
@@ -1471,6 +1473,43 @@ describe('GpuScene', () => {
     persistent.dispose();
   });
 
+  it('uploads changing native rows and journals their old and new bounds from columns', () => {
+    const queue = new RecordingQueue();
+    const gpu = GpuScene.create(createDevice(queue), 1).unwrap().scene;
+    const projection = new RenderScene();
+    const seed = snapshot(0);
+    const pose = new Float32Array(seed.transform.world);
+    const output = vi.spyOn(projection, 'writeCullingWorldBoundsAt');
+    const authored = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+    const matrixWindow = vi.spyOn(SceneDrawSlot.prototype, 'transform', 'get');
+    try {
+      const initial = projection.apply([updateSnapshot(seed)]);
+      authored.mockClear();
+      gpu.sync(initial, undefined, projection).unwrap();
+      expect(authored).not.toHaveBeenCalled();
+      for (let tick = 1; tick <= 100; tick++) {
+        const before = gpu.contentCursor;
+        pose[12] = tick;
+        const delta = projection.apply([{ kind: 'update', entityKey: 0, world: pose }]);
+        authored.mockClear();
+        gpu.sync(delta, undefined, projection).unwrap();
+        expect(authored).not.toHaveBeenCalled();
+        expect(residentTransforms(queue, gpu).current(1)).toBe(tick);
+        expect(gpu.changedBoundsSince(before)).toEqual(
+          Float32Array.of(tick - 2, -1, -1, tick, 1, 1, tick - 1, -1, -1, tick + 1, 1, 1),
+        );
+      }
+      expect(matrixWindow).not.toHaveBeenCalled();
+      expect(output).toHaveBeenCalledTimes(101);
+      expect(new Set(output.mock.calls.map(([, box]) => box)).size).toBe(1);
+    } finally {
+      matrixWindow.mockRestore();
+      authored.mockRestore();
+      output.mockRestore();
+      gpu.dispose();
+    }
+  });
+
   it('preserves the prior root transform on transform-only updates', () => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 1).unwrap();
@@ -1505,6 +1544,34 @@ describe('GpuScene', () => {
     });
   });
 
+  it('writes only current motion fields into one GPU upload scratch per reader', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    scene.apply([updateSnapshot(instanceSnapshot(0, 2)), updateSnapshot(snapshot(1))]);
+    scene.commitSubmission(scene.captureSubmission([{ entityKey: 0 }]));
+    const frame = scene.slotsSnapshot();
+    const first = frame.at(0);
+    const second = frame.at(1);
+    assert(first && second);
+    const read = scene.gpuMotionReader();
+    const before = scene.temporalSnapshotBySlot(first.slot);
+    const live = read(first);
+    expect(live).toEqual({
+      motionValid: before?.motionValid,
+      reactive: before?.reactive,
+      previousInstances: before?.previousInstances,
+    });
+    const after = scene.temporalSnapshotBySlot(second.slot);
+    expect(read(second)).toBe(live);
+    expect(live).toEqual({
+      motionValid: after?.motionValid,
+      reactive: after?.reactive,
+      previousInstances: after?.previousInstances,
+    });
+    expect(before?.previousInstances).toBeDefined();
+    expect(after?.previousInstances).toBeUndefined();
+  });
+
   it('maps GPU previous instance transforms by stable generation after reorder', () => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 4).unwrap();
@@ -1523,9 +1590,7 @@ describe('GpuScene', () => {
     expect(projection.temporalSnapshotBySlot(slot.slot)?.motionValid).toBe(true);
 
     queue.writes.length = 0;
-    created.scene
-      .sync(delta, (current) => projection.temporalSnapshotBySlot(current.slot))
-      .unwrap();
+    created.scene.sync(delta, projection.gpuMotionReader()).unwrap();
     const mapped = residentTransforms(queue, created.scene);
     const first = created.scene.instanceIndexForSlot(slot.slot, 0);
     expect(first).toBeDefined();
@@ -1544,9 +1609,7 @@ describe('GpuScene', () => {
     const retiredDelta = projection.apply([updateInstances(retired)]);
     expect(projection.temporalSnapshotBySlot(slot.slot)?.motionValid).toBe(true);
     queue.writes.length = 0;
-    created.scene
-      .sync(retiredDelta, (current) => projection.temporalSnapshotBySlot(current.slot))
-      .unwrap();
+    created.scene.sync(retiredDelta, projection.gpuMotionReader()).unwrap();
     const compacted = residentTransforms(queue, created.scene);
     expect([compacted.current(local(0)), compacted.previous(local(0))]).toEqual([11, 9]);
   });
@@ -3009,4 +3072,258 @@ it('keeps suffix table writes dirty when an earlier ordinary upload fails', asyn
     scene.dispose();
     projection.dispose();
   }
+});
+
+it('invalidates a prepared table copy once per physical upload range across retries', async () => {
+  const queue = new FailingQueue();
+  const created = GpuScene.create(createDevice(queue), 8).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const owner = new RenderScene();
+  const ids = Array.from({ length: 4096 }, (_, i) => i + 1);
+  scene.sync(owner.apply([updateSnapshot(multiInstanceSnapshot(7, ids, ids))])).unwrap();
+  const work = scene.prepareSourceCapacity(
+    [snapshot(8)],
+    () => {},
+    () => true,
+  );
+  let step = work.next();
+  while (!step.done) step = work.next();
+  const task = step.value;
+  const dirty = vi.spyOn(task, 'dirty');
+  const buffers = {
+    primitive: scene.primitiveBuffer,
+    instance: scene.instanceBuffer,
+    transform: scene.transformBuffer,
+    material: scene.materialBuffer,
+  };
+  try {
+    queue.writes.length = 0;
+    const remove = owner.apply([{ kind: 'remove', entityKey: 7 }]);
+    queue.failWrites = true;
+    expect(scene.sync(remove).ok).toBe(false);
+    const firstFailure = dirty.mock.calls.slice();
+    dirty.mockClear();
+    expect(scene.sync(remove).ok).toBe(false);
+    const retry = dirty.mock.calls.slice();
+    dirty.mockClear();
+    queue.failWrites = false;
+    const restored = scene.sync(remove).unwrap();
+    expect(restored.cleared).toBe(1);
+    // Every touched byte, including the failing attempt's suffix, remains pending.
+    const ranges = queue.writes.map(({ buffer, offset, bytes }) => {
+      expect(bytes.some((value) => value !== 0)).toBe(false);
+      const name = Object.entries(buffers).find(([, target]) => target === buffer)?.[0];
+      return [name, offset, bytes.byteLength];
+    });
+    expect(ranges).toHaveLength(restored.ranges);
+    expect(
+      ranges.some(
+        ([name, , bytes]) =>
+          name === 'instance' && bytes === ids.length * GPU_SCENE_LAYOUTS.instance.stride,
+      ),
+    ).toBe(true);
+    expect(firstFailure).toHaveLength(ranges.length);
+    expect(retry).toEqual(ranges);
+    expect(dirty.mock.calls).toEqual(ranges);
+    expect(firstFailure).toEqual(ranges);
+  } finally {
+    dirty.mockRestore();
+    await queue.onSubmittedWorkDone();
+    while (!task.retireStep()) {
+      /* drain the prepared copy */
+    }
+    scene.dispose();
+    owner.dispose();
+  }
+});
+
+it('reclaims large scene tables while every remaining pose moves and an old frame holds its buffers', async () => {
+  const queue = new RecordingQueue();
+  const device = createDevice(queue);
+  const created = GpuScene.create(device, 8).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const projection = new RenderScene();
+  const keep = 800;
+  const poses = Array.from({ length: keep }, (_, i) => snapshot(i + 1, i));
+  const ids = Array.from({ length: 8192 }, (_, i) => i + 1);
+  const large = multiInstanceSnapshot(keep + 1, ids, ids);
+  const initial = projection.apply([...poses.map(updateSnapshot), updateSnapshot(large)]);
+  scene.sync(initial).unwrap();
+  scene.commitFrame().unwrap();
+  const rootField = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex');
+  const roots = initial.createdSlots
+    .slice(0, keep)
+    .map((slot) => primitiveView(queue, scene, slot.slot).getUint32(rootField, true));
+  const peak = scene.inspect().tables;
+  const original = scene.transformBuffer;
+  const destroy = vi.spyOn(device, 'destroyBuffer');
+  const pinned = scene.captureResources().unwrap();
+  pinned.inputReads();
+  pinned.seal().unwrap();
+  let held = true;
+  let copying = false;
+  try {
+    for (let frame = 1; frame <= 72; frame++) {
+      const updates = poses.map((source, i) => ({
+        kind: 'update' as const,
+        entityKey: source.entityKey,
+        world: snapshot(source.entityKey, frame * 1024 + i).transform.world,
+      }));
+      queue.writes.length = 0;
+      scene
+        .sync(
+          projection.apply(
+            frame === 2 ? [{ kind: 'remove', entityKey: large.entityKey }, ...updates] : updates,
+          ),
+        )
+        .unwrap();
+      const resident = residentTransforms(queue, scene);
+      let correct = true;
+      for (let i = 0; i < keep; i++) {
+        const root = roots[i] as number;
+        if (
+          resident.current(root) !== frame * 1024 + i ||
+          resident.previous(root) !== (frame - 1) * 1024 + i
+        )
+          correct = false;
+      }
+      expect(correct).toBe(true);
+      scene.commitFrame().unwrap();
+      copying ||= (scene.inspect().tableReclamation?.privateBytes ?? 0) > 0;
+    }
+    const final = scene.inspect();
+    expect(final.tables.transform.bytes).toBeLessThan(peak.transform.bytes / 4);
+    expect(final.tables.primitive.bytes).toBeLessThan(peak.primitive.bytes / 4);
+    expect(final.tables.instance.bytes).toBeLessThan(peak.instance.bytes / 4);
+    expect(copying).toBe(true);
+    expect(final.tableReclamation).toMatchObject({ failures: 0, privateBytes: 0 });
+    expect(scene.transformBuffer).not.toBe(original);
+    await queue.onSubmittedWorkDone();
+    expect(destroy.mock.calls.some(([buffer]) => buffer === original)).toBe(false);
+    pinned.release();
+    held = false;
+    await queue.onSubmittedWorkDone();
+    await Promise.resolve();
+    expect(destroy.mock.calls.some(([buffer]) => buffer === original)).toBe(true);
+  } finally {
+    if (held) pinned.release();
+    scene.dispose();
+    projection.dispose();
+    destroy.mockRestore();
+  }
+});
+
+it.each([
+  'private-write-failure',
+  'regrowth',
+  'source-priority',
+] as const)('preserves the live table and resumes reclamation after %s', async (mode) => {
+  const queue = new RecordingQueue();
+  const device = createDevice(queue);
+  const created = GpuScene.create(device, 8).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const owner = new RenderScene();
+  const ids = Array.from({ length: 4096 }, (_, i) => i + 1);
+  const large = multiInstanceSnapshot(9, ids, ids);
+  scene.sync(owner.apply([updateSnapshot(snapshot(1)), updateSnapshot(large)])).unwrap();
+  scene.commitFrame().unwrap();
+  const old = scene.instanceBuffer;
+  scene.sync(owner.apply([{ kind: 'remove', entityKey: 9 }])).unwrap();
+  const originalWrite = queue.writeBuffer.bind(queue);
+  const active = new Set([scene.primitiveBuffer, old, scene.transformBuffer, scene.materialBuffer]);
+  let interrupted = false;
+  let source: import('../gpu-scene-capacity').GpuSceneCapacityPreparation | undefined;
+  let resume = 0;
+  const write = vi.spyOn(queue, 'writeBuffer').mockImplementation((...args) => {
+    if (mode === 'private-write-failure' && !interrupted && !active.has(args[0])) {
+      interrupted = true;
+      return err(
+        new RhiError({ code: 'internal-error', expected: 'private upload', hint: 'retry' }),
+      );
+    }
+    return originalWrite(...args);
+  });
+  try {
+    for (let frame = 1; frame <= 128; frame++) {
+      queue.writes.length = 0;
+      const move = {
+        kind: 'update' as const,
+        entityKey: 1,
+        world: snapshot(1, frame).transform.world,
+      };
+      if (
+        !interrupted &&
+        mode !== 'private-write-failure' &&
+        (scene.inspect().tableReclamation?.privateBytes ?? 0) > 0
+      ) {
+        interrupted = true;
+        resume = frame + 4;
+        if (mode === 'regrowth') {
+          scene.sync(owner.apply([move, updateSnapshot(large)])).unwrap();
+          expect(scene.instanceIndexForSlot(1, ids.length - 1)).toBeDefined();
+        } else {
+          const work = scene.prepareSourceCapacity(
+            [snapshot(10)],
+            () => {},
+            () => true,
+          );
+          let step = work.next();
+          while (!step.done) step = work.next();
+          source = step.value;
+        }
+      } else if (frame === resume && mode === 'regrowth')
+        scene.sync(owner.apply([move, { kind: 'remove', entityKey: 9 }])).unwrap();
+      else scene.sync(owner.apply([move])).unwrap();
+      scene.commitFrame().unwrap();
+      if (resume > frame) expect(scene.instanceBuffer).toBe(old);
+      if (source !== undefined && frame === resume) {
+        expect(source.isValid()).toBe(true);
+        await queue.onSubmittedWorkDone();
+        while (!source.retireStep()) {
+          /* exact private allocation */
+        }
+        source = undefined;
+      }
+    }
+    expect(interrupted).toBe(true);
+    expect(scene.instanceBuffer).not.toBe(old);
+    expect(scene.inspect().tableReclamation).toMatchObject({
+      reductions: 1,
+      failures: mode === 'private-write-failure' ? 1 : 0,
+      privateBytes: 0,
+    });
+  } finally {
+    write.mockRestore();
+    await queue.onSubmittedWorkDone();
+    if (source !== undefined)
+      while (!source.retireStep()) {
+        /* drain private storage */
+      }
+    scene.dispose();
+    owner.dispose();
+  }
+});
+
+it('keeps the strongest write for overlapping slot lanes and drops it on the next attempt', () => {
+  const slots = new PrimitiveAllocations();
+  slots.beginWrites();
+  slots.requireWrite(12, SlotWrite.full);
+  slots.requireWrite(12, SlotWrite.instances);
+  slots.prepareSlot(130);
+  slots.requireWrite(130, SlotWrite.instances);
+  expect(slots.writeClass(12)).toBe(SlotWrite.full);
+  slots.requireWrite(12, SlotWrite.reset);
+  expect(slots.writeClass(12)).toBe(SlotWrite.reset);
+  expect(slots.writeClass(130)).toBe(SlotWrite.instances);
+  slots.beginWrites();
+  expect(slots.writeClass(12)).toBe(SlotWrite.pose);
+  expect(slots.writeClass(130)).toBe(SlotWrite.pose);
+  slots.clear();
+  slots.prepareSlot(130);
+  slots.beginWrites();
+  slots.requireWrite(130, SlotWrite.instances);
+  expect(slots.writeClass(130)).toBe(SlotWrite.instances);
 });

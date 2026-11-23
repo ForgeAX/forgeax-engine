@@ -8,8 +8,8 @@ import {
   prepareLiveSyncSharedInputs,
 } from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { readProjectFacts } from '../project.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
 
 const engineRoot = resolve(import.meta.dirname, '../../../engine');
 const contentAssets = resolve(import.meta.dirname, '../../../content/assets');
@@ -77,7 +77,7 @@ async function catalogRows(
   let server: ViteDevServer | undefined;
   try {
     const config = await createViteConfig(facts.value, 'serve', '/', {
-      server: { port: await allocateLoopbackPort(), strictPort: true },
+      server: { port: await materializeViteDevPort(), strictPort: true },
     });
     server = await createServer(config);
     await server.listen();

@@ -9,10 +9,7 @@ import type {
 } from '../lifecycle';
 import type { OutputColorSpaceState } from '../output-color-space';
 import type { GpuPassTimingError } from '../record/gpu-pass-timing/errors.js';
-import type {
-  GpuPassTimingCapture,
-  GpuPassTimingFrameIdentity,
-} from '../record/gpu-pass-timing/index.js';
+import type { GpuPassTimingCapture } from '../record/gpu-pass-timing/index.js';
 import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
@@ -75,7 +72,7 @@ export interface WebGPURendererInternals {
     onStaleLoss?: () => void;
   };
   getMaterialShaderUvSetCount?: (materialShaderId: string) => number | undefined;
-  gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
+  gpuPassTimingDeviceGeneration?: number | undefined;
   gpuPassTimingCapture?: GpuPassTimingCapture | undefined;
   gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   observationCaptureOwner?: RenderPipelineObservationCaptureOwner;

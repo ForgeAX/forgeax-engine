@@ -8,7 +8,17 @@ it('matches full physical atmosphere on actual WebGL2, including opaque and blen
   const reference = await fullAtmosphereCases('webgpu');
   const actual = await fullAtmosphereCases('wgpu-webgl2');
   const evidence = [];
-  for (const key of ['day', 'noAerial', 'sunset', 'high', 'vacuum', 'fog', 'ao'] as const) {
+  for (const key of [
+    'day',
+    'noAerial',
+    'sunset',
+    'high',
+    'vacuum',
+    'fog',
+    'ao',
+    'fast',
+    'fastWithoutAP',
+  ] as const) {
     const error = atmosphereImageError(reference[key], actual[key]);
     expect(error.p95, `${key} p95`).toBeLessThanOrEqual(0.02);
     expect(error.p99, `${key} p99`).toBeLessThanOrEqual(0.05);
@@ -44,6 +54,10 @@ it('matches full physical atmosphere on actual WebGL2, including opaque and blen
     JSON.stringify(
       {
         images: evidence,
+        fastVersusRgb: {
+          webgpu: atmosphereImageError(reference.fast, reference.day),
+          webgl2: atmosphereImageError(actual.fast, actual.day),
+        },
         planar: {
           p99RelativeError: planarErrors[Math.floor(planarErrors.length * 0.99)],
           maxRelativeError: planarErrors.at(-1),

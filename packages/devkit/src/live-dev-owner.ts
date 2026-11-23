@@ -1,16 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  rename,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { processAlive } from './backend-lifetime.js';
 
 /**
  * Process-level helpers for the optional live owner. They keep `dev start`
@@ -90,19 +82,6 @@ export function changedLiveOptions(
     .map(([key]) => key);
 }
 
-/** Readers see the previous or the next complete file, never a partial one. */
-export async function writeFileAtomic(path: string, contents: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, contents, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, path);
-  } catch (error) {
-    await unlink(temporary).catch(() => {});
-    throw error;
-  }
-}
-
 /** The project's `dev start` owner record. */
 export function liveSessionRecordPath(root: string): string {
   return resolve(root, '.forgeax', 'dev-session.json');
@@ -121,16 +100,6 @@ export async function liveOwnerRecorded(root: string): Promise<boolean> {
     return typeof record?.endpoint === 'string' && processAlive(record.pid);
   } catch {
     return false;
-  }
-}
-
-export function processAlive(pid: unknown): boolean {
-  if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
-  try {
-    process.kill(pid as number, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

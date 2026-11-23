@@ -221,6 +221,8 @@ function toGpuVertexFormat(
     case 'float32x3':
     case 'float32x4':
     case 'uint16x4':
+    case 'unorm8x4':
+    case 'unorm16x4':
     case 'uint32':
       return format;
     default:

@@ -33,6 +33,10 @@ import { fnv1aUtf16 } from '@forgeax/engine-types';
 // feat-20260629-multi-uv-set-support m3-w4: uv1..uv7 + clamp-to-last alias (D-1).
 
 import {
+  MESH_BIN_SKIN_WEIGHT_UNORM8 as SKIN_WEIGHT_UNORM8,
+  MESH_BIN_SKIN_WEIGHT_UNORM16 as SKIN_WEIGHT_UNORM16,
+} from '@forgeax/engine-pack/mesh-bin-contract';
+import {
   ASSET_ERROR_HINTS,
   AssetError,
   err,
@@ -62,6 +66,9 @@ const ATTRIBUTE_FORMAT_MAP = {
 } as const;
 
 type AttributeKey = keyof typeof ATTRIBUTE_FORMAT_MAP;
+type AttributeFormat = (typeof ATTRIBUTE_FORMAT_MAP)[AttributeKey] | 'unorm8x4' | 'unorm16x4';
+const SKIN_WEIGHT_PRESENT = 1 << 5;
+const SKIN_WEIGHT_FORMAT_BITS = SKIN_WEIGHT_UNORM8 | SKIN_WEIGHT_UNORM16;
 
 export interface GpuVertexBufferLayoutEntry {
   readonly arrayStride: number;
@@ -115,9 +122,9 @@ type Entry = {
  * The stride never grows; a trailing invented region would make every later
  * vertex read the wrong bytes.
  */
-function emitAliasEntries(entries: Entry[], toIndex: number): void {
+function emitAliasEntries(entries: Entry[], toIndex: number): Entry | undefined {
   const source = entries.filter((entry) => UV_KEYS.includes(entry.key)).at(-1) ?? entries[0];
-  if (source === undefined) return;
+  if (source === undefined) return undefined;
   for (let k = 0; k < toIndex && k < UV_KEYS.length; k++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded index on const array
     const uvKey = UV_KEYS[k]!;
@@ -129,6 +136,7 @@ function emitAliasEntries(entries: Entry[], toIndex: number): void {
       format: ATTRIBUTE_FORMAT_MAP[uvKey],
     });
   }
+  return source;
 }
 
 /**
@@ -159,39 +167,9 @@ export function deriveVertexBufferLayout(
 ): GpuVertexBufferLayoutEntry[] {
   const shaderUvSetCount = opts?.shaderUvSetCount ?? 0;
 
-  // Process present keys in canonical order; absent keys reserve no space.
-  const entries: Entry[] = [];
-  let offset = 0;
-
-  for (const key of CANONICAL_KEYS) {
-    if (map[key] === undefined) continue;
-    entries.push({
-      key,
-      shaderLocation: CANONICAL_KEYS.indexOf(key),
-      offset,
-      format: ATTRIBUTE_FORMAT_MAP[key],
-    });
-    offset += bytesForFormat(ATTRIBUTE_FORMAT_MAP[key]);
-  }
-
-  if (entries.length === 0) return [];
-
-  // ── clamp-to-last alias (plan-strategy D-1) ──
-  if (shaderUvSetCount > 0) emitAliasEntries(entries, shaderUvSetCount);
-
-  // Sort by shaderLocation for deterministic vertex buffer descriptor
-  entries.sort((a, b) => a.shaderLocation - b.shaderLocation);
-
-  return [
-    {
-      arrayStride: offset,
-      attributes: entries.map(({ shaderLocation, offset: entryOffset, format }) => ({
-        shaderLocation,
-        offset: entryOffset,
-        format,
-      })),
-    },
-  ];
+  return deriveVertexBufferLayoutFromProjection(deriveVertexLayoutProjection(map), {
+    shaderUvSetCount,
+  });
 }
 
 /** Build the GPU descriptor from an immutable projection, adding only shader UV aliases. */
@@ -207,7 +185,31 @@ export function deriveVertexBufferLayoutFromProjection(
   }));
   const arrayStride = projection.arrayStride;
   const shaderUvSetCount = opts?.shaderUvSetCount ?? 0;
-  if (shaderUvSetCount > 0) emitAliasEntries(entries, shaderUvSetCount);
+  const originalCount = entries.length;
+  const uvSource = shaderUvSetCount > 0 ? emitAliasEntries(entries, shaderUvSetCount) : undefined;
+  if (projection.streams !== undefined) {
+    const aliases = entries.slice(originalCount);
+    return projection.streams.map((stream) => {
+      const aliasSource = stream.attributes.find((attribute) => attribute.key === uvSource?.key);
+      return {
+        arrayStride: stream.arrayStride,
+        attributes: [
+          ...stream.attributes.map(({ shaderLocation, offset, format }) => ({
+            shaderLocation,
+            offset,
+            format,
+          })),
+          ...(aliasSource === undefined
+            ? []
+            : aliases.map(({ shaderLocation, format }) => ({
+                shaderLocation,
+                format,
+                offset: aliasSource.offset,
+              }))),
+        ],
+      };
+    });
+  }
   entries.sort((a, b) => a.shaderLocation - b.shaderLocation);
   return projection.attributes.length === 0
     ? []
@@ -227,13 +229,20 @@ export interface VertexLayoutProjectionAttribute {
   readonly key: AttributeKey;
   readonly shaderLocation: number;
   readonly offset: number;
-  readonly format: (typeof ATTRIBUTE_FORMAT_MAP)[AttributeKey];
+  readonly format: AttributeFormat;
   readonly byteLength: number;
 }
 
 /** Immutable geometry-owned projection consumed by packers and GPU consumers. */
+export interface VertexStreamProjection {
+  readonly arrayStride: number;
+  readonly attributes: readonly VertexLayoutProjectionAttribute[];
+}
+
 export interface VertexLayoutProjection {
   readonly schemaVersion: 1;
+  /** GPU streams in binding order. The ordinary attribute table describes the CPU source. */
+  readonly streams?: readonly VertexStreamProjection[];
   readonly attributes: readonly VertexLayoutProjectionAttribute[];
   readonly mask: number;
   readonly arrayStride: number;
@@ -267,8 +276,8 @@ export function deriveVertexCount(
 }
 
 function bytesForFormat(format: string): number {
-  if (format === 'uint32') return 4;
-  if (format === 'uint16x4' || format === 'float32x2') return 8;
+  if (format === 'uint32' || format === 'unorm8x4') return 4;
+  if (format === 'uint16x4' || format === 'unorm16x4' || format === 'float32x2') return 8;
   if (format === 'float32x3') return 12;
   return 16;
 }
@@ -276,24 +285,58 @@ function bytesForFormat(format: string): number {
 function storageOf(value: unknown): VertexAttributeStorage {
   if (value instanceof ArrayBuffer) return 'array-buffer';
   if (value instanceof Float32Array) return 'float32';
+  if (value instanceof Uint8Array) return 'uint8';
   if (value instanceof Uint16Array) return 'uint16';
   if (value instanceof Uint32Array) return 'uint32';
   return 'other';
 }
 
+function sourceStorage(format: AttributeFormat): 'float32' | 'uint8' | 'uint16' | 'uint32' {
+  switch (format) {
+    case 'unorm8x4':
+      return 'uint8';
+    case 'unorm16x4':
+    case 'uint16x4':
+      return 'uint16';
+    case 'uint32':
+      return 'uint32';
+    default:
+      return 'float32';
+  }
+}
+
+export type VertexAttributeArray = Float32Array | Uint8Array | Uint16Array | Uint32Array;
+
+export function vertexAttributeArrayType(format: string): {
+  new (length: number): VertexAttributeArray;
+  new (buffer: ArrayBufferLike, byteOffset?: number, length?: number): VertexAttributeArray;
+  readonly BYTES_PER_ELEMENT: number;
+} {
+  switch (format) {
+    case 'unorm8x4':
+      return Uint8Array;
+    case 'unorm16x4':
+    case 'uint16x4':
+      return Uint16Array;
+    case 'uint32':
+      return Uint32Array;
+    default:
+      return Float32Array;
+  }
+}
+
 export function elementView(
   value: VertexAttributeMap[AttributeKey],
   format: string,
-): Float32Array | Uint16Array | Uint32Array | undefined {
-  if (value instanceof Float32Array || value instanceof Uint16Array || value instanceof Uint32Array)
+): VertexAttributeArray | undefined {
+  if (value instanceof ArrayBuffer) return new (vertexAttributeArrayType(format))(value);
+  if (
+    value instanceof Float32Array ||
+    value instanceof Uint8Array ||
+    value instanceof Uint16Array ||
+    value instanceof Uint32Array
+  )
     return value;
-  if (value instanceof ArrayBuffer) {
-    return format === 'uint16x4'
-      ? new Uint16Array(value)
-      : format === 'uint32'
-        ? new Uint32Array(value)
-        : new Float32Array(value);
-  }
   return undefined;
 }
 
@@ -306,6 +349,184 @@ function fnv1a(input: string): string {
 // cache by a mesh/map object: authoring maps may change in place.
 const layoutsByMask = new Map<number, VertexLayoutProjection>();
 
+export interface MeshVertexStreamRange {
+  readonly offset: number;
+  readonly size: number;
+}
+
+const staticStreamLayouts = new WeakMap<VertexLayoutProjection, VertexLayoutProjection>();
+
+function staticStreamSlot(key: AttributeKey): 0 | 1 | 2 | 3 {
+  if (key === 'position') return 0;
+  if (key === 'color') return 3;
+  return UV_KEYS.includes(key) ? 2 : 1;
+}
+
+function staticStreamLayout(source: VertexLayoutProjection): VertexLayoutProjection {
+  const existing = staticStreamLayouts.get(source);
+  if (existing !== undefined) return existing;
+  const groups: [
+    VertexLayoutProjectionAttribute[],
+    VertexLayoutProjectionAttribute[],
+    VertexLayoutProjectionAttribute[],
+    VertexLayoutProjectionAttribute[],
+  ] = [[], [], [], []];
+  for (const attribute of source.attributes)
+    groups[staticStreamSlot(attribute.key)].push(attribute);
+  const streams = groups
+    .filter((group) => group.length !== 0)
+    .map((group) => {
+      let arrayStride = 0;
+      const attributes = group.map((attribute) => {
+        const offset = arrayStride;
+        arrayStride += attribute.byteLength;
+        return Object.freeze({ ...attribute, offset });
+      });
+      return Object.freeze({ arrayStride, attributes: Object.freeze(attributes) });
+    });
+  const layout = Object.freeze({
+    ...source,
+    digest: `${source.digest}:static-streams/1`,
+    streams: Object.freeze(streams),
+  });
+  staticStreamLayouts.set(source, layout);
+  return layout;
+}
+
+/** Position, tangent basis, UV and color ranges share the same word count as canonical rows. */
+export function projectStaticMeshVertexStreams(
+  sourceLayout: VertexLayoutProjection,
+  count: number,
+):
+  | {
+      readonly layout: VertexLayoutProjection;
+      readonly ranges: readonly MeshVertexStreamRange[];
+    }
+  | undefined {
+  if (
+    sourceLayout.streams !== undefined ||
+    sourceLayout.attributes[0]?.key !== 'position' ||
+    sourceLayout.attributes.some(({ key }) => key === 'skinIndex' || key === 'skinWeight')
+  )
+    return undefined;
+  if (!Number.isSafeInteger(count) || count <= 0) return undefined;
+  const layout = staticStreamLayout(sourceLayout);
+  const streams = layout.streams;
+  if (streams === undefined || streams.length < 2) return undefined;
+  let offset = 0;
+  const ranges = streams.map(({ arrayStride }) => {
+    const size = arrayStride * count;
+    const range = Object.freeze({ offset, size });
+    offset += size;
+    return range;
+  });
+  return { layout, ranges: Object.freeze(ranges) };
+}
+
+/** Rebuild canonical rows explicitly for consumers that need that physical order. */
+export function interleaveStaticMeshVertexStreams(
+  vertices: Float32Array,
+  sourceLayout: VertexLayoutProjection,
+): Float32Array {
+  const count = deriveVertexCount(vertices, sourceLayout);
+  const physical =
+    count === undefined ? undefined : projectStaticMeshVertexStreams(sourceLayout, count);
+  const streams = physical?.layout.streams;
+  if (count === undefined || streams === undefined || physical === undefined)
+    throw new TypeError('Invalid static mesh stream layout');
+  const source = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
+  const words = new Uint32Array(vertices.length);
+  for (const [slot, stream] of streams.entries()) {
+    const range = physical.ranges[slot];
+    if (range === undefined) throw new Error('Missing static mesh stream range');
+    for (const attribute of stream.attributes) {
+      const target = sourceLayout.attributes.find(({ key }) => key === attribute.key);
+      if (target === undefined) throw new Error('Missing canonical mesh attribute');
+      let from = (range.offset + attribute.offset) / 4;
+      let to = target.offset / 4;
+      const width = attribute.byteLength / 4;
+      for (let vertex = 0; vertex < count; vertex++) {
+        for (let lane = 0; lane < width; lane++) {
+          // biome-ignore lint/style/noNonNullAssertion: the projected count and format bound this read
+          words[to + lane] = source[from + lane]!;
+        }
+        from += stream.arrayStride / 4;
+        to += sourceLayout.arrayStride / 4;
+      }
+    }
+  }
+  return new Float32Array(words.buffer);
+}
+
+/** Project and pack canonical rigid rows, with deferred allocation for residency reuse. */
+export function prepareStaticMeshVertexStreams(
+  vertices: Float32Array,
+  sourceLayout: VertexLayoutProjection,
+):
+  | {
+      readonly layout: VertexLayoutProjection;
+      readonly ranges: readonly MeshVertexStreamRange[];
+      pack(slot?: number, output?: Uint32Array): Uint32Array;
+    }
+  | undefined {
+  const count = deriveVertexCount(vertices, sourceLayout);
+  const physical =
+    count === undefined ? undefined : projectStaticMeshVertexStreams(sourceLayout, count);
+  if (count === undefined || physical === undefined) return undefined;
+  const { layout, ranges } = physical;
+  const streams = layout.streams;
+  if (streams === undefined) return undefined;
+  const copyStream = (
+    stream: VertexStreamProjection,
+    source: Uint32Array,
+    bytes: Uint32Array,
+    offset: number,
+  ): void => {
+    for (const attribute of stream.attributes) {
+      const original = sourceLayout.attributes.find(({ key }) => key === attribute.key);
+      if (original === undefined)
+        throw new Error('Missing source attribute for a static vertex stream');
+      let from = original.offset / 4;
+      let to = (offset + attribute.offset) / 4;
+      const words = attribute.byteLength / 4;
+      for (let vertex = 0; vertex < count; vertex++) {
+        for (let word = 0; word < words; word++) {
+          // biome-ignore lint/style/noNonNullAssertion: count and canonical width bound the input
+          bytes[to + word] = source[from + word]!;
+        }
+        from += sourceLayout.arrayStride / 4;
+        to += stream.arrayStride / 4;
+      }
+    }
+  };
+  return {
+    layout,
+    ranges,
+    pack(slot, output) {
+      if (output?.buffer === vertices.buffer)
+        throw new RangeError('Static stream output must not alias its source');
+      const source = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
+      if (slot !== undefined) {
+        const stream = streams[slot];
+        if (stream === undefined) throw new RangeError('Missing static mesh vertex stream slot');
+        const words = (stream.arrayStride * count) / 4;
+        const bytes = output ?? new Uint32Array(words);
+        if (bytes.length !== words) throw new RangeError('Invalid static stream output size');
+        copyStream(stream, source, bytes, 0);
+        return bytes;
+      }
+      const bytes = output ?? new Uint32Array(vertices.length);
+      if (bytes.length !== vertices.length)
+        throw new RangeError('Invalid static stream output size');
+      for (const [index, stream] of streams.entries()) {
+        // biome-ignore lint/style/noNonNullAssertion: each stream owns one range
+        copyStream(stream, source, bytes, ranges[index]!.offset);
+      }
+      return bytes;
+    },
+  };
+}
+
 /** Derive the one canonical immutable layout projection for a vertex map. */
 export function deriveVertexLayoutProjection(
   map: Readonly<Partial<Record<keyof VertexAttributeMap, unknown>>>,
@@ -315,6 +536,8 @@ export function deriveVertexLayoutProjection(
     const key = CANONICAL_KEYS[index];
     if (key !== undefined && map[key] !== undefined) mask |= 1 << index;
   }
+  if (map.skinWeight instanceof Uint8Array) mask |= SKIN_WEIGHT_UNORM8;
+  else if (map.skinWeight instanceof Uint16Array) mask |= SKIN_WEIGHT_UNORM16;
   return layoutFromMask(mask);
 }
 
@@ -326,7 +549,11 @@ function layoutFromMask(mask: number): VertexLayoutProjection {
   for (let index = 0; index < CANONICAL_KEYS.length; index += 1) {
     const key = CANONICAL_KEYS[index];
     if (key === undefined || (mask & (1 << index)) === 0) continue;
-    const format = ATTRIBUTE_FORMAT_MAP[key];
+    let format: AttributeFormat = ATTRIBUTE_FORMAT_MAP[key];
+    if (key === 'skinWeight') {
+      if (mask & SKIN_WEIGHT_UNORM8) format = 'unorm8x4';
+      else if (mask & SKIN_WEIGHT_UNORM16) format = 'unorm16x4';
+    }
     const byteLength = bytesForFormat(format);
     attributes.push(Object.freeze({ key, shaderLocation: index, offset, format, byteLength }));
     offset += byteLength;
@@ -376,7 +603,7 @@ export interface VertexLayoutProjectionMaskError {
     readonly mask: number;
     readonly knownMask: number;
     readonly unknownMask: number;
-    readonly reason: 'empty' | 'unknown-bits';
+    readonly reason: 'empty' | 'unknown-bits' | 'invalid-format';
   };
 }
 
@@ -384,7 +611,7 @@ export interface VertexLayoutProjectionMaskError {
 export function deriveVertexLayoutProjectionFromMask(
   mask: number,
 ): Result<VertexLayoutProjection, VertexLayoutProjectionMaskError> {
-  const knownMask = (1 << CANONICAL_KEYS.length) - 1;
+  const knownMask = ((1 << CANONICAL_KEYS.length) - 1) | SKIN_WEIGHT_FORMAT_BITS;
   const unsignedMask = Number.isInteger(mask) && mask >= 0 ? mask >>> 0 : 0xffffffff;
   const unknownMask = unsignedMask & ~knownMask;
   if (mask === 0) {
@@ -398,17 +625,27 @@ export function deriveVertexLayoutProjectionFromMask(
   if (!Number.isInteger(mask) || mask < 0 || unknownMask !== 0) {
     return err({
       code: 'vertex-layout-mask-invalid',
-      expected: `a mask using only canonical bits 0..${CANONICAL_KEYS.length - 1}`,
+      expected: `a mask using only canonical attribute and format bits (0x${knownMask.toString(16)})`,
       hint: 're-cook the mesh-bin payload from MeshAsset.attributes',
       detail: { mask, knownMask, unknownMask, reason: 'unknown-bits' },
+    });
+  }
+  const weightFormat = unsignedMask & SKIN_WEIGHT_FORMAT_BITS;
+  if (
+    weightFormat &&
+    (!(unsignedMask & SKIN_WEIGHT_PRESENT) || weightFormat === SKIN_WEIGHT_FORMAT_BITS)
+  ) {
+    return err({
+      code: 'vertex-layout-mask-invalid',
+      expected: 'one packed weight format on a skinWeight attribute',
+      hint: 're-cook the mesh-bin payload from MeshAsset.attributes',
+      detail: { mask, knownMask, unknownMask, reason: 'invalid-format' },
     });
   }
   return ok(layoutFromMask(unsignedMask));
 }
 
-function nonFiniteColor(
-  source: Float32Array | Uint16Array | Uint32Array,
-): VertexAttributePackDetail | undefined {
+function nonFiniteColor(source: VertexAttributeArray): VertexAttributePackDetail | undefined {
   for (let elementIndex = 0; elementIndex < source.length; elementIndex += 1) {
     const component = source[elementIndex] as number;
     if (!Number.isFinite(component))
@@ -424,17 +661,6 @@ function nonFiniteColor(
       };
   }
   return undefined;
-}
-
-function matchesAttributeStorage(
-  value: VertexAttributeMap[AttributeKey],
-  source: Float32Array | Uint16Array | Uint32Array,
-  format: string,
-): boolean {
-  if (format === 'uint32') return source instanceof Uint32Array;
-  const storage = storageOf(value);
-  if (format === 'uint16x4') return storage === 'uint16' || storage === 'array-buffer';
-  return storage === 'float32' || storage === 'array-buffer';
 }
 
 /** Pack tightly-owned attributes into the projection's canonical interleaved bytes. */
@@ -459,15 +685,13 @@ export function packInterleavedVertexAttributes(
   }
   const output = new ArrayBuffer(projection.arrayStride * vertexCount);
   const outputFloats = new Float32Array(output);
-  const outputU16 = new Uint16Array(output);
-  const outputU32 = new Uint32Array(output);
+
   for (const entry of projection.attributes) {
     const sourceValue = map[entry.key];
     if (sourceValue === undefined) continue;
-    const uint16 = entry.format === 'uint16x4';
-    const uint32 = entry.format === 'uint32';
-    const components = entry.byteLength / (uint16 ? 2 : 4);
-    const bytesPerComponent = uint16 ? 2 : 4;
+    const ArrayType = vertexAttributeArrayType(entry.format);
+    const bytesPerComponent = ArrayType.BYTES_PER_ELEMENT;
+    const components = entry.byteLength / bytesPerComponent;
     if (sourceValue instanceof ArrayBuffer && sourceValue.byteLength % bytesPerComponent !== 0) {
       return invalid({
         field: entry.key,
@@ -479,11 +703,15 @@ export function packInterleavedVertexAttributes(
       });
     }
     const source = elementView(sourceValue, entry.format);
-    if (source === undefined || !matchesAttributeStorage(sourceValue, source, entry.format)) {
+    if (
+      source === undefined ||
+      !(source instanceof ArrayType) ||
+      (entry.format === 'uint32' && !(sourceValue instanceof Uint32Array))
+    ) {
       return invalid({
         field: entry.key,
         reason: 'attribute-storage-invalid',
-        expectedStorage: uint32 ? 'uint32' : uint16 ? 'uint16' : 'float32',
+        expectedStorage: sourceStorage(entry.format),
         actualStorage: storageOf(sourceValue),
       });
     }
@@ -502,7 +730,7 @@ export function packInterleavedVertexAttributes(
       const colorFailure = nonFiniteColor(source);
       if (colorFailure !== undefined) return invalid(colorFailure);
     }
-    const target = uint32 ? outputU32 : uint16 ? outputU16 : outputFloats;
+    const target = ArrayType === Float32Array ? outputFloats : new ArrayType(output);
     const targetStride = projection.arrayStride / bytesPerComponent;
     let sourceIndex = 0;
     for (
@@ -527,28 +755,23 @@ export function unpackInterleavedVertexAttributes(
   const vertexCount = deriveVertexCount(vertices, projection);
   if (vertexCount === undefined) return undefined;
   const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
-  const attributes: Record<string, Float32Array | Uint16Array | Uint32Array> = {};
+  const attributes: Record<string, VertexAttributeArray> = {};
   let storageBytes = 0;
   for (const entry of projection.attributes) storageBytes += vertexCount * entry.byteLength;
   const storage = new ArrayBuffer(storageBytes);
   let storageOffset = 0;
   for (const entry of projection.attributes) {
-    const short = entry.format === 'uint16x4';
-    const integer = entry.format === 'uint32';
-    const width = short ? 2 : 4;
+    const ArrayType = vertexAttributeArrayType(entry.format);
+    const width = ArrayType.BYTES_PER_ELEMENT;
     const components = entry.byteLength / width;
-    const target = integer
-      ? new Uint32Array(storage, storageOffset, vertexCount * components)
-      : short
-        ? new Uint16Array(storage, storageOffset, vertexCount * components)
-        : new Float32Array(storage, storageOffset, vertexCount * components);
+    const target = new ArrayType(storage, storageOffset, vertexCount * components);
     storageOffset += target.byteLength;
     if (nativeLittleEndian) {
-      const values = integer
-        ? new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length)
-        : short
-          ? new Uint16Array(vertices.buffer, vertices.byteOffset, vertices.byteLength / 2)
-          : vertices;
+      const values = new ArrayType(
+        vertices.buffer,
+        vertices.byteOffset,
+        vertices.byteLength / width,
+      );
       const stride = projection.arrayStride / width;
       let targetIndex = 0;
       for (let base = entry.offset / width; targetIndex < target.length; base += stride) {
@@ -559,11 +782,14 @@ export function unpackInterleavedVertexAttributes(
       for (let vertex = 0; vertex < vertexCount; vertex++) {
         for (let component = 0; component < components; component++) {
           const offset = vertex * projection.arrayStride + entry.offset + component * width;
-          target[vertex * components + component] = integer
-            ? view.getUint32(offset, true)
-            : short
-              ? view.getUint16(offset, true)
-              : view.getFloat32(offset, true);
+          target[vertex * components + component] =
+            ArrayType === Float32Array
+              ? view.getFloat32(offset, true)
+              : width === 1
+                ? view.getUint8(offset)
+                : width === 2
+                  ? view.getUint16(offset, true)
+                  : view.getUint32(offset, true);
         }
       }
     }

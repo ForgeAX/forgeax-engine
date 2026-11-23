@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "3306d344-1d82-5f81-80c6-a296d1b45315",
+  "schemaVersion": "3.0.0",
+  "packageId": "d4bc1e3b-4030-593d-a808-03379e434b35",
+  "assets": {
+    "pulse-material.wgsl": {
       "kind": "material",
-      "sourceKey": "pulse-material.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -49,5 +47,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

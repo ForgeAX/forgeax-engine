@@ -13,43 +13,15 @@ The public entry point exports the following owners:
 
 | Surface | Public exports | Purpose |
 |---|---|---|
-| Layout | `resolveDdcLayout` | Resolve explicit build and project roots into the v2 child layout |
-| Status | `serializeDdcStatus`, `projectDdcStatusForBrowser` | Produce a versioned status envelope and a path-free browser projection |
 | Storage | `DdcEntryStore`, `ddcOutputDigest` | Stage, validate, publish, inspect, list, and remove immutable entries |
 | Native cook store | `createNativeCookCache`, `collectNativeCookGarbage` | Synchronous build-only `ByteCache` per cooker namespace under `<buildCacheRoot>/native-cook`; callers own keys and entry verification, unreadable files are misses. Reads refresh an entry's time and every write sweeps the root to `maxBytes` (default `NATIVE_COOK_CACHE_MAX_BYTES`, 4 GiB), least recently used first, never the entry just written |
 | Lifecycle | `DdcLifecycle`, `withDdcLock` | Allocate generation, fence leases, CAS heads, and recover failures |
-| Scope and GC | `createRuntimeScope`, `collectDdcGarbage` | Preserve original scope identity and sweep only unreachable project objects |
+| Runtime scope | `resolveRuntimeDdcRoot` | Preserve original scope identity |
 | Errors | `DdcStoreError`, `DDC_ERROR_CODES` | Closed machine-readable errors with executable recovery actions |
 
-Available Node subpaths are `.`, `./key`, `./entry-store`, `./layout`, `./status`, and `./errors`.
+Immutable entries store one `entry.json` document for references, the receipt and integrity facts. Payload and artifact bytes remain separate so a payload comparison can avoid artifact I/O. The store also reads the previous split metadata layout.
 
-## Status summary
-
-Status uses the stable schema identifier `forgeax-ddc-status/v2`. The first layer is the health summary; deeper fields identify the owner, scope, current/LKG facts, protection, and legal actions.
-
-```json
-{
-  "schemaVersion": "forgeax-ddc-status/v2",
-  "health": "blocked",
-  "layers": [
-    {
-      "kind": "project",
-      "owner": "engine-ddc",
-      "rootKind": "project-ddc",
-      "scopeId": "editor/main",
-      "current": 7,
-      "lastKnownGood": 6,
-      "protection": ["current", "lease:editor-a"],
-      "actions": [
-        { "kind": "inspect", "executable": true },
-        { "kind": "prune", "executable": true, "exactTarget": ".../generations/4" }
-      ]
-    }
-  ]
-}
-```
-
-`projectDdcStatusForBrowser(status)` preserves logical identity and recovery data while removing `gameDir`, `projectDdcRoot`, and every `exactTarget`. Browser and iframe consumers therefore never need host filesystem paths.
+Available Node subpaths are `.`, `./key`, `./entry-store`, and `./errors`.
 
 ## Layer and scope layout
 
@@ -72,10 +44,13 @@ The canonical project root is `<gameDir>/.forgeax/ddc/v2`. The build root is an 
 
 | Call shape | Required root | Intended use | Missing-root behavior |
 |---|---|---|---|
-| `resolveDdcLayout({ buildCacheRoot, projectDdcRoot })` | Both roots | Serve, publication, fixed bind, and rebind | `ddc-project-root-required` |
-| `createRuntimeScope(projectDdcRoot, scopeId)` | Project root | Scope hash plus original metadata | `ddc-scope-mismatch` |
+| `resolveRuntimeDdcRoot(projectDdcRoot, binding)` | Project root | Isolate the scope and generation | `ddc-scope-mismatch` |
 
-`a/b` and `a_b` receive different SHA-256 physical scope identities. The original scope id is stored in `scope.json` and is checked before enumeration or pruning; sanitized names and prefix matching are not ownership proofs.
+Scope IDs of up to 200 lowercase ASCII letters, digits, dots, underscores and
+hyphens keep their existing runtime cache directory for the same generation.
+Other IDs use a reserved SHA-256 namespace. For example, `a/b`, `a_b` and `A_B`
+resolve to distinct directories. The original directories remain on disk, and
+scopes with ambiguous old addresses rebuild from source.
 
 ## Lifecycle and recovery
 
@@ -85,7 +60,7 @@ stateDiagram-v2
     Missing --> Cooking : begin allocates generation + lease
     Cooking --> Current : validate entry + CAS commit
     Cooking --> Failed : producer failure or expiry
-    Cooking --> Stale : superseded attempt or revision conflict
+    Cooking --> Stale : active lease has a key or revision mismatch
     Current --> Cooking : new semantic key
     Failed --> Cooking : inspect + cold rebuild
     Stale --> Cooking : allocate new generation
@@ -112,7 +87,7 @@ publication's key, revision, generation, or LKG. Consumers use this snapshot
 without rereading the complete entry. Rejected commits return their attempted
 key and observed revision; an `invalid` commit also carries its rollback fence.
 
-`DdcGenerationSession` heartbeats active candidate leases while a multi-asset generation is still producing, so atomic publication may outlive one lease interval without weakening the final commit fence. A heartbeat renews only the persisted, unexpired attempt with its matching revision and desired key; an expired lease cannot be revived. Closing, discarding, or committing a candidate stops its heartbeat.
+`DdcLifecycle.stagePublication` starts a heartbeat for one staged entry. Atomic publication can outlive a lease interval while preserving the final commit fence. A heartbeat renews only the persisted, unexpired attempt with its matching revision and desired key; an expired lease cannot be revived. Committing, discarding or restoring the attempt stops its heartbeat.
 
 > [!NOTE]
 > `DdcLifecycle.readCurrentEntry()` is a recovery read for a Pack producer to rehydrate its process-local transport cache after a restart. It accepts only a `current` head with a complete, integrity-checked entry; it never promotes LKG/stale content, mutates the head, or turns DDC into an authoring/runtime transport authority. Catalog and producer state remain the consumer-facing authority.
@@ -121,10 +96,12 @@ key and observed revision; an `invalid` commit also carries its rollback fence.
 |---|---|---|
 | `DdcLifecycle.beginWithSnapshot` | Captures the accepted head and allocates the lease while holding the same per-asset lock | No begin/snapshot TOCTOU window |
 | `DdcLifecycle.restoreIfCurrent` | Accepts an active-attempt fence or an exact terminal mutation fence | `restored` or a diagnostic `not-owner` no-op |
-| `DdcGenerationSession.restoreEntry` | Stops the heartbeat before the fenced restore and discards staging afterward | A superseded writer cannot overwrite a newer head |
+| `DdcPublicationAttempt.restore` | Stops the heartbeat before the fenced restore and discards staging afterward | A superseded writer cannot overwrite a newer head |
 
 > [!IMPORTANT]
-> Rollback restores accepted content only. It never resurrects a superseded active lease, rewinds `revision` or `generation`, or replaces a newer active/terminal mutation. Stale, invalid, and failed terminal writes carry their own mutation fence so an old session cannot pass an ABA-shaped check.
+> Superseded attempts return `lease-lost` without modifying the current head.
+>
+> Rollback restores accepted content only. It never resurrects a superseded active lease, rewinds `revision` or `generation`, or replaces a newer active/terminal mutation. Stale, invalid, and failed terminal writes carry their own mutation fence so an old attempt cannot pass an ABA-shaped check.
 
 <details>
 <summary>Exact target and receipt contract</summary>
@@ -182,7 +159,7 @@ validates the complete destination and compares its immutable identity. Discard
 never deletes the referenced entry. Changed or corrupt destinations retain the
 ordinary conflict/error path.
 
-`DdcGenerationSession.commitEntry` sends its staged candidate directly to the
+`DdcPublicationAttempt.commit` sends its staged candidate directly to the
 lifecycle owner. The lifecycle publishes and validates the entry, then carries
 that readback into the ordinary lease/head CAS instead of reading the same entry
 again. It never accepts a caller-provided validated-entry token. Existing entries
@@ -217,7 +194,7 @@ The closed configuration and lifecycle codes are:
 | `ddc-object-conflict` | Same object key has different integrity | Inspect and keep the verified object |
 | `ddc-head-conflict` | Head revision changed before commit, or an existing head is unreadable/invalid | Inspect current/LKG and retry with a fresh attempt |
 | `ddc-generation-conflict` | Requested generation is not allocatable | Allocate a persistent generation; do not edit the counter |
-| `ddc-scope-mismatch` | Scope metadata and request disagree | Inspect the canonical project root and rebind |
+| `ddc-scope-mismatch` | Invalid runtime scope identity | Inspect the canonical project root and rebind |
 | `ddc-lease-expired` | The attempt no longer owns a live lease | Discard stale work and acquire a new lease |
 
 `DdcStoreError` exposes `code`, `hint`, `expected`, `actual`, `owner`, `rootKind`, `scope`, `generation`, `lease`, `revision`, and `recoveryActions`. Use these fields directly; do not parse `Error.message`, hand-edit heads/counters/leases, or recursively delete the cache. `toBrowserProjection()` removes host paths while retaining the fields needed to choose the next safe action.
@@ -238,6 +215,4 @@ Publication tuples are constructed by Types `createAssetPublication`; DDC valida
 Errors and status layers use the same `DdcRecoveryAction` contract, including
 lease release. Their browser projections share path redaction. Construct
 `DdcStoreError` with `{ code, detail, ... }`; entry-store failures use this same
-structured input as lifecycle and session failures.
-
-Both generation commit paths share candidate completion: restore validation, corruption accounting, heartbeat retirement and candidate removal. Concurrent session closes await the same completion. This does not introduce cross-session write ownership; lifecycle mutation fences remain authoritative.
+structured input as lifecycle failures.

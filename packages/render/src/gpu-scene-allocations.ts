@@ -36,6 +36,10 @@ const STAMP = 6;
 const INSTANCE_CAPACITY = 7;
 const WIDTH = 8;
 
+/** Strongest write required by any lane of this synchronous publication. */
+export const SlotWrite = { pose: 0, instances: 1, full: 2, reset: 3 } as const;
+type SlotWrite = (typeof SlotWrite)[keyof typeof SlotWrite];
+
 /**
  * Slot-indexed GPU Scene allocations as numeric columns plus two shared
  * reference columns (interned Mesh and material-range owners): no object per
@@ -44,6 +48,9 @@ const WIDTH = 8;
 export class PrimitiveAllocations<Mesh, Ranges> {
   private columns = new Uint32Array(64 * WIDTH);
   private present = new Uint8Array(64);
+  /** Attempt-local write class, addressed by the same dense slot as its allocation. */
+  private writeClasses = new Uint32Array(64);
+  private writeEpoch = 0;
   private meshes: (Mesh | undefined)[] = [];
   private ranges: (Ranges | undefined)[] = [];
   /** Scene version whose complete numeric rows were consumed from preparation. */
@@ -166,6 +173,25 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     this.publications[slot] = 0;
   }
 
+  beginWrites(): void {
+    // Two low bits hold the class. A new attempt also invalidates failed writes.
+    if (this.writeEpoch === 0xfffffffc) {
+      this.writeClasses.fill(0);
+      this.writeEpoch = 0;
+    }
+    this.writeEpoch += 4;
+  }
+
+  requireWrite(slot: number, kind: SlotWrite): void {
+    const next = this.writeEpoch + kind;
+    if ((this.writeClasses[slot] ?? 0) < next) this.writeClasses[slot] = next;
+  }
+
+  writeClass(slot: number): SlotWrite {
+    const mark = this.writeClasses[slot] ?? 0;
+    return mark < this.writeEpoch ? SlotWrite.pose : ((mark & 3) as SlotWrite);
+  }
+
   /** Grow only the existing columns; no live allocation is published. */
   prepareSlot(slot: number): void {
     this.ensure(slot);
@@ -199,8 +225,11 @@ export class PrimitiveAllocations<Mesh, Ranges> {
   clear(): void {
     for (const residency of this.residencies.values()) residency.invalidated = true;
     this.residencies.clear();
-    this.present.fill(0);
-    this.publications.fill(0);
+    this.columns = new Uint32Array(0);
+    this.present = new Uint8Array(0);
+    this.writeClasses = new Uint32Array(0);
+    this.writeEpoch = 0;
+    this.publications = new Float64Array(0);
     this.meshes = [];
     this.ranges = [];
     this.count = 0;
@@ -215,11 +244,14 @@ export class PrimitiveAllocations<Mesh, Ranges> {
 
   private ensure(slot: number): void {
     if (slot < this.present.length) return;
-    let capacity = this.present.length;
+    let capacity = Math.max(64, this.present.length);
     while (capacity <= slot) capacity *= 2;
     const present = new Uint8Array(capacity);
     present.set(this.present);
     this.present = present;
+    const writeClasses = new Uint32Array(capacity);
+    writeClasses.set(this.writeClasses);
+    this.writeClasses = writeClasses;
     const publications = new Float64Array(capacity);
     publications.set(this.publications);
     this.publications = publications;

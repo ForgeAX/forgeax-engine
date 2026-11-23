@@ -26,12 +26,12 @@ const definition = {
 describe('engine startup configuration', () => {
   it('resolves the named project AO settings independently from quality', () => {
     const defaultPlan = resolveEngineStartup({}, ios).unwrap();
-    expect(defaultPlan.rendering.profile.ambientOcclusion).toEqual({
-      enabled: false,
+    expect(defaultPlan.rendering.profile.ambientOcclusion).toMatchObject({
+      enabled: true,
       method: 'ssao',
     });
     const enabled = resolveEngineStartup(
-      { settings: { rendering: { ambientOcclusion: { enabled: true, method: 'gtao' } } } },
+      { settings: { rendering: { ambientOcclusion: { method: 'gtao' } } } },
       ios,
     ).unwrap();
     expect(enabled.rendering.profile.ambientOcclusion).toMatchObject({

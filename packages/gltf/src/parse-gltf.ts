@@ -276,7 +276,7 @@ export interface GltfMeshIr {
   /** JOINTS_0 per-vertex joint indices. */
   readonly joints0?: Uint16Array;
   /** WEIGHTS_0 per-vertex skin weights. */
-  readonly weights0?: Float32Array;
+  readonly weights0?: GltfSkinWeights;
   readonly morphTargets?: readonly {
     readonly position?: Float32Array;
     readonly normal?: Float32Array;
@@ -879,13 +879,15 @@ function decodeMorphTargets(
 // any skinned primitive; lone presence -> gltf-skin-attr-asymmetric.
 // JOINTS_0 componentType: UBYTE(5121) widen->U16 via decodeAccessor
 // role='joints' (D-3 width-convert at parse), or USHORT(5123) standard
-// U16 path. WEIGHTS_0 componentType: FLOAT(5126) standard F32 path.
+// U16 path. Normalized unsigned weights retain their encoded values.
+export type GltfSkinWeights = Float32Array | Uint8Array | Uint16Array;
+
 function decodeSkinAttributes(
   meshIndex: number,
   meshJson: MeshJson,
   prim: MeshPrimitiveJson,
   tables: AccessorTables,
-): Result<{ readonly joints0?: Uint16Array; readonly weights0?: Float32Array }, GltfError> {
+): Result<{ readonly joints0?: Uint16Array; readonly weights0?: GltfSkinWeights }, GltfError> {
   const jointsIdx = prim.attributes?.JOINTS_0;
   const weightsIdx = prim.attributes?.WEIGHTS_0;
   const hasJoints = jointsIdx !== undefined;
@@ -905,14 +907,16 @@ function decodeSkinAttributes(
   if (!joints0.ok) return joints0;
   const weightsAccessor = tables.accessors[weightsIdx];
   if (weightsAccessor === undefined) return err(unknownAccessor(weightsIdx));
-  const weights0 = decodeAttributeAccessor(
-    weightsIdx,
-    weightsAccessor,
-    tables.bufferViews,
-    tables.buffers,
-  );
-  if (!weights0.ok) return err(weights0.error);
-  return ok({ joints0: joints0.value, weights0: weights0.value });
+  const weights0 = decodeAccessor({
+    accessorIndex: weightsIdx,
+    accessor: weightsAccessor,
+    bufferViews: tables.bufferViews,
+    buffers: tables.buffers,
+    role: 'weights',
+  });
+  if (!weights0.ok) return weights0;
+  if (weights0.value.kind === 'u32') return err(unknownAccessor(weightsIdx));
+  return ok({ joints0: joints0.value, weights0: weights0.value.data });
 }
 
 function decodeJoints(jointsIdx: number, tables: AccessorTables): Result<Uint16Array, GltfError> {
@@ -949,7 +953,8 @@ function decodeIndices(
     role: 'indices',
   });
   if (!indexDecoded.ok) return err(indexDecoded.error);
-  if (indexDecoded.value.kind === 'f32') return err(unknownAccessor(prim.indices));
+  if (indexDecoded.value.kind !== 'u16' && indexDecoded.value.kind !== 'u32')
+    return err(unknownAccessor(prim.indices));
   return ok(indexDecoded.value.data);
 }
 

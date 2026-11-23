@@ -1,4 +1,3 @@
-import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { AssetPublicationEnvelope } from '@forgeax/engine-types';
 import { assetPublicationGeneration, assetPublicationOutputSetDigest } from '@forgeax/engine-types';
@@ -6,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   preserveAcceptedPublicationGeneration,
   selectAuthoredPublicationGeneration,
+  validateAuthoredPublication,
 } from '../dev/authored-pack-publication.js';
 
 function publication(generation: number): AssetPublicationEnvelope {
@@ -67,12 +67,12 @@ describe('ScriptablePack publication integration', () => {
         generation: 2,
         digest: accepted.digest,
         outputSetDigest: accepted.outputSetDigest,
-        packageUrl: '/__forgeax-ddc/scene.pack.json',
+        packageUrl: '/__forgeax-ddc/scene.runtime-pack.json',
         receiptKey: accepted.receipt.inputFingerprint,
       },
     };
 
-    const preserved = preserveAcceptedPublicationGeneration(candidate, { current: accepted });
+    const preserved = preserveAcceptedPublicationGeneration(candidate, accepted);
 
     expect(preserved).toMatchObject({
       generation: 1,
@@ -103,56 +103,43 @@ describe('ScriptablePack publication integration', () => {
     ).toBe(2);
   });
 
-  it('installs only one complete publication tuple and keeps the previous LKG on route failure', async () => {
-    const store = createAcceptedPublicationStore();
-    const first = publication(1);
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    expect((await store.commit(first.sourcePath, { envelope: first }, () => undefined)).ok).toBe(
-      true,
+  it('accepts a newer or identical tuple and rejects stale or changed same-generation tuples', () => {
+    const accepted = publication(2);
+    expect(() => validateAuthoredPublication(publication(3), accepted)).not.toThrow();
+    expect(() => validateAuthoredPublication(publication(2), accepted)).not.toThrow();
+    expect(() => validateAuthoredPublication(publication(1), accepted)).toThrow(
+      expect.objectContaining({ code: 'asset-publication-stale' }),
     );
-    const failedEnvelope = publication(2);
-    expect(store.stage(failedEnvelope.sourcePath, { envelope: failedEnvelope }).ok).toBe(true);
-    const failed = await store.commit(
-      failedEnvelope.sourcePath,
-      { envelope: failedEnvelope },
-      () => {
-        throw new Error('route unavailable');
-      },
-    );
-    expect(failed).toMatchObject({
-      ok: false,
-      error: { code: 'asset-publication-route-failed', recovery: { useLastKnownGood: true } },
-    });
-    expect(store.observe(first.sourcePath)).toMatchObject({ current: { generation: 1 } });
+    expect(() =>
+      validateAuthoredPublication(
+        {
+          ...publication(1),
+          generation: accepted.generation,
+        },
+        accepted,
+      ),
+    ).toThrow(expect.objectContaining({ code: 'asset-publication-stale' }));
   });
 });
 
-it('admits a runtime Pack tuple through the DDC publication authority', async () => {
+it('checks the route output tuple produced for a Runtime Pack', () => {
   const { publication } = createRuntimePackPublication({
     pack: { assets: [{ guid: 'MESH-GUID', kind: 'mesh', payload: {} }] },
     scopeId: 'runtime-fixture',
     sourcePath: 'mesh.pack.ts',
     sourceRevision: 'source-1',
-    packageUrl: '/mesh.pack.json',
+    packageUrl: '/mesh.runtime-pack.json',
   });
-  const store = createAcceptedPublicationStore();
-  const candidate = { envelope: publication };
-  expect(store.stage(publication.sourcePath, candidate)).toEqual({ ok: true, value: undefined });
-  const committed = await store.commit(publication.sourcePath, candidate, () => {});
-  expect(committed.ok).toBe(true);
-  expect(store.observe(publication.sourcePath).current).toMatchObject({
-    generation: publication.generation,
-    outputSetDigest: publication.outputSetDigest,
-    receipt: publication.receipt,
-  });
-  const firstOutput = publication.outputs[0];
-  if (firstOutput === undefined) throw new Error('fixture emitted no output');
-  const changedOutput = { ...firstOutput, sourceKey: 'other-source-key' };
-  const rejected = store.stage(publication.sourcePath, {
-    envelope: { ...publication, generation: publication.generation + 1, outputs: [changedOutput] },
-  });
-  expect(rejected).toMatchObject({
-    ok: false,
-    error: { code: 'asset-publication-output-set-mismatch' },
-  });
+  expect(() => validateAuthoredPublication(publication, undefined)).not.toThrow();
+  const output = publication.outputs[0];
+  if (!output) throw new Error('fixture emitted no output');
+  expect(() =>
+    validateAuthoredPublication(
+      {
+        ...publication,
+        outputs: [{ ...output, sourceKey: 'other-source-key' }],
+      },
+      undefined,
+    ),
+  ).toThrow(expect.objectContaining({ code: 'asset-publication-output-set-mismatch' }));
 });

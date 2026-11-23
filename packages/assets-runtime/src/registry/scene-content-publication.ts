@@ -22,7 +22,7 @@ import {
   createScenePublicationFence,
   type ScenePublicationFence,
   type ScenePublicationFenceError,
-  scenePublicationFenceFromCatalog,
+  scenePublicationFenceForRow,
 } from './scene-publication-fence';
 
 type Failure = AssetError | ScenePublicationFenceError;
@@ -80,22 +80,6 @@ function mismatch(hint: string): ScenePublicationFenceError {
 }
 
 /** Reuse Catalog's complete-publication checker, reading only that publication's output rows. */
-function currentFence(
-  registry: AssetRegistry,
-  guid: string,
-  row: CatalogEntry | undefined,
-  proofs: PublicationProofs,
-) {
-  const entries: CatalogEntry[] = [];
-  for (const output of row?.publication?.outputs ?? []) {
-    const entry = registry.catalogEntry(output.guid);
-    if (proofs.failure !== undefined) return err(proofs.failure);
-    if (entry !== undefined) entries.push(entry);
-  }
-  const fence = scenePublicationFenceFromCatalog(entries, guid);
-  return fence.ok ? ok({ fence: fence.value, entries }) : fence;
-}
-
 /** The mutable public projection is copied; only its owner-frozen descendants are reused. */
 function immutableFenceInputs(publication: AssetPublicationEnvelope): boolean {
   return (
@@ -215,7 +199,10 @@ function validateCatalog(
     checked.add(shared.rows);
     return ok(undefined);
   }
-  const current = currentFence(registry, guid, root, proofs);
+  const current = scenePublicationFenceForRow(root, (guid) =>
+    proofs.failure === undefined ? registry.catalogEntry(guid) : undefined,
+  );
+  if (proofs.failure !== undefined) return err(proofs.failure);
   if (!current.ok) return current;
   const same = compareScenePublicationFences(expected, current.value.fence);
   if (!same.ok) return same;

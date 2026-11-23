@@ -106,7 +106,7 @@ describe('irradiance field plan', () => {
       diffuseGi: gi,
     };
     expect(validateRenderProfile(profile)).toBeUndefined();
-    expect(validateRenderProfile({ ...profile, ibl: true })).toContain('IBL disabled');
+    expect(validateRenderProfile({ ...profile, ibl: true })).toBeUndefined();
     const frozen = freezeRenderProfile(profile).diffuseGi;
     expect(frozen?.gather).toBe('irradiance-field');
     if (frozen?.gather !== 'irradiance-field') return;

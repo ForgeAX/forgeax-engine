@@ -92,20 +92,18 @@ it('leaves ready receipts and ordinary recorded pending barriers with their stri
 
 it('requires the subsequent submitted ready receipt to match its exact current trace', () => {
   const source = readFileSync(
-    new URL('../forward-gtao-webgpu.browser.test.ts', import.meta.url),
+    new URL('../forward-gtao-webgl2.browser.test.ts', import.meta.url),
     'utf8',
   );
   const parsed = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true);
   const validator = parsed.statements.find(
-    (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'validatedClusterFrameReceipt',
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'assertClusterFrameConformance',
   );
-  if (validator === undefined) throw new Error('Missing original strict cluster receipt validator');
+  if (validator === undefined) throw new Error('Missing WebGL2 Cluster receipt validator');
   const validate = new Function(
-    'receipt',
-    'observation',
-    'trace',
+    'input',
     ts.transpile(validator.getText(parsed), { target: ts.ScriptTarget.ES2022 }) +
-      '\nreturn validatedClusterFrameReceipt(receipt, observation, trace);',
+      '\nassertClusterFrameConformance(input);',
   );
   const receipt = { frameId: 55, presentation: 'ready' };
   const observation = { status: 'captured', frameNumber: 54 };
@@ -115,17 +113,24 @@ it('requires the subsequent submitted ready receipt to match its exact current t
     recordStatus: 'submitted',
     receipt: { publicReceiptFrameId: 55, presentation: 'ready', completion: 'completed' },
   };
-  expect(validate(receipt, observation, trace).pendingBarrier).toBe(false);
-  expect(() => validate({ frameId: 54, presentation: 'pending' }, observation, trace)).toThrow(
+  const input = {
+    expectedTransport: 'required',
+    receiptFrameId: receipt.frameId,
+    receiptPresentation: receipt.presentation,
+    observation,
+    frameTrace: trace,
+  };
+  expect(() => validate(input)).not.toThrow();
+  expect(() => validate({ ...input, receiptFrameId: 54, receiptPresentation: 'pending' })).toThrow(
     'does not match',
   );
-  expect(() => validate(receipt, observation, { ...trace, observationFrameId: 53 })).toThrow(
+  expect(() => validate({ ...input, frameTrace: { ...trace, observationFrameId: 53 } })).toThrow(
     'does not match',
   );
-  expect(() => validate(receipt, observation, { ...trace, recordStatus: 'pending' })).toThrow(
+  expect(() => validate({ ...input, frameTrace: { ...trace, recordStatus: 'pending' } })).toThrow(
     'does not match',
   );
-  expect(() => validate(receipt, { ...observation, frameNumber: 53 }, trace)).toThrow(
+  expect(() => validate({ ...input, observation: { ...observation, frameNumber: 53 } })).toThrow(
     'does not match',
   );
 });

@@ -91,7 +91,7 @@ export type GameplayProjectionContext = {
 };
 
 const EMPTY_VIDEO_TEXTURE = { available: false, active: 'original', swaps: 0, hitReactions: 0, lastHitPlayhead: null, guid: null, name: null, kind: null, url: null } as const;
-const EMPTY_WORLD_SCORE_TEXT = { available: false, baked: false, active: false, text: '', age: 0, position: [0, 0, 0], fontSource: 'legacy-pack', fontGuid: null, fontSize: 0, color: [1, 1, 1, 1], toggles: 0 } as const;
+const EMPTY_WORLD_SCORE_TEXT = { available: false, baked: false, active: false, text: '', age: 0, position: [0, 0, 0], fontSource: 'baked-pack', fontGuid: null, fontSize: 0, color: [1, 1, 1, 1], toggles: 0 } as const;
 const EMPTY_FBX_SKINNED_TARGET = { available: false, root: null, skinEntity: null, clipGuid: null, jointCount: 0, position: [0, 0, 0], scale: [1, 1, 1], worldMatrix: [], animationTime: 0, hitPulses: 0, companionActive: false, targetEntity: null } as const;
 const EMPTY_ATTACK_PRESENTATION: AttackPresentationSnapshot = { available: false, charging: false, chargeProgress: 0, chargePower: 1, shotsFired: 0, trailStarts: 0, impactBursts: 0, misses: 0, overchargeShots: 0, overchargeImpacts: 0, activeTrails: 0, lastImpactScale: 1, lastVariant: 'normal' };
 
@@ -356,7 +356,7 @@ export function installGameplayProjection(args: GameplayProjectionContext): void
       id: 'game-default.toggle-font-source',
       title: 'Toggle TTF font plugin',
       description: 'Switch the same pooled hit-score GlyphText between the legacy baked pack and the licensed TTF font importer output.',
-      run: () => asProjection({ fontSource: args.worldScoreText?.toggleFontSource() ?? 'legacy-pack', ...(args.worldScoreText?.snapshot() ?? {}) }),
+      run: () => asProjection({ fontSource: args.worldScoreText?.toggleFontSource() ?? 'baked-pack', ...(args.worldScoreText?.snapshot() ?? {}) }),
     }),
     projection.registerAction({
       id: 'game-default.toggle-lighting-mode',

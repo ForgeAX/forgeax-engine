@@ -90,11 +90,11 @@ const submoduleDejavuFontMetaPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf.meta.json',
 );
-const submoduleDejavuLegacyAtlasMetaPath = resolve(
+const submoduleDejavuBakedAtlasMetaPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.atlas.png.meta.json',
 );
-const submoduleDejavuLegacyPackPath = resolve(
+const submoduleDejavuBakedPackPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.font.pack.json',
 );
@@ -142,8 +142,8 @@ const previewExternalRoots = [
   submoduleFbxDir,
   submoduleGlbDir,
   submoduleDejavuFontMetaPath,
-  submoduleDejavuLegacyAtlasMetaPath,
-  submoduleDejavuLegacyPackPath,
+  submoduleDejavuBakedAtlasMetaPath,
+  submoduleDejavuBakedPackPath,
   submoduleSpriteAtlasDir,
 ];
 
@@ -171,6 +171,9 @@ export function createBrowserProject() {
     // This real-device contract runs on both Browser and native Dawn.
     'packages/rhi-webgpu/src/__tests__/r32float-capability-generation.integration.test.ts',
   ];
+  const prepareNodeInputs = include.includes(
+    'packages/three/src/__tests__/node-inputs.browser.test.ts',
+  );
   const parityComparison = include.some(
     (file) => file.includes('*') || file.startsWith('apps/parity/color-lighting/'),
   );
@@ -197,6 +200,13 @@ export function createBrowserProject() {
       'apps/learn-render/5.advanced-lighting/7.bloom/src/__tests__/onerror-gate.browser.test.ts',
       bloomAssetRoots,
     ],
+    ['packages/three/src/__tests__/material-output-0.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-1.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-2.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-3.browser.test.ts', []],
+    ['packages/three/src/__tests__/opaque-order.browser.test.ts', []],
+    ['packages/three/src/__tests__/composer.browser.test.ts', []],
+    ['packages/three/src/__tests__/targets-environment.browser.test.ts', []],
     ['packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts', []],
     ['packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts', []],
     ['packages/runtime/src/__tests__/optional-pipeline-library.browser.test.ts', []],
@@ -329,7 +339,24 @@ export function createBrowserProject() {
     plugins:
       process.argv.includes('list') && process.argv.includes('--filesOnly')
         ? []
-        : [...browserStartupDiagnostics('browser'), ...plugins],
+        : [
+            ...browserStartupDiagnostics('browser'),
+            ...(prepareNodeInputs
+              ? [
+                  {
+                    name: 'forgeax-three-node-input-materials',
+                    async configureServer() {
+                      const start = performance.now();
+                      await threeNodeInputCommands.prepareThreeNodeInputMaterials();
+                      process.stderr.write(
+                        `[three-node-input-materials] prepared before browser startup in ${Math.round(performance.now() - start)} ms\n`,
+                      );
+                    },
+                  },
+                ]
+              : []),
+            ...plugins,
+          ],
     server: {
       // Loop state is not a browser source; test discovery exclusions do not filter Vite watches.
       watch: { ignored: ['**/.forgeax-harness/**'] },
@@ -409,6 +436,9 @@ export function createBrowserProject() {
         },
         provider: playwrightWithBackgroundPages({
           launchOptions: browserLaunchOptions(),
+          ...(process.env.FORGEAX_BROWSER_PROCESS_ENDPOINT
+            ? { connectOptions: { wsEndpoint: process.env.FORGEAX_BROWSER_PROCESS_ENDPOINT } }
+            : {}),
         }),
         instances: [{ browser: 'chromium' }],
         headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0' && !!process.env.CI,

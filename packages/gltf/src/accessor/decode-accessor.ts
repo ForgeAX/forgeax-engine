@@ -24,7 +24,7 @@ export interface BufferViewJson {
   readonly byteLength: number;
   readonly byteStride?: number;
 }
-export type AccessorRole = 'attribute' | 'indices' | 'joints';
+export type AccessorRole = 'attribute' | 'indices' | 'joints' | 'weights';
 export interface DecodeAccessorInput {
   readonly accessorIndex: number;
   readonly accessor: AccessorJson;
@@ -34,6 +34,7 @@ export interface DecodeAccessorInput {
 }
 export type DecodedAccessor =
   | { readonly kind: 'f32'; readonly data: Float32Array }
+  | { readonly kind: 'u8'; readonly data: Uint8Array }
   | { readonly kind: 'u16'; readonly data: Uint16Array }
   | { readonly kind: 'u32'; readonly data: Uint32Array };
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
@@ -64,7 +65,7 @@ interface SparseRanges {
   readonly values: ByteRange;
   readonly indexWidth: number;
 }
-type AccessorOutput = Float32Array | Uint16Array | Uint32Array;
+type AccessorOutput = Float32Array | Uint8Array | Uint16Array | Uint32Array;
 
 /** A single decoder for attributes, indices, skin, morph and animation. Matrix columns are 4-byte aligned. */
 export function decodeAccessor(input: DecodeAccessorInput): Result<DecodedAccessor, GltfError> {
@@ -128,7 +129,9 @@ function isDeclarationAdmissible(
     return false;
   if (
     accessor.normalized === true &&
-    (accessor.componentType === 5126 || accessor.componentType === 5125 || role !== 'attribute')
+    (accessor.componentType === 5126 ||
+      accessor.componentType === 5125 ||
+      (role !== 'attribute' && role !== 'weights'))
   )
     return false;
   if (
@@ -136,6 +139,12 @@ function isDeclarationAdmissible(
     (accessor.type !== 'SCALAR' || ![5121, 5123, 5125].includes(accessor.componentType))
   )
     return false;
+  if (role === 'weights')
+    return (
+      accessor.type === 'VEC4' &&
+      (accessor.componentType === 5126 ||
+        (accessor.normalized === true && [5121, 5123].includes(accessor.componentType)))
+    );
   return !(
     role === 'joints' &&
     (accessor.type !== 'VEC4' || ![5121, 5123].includes(accessor.componentType))
@@ -149,12 +158,17 @@ function allocateOutput(
   length: number,
 ): AccessorOutput {
   if (role === 'attribute') return new Float32Array(length);
+  if (role === 'weights') {
+    if (accessor.componentType === 5126) return new Float32Array(length);
+    if (accessor.componentType === 5121) return new Uint8Array(length);
+  }
   return accessor.componentType === 5125 ? new Uint32Array(length) : new Uint16Array(length);
 }
 
 function decodedAccessor(out: AccessorOutput): DecodedAccessor {
   if (out instanceof Float32Array) return { kind: 'f32', data: out };
   if (out instanceof Uint32Array) return { kind: 'u32', data: out };
+  if (out instanceof Uint8Array) return { kind: 'u8', data: out };
   return { kind: 'u16', data: out };
 }
 
@@ -382,7 +396,8 @@ function copyElement(
       accessor.componentType,
     );
     if (!Number.isFinite(value)) return false;
-    if (accessor.normalized === true) value = normalizedComponent(value, accessor.componentType);
+    if (accessor.normalized && out instanceof Float32Array)
+      value = normalizedComponent(value, accessor.componentType);
     out[target * components + c] = value;
   }
   return true;

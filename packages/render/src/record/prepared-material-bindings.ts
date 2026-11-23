@@ -10,10 +10,6 @@ import {
 } from '@forgeax/engine-types';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
-import {
-  materialUsesPlanarReflection,
-  planarReflectionMaterialEntries,
-} from '../capture/planar-material';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { ResidencyLease } from '../device/residency-lifetime';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
@@ -31,6 +27,7 @@ import {
   materialUsesLitSceneInputs,
   omittedStandardMaterialBindings,
   programDeclaresTransmissionBackdrop,
+  projectMaterialLayoutEntries,
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
@@ -378,7 +375,7 @@ export function preparedMaterialBindings(
         : standardEntries.filter((entry) => !omitted.has(entry.binding));
     return completeEntries;
   };
-  const completeEntries = projectPreparedMaterialLayoutEntries();
+  let completeEntries = projectPreparedMaterialLayoutEntries();
   const appendPreparedMaterialOwnedEntries = () => {
     for (let index = 0; index < completeEntries.length; index++) {
       const entry = completeEntries[index];
@@ -391,7 +388,13 @@ export function preparedMaterialBindings(
         completeEntries[index] = entry.binding;
     }
     if (litMaterial) return undefined;
-    if (materialUsesDirectDfgLut(schema)) {
+    if (
+      materialUsesDirectDfgLut(schema) &&
+      !isCanonicalStandardPbrMaterialShader(materialShaderId) &&
+      sharedMaterialBindingDeclarations(runtime.shaderRegistry, materialShaderId)?.includes(
+        STANDARD_DIRECT_DFG_LUT_BINDING,
+      ) !== false
+    ) {
       const lut = getOrCreateDirectDfgLut(device, recordContext(runtime).deviceScope);
       if (!lut.ok) {
         return lut;
@@ -400,16 +403,6 @@ export function preparedMaterialBindings(
         binding: STANDARD_DIRECT_DFG_LUT_BINDING,
         resource: { kind: 'textureView', value: lut.value.view },
       });
-    }
-    // Prepared bindings serve no current capture: the projection stays disabled.
-    if (materialUsesPlanarReflection(schema)) {
-      completeEntries.push(
-        ...planarReflectionMaterialEntries(
-          pipelineState.viewUniformBuffer,
-          undefined,
-          (skylightResources ?? skylightBindGroupResources(fallback)).brdfLutView,
-        ),
-      );
     }
     // Per-shader PBR layouts reserve the scene-material SSBO at binding 46 on
     // storage-capable devices. Prepared feature materials use this same layout,
@@ -429,6 +422,7 @@ export function preparedMaterialBindings(
   };
   const ownedEntryFailure = appendPreparedMaterialOwnedEntries();
   if (ownedEntryFailure !== undefined) return ownedEntryFailure;
+  completeEntries = projectMaterialLayoutEntries(layout, completeEntries);
   // Resolve all current values and physical resources before sharing. Neither
   // a material GUID nor an immutable-looking source is sufficient authority.
   const findPreparedMaterialBindingReuse = () => {

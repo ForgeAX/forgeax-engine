@@ -71,37 +71,74 @@ DevKit converts old project declarations in one direction. The mixed
 `settings.rendering.profile` bridge and legacy bootstrap `configureRenderer` are
 deprecated for removal in 0.7. A managed App rejects the late bootstrap hook.
 
-## Internal Level lifecycle
+## Level streaming
 
-Internal static Scene source preflight checks a closed component vocabulary
-before materialization and checks effective body, shape and material values after
-nested overrides. Schema and source proofs remain live across continuations;
-author Disabled intent stays separate from the temporary preparation tag.
-These helpers do not yet provide a public Level service or Render/native readiness.
+Use `app.levels` on a local App or inject `levels` in a gameplay plugin in
+the World realm. Both expose the same service. The Host side of an Engine
+Worker App obtains application results through its existing game transport.
 
-The internal `createLevelCandidate` owns fixed capture/publication, disabled Scene
-construction, source guards, custody and the actual Render Source. `appLevelOwner`
-connects that candidate to the original App frame grant, fixed participation
-boundary and stopped shutdown. Actual Renderer-native demand and static Rapier3D
-participation must both be current before a candidate can activate. Source Data
-admission alone grants no native readiness. The local internal lifecycle is
-`prepared -> active -> prepared -> active -> retired`; the public/Worker Level
-service remains a later milestone.
+```ts
+const level = levels.create({ scene: sceneGuid }).unwrap();
+const prepared = level.request('prepared').unwrap();
+(await prepared.done).unwrap();
+const activated = level.request('active').unwrap();
+(await activated.done).unwrap();
+console.log(level.inspect().current);
+```
 
-Preparation retains original pending compiler/queue completions. Cancellation and
-stopped shutdown drain those owners without another World update, draw or physics
-step. Native-only demand changes revoke readiness and reprepare through the same
-owners. Unknown partial participation faults the World and closes execution.
-Render and Physics retire their safely owned children; a poisoned borrowed World
-is never mutated to manufacture successful unloading. `cleanupFailure` reports
-`world-faulted` with the exact World identity and retained member count, and keeps
-Scene/asset custody inspectable for that World's fault owner. Normal cleanup and
-unconfirmed cleanup remain distinct results.
+Submit requests while the App is running so preparation and participation can
+advance. Creating a handle does not load the Scene. Two handles for the same
+Scene own independent members and participation. A request to `prepared` hides
+an active Level and retains eligible preparation. An `unloaded` request settles
+after this instance retires its members and leases. A later request can prepare
+the same handle.
 
-Small actual native lifecycle witnesses pass, including first Level, existing
-GPU content, shadow consumers, shared instances, contacts and no-frame retirement.
-The original full workload, browser, budgets and required final checks remain
-unqualified. These internal entries do not yet promise public Level support.
+Same-target in-flight requests share a receipt. A new target settles the old
+receipt with `level-request-superseded`. Check the returned `Result` before
+using a receipt. `done` records completion of that request. Read `inspect()`
+for current readiness and lifecycle failures. Active completion records source
+and Render participation. Use the separate `picture` when the execution route
+reports a completed selection frame. On shutdown, outstanding requests settle
+and the App drains its Level owners before destroying their asset context.
+
+The initial content contract covers cooked static Scene assets with supported
+opaque or masked rendering and the existing Rapier3D static shapes. Scene
+source, actual Renderer-native demand, and required colliders qualify together.
+An admitted Runtime Pack Scene uses the same GUID and request contract.
+A poisoned World or lost cleanup receipt can leave retirement unconfirmed.
+The result retains the failure and its owning cause.
+Render recovery requalifies retained Level targets. After an explicit World
+rebuild, the new gameplay plugin instance creates its own Level handles.
+
+### World streaming
+
+Use `createWorldStreaming(levels, { grid, cells })` in the World realm. Each
+Cell identifies cooked Scene content by GUID and describes its conservative
+XZ bounds, participation role, and optional layer or visual replacement group.
+The runtime builds the paged index incrementally from these records. The
+alternative `scene` input partitions a static keyed Scene with per-entity
+placement metadata. It groups parents and declared hard references and
+publishes a derived Scene through the realm's Runtime Pack producer when
+selected. Binary assets follow their existing references and load paths.
+
+The game submits spatial demand with `setSource` and advances the streamer
+with `step()` during World updates. A source specifies its position,
+preparation and active radii, and can specialize its coverage for visuals
+or collision. An unresolved query retains its previous complete selection.
+Overlapping sources for the same Cell share a Level. `setLayer` controls
+semantic participation.
+
+A visual replacement group has one proxy and one or more detail Cells. Its
+current representation continues until the whole next representation is
+prepared. The App submits the group exchange at one participation boundary
+and a split Renderer confirms the same completed frame for the members.
+
+Read `inspectEntry(source, point)` immediately before entering at a fixed
+step. It checks the source's latest resolved selection and actual static
+collision participation around the point. The game can also test the shape
+at the destination. Retain a temporary destination source until the regular
+player source has taken over that point. Close the streamer to cancel
+unpublished work and request retirement of its Levels.
 
 Renderer inspection field selection reaches the Render owner before inventory
 production and structured cloning. Use `execution.inspectRenderer({ fields:

@@ -21,6 +21,7 @@ import {
 import { planIrradianceField } from '../../../render/src/raytracing/irradiance-field-plan';
 import {
   createIrradianceFieldHarness,
+  IRRADIANCE_FIELD_CARD_PASSES,
   irradianceFieldGi,
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -36,8 +37,6 @@ const save = (name: string, value: unknown) =>
   );
 
 const PASSES = [
-  'irradiance-field.card-surface',
-  'irradiance-field.card-lighting',
   'irradiance-field.place-probes',
   'irradiance-field.trace-probes',
   'irradiance-field.update-probes',
@@ -108,7 +107,9 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     for (let i = 0; i < 4; i++) await h.draw();
     const dark = await h.image();
     h.setGi(irradianceFieldGi());
-    await h.settle();
+    const enablingPasses = new Set<string>();
+    await h.settle(12, enablingPasses);
+    expect([...enablingPasses]).toEqual(expect.arrayContaining(IRRADIANCE_FIELD_CARD_PASSES));
     const off = await h.image();
     expect(h.errors).toEqual([]);
     expect(equalBytes(off.bytes, dark.bytes)).toBe(true);
@@ -263,7 +264,8 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     const composite = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
-          shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_diffuse_reconstructed',
+          shader.stage === 'fragment' &&
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
       ),
     );
     assert(composite, 'frame contains the shared diffuse composite');
@@ -465,12 +467,9 @@ it('stays within a bounded error of the exact one-bounce lane without steady Car
     const steadyPasses = await h.steadyPasses();
     if (Array.isArray(steadyPasses))
       for (const names of steadyPasses) {
-        const cardDirect = ['irradiance-field.card-surface', 'irradiance-field.card-lighting'];
-        expect(names).toEqual(
-          expect.arrayContaining(PASSES.filter((name) => !cardDirect.includes(name))),
-        );
+        expect(names).toEqual(expect.arrayContaining(PASSES));
         // Compose/capture is one-shot; Card lighting only runs on changes.
-        for (const name of cardDirect) expect(names).not.toContain(name);
+        for (const name of IRRADIANCE_FIELD_CARD_PASSES) expect(names).not.toContain(name);
         expect(names).not.toContain('irradiance-field.compose');
         expect(names).not.toContain('irradiance-field.card.capture');
       }

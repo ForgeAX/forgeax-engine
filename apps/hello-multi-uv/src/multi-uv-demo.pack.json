@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "4950c480-8910-553f-879a-0b19ecb1b729",
+  "schemaVersion": "3.0.0",
+  "packageId": "b10260e5-8f85-5349-8c34-3dc6504a59db",
+  "assets": {
+    "multi-uv-demo.wgsl": {
       "kind": "material",
-      "sourceKey": "multi-uv-demo.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -16,7 +14,12 @@
               "vertexEntry": "vs_main",
               "fragmentEntry": "fs_main"
             },
-            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
           }
         ],
         "parameters": [
@@ -44,5 +47,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

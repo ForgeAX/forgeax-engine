@@ -40,7 +40,9 @@ it('shows English version and completed-frame diagnostics without intercepting g
       await page.setViewportSize({ width, height: 720 });
       const hud = page.locator('#forgeax-status');
       await hud.waitFor({ state: 'visible' });
-      expect(await hud.textContent()).toMatch(/^Game 123456abcdef \| Engine abcdef123456 \| FPS /);
+      expect(await hud.textContent()).toMatch(
+        /^Game 123456abcdef \| Engine abcdef123456 \| Render FPS /,
+      );
       const layout = await hud.evaluate((node) => {
         const bounds = node.getBoundingClientRect();
         const style = getComputedStyle(node);

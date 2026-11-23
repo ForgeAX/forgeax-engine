@@ -1,5 +1,6 @@
 import { definePackageId, parsePackSourceJson } from '@forgeax/engine/pack';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
+import { parsePackV2 } from '@forgeax/engine/pack/runtime';
 import { scanInventory } from '@forgeax/engine/pack/scanner';
 import { defineFeature } from '../../lab/feature';
 import { errorCode, withFixture } from './support/fixture';
@@ -16,7 +17,7 @@ const direct = JSON.stringify({
 const transport = JSON.stringify({
   schemaVersion: '2.0.0',
   kind: 'internal-text-package',
-  assets: [{ guid: TRANSPORT_GUID, kind: 'sampler', payload: {}, refs: [] }],
+  assets: [{ guid: TRANSPORT_GUID, kind: 'sampler', payload: {}, refs: [], artifacts: {} }],
 });
 
 export default defineFeature({
@@ -24,32 +25,39 @@ export default defineFeature({
   catalog: 'Pack source / transport',
   kind: 'headless',
   summary:
-    'The scanner tells v3 authoring (direct / instance) apart from v2 generated transport by schemaVersion.',
+    'V3 direct and instance declarations are scanned as source. The runtime reader admits v2 output.',
   expect:
-    'v3 direct outputs get sourceKey-derived GUIDs, v2 transport keeps explicit GUIDs, mixed branches fail.',
+    'The direct output derives its GUID. Runtime v2 keeps the explicit GUID and is rejected as source.',
   async run(checks) {
-    await checks.run('scanner separates v3 direct from v2 transport', () =>
+    await checks.run('scanner admits authoring and skips Runtime Pack paths', () =>
       withFixture(
-        { 'source.pack.json': direct, 'generated.pack.json': transport },
+        { 'source.pack.json': direct, 'generated.runtime-pack.json': transport },
         async (root) => {
           const result = await scanInventory([root]);
-          if (!result.ok) throw new Error(`scan failed: ${result.error.code}`);
-          const rows = result.value.inventory;
-          const authored = rows.find((row) => row.sourcePath.endsWith('source.pack.json'));
-          const generated = rows.find((row) => row.sourcePath.endsWith('generated.pack.json'));
+          if (!result.ok) throw result.error;
+          const [authored] = result.value.inventory;
           const derived = AssetGuid.format(
             AssetGuid.derive(definePackageId(PACKAGE), 'samplers/linear'),
           );
-          if (authored?.guid !== derived || authored.sourceKey !== 'samplers/linear')
-            return `authored=${JSON.stringify(authored)}`;
-          if (generated?.guid !== TRANSPORT_GUID || generated.sourceKey !== undefined)
-            return `generated=${JSON.stringify(generated)}`;
-          const versions = [...result.value.declarations.values()].map((entry) =>
-            entry.format === 'pack.json' ? entry.value.schemaVersion : entry.format,
+          return (
+            result.value.inventory.length === 1 &&
+            authored?.guid === derived &&
+            authored.sourceKey === 'samplers/linear'
           );
-          return versions.includes('3.0.0') && versions.includes('2.0.0');
         },
       ),
+    );
+    checks.equal(
+      'runtime retains its explicit GUID',
+      parsePackV2(JSON.parse(transport)).unwrap().assets[0]?.guid,
+      TRANSPORT_GUID,
+    );
+    checks.equal(
+      'scanner rejects v2 content at an authoring path',
+      await withFixture({ 'generated.pack.json': transport }, async (root) =>
+        errorCode(await scanInventory([root])),
+      ),
+      'pack-malformed-pack',
     );
 
     const instance = parsePackSourceJson({

@@ -1,6 +1,6 @@
 import { createPlaneGeometry, createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
-  ANTIALIAS_NONE, ANTIALIAS_TAA, Camera, DirectionalLight, DynamicResolution, Materials, MeshFilter, MeshRenderer,
+  ANTIALIAS_NONE, ANTIALIAS_TAA, ANTIALIAS_TSR, Camera, DirectionalLight, DynamicResolution, Materials, MeshFilter, MeshRenderer,
   ReflectionProbe, ScreenSpaceReflection, Skylight, perspective,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -9,13 +9,19 @@ import { createReflectionTexture } from './reflection-texture.mjs';
 
 // Browser, Dawn correctness, and performance share this authored scene.
 export const SSR_FIXTURE_REVISION = 'textured-reflection-scenes-v9';
-export const SSR_ANTIALIAS_MODES = Object.freeze(['none', 'taa', 'taau', 'taa-dynamic']);
+export const SSR_ANTIALIAS_MODES = Object.freeze(['none', 'taa', 'taau', 'taa-dynamic', 'tsr']);
 export const SSR_FIXTURES = Object.freeze(['cube', 'tiles', 'objects', 'no-hit', 'probe-updates', 'underside', 'atmosphere']);
-export const SSR_PARAMETERS = Object.freeze({ maxDistance: 12, thickness: 0.2, maxRoughness: 0.65 });
+export const SSR_PARAMETERS = Object.freeze({ maxDistance: 12, thickness: 0.2, maxRoughness: 0.6 });
 
 export function resolveSsrFixture(value = 'tiles') {
   if (!SSR_FIXTURES.includes(value)) throw new Error(`Unknown SSR fixture: ${value}`);
   return value;
+}
+
+function reflectionCameraAntialias(mode) {
+  if (mode === 'none') return ANTIALIAS_NONE;
+  if (mode === 'tsr') return ANTIALIAS_TSR;
+  return ANTIALIAS_TAA;
 }
 
 export function spawnReflectionScene(world, assets, aspect = 1, fixture = 'tiles', antialias = 'none') {
@@ -151,7 +157,7 @@ export function spawnReflectionScene(world, assets, aspect = 1, fixture = 'tiles
         -Math.sin(pitch / 2) * Math.sin(yaw / 2),
         Math.cos(pitch / 2) * Math.cos(yaw / 2)] } },
     { component: Camera, data: { ...perspective({ fov: Math.PI / 3, aspect, near: 0.1, far: 20 }),
-      clearColor: [0.04, 0.06, 0.1, 1], antialias: antialias === 'none' ? ANTIALIAS_NONE : ANTIALIAS_TAA } },
+      clearColor: [0.04, 0.06, 0.1, 1], antialias: reflectionCameraAntialias(antialias) } },
     { component: ScreenSpaceReflection, data: SSR_PARAMETERS },
   ).unwrap();
   if (antialias === 'taau' || antialias === 'taa-dynamic') {

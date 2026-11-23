@@ -5,12 +5,12 @@ import { defineComponent } from '@forgeax/engine-ecs';
 export const RenderFeatureEnvironment = defineComponent('RenderFeatureEnvironment', {
   feature: { type: 'string' },
   sky: { type: 'string' },
-  irradiance: { type: 'string' },
+  skySh: { type: 'string' },
   prefilter: { type: 'string' },
 });
 export interface RenderFeatureEnvironmentSource {
   readonly feature: string;
   readonly sky: string;
-  readonly irradiance: string;
+  readonly skySh: string;
   readonly prefilter: string;
 }

@@ -1,13 +1,28 @@
 import type { ResolvedMaterialTextureCoordinates } from '@forgeax/engine-types';
-import { type BufferGeometry, type Texture, Vector2 } from 'three/src/Three.Core.js';
+import {
+  BufferAttribute,
+  BufferGeometry,
+  InterleavedBufferAttribute,
+  type Texture,
+  Vector2,
+} from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
+import { sameValues } from './shared-assets';
 import { textureCoordinates } from './texture';
 
 export interface UvProjection {
   readonly coordinates: ReadonlyMap<Texture, ResolvedMaterialTextureCoordinates>;
   readonly attributes: Readonly<Record<string, Float32Array>>;
   readonly values: readonly unknown[];
+  readonly generatedChannels: readonly string[];
 }
+
+const EMPTY_UV_PROJECTION: UvProjection = Object.freeze({
+  coordinates: new Map<Texture, ResolvedMaterialTextureCoordinates>(),
+  attributes: Object.freeze({}),
+  values: Object.freeze([]),
+  generatedChannels: Object.freeze([]),
+});
 
 function bakeUvAttribute(geometry: BufferGeometry, texture: Texture): Float32Array {
   const source = geometry.getAttribute(texture.channel === 0 ? 'uv' : `uv${texture.channel}`);
@@ -25,12 +40,92 @@ function bakeUvAttribute(geometry: BufferGeometry, texture: Texture): Float32Arr
   return data;
 }
 
+/** Retain coordinates and missing-channel zero streams for one mesh's selected textures. */
+export class MeshUvs {
+  private values: readonly unknown[] = [];
+  private projection: UvProjection | undefined;
+  private bakedSource: readonly unknown[] | undefined;
+
+  read(
+    geometry: BufferGeometry,
+    textures: readonly Texture[],
+    reservedChannels: readonly number[],
+  ): UvProjection {
+    // Reserved channels only affect the allocation of transformed texture streams.
+    if (textures.length === 0) return EMPTY_UV_PROJECTION;
+    const unique = textures.length === 1 ? textures : new Set(textures);
+    const values: unknown[] = [
+      geometry,
+      geometry.getAttribute('position')?.count,
+      ...reservedChannels,
+    ];
+    for (const texture of unique) {
+      if (texture.matrixAutoUpdate) texture.updateMatrix();
+      const channel = texture.channel;
+      values.push(
+        texture,
+        texture.isRenderTargetTexture,
+        channel,
+        geometry.hasAttribute(channel === 0 ? 'uv' : `uv${channel}`),
+        ...texture.matrix.elements,
+      );
+    }
+    if (this.projection !== undefined && sameValues(this.values, values)) {
+      if (this.projection.values.length === 0) return this.projection;
+      const source = bakedUvSourceValues(geometry, unique);
+      if (
+        source !== undefined &&
+        this.bakedSource !== undefined &&
+        sameValues(this.bakedSource, source)
+      )
+        return this.projection;
+    }
+    const result = projectUvs(geometry, textures, reservedChannels, false);
+    this.bakedSource =
+      result.values.length === 0 ? undefined : bakedUvSourceValues(geometry, unique);
+    this.projection =
+      result.values.length === 0 || this.bakedSource !== undefined ? result : undefined;
+    this.values = values;
+    return result;
+  }
+}
+
+/** Only the stock BufferAttribute accessors are backed by the observed byte revisions. */
+function bakedUvSourceValues(
+  geometry: BufferGeometry,
+  textures: Iterable<Texture>,
+): readonly unknown[] | undefined {
+  if (geometry.getAttribute !== BufferGeometry.prototype.getAttribute) return undefined;
+  const values: unknown[] = [];
+  for (const texture of textures) {
+    const source = geometry.getAttribute(texture.channel === 0 ? 'uv' : `uv${texture.channel}`);
+    values.push(source);
+    if (source === undefined) continue;
+    const interleaved = 'data' in source;
+    const prototype = interleaved
+      ? InterleavedBufferAttribute.prototype
+      : BufferAttribute.prototype;
+    if (source.getX !== prototype.getX || source.getY !== prototype.getY) return undefined;
+    const buffer = interleaved ? source.data : source;
+    values.push(
+      buffer.array,
+      buffer.version,
+      source.normalized,
+      source.itemSize,
+      interleaved ? source.offset : 0,
+      interleaved ? source.data.stride : 0,
+    );
+  }
+  return values;
+}
+
 /** Affine UVs can be authored in ordinary native UV streams; sampling, derivatives,
  * mip selection and wrapping continue to belong to the native material. */
 export function projectUvs(
   geometry: BufferGeometry,
   textures: readonly Texture[],
   reservedChannels: readonly number[] = [],
+  updateMatrix = true,
 ): UvProjection {
   const coordinates = new Map<Texture, ResolvedMaterialTextureCoordinates>();
   const attributes: Record<string, Float32Array> = {};
@@ -38,7 +133,7 @@ export function projectUvs(
   const used = new Set([...reservedChannels, ...textures.map((texture) => texture.channel)]);
   const baked = new Map<string, number>();
   for (const texture of new Set(textures)) {
-    const native = textureCoordinates(texture);
+    const native = textureCoordinates(texture, updateMatrix);
     if (native.ok) {
       coordinates.set(texture, native.value);
       const name = texture.channel === 0 ? 'uv' : `uv${texture.channel}`;
@@ -75,5 +170,5 @@ export function projectUvs(
       transform: { offset: [0, 0], scale: [1, 1], rotation: 0 },
     });
   }
-  return { coordinates, attributes, values };
+  return { coordinates, attributes, values, generatedChannels: Object.keys(attributes).sort() };
 }

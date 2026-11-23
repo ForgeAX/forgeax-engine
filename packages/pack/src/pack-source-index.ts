@@ -1,9 +1,16 @@
 import { createHash } from 'node:crypto';
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { PackageId } from './guid.js';
-import { parsePackSourceJson } from './pack-authoring.js';
-import { declaredPackAssets, SCANNER_BLACKLIST, scanInventory } from './scanner.js';
+import {
+  type PackParameterDefinition,
+  type PackParameterInheritanceSubject,
+  type ParsedPackJson,
+  parsePackSourceJson,
+  resolvePackParameterInheritance,
+} from './pack-authoring.js';
+import { packSourceFailure, readPackAuthoringDeclaration } from './pack-authoring-literals.js';
+import { declaredPackAssets, enumeratePackSourcePaths } from './scanner.js';
 
 export interface PackSourceIndexRow {
   readonly sourcePath: string;
@@ -14,11 +21,12 @@ export interface PackSourceIndexRow {
   readonly diagnostic?: { code: string; hint: string };
 }
 
-/** Bounded, partial source inventory. Scriptable Pack metadata is never executed by this read. */
+/** Bounded source listing with an optional static reader of the same captured bytes. */
 export async function listPackSources(
   projectRoot: string,
   limit = 200,
   assetRoots?: readonly string[],
+  visit?: (sourcePath: string, source: string, declaration?: ParsedPackJson) => void,
 ): Promise<{
   sources: readonly PackSourceIndexRow[];
   hasMore: boolean;
@@ -26,31 +34,7 @@ export async function listPackSources(
   if (!Number.isInteger(limit) || limit < 1 || limit > 200)
     throw new RangeError('Pack source limit must be 1..200');
   const root = await realpath(projectRoot);
-  const paths: string[] = [];
-  let visited = 0;
-  let hasMore = false;
-  const visitedDirectories = new Set<string>();
-  async function visit(dir: string): Promise<void> {
-    if (hasMore || visitedDirectories.has(dir)) return;
-    visitedDirectories.add(dir);
-    const entries = await readdir(dir, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      if (++visited > 10_000 || paths.length > limit) {
-        hasMore = true;
-        return;
-      }
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!SCANNER_BLACKLIST.has(entry.name)) await visit(path);
-      } else if (
-        entry.isFile() &&
-        (entry.name.endsWith('.pack.json') || entry.name.endsWith('.pack.ts'))
-      ) {
-        paths.push(path);
-      }
-    }
-  }
+  const directories: string[] = [];
   for (const directory of assetRoots ?? ['']) {
     const path = resolve(root, directory);
     const rel = relative(root, path);
@@ -60,15 +44,15 @@ export async function listPackSources(
       if (error.code === 'ENOENT') return undefined;
       throw error;
     });
-    if (entry?.isDirectory() && (await realpath(path)) === path) await visit(path);
+    if (entry?.isDirectory() && (await realpath(path)) === path) directories.push(path);
   }
-  hasMore ||= paths.length > limit;
+  const { paths, hasMore } = await enumeratePackSourcePaths(directories, { sourceLimit: limit });
   const selected = paths.slice(0, limit);
   const sources: PackSourceIndexRow[] = [];
   for (const path of selected) {
     const canonical = await realpath(path).catch(() => undefined);
     const sourcePath = relative(root, path).split(sep).join('/');
-    const format = basename(path).endsWith('.pack.ts') ? 'pack.ts' : 'pack.json';
+    const format = path.endsWith('.pack.ts') ? 'pack.ts' : 'pack.json';
     if (!canonical || canonical !== path) {
       sources.push({
         sourcePath,
@@ -93,6 +77,7 @@ export async function listPackSources(
     }
     const revision = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     if (format === 'pack.ts') {
+      visit?.(sourcePath, bytes.toString('utf8'));
       sources.push({
         sourcePath,
         revision,
@@ -105,9 +90,10 @@ export async function listPackSources(
       });
       continue;
     }
+    const source = bytes.toString('utf8');
     let document: unknown;
     try {
-      document = JSON.parse(bytes.toString('utf8'));
+      document = JSON.parse(source);
     } catch {
       sources.push({
         sourcePath,
@@ -118,78 +104,108 @@ export async function listPackSources(
       });
       continue;
     }
-    if (
-      document &&
-      typeof document === 'object' &&
-      (document as { schemaVersion?: unknown }).schemaVersion === '3.0.0'
-    ) {
-      const parsed = parsePackSourceJson(document);
-      if (!parsed.ok) {
-        sources.push({
-          sourcePath,
-          revision,
-          format,
-          outputs: [],
-          diagnostic: { code: parsed.error.code, hint: parsed.error.hint },
-        });
-        continue;
-      }
-      sources.push({
-        sourcePath,
-        revision,
-        format,
-        packageId: PackageId.format(parsed.value.packageId),
-        outputs: declaredPackAssets(parsed.value)
-          .slice(0, 50)
-          .map((asset) => ({
-            guid: asset.guid,
-            kind: asset.kind,
-            ...(asset.sourceKey ? { sourceKey: asset.sourceKey } : {}),
-          })),
-      });
-      continue;
-    }
-    const scanned = await scanInventory([path]);
-    if (!scanned.ok) {
+    const parsed = parsePackSourceJson(document);
+    if (parsed.ok) {
+      visit?.(sourcePath, source, parsed.value);
+      sources.push(sourceIndexRow(sourcePath, revision, parsed.value));
+    } else {
       sources.push({
         sourcePath,
         revision,
         format,
         outputs: [],
-        diagnostic: { code: scanned.error.code, hint: scanned.error.message },
+        diagnostic: { code: parsed.error.code, hint: parsed.error.hint },
       });
-      continue;
     }
-    const declaration = scanned.value.declarations.get(path);
-    if (declaration?.format !== 'pack.json') {
-      sources.push({
-        sourcePath,
-        revision,
-        format,
-        outputs: [],
-        diagnostic: { code: 'pack-source-unresolved', hint: 'Pack declaration was not resolved.' },
-      });
-      continue;
-    }
-    const packageId =
-      typeof declaration.value.packageId === 'string'
-        ? declaration.value.packageId
-        : declaration.value.packageId
-          ? PackageId.format(declaration.value.packageId)
-          : undefined;
-    sources.push({
-      sourcePath,
-      revision,
-      format,
-      ...(packageId ? { packageId } : {}),
-      outputs: declaredPackAssets(declaration.value)
-        .slice(0, 50)
-        .map((asset) => ({
-          guid: asset.guid,
-          kind: asset.kind,
-          ...(asset.sourceKey ? { sourceKey: asset.sourceKey } : {}),
-        })),
-    });
   }
   return { sources, hasMore };
+}
+
+function sourceIndexRow(
+  sourcePath: string,
+  revision: string,
+  declaration: ParsedPackJson,
+): PackSourceIndexRow {
+  return {
+    sourcePath,
+    revision,
+    format: 'pack.json',
+    packageId: PackageId.format(declaration.packageId),
+    outputs: declaredPackAssets(declaration)
+      .slice(0, 50)
+      .map((asset) => ({
+        guid: asset.guid,
+        kind: asset.kind,
+        sourceKey: asset.sourceKey,
+      })),
+  };
+}
+
+/** Resolve the static parent using the indexed source bytes. */
+export async function readPackAuthoringParent(
+  root: string,
+  parent: string,
+  sourceRoots?: readonly string[],
+): Promise<{
+  readonly parameters: readonly PackParameterDefinition[];
+  readonly sourcePath: string;
+  readonly source: string;
+  readonly paths: readonly string[];
+}> {
+  const sources = new Map<
+    string,
+    {
+      sourcePath: string;
+      source: string;
+      subject: PackParameterInheritanceSubject;
+    }
+  >();
+  const inventory = await listPackSources(
+    root,
+    200,
+    sourceRoots,
+    (sourcePath, source, declaration) => {
+      let subject: PackParameterInheritanceSubject;
+      if (declaration) subject = declaration;
+      else {
+        const parsed = readPackAuthoringDeclaration(sourcePath, source);
+        if (!parsed.ok) return;
+        const identity = PackageId.parse(parsed.value.packageId);
+        if (!identity.ok) throw identity.error;
+        subject = {
+          format: 'source',
+          packageId: identity.value,
+          parameters: parsed.value.parameters,
+        };
+      }
+      const key = PackageId.format(subject.packageId);
+      if (sources.has(key))
+        throw packSourceFailure(sourcePath, 'duplicate parent package identity');
+      sources.set(key, { sourcePath, source, subject });
+    },
+  );
+  if (inventory.hasMore)
+    throw packSourceFailure(
+      parent,
+      'static parent inventory is incomplete; use the existing instance authoring entry',
+    );
+  const paths: string[] = [];
+  const read = (id: PackageId): PackParameterInheritanceSubject | undefined => {
+    const source = sources.get(PackageId.format(id));
+    if (source === undefined) return undefined;
+    paths.push(source.sourcePath);
+    return source.subject;
+  };
+  const identity = PackageId.parse(parent);
+  const subject = identity.ok ? read(identity.value) : undefined;
+  if (subject === undefined)
+    throw packSourceFailure(parent, 'parent has no static authoring declaration');
+  const inherited = (await resolvePackParameterInheritance(subject, read)).unwrap();
+  const rootSource = sources.get(PackageId.format(inherited.rootPackageId));
+  if (rootSource === undefined) throw packSourceFailure(parent, 'parent source was retired');
+  const parameters = inherited.parameters.map((parameter) => ({
+    ...parameter,
+    default: inherited.values[parameter.name] ?? parameter.default,
+  }));
+  return { sourcePath: rootSource.sourcePath, source: rootSource.source, parameters, paths };
 }

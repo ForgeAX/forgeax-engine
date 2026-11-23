@@ -2,6 +2,7 @@
 import {
   createMaterialProgramArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
+  STANDARD_SHARED_TRANSMISSION_SLOTS,
   standardParallaxSelectable,
 } from '@forgeax/engine-shader';
 import type {
@@ -62,7 +63,9 @@ import { materialLightingResources, materialLightingSources } from './lighting-i
 import {
   lowerStandardContract,
   lowerStandardPhysicalBindings,
+  standardMaterialResourceBindings,
   standardStaticSwitchDefines,
+  standardTextureAvailabilityDefine,
 } from './lower-standard-contract.js';
 import { materialSystemInputs, validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
@@ -128,6 +131,14 @@ export interface MaterialCookedPass {
   readonly readsVertexColor?: boolean;
 }
 
+export function selectionAbi(
+  abi: MaterialCookedPass['abi'],
+  compile: MaterialCookedPass['compile'],
+): MaterialCookedPass['abi'] {
+  const entryPoints = compile.reflection.entryPoints;
+  return { ...abi, ...(entryPoints === undefined ? {} : { entryPoints }) };
+}
+
 export type GeneratedMaterialParameterProjection = MaterialParameterProjection;
 
 export interface MaterialCookedAsset {
@@ -147,8 +158,13 @@ export type MaterialCompilation<T, E = MaterialCookError> = Generator<
 
 function surfaceProgramAbi(
   asset: ResolvedMaterial['asset'],
+  standardSurface?: string,
 ): MaterialSurfaceProgramAbi | undefined {
-  const declaration = asset.surface;
+  const declaration =
+    asset.surface ??
+    (standardSurface === undefined
+      ? undefined
+      : { model: 'standard' as const, module: standardSurface });
   if (declaration === undefined) return undefined;
   const dynamic =
     declaration.dynamicInput === undefined
@@ -263,6 +279,8 @@ export interface GenerateParameterModuleOptions {
   readonly includeResources?: boolean;
   /** Resource names already owned by the selected template. */
   readonly excludeResources?: ReadonlySet<string>;
+  /** Standard's device profiles may disable or reuse a declared 2D map slot. */
+  readonly standardTextureDefines?: boolean;
   /**
    * Publish the engine-owned scene-index storage declaration.  This is only
    * used for compiler-controlled custom programs that expose `vs_scene_index`;
@@ -288,14 +306,107 @@ export interface GenerateParameterModuleOptions {
   readonly visibleItemsBinding?: 2;
 }
 
-export function generateParameterModule(
-  schema: readonly ParamSchemaEntry[],
-  options: GenerateParameterModuleOptions = {},
+type MaterialResourceBinding = NonNullable<ReturnType<typeof derive>['resourceBindings']>[number];
+
+function declareMaterialResource(
+  resource: MaterialResourceBinding,
+  parameter: ParamSchemaEntry,
+  binding: number,
 ): string {
-  const derived = derive(schema);
-  const coordinateRecords = derived.coordinateRecords ?? [];
+  if (resource.kind === 'sampler') {
+    const type = parameter.type === 'sampler_comparison' ? wgslType(parameter) : 'sampler';
+    return `@group(1) @binding(${binding}) var ${resource.name} : ${type};`;
+  }
+  if (resource.kind === 'texture') {
+    return `@group(1) @binding(${binding}) var ${resource.name} : ${wgslType(parameter)};`;
+  }
+  return `@group(1) @binding(${binding}) var<storage, read> ${resource.name} : array<vec4<u32>>;`;
+}
+
+function guardStandardMaterialResource(
+  resource: MaterialResourceBinding,
+  parameter: ParamSchemaEntry,
+  declaration: string,
+  derived: ReturnType<typeof derive>,
+  options: GenerateParameterModuleOptions,
+  filteringWitnesses: string[],
+): string {
+  if (options.standardTextureDefines !== true || parameter.type !== 'texture2d') return declaration;
+  const availability = standardTextureAvailabilityDefine(parameter.name);
+  declaration = `#ifdef ${availability}\n${declaration}\n#endif`;
+  const sampler = derived.samplerForTexture.get(parameter.name);
+  const transmission = STANDARD_SHARED_TRANSMISSION_SLOTS.some(
+    (slot) => slot.resource === parameter.name,
+  );
+  if (transmission) declaration = `#ifdef TRANSMISSION_AVAILABLE\n${declaration}\n#endif`;
+  if (
+    resource.kind === 'texture' &&
+    parameter.sampleType !== 'unfilterable-float' &&
+    sampler !== undefined &&
+    !options.excludeResources?.has(sampler)
+  ) {
+    const witness = `#ifdef ${availability}\n  _ = textureSample(${resource.name}, ${sampler}, vec2<f32>(0.0));\n#endif`;
+    filteringWitnesses.push(
+      transmission ? `#ifdef TRANSMISSION_AVAILABLE\n${witness}\n#endif` : witness,
+    );
+  }
+  return declaration;
+}
+
+function materialParameterResources(
+  schema: readonly ParamSchemaEntry[],
+  derived: ReturnType<typeof derive>,
+  options: GenerateParameterModuleOptions,
+) {
   const resourceBindings = derived.resourceBindings ?? [];
-  const fields = schema
+  const parameterByName = new Map(schema.map((parameter) => [parameter.name, parameter]));
+  const uniformBinding = derived.bglEntries.find(
+    (entry) => entry.buffer?.type === 'uniform',
+  )?.binding;
+  const declarations: { binding: number; source: string }[] = [];
+  const filteringWitnesses: string[] = [];
+  const standardBindings =
+    options.standardTextureDefines === true
+      ? standardMaterialResourceBindings(schema).bindingByName
+      : undefined;
+  if (uniformBinding !== undefined) {
+    const materialBindingName =
+      options.sceneMaterialPrivate === true ? '_uniformMaterial' : 'material';
+    declarations.push({
+      binding: uniformBinding,
+      source: `@group(1) @binding(${uniformBinding}) var<uniform> ${materialBindingName} : MaterialParameters;`,
+    });
+  }
+  if (options.includeResources !== false) {
+    for (const resource of resourceBindings) {
+      if (
+        options.excludeResources?.has(resource.name) ||
+        (resource.parameter !== undefined && options.excludeResources?.has(resource.parameter))
+      )
+        continue;
+      const parameter = parameterByName.get(resource.parameter ?? resource.name);
+      if (parameter === undefined) continue;
+      const binding = standardBindings?.get(resource.name) ?? resource.binding;
+      const declaration = guardStandardMaterialResource(
+        resource,
+        parameter,
+        declareMaterialResource(resource, parameter, binding),
+        derived,
+        options,
+        filteringWitnesses,
+      );
+      declarations.push({ binding, source: declaration });
+    }
+  }
+  return { declarations, filteringWitnesses };
+}
+
+function materialParameterFields(
+  schema: readonly ParamSchemaEntry[],
+  derived: ReturnType<typeof derive>,
+): string {
+  const coordinateRecords = derived.coordinateRecords ?? [];
+  return schema
     .flatMap((parameter) => {
       if (inferMaterialParameterKind(parameter) === 'numeric') {
         return [`  ${parameter.name} : ${wgslType(parameter)},`];
@@ -312,6 +423,14 @@ export function generateParameterModule(
       return [];
     })
     .join('\n');
+}
+
+export function generateParameterModule(
+  schema: readonly ParamSchemaEntry[],
+  options: GenerateParameterModuleOptions = {},
+): string {
+  const derived = derive(schema);
+  const fields = materialParameterFields(schema, derived);
   const sceneRowStride = options.sceneRowStride ?? Math.max(16, derived.totalBytes);
   if (
     options.sceneIndex === true &&
@@ -337,48 +456,13 @@ export function generateParameterModule(
     lines.push(`struct MaterialParameters {\n${paddedFields}\n}`);
   }
 
-  const parameterByName = new Map(schema.map((parameter) => [parameter.name, parameter]));
-  const uniformBinding = derived.bglEntries.find(
-    (entry) => entry.buffer?.type === 'uniform',
-  )?.binding;
-  const declarations = new Map<number, string>();
-  if (uniformBinding !== undefined) {
-    const materialBindingName =
-      options.sceneMaterialPrivate === true ? '_uniformMaterial' : 'material';
-    declarations.set(
-      uniformBinding,
-      `@group(1) @binding(${uniformBinding}) var<uniform> ${materialBindingName} : MaterialParameters;`,
-    );
+  const { declarations, filteringWitnesses } = materialParameterResources(schema, derived, options);
+  for (const declaration of declarations.sort((left, right) => left.binding - right.binding)) {
+    lines.push(declaration.source);
   }
-  if (options.includeResources !== false) {
-    for (const resource of resourceBindings) {
-      if (
-        options.excludeResources?.has(resource.name) ||
-        (resource.parameter !== undefined && options.excludeResources?.has(resource.parameter))
-      )
-        continue;
-      const parameter = parameterByName.get(resource.parameter ?? resource.name);
-      if (parameter === undefined) continue;
-      if (resource.kind === 'sampler') {
-        declarations.set(
-          resource.binding,
-          `@group(1) @binding(${resource.binding}) var ${resource.name} : ${parameter.type === 'sampler_comparison' ? wgslType(parameter) : 'sampler'};`,
-        );
-      } else if (resource.kind === 'texture') {
-        declarations.set(
-          resource.binding,
-          `@group(1) @binding(${resource.binding}) var ${resource.name} : ${wgslType(parameter)};`,
-        );
-      } else {
-        declarations.set(
-          resource.binding,
-          `@group(1) @binding(${resource.binding}) var<storage, read> ${resource.name} : array<vec4<u32>>;`,
-        );
-      }
-    }
-  }
-  for (const binding of [...declarations.keys()].sort((left, right) => left - right)) {
-    lines.push(declarations.get(binding) as string);
+  // Naga reflection needs a direct sample to classify generic helper arguments.
+  if (filteringWitnesses.length > 0) {
+    lines.push(`fn materialParameterFilteringWitness() {\n${filteringWitnesses.join('\n')}\n}`);
   }
   if (options.sceneMaterialPrivate === true) {
     lines.push('var<private> material : MaterialParameters;');
@@ -1007,6 +1091,30 @@ export function compileMaterialSelection(
   return next.value;
 }
 
+/** Runtime templates compile the address requested by the receiving renderer. */
+export function compileMaterialAddressSelection(
+  request: MaterialCookRequest,
+  compiler: PreparedShaderCompiler,
+  selection: { readonly pass: string; readonly address: MaterialProgramAddress },
+): Result<MaterialCookedPass | undefined, MaterialCookError> {
+  const prepared = prepareMaterialCookUnit(request, undefined);
+  if (!prepared.ok) return prepared;
+  const { unit } = prepared.value;
+  const pass = unit.passes.find(({ name }) => name === selection.pass);
+  if (pass === undefined) return ok(undefined);
+  const lowered = prepareMaterialPass(unit, pass, selection.address === 'scene-index');
+  if (!lowered.ok) return lowered;
+  const { cook, scene, direct } = lowered.value;
+  const program = selection.address === 'scene-index' ? scene?.program : direct;
+  if (program === undefined) return ok(undefined);
+  const compiled = compiler.compile(program.source, program.options);
+  if (!compiled.ok)
+    return err(
+      mapCookErrorToAuthoredSource(compiled.error, cook.sourceRecord.source, program.source),
+    );
+  return publishCompiledMaterialPass(lowered.value, compiled.value, undefined, selection.address);
+}
+
 function* materialCompilation(
   request: MaterialCookRequest,
   selectedPasses: readonly string[] | undefined,
@@ -1084,7 +1192,7 @@ function classifyPassTemplate(
   };
 }
 
-function templateResourceNames(source: string): ReadonlySet<string> {
+export function templateResourceNames(source: string): ReadonlySet<string> {
   return new Set(
     Array.from(
       source.matchAll(/@group\(1\)\s*@binding\(\d+\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\s*:/g),
@@ -1185,6 +1293,7 @@ interface PreparedMaterialPass {
   readonly entry: PassEntrySource;
   readonly fragmentEntry: string | undefined;
   readonly direct: MaterialRasterProgramInput;
+  readonly sceneIndexDeclared: boolean;
   readonly scene?: {
     readonly program: MaterialRasterProgramInput;
     readonly diagnosticSource: string;
@@ -1309,26 +1418,31 @@ function prepareMaterialPass(
       defines: compileDefines,
     },
   };
-  const prepared = { cook, composed: composed.value, entry: entry.value, fragmentEntry, direct };
-  if (!includeSceneIndex) return ok(prepared);
+  const sceneSurface = canCompileSceneSurface(cook, entry.value);
+  const sceneIndexDeclared = sceneSurface || entry.value.customSceneProgram;
+  const prepared = {
+    cook,
+    composed: composed.value,
+    entry: entry.value,
+    fragmentEntry,
+    direct,
+    sceneIndexDeclared,
+  };
+  if (!includeSceneIndex || !sceneIndexDeclared) return ok(prepared);
   const sceneEntry = prepareSceneIndexEntry(
     cook,
     entry.value,
-    usesSurfaceSlot,
+    sceneSurface && usesSurfaceSlot,
     templateResources,
     dynamicInput.value,
   );
   if (!sceneEntry.ok) return sceneEntry;
   return ok({
     ...prepared,
-    ...(sceneEntry.value === undefined
-      ? {}
-      : {
-          scene: {
-            program: sceneIndexProgramInput(cook, sceneEntry.value, fragmentEntry, compileDefines),
-            diagnosticSource: sceneEntry.value.source,
-          },
-        }),
+    scene: {
+      program: sceneIndexProgramInput(cook, sceneEntry.value, fragmentEntry, compileDefines),
+      diagnosticSource: sceneEntry.value.source,
+    },
   });
 }
 
@@ -1338,7 +1452,7 @@ function* cookMaterialPass(
 ): MaterialCompilation<MaterialCookedPass> {
   const prepared = prepareMaterialPass(unit, pass, true);
   if (!prepared.ok) return prepared;
-  const { cook, composed, entry, fragmentEntry, direct, scene } = prepared.value;
+  const { cook, direct, scene } = prepared.value;
   const source = cook.sourceRecord.source;
   const compiled = yield [direct.source, direct.options];
   if (!compiled.ok) return err(mapCookErrorToAuthoredSource(compiled.error, source, direct.source));
@@ -1351,64 +1465,82 @@ function* cookMaterialPass(
       return err(mapCookErrorToAuthoredSource(result.error, source, scene.diagnosticSource));
     sceneCompiled = result.value;
   }
-  const publishCompiledPass = () => {
-    const checked = checkPassInterface(cook, entry, compiled.value, sceneCompiled !== undefined);
+  return publishCompiledMaterialPass(prepared.value, compiled.value, sceneCompiled, 'direct');
+}
+
+function publishCompiledMaterialPass(
+  prepared: PreparedMaterialPass,
+  compiled: CompileResult,
+  sceneCompiled: CompileResult | undefined,
+  address: MaterialProgramAddress,
+): Result<MaterialCookedPass, MaterialCookError> {
+  const { cook, composed, entry, fragmentEntry, sceneIndexDeclared } = prepared;
+  const { unit, pass } = cook;
+  if (address === 'direct') {
+    const checked = checkPassInterface(cook, entry, compiled, sceneIndexDeclared);
     if (!checked.ok) return checked;
-    const abi = publishPassAbi(cook, composed, entry, compiled.value, sceneCompiled);
-    if (!abi.ok) return abi;
-    const systemInputs = materialSystemInputs(
-      unit.request.sources,
-      composed.sourceClosure,
-      compiled.value.bindings,
-    );
-    if (!systemInputs.ok) return systemInputs;
-    const bindingFailure = validateMaterialProgramBindings(
-      pass.program,
-      compiled.value.bindings,
-      systemInputs.value,
-    );
-    if (bindingFailure !== undefined) return err(bindingFailure);
-    const validatePostProcessEntry = () => {
-      if (pass.program.bindings === 'post-process') {
-        const vertex = compiled.value.reflection.entryPoints?.find(
-          (entry) => entry.stage === 'vertex' && entry.name === abi.value.directEntry,
+  }
+  const abi = publishPassAbi(
+    cook,
+    composed,
+    entry,
+    compiled,
+    sceneCompiled,
+    address,
+    sceneIndexDeclared,
+  );
+  if (!abi.ok) return abi;
+  const systemInputs = materialSystemInputs(
+    unit.request.sources,
+    composed.sourceClosure,
+    compiled.bindings,
+  );
+  if (!systemInputs.ok) return systemInputs;
+  const bindingFailure = validateMaterialProgramBindings(
+    pass.program,
+    compiled.bindings,
+    systemInputs.value,
+  );
+  if (bindingFailure !== undefined) return err(bindingFailure);
+  const validatePostProcessEntry = () => {
+    if (pass.program.bindings === 'post-process') {
+      const vertex = compiled.reflection.entryPoints?.find(
+        (entry) => entry.stage === 'vertex' && entry.name === abi.value.directEntry,
+      );
+      const fragment = compiled.reflection.entryPoints?.find(
+        (entry) => entry.stage === 'fragment' && entry.name === fragmentEntry,
+      );
+      if (
+        abi.value.vertexInputs.length !== 0 ||
+        vertex === undefined ||
+        fragment === undefined ||
+        ![1, 2, 3].every((binding) =>
+          fragment.bindings.some((read) => read.group === 0 && read.binding === binding),
+        )
+      ) {
+        return err(
+          new ShaderError({
+            code: 'shader-compile-failed',
+            expected:
+              'a reflected fullscreen vertex entry and fragment reads of scene color, depth and pass inputs',
+            message: `material ${unit.request.material} pass ${pass.name} does not consume its fullscreen ABI`,
+            hint: 'remove vertex attributes and consume the declared post-process input resources, then re-cook',
+          }),
         );
-        const fragment = compiled.value.reflection.entryPoints?.find(
-          (entry) => entry.stage === 'fragment' && entry.name === fragmentEntry,
-        );
-        if (
-          abi.value.vertexInputs.length !== 0 ||
-          vertex === undefined ||
-          fragment === undefined ||
-          ![1, 2, 3].every((binding) =>
-            fragment.bindings.some((read) => read.group === 0 && read.binding === binding),
-          )
-        ) {
-          return err(
-            new ShaderError({
-              code: 'shader-compile-failed',
-              expected:
-                'a reflected fullscreen vertex entry and fragment reads of scene color, depth and pass inputs',
-              message: `material ${unit.request.material} pass ${pass.name} does not consume its fullscreen ABI`,
-              hint: 'remove vertex attributes and consume the declared post-process input resources, then re-cook',
-            }),
-          );
-        }
       }
+    }
 
-      return undefined;
-    };
-    const validatePostProcessEntryFailure = validatePostProcessEntry();
-    if (validatePostProcessEntryFailure !== undefined) return validatePostProcessEntryFailure;
-
-    return ok(
-      cookedPassRecord(cook, composed, entry, compiled.value, sceneCompiled, {
-        ...abi.value,
-        ...(systemInputs.value === undefined ? {} : { systemInputs: systemInputs.value }),
-      }),
-    );
+    return undefined;
   };
-  return publishCompiledPass();
+  const validatePostProcessEntryFailure = validatePostProcessEntry();
+  if (validatePostProcessEntryFailure !== undefined) return validatePostProcessEntryFailure;
+
+  return ok(
+    cookedPassRecord(cook, composed, entry, compiled, sceneCompiled, {
+      ...abi.value,
+      ...(systemInputs.value === undefined ? {} : { systemInputs: systemInputs.value }),
+    }),
+  );
 }
 
 function cookedPassRecord(
@@ -1481,23 +1613,25 @@ function cookedPassRecord(
  * Select the scene-index entry source, or undefined when the pass publishes only
  * a direct entry. A Surface template recomposes its Surface over the scene row.
  */
-function prepareSceneIndexEntry(
-  cook: MaterialPassCook,
-  entry: PassEntrySource,
-  usesSurfaceSlot: boolean,
-  templateResources: ReadonlySet<string>,
-  dynamicInput: MaterialDynamicInputLayout | undefined,
-): Result<SceneEntrySource | undefined, MaterialCookError> {
+function canCompileSceneSurface(cook: MaterialPassCook, entry: PassEntrySource): boolean {
   const { context } = cook;
-  const compileSceneSurface =
+  return (
     context.geometry !== 'terrain' &&
     context.capability !== 'uniform-fallback' &&
     cook.sceneSurfaceTemplate &&
     sceneIndexEntry(entry.loweredSource) !== undefined &&
-    cook.unit.derived.totalBytes <= GPU_DRIVEN_MATERIAL_ROW_BYTES;
-  if (compileSceneSurface && usesSurfaceSlot)
-    return composeSceneSurfaceEntry(cook, templateResources, dynamicInput);
-  if (!compileSceneSurface && !entry.customSceneProgram) return ok(undefined);
+    cook.unit.derived.totalBytes <= GPU_DRIVEN_MATERIAL_ROW_BYTES
+  );
+}
+
+function prepareSceneIndexEntry(
+  cook: MaterialPassCook,
+  entry: PassEntrySource,
+  recomposeSurface: boolean,
+  templateResources: ReadonlySet<string>,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): Result<SceneEntrySource, MaterialCookError> {
+  if (recomposeSurface) return composeSceneSurfaceEntry(cook, templateResources, dynamicInput);
   return ok({ source: entry.loweredSource, imports: entry.compileImports });
 }
 
@@ -1560,6 +1694,7 @@ function composeSurfaceSlotPass(
 ): Result<ComposedPassSource, MaterialCookError> {
   const generatedParameters = generateParameterModule(cook.unit.schema, {
     excludeResources: templateResources,
+    standardTextureDefines: cook.standardTemplate,
   });
   const surface = prepareCookSurface(cook, generatedParameters, dynamicInput);
   if (!surface.ok) return surface;
@@ -1737,7 +1872,7 @@ function lowerTemplateEntryBindings(cook: MaterialPassCook, source: string): str
 function lowerMediumPhysicalBindings(source: string, schema: readonly ParamSchemaEntry[]): string {
   const start = derive(schema).userRegionBindingEnd;
   const names = [
-    'mediumIrradianceMap',
+    'mediumSkySh',
     'mediumIrradianceSampler',
     'mediumPrefilterMap',
     'mediumPrefilterSampler',
@@ -1798,6 +1933,18 @@ function defaultFragmentEntry(context: MaterialVariantContext): string | undefin
   return context.pipeline !== 'forward' ? 'fs_gbuffer' : 'fs_main';
 }
 
+const WATER_FRAGMENT_OUTPUTS: Readonly<
+  Record<string, keyof typeof SINGLE_LAYER_WATER_PASS_OUTPUTS>
+> = {
+  fs_water_prepass: 'depth',
+  fs_water_visibility: 'visibility',
+  fs_water_color: 'color',
+  fs_water_forward_color: 'forward-color',
+  fs_water_velocity: 'velocity',
+  fs_water_shadow: 'shadow',
+  fs_main: 'color',
+};
+
 function passRenderEntries(
   cook: MaterialPassCook,
   vertex: string,
@@ -1805,16 +1952,8 @@ function passRenderEntries(
 ): NonNullable<CompileOptions['renderEntries']> {
   const { pass } = cook;
   const waterOutputPass =
-    cook.unit.asset.surface?.model === 'single-layer-water'
-      ? fragment === 'fs_water_prepass'
-        ? 'depth'
-        : fragment === 'fs_water_velocity'
-          ? 'velocity'
-          : fragment === 'fs_water_shadow'
-            ? 'shadow'
-            : fragment === 'fs_water_color' || fragment === 'fs_main'
-              ? 'color'
-              : undefined
+    cook.unit.asset.surface?.model === 'single-layer-water' && fragment !== undefined
+      ? WATER_FRAGMENT_OUTPUTS[fragment]
       : undefined;
   const outputs =
     waterOutputPass === undefined ? pass.outputs : SINGLE_LAYER_WATER_PASS_OUTPUTS[waterOutputPass];
@@ -1960,6 +2099,7 @@ function composeSceneSurfaceEntry(
   try {
     sceneGeneratedInterface = generateParameterModule(schema, {
       excludeResources: templateResources,
+      standardTextureDefines: cook.standardTemplate,
       sceneIndex: true,
       sceneIndexDeclarations: false,
       sceneMaterialPrivate: true,
@@ -2102,24 +2242,23 @@ function withPackedTangentFrameAbi(
   directEntry: string,
   compiled: CompileResult,
   sceneCompiled: CompileResult | undefined,
+  address: MaterialProgramAddress,
 ): MaterialProgramAbi {
   const packedDirect = `${directEntry}_packed`;
-  const packedInputs = materialVertexInputs(compiled.wgsl, packedDirect);
+  const packedScene = 'vs_scene_index_packed';
+  const isScene = address === 'scene-index';
+  const packedInputs = materialVertexInputs(compiled.wgsl, isScene ? packedScene : packedDirect);
   if (packedInputs.some((input) => input.semantic === 'tangentFrame')) {
-    const packedScene = sceneCompiled === undefined ? undefined : 'vs_scene_index_packed';
     if (
       sceneCompiled !== undefined &&
-      !sameVertexInputs(
-        packedInputs,
-        materialVertexInputs(sceneCompiled.wgsl, packedScene as string),
-      )
+      !sameVertexInputs(packedInputs, materialVertexInputs(sceneCompiled.wgsl, packedScene))
     )
       throw new Error('packed direct and scene-index vertex inputs differ');
     return {
       ...receipt,
       tangentFrame32: {
         directEntry: packedDirect,
-        ...(packedScene === undefined ? {} : { sceneIndexEntry: packedScene }),
+        ...(isScene || sceneCompiled !== undefined ? { sceneIndexEntry: packedScene } : {}),
         vertexInputs: packedInputs,
       },
     };
@@ -2133,8 +2272,12 @@ function publishPassAbi(
   entry: PassEntrySource,
   compiled: CompileResult,
   sceneCompiled: CompileResult | undefined,
+  address: MaterialProgramAddress,
+  sceneIndexDeclared: boolean,
 ): Result<MaterialProgramAbi, MaterialCookError> {
-  const abiKind = passAbiKind(cook, sceneCompiled !== undefined);
+  const isScene = address === 'scene-index';
+  const hasSceneProgram = isScene || sceneCompiled !== undefined;
+  const abiKind = passAbiKind(cook, sceneIndexDeclared);
   try {
     if (
       abiKind === 'custom-scene' &&
@@ -2150,12 +2293,19 @@ function publishPassAbi(
     const vertexInputs = reflectPassVertexInputs(
       cook,
       abiKind,
-      directEntry,
+      isScene ? 'vs_scene_index' : directEntry,
       compiled,
       sceneCompiled,
+      address,
     );
     if (!vertexInputs.ok) return vertexInputs;
-    const publishedSurface = abiKind === 'direct' ? undefined : surfaceProgramAbi(cook.unit.asset);
+    const publishedSurface =
+      abiKind === 'direct'
+        ? undefined
+        : surfaceProgramAbi(
+            cook.unit.asset,
+            abiKind === 'standard' ? composed.surfaceModule : undefined,
+          );
     if (abiKind === 'medium' && publishedSurface === undefined)
       throw new Error('single-layer medium material must publish a Surface ABI');
     const skin = validateSkinVertexResources(vertexInputs.value, compiled, cook.context);
@@ -2167,7 +2317,7 @@ function publishPassAbi(
       schema: cook.unit.schema,
       directEntry,
       vertexInputs: vertexInputs.value,
-      ...(sceneCompiled === undefined
+      ...(!hasSceneProgram
         ? {}
         : { sceneIndexEntry: 'vs_scene_index', rowStride: cook.unit.sceneRowStride }),
       ...(abiKind === 'standard' &&
@@ -2177,7 +2327,7 @@ function publishPassAbi(
         : {}),
       ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
     });
-    return ok(withPackedTangentFrameAbi(receipt, directEntry, compiled, sceneCompiled));
+    return ok(withPackedTangentFrameAbi(receipt, directEntry, compiled, sceneCompiled, address));
   } catch (error) {
     return sceneAbiFailure(abiKind, error);
   }
@@ -2225,15 +2375,17 @@ function reflectPassVertexInputs(
   directEntry: string,
   compiled: CompileResult,
   sceneCompiled: CompileResult | undefined,
+  address: MaterialProgramAddress,
 ): Result<MaterialVertexInputs, MaterialCookError> {
   // Generic direct programs retain reflected stream names. Every other
   // family uses the same paired-entry geometry and storage admission.
   let vertexInputs =
     abiKind === 'standard' ? materialVertexInputs(compiled.wgsl, directEntry) : undefined;
-  if (sceneCompiled !== undefined) {
+  const scene = address === 'scene-index' ? compiled : sceneCompiled;
+  if (scene !== undefined) {
     const storageFailure = validateSceneIndexStorage(
       abiKind === 'medium' ? undefined : cook.unit.derived,
-      { boundGlobals: sceneCompiled.reflection.boundGlobals, bindings: sceneCompiled.bindings },
+      { boundGlobals: scene.reflection.boundGlobals, bindings: scene.bindings },
       cook.unit.sceneRowStride,
       SCENE_VISIBLE_ITEMS_BINDING,
     );
@@ -2285,7 +2437,7 @@ function validateSkinVertexResources(
   const valid =
     auxiliary?.addressSpace === 'uniform' &&
     (uniform
-      ? current?.addressSpace === 'uniform' && current.span === 16336 && auxiliary.span === 16320
+      ? current?.addressSpace === 'uniform' && current.span === 16336 && auxiliary.span === 16336
       : current?.addressSpace === 'storage' &&
         current.elementStride === 16 &&
         auxiliary.span === 16);

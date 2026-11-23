@@ -15,9 +15,15 @@ import {
 import { buildWaterZoneMeshViewForRenderer } from '@forgeax/engine-water/internal';
 import { assert, expect, it } from 'vitest';
 import { runSingleViewFeatureFrame } from '../../__tests__/single-view-feature-fixture';
+import { featureResourceKey, featureScopeKey } from '../../features/frame-plan';
 import { createRenderFeatureHost } from '../../features/host';
+import { waterGpuMeshDrawBuffers } from '../gpu-mesh-draw';
 import { createWaterGpuMeshFeature } from '../gpu-mesh-feature';
-import { buildWaterGpuMeshZone } from '../gpu-mesh-source';
+import {
+  buildWaterGpuMeshZone,
+  WATER_GPU_MESH_FEATURE,
+  waterGpuMeshResource,
+} from '../gpu-mesh-source';
 import {
   createWaterInfoFeature,
   createWaterInfoSourceFeature,
@@ -810,4 +816,88 @@ it('rejects continuity only for an active current-generation body bound to this 
     ok: false,
     error: { code: 'invalid-source', expected: expect.stringContaining('terminal continuity') },
   });
+});
+
+it('reads the two buffers written by the issuing view and zone on each changing frame', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const encoder = device.createCommandEncoder().unwrap();
+  const buffers = Array.from({ length: 4 }, () =>
+    device.createBuffer({ size: 4096, usage: 0x180 }).unwrap(),
+  );
+  const draw = {
+    zoneKey: 'estuary',
+    materialBucket: 1,
+    materialCount: 2,
+    tileCapacity: 16,
+    viewIndex: 1,
+    viewCount: 2,
+    sourceBodies: [],
+  };
+  const scope = { view: 'main' };
+  const source = {
+    waterGpuMesh: draw,
+    waterOwner: {
+      guid: 'lake',
+      generation: 1,
+      zoneGeneration: 3,
+      worldIdentity: 'scene',
+      viewIdentity: scope.view,
+    },
+  };
+  try {
+    const work = (view: string, zone: string, tiles: number, args: number, enabled = true) => {
+      const scoped = { view };
+      const pass = {
+        featureIdentity: WATER_GPU_MESH_FEATURE,
+        order: 0,
+        name: waterGpuMeshResource(zone, 'scatter'),
+        enabled,
+        resolvedGpuCompute: {
+          dispatches: [],
+          buffers: (
+            [
+              ['args', args],
+              ['tiles', tiles],
+            ] as const
+          ).map(([kind, index]) => ({
+            name: featureResourceKey(scoped, waterGpuMeshResource(zone, kind)),
+            buffer: requiredFixtureValue(buffers[index]),
+            size: 4096,
+            physicalUsage: 0x180,
+            access: 'storage-read-write' as const,
+          })),
+        },
+      };
+      return {
+        featureIdentity: WATER_GPU_MESH_FEATURE,
+        scope: featureScopeKey(scoped),
+        order: 0,
+        passes: [pass],
+      };
+    };
+    for (let i = 0; i < 60; i++) {
+      const a = i % 2,
+        b = 2 + a;
+      const otherView = work('reflection', draw.zoneKey, 1 - a, 3 - a);
+      const otherZone = work(scope.view, 'upstream', 1 - a, 3 - a);
+      const current = work(scope.view, draw.zoneKey, a, b);
+      const frame = { encoder, featureExecutions: [otherView, otherZone, current] };
+      const selected = waterGpuMeshDrawBuffers(frame, source);
+      expect(selected?.tiles.buffer).toBe(buffers[a]);
+      expect(selected?.args.buffer).toBe(buffers[b]);
+      expect(selected).toMatchObject({ headerOffset: 256, indirectOffset: 20, bindingBytes: 2048 });
+      expect(() =>
+        waterGpuMeshDrawBuffers({ encoder, featureExecutions: [otherView, otherZone] }, source),
+      ).toThrow();
+      expect(() =>
+        waterGpuMeshDrawBuffers(
+          { encoder, featureExecutions: [work(scope.view, draw.zoneKey, a, b, false)] },
+          source,
+        ),
+      ).toThrow();
+    }
+  } finally {
+    encoder.finish().unwrap();
+    for (const buffer of buffers) device.destroyBuffer(buffer).unwrap();
+  }
 });

@@ -1,5 +1,9 @@
 import type { RenderBundle } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import {
+  type PrimitiveReflection,
+  samePrimitiveReflection,
+} from '../reflection/primitive-bindings';
 import { publishReadonlyMap } from './shadow-projection-publication';
 
 export interface RetainedRasterInputPreparation {
@@ -15,6 +19,7 @@ interface RetainedPassInputs {
 
 interface RetainedPassState {
   readonly inputs: RetainedPassInputs;
+  readonly fixed?: FixedRasterInputs | undefined;
   frame: number;
 }
 
@@ -26,27 +31,42 @@ function stalePreparation(): RhiError {
   });
 }
 
-type MaterialOwner = { readonly group: object; readonly offset: number };
+type MaterialOwner = {
+  readonly group: object;
+  readonly offset: number;
+  readonly reflection?: PrimitiveReflection | undefined;
+  readonly program?: string | undefined;
+};
 export type ClassOwner = { readonly pipeline: object; readonly mesh: object };
 
 /** Resolutions belong only to this encode and are discarded with it. */
 class ResolvedOwners<K, V> {
-  readonly #memo = new Map<K, V | undefined>();
+  readonly #memo = new Map<K, { expected: V; actual: V | undefined }>();
   constructor(
-    private readonly resolve: (key: K) => V | undefined,
+    private readonly resolve: (key: K, expected: V) => V | undefined,
     private readonly equal: (actual: V | undefined, expected: V) => boolean,
+    private readonly sameRequest?: (prior: V, next: V) => boolean,
   ) {}
   matches(expected: ReadonlyMap<K, V>): boolean {
-    for (const key of expected.keys()) {
-      if (!this.#memo.has(key)) this.#memo.set(key, this.resolve(key));
-      if (!this.equal(this.#memo.get(key), expected.get(key) as V)) return false;
+    for (const [key, owner] of expected) {
+      let resolution = this.#memo.get(key);
+      if (resolution === undefined || this.sameRequest?.(resolution.expected, owner) === false) {
+        resolution = { expected: owner, actual: this.resolve(key, owner) };
+        this.#memo.set(key, resolution);
+      }
+      if (!this.equal(resolution.actual, owner)) return false;
     }
     return true;
   }
 }
 
 function sameMaterial(actual: MaterialOwner | undefined, expected: MaterialOwner): boolean {
-  return actual?.group === expected.group && actual.offset === expected.offset;
+  return (
+    actual?.group === expected.group &&
+    actual.offset === expected.offset &&
+    actual.program === expected.program &&
+    samePrimitiveReflection(actual.reflection, expected.reflection)
+  );
 }
 
 function sameClass(actual: ClassOwner | undefined, expected: ClassOwner): boolean {
@@ -57,6 +77,7 @@ function sameClass(actual: ClassOwner | undefined, expected: ClassOwner): boolea
 export interface RetainedRasterBlock {
   /** The command identities of the run's live batches, in encode order. */
   readonly commands: readonly object[];
+  readonly materialConflict?: boolean;
   /** Ordered physical-buffer and material-selection facts of this run. */
   readonly physical: readonly unknown[];
   readonly materials: ReadonlyMap<number, MaterialOwner>;
@@ -67,6 +88,7 @@ export interface RetainedRasterBlock {
 
 /** Mutable only while the pass owns a private native recording. */
 export interface RasterRunRecording extends RetainedRasterBlock {
+  materialConflict?: boolean;
   readonly materials: Map<number, MaterialOwner>;
   readonly classes: Map<object, ClassOwner>;
   bundle: RenderBundle | undefined;
@@ -119,6 +141,7 @@ function sameOwners<K, V>(
 
 function sameRun(recording: RasterRunRecording, previous: RetainedRasterBlock): boolean {
   return (
+    recording.materialConflict === previous.materialConflict &&
     recording.bundle === previous.bundle &&
     recording.draws === previous.draws &&
     sameList(recording.commands, previous.commands) &&
@@ -141,6 +164,12 @@ function samePasses(
 type FactConsumer = (value: unknown) => void;
 /** Emit all facts synchronously; the reader must not retain the consumer. */
 type ReadFacts = (live: object, consume: FactConsumer) => void;
+
+/** The native producer's immutable live projection and captured pass bindings. */
+export interface FixedRasterInputs {
+  readonly lives: readonly object[];
+  readonly bindings: readonly unknown[];
+}
 
 function sameFacts(
   lives: readonly object[],
@@ -172,11 +201,23 @@ export class RetainedPassEncode {
   readonly #classes: ResolvedOwners<object, ClassOwner>;
   constructor(
     private readonly previous: RetainedPassInputs | undefined,
-    resolveMaterial: (slot: number) => MaterialOwner | undefined,
+    resolveMaterial: (slot: number, program?: string) => MaterialOwner | undefined,
     resolveClass: (rasterClass: object) => ClassOwner | undefined,
+    private readonly fixedLives?: readonly object[],
   ) {
-    this.#materials = new ResolvedOwners(resolveMaterial, sameMaterial);
+    this.#materials = new ResolvedOwners(
+      (slot, owner) => resolveMaterial(slot, owner.program),
+      sameMaterial,
+      (prior, next) => prior.program === next.program,
+    );
     this.#classes = new ResolvedOwners(resolveClass, sameClass);
+  }
+
+  /** A fixed producer also proves the run boundary, without scanning its batches. */
+  fixedRunLength(lives: readonly object[], start: number): number {
+    const first = lives[start];
+    if (this.fixedLives !== lives || first === undefined) return 0;
+    return this.previous?.blocks.get(commandOf(first))?.commands.length ?? 0;
   }
 
   /** Retained output of the run `lives[start..end)`, if every input still matches. */
@@ -188,10 +229,13 @@ export class RetainedPassEncode {
   ): RetainedRasterBlock | undefined {
     const first = lives[start];
     const block = first === undefined ? undefined : this.previous?.blocks.get(commandOf(first));
-    if (block === undefined || block.commands.length !== end - start) return undefined;
-    for (let index = start; index < end; index++)
-      if (block.commands[index - start] !== commandOf(lives[index] as object)) return undefined;
-    if (!sameFacts(lives, start, end, physicalOf, block.physical)) return undefined;
+    if (block === undefined || block.materialConflict || block.commands.length !== end - start)
+      return undefined;
+    if (this.fixedLives !== lives) {
+      for (let index = start; index < end; index++)
+        if (block.commands[index - start] !== commandOf(lives[index] as object)) return undefined;
+      if (!sameFacts(lives, start, end, physicalOf, block.physical)) return undefined;
+    }
     if (!this.#materials.matches(block.materials) || !this.#classes.matches(block.classes))
       return undefined;
     this.openBlocks().set(commandOf(first as object), block);
@@ -428,8 +472,9 @@ export class RetainedRasterEncodes {
   begin(
     key: object,
     identities: readonly unknown[],
-    resolveMaterial: (slot: number) => MaterialOwner | undefined,
+    resolveMaterial: (slot: number, program?: string) => MaterialOwner | undefined,
     resolveClass: (rasterClass: object) => ClassOwner | undefined,
+    fixed?: FixedRasterInputs,
   ): RetainedPassEncode {
     const entry = this.#passes.get(key);
     const previous =
@@ -438,11 +483,23 @@ export class RetainedRasterEncodes {
         : undefined;
     // A failed encode leaves no partially recorded runs behind.
     this.#passes.delete(key);
-    return new RetainedPassEncode(previous, resolveMaterial, resolveClass);
+    const previousFixed = previous === undefined ? undefined : entry?.fixed;
+    const fixedLives =
+      fixed !== undefined &&
+      previousFixed?.lives === fixed.lives &&
+      sameList(previousFixed.bindings, fixed.bindings)
+        ? fixed.lives
+        : undefined;
+    return new RetainedPassEncode(previous, resolveMaterial, resolveClass, fixedLives);
   }
 
-  finish(key: object, identities: readonly unknown[], encode: RetainedPassEncode): void {
-    this.#passes.set(key, { inputs: encode.finish(identities), frame: this.#frame });
+  finish(
+    key: object,
+    identities: readonly unknown[],
+    encode: RetainedPassEncode,
+    fixed?: FixedRasterInputs,
+  ): void {
+    this.#passes.set(key, { inputs: encode.finish(identities), fixed, frame: this.#frame });
   }
 
   clear(): void {
@@ -457,11 +514,23 @@ export class RetainedRasterEncodes {
 
 /** Resolved material owner of a prepared material binding. */
 export function materialOwner(
-  prepared: { readonly group: object; readonly byteOffset: number } | undefined,
+  prepared:
+    | {
+        readonly group: object;
+        readonly byteOffset: number;
+        readonly reflection?: PrimitiveReflection | undefined;
+      }
+    | undefined,
+  program?: string,
 ): MaterialOwner | undefined {
   return prepared === undefined
     ? undefined
-    : { group: prepared.group, offset: prepared.byteOffset };
+    : {
+        group: prepared.group,
+        offset: prepared.byteOffset,
+        program,
+        reflection: prepared.reflection,
+      };
 }
 
 /** Resolved pipeline and group(2) owner of a raster class. */

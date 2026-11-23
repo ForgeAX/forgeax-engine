@@ -141,6 +141,7 @@ export default async function bootstrap(data) {
         inject: [
           'world',
           'assets',
+          'levels',
           'runtimePacks',
           'pluginPrograms',
           'toolApi',
@@ -153,6 +154,7 @@ export default async function bootstrap(data) {
           const port = ctx.executionBootstrapHost.port;
           if (measureReplacement) measuredAssets = ctx.assets;
           let root;
+          let generatedLevel;
           let installed;
           let visual;
           let visualEntity;
@@ -281,6 +283,10 @@ export default async function bootstrap(data) {
           const commands = {
             ...group?.commands,
             inspect,
+            async requestGeneratedLevel(target) {
+              generatedLevel ??= ctx.levels.create({ scene: guid('scene') }).unwrap();
+              return (await generatedLevel.request(target).unwrap().done).unwrap();
+            },
             async catalogRows() {
               return (await ctx.assets.enumerateCatalog()).unwrap();
             },
@@ -617,6 +623,7 @@ export default async function bootstrap(data) {
               // The browser does not emit an error for an owner-initiated termination.
               lost.dispatchEvent(new ErrorEvent('error', { message: 'fixture terminated Render Worker' }));
             },
+            visualEntity() { return visualEntity; },
             pickVisual() {
               const result = pickTriangle(world, camera, 192, 192, 384, 384);
               return {

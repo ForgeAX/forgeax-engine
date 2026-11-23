@@ -10,7 +10,6 @@ import {
   sourcesFromManifest,
   ssrCoordinateErrors,
 } from './ssr-gpu-dispatch';
-import { runSsrReprojectionProbe } from './ssr-reprojection-probe';
 
 const confidence = (values: readonly number[]) => values.filter((_, i) => i % 4 === 3);
 
@@ -31,17 +30,7 @@ describe('SSR GPU dispatch Browser WebGPU probe', () => {
   // Independent cases identify the failing invariant. The 60-frame case
   // also includes cold software-driver compilation and completed readbacks;
   // its bounded 60-second execution allowance is not a frame-performance gate.
-  it('reprojects history and reconstructs perspective and orthographic view distance', async () => {
-    expect(
-      await runSsrReprojectionProbe(
-        device,
-        typeof sources.temporal === 'string' ? sources.temporal : sources.temporal.read(),
-      ),
-    ).toEqual([
-      [0.5, 0.5, 0.375, 0.5625],
-      [0.5, 0.5, 0.375, 0.5625],
-      [0.5, 0.5, 0.375, 0.5625],
-    ]);
+  it('reconstructs perspective and orthographic view distance', async () => {
     for (const distances of await runSsrViewDistanceProbe(
       device,
       typeof sources.trace === 'string' ? sources.trace : sources.trace.read(),
@@ -51,15 +40,15 @@ describe('SSR GPU dispatch Browser WebGPU probe', () => {
     }
   });
 
-  it('executes 60 stable depth-pyramid, trace and temporal frames with finite visible hits', async () => {
-    const hit = await runSsrGpuDispatch(device, sources, 60);
+  it('executes 60 stable depth-pyramid, half-color, trace and composition frames with finite visible hits', async () => {
+    const hit = await runSsrGpuDispatch(device, sources, 60, { halfHitColor: true });
+    expect(hit.passNames).toContain('ssr-half-hit-color-downsample');
     expect(hit.passNames.filter((name) => name.startsWith('depth-pyramid-reduce'))).toHaveLength(1);
-    expect(hit.passNames.filter((name) => name.startsWith('ssr-reflection-mip'))).toHaveLength(1);
     expect(hit.passNames).toContain('depth-pyramid-seed');
     expect(hit.passNames).toContain('ssr-trace');
-    expect(hit.passNames).toContain('ssr-temporal');
+    expect(hit.passNames).not.toContain('ssr-temporal');
     expect(hit.passNames.filter((name) => name === 'ssr-compose')).toHaveLength(1);
-    expect(hit.resourceNames).toContain('ssr-resolved');
+    expect(hit.resourceNames.some((label) => label.startsWith('ssr-history'))).toBe(false);
     expect(hit.pixels).toHaveLength(60);
     expect(new Set(hit.pixels.map((pixel) => pixel.join(','))).size).toBe(1);
     expect(hit.pixel.some((value) => value !== 0)).toBe(true);

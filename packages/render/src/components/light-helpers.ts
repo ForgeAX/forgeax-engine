@@ -150,20 +150,18 @@ function validateShadowPolicy(
     ['shadowIntensity', 1, 0, 1],
     ['shadowMapAspect', 1, Number.MIN_VALUE, 3.4028234663852886e38],
     ['shadowRevision', 0, 0, Number.MAX_SAFE_INTEGER],
-    ['shadowBlurSamples', 8, 1, 64],
   ] as const) {
     const value = (data[field] as number | undefined) ?? fallback;
     if (
       !Number.isFinite(value) ||
       value < min ||
       value > max ||
-      ((field === 'shadowRevision' || field === 'shadowBlurSamples') &&
-        !Number.isSafeInteger(value))
+      (field === 'shadowRevision' && !Number.isSafeInteger(value))
     )
       return err(new ShadowInvalidConfigError(field, value, { kind: 'range', min, max }));
   }
   if (kind !== 'directional') {
-    const values = kind === 'point' ? [1, 6] : [1, 6, 7, 8];
+    const values = kind === 'point' ? [1, 6] : [1, 6, 7];
     const filter = (data.shadowFilter as number | undefined) ?? 6;
     if (!values.includes(filter))
       return err(

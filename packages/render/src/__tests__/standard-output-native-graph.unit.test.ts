@@ -16,9 +16,11 @@ import {
   resetStandardOutputForDeviceLoss,
 } from '../pipeline/standard-output/resources';
 import { addStandardPost, inspectStandardBloomGraph } from '../pipeline/standard-post';
+import { currentOutputDither } from '../record/display-ports';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import {
   createRenderPipelineTarget,
+  type OutputDither,
   type RenderPipelineBuildContext,
   type RenderPipelineFrame,
   type RenderPipelineTopology,
@@ -35,7 +37,7 @@ async function fixture() {
   const groups = vi.spyOn(device, 'createBindGroup');
   const writes = vi.spyOn(device.queue, 'writeBuffer');
   const textures = vi.spyOn(device, 'createTexture');
-  function build() {
+  function build(dither: OutputDither = false) {
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     const target = (name: string, format: 'rgba16float' | 'rgba8unorm' = 'rgba8unorm') =>
       createRenderPipelineTarget(graph, name, { size: 'surface', format }).unwrap();
@@ -51,9 +53,8 @@ async function fixture() {
       .unwrap();
     const parameters = addNativeOutputParameters(graph, {
       bloom: false,
-      lutStrength: 0,
       sharpen: 0,
-      dither: false,
+      dither,
       finishInGrade: false,
     }).unwrap();
     addNativeOutputPass(graph, 'native-grade', scene, grade, parameters, {
@@ -82,11 +83,12 @@ async function fixture() {
 
 it('owns independent view uploads while retaining warm PSOs and bindings', async () => {
   const f = await fixture(),
-    a = f.build(),
-    b = f.build();
+    a = f.build(currentOutputDither),
+    b = f.build(false);
+  const config = { outputDither: true };
   const states = new Map([
-    [a, {}],
-    [b, {}],
+    [a, { installedPipelineConfig: config }],
+    [b, { installedPipelineConfig: config }],
   ]);
   const execute = (graph: typeof a, exposure: number) => {
     const encoder = f.device.createCommandEncoder().unwrap();
@@ -101,16 +103,22 @@ it('owns independent view uploads while retaining warm PSOs and bindings', async
     const uploads = f.writes.mock.calls;
     expect(uploads).toHaveLength(2);
     expect(uploads[0]?.[0]).not.toBe(uploads[1]?.[0]);
-    const exposure = (data: ArrayBuffer | ArrayBufferView | undefined) => {
+    const uniform = (data: ArrayBuffer | ArrayBufferView | undefined) => {
       if (data === undefined) throw Error('Missing native upload');
       return ArrayBuffer.isView(data)
-        ? new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat32(4, true)
-        : new DataView(data).getFloat32(4, true);
+        ? new DataView(data.buffer, data.byteOffset, data.byteLength)
+        : new DataView(data);
     };
-    expect(exposure(uploads[0]?.[2])).toBe(0.5);
-    expect(exposure(uploads[1]?.[2])).toBe(2);
-    // Warm frames upload only camera values: no new PSO, layout or bind group.
+    expect(uniform(uploads[0]?.[2]).getFloat32(4, true)).toBe(0.5);
+    expect(uniform(uploads[1]?.[2]).getFloat32(4, true)).toBe(2);
+    expect(uniform(uploads[0]?.[2]).getUint32(38 * 4, true)).toBe(1);
+    expect(uniform(uploads[1]?.[2]).getUint32(38 * 4, true)).toBe(0);
+    config.outputDither = false;
     execute(a, 0.75);
+    expect(uniform(uploads[2]?.[2]).getUint32(38 * 4, true)).toBe(0);
+    config.outputDither = true;
+    execute(a, 0.5);
+    expect(uniform(uploads[3]?.[2]).getUint32(38 * 4, true)).toBe(1);
     expect(f.pipelines).toHaveBeenCalledTimes(2);
     expect(f.groups).toHaveBeenCalledTimes(4);
     expect(a.inspect().passes.map(({ name }) => name)).toEqual([

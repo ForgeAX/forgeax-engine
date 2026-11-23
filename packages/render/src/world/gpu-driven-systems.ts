@@ -21,7 +21,7 @@ import { type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { ViewSsrAdmission, viewSsrAdmissionOf } from './ssr-admission-systems';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 
 /** RenderQueue: the view's GPU-driven frame selection and its executed GPU Scene query. */
 export const RENDER_GPU_DRIVEN_PREPARE_SYSTEM = 'render-gpu-driven-prepare';
@@ -105,12 +105,8 @@ export function viewGpuDrivenSourcesOf(
   world: World,
   entity: EntityHandle,
 ): FrameGpuDrivenSources | undefined {
-  if (!world.hasComponent(entity, ViewGpuDrivenPrepareInput)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewGpuDrivenPrepareState>(
-      requireViewField(world, entity, ViewGpuDrivenPrepareInput, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewGpuDrivenPrepareState>(world, entity, ViewGpuDrivenPrepareInput);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.sources : undefined;
 }
 
@@ -195,10 +191,8 @@ export function viewGpuDrivenOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewGpuDrivenOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewGpuDriven)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewGpuDrivenState>(requireViewField(world, entity, ViewGpuDriven, 'state'))
-    .unwrap();
+  const state = readViewState<ViewGpuDrivenState>(world, entity, ViewGpuDriven);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

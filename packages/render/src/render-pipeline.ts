@@ -212,6 +212,7 @@ export interface RenderPipelineTopology {
   readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
   /** Optional receiver attachment for the inputs outside the fixed A-D record. */
   readonly compactReceiver?: 'channels' | 'context' | 'geometry';
+  readonly forwardDirectionalShadow?: import('./pipeline/forward-shadow-admission').ForwardShadowAdmission;
   readonly forwardContactShadows?: boolean;
   readonly forwardCapsuleShadows?: boolean;
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
@@ -232,9 +233,11 @@ export interface RenderPipelineTopology {
   readonly atmosphere?: boolean | undefined;
   /** Explicit background-only Atmosphere; materials and IBL do not consume it. */
   readonly atmosphereBackgroundOnly?: boolean | undefined;
+  readonly perPixelAtmosphereTransmittance?: boolean;
   /** Finite-depth distance / exponential-height fog; no volume history. */
   readonly analyticFog?: boolean | undefined;
   /** Whether Standard main draws carry the producer-owned fallback MRT. */
+  readonly deferredLightProbes?: true;
   readonly reflectionFallback?:
     | {
         readonly enabled: boolean;
@@ -291,6 +294,7 @@ export interface RenderPipelineTopology {
   };
   /** Detached spatial SSR admission; graph resources remain renderer-owned. */
   readonly ssr?: SsrSpatialAdmission | undefined;
+  readonly inlineSsr?: true;
   readonly temporal?: {
     readonly taa: boolean;
     readonly motionBlur: boolean;
@@ -308,7 +312,9 @@ export interface RenderPipelineTopology {
           readonly staticLayer?: false;
           readonly terrainReceivers?: readonly import('./terrain/shadow-family').TerrainShadowReceiver[];
         };
-    readonly variance?: { readonly directional: boolean; readonly spots: readonly number[] };
+    /** Atlas slots whose owning lights explicitly requested a separate static depth layer. */
+    readonly pointStaticMask?: number;
+    readonly spotStaticMask?: number;
     readonly spotMapSize: number;
     readonly pointCount: number;
     readonly pointFaceSize: number;
@@ -374,6 +380,8 @@ export interface RenderPipelineTopology {
   readonly gpuDrivenTopologySignature: string;
   /** Stable Cluster transport/layout facts; excludes per-frame light payloads. */
   readonly standardLightingTopologySignature?: string | undefined;
+  /** Deferred can drop extended lighting reads when the accepted light roster proves they are idle. */
+  readonly deferredPcfLighting?: true;
   /** Internal graph fact; renderer callers do not configure transmission demand. */
   readonly transmissionDemand?: TransmissionDemand | undefined;
   /** Whether the extracted frame contains a single-layer medium Surface. */
@@ -403,12 +411,21 @@ export function resolveOutputDither(
   return config?.outputDither ?? true;
 }
 
+/** A final writer either has an authored dither value or reads the current view's policy. */
+export type OutputDither = boolean | ((frame: RenderPipelineFrame) => boolean);
+
+export function frameOutputDither(dither: OutputDither, frame: RenderPipelineFrame): boolean {
+  return typeof dither === 'boolean' ? dither : dither(frame);
+}
+
 export interface RenderPipelineFrame extends RenderPipelineContext, RenderGraphFrame {
   readonly editorAssistance?: import('./features/editor-assistance/feature').EditorAssistanceViewPresentation;
   readonly probePlacement?: import('./raytracing/renderer-probe-placement').PreparedProbePlacement;
 }
 
 export interface RenderPipelineTarget {
+  /** Built-in Scene depth dimensions for the view's sequential before-pass snapshots. */
+  readonly currentMaterialDepthExtent?: import('./record/current-material-depth').MaterialDepthExtent;
   readonly texture: GraphTexture;
   readonly view: GraphTextureView;
   readonly format: TextureFormat;
@@ -447,10 +464,11 @@ export function importRenderPipelineSurface(
   { readonly display?: RenderPipelineTarget; readonly storage: RenderPipelineTarget },
   RenderGraphError
 > {
+  const { storageFormat, viewFormat, profile } = topology.surface;
   const texture = graph.importTexture(
     'surface',
     {
-      format: topology.surface.storageFormat,
+      format: storageFormat,
       size: 'surface',
       // The imported surface is the final encoded endpoint.  Keeping this
       // semantic fact on the graph resource lets detached inspection project
@@ -458,36 +476,32 @@ export function importRenderPipelineSurface(
       domain: 'display-encoded',
       usage:
         GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        (topology.surface.profile?.kind === 'raw-only' ? 0 : GPU_TEXTURE_USAGE_COPY_SRC),
+        (profile?.kind === 'raw-only' ? 0 : GPU_TEXTURE_USAGE_COPY_SRC),
       viewFormats: [
-        ...(topology.surface.profile?.viewFormats ??
-          (topology.surface.storageFormat === topology.surface.viewFormat
-            ? []
-            : [topology.surface.viewFormat])),
+        ...(profile?.viewFormats ?? (storageFormat === viewFormat ? [] : [viewFormat])),
       ],
     },
     (frame) => frame.outputTarget().texture,
   );
   if (!texture.ok) return texture;
   const display =
-    topology.surface.profile?.hasDisplayEndpoint === false
+    profile?.hasDisplayEndpoint === false
       ? undefined
       : graph.importView(
           texture.value,
-          { label: 'surface.display', format: topology.surface.viewFormat },
+          { label: 'surface.display', format: viewFormat },
           (frame) => frame.outputTarget().view,
         );
   if (display !== undefined && !display.ok) return display;
   const storage = graph.importView(
     texture.value,
-    { label: 'surface.storage', format: topology.surface.storageFormat },
+    { label: 'surface.storage', format: storageFormat },
     (frame) => {
-      if (topology.surface.storageFormat === topology.surface.viewFormat)
-        return frame.outputTarget().view;
+      if (storageFormat === viewFormat) return frame.outputTarget().view;
       return surfaceTextureView(
         frame.runtime,
         frame.outputTarget().texture,
-        topology.surface.storageFormat,
+        storageFormat,
       ).unwrap();
     },
   );
@@ -499,7 +513,7 @@ export function importRenderPipelineSurface(
           display: {
             texture: texture.value,
             view: display.value,
-            format: topology.surface.viewFormat,
+            format: viewFormat,
             sampleCount: 1 as const,
             domain: 'display-encoded' as const,
           },
@@ -507,7 +521,7 @@ export function importRenderPipelineSurface(
     storage: {
       texture: texture.value,
       view: storage.value,
-      format: topology.surface.storageFormat,
+      format: storageFormat,
       sampleCount: 1,
       domain: 'display-encoded',
     },
@@ -534,7 +548,28 @@ export interface RenderPipelineGpuDrivenSourcePreparation {
   ): Generator<void, Result<void, RhiError>>;
 }
 
+export interface RenderPipelineGpuDrivenTarget {
+  readonly format: TextureFormat;
+  readonly sampleCount: 1 | 4;
+  readonly additionalColorFormats?: readonly TextureFormat[];
+  /** Reserve the two-phase HZB occlusion path; see `addLateOcclusion`. */
+  readonly lateOcclusion?: boolean;
+}
+
 export interface RenderPipelineGpuDrivenProjection {
+  /** Actual indirect work bound to this ordinary camera. */
+  readonly currentCameraWork?: () => boolean;
+  readonly recordCameraOcclusion?: (
+    graph: RenderGraphBuilder<RenderPipelineFrame>,
+    inputs: {
+      readonly depth: GraphTextureView;
+      readonly view: GraphBuffer;
+      readonly width: number;
+      readonly height: number;
+      readonly multisampled: boolean;
+    },
+  ) => Result<void, RenderGraphError>;
+  readonly retainIndirectBundles?: boolean;
   /** @internal Stage prospective classes through this graph's actual Pass jobs. */
   readonly prepareSource?: (
     source: GpuDrivenGraphProjection,
@@ -553,7 +588,7 @@ export interface RenderPipelineGpuDrivenProjection {
   ) => void;
   /** @internal Poll the registered real PSOs before any graph pass is encoded. */
   readonly preparePipelines?: (
-    entries?: readonly import('./record/frame-snapshot').ValidatedRenderable[],
+    entries?: import('./record/frame-snapshot').DrawRows,
     artifacts?: ReadonlyMap<string, import('@forgeax/engine-shader').MaterialShaderArtifact>,
     onPending?: (reason: import('./render-contract').FramePresentationPendingReason) => void,
     materials?: import('./scene/material-dispatch').MaterialFrame,
@@ -567,7 +602,7 @@ export interface RenderPipelineGpuDrivenProjection {
     frameResources: GpuDrivenStandardPbrFrameResources,
     filter?: RenderPipelineGpuDrivenFilter,
     fragmentEntryPoint?: string,
-    /** Select the `fs_temporal` binary coverage variant for an r8unorm target. */
+    /** Select binary coverage for a coverage or depth-writing pass. */
     coverageOnly?: boolean,
     /**
      * `late` draws only the candidates the HZB phase found newly visible.
@@ -618,7 +653,15 @@ export interface GpuDrivenStandardPbrFrameResources {
   /** Called only for a batch actually being recorded; prepares its exact physical binding. */
   prepareMaterialBinding(
     slot: number,
-  ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
+    standardMaterialLayoutIndex?: number,
+    program?: string,
+  ):
+    | {
+        readonly group: BindGroup;
+        readonly byteOffset: number;
+        readonly reflection?: import('./reflection/primitive-bindings').PrimitiveReflection;
+      }
+    | undefined;
   /** Record the selected material pipeline only when its indirect draw is encoded. */
   recordMaterialPipelineBinding?: (
     slot: number,
@@ -633,6 +676,7 @@ export interface GpuDrivenStandardPbrFrameResources {
   /** Pass-local depth compare policy shared by direct and scene-index draws. */
   opaqueDepthPrimed?: boolean;
   bundleDescriptor?: RenderBundleEncoderDescriptor;
+  sampleCount?: number;
   /** Exact producer-owned numeric Material table consumed by scene-index PBR. */
   readonly sceneMaterialBuffer: Buffer;
   /** Renderer-owned generic Surface page and frame/range metadata. */
@@ -650,6 +694,8 @@ export interface GpuDrivenStandardPbrFrameResources {
    * publishing a bind group; record never derives a frame-row address.
    */
   readonly surfaceDirectInstances?: (input: {
+    /** Set false when only native bindings are consumed. Physical membership is always validated. */
+    readonly includeMemberIds?: boolean;
     readonly entityKey: number;
     readonly drawItemIndex: number;
     readonly instanceCount: number;
@@ -669,20 +715,6 @@ export interface GpuDrivenStandardPbrFrameResources {
   >;
   /** Frame-local sink fed only by actual Surface draw commands. */
   readonly surfaceSubmissionObservation?: import('./surface/submission-observation').SurfaceSubmissionCandidate;
-  /** Existing Standard clustered group(2), supplied by the main-pass owner. */
-  clusterBindGroup?: BindGroup | undefined;
-  /** Rebind the same cluster resources around one batch-local mesh row page. */
-  clusterBindGroupForMesh?:
-    | ((meshBuffer: Buffer, bindingBytes: number) => BindGroup | undefined)
-    | undefined;
-  /** Rebind clustered lighting around the scene-index Mesh/Palette/Morph page. */
-  clusterBindGroupForSkin?:
-    | ((
-        meshBuffer: Buffer,
-        meshBindingBytes: number,
-        task: import('./record/skin-tasks').SkinTaskBinding,
-      ) => BindGroup | undefined)
-    | undefined;
 }
 
 export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame> {
@@ -764,22 +796,8 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly currentDepth: RenderPipelineTarget;
     readonly previousDepth: RenderPipelineTarget;
   };
-  /** Renderer-owned SSR temporal history targets for the admitted spatial chain. */
-  readonly ssrHistory?: {
-    readonly previous: RenderPipelineTarget;
-    readonly output: RenderPipelineTarget;
-    readonly previousSurface: RenderPipelineTarget;
-    readonly outputSurface: RenderPipelineTarget;
-    readonly params: GraphBuffer;
-  };
-  /** Water history stores reflected RGB and fallback-suppression alpha together. */
-  readonly waterSsr?: {
-    readonly inputParams: GraphBuffer;
-    readonly temporal?: Omit<
-      NonNullable<RenderPipelineBuildContext<FrameCtx>['ssrHistory']>,
-      'previousSurface' | 'outputSurface'
-    >;
-  };
+  /** Parameters for Deferred water ray and hit-color selection. */
+  readonly waterSsr?: { readonly inputParams: GraphBuffer };
   /** Existing TAA scene color is a hit-color source, separate from reflected RGBA history. */
   readonly ssrSceneColorHistory?: RenderPipelineTarget;
   /** No-TAA HDR snapshot written after DoF and before Motion Blur/Bloom/output. */
@@ -794,13 +812,9 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly format: TextureFormat;
     readonly level: number;
   }) => void;
-  projectGpuDriven(target: {
-    readonly format: TextureFormat;
-    readonly sampleCount: 1 | 4;
-    readonly additionalColorFormats?: readonly TextureFormat[];
-    /** Reserve the two-phase HZB occlusion path; see `addLateOcclusion`. */
-    readonly lateOcclusion?: boolean;
-  }): Result<RenderPipelineGpuDrivenProjection | undefined, RenderPipelineBuildError>;
+  projectGpuDriven(
+    target: RenderPipelineGpuDrivenTarget,
+  ): Result<RenderPipelineGpuDrivenProjection | undefined, RenderPipelineBuildError>;
   /**
    * `cameraPyramid` offers the main camera's HZB to the view's caster cull;
    * the frame graph drops it whenever another consumer samples the shadows.

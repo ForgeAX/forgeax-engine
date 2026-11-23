@@ -11,10 +11,10 @@ import './shader-defs-red.wgsl';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 
-const authoredPayload = materialPackage.assets[0]?.payload;
+const authoredPayload = materialPackage.assets['shader-defs.wgsl']?.payload;
 assertMaterialAsset(authoredPayload, 'shader-defs.pack.json');
 const authoredMaterial: MaterialAsset = authoredPayload;
-const redAuthoredPayload = redMaterialPackage.assets[0]?.payload;
+const redAuthoredPayload = redMaterialPackage.assets['shader-defs-red.wgsl']?.payload;
 assertMaterialAsset(redAuthoredPayload, 'shader-defs-red.pack.json');
 const redAuthoredMaterial: MaterialAsset = redAuthoredPayload;
 

@@ -1,6 +1,7 @@
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { type MaterialRootAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
 import { buildScriptablePack } from '../scriptable-pack-build.js';
 import { materialAssetOutputProducer } from '../scriptable-pack-output-producers.js';
@@ -45,10 +46,7 @@ function build(options: {
   };
   let serialActive = 0;
   let materialActive = 0;
-  let releaseOverlap: () => void = () => {};
-  const overlapping = new Promise<void>((resolve) => {
-    releaseOverlap = resolve;
-  });
+  const { promise: overlapping, resolve: releaseOverlap } = testGate();
   const outputs = new AssetOutputProducerRegistry();
   outputs.register(materialAssetOutputProducer);
   const result = buildScriptablePack({

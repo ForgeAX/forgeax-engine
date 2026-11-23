@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createRevisionObserver, type DevWatchListener } from '../dev/revision-observer.js';
 
 const snapshotGate = vi.hoisted(() => ({
@@ -44,14 +45,8 @@ it('drain observes a write made after an in-flight snapshot already read that fi
       observed.push(...batch.sources.map((entry) => entry.filename));
     },
   });
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let entered!: () => void;
-  const captured = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
+  const { promise: blocked, resolve: release } = testGate();
+  const { promise: captured, resolve: entered } = testGate();
   try {
     await observer.ready;
     snapshotGate.afterStat = async (path) => {

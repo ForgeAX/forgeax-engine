@@ -1,4 +1,3 @@
-import type { AssetPublicationTuple } from './asset.js';
 import type {
   AssetAuthoringCapability,
   AssetPublicationEnvelope,
@@ -33,23 +32,6 @@ export type {
   CookExecution,
 } from './asset-producer';
 
-/**
- * Strict contract row for the Catalog projection.
- *
- * This is evidence for an AI consumer, not authoring authority: a Catalog row
- * projects producer facts and runtime navigation while preserving lifecycle,
- * execution, and sourceKey distinctions.
- */
-export interface CatalogEntryV2 extends AssetPublicationTuple {
-  readonly guid: string;
-  readonly packageUrl: string;
-  readonly kind: string;
-  readonly sourcePath: string;
-  readonly subject: CatalogSubject;
-  readonly execution: CookExecution;
-  readonly lifecycle: CatalogLifecycle;
-  readonly projection: CatalogProjection;
-}
 /** One producer revision point in a catalog continuity window. */
 export interface CatalogRevisionPoint {
   readonly rootId: string;

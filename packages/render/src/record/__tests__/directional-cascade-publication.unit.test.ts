@@ -1,6 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +15,7 @@ import { encodeRenderPublication, renderPublicationTransfers } from '../../publi
 import { worldRenderResources } from '../../publication/resource-scope';
 import type { ExtractedFrame } from '../../render-system-extract';
 import { PersistentRenderScene } from '../../scene/render-scene';
+import { ShadowDepthLayers } from '../../shadow-depth-layers';
 import { renderLightsOf } from '../../world/render-lights';
 import { createRenderWorld } from '../../world/render-world';
 import {
@@ -24,7 +26,7 @@ import {
   prepareDirectionalShadowCache,
   shadowMeshReadsForQuery,
 } from '../directional-shadow-cache';
-import type { RenderFrameState } from '../frame-snapshot';
+import type { InstalledFrameGraph, RenderFrameState } from '../frame-snapshot';
 import type { RenderSystemInternals } from '../render-context';
 
 const lightOwner = renderLightsOf(createRenderWorld());
@@ -173,6 +175,38 @@ function requiredSource(f: ReturnType<typeof fixture>) {
 }
 
 describe('accepted publication CPU shadow authority', () => {
+  it('tracks directional depth across stock pass changes and rejects replaced physical storage', async () => {
+    const f = fixture();
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const layers = new ShadowDepthLayers(device);
+    f.state.shadowDepthLayers = layers;
+    // Only these installed graph ports are consumed by the directional record decision.
+    const graph = (topologyKey: string) =>
+      ({ topologyKey, directionalShadowViewCount: 'current' }) as InstalledFrameGraph;
+    try {
+      f.state.compiledFrameGraph = graph('forward');
+      const atlas = layers.texture('directional-shadow-depth', 32, 3);
+      const accepted = f.publish();
+      const initial = f.decide(accepted);
+      expect(initial.next?.depthTarget).toBe(atlas);
+      f.state.directionalShadowCache = initial.next;
+      for (let frame = 0; frame < 60; frame++) {
+        f.state.compiledFrameGraph = graph(frame % 2 ? 'forward' : 'forward-ao');
+        expect(f.decide(accepted).miss).toBeUndefined();
+      }
+      layers.beginReplacement();
+      const changed = layers.texture('directional-shadow-depth', 64, 3);
+      expect(changed).not.toBe(atlas);
+      expect(f.decide(accepted).miss).toBe('configuration-changed');
+      expect(f.decide(accepted).next?.depthTarget).toBe(changed);
+      layers._abort();
+      expect(f.decide(accepted).miss).toBeUndefined();
+    } finally {
+      layers.dispose();
+      f.dispose();
+    }
+  });
+
   it('keeps live physical dependencies through content misses without consuming rejected input', () => {
     const f = fixture();
     try {

@@ -97,6 +97,7 @@ describe('diffuse GI quality tiers', () => {
   it('emits profiles the Renderer accepts unchanged', () => {
     for (const tier of DIFFUSE_GI_TIERS) {
       const { profile } = resolveDiffuseGiTier(tier, scene, gpu).unwrap();
+      expect(profile.ibl).toBe(true);
       const merged = { ...DEFAULT_STANDARD_PROFILE, ...profile };
       expect(validateRenderProfile(merged)).toBeUndefined();
       expect(freezeRenderProfile(merged).diffuseGi).toEqual(profile.diffuseGi);

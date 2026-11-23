@@ -281,7 +281,14 @@ async function runGraph(
   const errorRegistry = new RhiErrorListenerRegistry();
   const frameState = {
     installedPipelineConfig: {
-      ambientOcclusion: { enabled: true, method: 'gtao', quality: 'medium' },
+      ambientOcclusion: {
+        enabled: true,
+        method: 'gtao',
+        quality: 'medium',
+        bias: 0,
+        radius: 0.25,
+        intensity: 1,
+      },
     },
     postProcessBgCache: new WeakMap<object, unknown>(),
   };
@@ -338,7 +345,7 @@ async function runGraph(
   }
 }
 
-it('executes the prepared GTAO compute and fragment entries through the production typed graph', async () => {
+it('executes the prepared GTAO compute and fragment entries through the retained typed primitive', async () => {
   const adapter = value(await rhi.requestAdapter());
   const device = value(await adapter.requestDevice());
   const size = { width: 128, height: 128 };

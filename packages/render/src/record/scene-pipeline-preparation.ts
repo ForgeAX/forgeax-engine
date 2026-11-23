@@ -15,10 +15,11 @@ export interface ScenePipelineDemand {
     import('../typed-render-graph-primitives').TypedScenePassOptions,
     | 'directionalShadow'
     | 'spotShadow'
-    | 'shadowMoments'
     | 'cloudShadow'
     | 'ssao'
+    | 'ssrSource'
     | 'environment'
+    | 'atmosphereReads'
     | 'transmissionBackdrop'
     | 'surfacePair'
     | 'surfaceNearestLayer'

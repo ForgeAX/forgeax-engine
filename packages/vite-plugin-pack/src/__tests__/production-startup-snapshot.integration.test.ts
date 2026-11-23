@@ -130,7 +130,7 @@ it('uses the selected Engine package to scan and cook production Pack sources', 
     );
     await plugin.buildStart.call(f.context);
     await plugin.generateBundle.call(f.context);
-    const pack = f.emitted.find((asset) => asset.fileName?.endsWith('.pack.json'))?.source;
+    const pack = f.emitted.find((asset) => asset.fileName?.endsWith('.runtime-pack.json'))?.source;
     expect(pack).toBeDefined();
     const body = typeof pack === 'string' ? pack : new TextDecoder().decode(pack);
     expect(JSON.parse(body)).toMatchObject({ assets: [{ payload: { magFilter: 'nearest' } }] });

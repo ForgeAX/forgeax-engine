@@ -61,6 +61,7 @@ export const SOURCE_ASSET_PRODUCERS = new Map([
     'Render tsup text loader owns Terrain WGSL inlining',
   ],
   ['packages/shader/src/auto-exposure-source.ts', 'Shader tsup text loader owns WGSL inlining'],
+  ['packages/shader/src/sky-sh-source.ts', 'Shader tsup text loader owns Sky SH WGSL inlining'],
   [
     'packages/shader/src/scene-velocity-source.ts',
     'Shader tsup text loader owns velocity WGSL inlining',
@@ -83,9 +84,8 @@ export const TOOL_SOURCE_ENTRIES = new Map([
   ['packages/pack/src/pack-authoring-drafts-node.ts', 'Node Pack authoring draft manager'],
   ['packages/pack/src/pack-authoring-literals.ts', 'Pack authoring declaration AST reader'],
   ['packages/pack/src/pack-authoring-node.ts', 'Node Pack authoring process entry'],
-  ['packages/pack/src/pack-authoring-parent.ts', 'Node Pack authoring parent resolver'],
   ['packages/pack/src/pack-generation-projection.ts', 'Pack authoring AST projection'],
-  ['packages/pack/src/pack-source-index.ts', 'Node Pack source index producer'],
+  ['packages/pack/src/pack-source-index.ts', 'Node Pack source index and static parent resolver'],
   ['packages/pack/src/scanner.ts', 'Filesystem Pack scanner entry'],
   ['packages/pack/src/scriptable-pack-node.ts', 'Node scriptable Pack process host'],
   ['packages/pack/src/scriptable-pack-source-snapshot.ts', 'Scriptable Pack source AST snapshot'],

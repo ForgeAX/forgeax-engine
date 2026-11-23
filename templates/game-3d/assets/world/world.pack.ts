@@ -11,7 +11,7 @@ export const scene: Plugin.Object<{ readonly scene: string; readonly children: r
     async apply(ctx, config) {
       const assets = ctx.assets;
       if (!assets) throw new Error('scene owner requires assets');
-      const loaded = await assets.load(assets.parseGuid(config.scene), 'scene');
+      const loaded = await assets.load(assets.parseGuid(config.scene), 'scene', { usage: 'render' });
       if (!loaded.ok) throw loaded.error;
       // Register each inverse immediately; generator disposal joins children before scene data.
       await ctx.effect(async function* () {

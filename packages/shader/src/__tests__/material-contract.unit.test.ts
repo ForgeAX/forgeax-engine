@@ -420,8 +420,8 @@ describe('standard PBR transmission material contract', () => {
     expect(baseVariant).toBeDefined();
     if (baseVariant === undefined) return;
     expect(derived.totalBytes).toBe(1472);
-    // The base capability variant owns only the ordinary material region and
-    // the IBL injection. Transmission and second-stage physical maps are
+    // The base capability variant keeps sky lighting in View. Transmission
+    // and second-stage physical maps are
     // specialized in authored roots, so no transmission/physical resource
     // declaration may leak into this base artifact.
     expect(baseVariant.composedWgsl).not.toMatch(
@@ -431,7 +431,7 @@ describe('standard PBR transmission material contract', () => {
       /@group\(1\)\s*@binding\((?:13|14|15|16|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48)\)\s*\n?\s*var\s+(?:thickness|clearcoat|anisotropy|sheen|iridescence|specular|diffuseTransmission)/u,
     );
     expect(baseVariant.composedWgsl).toMatch(
-      /@group\(1\)\s*@binding\(25\)\s*\n?\s*var\s+irradianceMap/u,
+      /@group\(0\)\s*@binding\(34\)\s*\n?\s*var<uniform>\s+skySh/u,
     );
   });
 

@@ -77,6 +77,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
   const directSurface = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'directSurfaceInstances');
   const viewUpdate = vi.spyOn(GpuDrivenView.prototype, 'update');
   const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
+  const endedPasses = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'end');
   const errors: unknown[] = [];
   renderer.onError((error) => errors.push(error));
   try {
@@ -251,6 +252,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     consume.mockClear();
     shadowPrepare.mockClear();
     draws.mockClear();
+    endedPasses.mockClear();
     directSurface.mockClear();
     expect(draw('direct').ok, JSON.stringify(errors)).toBe(true);
     expect(shadowPrepare).not.toHaveBeenCalled();
@@ -258,8 +260,12 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(directSurface).toHaveBeenCalled();
     expect(preparedFrame().standardPbrFrameResources.prepareMaterialBinding(0)).toBeUndefined();
     expect(preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size).toBe(0);
+    expect(
+      (endedPasses.mock.contexts as RhiNullRenderPassEncoder[]).some(
+        (pass) => pass.passName.startsWith('shadowCascade') && pass.drawCount > 0,
+      ),
+    ).toBe(true);
     const passes = (draws.mock.contexts as RhiNullRenderPassEncoder[]).map((pass) => pass.passName);
-    expect(passes.some((name) => name.startsWith('shadowCascade'))).toBe(true);
     expect(passes).toContain('single-layer-medium-nearest-layer');
     expect(passes).toContain('single-layer-medium-color');
     expect(errors).toEqual([]);

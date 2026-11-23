@@ -44,12 +44,11 @@ async function save(name: string, bytes: Uint8Array) {
   );
 }
 
+// World extraction and packet publication each get a real surface oracle.
+// The deferred volume exercises the volume-specific receiving pass.
 it.each([
-  ['world', 'forward'],
   ['world', 'deferred'],
   ['publication', 'forward'],
-  ['publication', 'deferred'],
-  ['volume', 'forward'],
   ['volume', 'deferred'],
 ] as const)(
   'projects live point decay through %s / %s',

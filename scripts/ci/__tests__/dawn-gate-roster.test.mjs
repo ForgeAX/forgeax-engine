@@ -22,6 +22,7 @@ import {
   DAWN_ORDINARY_FILE_FAMILIES,
   DAWN_VITEST_CONFIG,
 } from '../dawn-gate-roster.mjs';
+import { nativeValidationLanes } from '../native-validation-scope.mjs';
 import {
   dawnGroupEnvironment,
   dawnVitestArgs,
@@ -148,8 +149,9 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
     const args = dawnVitestArgs(group, { ordinaryWorkers: 2 });
     const ordinary = group.vitestShard !== undefined;
     const env = dawnGroupEnvironment(group, { LP_NUM_THREADS: '8' }, 2);
-    assert.equal(env.LP_NUM_THREADS, ordinary ? '4' : '8');
-    assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, ordinary ? '1' : undefined);
+    const bounded = ordinary || group.limitSoftwareGpuWorkers;
+    assert.equal(env.LP_NUM_THREADS, bounded ? '4' : '8');
+    assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, bounded ? '1' : undefined);
     assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
     assert.equal(args.includes('--pool=forks'), ordinary);
     assert.equal(args.includes('--fileParallelism=true'), ordinary);
@@ -359,10 +361,12 @@ test('the CI matrix and Dawn gate command match the authoritative lane count', (
   );
   assert.ok(job.includes(`name: vitest-dawn-\${{ matrix.shard }}-of-${laneCount}`));
   assert.ok(job.includes(`--shard "\${{ matrix.shard }}/${laneCount}"`));
-  const matrix = /\n\s+shard:\s*\[([^\]]+)\]/.exec(job);
-  assert.ok(matrix, 'the CI job must declare its complete shard matrix');
+  assert.match(
+    parse(workflow).jobs['vitest-dawn'].strategy.matrix.shard,
+    /core-build.outputs.dawn_shards/,
+  );
   assert.deepEqual(
-    JSON.parse(`[${matrix[1]}]`),
+    nativeValidationLanes.dawn,
     Array.from({ length: laneCount }, (_, index) => index + 1),
   );
 });
@@ -448,7 +452,7 @@ test('local, PR and Linux nightly execute the same complete gate', () => {
   assert.ok(ci.on.workflow_call, 'Nightly must execute the same-commit CI workflow');
   assert.equal(ci.on.workflow_call.inputs.nightly_full_profile.default, false);
   const dawn = ci.jobs['vitest-dawn'];
-  assert.deepEqual(dawn.strategy.matrix.shard, [1, 2, 3, 4]);
+  assert.match(dawn.strategy.matrix.shard, /core-build.outputs.dawn_shards/);
   const step = dawn.steps.find((candidate) =>
     candidate.run?.includes('node scripts/ci/run-dawn-gate.mjs --shard'),
   );
@@ -1259,7 +1263,7 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       import { createVitest } from 'vitest/node';
       import ledger from './scripts/ci/dawn-file-seconds.json' with { type: 'json' };
       import { planDawnShards } from './config/vitest-dawn-sequencer.ts';
-      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS } from './scripts/ci/dawn-gate-roster.mjs';
+      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS, dawnNativeLaneReserve } from './scripts/ci/dawn-gate-roster.mjs';
       import { coreValidationFiles } from './scripts/ci/core-validation.mjs';
       import { dawnFileOwnerCosts, dawnPlanningFileCosts, dawnPlanningOwnerCosts } from './config/dawn-timings.ts';
       const v = await createVitest('test', { project: ['dawn'], watch: false });
@@ -1273,7 +1277,11 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
         // also admits new files, charged at the sequencer's conservative fallback.
         const measured = Object.keys(ledger.coreProfile.files);
         const native = new Set(DAWN_GATE_GROUPS.flatMap(({ files }) => files));
+        const retired = 'packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts';
+        assert.ok(measured.includes(retired));
+        assert.ok(!paths.includes(retired));
         const declared = coreValidationFiles([...measured, ...Object.keys(ledger.fileReserves)])
+          .filter((path) => path !== retired)
           .filter((path) => !native.has(path));
         assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
         const added = paths.filter((path) => !declared.includes(path));
@@ -1290,15 +1298,15 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           'packages/three/src/__tests__/node-optical-inputs.dawn.test.ts',
           'packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts',
         ]);
+        const nativeReserves = new Map(DAWN_GATE_GROUPS.filter(({ files }) => files.length > 0)
+          .map(group => [group.id, coreValidationFiles(group.files).length === 0 ? 0 :
+            Math.max(owners.get(group.id) ?? 0, group.placementReserveSeconds ?? 0)]));
         const loads = lanes.map((lane, index) =>
           lane.reduce((sum, { moduleId }) => {
             const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
             return sum + (children.has(path) ? 0 : (costs.get(path) ?? fallback) / 2);
-          }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
-            const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-            return sum + (id.startsWith('ordinary-') || coreValidationFiles(group.files).length === 0
-              ? 0 : Math.max(owners.get(id) ?? 0, group.placementReserveSeconds ?? 0));
-          }, 0));
+          }, 0) + dawnNativeLaneReserve(DAWN_GATE_GROUPS.filter(group => DAWN_GATE_SHARDS[index].includes(group.id)),
+            nativeReserves, 2));
         assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
         // Replay the original measured population; additions have forecasts, not old observations.
         const historical = files.filter(({ moduleId }) =>
@@ -1369,19 +1377,26 @@ test('planar capture and low-limit transmission share serial Surface admission',
 });
 
 test('long native capture journeys start before ordinary backfill', () => {
+  const minimumReserveSeconds = new Map([
+    ['direct-light', 219.011],
+    ['gi-2', 534.117],
+    ['path-tracer', 355.022],
+    ['transmission', 294.878],
+  ]);
   for (const id of [
     'modeling-s6',
     'modeling-show',
     'gi-5',
+    'gi-2',
     'surface-pipelines',
     'direct-light',
+    'path-tracer',
     'transmission',
   ]) {
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
     const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
     assert.ok(
-      group.placementReserveSeconds >=
-        (id === 'direct-light' ? 219.011 : id === 'transmission' ? 294.878 : 600),
+      group.placementReserveSeconds >= (minimumReserveSeconds.get(id) ?? 600),
       'retain measured capture headroom without changing the case deadline',
     );
     const selected = selectDawnShard(`${lane + 1}/4`);
@@ -1403,6 +1418,10 @@ test('long native capture journeys start before ordinary backfill', () => {
     lanes.length,
     'independent long capture journeys must not accumulate on one slow runner',
   );
+  const coldLanes = ['surface-pipelines', 'three-surface-expression', 'gi-4'].map((id) =>
+    DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id)),
+  );
+  assert.equal(new Set(coldLanes).size, coldLanes.length);
 });
 
 test('run 43718751716 preserves interrupted-owner forecasts', () => {
@@ -1444,42 +1463,34 @@ test('completed cohorts distribute complete native tails before ordinary backfil
   assert.deepEqual(DAWN_GATE_SHARDS, [
     [
       'ordinary-1',
+      'compact-1',
       'direct-light',
+      'feature-depth',
       'gi-1',
-      'heavy-4',
+      'gi-3',
+      'heavy-3',
       'modeling-s6',
-      'path-tracer',
       'rect-source',
       'three-surface-expression',
     ],
     [
       'ordinary-2',
       'compact-2',
-      'gi-4',
-      'gi-6',
+      'gi-2',
       'heavy-2',
       'specular-aa',
       'shadow-quality',
       'surface-pipelines',
       'transmission',
     ],
-    [
-      'ordinary-3',
-      'alpha-hash',
-      'compact-3',
-      'feature-depth',
-      'gi-2',
-      'heavy-1',
-      'heavy-3',
-      'modeling-show',
-      'screen-probe',
-    ],
+    ['ordinary-3', 'alpha-hash', 'compact-3', 'gi-4', 'heavy-1', 'modeling-show', 'screen-probe'],
     [
       'ordinary-4',
-      'compact-1',
-      'gi-3',
       'gi-5',
+      'gi-6',
+      'heavy-4',
       'nested-discard',
+      'path-tracer',
       'shadow-fields',
       'renderer',
       'vfx-depth',
@@ -1618,7 +1629,8 @@ test('run 43819262879 retains all completed work and positive unfinished-owner f
 
 function nodeInputMatrix(node) {
   if (node === undefined) return null;
-  if (ts.isAsExpression(node)) return nodeInputMatrix(node.expression);
+  if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node))
+    return nodeInputMatrix(node.expression);
   if (ts.isIdentifier(node)) return node.text;
   assert.ok(ts.isArrayLiteralExpression(node));
   return node.elements.map((element) => {
@@ -1631,13 +1643,25 @@ function nodeInputMatrix(node) {
 }
 
 // Preserve the case inputs and oracle delegation, independent of Renderer allocation.
-function nodeInputContracts(file) {
+function nodeInputContracts(file, core = false) {
   const source = ts.createSourceFile(
     file,
     readFileSync(file, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
   );
+  const profiles = new Map();
+  for (const statement of source.statements.filter(ts.isVariableStatement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      const choice = declaration.initializer;
+      if (!choice || !ts.isConditionalExpression(choice)) continue;
+      assert.equal(choice.condition.getText(source), 'core');
+      profiles.set(
+        declaration.name.getText(source),
+        nodeInputMatrix(core ? choice.whenTrue : choice.whenFalse),
+      );
+    }
+  }
   return source.statements.filter(ts.isExpressionStatement).map(({ expression: call }) => {
     assert.ok(ts.isCallExpression(call));
     const [title, options, callback] = call.arguments;
@@ -1671,8 +1695,9 @@ function nodeInputContracts(file) {
       each?.expression.getText(source) ?? call.expression.getText(source),
       each ? 'it.each' : 'it',
     );
+    const matrix = nodeInputMatrix(each?.arguments[0]);
     return [
-      nodeInputMatrix(each?.arguments[0]),
+      profiles.get(matrix) ?? matrix,
       title.text,
       callback.parameters.map((parameter) => parameter.name.getText(source)),
       factory.expression.getText(source),
@@ -1682,14 +1707,18 @@ function nodeInputContracts(file) {
   });
 }
 
-test('split node-input files retain all original cases and one measured physical owner', () => {
+test('split node-input files retain the full and Core contracts and one measured physical owner', () => {
   const receipt = JSON.parse(
     readFileSync('scripts/ci/__tests__/fixtures/dawn-node-inputs-43823116760.json', 'utf8'),
   );
   const family = DAWN_ORDINARY_FILE_FAMILIES[0];
   assert.equal(family.anchor, receipt.uncompletedFile);
   const members = [family.anchor, ...family.children];
-  const contracts = members.flatMap(nodeInputContracts);
+  assert.match(
+    readFileSync(family.anchor, 'utf8'),
+    /const core = process\.env\.FORGEAX_CI_CORE_VALIDATION === '1'/,
+  );
+  const contracts = members.flatMap((file) => nodeInputContracts(file));
   assert.deepEqual(contracts, [
     [
       ['uniform', 'vec4', 'texture'],
@@ -1740,6 +1769,22 @@ test('split node-input files retain all original cases and one measured physical
       ['renderer', 'mode'],
     ],
   ]);
+  const coreContracts = members.flatMap((file) => nodeInputContracts(file, true));
+  const coreMatrices = new Map([
+    ['verifyNodeInputs', ['uniform', 'texture']],
+    ['verifyNodeInputPrimitive', ['dashed', 'sprite']],
+  ]);
+  assert.deepEqual(
+    coreContracts,
+    contracts.map(([matrix, title, params, factory, verify, args]) => [
+      coreMatrices.get(verify) ?? matrix,
+      title,
+      params,
+      factory,
+      verify,
+      args,
+    ]),
+  );
   // The historical whole-body hashes remain untouched in their original receipt.
   // These unchanged helpers own all original frames, pixels and fresh-device replays.
   for (const [file, digest] of [

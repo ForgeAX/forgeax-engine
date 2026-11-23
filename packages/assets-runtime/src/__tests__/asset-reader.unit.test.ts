@@ -1,7 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { MaterialAsset, MaterialRootAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { readMaterialContent } from '../internal/resolve-asset';
 import { runtimeAssets } from '../internal/runtime-assets';
@@ -86,21 +86,18 @@ describe('prepared material content', () => {
         refs: [parentGuid],
       },
     ]);
-    try {
-      const parent = (await assets.load(parentGuid, 'material')).unwrap();
-      expect(
-        assets
-          .read(parent)
-          .unwrap()
-          .parameters?.map((parameter) => parameter.name),
-      ).toEqual(['baseColor']);
-      const loaded = await assets.load(otherGuid, 'material');
-      expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
-      if (!loaded.ok) throw loaded.error;
-      expect(assets.read(loaded.value).unwrap().values).toEqual({ baseColor: [0.2, 0.3, 0.4, 1] });
-    } finally {
-      assets.dispose();
-    }
+    onTestFinished(() => assets.dispose());
+    const parent = (await assets.load(parentGuid, 'material')).unwrap();
+    expect(
+      assets
+        .read(parent)
+        .unwrap()
+        .parameters?.map((parameter) => parameter.name),
+    ).toEqual(['baseColor']);
+    const loaded = await assets.load(otherGuid, 'material');
+    expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
+    if (!loaded.ok) throw loaded.error;
+    expect(assets.read(loaded.value).unwrap().values).toEqual({ baseColor: [0.2, 0.3, 0.4, 1] });
   });
 
   it('removes disabled defaults and values before runtime admission', () => {

@@ -25,7 +25,6 @@ import type {
   AssetGuid as AssetGuidType,
   AssetPublicationEnvelope,
   AssetPublicationExternalEvidence,
-  AssetRef,
   ImportedAsset,
   MaterialAsset,
   MaterialTable,
@@ -37,7 +36,7 @@ import {
   type ImportAssetProduct,
   type TerminalImportProduct,
 } from './import-product.js';
-import { orderedPackPreparation } from './ordered-pack-preparation.js';
+import { orderedPackPreparation, orderedPackProduction } from './ordered-pack-preparation.js';
 import type {
   AssetOutputProducer,
   AssetOutputProducerRegistry,
@@ -49,7 +48,10 @@ import type {
   ScriptablePackStagedOutput,
 } from './scriptable-pack.js';
 import { scriptablePackFingerprintAsync as digest } from './scriptable-pack-fingerprint.js';
-import { materialAssetOutputProducer } from './scriptable-pack-output-producers.js';
+import {
+  materialAssetOutputProducer,
+  projectNativeMaterial,
+} from './scriptable-pack-output-producers.js';
 
 export interface ScriptablePackBuildOptions {
   readonly definition: AnyScriptablePackDefinition;
@@ -77,6 +79,11 @@ export interface ScriptablePackBuildOptions {
   /** Producer-owned generation shared with every cooked output receipt. */
   readonly publicationGeneration?: number;
 }
+
+type PackOutputPlanOptions = Omit<
+  ScriptablePackBuildOptions,
+  'definition' | 'values' | 'inheritedValues' | 'subjectPackageId' | 'assetSource'
+>;
 
 export interface ScriptablePackBuildProduct extends PackBuildProduct {
   readonly publication?: AssetPublicationEnvelope;
@@ -536,7 +543,7 @@ function declaresCookedExecution(asset: PackOutput): asset is PackCookSource {
 
 /** Reject outputs whose shape no producer path can own, before any identity is derived. */
 function outputShapeFailure(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   sourceKey: string,
   asset: PackOutput,
 ): PackAuthoringError | undefined {
@@ -568,7 +575,7 @@ function outputShapeFailure(
 }
 
 async function cookCustomOutput(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   sourceKey: string,
   guid: string,
   asset: PackCookSource,
@@ -640,7 +647,7 @@ async function cookCustomOutput(
 }
 
 async function invokeOutputProducer(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   sourceKey: string,
   guid: string,
   asset: Asset | PluginAssetSource | ParticleEffectAssetSource,
@@ -695,36 +702,8 @@ async function invokeOutputProducer(
   return ok(produced.value as AssetOutputProduct);
 }
 
-/** Projected refs first, then cooker refs not already present (case-insensitive). */
-function mergeCookerRefs(
-  options: ScriptablePackBuildOptions,
-  sourceKey: string,
-  projectedRefs: readonly AssetRef[],
-  cookerRefs: readonly string[],
-): Result<AssetRef[], ScriptablePackBuildFailure> {
-  const mergedRefs: AssetRef[] = [...projectedRefs];
-  const seenRefs = new Set(mergedRefs.map((reference) => reference.guid.toLowerCase()));
-  for (const cookerRef of cookerRefs) {
-    const parsed = AssetGuid.parse(cookerRef);
-    if (!parsed.ok) {
-      return err({
-        code: 'pack-source-output-invalid',
-        expected: 'the authored material cooker refs to contain valid AssetGuid values',
-        hint: 'repair the native material cooker refs and rebuild the Pack',
-        detail: { sourcePath: options.sourcePath, sourceKey, ref: cookerRef },
-      });
-    }
-    const formatted = AssetGuid.format(parsed.value);
-    const normalizedRef = formatted.toLowerCase();
-    if (seenRefs.has(normalizedRef)) continue;
-    seenRefs.add(normalizedRef);
-    mergedRefs.push({ guid: formatted });
-  }
-  return ok(mergedRefs);
-}
-
 async function cookAuthoredMaterial(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   sourceKey: string,
   guid: string,
   asset: Asset | PluginAssetSource | ParticleEffectAssetSource,
@@ -745,38 +724,16 @@ async function cookAuthoredMaterial(
       : { cookGeneration: options.publicationGeneration }),
   });
   if (!cooked.ok) return err(cooked.error);
-  if (cooked.value.guid.toLowerCase() !== guid.toLowerCase()) {
+  const projected = await projectNativeMaterial(guid, sourceKey, cooked.value);
+  if (!projected.ok) {
+    if ('code' in projected.error) return err(projected.error);
     return err({
       code: 'pack-source-output-invalid',
-      expected: 'the authored material cooker to preserve the derived AssetGuid',
-      hint: 'repair the native material cooker output GUID and rebuild the Pack',
-      detail: {
-        sourcePath: options.sourcePath,
-        sourceKey,
-        expectedGuid: guid,
-        actualGuid: cooked.value.guid,
-      },
+      expected: projected.error.expected,
+      hint: 'repair the native material cooker output and rebuild the Pack',
+      detail: { sourcePath: options.sourcePath, sourceKey, expectedGuid: guid, ...projected.error },
     });
   }
-  // Native cooking owns shader/program composition, but the Pack output
-  // producer owns the serialized wire shape. Re-project the cooked
-  // material once so texture/sampler/parent values become refsIndex
-  // entries again instead of leaking authored GUID strings into JSON.
-  const cookedAsset = cooked.value.payload;
-  if (!isAsset(cookedAsset) || cookedAsset.kind !== 'material') {
-    return err({
-      code: 'pack-source-output-invalid',
-      expected: 'the authored material cooker to return a material payload',
-      hint: 'repair the native material cooker payload and rebuild the Pack',
-      detail: { sourcePath: options.sourcePath, sourceKey },
-    });
-  }
-  const projected = await materialAssetOutputProducer.produce({
-    guid,
-    sourceKey,
-    asset: cookedAsset,
-  });
-  if (!projected.ok) return err(projected.error);
   const projectedInvalid = productError(
     options.sourcePath,
     sourceKey,
@@ -784,14 +741,12 @@ async function cookAuthoredMaterial(
     projected.value,
   );
   if (projectedInvalid !== undefined) return err(projectedInvalid);
-  const refs = mergeCookerRefs(options, sourceKey, projected.value.refs, cooked.value.refs);
-  if (!refs.ok) return refs;
   return ok({
     imported: {
       guid,
       kind: asset.kind,
       payload: projected.value.payload,
-      refs: refs.value,
+      refs: projected.value.refs,
       artifacts: {
         ...product.artifacts,
         ...cooked.value.artifacts,
@@ -806,7 +761,7 @@ async function cookAuthoredMaterial(
 }
 
 async function produceOrdinaryOutput(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   sourceKey: string,
   guid: string,
   asset: PackOutput,
@@ -851,7 +806,7 @@ async function produceOrdinaryOutput(
 }
 
 async function collectMaterialCookTable(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   packageId: PackageId,
   outputs: PackOutputMap,
   reader: ReturnType<typeof observedReader>['reader'],
@@ -903,7 +858,7 @@ function externalReferences(
 }
 
 function missingReferenceFailure(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   availableGuids: ReadonlySet<string> | undefined,
   referenced: ReadonlySet<string>,
 ): PackAuthoringError | undefined {
@@ -935,7 +890,7 @@ function externalEvidenceFor(
 }
 
 async function packInputFingerprint(
-  options: ScriptablePackBuildOptions,
+  options: PackOutputPlanOptions,
   subjectPackageId: PackageId,
   effectiveValues: Readonly<Record<string, PackParameterValue>> | undefined,
   externalEvidence: readonly AssetPublicationExternalEvidence[],
@@ -963,7 +918,7 @@ async function packInputFingerprint(
 }
 
 function packImportProduct(
-  options: ScriptablePackBuildOptions,
+  sourcePath: string,
   imported: ImportedAsset<unknown>[],
   inputFingerprint: string,
   sourceDependencies: readonly string[],
@@ -976,12 +931,7 @@ function packImportProduct(
   );
   return createImportProduct({
     assets: imported,
-    sourceDependencies: [
-      ...new Set([
-        ...(options.sourceClosure ?? []).map((entry) => entry.path),
-        ...sourceDependencies,
-      ]),
-    ].sort(),
+    sourceDependencies: [...new Set(sourceDependencies)].sort(),
     refs,
     artifacts,
     receipts: imported.map((asset) => ({
@@ -992,7 +942,7 @@ function packImportProduct(
     })),
     diagnostics: [],
     sourceRevision: inputFingerprint,
-    sourceKey: options.sourcePath,
+    sourceKey: sourcePath,
   });
 }
 
@@ -1004,7 +954,6 @@ export async function buildScriptablePack(
   options: ScriptablePackBuildOptions,
 ): Promise<ScriptablePackBuildResult> {
   const subjectPackageId = options.subjectPackageId ?? options.definition.packageId;
-  const availableGuids = normalizedGuidSet(options.availableGuids);
   const observed = observedReader(options.assetSource);
   const values = effectiveParameterValues(options);
   if (!values.ok) return values;
@@ -1013,13 +962,61 @@ export async function buildScriptablePack(
   const built = await runPackBuild(options, subjectPackageId, effectiveValues, observed.reader);
   if (!built.ok) return built;
 
+  const plan = await planPackOutputMap(
+    options,
+    subjectPackageId,
+    built.value,
+    options.definition.plugins,
+    observed,
+    effectiveValues,
+  );
+  return plan.ok ? sealPackOutputPlan(options.sourcePath, plan.value, options.publication) : plan;
+}
+
+export interface PackOutputPlan
+  extends Omit<ScriptablePackBuildProduct, 'product' | 'publication'> {
+  readonly imported: ImportedAsset<unknown>[];
+  readonly sourceDependencies: readonly string[];
+}
+
+export function sealPackOutputPlan(
+  sourcePath: string,
+  plan: PackOutputPlan,
+  publication?: AssetPublicationEnvelope,
+): ScriptablePackBuildResult {
+  const { imported, sourceDependencies, ...facts } = plan;
+  const product = packImportProduct(
+    sourcePath,
+    imported,
+    facts.inputFingerprint,
+    sourceDependencies,
+  );
+  return product.ok
+    ? ok({
+        ...facts,
+        product: product.value,
+        ...(publication === undefined ? {} : { publication }),
+      })
+    : err(product.error);
+}
+
+/** Collect producer facts before sealing receipts and the immutable ImportProduct. */
+export async function planPackOutputMap(
+  options: PackOutputPlanOptions,
+  subjectPackageId: PackageId,
+  built: PackOutputMap,
+  plugins?: true,
+  observed = observedReader(undefined),
+  effectiveValues?: Readonly<Record<string, PackParameterValue>>,
+): Promise<Result<PackOutputPlan, ScriptablePackBuildFailure>> {
+  const availableGuids = normalizedGuidSet(options.availableGuids);
   const imported: ImportedAsset<unknown>[] = [];
   const stagedOutputs: ScriptablePackStagedOutput[] = [];
-  const ownedOutputs = clone(built.value);
+  const ownedOutputs = clone(built);
   const localGuids = new Set<string>();
   const nativeFingerprints = new Map<string, string>();
   const sourceDependencies = new Set<string>();
-  const sourceKeys = Object.keys(built.value).sort();
+  const sourceKeys = Object.keys(built).sort();
   const materialTable = await collectMaterialCookTable(
     options,
     subjectPackageId,
@@ -1027,8 +1024,8 @@ export async function buildScriptablePack(
     observed.reader,
   );
   if (!materialTable.ok) return materialTable;
-  const parallel = (index: number): boolean => {
-    const asset = ownedOutputs[sourceKeys[index] ?? ''];
+  const parallel = (sourceKey: string): boolean => {
+    const asset = ownedOutputs[sourceKey];
     return (
       asset !== undefined &&
       (declaresCookedExecution(asset) ||
@@ -1041,8 +1038,7 @@ export async function buildScriptablePack(
     const asset = ownedOutputs[sourceKey];
     const raw: unknown = asset;
     // Without the plugin capability, keep ordinary outputs and omit plugin siblings.
-    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true)
-      return ok(undefined);
+    if (record(raw) && raw.kind === 'plugin' && plugins !== true) return ok(undefined);
     if (!isValidPackSourceKey(sourceKey))
       return err(sourceKeyFailure(options.sourcePath, sourceKey));
     if (asset === undefined)
@@ -1100,21 +1096,14 @@ export async function buildScriptablePack(
   // Preserve serial barriers and canonical acceptance. Parallel outputs refill
   // idle lanes through the same bounded owner as source-package preparation;
   // failures stop admission and drain every accepted sibling before returning.
-  for (let index = 0; index < sourceKeys.length; ) {
-    let end = index + 1;
-    if (parallel(index)) {
-      while (end < sourceKeys.length && parallel(end)) end++;
-    }
-    for await (const settled of orderedPackPreparation(
-      sourceKeys.slice(index, end),
-      parallel(index) ? 4 : 1,
-      produce,
-      (result) => !result.ok,
-    )) {
-      const outputFailure = acceptProducedOutput(settled);
-      if (outputFailure !== undefined) return outputFailure;
-    }
-    index = end;
+  for await (const settled of orderedPackProduction(
+    sourceKeys,
+    parallel,
+    produce,
+    (result) => !result.ok,
+  )) {
+    const failure = acceptProducedOutput(settled);
+    if (failure !== undefined) return failure;
   }
 
   const referenced = externalReferences(imported, localGuids);
@@ -1146,14 +1135,15 @@ export async function buildScriptablePack(
     externalEvidence,
     nativeFingerprints,
   );
-  const product = packImportProduct(options, imported, inputFingerprint, [...sourceDependencies]);
-  if (!product.ok) return err(product.error);
   return ok({
-    product: product.value,
+    imported,
     stagedOutputs,
     externalEvidence,
     inputFingerprint,
-    ...(options.publication === undefined ? {} : { publication: options.publication }),
+    sourceDependencies: [
+      ...(options.sourceClosure ?? []).map((entry) => entry.path),
+      ...sourceDependencies,
+    ],
   });
 }
 
@@ -1196,7 +1186,6 @@ function packRelativeIdentity(
 
 export interface ScriptablePackBuildWorkItem {
   readonly definition: AnyScriptablePackDefinition;
-  readonly cookRuntimeOutputs?: true;
   readonly sourcePath: string;
   readonly subjectPackageId?: PackageId;
   readonly values?: Readonly<Record<string, unknown>>;
@@ -1528,9 +1517,6 @@ export async function buildScriptablePackWorklist(
               ...(subject.sourceClosure === undefined
                 ? {}
                 : { sourceClosure: subject.sourceClosure }),
-              ...(subject.cookRuntimeOutputs === true
-                ? { authoringContractVersion: 'scriptable-pack/1+runtime-outputs' }
-                : {}),
               ...(subject.publicationGeneration === undefined
                 ? {}
                 : { publicationGeneration: subject.publicationGeneration }),

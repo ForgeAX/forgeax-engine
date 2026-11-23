@@ -159,13 +159,13 @@ export function resolveDiffuseGiTier(
   scene: DiffuseGiTierScene,
   caps: DiffuseGiTierCaps,
 ): Result<DiffuseGiTierResolution, RayReferenceError> {
-  const raster = { renderPath: 'deferred', pbr: true } as const;
+  const raster = { renderPath: 'deferred', pbr: true, ibl: true } as const;
   if (tier === 'low')
     return ok(
       Object.freeze({
         tier,
         lane: 'direct-ibl-ssao',
-        profile: Object.freeze({ ...raster, ibl: true, ambientOcclusion: { enabled: true } }),
+        profile: Object.freeze({ ...raster, ambientOcclusion: { enabled: true } }),
       }),
     );
   const gap = capabilityGap(caps);
@@ -174,7 +174,7 @@ export function resolveDiffuseGiTier(
       Object.freeze({
         tier,
         lane: 'direct-ibl',
-        profile: Object.freeze({ ...raster, ibl: true, ambientOcclusion: { enabled: false } }),
+        profile: Object.freeze({ ...raster, ambientOcclusion: { enabled: false } }),
         fallback: Object.freeze({
           reason: gap,
           hint: 'Diffuse GI needs compute with storage buffers on a WebGPU-class backend; rendering direct + IBL.',
@@ -211,7 +211,6 @@ export function resolveDiffuseGiTier(
       lane: diffuseGi.gather as 'irradiance-field' | 'screen-probe',
       profile: Object.freeze({
         ...raster,
-        ibl: false,
         ambientOcclusion: { enabled: false },
         diffuseGi: freezeDiffuseGi(diffuseGi),
       }),

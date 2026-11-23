@@ -1,10 +1,12 @@
 import { pluginAssetOutputProducer } from '@forgeax/engine-import';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { AssetPublicationTuple, PackV2 } from '@forgeax/engine-types';
 import { AssetError, err, ok } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
+import { packAssetFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { AssetRegistry } from '../asset-registry.js';
 import { PackReader, validatePackEnvelope } from '../internal/pack-reader.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const guid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const mesh = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -47,23 +49,10 @@ describe('Pack plugin production and runtime transport', () => {
   });
   it('rejects a definition read whose Catalog source was replaced during transport', async () => {
     const packageUrl = 'https://project.invalid/player.pack.json';
-    const publication = createRuntimePackPublication({
-      scopeId: 'game',
-      sourcePath: 'player',
-      sourceRevision: 'fixed',
-      packageUrl,
-      pack: {
-        assets: [
-          {
-            guid,
-            kind: 'plugin',
-            payload: { kind: 'plugin', program: 'player' },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      },
-    });
+    const publication = catalogPack(
+      [packAssetFixture(guid, 'plugin', { kind: 'plugin', program: 'player' })],
+      { scopeId: 'game', sourcePath: 'player', sourceRevision: 'fixed', packageUrl },
+    );
     const source = () => ({
       expectedScope: { scopeId: 'game', generation: 1 },
       enumerate: async () =>
@@ -78,14 +67,8 @@ describe('Pack plugin production and runtime transport', () => {
         ]),
       subscribe: () => () => {},
     });
-    let enter!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      enter = resolve;
-    });
-    let resume!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      resume = resolve;
-    });
+    const { promise: entered, resolve: enter } = testGate();
+    const { promise: gate, resolve: resume } = testGate();
     const registry = new AssetRegistry({ scopeId: 'game' });
     registry.setCatalogSource(source(), async () => {
       enter();
@@ -111,27 +94,21 @@ describe('Pack plugin production and runtime transport', () => {
   it('rejects an older body served at the current Catalog publication URL', async () => {
     const packageUrl = 'https://project.invalid/player.pack.json';
     const publication = (revision: number) =>
-      createRuntimePackPublication({
-        scopeId: 'game',
-        sourcePath: 'assets/player.pack.json',
-        sourceRevision: String(revision),
-        packageUrl,
-        pack: {
-          assets: [
-            {
-              guid,
-              kind: 'plugin',
-              payload: {
-                kind: 'plugin',
-                program: 'project:player.js#default',
-                config: { revision },
-              },
-              refs: [],
-              artifacts: {},
-            },
-          ],
+      catalogPack(
+        [
+          packAssetFixture(guid, 'plugin', {
+            kind: 'plugin',
+            program: 'project:player.js#default',
+            config: { revision },
+          }),
+        ],
+        {
+          scopeId: 'game',
+          sourcePath: 'assets/player.pack.json',
+          sourceRevision: String(revision),
+          packageUrl,
         },
-      });
+      );
     const old = publication(1);
     const current = publication(2);
     const registry = new AssetRegistry({ scopeId: 'game' });
@@ -172,23 +149,23 @@ describe('Pack plugin production and runtime transport', () => {
     });
     expect(produced.ok).toBe(true);
     const product = produced.unwrap();
-    const published = createRuntimePackPublication({
-      scopeId: 'game',
-      sourcePath: 'assets/player.pack.ts',
-      sourceRevision: 'fixture',
-      packageUrl: '/player.pack.json',
-      pack: {
-        assets: [
-          {
-            guid,
-            kind: 'plugin',
-            payload: product.payload,
-            refs: product.refs.map((ref) => ref.guid),
-            artifacts: {},
-          },
-        ],
+    const published = catalogPack(
+      [
+        {
+          guid,
+          kind: 'plugin',
+          payload: product.payload,
+          refs: product.refs.map((ref) => ref.guid),
+          artifacts: {},
+        },
+      ],
+      {
+        scopeId: 'game',
+        sourcePath: 'assets/player.pack.ts',
+        sourceRevision: 'fixture',
+        packageUrl: '/player.pack.json',
       },
-    });
+    );
     const pack = published.pack;
     const { scopeId, generation, digest, outputSetDigest } = pack;
     const tuple = { scopeId, generation, digest, outputSetDigest };
@@ -233,38 +210,31 @@ describe('Pack plugin production and runtime transport', () => {
 
 function retainedPluginPack() {
   const packageUrl = 'https://project.invalid/retained.pack.json';
-  const publication = createRuntimePackPublication({
-    scopeId: 'game',
-    sourcePath: 'retained',
-    sourceRevision: 'fixed',
-    packageUrl,
-    pack: {
-      assets: [
-        {
-          guid,
-          kind: 'plugin',
-          payload: { kind: 'plugin', program: 'retained', config: { nested: { speed: 4 } } },
-          refs: [],
-          artifacts: {},
-        },
-        {
-          guid: mesh,
-          kind: 'mesh',
-          payload: { kind: 'mesh', marker: 'mutable' },
-          refs: [],
-          artifacts: {
-            body: {
-              path: 'body.bin',
-              mediaType: 'application/octet-stream',
-              contentEncoding: 'identity',
-              byteLength: 1,
-              integrity: { algorithm: 'sha256', digest: `sha256:${'a'.repeat(64)}` },
-            },
+  const publication = catalogPack(
+    [
+      packAssetFixture(guid, 'plugin', {
+        kind: 'plugin',
+        program: 'retained',
+        config: { nested: { speed: 4 } },
+      }),
+      {
+        guid: mesh,
+        kind: 'mesh',
+        payload: { kind: 'mesh', marker: 'mutable' },
+        refs: [],
+        artifacts: {
+          body: {
+            path: 'body.bin',
+            mediaType: 'application/octet-stream',
+            contentEncoding: 'identity',
+            byteLength: 1,
+            integrity: { algorithm: 'sha256', digest: `sha256:${'a'.repeat(64)}` },
           },
         },
-      ],
-    },
-  });
+      },
+    ],
+    { scopeId: 'game', sourcePath: 'retained', sourceRevision: 'fixed', packageUrl },
+  );
   const raw = JSON.parse(JSON.stringify(publication.pack)) as PackV2<Record<string, unknown>> &
     AssetPublicationTuple;
   const registry = new AssetRegistry({ scopeId: 'game' });
@@ -323,6 +293,16 @@ it('rejects a body that does not match the admitted publication tuple', async ()
   expect(await f.registry.readPluginDefinition(guid)).toMatchObject({
     ok: false,
     error: { code: 'asset-package-invalid', detail: { reason: 'publication tuple mismatch' } },
+  });
+  f.registry.dispose();
+});
+
+it('rejects duplicate GUIDs in the Pack reader', () => {
+  const f = retainedPluginPack();
+  const asset = f.raw.assets[0];
+  expect(validatePackEnvelope({ ...f.raw, assets: [asset, asset] }, f.raw)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-package-invalid', detail: { reason: 'duplicate guid' } },
   });
   f.registry.dispose();
 });

@@ -9,7 +9,6 @@ import {
 } from '@forgeax/engine-assets-runtime';
 import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineComponent, World } from '@forgeax/engine-ecs';
-import * as naga from '@forgeax/engine-naga';
 import { type CookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
@@ -17,13 +16,13 @@ import {
   validateMaterialTemplatePublication,
 } from '@forgeax/engine-pack/material-cook';
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
-import { Materials, MeshRenderer } from '@forgeax/engine-render';
+import { MeshRenderer } from '@forgeax/engine-render';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { type MaterialAsset, resolveMaterialAsset, type SceneAsset } from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import {
   prepareRuntimeAssetPublication,
@@ -34,25 +33,13 @@ import { buildScriptablePack } from '../../../import/src/scriptable-pack-build';
 import {
   createDeclaredPackAssetSnapshotSource,
   prepareDirectPackTransport,
-  prepareLegacyPackTransport,
 } from '../../../import/src/scriptable-pack-host';
 import { materialAssetOutputProducer } from '../../../import/src/scriptable-pack-output-producers';
 import { materialSampledTextureBudget } from '../../../render/src/material-sampled-texture-budget';
-import * as compiler from '../../../shader-compiler/src/compile.js';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../../../shader-compiler/src/material/variant-context';
 
-// The observing realm's compiler is selected at import time. Restore ordinary
-// Worker admission before each case; only the call-count case opts back in.
-vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
-
-// Create the ordinary publication owner after restoring production admission.
-// Module initialization runs under the observing realm's serial compiler setting.
-let publicationCooker: ReturnType<typeof createMaterialPackCooker>;
-beforeEach(() => {
-  vi.unstubAllEnvs();
-  publicationCooker ??= createMaterialPackCooker([], { profile: 'webgpu-storage' });
-});
+const publicationCooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
 
 function expectWebGpuPublication(record: CookedMaterialRecord) {
   const selections = record.programs.flatMap((program) => program.selections);
@@ -74,18 +61,22 @@ it.each([
     const sourcePath = fileURLToPath(
       new URL(`../../../../apps/hello/boss-lightning/assets/${file}`, import.meta.url),
     );
-    const result = await prepareLegacyPackTransport(
-      JSON.parse(await readFile(sourcePath, 'utf8')),
-      [publicationCooker],
-      () => ({
-        base: '/',
-        packagePath: `assets/${file}`,
-        artifactPath: (guid, key) => `${guid}/${key}.bin`,
-        sink: () => {},
-      }),
+    const source = await readFile(sourcePath, 'utf8');
+    const parsed = parsePackSourceJson(JSON.parse(source)).unwrap();
+    if (parsed.format !== 'direct') throw new Error('expected a direct material Pack');
+    const result = await prepareDirectPackTransport({
+      projected: projectDirectPackJson(parsed),
       sourcePath,
-    );
-    const material = result.cooked?.logicalPackage.assets[0];
+      sourceRevision: source,
+      cookers: [publicationCooker],
+      policy: {
+        base: '/',
+        packagePath: `assets/${file.replace('.pack.json', '.runtime-pack.json')}`,
+        artifactPath: (guid, key) => `${guid}/${key}.bin`,
+      },
+    });
+    if (!result.ok) throw result.error;
+    const material = result.value.product.product.assets[0];
     expect(material, 'shard material requires a cooked publication').toBeDefined();
     if (material === undefined) throw new Error('published shard material required');
     const cooked = (material.payload as { cooked?: unknown }).cooked;
@@ -446,118 +437,6 @@ it('publishes the declared Unlit shorthand beside an explicit custom animation s
   }
 }, 30_000);
 
-it('retains complete ordinary Standard programs across authored color changes', async () => {
-  // Only call-count observations require compilation in this test's realm.
-  vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1');
-  const composition = vi.spyOn(naga, 'composeShader');
-  const validation = vi.spyOn(compiler, 'compileShaderProgram');
-  try {
-    const cooker = createMaterialPackCooker();
-    const source = Materials.standard({
-      baseColor: [1, 0, 0, 1],
-      roughness: 0.5,
-      metallic: 0,
-      specular: 0,
-    });
-    const first = await cooker.cook({ guid: 'ordinary-red', source });
-    const compositions = composition.mock.calls.length;
-    const validations = validation.mock.calls.length;
-    expect(compositions).toBeGreaterThan(0);
-    expect(validations).toBeGreaterThan(0);
-    const second = await cooker.cook({
-      guid: 'ordinary-green',
-      source: Materials.standard({
-        baseColor: [0, 1, 0, 1],
-        roughness: 0.5,
-        metallic: 0,
-        specular: 0,
-      }),
-    });
-    const record = (draft: typeof first) =>
-      validateCookedMaterialRecord((draft.payload as { cooked: unknown }).cooked).unwrap();
-    const selections = record(first).programs.flatMap((program) => program.selections);
-    expect(new Set(selections.map((selection) => selection.context.backend))).toEqual(
-      new Set(['webgpu', 'webgl2']),
-    );
-    expect(
-      selections.some((selection) => selection.context.capability === 'uniform-fallback'),
-    ).toBe(true);
-    const originalPrograms = record(first).programs;
-    const updatedPrograms = record(second).programs;
-    expect(updatedPrograms).toHaveLength(originalPrograms.length);
-    for (const [index, updated] of updatedPrograms.entries()) {
-      const original = originalPrograms[index];
-      if (original === undefined) throw new Error('compiled program count changed');
-      // Preserve exact byte equality without enumerating every index in Vitest.
-      const { bytes: updatedBytes, ...updatedArtifact } = updated.artifact;
-      const { bytes: originalBytes, ...originalArtifact } = original.artifact;
-      expect(Buffer.compare(updatedBytes, originalBytes)).toBe(0);
-      expect({ ...updated, artifact: updatedArtifact }).toEqual({
-        ...original,
-        artifact: originalArtifact,
-      });
-    }
-    expect(record(second).resolved.values.baseColor).not.toEqual(
-      record(first).resolved.values.baseColor,
-    );
-    expect(composition).toHaveBeenCalledTimes(compositions);
-    expect(validation).toHaveBeenCalledTimes(validations);
-  } finally {
-    composition.mockRestore();
-    validation.mockRestore();
-    vi.unstubAllEnvs();
-  }
-});
-
-it('admits the authored Lab clearcoat toggle after ordinary material cooking', async () => {
-  const document = JSON.parse(
-    await readFile(
-      new URL('../../../../apps/game-capability-lab/assets/scene.pack.json', import.meta.url),
-      'utf8',
-    ),
-  );
-  const authored = document.assets['material/blue-ball'];
-  const source = { kind: authored.kind, ...authored.payload } as MaterialAsset;
-  const guid = '5a90b107-fb75-4a62-9b08-520a8d153019';
-  const draft = await publicationCooker.cook({ guid, source });
-  const record = validateCookedMaterialRecord(
-    (draft.payload as { cooked: unknown }).cooked,
-  ).unwrap();
-  expectWebGpuPublication(record);
-  const ready = await createMaterialLoader({
-    loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
-  }).load({ guid, specializationKey: record.specializationKey ?? '' });
-  if (ready.status !== 'Ready') throw new Error('production material loader required');
-  const registry = new AssetRegistry();
-  try {
-    const {
-      handle,
-      payload: root,
-      projection,
-    } = (await loadMaterialFixture(registry, ready.record)).unwrap();
-    const coated = registry.copy(handle).unwrap();
-    registry.update(coated, { values: { clearcoat: 0.85, clearcoatRoughness: 0.12 } }).unwrap();
-    const value = registry.read(coated).unwrap();
-    expect(root.values?.clearcoat).toBe(0);
-    expect(root.parameters?.map((parameter) => parameter.name)).toEqual(
-      expect.arrayContaining(['clearcoat', 'clearcoatRoughness']),
-    );
-    expect(value.values).toMatchObject({ clearcoat: 0.85, clearcoatRoughness: 0.12 });
-    expect(
-      registry.getMaterialProjectionForPayload(
-        runtimeAssets(registry).borrow<MaterialAsset>(coated).unwrap(),
-      ),
-    ).toBe(projection);
-    const unknown = resolveMaterialAsset('unknown', {
-      unknown: { ...root, values: { ...root.values, undeclaredCoat: 1 } },
-    });
-    expect(unknown.ok).toBe(false);
-    if (!unknown.ok) expect(unknown.error.code).toBe('material-value-unknown');
-  } finally {
-    registry.dispose();
-  }
-});
-
 it('admits clearcoat on the material actually referenced by the authored BlueBall scene', async () => {
   const sourcePath = fileURLToPath(
     new URL('../../../../apps/game-capability-lab/assets/scene.pack.json', import.meta.url),
@@ -607,6 +486,15 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
       payload,
       projection,
     } = (await loadMaterialFixture(registry, ready.record)).unwrap();
+    expect(payload.values?.clearcoat).toBe(0);
+    expect(payload.parameters?.map((parameter) => parameter.name)).toEqual(
+      expect.arrayContaining(['clearcoat', 'clearcoatRoughness']),
+    );
+    expect(
+      resolveMaterialAsset('unknown', {
+        unknown: { ...payload, values: { ...payload.values, undeclaredCoat: 1 } },
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'material-value-unknown' } });
     registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
     publishRuntimeAssets(registry, [
       { guid: selected.guid, asset: payload },

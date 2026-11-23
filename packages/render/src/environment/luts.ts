@@ -38,18 +38,26 @@ interface GraphAtmosphereCommon extends GraphAtmosphereTables {
   };
   readonly visibility: AtmosphereVisibility;
   readonly distantSkyLight: GraphTextureView;
+  readonly fastAerialPerspective?: boolean;
 }
 export type GraphAtmosphere = GraphAtmosphereCommon &
   (
     | {
         readonly execution: 'compute-volume';
         readonly aerialPerspective: GraphTextureView;
-        readonly aerialTransmittance: GraphTextureView;
+        readonly aerialTransmittance?: GraphTextureView;
       }
     | { readonly execution: 'fragment-cluster'; readonly packed: GraphTextureView }
   );
 
-export function atmosphereTextures(atmosphere: GraphAtmosphere): GraphTextureView[] {
+export type RasterAtmosphereReads = 'none' | 'solar';
+
+export function atmosphereTextures(
+  atmosphere: GraphAtmosphere,
+  reads?: RasterAtmosphereReads,
+): GraphTextureView[] {
+  if (reads === 'none') return [];
+  if (reads === 'solar') return [atmosphere.transmittance];
   return [
     atmosphere.transmittance,
     atmosphere.multipleScattering,
@@ -57,7 +65,10 @@ export function atmosphereTextures(atmosphere: GraphAtmosphere): GraphTextureVie
     atmosphere.captureSky,
     atmosphere.distantSkyLight,
     ...(atmosphere.execution === 'compute-volume'
-      ? [atmosphere.aerialPerspective, atmosphere.aerialTransmittance]
+      ? [
+          atmosphere.aerialPerspective,
+          ...(atmosphere.aerialTransmittance === undefined ? [] : [atmosphere.aerialTransmittance]),
+        ]
       : [atmosphere.packed]),
     ...atmosphereVisibilityAccesses(atmosphere.visibility).map(({ resource }) => resource),
   ];
@@ -67,15 +78,57 @@ export function atmosphereTextures(atmosphere: GraphAtmosphere): GraphTextureVie
 export function atmosphereVolumeViews(
   resources: Pick<import('@forgeax/engine-render-graph').GraphResourceResolver, 'textureView'>,
   atmosphere: GraphAtmosphere | undefined,
+  reads?: RasterAtmosphereReads,
 ): import('./bindings').AtmosphereViews | undefined {
-  if (atmosphere?.execution !== 'compute-volume') return undefined;
+  if (atmosphere?.execution !== 'compute-volume' || reads === 'none') return undefined;
+  if (reads === 'solar')
+    return { transmittance: resources.textureView(atmosphere.transmittance).unwrap() };
   return {
     transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
     multipleScattering: resources.textureView(atmosphere.multipleScattering).unwrap(),
     distantSkyLight: resources.textureView(atmosphere.distantSkyLight).unwrap(),
     aerialPerspective: resources.textureView(atmosphere.aerialPerspective).unwrap(),
-    aerialTransmittance: resources.textureView(atmosphere.aerialTransmittance).unwrap(),
+    ...(atmosphere.aerialTransmittance === undefined
+      ? {}
+      : {
+          aerialTransmittance: resources.textureView(atmosphere.aerialTransmittance).unwrap(),
+        }),
   };
+}
+
+function addAerialLutTargets(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  fast: boolean,
+): Result<
+  {
+    aerialView: GraphTextureView;
+    extinctionView?: GraphTextureView;
+    aerialDepth: number;
+  },
+  RenderGraphError
+> {
+  const aerialDepth = fast ? 16 : 32;
+  const addVolume = (name: string) => {
+    const texture = graph.createTexture(name, {
+      format: 'rgba16float',
+      size: { width: 32, height: 32, depthOrArrayLayers: aerialDepth },
+      dimension: '3d',
+      usage: 0x0c,
+    });
+    return texture.ok ? graph.view(texture.value, { dimension: '3d' }) : texture;
+  };
+  const aerial = addVolume('atmosphere-aerial-perspective');
+  if (!aerial.ok) return aerial;
+  if (fast) return ok({ aerialView: aerial.value, aerialDepth });
+  const extinction = addVolume('atmosphere-aerial-transmittance');
+  return extinction.ok
+    ? ok({ aerialView: aerial.value, extinctionView: extinction.value, aerialDepth })
+    : extinction;
+}
+
+function atmosphereLutEntryPoint(name: keyof typeof AtmosphereLutPass, fast: boolean): string {
+  if (name === 'aerial_perspective' && fast) return 'atmosphere_aerial_perspective_fast';
+  return `atmosphere_${name === 'capture_sky_view' ? 'sky_view' : name}`;
 }
 
 /** Medium tables persist; camera-dependent tables belong to this camera graph. */
@@ -84,6 +137,7 @@ export function addAtmosphereLuts(
   captureParameters: GraphBuffer,
   captureDirty: (frame: RenderPipelineFrame) => boolean,
   visibility: AtmosphereVisibility = {},
+  fastAerialPerspective = false,
 ): Result<GraphAtmosphere, RenderGraphError> {
   const table = (
     name: 'transmittance' | 'multipleScattering' | 'captureSky' | 'distantSkyLight',
@@ -116,24 +170,9 @@ export function addAtmosphereLuts(
   if (!sky.ok) return sky;
   const skyView = graph.view(sky.value, { dimension: '2d' });
   if (!skyView.ok) return skyView;
-  const aerial = graph.createTexture('atmosphere-aerial-perspective', {
-    format: 'rgba16float',
-    size: { width: 32, height: 32, depthOrArrayLayers: 32 },
-    dimension: '3d',
-    usage: 0x0c,
-  });
-  if (!aerial.ok) return aerial;
-  const aerialView = graph.view(aerial.value, { dimension: '3d' });
-  if (!aerialView.ok) return aerialView;
-  const extinction = graph.createTexture('atmosphere-aerial-transmittance', {
-    format: 'rgba16float',
-    size: { width: 32, height: 32, depthOrArrayLayers: 32 },
-    dimension: '3d',
-    usage: 0x0c,
-  });
-  if (!extinction.ok) return extinction;
-  const extinctionView = graph.view(extinction.value, { dimension: '3d' });
-  if (!extinctionView.ok) return extinctionView;
+  const volumes = addAerialLutTargets(graph, fastAerialPerspective);
+  if (!volumes.ok) return volumes;
+  const { aerialView, extinctionView, aerialDepth } = volumes.value;
   const view = graph.importBuffer(
     'atmosphere-lut-view',
     { size: VIEW_UNIFORM_BYTES, usage: 0x48 },
@@ -180,9 +219,9 @@ export function addAtmosphereLuts(
     },
     {
       name: 'aerial_perspective',
-      target: aerialView.value,
+      target: aerialView,
       inputs: [transmittance.value.view, multiple.value.view],
-      groups: [8, 8, 8],
+      groups: [8, 8, aerialDepth / 4],
       shared: false,
     },
   ] as const) {
@@ -212,6 +251,8 @@ export function addAtmosphereLuts(
       ]);
     };
     const volume = stage.name === 'aerial_perspective';
+    const extinctionOutput = volume ? extinctionView : undefined;
+    const entryPoint = atmosphereLutEntryPoint(stage.name, fastAerialPerspective);
     const usesVisibility = !stage.shared;
     const localVisibility = stage.name === 'sky_view' || volume ? visibility : {};
     const parameters =
@@ -224,7 +265,9 @@ export function addAtmosphereLuts(
         { resource: parameters, usage: 'uniform-read' },
         ...stage.inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
         { resource: stage.target, usage: 'storage-write' },
-        ...(volume ? [{ resource: extinctionView.value, usage: 'storage-write' as const }] : []),
+        ...(extinctionOutput === undefined
+          ? []
+          : [{ resource: extinctionOutput, usage: 'storage-write' as const }]),
       ],
       ...(stage.shared
         ? {
@@ -279,7 +322,7 @@ export function addAtmosphereLuts(
                     viewDimension: volume ? '3d' : '2d',
                   },
                 },
-                ...(volume
+                ...(extinctionOutput !== undefined
                   ? [
                       {
                         binding: 6,
@@ -308,7 +351,7 @@ export function addAtmosphereLuts(
                 .unwrap(),
               compute: {
                 module,
-                entryPoint: `atmosphere_${stage.name === 'capture_sky_view' ? 'sky_view' : stage.name}`,
+                entryPoint,
               },
             })
             .unwrap();
@@ -349,13 +392,13 @@ export function addAtmosphereLuts(
                   value: resources.textureView(stage.target).unwrap(),
                 },
               },
-              ...(volume
+              ...(extinctionOutput !== undefined
                 ? [
                     {
                       binding: 6,
                       resource: {
                         kind: 'textureView' as const,
-                        value: resources.textureView(extinctionView.value).unwrap(),
+                        value: resources.textureView(extinctionOutput).unwrap(),
                       },
                     },
                   ]
@@ -408,7 +451,8 @@ export function addAtmosphereLuts(
     skyView: skyView.value,
     captureSky: captureSky.value.view,
     distantSkyLight: distant.value.view,
-    aerialPerspective: aerialView.value,
-    aerialTransmittance: extinctionView.value,
+    aerialPerspective: aerialView,
+    fastAerialPerspective,
+    ...(extinctionView === undefined ? {} : { aerialTransmittance: extinctionView }),
   });
 }

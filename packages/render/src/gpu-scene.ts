@@ -1,18 +1,14 @@
-import type { Buffer, Result, RhiDevice, TextureView } from '@forgeax/engine-rhi';
+import type { Buffer, Result, RhiDevice } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import { createStandardPbrArtifactReceipt, type ShaderRegistry } from '@forgeax/engine-shader';
-import {
-  derive,
-  MATERIAL_SCENE_ADDRESS_UNIT_BYTES,
-  type ParamSchemaEntry,
-} from '@forgeax/engine-types';
+import { derive, type ParamSchemaEntry } from '@forgeax/engine-types';
 import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
-import { GpuDirtyRanges } from './gpu-dirty-ranges';
 import type { GpuInputArena } from './gpu-input-arena';
 import {
   type PrimitiveAllocationResidency,
   PrimitiveAllocations,
   type PrimitiveAllocation as SlotAllocation,
+  SlotWrite,
 } from './gpu-scene-allocations';
 import { type CapacityTableDemand, GpuSceneCapacityPreparation } from './gpu-scene-capacity';
 import {
@@ -28,6 +24,7 @@ import {
   type GpuSceneInputPreparation,
   GpuSceneInputs,
 } from './gpu-scene-inputs';
+import { GpuScenePreviousRows } from './gpu-scene-previous-rows';
 import {
   encodeMaterialSceneDescriptor,
   encodeMeshSceneDescriptor,
@@ -42,32 +39,50 @@ import {
   gpuSceneFieldOffset,
 } from './gpu-scene-schema';
 import {
+  releaseSourceParts,
+  resourceHoldInvalid,
+  sourceResource,
+} from './gpu-scene-source-custody';
+import {
   type GpuSceneSourceMaterial,
   type GpuSceneSourceMesh,
   type GpuSceneSourceMeshInput,
-  type GpuSceneSourceResource,
   type GpuSceneSourceRow,
   GpuSceneSourceRows,
   SOURCE_ROWS_PER_RETIREMENT_STEP,
 } from './gpu-scene-source-rows';
 import {
+  createTables,
+  type GpuSceneTableName,
+  type GpuSceneTables,
+  type GpuSceneTableTextures,
+  growGpuSceneTableCapacity,
+  MATERIAL,
+  TABLE_LAYOUTS,
+  TABLE_NAMES,
+  tableBuffer,
+  textureTableViews,
+} from './gpu-scene-table-set';
+import {
   createGpuSceneTable,
   destroyGpuSceneTable,
-  destroyGpuSceneTables,
   type GpuSceneTableBackend,
   type GpuSceneTableResource,
   type GpuSceneTableStorage,
   gpuSceneTableByteLimit,
   writeGpuSceneTable,
 } from './gpu-scene-tables';
+import { GpuTableWrites } from './gpu-table-writes';
 import type { GpuSceneInspection } from './inspection-types';
-import { uniqueInstanceIdentities } from './instances';
+import { previousInstanceRows } from './instance-generations';
+
 import type { MaterialResource } from './material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from './material-row';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
 import { getOpaqueResourceIdentity } from './record/frame-snapshot';
 import type { MaterialSnapshot, RenderableSnapshot } from './render-system-extract';
 import { type AcceptedMaterial, MaterialFrame } from './scene/material-dispatch';
+import { slotContent, slotPoseColumn, slotPoseOffset } from './scene/mesh-draw';
 import { MeshFrame, type MeshGeometry, type MeshMorphDeltas } from './scene/mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './scene/mesh-materials';
 import type {
@@ -81,17 +96,12 @@ import { StableRangeAllocator } from './stable-range-allocator';
 
 export type { GpuSceneInspection } from './inspection-types';
 
-type GpuSceneTemporalSnapshot = NonNullable<RenderSceneSlot['snapshot']['temporal']>;
+type GpuSceneTemporalSnapshot = Readonly<import('./scene/render-scene-types').GpuSceneMotion>;
 type GpuSceneTemporalResolver = (slot: RenderSceneSlot) => GpuSceneTemporalSnapshot | undefined;
 
 const PRIMITIVE = GPU_SCENE_LAYOUTS.primitive;
 const INSTANCE = GPU_SCENE_LAYOUTS.instance;
 const TRANSFORM = GPU_SCENE_LAYOUTS.transform;
-const MATERIAL = {
-  name: 'GpuSceneMaterialAddress',
-  stride: MATERIAL_SCENE_ADDRESS_UNIT_BYTES,
-  fields: [],
-} as const;
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
 const PRIMITIVE_ACTIVE = GPU_SCENE_PRIMITIVE_FLAGS.active;
 /** Static author request; readiness stays in the fixed Skin source root. */
@@ -103,20 +113,6 @@ export const GPU_SCENE_PRIMITIVE_MOTION_INVALID = GPU_SCENE_PRIMITIVE_FLAGS.moti
 /** `ShadowParticipation.receive` is false: the surface skips shadow sampling. */
 export const GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE = GPU_SCENE_PRIMITIVE_FLAGS.noShadowReceive;
 const IDENTITY_MATRIX = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
-interface GpuSceneTables {
-  readonly primitive: GpuSceneTableResource;
-  readonly instance: GpuSceneTableResource;
-  readonly transform: GpuSceneTableResource;
-  readonly material: GpuSceneTableResource;
-}
-
-/** The row tables a texture-backed scene binds to `textureLoad` reads. */
-export interface GpuSceneTableTextures {
-  readonly primitive: TextureView;
-  readonly instance: TextureView;
-  readonly transform: TextureView;
-}
 
 /** One exact Scene-issued native target; it does not authorize execution or Source Rows. */
 export interface GpuSceneTableBindingTarget {
@@ -174,6 +170,10 @@ export interface MaterialAllocation {
   holders: number;
   version: MaterialVersion;
 }
+
+const NO_INSTANCE_UPLOAD = Object.freeze({ ranges: Object.freeze([]), bytes: 0 });
+
+const NO_MATERIAL_RANGES: readonly MaterialAllocation[] = Object.freeze([]);
 
 /** A preparation owns shared resource addresses until abort or submitted completion. */
 export interface GpuSceneResourceFrame {
@@ -270,17 +270,6 @@ export interface MeshAllocation {
 }
 
 type PrimitiveAllocation = SlotAllocation<MeshAllocation, readonly MaterialAllocation[]>;
-
-type GpuSceneTableName = keyof GpuSceneTables;
-
-const TABLE_LAYOUTS = {
-  primitive: PRIMITIVE,
-  instance: INSTANCE,
-  transform: TRANSFORM,
-  material: MATERIAL,
-} as const satisfies Readonly<Record<GpuSceneTableName, GpuSceneTableLayout>>;
-
-const TABLE_NAMES = Object.keys(TABLE_LAYOUTS) as readonly GpuSceneTableName[];
 const EMPTY_CPU_BYTES = new Uint8Array(0);
 const EMPTY_CPU_VIEW = new DataView(EMPTY_CPU_BYTES.buffer);
 const EMPTY_CPU_TABLES = Object.freeze({
@@ -294,32 +283,6 @@ const GPU_SCENE_ROW_TABLE_STRIDE = Math.max(PRIMITIVE.stride, INSTANCE.stride);
 const TRANSFORM_CURRENT = gpuSceneFieldOffset(TRANSFORM, 'currentWorld');
 const TRANSFORM_PREVIOUS = gpuSceneFieldOffset(TRANSFORM, 'previousIndex');
 const TRANSFORM_STAMP = gpuSceneFieldOffset(TRANSFORM, 'stamp');
-
-/**
- * Doubling growth keeps reallocation amortized O(1) per row; slack is clamped
- * to the rows the device can bind, and only a requirement beyond that fails.
- */
-export function growGpuSceneTableCapacity(
-  current: number,
-  required: number,
-  stride: number,
-  limitBytes: number,
-): Result<number, RhiError> {
-  if (required <= current) return ok(current);
-  const maxRows = Math.floor(limitBytes / stride);
-  if (required > maxRows)
-    return err(
-      new RhiError({
-        code: 'limit-exceeded',
-        expected: `GPU Scene table (${required} rows x ${stride} B) fits the device table binding limit (${limitBytes} B)`,
-        hint: 'reduce resident GPU-driven rows or request a device with larger storage binding limits',
-        detail: { maxStorageBufferBindingSize: limitBytes, requestedBytes: required * stride },
-      }),
-    );
-  let next = Math.max(1, current);
-  while (next < required) next *= 2;
-  return ok(Math.min(next, maxRows));
-}
 // Material storage grows from distinct accepted ABIs, independently of entity reservations.
 const INITIAL_MATERIAL_CAPACITY = 1;
 
@@ -331,80 +294,6 @@ interface GpuSceneSyncResult {
 }
 
 type GpuSceneAvailability = { readonly status: 'available'; readonly scene: GpuScene };
-
-function createTables(
-  device: RhiDevice,
-  backend: GpuSceneTableBackend,
-  capacity: number,
-  materialCapacity: number,
-): Result<GpuSceneTables, RhiError> {
-  const created: Partial<Record<GpuSceneTableName, GpuSceneTableResource>> = {};
-  const captured: GpuSceneTableStorage[] = [];
-  const failed = (cause: unknown): Result<never, RhiError> => {
-    const cleanup = destroyGpuSceneTables(device, captured);
-    const failure =
-      cause instanceof RhiError
-        ? cause
-        : Object.assign(
-            new RhiError({
-              code: 'internal-error',
-              expected: 'complete initial GPU Scene table construction',
-              hint: 'retain construction and cleanup failures and rebuild the GPU owner',
-            }),
-            { cause },
-          );
-    return cleanup.ok
-      ? err(failure)
-      : err(
-          Object.assign(cleanup.error, {
-            cause: new AggregateError(
-              [failure, cleanup.error.cause],
-              'GPU table creation and cleanup failed',
-            ),
-          }),
-        );
-  };
-  for (const name of TABLE_NAMES) {
-    try {
-      const result = createGpuSceneTable(
-        device,
-        backend,
-        `gpu-scene-${name}-table`,
-        (name === 'material' ? materialCapacity : capacity) * TABLE_LAYOUTS[name].stride,
-        (table) => captured.push(table),
-      );
-      if (!result.ok) return failed(result.error);
-      created[name] = result.value;
-    } catch (cause) {
-      return failed(cause);
-    }
-  }
-  const { primitive, instance, transform, material } = created;
-  if (
-    primitive === undefined ||
-    instance === undefined ||
-    transform === undefined ||
-    material === undefined
-  ) {
-    return err(
-      new RhiError({
-        code: 'internal-error',
-        expected: 'GPU scene creates one resource for every table',
-        hint: 'rebuild the renderer after inspecting the device resource failure',
-      }),
-    );
-  }
-  return ok({ primitive, instance, transform, material });
-}
-
-function tableBuffer(table: GpuSceneTableResource): Buffer {
-  if (table.kind === 'buffer') return table.buffer;
-  throw new RhiError({
-    code: 'internal-error',
-    expected: 'storage-buffer GPU Scene tables for a storage-bound consumer',
-    hint: 'read texture-backed GPU Scene tables through tableTextures',
-  });
-}
 
 function writeMat4(
   view: DataView,
@@ -434,17 +323,27 @@ function writeChangedMat4(
   return changed;
 }
 
+type GpuSceneWrites = Readonly<Record<GpuSceneTableName, GpuTableWrites>>;
+
+interface TableReduction {
+  readonly baseline: GpuSceneTables;
+  readonly rows: number;
+  readonly transforms: number;
+  readonly materials: number;
+  readonly task: GpuSceneCapacityPreparation;
+}
+
 /** Zero `count` rows from `start` and mark them for upload. */
 function clearRows(
   bytes: Uint8Array,
   stride: number,
   start: number,
   count: number,
-  writes: number[],
+  writes: GpuTableWrites,
 ): void {
   if (count <= 0) return;
   bytes.fill(0, start * stride, (start + count) * stride);
-  for (let row = start; row < start + count; row += 1) writes.push(row);
+  writes.addRange(start, start + count);
 }
 
 function offset(layout: GpuSceneTableLayout, field: string): number {
@@ -478,26 +377,8 @@ function previousInstanceOrdinals(
   ) {
     return undefined;
   }
-  // A stable collection keeps one immutable generation column across row
-  // moves: its ordinals pair with themselves after a memoized uniqueness proof.
-  if (currentGenerations === previousGenerations) {
-    return uniqueInstanceIdentities(currentGenerations) ? identityOrdinal : undefined;
-  }
-  const currentSet = new Set<number>();
-  for (const generation of currentGenerations) {
-    if (generation === 0 || currentSet.has(generation)) return undefined;
-    currentSet.add(generation);
-  }
-  const ordinals = new Map<number, number>();
-  for (let ordinal = 0; ordinal < previousGenerations.length; ordinal += 1) {
-    const generation = previousGenerations[ordinal] ?? 0;
-    if (generation === 0 || ordinals.has(generation)) return undefined;
-    ordinals.set(generation, ordinal);
-  }
-  return (ordinal) => ordinals.get(currentGenerations[ordinal] ?? 0);
+  return previousInstanceRows(currentGenerations, previousGenerations);
 }
-
-const identityOrdinal = (ordinal: number): number => ordinal;
 
 /** Accepted instance collection revision mirrored by one slot's transform rows. */
 interface InstanceResidentRevision {
@@ -530,72 +411,6 @@ function primitiveTemporalFlags(
   );
 }
 
-/** A Source owns callbacks only until exact release; a failed release is never retried blindly. */
-function sourceResource<T extends Omit<GpuSceneSourceResource, 'isCurrent' | 'release' | 'adopt'>>(
-  facts: T,
-  current: () => boolean,
-  release: () => void,
-  adopt: () => void,
-): T & GpuSceneSourceResource {
-  let scope: { current(): boolean; release(): void; adopt(): void } | undefined = {
-    current,
-    release,
-    adopt,
-  };
-  let failure: { cause: unknown } | undefined;
-  const api = Object.defineProperties({} as T, Object.getOwnPropertyDescriptors(facts));
-  return Object.freeze(
-    Object.assign(api, {
-      adopt: () => {
-        if (failure !== undefined) throw failure.cause;
-        const held = scope;
-        if (held === undefined) throw resourceHoldInvalid();
-        try {
-          held.adopt();
-        } catch (cause) {
-          failure = { cause };
-          throw cause;
-        }
-      },
-      isCurrent: () => {
-        const held = scope;
-        return (
-          failure === undefined &&
-          held !== undefined &&
-          held.current() &&
-          scope === held &&
-          failure === undefined
-        );
-      },
-      release: () => {
-        if (failure !== undefined) throw failure.cause;
-        const held = scope;
-        if (held === undefined) return;
-        scope = undefined;
-        try {
-          held.release();
-        } catch (cause) {
-          scope = held;
-          failure = { cause };
-          throw cause;
-        }
-      },
-    }),
-  );
-}
-
-function releaseSourceParts(parts: readonly (() => void)[]): void {
-  const failures: unknown[] = [];
-  for (const release of parts)
-    try {
-      release();
-    } catch (cause) {
-      failures.push(cause);
-    }
-  if (failures.length > 0)
-    throw new AggregateError(failures, 'Source resource custody release failed');
-}
-
 /** Persistent GPU tables derived only from renderer projection slots. */
 export class GpuScene {
   readonly inputs: GpuSceneInputs;
@@ -609,7 +424,6 @@ export class GpuScene {
   private morphScratch = new DataView(new ArrayBuffer(64));
   private readonly pendingMeshes = new Set<MeshVersion>();
 
-  private readonly dirtyRanges = new GpuDirtyRanges();
   private readonly rowScratch = new Uint8Array(PRIMITIVE.stride);
   private readonly rowScratchView = new DataView(this.rowScratch.buffer);
   private disposed = false;
@@ -622,6 +436,7 @@ export class GpuScene {
   private transformBytes: Uint8Array<ArrayBuffer>;
   private transformView: DataView;
   private tables: GpuSceneTables;
+  private textureViews: GpuSceneTableTextures | undefined;
   private readonly retiredTables = new Set<GpuSceneTableStorage>();
   private readonly retiredTableStates = new WeakMap<
     GpuSceneTableStorage,
@@ -643,6 +458,8 @@ export class GpuScene {
     { readonly failure: AggregateError; readonly releaseInputs: () => void }
   >();
   private disposalFailure: AggregateError | undefined;
+  /** Shared packing within one sync. Released on success, failure or device disposal. */
+  private packedMaterialRows: Map<MaterialSnapshot, Uint8Array> | undefined;
   private readonly pendingMaterials = new Set<MaterialVersion>();
   private readonly pendingMaterialRoots = new Set<MaterialAllocation>();
   private uploadRanges = 0;
@@ -658,6 +475,7 @@ export class GpuScene {
    */
   private journal = new RowChangeLog();
   /** Content identity consumed by shadow-cache invalidation; replaced by every completed sync. */
+  private syncRevisionValue = 0;
   private contentAt: SceneContentCursor = { journal: this.journal, position: 0 };
   private readonly contentBoxes = new GpuSceneContentBoxes();
   private identityUploaded = false;
@@ -684,11 +502,18 @@ export class GpuScene {
   private readonly transforms = new StableRangeAllocator();
   private readonly materials = new StableRangeAllocator();
   private readonly sharedMaterials = new Map<MaterialResource, MaterialAllocation>();
-  private readonly writesByTable: Record<GpuSceneTableName, number[]> = {
-    primitive: [],
-    instance: [],
-    transform: [],
-    material: [],
+  private tableRowsReleased = false;
+  private retiredTransformRows = 0;
+  private reviewCapacity = false;
+  private smallSubmissions = 0;
+  private reductions = 0;
+  private reductionFailures = 0;
+  private reduction: TableReduction | undefined;
+  private readonly writesByTable: GpuSceneWrites = {
+    primitive: new GpuTableWrites(),
+    instance: new GpuTableWrites(),
+    transform: new GpuTableWrites(),
+    material: new GpuTableWrites(),
   };
   /**
    * Stamp of the frame being prepared; row 0 carries it to the GPU. It
@@ -697,8 +522,7 @@ export class GpuScene {
    */
   private frameStamp = 1;
   /** Scene-owned previous-pose scratch rows, reused after each submitted stamp. */
-  private readonly previousRows: number[] = [];
-  private previousRowsUsed = 0;
+  private readonly previousRows = new GpuScenePreviousRows(this.transforms);
   private transformCapacity: number;
 
   private constructor(
@@ -711,6 +535,7 @@ export class GpuScene {
   ) {
     this.inputs = new GpuSceneInputs(device, (slot) => this.primitiveIndexForSlot(slot), arena);
     this.tables = tables;
+    this.textureViews = textureTableViews(tables);
     this.materialCapacity = INITIAL_MATERIAL_CAPACITY;
     this.transformCapacity = capacity;
     this.tableBytes = this.allocateCpuTables(capacity, this.materialCapacity);
@@ -764,13 +589,15 @@ export class GpuScene {
 
   /** Row tables of a texture-backed scene; undefined for storage-buffer tables. */
   get tableTextures(): GpuSceneTableTextures | undefined {
-    const { primitive, instance, transform } = this.tables;
-    if (primitive.kind !== 'texture' || instance.kind !== 'texture' || transform.kind !== 'texture')
-      return undefined;
-    return { primitive: primitive.view, instance: instance.view, transform: transform.view };
+    return this.textureViews;
   }
 
-  /** The scene journal position of the last completed sync; a new object per sync. */
+  /** Advances on every completed sync, including resource-only publications. */
+  get syncRevision(): number {
+    return this.syncRevisionValue;
+  }
+
+  /** Spatial row journal position, shared until the journal or its position advances. */
   get contentCursor(): SceneContentCursor {
     return this.contentAt;
   }
@@ -1298,7 +1125,8 @@ export class GpuScene {
     readonly ranges: readonly { readonly start: number; readonly end: number }[];
     readonly bytes: number;
   } {
-    const ranges = this.instanceUploads.get(slot) ?? [];
+    const ranges = this.instanceUploads.get(slot);
+    if (ranges === undefined) return NO_INSTANCE_UPLOAD;
     this.instanceUploads.delete(slot);
     let rows = 0;
     for (const range of ranges) rows += range.end - range.start;
@@ -1448,6 +1276,7 @@ export class GpuScene {
     task: GpuSceneCapacityPreparation,
     capture: (preparation: GpuSceneInputPreparation) => void,
     current: () => boolean,
+    retired?: GpuSceneInputPreparation,
   ): Generator<void, GpuSceneInputPreparation> {
     const scope = this.capacityPreparations.get(task);
     const source = scope?.sourceRows;
@@ -1455,10 +1284,16 @@ export class GpuScene {
       scope === undefined ||
       source === undefined ||
       scope.sourceEncoded !== true ||
-      scope.sourceInput !== undefined ||
+      scope.sourceInput !== retired ||
       !task.isValid()
     )
       throw resourceHoldInvalid();
+    if (
+      retired !== undefined &&
+      (retired.inspect().phase !== 'released' || !retired.retirement().unwrap().done)
+    )
+      throw resourceHoldInvalid();
+    delete scope.sourceInput;
     const reservations = [];
     for (const resource of [...source.materials.values(), ...source.meshes.values()])
       if (resource.mapping !== undefined) reservations.push(resource.mapping);
@@ -1525,16 +1360,18 @@ export class GpuScene {
       throw resourceHoldInvalid();
     const mesh = source.meshes.get(row.geometry)?.allocation;
     if (mesh === undefined) throw resourceHoldInvalid();
-    const ranges = source.rowMaterialRanges
-      ? (row.source.snapshot.materials.length === 0
-          ? [row.source.snapshot.material]
-          : row.source.snapshot.materials
-        ).map((resource) => {
-          const allocation = source.materials.get(resource)?.allocation;
-          if (allocation === undefined) throw resourceHoldInvalid();
-          return allocation;
-        })
-      : [];
+    const materialRanges = source.rowMaterialRanges
+      ? this.internRanges(
+          (row.source.snapshot.materials.length === 0
+            ? [row.source.snapshot.material]
+            : row.source.snapshot.materials
+          ).map((resource) => {
+            const allocation = source.materials.get(resource)?.allocation;
+            if (allocation === undefined) throw resourceHoldInvalid();
+            return allocation;
+          }),
+        )
+      : NO_MATERIAL_RANGES;
     return {
       mesh,
       recordIndex: row.recordIndex,
@@ -1544,7 +1381,7 @@ export class GpuScene {
       instanceTransformStart: row.instanceTransformStart,
       instanceTransformCount: row.snapshot.instances === undefined ? 0 : row.instanceCount,
       instanceCapacity: row.instanceCount,
-      materialRanges: this.internRanges(ranges),
+      materialRanges,
     };
   }
 
@@ -1570,7 +1407,7 @@ export class GpuScene {
     this.allocations.acceptPublication(record.slot, record.version);
     this.rememberInstanceGenerations(
       record.slot,
-      record.snapshot.instances?.generations,
+      slotContent(record).instances?.generations,
       prepared.allocation.instanceCount,
     );
     this.rememberInstanceResident(record);
@@ -1596,9 +1433,10 @@ export class GpuScene {
         scope.detachmentBatchEnd ??
         this.clearSourceRowBatch(scope.sourceData.rows, scope.detachmentCursor ?? 0);
       scope.detachmentBatchEnd = end;
+      this.markPendingCapacityDirty(this.writesByTable);
       const uploaded = this.uploadRows(this.writesByTable);
       if (!uploaded.ok) return uploaded;
-      for (const name of TABLE_NAMES) this.writesByTable[name].length = 0;
+      this.clearTableWrites();
       scope.detachmentCursor = end;
       delete scope.detachmentBatchEnd;
       const done = end >= scope.sourceData.rows.length;
@@ -1609,6 +1447,7 @@ export class GpuScene {
       return this.failBindingPublication(cause);
     } finally {
       this.cpuBusy = false;
+      if (this.disposed) this.releaseCpuTables();
     }
   }
 
@@ -2355,6 +2194,7 @@ export class GpuScene {
     this.cpuBusy = true;
     try {
       this.tables = scope.tables;
+      this.textureViews = textureTableViews(scope.tables);
       this.tableBytes = scope.bytes;
       this.capacity = scope.limits.primitive;
       this.transformCapacity = scope.limits.transform;
@@ -2377,13 +2217,37 @@ export class GpuScene {
     }
   }
 
-  private markPendingCapacityDirty(
-    rows: Readonly<Record<GpuSceneTableName, readonly number[]>>,
-  ): void {
+  private markPendingCapacityDirty(rows: GpuSceneWrites): void {
     if (this.capacityPreparations.size === 0) return;
-    for (const name of TABLE_NAMES)
-      for (const row of rows[name])
-        this.markCapacityDirty(name, row * TABLE_LAYOUTS[name].stride, TABLE_LAYOUTS[name].stride);
+    for (const name of TABLE_NAMES) {
+      const changes = rows[name];
+      const stride = TABLE_LAYOUTS[name].stride;
+      let first = changes.next(0);
+      while (first >= 0) {
+        const end = changes.end(first);
+        this.markCapacityDirty(name, first * stride, (end - first) * stride);
+        first = changes.next(end);
+      }
+    }
+  }
+
+  private clearTableWrites(): void {
+    for (const name of TABLE_NAMES) {
+      const writes = this.writesByTable[name];
+      writes.clear();
+      if (!this.tableRowsReleased || writes.storageBytes <= 256) continue;
+      const allocator =
+        name === 'primitive'
+          ? this.records
+          : name === 'instance'
+            ? this.instances
+            : name === 'transform'
+              ? this.transforms
+              : this.materials;
+      writes.trim(allocator.allocatedEnd());
+    }
+    this.reviewCapacity ||= this.tableRowsReleased;
+    this.tableRowsReleased = false;
   }
 
   private markCapacityDirty(name: GpuSceneTableName, offset: number, size: number): void {
@@ -2398,19 +2262,15 @@ export class GpuScene {
     if (this.failure !== undefined) return err(this.failure);
     if (this.disposed || this.cpuBusy) return this.cpuUpdateUnavailable();
     this.cpuBusy = true;
+    let notified = false;
     try {
       this.adoptMaterialFrame(delta);
       this.adoptMeshFrame(delta);
       this.instanceUploads.clear();
-      if (this.isUnchangedDelta(delta)) {
-        this.noChangeFrames += 1;
-        return ok({ ranges: 0, bytes: 0, grew: false, cleared: 0 });
-      }
+      if (this.isUnchangedDelta(delta)) this.noChangeFrames++;
       const writesByTable = this.writesByTable;
-      if (!this.identityUploaded && !writesByTable.transform.includes(0)) {
-        writesByTable.transform.push(0);
-      }
-      const { resets: allocationResets, resized } = this.allocateDeltaSlots(delta, writesByTable);
+      if (!this.identityUploaded) writesByTable.transform.add(0);
+      this.allocateDeltaSlots(delta, writesByTable);
       const requiredCapacity = Math.max(
         this.records.requiredCapacity(),
         this.instances.requiredCapacity(),
@@ -2430,20 +2290,16 @@ export class GpuScene {
         if (!grown.ok) return grown;
       }
       for (const range of this.pendingMeshes) this.writeMeshDescriptor(range);
-      const materialRows = this.writePendingMaterials(delta, writesByTable);
-      this.writeSlotPublications(
-        delta,
-        allocationResets,
-        resized,
-        writesByTable,
-        materialRows,
-        temporalResolver,
-      );
+      this.writePendingMaterials(delta, writesByTable);
+      this.writeSlotPublications(delta, writesByTable, temporalResolver);
       if (this.disposed) return this.cpuUpdateUnavailable();
+      this.markPendingCapacityDirty(writesByTable);
+      notified = true;
       const uploaded = this.uploadRows(writesByTable);
       if (!uploaded.ok) return uploaded;
       this.completeSync(delta, boundsOf);
       if (this.disposed) return this.cpuUpdateUnavailable();
+      this.syncRevisionValue++;
       return ok({
         ranges: uploaded.value.ranges,
         bytes: uploaded.value.bytes,
@@ -2468,7 +2324,8 @@ export class GpuScene {
             );
       return err(this.failure);
     } finally {
-      this.markPendingCapacityDirty(this.writesByTable);
+      this.packedMaterialRows = undefined;
+      if (!notified) this.markPendingCapacityDirty(this.writesByTable);
       this.cpuBusy = false;
       if (this.disposed) this.releaseCpuTables();
     }
@@ -2499,11 +2356,7 @@ export class GpuScene {
     const alreadyPacked = packed?.initialized === true && packed.snapshot === after.snapshot;
     const allocation =
       before === undefined
-        ? this.acquireMaterial(
-            after.resource,
-            this.materialUnits(after.snapshot),
-            this.writesByTable,
-          )
+        ? this.acquireMaterial(after.resource, this.writesByTable)
         : this.sharedMaterials.get(after.resource);
     if (allocation === undefined) throw new Error('Accepted GPU material root is missing');
     this.adoptMaterial(allocation, this.writesByTable);
@@ -2553,26 +2406,18 @@ export class GpuScene {
       delta.contentUpdatedSlots.length === 0 &&
       (delta.materialUpdates?.length ?? 0) === 0 &&
       delta.instanceUpdatedSlots.length === 0 &&
-      !TABLE_NAMES.some((name) => this.writesByTable[name].length > 0) &&
+      !TABLE_NAMES.some((name) => !this.writesByTable[name].empty) &&
       this.pendingMeshes.size === 0 &&
       this.pendingMaterialRoots.size === 0 &&
       this.identityUploaded
     );
   }
 
-  /**
-   * Clear removed rows, then ensure every published slot's allocation. Returns
-   * the slots whose allocation was replaced (`resets`) and those whose
-   * instance count changed within their reserved rows (`resized`).
-   */
-  private allocateDeltaSlots(
-    delta: RenderSceneApplyResult,
-    writesByTable: Record<GpuSceneTableName, number[]>,
-  ): { readonly resets: Set<number>; readonly resized: Set<number> } {
-    const allocationResets = new Set<number>();
-    const resized = new Set<number>();
+  /** Classify each allocated slot once for the following numeric write stage. */
+  private allocateDeltaSlots(delta: RenderSceneApplyResult, writesByTable: GpuSceneWrites): void {
+    this.allocations.beginWrites();
     if (delta.resynced > 0) {
-      for (const slot of [...this.allocations.keys()]) this.clearSlot(slot, writesByTable);
+      for (const slot of this.allocations.keys()) this.clearSlot(slot, writesByTable);
     }
     // RenderScene may recycle a released CPU slot for a different identity in
     // the same delta. Clear the old GPU allocation before ensuring the new
@@ -2581,23 +2426,34 @@ export class GpuScene {
     for (const record of delta.removedSlots) {
       this.clearSlot(record.slot, writesByTable);
     }
-    for (const records of [
-      delta.createdSlots,
-      delta.contentUpdatedSlots,
-      delta.instanceUpdatedSlots,
-      delta.recreatedSlots,
-    ]) {
-      for (const record of records) {
-        const previous = this.allocations.stamp(record.slot);
-        if (this.ensureAllocation(record, writesByTable)) resized.add(record.slot);
-        if (previous !== this.allocations.stamp(record.slot)) allocationResets.add(record.slot);
-      }
-    }
+    this.allocateSlotLane(delta.createdSlots, SlotWrite.reset, writesByTable);
+    this.allocateSlotLane(delta.contentUpdatedSlots, SlotWrite.full, writesByTable);
+    this.allocateSlotLane(delta.instanceUpdatedSlots, SlotWrite.instances, writesByTable);
+    this.allocateSlotLane(delta.recreatedSlots, SlotWrite.reset, writesByTable);
     for (const resource of delta.materialUpdates ?? []) {
       const range = this.sharedMaterials.get(resource);
       if (range !== undefined) this.adoptMaterial(range, writesByTable);
     }
-    return { resets: allocationResets, resized };
+  }
+
+  private allocateSlotLane(
+    records: readonly RenderSceneSlot[],
+    required: typeof SlotWrite.reset | typeof SlotWrite.full | typeof SlotWrite.instances,
+    writes: GpuSceneWrites,
+  ): void {
+    for (const record of records) {
+      const previous = this.allocations.stamp(record.slot);
+      const resized = this.ensureAllocation(record, writes);
+      const reset = previous !== this.allocations.stamp(record.slot);
+      this.allocations.requireWrite(
+        record.slot,
+        reset
+          ? SlotWrite.reset
+          : resized && required === SlotWrite.instances
+            ? SlotWrite.full
+            : required,
+      );
+    }
   }
 
   /** Write one shared mesh descriptor header and its Skin envelope into the input arena. */
@@ -2633,17 +2489,14 @@ export class GpuScene {
    */
   private writePendingMaterials(
     delta: RenderSceneApplyResult,
-    writesByTable: Record<GpuSceneTableName, number[]>,
-  ): Map<MaterialSnapshot, Uint8Array> {
-    const materialRows = new Map<MaterialSnapshot, Uint8Array>();
+    writesByTable: GpuSceneWrites,
+  ): void {
     for (const allocation of this.pendingMaterialRoots)
-      this.writeMaterial(allocation.version, writesByTable, materialRows, false);
+      this.writeMaterial(allocation.version, writesByTable, false);
     for (const resource of delta.materialUpdates ?? []) {
       const range = this.sharedMaterials.get(resource);
-      if (range !== undefined)
-        this.writeMaterial(range.version, writesByTable, materialRows, false);
+      if (range !== undefined) this.writeMaterial(range.version, writesByTable, false);
     }
-    return materialRows;
   }
 
   /**
@@ -2652,22 +2505,9 @@ export class GpuScene {
    */
   private writeSlotPublications(
     delta: RenderSceneApplyResult,
-    allocationResets: ReadonlySet<number>,
-    resized: ReadonlySet<number>,
-    writesByTable: Record<GpuSceneTableName, number[]>,
-    materialRows: Map<MaterialSnapshot, Uint8Array>,
+    writesByTable: GpuSceneWrites,
     temporalResolver: GpuSceneTemporalResolver | undefined,
   ): void {
-    const contentUpdatedSlotIds =
-      delta.contentUpdatedSlots.length === 0 ? undefined : new Set<number>();
-    for (const record of delta.contentUpdatedSlots) contentUpdatedSlotIds?.add(record.slot);
-    const instanceUpdatedSlotIds =
-      delta.instanceUpdatedSlots.length === 0 ? undefined : new Set<number>();
-    for (const record of delta.instanceUpdatedSlots) instanceUpdatedSlotIds?.add(record.slot);
-    const newSlots =
-      delta.createdSlots.length + delta.recreatedSlots.length === 0 ? undefined : new Set<number>();
-    for (const record of delta.createdSlots) newSlots?.add(record.slot);
-    for (const record of delta.recreatedSlots) newSlots?.add(record.slot);
     // Preserve create/update/recreate order without concatenating the full row population.
     for (let group = 0; group < 3; group++) {
       const publications =
@@ -2676,7 +2516,7 @@ export class GpuScene {
         if (this.allocations.publicationVersion(record.slot) === record.version) {
           const temporal = temporalResolver?.(record);
           if (temporal !== undefined) {
-            if (record.snapshot.instances !== undefined)
+            if (slotContent(record).instances !== undefined)
               this.writeInstanceTransforms(record, writesByTable, temporal);
             this.writeRootTransform(record, false, writesByTable);
             this.writeTemporalFlags(
@@ -2687,13 +2527,14 @@ export class GpuScene {
           }
           continue;
         }
-        const reset = newSlots?.has(record.slot) === true || allocationResets.has(record.slot);
-        if (reset || contentUpdatedSlotIds?.has(record.slot) || resized.has(record.slot)) {
-          this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
+        const kind = this.allocations.writeClass(record.slot);
+        const reset = kind === SlotWrite.reset;
+        if (kind >= SlotWrite.full) {
+          this.writeSlot(record, reset, writesByTable, temporalResolver?.(record));
           continue;
         }
         const temporal = temporalResolver?.(record);
-        if (instanceUpdatedSlotIds?.has(record.slot))
+        if (kind === SlotWrite.instances)
           this.writeInstanceTransforms(record, writesByTable, temporal);
         this.writeRootTransform(record, false, writesByTable);
         this.writeTemporalFlags(
@@ -2714,13 +2555,17 @@ export class GpuScene {
     this.pendingMaterials.clear();
     this.pendingMaterialRoots.clear();
     this.pendingMeshes.clear();
-    for (const name of TABLE_NAMES) this.writesByTable[name].length = 0;
+    this.clearTableWrites();
     this.identityUploaded = true;
     this.clearedSlots += delta.removedSlots.length;
     if (delta.resynced > 0) this.fullRebuilds += 1;
     if (delta.journal !== undefined) this.journal = delta.journal;
     this.contentBoxes.record(this.journal, delta, boundsOf);
-    this.contentAt = { journal: this.journal, position: this.journal.position };
+    if (
+      this.contentAt.journal !== this.journal ||
+      this.contentAt.position !== this.journal.position
+    )
+      this.contentAt = { journal: this.journal, position: this.journal.position };
   }
 
   /**
@@ -2735,7 +2580,6 @@ export class GpuScene {
     this.cpuBusy = true;
     try {
       this.frameStamp = this.frameStamp === 0xffffffff ? 1 : this.frameStamp + 1;
-      this.previousRowsUsed = 0;
       this.transformView.setUint32(TRANSFORM_STAMP, this.frameStamp, true);
       this.markCapacityDirty('transform', TRANSFORM_STAMP, 4);
       const written = writeGpuSceneTable(
@@ -2746,12 +2590,16 @@ export class GpuScene {
         4,
       );
       if (!written.ok) {
-        this.writesByTable.transform.push(0);
+        this.writesByTable.transform.add(0);
         return written;
       }
       if (this.disposed) return this.cpuUpdateUnavailable();
       this.uploadRanges += 1;
       this.uploadBytes += written.value;
+      this.followTableReduction('transform', TRANSFORM_STAMP, 4);
+      if (this.previousRows.submitted()) this.reviewCapacity = true;
+      this.reduceSubmittedTables();
+      if (this.disposed) return this.cpuUpdateUnavailable();
       return ok(undefined);
     } finally {
       this.cpuBusy = false;
@@ -2760,15 +2608,15 @@ export class GpuScene {
   }
 
   /** Previous pose = current pose for the frame being prepared. */
-  private seedPrevious(index: number, writes: Record<GpuSceneTableName, number[]>): void {
+  private seedPrevious(index: number, writes: GpuSceneWrites): void {
     const at = index * TRANSFORM.stride;
     this.transformView.setUint32(at + TRANSFORM_PREVIOUS, index, true);
     this.transformView.setUint32(at + TRANSFORM_STAMP, this.frameStamp, true);
-    writes.transform.push(index);
+    writes.transform.add(index);
   }
 
   /** Stamp a row for this frame without moving it; an earlier change this frame stays. */
-  private stampTransform(index: number, writes: Record<GpuSceneTableName, number[]>): void {
+  private stampTransform(index: number, writes: GpuSceneWrites): void {
     const at = index * TRANSFORM.stride;
     if (this.transformView.getUint32(at + TRANSFORM_STAMP, true) !== this.frameStamp)
       this.seedPrevious(index, writes);
@@ -2784,24 +2632,19 @@ export class GpuScene {
   }
 
   /** The row holding `index`'s previous pose this frame, allocated on its first change. */
-  private previousRow(index: number, writes: Record<GpuSceneTableName, number[]>): number {
+  private previousRow(index: number, writes: GpuSceneWrites): number {
     const at = index * TRANSFORM.stride;
     if (this.hasPreviousRow(index))
       return this.transformView.getUint32(at + TRANSFORM_PREVIOUS, true);
-    let row = this.previousRows[this.previousRowsUsed];
-    if (row === undefined) {
-      // Keep warm scratch out of the free list that a private Source reserves from.
-      row = this.transforms.allocate(1);
-      this.previousRows.push(row);
-    }
-    this.previousRowsUsed++;
+    const row = this.previousRows.take();
     if (row >= this.transformCapacity) {
       const grown = this.grow(this.capacity, row + 1, this.materialCapacity);
       if (!grown.ok) throw grown.error;
     }
     this.transformView.setUint32(at + TRANSFORM_PREVIOUS, row, true);
     this.transformView.setUint32(at + TRANSFORM_STAMP, this.frameStamp, true);
-    writes.transform.push(index, row);
+    writes.transform.add(index);
+    writes.transform.add(row);
     return row;
   }
 
@@ -2814,7 +2657,7 @@ export class GpuScene {
     index: number,
     matrix: Float32Array,
     sourceOffset: number,
-    writes: Record<GpuSceneTableName, number[]>,
+    writes: GpuSceneWrites,
   ): void {
     const at = index * TRANSFORM.stride + TRANSFORM_CURRENT;
     let differs = false;
@@ -2829,7 +2672,7 @@ export class GpuScene {
       this.transformBytes.copyWithin(row * TRANSFORM.stride + TRANSFORM_CURRENT, at, at + 64);
     }
     writeMat4(this.transformView, at, matrix, sourceOffset);
-    writes.transform.push(index);
+    writes.transform.add(index);
   }
 
   /** Write a known previous pose (a mapped submitted instance row) for `index`. */
@@ -2837,7 +2680,7 @@ export class GpuScene {
     index: number,
     previous: Float32Array,
     previousOffset: number,
-    writes: Record<GpuSceneTableName, number[]>,
+    writes: GpuSceneWrites,
   ): void {
     const row = this.previousRow(index, writes);
     writeMat4(
@@ -2846,14 +2689,11 @@ export class GpuScene {
       previous,
       previousOffset,
     );
-    writes.transform.push(index, row);
+    writes.transform.add(index);
+    writes.transform.add(row);
   }
 
-  private writeTemporalFlags(
-    slot: number,
-    temporalFlags: number,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private writeTemporalFlags(slot: number, temporalFlags: number, writes: GpuSceneWrites): void {
     const primitive = this.primitiveView;
     const recordIndex = this.allocations.recordIndex(slot);
     if (recordIndex === undefined) return;
@@ -2869,7 +2709,7 @@ export class GpuScene {
     }
     if (next === current) return;
     primitive.setUint32(at, next, true);
-    writes.primitive.push(recordIndex);
+    writes.primitive.add(recordIndex);
   }
 
   inspect(): GpuSceneInspection {
@@ -2896,6 +2736,11 @@ export class GpuScene {
       uploadRanges: this.uploadRanges,
       uploadBytes: this.uploadBytes,
       capacityGrows: this.capacityGrows,
+      tableReclamation: {
+        reductions: this.reductions,
+        failures: this.reductionFailures,
+        privateBytes: this.reduction?.task.inspect().cpuBytes ?? 0,
+      },
       fullRebuilds: this.fullRebuilds,
       clearedSlots: this.clearedSlots,
       noChangeFrames: this.noChangeFrames,
@@ -2969,8 +2814,7 @@ export class GpuScene {
   private writeSlot(
     record: RenderSceneSlot,
     resetPrevious: boolean,
-    writes: Record<GpuSceneTableName, number[]>,
-    materialRows: Map<MaterialSnapshot, Uint8Array>,
+    writes: GpuSceneWrites,
     temporal?: GpuSceneTemporalSnapshot,
   ): void {
     const allocation = this.allocations.get(record.slot);
@@ -2980,7 +2824,7 @@ export class GpuScene {
     encodeScenePrimitive(
       this.rowScratchView,
       record,
-      record.snapshot,
+      slotContent(record),
       {
         transformStart: allocation.transformStart,
         instanceStart: allocation.instanceStart,
@@ -2992,10 +2836,10 @@ export class GpuScene {
     );
 
     if (this.writeRow('primitive', allocation.recordIndex, this.rowScratch) || resetPrevious)
-      writes.primitive.push(allocation.recordIndex);
+      writes.primitive.add(allocation.recordIndex);
 
     const instance = this.instanceView;
-    const instances = record.snapshot.instances;
+    const instances = slotContent(record).instances;
     const previousInstances = temporal?.previousInstances;
     const previousOrdinals = previousInstanceOrdinals(instances, temporal);
     const currentGenerations = instances?.generations;
@@ -3036,7 +2880,7 @@ export class GpuScene {
           writes,
         );
       }
-      if (metadataChanged || resetPrevious) writes.instance.push(instanceIndex);
+      if (metadataChanged || resetPrevious) writes.instance.add(instanceIndex);
     }
 
     this.rememberInstanceGenerations(record.slot, currentGenerations, allocation.instanceCount);
@@ -3046,7 +2890,7 @@ export class GpuScene {
     // Pulses hold only while the root row carries this frame's stamp.
     if (temporalFlags !== 0) this.stampTransform(allocation.transformStart, writes);
 
-    this.writeMaterialSlot(record, writes, materialRows, resetPrevious);
+    this.writeMaterialSlot(record, writes, resetPrevious);
   }
 
   /**
@@ -3056,7 +2900,7 @@ export class GpuScene {
    */
   private rowMaterialSlot(record: RenderSceneSlot, range: MaterialAllocation | undefined): number {
     if (range !== undefined) return range.logicalSlot;
-    const source = record.snapshot;
+    const source = slotContent(record);
     const mesh = source.assetHandle === undefined ? undefined : this.meshes.get(source.assetHandle);
     const material =
       mesh === undefined
@@ -3093,27 +2937,17 @@ export class GpuScene {
       : snapshot.materialParamSchema;
   }
 
-  private writeMaterialSlot(
-    record: RenderSceneSlot,
-    writes: Record<GpuSceneTableName, number[]>,
-    materialRows: Map<MaterialSnapshot, Uint8Array>,
-    reset: boolean,
-  ): void {
+  private writeMaterialSlot(record: RenderSceneSlot, writes: GpuSceneWrites, reset: boolean): void {
     const ranges = this.allocations.materialRanges(record.slot);
     if (ranges === undefined) throw new RangeError('GPU Scene allocation unavailable');
     for (let ordinal = 0; ordinal < ranges.length; ordinal += 1) {
       const range = ranges[ordinal];
       if (range === undefined) throw new RangeError('material range unavailable');
-      this.writeMaterial(range.version, writes, materialRows, reset && !range.version.initialized);
+      this.writeMaterial(range.version, writes, reset && !range.version.initialized);
     }
   }
 
-  private writeMaterial(
-    range: MaterialVersion,
-    writes: Record<GpuSceneTableName, number[]>,
-    materialRows: Map<MaterialSnapshot, Uint8Array>,
-    reset: boolean,
-  ): void {
+  private writeMaterial(range: MaterialVersion, writes: GpuSceneWrites, reset: boolean): void {
     if (this.pendingMaterials.has(range)) return;
     // Shared descriptors never consume primitive/instance/transform rows.
     if (!Number.isSafeInteger(range.start) || range.start < 0 || range.start > 0xffffffff)
@@ -3130,6 +2964,8 @@ export class GpuScene {
       this.rowScratchView,
       GPU_MATERIAL_DESCRIPTOR.words,
     );
+    this.packedMaterialRows ??= new Map();
+    const materialRows = this.packedMaterialRows;
     let row = materialRows.get(snapshot);
     if (row === undefined) {
       row =
@@ -3160,7 +2996,7 @@ export class GpuScene {
         destination[start + byte] = value;
         changed = true;
       }
-      if (changed) writes.material.push(range.start + unit);
+      if (changed) writes.material.add(range.start + unit);
     }
     range.initialized = false;
     this.pendingMaterials.add(range);
@@ -3169,12 +3005,12 @@ export class GpuScene {
   /** Consume changed instance fields independently of root or material changes. */
   private writeInstanceTransforms(
     record: RenderSceneSlot,
-    writes: Record<GpuSceneTableName, number[]>,
+    writes: GpuSceneWrites,
     temporal?: GpuSceneTemporalSnapshot,
   ): void {
     const count = this.allocations.instanceTransformCount(record.slot);
     const start = this.allocations.instanceTransformStart(record.slot);
-    const instances = record.snapshot.instances;
+    const instances = slotContent(record).instances;
     if (count === undefined || start === undefined || instances === undefined) {
       throw new RangeError('GPU Scene instance update has no explicit allocation');
     }
@@ -3218,7 +3054,7 @@ export class GpuScene {
   }
 
   private rememberInstanceResident(record: RenderSceneSlot): void {
-    const instances = record.snapshot.instances;
+    const instances = slotContent(record).instances;
     if (instances?.collectionId === undefined || instances.revision === undefined) {
       this.instanceResidents.delete(record.slot);
       return;
@@ -3258,7 +3094,7 @@ export class GpuScene {
     reset: boolean,
     previousOrdinal: number | undefined,
     previousInstances: GpuSceneTemporalSnapshot['previousInstances'],
-    writes: Record<GpuSceneTableName, number[]>,
+    writes: GpuSceneWrites,
   ): void {
     const at = index * TRANSFORM.stride + TRANSFORM_CURRENT;
     if (reset) writeMat4(this.transformView, at, local, sourceOffset);
@@ -3283,22 +3119,23 @@ export class GpuScene {
   private writeRootTransform(
     record: RenderSceneSlot,
     resetPrevious: boolean,
-    writes: Record<GpuSceneTableName, number[]>,
+    writes: GpuSceneWrites,
   ): void {
     const index = this.allocations.transformStart(record.slot);
     if (index === undefined) throw new RangeError('GPU Scene allocation unavailable');
-    const world = record.snapshot.transform.world;
+    const world = slotPoseColumn(record);
+    const offset = slotPoseOffset(record);
     if (resetPrevious) {
       encodeResetSceneTransform(
         this.transformView,
         index * TRANSFORM.stride,
         index,
         world,
-        0,
+        offset,
         this.frameStamp,
       );
-      writes.transform.push(index);
-    } else this.writeTransform(index, world, 0, writes);
+      writes.transform.add(index);
+    } else this.writeTransform(index, world, offset, writes);
   }
 
   /**
@@ -3307,9 +3144,9 @@ export class GpuScene {
    * uploads only changed words, so a weight edit is one row-sized write.
    */
   private writeMorphRow(record: RenderSceneSlot): number {
-    const morph = record.snapshot.morph;
-    const deltas =
-      morph === undefined ? undefined : this.meshes.get(record.snapshot.assetHandle)?.morph;
+    const content = slotContent(record);
+    const morph = content.morph;
+    const deltas = morph === undefined ? undefined : this.meshes.get(content.assetHandle)?.morph;
     let row = this.morphRows.get(record.slot);
     if (row !== undefined && (deltas === undefined || row.deltas !== deltas)) {
       this.releaseMorphRow(record.slot, row);
@@ -3323,7 +3160,7 @@ export class GpuScene {
       row = {
         descriptor: this.inputs.arena.allocateDescriptor(words),
         words,
-        handle: record.snapshot.assetHandle as number,
+        handle: content.assetHandle as number,
         deltas,
       };
       this.acquireMorphDeltas(deltas);
@@ -3409,7 +3246,7 @@ export class GpuScene {
     }
   }
 
-  private clearSlot(slot: number, writes: Record<GpuSceneTableName, number[]>): void {
+  private clearSlot(slot: number, writes: GpuSceneWrites): void {
     const morphRow = this.morphRows.get(slot);
     if (morphRow !== undefined) this.releaseMorphRow(slot, morphRow);
     const allocation = this.allocations.get(slot);
@@ -3423,28 +3260,30 @@ export class GpuScene {
   }
 
   private uploadRows(
-    rows: Readonly<Record<GpuSceneTableName, readonly number[]>>,
+    rows: GpuSceneWrites,
   ): Result<{ readonly ranges: number; readonly bytes: number }, RhiError> {
-    this.markPendingCapacityDirty(rows);
     let rangeCount = 0;
     let bytes = 0;
     for (const name of TABLE_NAMES) {
-      const ranges = this.dirtyRanges.coalesce(rows[name]);
-      rangeCount += ranges.length;
-      for (const range of ranges) {
-        const layout = TABLE_LAYOUTS[name];
-        const tableOffset = range.start * layout.stride;
-        const tableSize = (range.end - range.start) * layout.stride;
+      const changes = rows[name];
+      const stride = TABLE_LAYOUTS[name].stride;
+      let first = changes.next(0);
+      while (first >= 0) {
+        const end = changes.end(first);
         const write = writeGpuSceneTable(
           this.device,
           this.tables[name],
           this.tableBytes[name].buffer,
-          tableOffset,
-          tableSize,
+          first * stride,
+          (end - first) * stride,
         );
         if (!write.ok) return write;
         if (this.disposed) return this.cpuUpdateUnavailable();
+        this.followTableReduction(name, first * stride, (end - first) * stride);
+        if (this.disposed) return this.cpuUpdateUnavailable();
+        rangeCount++;
         bytes += write.value;
+        first = changes.next(end);
       }
     }
     this.uploadRanges += rangeCount;
@@ -3456,36 +3295,26 @@ export class GpuScene {
    * Bind `record` to rows; returns true when only its instance count changed
    * and the rows were resized in place (same addresses, same stamp).
    */
-  private ensureAllocation(
-    record: RenderSceneSlot,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): boolean {
+  private ensureAllocation(record: RenderSceneSlot, writes: GpuSceneWrites): boolean {
     // A present Instances component is authoritative even when its array is
     // empty: preserve zero so neither the GPU Scene nor the indirect topology
     // turns it into a synthetic identity instance. Entities without the
     // component retain the ordinary one-instance identity path.
-    const explicitInstances = record.snapshot.instances;
+    const content = slotContent(record);
+    const explicitInstances = content.instances;
     const instanceCount =
       explicitInstances === undefined
         ? 1
         : Math.max(0, Math.floor(explicitInstances.instanceCount));
     const instanceTransformCount = explicitInstances === undefined ? 0 : instanceCount;
-    const materialUnits = Array.from(
-      {
-        length:
-          this.materialFrame === undefined ? Math.max(1, record.snapshot.materials.length) : 0,
-      },
-      (_, ordinal) =>
-        this.materialUnits(
-          (record.snapshot.materials[ordinal] ?? record.snapshot.material).snapshot,
-        ),
-    );
+    const materialCount =
+      this.materialFrame === undefined ? Math.max(1, content.materials.length) : 0;
     const geometry =
-      record.snapshot.morph !== undefined ||
-      record.snapshot.terrainSection !== undefined ||
-      record.snapshot.pointsLines !== undefined
+      content.morph !== undefined ||
+      content.terrainSection !== undefined ||
+      content.pointsLines !== undefined
         ? undefined
-        : this.meshes.get(record.snapshot.assetHandle);
+        : this.meshes.get(content.assetHandle);
     const geometryKey = geometry === undefined ? undefined : `${geometry.handle}`;
     const existing = this.allocations.get(record.slot);
     const reuse =
@@ -3494,12 +3323,10 @@ export class GpuScene {
         : this.reuseAllocation(
             record,
             existing,
-            {
-              geometryKey,
-              materialCount: materialUnits.length,
-              instanceCount,
-              instanceTransformCount,
-            },
+            geometryKey,
+            materialCount,
+            instanceCount,
+            instanceTransformCount,
             writes,
           );
     if (reuse !== undefined) return reuse;
@@ -3516,26 +3343,26 @@ export class GpuScene {
     // Hold reused identities before releasing this binding, but let retired
     // versions free their ranges before a genuinely new material allocates.
     // Prepared/submitted frame holders independently keep their versions live.
-    const retainedMaterials = materialUnits.map((count, index) => {
-      const resource = record.snapshot.materials[index] ?? record.snapshot.material;
-      return this.sharedMaterials.has(resource)
-        ? this.acquireMaterial(resource, count, writes)
-        : undefined;
-    });
+    const ranges = materialCount === 0 ? undefined : new Array<MaterialAllocation>(materialCount);
     if (existing !== undefined) {
+      if (ranges !== undefined) {
+        for (let index = 0; index < materialCount; index++) {
+          const resource = content.materials[index] ?? content.material;
+          if (this.sharedMaterials.has(resource))
+            ranges[index] = this.acquireMaterial(resource, writes);
+        }
+      }
       this.clearAllocationRanges(existing, writes);
       this.releaseRanges(existing.materialRanges);
     }
-    const ranges = materialUnits.map(
-      (count, index) =>
-        retainedMaterials[index] ??
-        this.acquireMaterial(
-          record.snapshot.materials[index] ?? record.snapshot.material,
-          count,
+    if (ranges !== undefined) {
+      for (let index = 0; index < materialCount; index++)
+        ranges[index] ??= this.acquireMaterial(
+          content.materials[index] ?? content.material,
           writes,
-        ),
-    );
-    const materialRanges = this.internRanges(ranges);
+        );
+    }
+    const materialRanges = ranges === undefined ? NO_MATERIAL_RANGES : this.internRanges(ranges);
     const allocation = {
       mesh,
       // Member nodes name this live slot's physical record. Resizing its
@@ -3566,24 +3393,18 @@ export class GpuScene {
   private reuseAllocation(
     record: RenderSceneSlot,
     existing: PrimitiveAllocation,
-    binding: {
-      readonly geometryKey: string | undefined;
-      readonly materialCount: number;
-      readonly instanceCount: number;
-      readonly instanceTransformCount: number;
-    },
-    writes: Record<GpuSceneTableName, number[]>,
+    geometryKey: string | undefined,
+    materialCount: number,
+    instanceCount: number,
+    instanceTransformCount: number,
+    writes: GpuSceneWrites,
   ): boolean | undefined {
-    const { materials, material, instances } = record.snapshot;
-    const { geometryKey, materialCount, instanceCount, instanceTransformCount } = binding;
-    if (
-      existing.mesh?.key !== geometryKey ||
-      existing.materialRanges.length !== materialCount ||
-      !existing.materialRanges.every(
-        (range, index) => range.resource === (materials[index] ?? material),
-      )
-    )
+    const { materials, material, instances } = slotContent(record);
+    if (existing.mesh?.key !== geometryKey || existing.materialRanges.length !== materialCount)
       return undefined;
+    for (let index = 0; index < materialCount; index++)
+      if (existing.materialRanges[index]?.resource !== (materials[index] ?? material))
+        return undefined;
     const unchanged =
       existing.instanceCount === instanceCount &&
       existing.instanceTransformCount === instanceTransformCount;
@@ -3603,12 +3424,12 @@ export class GpuScene {
     return true;
   }
 
-  private internRanges(ranges: readonly MaterialAllocation[]): readonly MaterialAllocation[] {
+  private internRanges(ranges: MaterialAllocation[]): readonly MaterialAllocation[] {
     let key = '';
     for (const range of ranges) key += `${getOpaqueResourceIdentity(range)},`;
     let shared = this.rangeLists.get(key);
     if (shared === undefined) {
-      shared = { ranges: Object.freeze([...ranges]), holders: 0 };
+      shared = { ranges: Object.freeze(ranges), holders: 0 };
       this.rangeLists.set(key, shared);
     }
     shared.holders++;
@@ -3616,6 +3437,7 @@ export class GpuScene {
   }
 
   private releaseRanges(ranges: readonly MaterialAllocation[]): void {
+    if (ranges === NO_MATERIAL_RANGES) return;
     let key = '';
     for (const range of ranges) key += `${getOpaqueResourceIdentity(range)},`;
     const shared = this.rangeLists.get(key);
@@ -3655,10 +3477,7 @@ export class GpuScene {
     return range;
   }
 
-  private releaseMaterial(
-    range: MaterialAllocation,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private releaseMaterial(range: MaterialAllocation, writes: GpuSceneWrites): void {
     if (--range.holders !== 0) return;
     this.pendingMaterialRoots.delete(range);
     this.sharedMaterials.delete(range.resource);
@@ -3683,21 +3502,15 @@ export class GpuScene {
     this.releaseMeshVersion(mesh.version);
   }
 
-  private acquireMaterial(
-    resource: MaterialResource,
-    count: number,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): MaterialAllocation {
+  private acquireMaterial(resource: MaterialResource, writes: GpuSceneWrites): MaterialAllocation {
     const existing = this.sharedMaterials.get(resource);
     if (existing !== undefined) {
       this.adoptMaterial(existing, writes);
       existing.holders++;
       return existing;
     }
-    const version = this.allocateMaterialVersion(
-      this.materialFrame?.get(resource)?.snapshot ?? resource.snapshot,
-      count,
-    );
+    const snapshot = this.materialFrame?.get(resource)?.snapshot ?? resource.snapshot;
+    const version = this.allocateMaterialVersion(snapshot, this.materialUnits(snapshot));
     let logicalSlot: number;
     try {
       logicalSlot = this.inputs.allocateResource(version.descriptor);
@@ -3739,10 +3552,7 @@ export class GpuScene {
     }
   }
 
-  private adoptMaterial(
-    allocation: MaterialAllocation,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private adoptMaterial(allocation: MaterialAllocation, writes: GpuSceneWrites): void {
     const previous = allocation.version;
     const snapshot =
       this.materialFrame?.get(allocation.resource)?.snapshot ?? allocation.resource.snapshot;
@@ -3759,28 +3569,22 @@ export class GpuScene {
     this.inputs.updateResource(allocation.logicalSlot, allocation.version.descriptor);
   }
 
-  private releaseMaterialVersion(
-    version: MaterialVersion,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private releaseMaterialVersion(version: MaterialVersion, writes: GpuSceneWrites): void {
     if (--version.references !== 0) return;
     this.pendingMaterials.delete(version);
     this.inputs.arena.releaseDescriptor(version.descriptor, GPU_MATERIAL_DESCRIPTOR.words);
     this.clearMaterialRows(version, writes);
   }
 
-  private clearMaterialRows(
-    version: MaterialVersion,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private clearMaterialRows(version: MaterialVersion, writes: GpuSceneWrites): void {
     const start = Math.min(version.start * MATERIAL.stride, this.tableBytes.material.byteLength);
     const end = Math.min(
       (version.start + version.count) * MATERIAL.stride,
       this.tableBytes.material.byteLength,
     );
     this.tableBytes.material.fill(0, start, end);
-    for (let unit = start / MATERIAL.stride; unit < end / MATERIAL.stride; unit++)
-      writes.material.push(unit);
+    writes.material.addRange(start / MATERIAL.stride, end / MATERIAL.stride);
+    this.tableRowsReleased = true;
     this.materials.release(version.start, version.count);
   }
 
@@ -3793,11 +3597,7 @@ export class GpuScene {
     );
   }
 
-  private resizeMaterial(
-    range: MaterialVersion,
-    count: number,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private resizeMaterial(range: MaterialVersion, count: number, writes: GpuSceneWrites): void {
     if (range.count === count) return;
     this.clearMaterialRows(range, writes);
     const start = this.materials.allocate(count, count);
@@ -3806,26 +3606,20 @@ export class GpuScene {
     range.initialized = false;
   }
 
-  private clearRecord(index: number, writes: Record<GpuSceneTableName, number[]>): void {
+  private clearRecord(index: number, writes: GpuSceneWrites): void {
     if (index < this.capacity) {
       this.tableBytes.primitive.fill(0, index * PRIMITIVE.stride, (index + 1) * PRIMITIVE.stride);
-      writes.primitive.push(index);
+      writes.primitive.add(index);
     }
     this.records.release(index, 1);
   }
 
-  private clearAllocation(
-    allocation: PrimitiveAllocation,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private clearAllocation(allocation: PrimitiveAllocation, writes: GpuSceneWrites): void {
     this.clearRecord(allocation.recordIndex, writes);
     this.clearAllocationRanges(allocation, writes);
   }
 
-  private clearAllocationRanges(
-    allocation: PrimitiveAllocation,
-    writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  private clearAllocationRanges(allocation: PrimitiveAllocation, writes: GpuSceneWrites): void {
     const mesh = allocation.mesh;
     if (mesh !== undefined) this.releaseMeshAllocation(mesh);
     // Clear every reserved row, including unreferenced capacity past the count:
@@ -3858,6 +3652,12 @@ export class GpuScene {
       writes.transform,
     );
     for (const range of allocation.materialRanges) this.releaseMaterial(range, writes);
+    this.tableRowsReleased = true;
+    this.retiredTransformRows += transformRows + 1;
+    if (this.retiredTransformRows >= Math.max(512, this.transformCapacity / 4)) {
+      this.previousRows.sourceReleased();
+      this.retiredTransformRows = 0;
+    }
     this.instances.release(allocation.instanceStart, instanceRows);
     this.transforms.release(allocation.transformStart, 1);
     this.transforms.release(allocation.instanceTransformStart, transformRows);
@@ -3900,7 +3700,7 @@ export class GpuScene {
     this.retiredTables.delete(table);
   }
 
-  private retireTable(table: GpuSceneTableResource): void {
+  private retireTable(table: GpuSceneTableStorage): void {
     const state = this.retiredTableStates.get(table);
     if (state !== undefined && state !== 'waiting') return;
     this.retiredTables.add(table);
@@ -3927,6 +3727,157 @@ export class GpuScene {
       this.destroyRetiredTable(table);
     }
     if (this.tableRetirementFailure !== undefined) throw this.tableRetirementFailure;
+  }
+
+  private abandonTableReduction(): void {
+    const pending = this.reduction;
+    if (pending === undefined) return;
+    this.reduction = undefined;
+    pending.task.abandon((table) => this.retireTable(table));
+  }
+
+  private failedTableReduction(): void {
+    this.reductionFailures++;
+    this.abandonTableReduction();
+    this.reviewCapacity = true;
+    this.smallSubmissions = -48;
+  }
+
+  private followTableReduction(name: GpuSceneTableName, offset: number, bytes: number): void {
+    const pending = this.reduction;
+    if (pending === undefined || pending.baseline !== this.tables || this.disposed) return;
+    try {
+      if (pending.task.followSubmitted(name, offset, bytes).ok) return;
+    } catch {
+      // The live write already succeeded. Its private copy can be retired and retried.
+    }
+    this.failedTableReduction();
+  }
+
+  /** Give private Source publication priority. Held submitted draws keep their original tables. */
+  private reduceSubmittedTables(): void {
+    if (!this.reviewCapacity && this.reduction === undefined) return;
+    if (this.disposed || TABLE_NAMES.some((name) => !this.writesByTable[name].empty)) return;
+    for (const scope of this.capacityPreparations.values()) {
+      if (!scope.published) {
+        this.abandonTableReduction();
+        return;
+      }
+    }
+    let pending = this.reduction;
+    if (
+      pending !== undefined &&
+      (pending.baseline !== this.tables ||
+        Math.max(this.records.requiredCapacity(), this.instances.requiredCapacity()) >
+          pending.rows ||
+        this.transforms.requiredCapacity() > pending.transforms ||
+        this.materials.requiredCapacity() > pending.materials)
+    ) {
+      this.abandonTableReduction();
+      this.smallSubmissions = 0;
+      pending = undefined;
+    }
+    if (pending === undefined) {
+      this.reduction = pending = this.planTableReduction();
+      if (pending === undefined) return;
+    }
+    // One allocation or 64 KiB of copy per successful submission. Concurrent writes
+    // follow the copied prefix directly, so even a wholly moving view can finish.
+    let state: ReturnType<GpuSceneCapacityPreparation['step']>;
+    try {
+      state = pending.task.step();
+    } catch {
+      this.failedTableReduction();
+      return;
+    }
+    if (!state.ok) {
+      this.failedTableReduction();
+      return;
+    }
+    if (
+      state.value.phase !== 'current' ||
+      this.disposed ||
+      TABLE_NAMES.some((name) => !this.writesByTable[name].empty)
+    )
+      return;
+    this.publishTableReduction(pending);
+  }
+
+  private planTableReduction(): TableReduction | undefined {
+    const rows = Math.max(this.records.allocatedEnd(), this.instances.allocatedEnd());
+    const transforms = this.transforms.allocatedEnd();
+    const materials = this.materials.allocatedEnd();
+    if (
+      !shouldShrinkCapacity(rows, this.capacity) &&
+      !shouldShrinkCapacity(transforms, this.transformCapacity) &&
+      !shouldShrinkCapacity(materials, this.materialCapacity)
+    ) {
+      this.reviewCapacity = false;
+      this.smallSubmissions = 0;
+      return undefined;
+    }
+    if (++this.smallSubmissions < 16) return undefined;
+    this.smallSubmissions = 0;
+    this.records.releaseTail();
+    this.instances.releaseTail();
+    this.transforms.releaseTail();
+    this.materials.releaseTail();
+    const reduced = (extent: number, capacity: number) =>
+      shouldShrinkCapacity(extent, capacity) ? Math.max(1, dynamicCapacity(extent)) : capacity;
+    const rowLimit = reduced(rows, this.capacity);
+    const transformLimit = reduced(transforms, this.transformCapacity);
+    const materialLimit = reduced(materials, this.materialCapacity);
+    const demands: CapacityTableDemand[] = [];
+    for (const name of TABLE_NAMES) {
+      const limit =
+        name === 'transform' ? transformLimit : name === 'material' ? materialLimit : rowLimit;
+      const stride = TABLE_LAYOUTS[name].stride;
+      if (limit * stride < this.tableBytes[name].byteLength)
+        demands.push({ name, stride, bytes: limit * stride });
+    }
+    const baseline = this.tables;
+    const task = new GpuSceneCapacityPreparation(
+      this.device,
+      this.backend,
+      demands,
+      (name) => this.tableBytes[name],
+      () => !this.disposed && this.tables === baseline,
+      undefined,
+    );
+    return {
+      baseline,
+      rows: rowLimit,
+      transforms: transformLimit,
+      materials: materialLimit,
+      task,
+    };
+  }
+
+  private publishTableReduction(pending: TableReduction): void {
+    const completed = pending.task.preparedTables();
+    if (completed === undefined) return;
+    const tables = { ...this.tables };
+    const bytes = { ...this.tableBytes };
+    for (const result of completed) {
+      tables[result.name] = result.resource;
+      bytes[result.name] = result.bytes;
+    }
+    if (!pending.task.transfer(() => this.tables === tables).ok) {
+      this.failedTableReduction();
+      return;
+    }
+    this.reduction = undefined;
+    this.tables = tables;
+    this.tableBytes = bytes;
+    this.textureViews = textureTableViews(tables);
+    this.capacity = pending.rows;
+    this.transformCapacity = pending.transforms;
+    this.materialCapacity = pending.materials;
+    this.refreshCpuViews();
+    this.reductions++;
+    // Another table may have lost its tail since this copy started.
+    this.reviewCapacity = true;
+    for (const result of completed) this.retireTable(pending.baseline[result.name]);
   }
 
   private grow(
@@ -4002,6 +3953,7 @@ export class GpuScene {
       if (this.disposed) this.cpuUpdateUnavailable().unwrap();
       if (this.failure !== undefined) throw this.failure;
       this.tables = nextResources;
+      this.textureViews = textureTableViews(nextResources);
       published = true;
       this.tableBytes = nextTables;
       this.refreshCpuViews();
@@ -4037,6 +3989,10 @@ export class GpuScene {
 
   /** No CPU table reader remains; GPU frames retain only their actual GPU resources. */
   private releaseCpuTables(): void {
+    this.abandonTableReduction();
+    this.previousRows.clear();
+    for (const name of TABLE_NAMES) this.writesByTable[name].release();
+    this.contentBoxes.clear();
     this.tableBytes = EMPTY_CPU_TABLES;
     this.transformBytes = EMPTY_CPU_BYTES;
     this.transformView = this.primitiveView = this.instanceView = EMPTY_CPU_VIEW;
@@ -4072,10 +4028,4 @@ export class GpuScene {
   }
 }
 
-function resourceHoldInvalid(): RhiError {
-  return new RhiError({
-    code: 'rhi-descriptor-invalid',
-    expected: 'one live sealed resource frame issued by this GPU Scene, transferred once',
-    hint: 'seal a fresh source/read-domain probe before transferring its hold-only references',
-  });
-}
+export { type GpuSceneTableTextures, growGpuSceneTableCapacity } from './gpu-scene-table-set';

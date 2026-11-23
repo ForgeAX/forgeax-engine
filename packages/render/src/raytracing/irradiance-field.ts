@@ -977,15 +977,21 @@ export function createIrradianceFieldSampleLayout(device: RhiDevice, mode: 'live
   });
 }
 
-export function createIrradianceFieldViewKernels(
+const VIEW_STAGE_NAMES = {
+  live: Object.keys(VIEW_STAGES) as IrradianceFieldViewStage[],
+  baked: ['gatherField', 'upsampleField'] as const,
+};
+
+export function createIrradianceFieldViewKernels<Mode extends keyof typeof VIEW_STAGE_NAMES>(
   device: RhiDevice,
   module: ShaderModule,
-  mode: 'live' | 'baked',
+  mode: Mode,
 ) {
+  type Stage = (typeof VIEW_STAGE_NAMES)[Mode][number];
   const sampleLayout = createIrradianceFieldSampleLayout(device, mode);
   if (!sampleLayout.ok) return sampleLayout;
   const kernels = {} as Record<
-    IrradianceFieldViewStage,
+    Stage,
     {
       record(
         pass: RhiComputePassEncoder,
@@ -995,7 +1001,8 @@ export function createIrradianceFieldViewKernels(
       ): Result<void, RhiError>;
     }
   >;
-  for (const stage of Object.keys(VIEW_STAGES) as IrradianceFieldViewStage[]) {
+  const stages: readonly Stage[] = VIEW_STAGE_NAMES[mode];
+  for (const stage of stages) {
     const roster = VIEW_STAGES[stage];
     const layout = createComputeLayout(device, roster);
     if (!layout.ok) return layout;

@@ -7,6 +7,8 @@ import { NativeGPUTexture } from './objects';
 
 export interface NativeWindowOptions {
   readonly title?: string;
+  /** Absolute path to a native addon shipped with the player. */
+  readonly addonPath?: string;
   /** Initial physical pixel dimensions; subsequent facts come from the native window. */
   readonly width: number;
   readonly height: number;
@@ -19,9 +21,54 @@ export interface NativeWindowFacts {
   readonly visible: boolean;
 }
 
+export interface NativeGamepad {
+  readonly index: number;
+  readonly buttons: readonly number[];
+  readonly axes: readonly number[];
+}
+
+type NativeImeArea = readonly [x: number, y: number, width: number, height: number];
+
 export type NativeWindowEvent =
   | { readonly kind: 'redraw' | 'display' | 'close-requested' | 'surface-lost' }
-  | { readonly kind: 'visibility'; readonly visible: boolean };
+  | { readonly kind: 'visibility'; readonly visible: boolean }
+  /** Physical key transitions are ordered and are never coalesced with window facts. */
+  | {
+      readonly kind: 'key-down' | 'key-up';
+      readonly code?: string;
+      readonly key: string;
+      readonly text?: string;
+      readonly repeat: boolean;
+      readonly shiftKey: boolean;
+      readonly ctrlKey: boolean;
+      readonly altKey: boolean;
+      readonly metaKey: boolean;
+    }
+  | {
+      readonly kind: 'ime-preedit' | 'ime-commit';
+      readonly text: string;
+      readonly generation: number;
+    }
+  | { readonly kind: 'ime-cancel'; readonly generation: number }
+  /** Physical client pixels, matching NativeWindowFacts dimensions. */
+  | { readonly kind: 'pointer-move'; readonly x: number; readonly y: number }
+  | {
+      readonly kind: 'pointer-down' | 'pointer-up';
+      readonly button: 'left' | 'right' | 'middle';
+      readonly x: number;
+      readonly y: number;
+    }
+  | { readonly kind: 'pointer-leave' }
+  | { readonly kind: 'pointer-relative'; readonly dx: number; readonly dy: number }
+  | {
+      readonly kind: 'pointer-wheel';
+      readonly x: number;
+      readonly y: number;
+      readonly dx: number;
+      readonly dy: number;
+    }
+  /** Consumers must clear their held-key state when focus is lost. */
+  | { readonly kind: 'focus'; readonly focused: boolean };
 
 function operation<T>(name: string, run: () => T): Result<T, RhiError> {
   try {
@@ -48,6 +95,10 @@ class NativeCanvasContext {
 
   get supportedAlphaModes(): readonly GPUCanvasAlphaMode[] {
     return Object.freeze(this.native.supportedAlphaModes());
+  }
+
+  get supportedTextureUsages(): number | undefined {
+    return this.native.supportedTextureUsages?.();
   }
 
   configure(configuration: GPUCanvasConfiguration): void {
@@ -186,6 +237,22 @@ export class NativeWindow {
 
   requestRedraw(): Result<void, RhiError> {
     return operation('request a native frame', () => this.native.requestRedraw());
+  }
+
+  setPointerLock(locked: boolean): Result<boolean, RhiError> {
+    return operation('change native cursor grab', () => this.native.setPointerLock(locked));
+  }
+
+  /** Snapshots in the standard controller layout. Null means the host has no gamepad provider. */
+  gamepads(): Result<readonly NativeGamepad[] | null, RhiError> {
+    return operation('sample gamepads', () => JSON.parse(this.native.gamepads()));
+  }
+
+  /** The field rectangle is expressed in logical viewport coordinates. */
+  setImeArea(area: NativeImeArea | null): Result<number, RhiError> {
+    return operation('set IME area', () =>
+      this.native.setImeArea(area === null ? null : JSON.stringify(area)),
+    );
   }
 
   resize(width: number, height: number): Result<void, RhiError> {

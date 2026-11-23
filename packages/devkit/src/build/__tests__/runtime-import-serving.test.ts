@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
-import { createServer, normalizePath, type ViteDevServer } from 'vite';
+import { build, createServer, normalizePath, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { executionWorkerEntries, runtimeDependencyEntries } from '../execution-workers.js';
 import { runtimeProgramIdentity } from '../pack-program-imports.js';
@@ -70,6 +70,46 @@ it('discovers dependencies from declared runtime subpaths before any page reques
     );
   } finally {
     await server?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('rejects a player build when the Engine changes after a Runtime Pack is sealed', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'runtime pack engine identity-')));
+  const engine = join(root, 'node_modules/@forgeax/engine');
+  const manifest = join(engine, 'package.json');
+  const feature = join(engine, 'dist/feature.mjs');
+  const specifier = '@forgeax/engine/feature';
+  try {
+    await mkdir(dirname(feature), { recursive: true });
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        name: '@forgeax/engine',
+        version: '1.0.0',
+        exports: { './package.json': './package.json', './feature': './dist/feature.mjs' },
+      }),
+    );
+    await writeFile(feature, 'export const value = 1;');
+    await writeFile(join(root, 'index.html'), '<script type="module" src="/main.js"></script>');
+    await writeFile(
+      join(root, 'main.js'),
+      'import imports from "virtual:forgeax/pack-program-imports"; console.log(imports);',
+    );
+    const sealedIdentity = await runtimeProgramIdentity(manifest);
+    const buildPlayer = () =>
+      build({
+        root,
+        configFile: false,
+        logLevel: 'silent',
+        build: { write: false },
+        plugins: [executionWorkerEntries([specifier], 'browser', undefined, {}, sealedIdentity)],
+      });
+
+    await expect(buildPlayer()).resolves.toBeDefined();
+    await writeFile(feature, 'export const value = 2;');
+    await expect(buildPlayer()).rejects.toThrow(/Engine.*changed.*Runtime Pack/);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,5 +1,8 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { type Buffer, err, RhiError } from '@forgeax/engine-rhi';
+import { Transform } from '@forgeax/engine-scene';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
+import { MeshFilter, MeshRenderer } from '../components';
 import { GpuScene } from '../gpu-scene';
 import { rendererInputHandoffFixture } from './renderer-input-handoff-fixture';
 
@@ -218,6 +221,38 @@ it('rechecks a failed Scene after the caller even when existing capacity fits', 
     return true;
   });
   expect(() => finish(work)).toThrow();
+});
+
+it('publishes address growth after a rendered plan change within the same native storage', async () => {
+  const f = await rendererInputHandoffFixture();
+  onTestFinished(async () => (await f.close()).unwrap());
+  const mesh = f.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const member = f.world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  await f.draw();
+  const view = f.manager.currentOwner.gpuDriven.inputBindingViews(f.scene)[0];
+  assert(view);
+  const { candidateCount, bufferRebuilds } = view.inspect();
+  const visible = view.visibleBuffer;
+  const work = view.prepareAddressCapacity(f.scene, 129, () => true);
+  try {
+    for (let index = 0; index < 3; index++) expect(work.next().done).toBe(false);
+    f.world.despawn(member).unwrap();
+    await f.draw();
+    expect(view.inspect().candidateCount).toBeLessThan(candidateCount);
+    expect(view.inspect().bufferRebuilds).toBe(bufferRebuilds);
+    expect(view.visibleBuffer).toBe(visible);
+    finish(work);
+    expect(view.coversAddressExtent(f.scene, 129)).toBe(true);
+    expect(view.visibleBuffer).toBe(visible);
+  } finally {
+    work.return(undefined);
+  }
 });
 
 function finish(work: Generator<void>): void {

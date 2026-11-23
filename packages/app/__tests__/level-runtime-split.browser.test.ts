@@ -1,6 +1,5 @@
-import { type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
+import { type App, type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { appLevelOwner } from '@forgeax/engine-app/internal';
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import physics3d from '@forgeax/engine-physics-rapier3d';
 import { expect, it } from 'vitest';
@@ -47,7 +46,74 @@ function changedPixels(before: Uint8ClampedArray, after: Uint8ClampedArray) {
   return changed;
 }
 
-it.each(['local', 'split Worker', 'first Level in split Worker'] as const)('runs the same cooked Level lifecycle with %s execution', async (tier) => {
+async function verifyWorldReplacement(app: App, request: (kind: string) => Promise<Status>) {
+  const before = app.execution.report().world.identity;
+  await request('poison-world');
+  await expect.poll(() => app.execution.report().world.health, { timeout: 30_000 })
+    .toBe('poisoned');
+  (await app.execution.rebuild()).unwrap();
+  expect(app.execution.report().world.identity).not.toBe(before);
+  app.start().unwrap();
+  const canvas = app.canvas;
+  if (canvas === undefined) throw Error('Missing replacement canvas');
+  await expect.poll(() => app.execution.report().render?.completedFrame ?? 0, { timeout: 45_000 })
+    .toBeGreaterThan(0);
+  const baseline = await picture(canvas);
+  expect((await request('inspect')).hit).toBeUndefined();
+  await request('load');
+  const active = await request('active');
+  expect(active).toMatchObject({ phase: 'active', current: true, hit: expect.any(Number) });
+  expect(active.renderSelection?.active).toBe(true);
+  await expect.poll(async () => changedPixels(baseline, await picture(canvas))).toBeGreaterThan(24);
+  await request('unloaded');
+  expect((await request('inspect')).hit).toBeUndefined();
+}
+
+async function verifyDerivedStreaming(request: (kind: string) => Promise<Status>, completed: () => number) {
+  const inspect = () => expect.poll(async () => (await request('derived-inspect')).derived, {
+    timeout: 45_000,
+  });
+  expect((await request('derived-enter')).derived).toMatchObject({ state: 'pending', hit: undefined });
+  await inspect().toMatchObject({ state: 'ready', cells: 2, pendingPages: 2, started: 1, hit: expect.any(Number) });
+  const before = completed();
+  expect((await request('derived-unread')).derived).toMatchObject({
+    state: 'pending', pendingPages: 1, started: 1, hit: expect.any(Number), nextHit: undefined,
+  });
+  await expect.poll(completed).toBeGreaterThanOrEqual(before + 3);
+  await inspect().toMatchObject({ state: 'pending', started: 1, hit: expect.any(Number), nextHit: undefined });
+  await request('derived-restore-home');
+  await inspect().toMatchObject({ state: 'ready', pendingPages: 0, started: 1 });
+
+  await request('derived-share-home');
+  await inspect().toMatchObject({ shared: 'ready', started: 1 });
+  await request('derived-exit');
+  await inspect().toMatchObject({ state: 'pending', shared: 'ready', started: 1, retired: 0, hit: expect.any(Number) });
+
+  await request('derived-hold-destination');
+  try {
+    await inspect().toMatchObject({
+      destination: 'pending', started: 1, hit: expect.any(Number), nextHit: undefined,
+      admission: { published: true, cancelled: false, withdrawn: false },
+    });
+    await request('derived-cancel-destination');
+    await inspect().toMatchObject({ admission: { published: true, cancelled: true, withdrawn: false } });
+  } finally {
+    await request('derived-release-destination');
+  }
+  await inspect().toMatchObject({
+    destination: 'pending', started: 1, retired: 0, hit: expect.any(Number), nextHit: undefined,
+    admission: { withdrawn: true },
+  });
+  await request('derived-retry-destination');
+  await inspect().toMatchObject({ destination: 'ready', nextHit: expect.any(Number), started: 2 });
+  await request('derived-cancel-destination');
+  await request('derived-exit-shared');
+  await inspect().toMatchObject({ hit: undefined, nextHit: undefined, retired: 2 });
+}
+
+it.each(['local', 'Engine Worker', 'split Worker', 'first Level in split Worker', 'split Worker with live direct Skin'] as const)('runs the same cooked Level lifecycle with %s execution', async (tier) => {
+  const liveSkin = tier === 'split Worker with live direct Skin';
+  const split = tier === 'split Worker' || tier === 'first Level in split Worker' || liveSkin;
   const fixture = await commands.openLevelRuntimeFixture();
   const channel = new MessageChannel();
   let nextId = 0;
@@ -94,22 +160,36 @@ it.each(['local', 'split Worker', 'first Level in split Worker'] as const)('runs
           canvas,
           {
             execution: {
-              workers: { engine: true, render: true, kernels: false },
+              workers: { engine: true, render: split, kernels: false },
+              ...(liveSkin ? { diagnostics: { geometryLane: 'direct' } } : {}),
               bootstrap: new URL('./level-runtime-split-bootstrap.ts', import.meta.url),
               bootstrapPort: channel.port2,
-              bootstrapData: { rootGuid: fixture.rootGuid, firstLevel: tier === 'first Level in split Worker' },
+              bootstrapData: {
+                rootGuid: fixture.rootGuid,
+                firstLevel: tier === 'first Level in split Worker',
+                liveSkin,
+                ...(tier !== 'split Worker' ? {} : {
+                  runtimePacks: { scopeId: fixture.scope.scopeId, baseUrl: `${fixture.origin}/derived/` },
+                }),
+              },
               assetCatalog,
               startupTimeoutMs: 90_000,
             },
           },
           bundler,
         )).unwrap();
-    dispose = async () => { (await app.dispose()).unwrap(); };
+    dispose = async () => {
+      try {
+        (await app.dispose()).unwrap();
+      } finally {
+        app.canvas?.remove();
+      }
+    };
     let requestSource = requestWorker;
     if (tier === 'local') {
       if (app.assets === undefined) throw Error('Missing local asset registry');
       const local = installLevelFixture(
-        app.world, app.assets, app.physics, appLevelOwner(app), fixture.rootGuid,
+        app.world, app.assets, app.physics, app.levels, fixture.rootGuid,
       );
       requestSource = local.request;
       dispose = async () => {
@@ -166,7 +246,7 @@ it.each(['local', 'split Worker', 'first Level in split Worker'] as const)('runs
       await request('active');
       const shown = await when('active');
       expect(shown.hit).toBeTypeOf('number');
-      if (tier !== 'local') {
+      if (split) {
         const receipt = shown.renderSelection;
         expect(receipt?.active).toBe(true);
         if (receipt === undefined) throw Error('Missing completed Level activation receipt');
@@ -188,17 +268,29 @@ it.each(['local', 'split Worker', 'first Level in split Worker'] as const)('runs
       await request('active');
       expect((await when('active')).hit).toBeTypeOf('number');
       await expect.poll(async () => changedPixels(resized, await picture(canvas))).toBeGreaterThan(24);
+      if (tier === 'split Worker') {
+        await request('share');
+        await request('unloaded');
+        expect((await when('unloaded')).hit).toBeTypeOf('number');
+        await request('unload-shared');
+      }
       await request('unloaded');
-      expect((await when('retired')).hit).toBeUndefined();
+      expect((await when('unloaded')).hit).toBeUndefined();
       if (tier === 'split Worker') {
         await request('load');
         expect((await when('prepared')).hit).toBeUndefined();
         await request('active');
         expect((await when('active')).hit).toBeTypeOf('number');
         await request('unloaded');
-        expect((await when('retired')).hit).toBeUndefined();
+        expect((await when('unloaded')).hit).toBeUndefined();
       }
       expect(errors).toEqual([]);
+      if (tier === 'split Worker') {
+        await request('load');
+        await request('active');
+        await verifyWorldReplacement(app, request);
+        await verifyDerivedStreaming(request, () => app.execution.report().render?.completedFrame ?? 0);
+      }
     } finally {
       removeErrors();
     }

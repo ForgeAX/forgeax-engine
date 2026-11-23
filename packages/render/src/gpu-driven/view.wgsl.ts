@@ -1,5 +1,6 @@
 import { GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW } from '../gpu-scene';
 import { GPU_MATERIAL_DESCRIPTOR, GPU_MESH_DESCRIPTOR } from '../gpu-scene-inputs';
+import { GPU_SCENE_PRIMITIVE_FLAGS } from '../gpu-scene-row-encoding';
 import { GPU_SCENE_LAYOUTS, gpuSceneWgsl } from '../gpu-scene-schema';
 import { SKIN_INPUT_WGSL } from '../scene/skin-inputs.wgsl';
 import { LOD_PROJECTION_WGSL } from './lod-projection.wgsl';
@@ -282,7 +283,7 @@ fn candidatePrimitive(candidate: CandidateRecord, candidateIndex: u32) -> Primit
     primitive.flags &= ~2u;
     let descriptor = skinDemandDescriptor(candidateIndex);
     if ((descriptor.w & 1u) == 0u) { primitive.instanceCount = 0u; return primitive; }
-    if (view.capsuleDirectional != 0u && (primitive.flags & ${GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW}u) != 0u) {
+    if ((descriptor.w & 4u) == 0u && view.capsuleDirectional != 0u && (primitive.flags & ${GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW}u) != 0u) {
       let binding = candidateSkinBinding(candidate);
       let skeleton = skinRowAddress(view.skin.currentRoot, 0u, sceneInputs[binding + 2u]);
       let capsuleCount = sceneInputs[skeleton + 1u + descriptor.y * 16u];
@@ -296,8 +297,12 @@ fn candidatePrimitive(candidate: CandidateRecord, candidateIndex: u32) -> Primit
     if (geometry == 0u || geometry == 0xffffffffu || material == 0u || material == 0xffffffffu ||
         sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.positionBounds}u] != 1u) { return primitive; }
     let envelope = sceneInputs[geometry + ${GPU_MESH_DESCRIPTOR.skinEnvelopes}u];
-    let bounds = skinEnvelopeBounds(envelope, descriptor.z, descriptor.y,
+    var bounds = skinEnvelopeBounds(envelope, descriptor.z, descriptor.y,
       bitcast<f32>(sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.radius}u]));
+    if (bounds.valid != 0u && (descriptor.w & 4u) != 0u) {
+      let translation = transforms[primitive.transformIndex].currentWorld[3];
+      bounds = skinEnvelopeAffinePoint(bounds, envelope, translation);
+    }
     if (bounds.valid != 0u) {
       primitive.flags |= 2u;
       primitive.localBoundsMin = bounds.minimum;
@@ -371,7 +376,7 @@ fn isVisible(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
   // bounds still belongs in the GPU lane; keep it conservatively visible
   // instead of silently dropping a valid draw.
   if ((primitive.flags & 5u) != 5u) { return false; }
-  if ((primitive.flags & 2u) == 0u) { return true; }
+  if ((primitive.flags & 2u) == 0u || (primitive.flags & ${GPU_SCENE_PRIMITIVE_FLAGS.skipFrustum}u) != 0u) { return true; }
   let localCenter = (primitive.localBoundsMin.xyz + primitive.localBoundsMax.xyz) * 0.5;
   let localExtent = (primitive.localBoundsMax.xyz - primitive.localBoundsMin.xyz) * 0.5;
   let worldCenter = (world * vec4<f32>(localCenter, 1.0)).xyz;

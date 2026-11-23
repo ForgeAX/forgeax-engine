@@ -6,7 +6,7 @@ import { parseImage } from '@forgeax/engine-image/parse-image';
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
 import type { RenderInspection } from '@forgeax/engine-render';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Page, type Worker } from 'playwright';
 import { build, createServer, preview, type Plugin } from 'vite';
 import { expect, it } from 'vitest';
 import { runtimeBrowserLaunchOptions } from './browser-launch.js';
@@ -329,7 +329,7 @@ interface StagedMeshStorage {
     sentMs: number;
     acceptedMs: number;
     reservation: { requestedMs: number; confirmedMs: number };
-    engine: { mode: string; registryBytes: number };
+    engine: { mode: string; registryBytes: number; handoff?: 'transfer' | 'copy' };
   }[];
 }
 
@@ -429,8 +429,8 @@ function verifyStagedReplacement(
     expect(row.sentMs).toBeGreaterThanOrEqual(row.reservation.confirmedMs);
     expect(row.reservation.confirmedMs).toBeGreaterThanOrEqual(row.reservation.requestedMs);
     expect(row.acceptedMs).toBeGreaterThanOrEqual(row.sentMs);
-    expect(row.engine.mode).toBe('cpu');
-    expect(row.engine.registryBytes).toBeGreaterThan(backingFloor);
+    expect(row.engine).toMatchObject({ mode: 'render', handoff: 'transfer' });
+    expect(row.engine.registryBytes).toBeLessThan(8192);
   }
 }
 
@@ -623,7 +623,7 @@ async function verifyReloadedVisual(
   return { reloaded, pixels: pixels(png), completedFramesAfterVisibility: (await countReadyRenderFrames(page)) - frame };
 }
 
-function renderDeviceLossHook(channel: string): Plugin {
+function renderDeviceLossHook(channel: string, observeHit: boolean): Plugin {
   return {
     name: 'fixture-render-device-loss',
     enforce: 'pre',
@@ -637,6 +637,32 @@ function renderDeviceLossHook(channel: string): Plugin {
           lastDevice = await requestDevice.apply(this, args);
           return lastDevice;
         };
+        ${observeHit ? `
+          const beginRenderPass = GPUCommandEncoder.prototype.beginRenderPass;
+          const mapAsync = GPUBuffer.prototype.mapAsync;
+          const createRenderPipelineAsync = GPUDevice.prototype.createRenderPipelineAsync;
+          let hitPipelines = 0;
+          GPUDevice.prototype.createRenderPipelineAsync = async function (descriptor) {
+            const pipeline = await createRenderPipelineAsync.call(this, descriptor);
+            if (descriptor.label === 'viewport-hit-proxy') hitPipelines++;
+            return pipeline;
+          };
+          let hitPasses = 0;
+          let releaseMap;
+          GPUCommandEncoder.prototype.beginRenderPass = function (descriptor) {
+            if (descriptor.label === 'viewport-hit-pass') hitPasses++;
+            return beginRenderPass.call(this, descriptor);
+          };
+          GPUBuffer.prototype.mapAsync = function (...args) {
+            const mapped = mapAsync.apply(this, args);
+            if (this.label !== 'viewport-hit-readback' || hitPasses !== 1) return mapped;
+            return Promise.all([mapped, new Promise(resolve => { releaseMap = resolve; })]);
+          };
+          globalThis.viewportHitProof = {
+            state: () => ({ hitPasses, hitPipelines, waiting: releaseMap !== undefined }),
+            release() { releaseMap?.(); releaseMap = undefined; },
+          };
+        ` : ''}
         deviceCommand.onmessage = ({ data }) => {
           if (data !== 'destroy' || lastDevice === undefined) return;
           lastDevice.destroy();
@@ -696,9 +722,9 @@ async function checkRecoveredVisual(
   return recovered;
 }
 
-function fixturePlugins(splitRender: boolean, deviceLossChannel: string) {
+function fixturePlugins(splitRender: boolean, deviceLossChannel: string, viewportHit: boolean) {
   return [
-    ...(splitRender && meshMiB === 0 ? [renderDeviceLossHook(deviceLossChannel)] : []),
+    ...(splitRender && meshMiB === 0 ? [renderDeviceLossHook(deviceLossChannel, viewportHit)] : []),
     ...(taskPressure || replacementMeasurement ? [observeRuntimePackTaskPool(taskPressure)] : []),
     ...(replacementMeasurement ? [
       observeRuntimePackTaskMemory(`${deviceLossChannel}-replacement-memory`),
@@ -881,8 +907,65 @@ const workloadTitle = taskUnavailable
   : '%s %s %s %s generates and renders assets after Engine Worker startup';
 it.each<RuntimePackBrowserCase>(cases)(workloadTitle, (...browserCase) => runRuntimePackCase(...browserCase));
 if (meshMiB === 0 && !taskDiagnostic) {
+  it('picks a render-resident Runtime Pack Mesh across Engine and Render Workers in the direct lane', () =>
+    runRuntimePackCase(...workerRenderCase, 'viewport-hit'));
   it('production scene-group adopts Runtime Pack Mesh and collision across Engine and Render Workers', () =>
-    runRuntimePackCase(...workerRenderCase, true));
+    runRuntimePackCase(...workerRenderCase, 'scene-group'));
+  it('production Level activates and unloads a Scene generated in a Task Worker', () =>
+    runRuntimePackCase(...workerRenderCase, 'level'));
+}
+
+async function exerciseGeneratedLevel(
+  page: Page,
+  evidencePath: string,
+  deviceLossChannel: string,
+): Promise<void> {
+  const ready = await countReadyRenderFrames(page);
+  await expect.poll(() => countReadyRenderFrames(page), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(ready + 3);
+  const before = await page.screenshot();
+  expect(await call(page, 'generate', 2)).toEqual({ ok: true });
+  expect(await call(page, 'requestGeneratedLevel', 'prepared')).toMatchObject({
+    phase: 'prepared', current: true, members: 2, renderAccepted: false,
+  });
+  const active = await call(page, 'requestGeneratedLevel', 'active');
+  expect(active).toMatchObject({
+    phase: 'active', current: true, sourceAccepted: true, renderAccepted: true,
+    picture: { frameId: expect.any(Number), revision: expect.any(Number) },
+  });
+  const selected = await countReadyRenderFrames(page);
+  await expect.poll(() => countReadyRenderFrames(page), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(selected + 60);
+  const visible = await page.screenshot({ path: `${evidencePath}-visible.png` });
+  expect(visible.equals(before)).toBe(false);
+  await recoverGeneratedLevel(page, evidencePath, deviceLossChannel, visible);
+  expect(await call(page, 'requestGeneratedLevel', 'unloaded')).toMatchObject({
+    phase: 'unloaded', members: 0, sourceAccepted: false, renderAccepted: false,
+  });
+  await expect.poll(async () => (await page.screenshot()).equals(before)).toBe(true);
+}
+
+async function recoverGeneratedLevel(
+  page: Page,
+  evidencePath: string,
+  deviceLossChannel: string,
+  visible: Buffer,
+): Promise<void> {
+  const report = () => host(page, 'report') as Promise<ExecutionReport>;
+  const before = await report();
+  await destroyRenderDevice(page, deviceLossChannel);
+  await expect.poll(async () => (await report()).render, { timeout: 90_000 })
+    .toMatchObject({ state: 'alive', epoch: (before.render?.epoch ?? 0) + 1 });
+  expect((await report()).world.identity).toBe(before.world.identity);
+  expect(await call(page, 'requestGeneratedLevel', 'active')).toMatchObject({
+    phase: 'active', current: true, sourceAccepted: true, renderAccepted: true,
+    picture: { frameId: expect.any(Number), revision: expect.any(Number) },
+  });
+  const ready = await countReadyRenderFrames(page);
+  await expect.poll(() => countReadyRenderFrames(page), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(ready + 60);
+  const recovered = await page.screenshot({ path: `${evidencePath}-recovered.png` });
+  expect(recovered.equals(visible)).toBe(true);
 }
 
 async function startRuntimePackFixture(
@@ -893,6 +976,7 @@ async function startRuntimePackFixture(
   splitRender: boolean,
   deviceLossChannel: string,
   sceneGroup: boolean,
+  viewportHit: boolean,
 ) {
   const base = '/games/runtime-worker/';
   const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
@@ -944,7 +1028,7 @@ async function startRuntimePackFixture(
     base,
     configFile: false as const,
     logLevel: 'error' as const,
-    plugins: fixturePlugins(splitRender, deviceLossChannel),
+    plugins: fixturePlugins(splitRender, deviceLossChannel, viewportHit),
     define: {
       'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': '"0"',
       __FORGEAX_TEST_SCENE_GROUP__: JSON.stringify(sceneGroup),
@@ -994,13 +1078,117 @@ async function startRuntimePackFixture(
   }
 }
 
+async function proveSplitRenderWorkload({
+  page, workers, errors, scenario, deviceLossChannel, renderer, execution,
+  evidencePath, navigationStarted, engineReady, rendererReady, generatorAdmitted,
+}: {
+  page: Page;
+  workers: ReadonlySet<Worker>;
+  errors: readonly string[];
+  scenario: 'scene-group' | 'level' | 'viewport-hit' | undefined;
+  deviceLossChannel: string;
+  renderer: RuntimePackBrowserCase[3];
+  execution: RuntimePackBrowserCase[2];
+  evidencePath: string;
+  navigationStarted: number;
+  engineReady: number;
+  rendererReady: number;
+  generatorAdmitted: number;
+}): Promise<boolean> {
+  if (scenario === 'level') await exerciseGeneratedLevel(page, evidencePath, deviceLossChannel);
+  else if (scenario === 'scene-group') await exerciseSceneGroup(page, evidencePath);
+  else if (meshMiB === 0) return false;
+  else if (replacementMeasurement) {
+    await measureReplacementMemory(page, renderer, execution, evidencePath, {
+      navigationToEngineMs: engineReady - navigationStarted,
+      navigationToRendererMs: rendererReady - navigationStarted,
+      generatorAdmissionMs: generatorAdmitted - rendererReady,
+    });
+  } else await exerciseWorkload(page, renderer, execution, evidencePath);
+  expect(await host(page, 'close')).toMatchObject({ errors: [], pending: 0 });
+  await expect.poll(() => workers.size).toBe(0);
+  expect(errors).toEqual([]);
+  return true;
+}
+
+async function proveViewportHit(
+  page: Page,
+  workers: ReadonlySet<Worker>,
+  visual: unknown,
+  errors: readonly unknown[],
+  evidencePath: string,
+): Promise<void> {
+  type HitProbe = {
+    state(): { hitPasses: number; hitPipelines: number; waiting: boolean };
+    release(): void;
+  };
+  const render = [...workers].find((worker) => worker.url().includes('render-worker'));
+  if (!render) throw new Error('Expected the isolated Render Worker');
+  const state = () => render.evaluate(() => (globalThis as unknown as {
+    viewportHitProof: HitProbe;
+  }).viewportHitProof.state());
+  await expect.poll(async () => (await state()).hitPipelines).toBeGreaterThan(0);
+  const warmed = (await state()).hitPipelines;
+  expect(await state()).toEqual({ hitPasses: 0, hitPipelines: warmed, waiting: false });
+  const picking = host(page, 'pickViewport', 0.5, 0.5);
+  void picking.catch(() => undefined);
+  await expect.poll(state).toEqual({ hitPasses: 1, hitPipelines: warmed, waiting: true });
+  const heldAt = await countReadyRenderFrames(page);
+  try {
+    await expect.poll(() => countReadyRenderFrames(page)).toBeGreaterThanOrEqual(heldAt + 3);
+    expect(await state()).toEqual({ hitPasses: 1, hitPipelines: warmed, waiting: true });
+  } finally {
+    await render.evaluate(() => (globalThis as unknown as {
+      viewportHitProof: HitProbe;
+    }).viewportHitProof.release());
+  }
+  const advancedDuringRead = (await countReadyRenderFrames(page)) - heldAt;
+  const gpuPick = await picking as {
+    result: { kind: string; entity: number; frameId: number; publicationRevision: number };
+    afterFrameId: number;
+  };
+  expect(gpuPick.result, JSON.stringify(gpuPick)).toMatchObject({
+    kind: 'hit', entity: await call(page, 'visualEntity'), publicationRevision: expect.any(Number),
+  });
+  expect(gpuPick.result.frameId).toBeGreaterThan(gpuPick.afterFrameId);
+  const miss = await host(page, 'pickViewport', 0, 0);
+  expect(miss).toMatchObject({ result: { kind: 'miss' } });
+  const residencyAfter = await call(page, 'inspectVisual');
+  expect(residencyAfter).toEqual(visual);
+  expect(await call(page, 'meshSourceReady')).toBe(false);
+  expect(await host(page, 'close')).toMatchObject({ errors: [], pending: 0 });
+  await expect.poll(() => workers.size).toBe(0);
+  expect(errors).toEqual([]);
+  await writeFile(`${evidencePath}-result.json`, JSON.stringify({
+    hit: gpuPick, miss, warmed, advancedDuringRead, residencyBefore: visual, residencyAfter, errors,
+  }, null, 2));
+}
+
+function launchRuntimePackProbe(sceneGroup = false) {
+  const browserEnv = Object.fromEntries(
+    ['PATH', 'HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'XAUTHORITY'].flatMap((key) =>
+      process.env[key] === undefined ? [] : [[key, process.env[key]]],
+    ),
+  );
+  if (sceneGroup) sceneGroupStage('launch Chromium');
+  const options = runtimeBrowserLaunchOptions();
+  return chromium.launch({
+    ...options,
+    env: browserEnv,
+    args: [...options.args, '--disable-gpu-watchdog'],
+    chromiumSandbox: true,
+  });
+}
+
 async function runRuntimePackCase(
   mode: RuntimePackBrowserCase[0],
   language: RuntimePackBrowserCase[1],
   execution: RuntimePackBrowserCase[2],
   renderer: RuntimePackBrowserCase[3],
-  sceneGroup = false,
+  scenario?: 'scene-group' | 'level' | 'viewport-hit',
 ) {
+  const sceneGroup = scenario === 'scene-group';
+  const viewportHit = scenario === 'viewport-hit';
   const repository = resolve(import.meta.dirname, '../../..');
   const directory = await createLiveSyncProjectDirectory('forgeax-runtime-worker-', repository, process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST);
   const root = await realpath(directory.root);
@@ -1011,7 +1199,7 @@ async function runRuntimePackCase(
   const splitRender = renderer !== 'local-render';
   const deviceLossChannel = `fixture-render-device-loss-${crypto.randomUUID()}`;
   const evidenceName = evidenceNameOf(mode, language, execution, renderer) +
-    (sceneGroup ? '-scene-group' : '');
+    (scenario === undefined ? '' : `-${scenario}`);
   let fixture: Awaited<ReturnType<typeof startRuntimePackFixture>> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   const errors: string[] = [];
@@ -1025,28 +1213,14 @@ async function runRuntimePackCase(
       splitRender,
       deviceLossChannel,
       sceneGroup,
+      viewportHit,
     );
     const { url } = fixture;
     if (!url) throw new Error('Vite URL unavailable');
-    const browserEnv = Object.fromEntries(
-      ['PATH', 'HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'XAUTHORITY'].flatMap((key) =>
-        process.env[key] === undefined ? [] : [[key, process.env[key]]],
-      ),
-    );
-    const launch = () => {
-      const options = runtimeBrowserLaunchOptions();
-      return chromium.launch({
-        ...options,
-        env: browserEnv,
-        args: [...options.args, '--disable-gpu-watchdog'],
-        chromiumSandbox: true,
-      });
-    };
-    if (sceneGroup) sceneGroupStage('launch Chromium');
-    browser = await launch();
+    browser = await launchRuntimePackProbe(sceneGroup);
     const page = await browser.newPage({ viewport: { width: 384, height: 384 } });
     await installFixturePageHooks(page, splitRender);
-    const workers = new Set();
+    const workers = new Set<Worker>();
     const watch = (page: Page) => {
       page.on('worker', (worker) => {
         workers.add(worker);
@@ -1073,6 +1247,7 @@ async function runRuntimePackCase(
       taskPressure,
       renderMeshBudget,
       replacementMeasurement ? `${deviceLossChannel}-replacement-memory` : undefined,
+      viewportHit,
     );
     expect(opened).toMatchObject({ engine: { realm: 'worker', health: 'running' }, fault: null });
     const engineReady = performance.now();
@@ -1093,37 +1268,20 @@ async function runRuntimePackCase(
       if (sceneGroup) sceneGroupStage('admit the Task Worker generator');
       await admit();
       const generatorAdmitted = performance.now();
-      if (sceneGroup) {
-        await exerciseSceneGroup(page, resolve(evidence, evidenceName));
-        expect(await host(page, 'close')).toMatchObject({ errors: [], pending: 0 });
-        await expect.poll(() => workers.size).toBe(0);
-        expect(errors).toEqual([]);
-        return;
-      }
-      if (meshMiB > 0) {
-        const path = resolve(evidence, evidenceName);
-        if (replacementMeasurement) {
-          await measureReplacementMemory(page, renderer, execution, path, {
-            navigationToEngineMs: engineReady - navigationStarted,
-            navigationToRendererMs: rendererReady - navigationStarted,
-            generatorAdmissionMs: generatorAdmitted - rendererReady,
-          });
-        } else {
-          await exerciseWorkload(page, renderer, execution, path);
-        }
-        expect(await host(page, 'close')).toMatchObject({ errors: [], pending: 0 });
-        await expect.poll(() => workers.size).toBe(0);
-        expect(errors).toEqual([]);
-        return;
-      }
+      if (await proveSplitRenderWorkload({
+        page, workers, errors, scenario, deviceLossChannel, renderer, execution,
+        evidencePath: resolve(evidence, evidenceName),
+        navigationStarted, engineReady, rendererReady, generatorAdmitted,
+      })) return;
       expect(await call(page, 'generate', 2)).toEqual({ ok: true });
       expect(await call(page, 'meshSourceReady')).toBe(false);
       const visual = await call(page, 'mountVisual') as {
         handle: number; revision: number; guid: string; read: string;
-        residency: { mode: string; recoveryArtifactBytes: number; recoveryArtifactStorage?: string };
+        residency: { mode: string; recoveryArtifactBytes: number; recoveryArtifactStorage?: string; handoff?: string };
       };
       expect(visual.read).toBe('asset-cpu-data-unavailable');
       expect(visual.residency.mode).toBe('render');
+      if (execution === 'task-worker') expect(visual.residency.handoff).toBe('transfer');
       expect(visual.residency.recoveryArtifactBytes).toBeGreaterThan(0);
       expect(visual.residency.recoveryArtifactStorage).toBe('publication');
       expect(await call(page, 'meshSourceReady')).toBe(false);
@@ -1137,6 +1295,9 @@ async function runRuntimePackCase(
       expect(await call(page, 'pickVisual')).toMatchObject({
         status: 'unavailable', reason: 'cpu-geometry-unavailable', boundsHit: true,
       });
+      if (viewportHit) {
+        return await proveViewportHit(page, workers, visual, errors, resolve(evidence, evidenceName));
+      }
       await assertCancelledBuild(page);
       await assertFailedTaskProgram(page);
       // The active Mesh still uses width 2 after its source publishes width 4.
@@ -1315,7 +1476,7 @@ async function runRuntimePackCase(
       // No generated program has been admitted in this new browser yet.
       await browser.close();
       expect(browser.isConnected()).toBe(false);
-      browser = await launch();
+      browser = await launchRuntimePackProbe();
       const context = await browser.newContext({ viewport: { width: 384, height: 384 } });
       const restored = await context.newPage();
       watch(restored);

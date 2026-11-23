@@ -170,7 +170,7 @@ describe('ReflectionProbe global diffuse availability', () => {
   };
   function ready(f: ReturnType<typeof fixture>) {
     const output = {
-      irradianceView: {},
+      skySh: {},
       prefilterView: {},
       brdfLutView: {},
     } as IblPrecomputeOutput;

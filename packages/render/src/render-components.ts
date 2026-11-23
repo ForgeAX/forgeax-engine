@@ -19,6 +19,7 @@ import { LensEffects } from './components/lens-effects';
 import { LensFlare } from './components/lens-flare';
 import { LightProbe } from './components/light-probe';
 import { Lines } from './components/lines';
+import { MeshDrawParameters } from './components/mesh-draw-parameters';
 import { MeshFilter } from './components/mesh-filter';
 import { MeshRenderer } from './components/mesh-renderer';
 import { MotionBlur } from './components/motion-blur';
@@ -73,6 +74,7 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   Instances,
   Layer,
   LightProbe,
+  MeshDrawParameters,
   MeshFilter,
   Terrain,
   MeshRenderer,

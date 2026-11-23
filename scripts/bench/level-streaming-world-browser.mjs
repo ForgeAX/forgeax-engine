@@ -18,11 +18,25 @@ const cruise = document.querySelector('#cruise');
 const error = document.querySelector('#error');
 const context = map.getContext('2d');
 const channel = new MessageChannel();
+document.addEventListener('pine-basin-command', ({ detail }) => channel.port1.postMessage(detail));
 let app;
 let firstFrame = false;
 let latest;
 let failure;
 let cruiseRequested = false;
+
+document.addEventListener('pine-basin-measure-residency', () => {
+  if (app?.remoteEval === undefined) return;
+  void app.remoteEval("return await execution.inspectRenderer({ fields: ['meshResidency'] })").then(
+    (result) => document.dispatchEvent(new CustomEvent('pine-basin-residency', { detail: result })),
+    (cause) =>
+      document.dispatchEvent(
+        new CustomEvent('pine-basin-residency', {
+          detail: { ok: false, error: String(cause) },
+        }),
+      ),
+  );
+});
 
 function drawMap(state) {
   const width = map.width;
@@ -131,7 +145,7 @@ window.addEventListener(
 try {
   const response = await fetch('/__level/play/fixture');
   if (!response.ok) throw Error((await response.json()).error);
-  const { manifest, catalogUrl, expectedScope } = await response.json();
+  const { manifest, wildlife, catalogUrl, expectedScope } = await response.json();
   app = (
     await createApp(
       canvas,
@@ -141,7 +155,7 @@ try {
           diagnostics: { geometryLane: 'direct' },
           bootstrap: new URL('./level-streaming-world-bootstrap.mjs', import.meta.url),
           bootstrapPort: channel.port2,
-          bootstrapData: { manifest },
+          bootstrapData: { manifest, wildlife },
           assetCatalog: { url: catalogUrl, expectedScope },
           startupTimeoutMs: 90_000,
         },

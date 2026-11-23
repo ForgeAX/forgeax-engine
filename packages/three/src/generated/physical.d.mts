@@ -1,1 +1,1 @@
-export const physicalPrograms: string;
+export declare const physicalIndex: Readonly<Record<string, string>>;

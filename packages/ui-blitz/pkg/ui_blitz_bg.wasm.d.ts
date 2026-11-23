@@ -21,6 +21,7 @@ export const uidocument_hit: (a: number, b: number, c: number) => [bigint, numbe
 export const uidocument_inner_html: (a: number, b: bigint) => [number, number, number, number];
 export const uidocument_input_bad_input: (a: number, b: bigint) => [number, number, number];
 export const uidocument_input_checked: (a: number, b: bigint) => [number, number, number];
+export const uidocument_input_selection: (a: number, b: bigint) => [number, number, number, number];
 export const uidocument_input_step: (a: number, b: bigint, c: number) => [number, number];
 export const uidocument_input_text: (a: number, b: bigint) => [number, number, number, number];
 export const uidocument_input_value: (a: number, b: bigint) => [number, number, number, number];
@@ -64,6 +65,7 @@ export const uidocument_set_attribute: (a: number, b: bigint, c: number, d: numb
 export const uidocument_set_hover: (a: number, b: bigint) => [number, number];
 export const uidocument_set_inner_html: (a: number, b: bigint, c: number, d: number) => [number, number];
 export const uidocument_set_input_checked: (a: number, b: bigint, c: number) => [number, number];
+export const uidocument_set_input_selection: (a: number, b: bigint, c: number, d: number) => [number, number];
 export const uidocument_set_input_text: (a: number, b: bigint, c: number, d: number) => [number, number, number];
 export const uidocument_set_input_value: (a: number, b: bigint, c: number, d: number) => [number, number];
 export const uidocument_set_option_selected: (a: number, b: bigint, c: number) => [number, number];

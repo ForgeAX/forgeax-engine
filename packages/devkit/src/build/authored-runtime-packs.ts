@@ -3,7 +3,7 @@ import { dirname, relative, resolve } from 'node:path';
 import type { AuthoredRuntimePack } from '@forgeax/engine-app';
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
 import type { ScanSourceDeclaration } from '@forgeax/engine-pack/scanner';
-import { PackageId, projectScriptablePackMeta } from '@forgeax/engine-pack/source';
+import { projectScriptablePackMeta } from '@forgeax/engine-pack/source';
 import type { ScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { normalizePath } from 'vite';
 import type { BuildOptions } from '../types.js';
@@ -25,6 +25,16 @@ export function authoredRuntimePackImports(
   ];
 }
 
+/** Record the Engine build that sealed the authored programs. */
+export function authoredRuntimePackIdentity(
+  packs: readonly AuthoredRuntimePack[],
+): string | undefined {
+  const identities = new Set(packs.flatMap(({ program }) => Object.values(program.imports ?? {})));
+  if (identities.size > 1)
+    throw new Error('Authored Runtime Packs were sealed against different Engine builds.');
+  return identities.values().next().value;
+}
+
 /** Prepare the named generator from the same immutable source scan as the built outputs. */
 export async function prepareAuthoredRuntimePacks(
   projectRoot: string,
@@ -33,7 +43,6 @@ export async function prepareAuthoredRuntimePacks(
   target?: BuildOptions['target'],
 ): Promise<{
   readonly packs: readonly AuthoredRuntimePack[];
-  readonly cooked: ReadonlySet<string>;
 }> {
   const resolveImport = createNodePackProgramResolver(projectRoot);
   const identities = new Map<string, Promise<string>>();
@@ -48,27 +57,18 @@ export async function prepareAuthoredRuntimePacks(
     return bound;
   };
   const prepared: AuthoredRuntimePack[] = [];
-  const cooked = new Set<string>();
   for (const declaration of declarations.values()) {
     if (declaration.format !== 'pack.ts') continue;
     const { definition, sourcePath } = declaration;
     const runtime = definition.runtime;
     if (runtime?.export === undefined) continue;
-    if (target === 'wechat') {
-      if (runtime.fallback !== 'build') {
-        throw Object.assign(
-          new TypeError(`Runtime Pack has no Task Worker carrier: ${sourcePath}`),
-          {
-            code: 'runtime-pack-task-worker-unavailable',
-            expected: 'a Task Worker carrier or explicit offline generation',
-            hint: 'choose a Worker-capable target or declare runtime.fallback: build',
-            detail: { sourcePath },
-          },
-        );
-      }
-      cooked.add(PackageId.format(definition.packageId));
-      continue;
-    }
+    if (target === 'wechat' && runtime.execution === 'task-worker')
+      throw Object.assign(new TypeError(`Runtime Pack has no Task Worker carrier: ${sourcePath}`), {
+        code: 'runtime-pack-task-worker-unavailable',
+        expected: 'a target with a Task Worker carrier for authored Runtime Packs',
+        hint: 'choose a Worker-capable target or allow execution in the game realm',
+        detail: { sourcePath, target },
+      });
     const { entry, sources } = await snapshot.moduleSources(sourcePath);
     const projectPath = (path: string) => normalizePath(relative(projectRoot, path));
     const displayPath = projectPath(entry);
@@ -108,7 +108,7 @@ export async function prepareAuthoredRuntimePacks(
       program: program.value,
     });
   }
-  return { packs: prepared, cooked };
+  return { packs: prepared };
 }
 
 export function authoredRuntimePackDeclarations(packs: readonly AuthoredRuntimePack[]): string {

@@ -7,19 +7,20 @@ import { verifyRayPath } from './path-tracer.fixture';
 import { verifySurfaceAndBsdf } from './surface-bsdf.fixture';
 
 it('traces shared materials and replays warm accumulation on a fresh Dawn device', async () => {
-  const fixture = await prepareRayPathFixture();
-  const independent = await prepareRayPathFixture();
+  const materials = ['cutout', 'matte'] as const;
+  const fixture = await prepareRayPathFixture(materials);
+  const independent = await prepareRayPathFixture(materials);
   independent.kernel = 'consumer mutation';
   const material = independent.materials[0];
   expect(material).toBeDefined();
   if (material !== undefined) material.publication.program = 'consumer mutation';
   independent.materials.pop();
-  expect(await prepareRayPathFixture()).toEqual(fixture);
+  expect(await prepareRayPathFixture(materials)).toEqual(fixture);
   const result = await verifyRayPath(fixture);
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
   if (dir) {
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'prepared.json'), JSON.stringify(fixture));
+    await writeFile(join(dir, 'prepared.json'), JSON.stringify(await prepareRayPathFixture()));
     await writeFile(join(dir, 'path-tracer.rhitape'), result.bytes);
     await writeFile(join(dir, 'path-live.bin'), result.live);
     await writeFile(join(dir, 'path-summary.json'), JSON.stringify(result.results, null, 2));
@@ -27,14 +28,16 @@ it('traces shared materials and replays warm accumulation on a fresh Dawn device
 }, 120000);
 
 it('matches raster/ray texture footprints and BSDF quadrature', async () => {
-  await verifySurfaceAndBsdf(await prepareRayPathFixture());
+  await verifySurfaceAndBsdf(await prepareRayPathFixture(['textured', 'normalMapped']));
 }, 120000);
 
 it('validates analytic shadows, emission, material edits and indirect emitter hits', async () => {
-  await verifyPathLighting(await prepareRayPathFixture());
+  await verifyPathLighting(await prepareRayPathFixture(['matte', 'emission', 'textured']));
 }, 120000);
 it('renders the bounded reference gallery', async () => {
-  const result = await renderPathGallery(await prepareRayPathFixture());
+  const result = await renderPathGallery(
+    await prepareRayPathFixture(['matte', 'metal', 'emission']),
+  );
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
   if (dir) {
     await mkdir(dir, { recursive: true });
@@ -46,7 +49,7 @@ it('preserves geometric and shading frames through mirrored traversal, cards and
   const { verifyNormalFrame } = await import('./normal-frame.fixture');
   const { prepareSdfCardsFixture } = await import('./sdf-cards.commands');
   const result = await verifyNormalFrame(
-    await prepareRayPathFixture(),
+    await prepareRayPathFixture([]),
     await prepareSdfCardsFixture(),
   );
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
@@ -59,13 +62,16 @@ it('preserves geometric and shading frames through mirrored traversal, cards and
 
 it('resolves masked primary and shadow candidates without skipping coplanar surfaces', async () => {
   const { verifyCoverage } = await import('./coverage.fixture');
-  const result = await verifyCoverage(await prepareRayPathFixture(), async (bytes) => {
-    const dir = process.env.FORGEAX_RAY_EVIDENCE;
-    if (dir) {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, 'coverage.rhitape'), bytes);
-    }
-  });
+  const result = await verifyCoverage(
+    await prepareRayPathFixture(['cutout', 'white']),
+    async (bytes) => {
+      const dir = process.env.FORGEAX_RAY_EVIDENCE;
+      if (dir) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, 'coverage.rhitape'), bytes);
+      }
+    },
+  );
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
   if (dir) {
     await mkdir(dir, { recursive: true });
@@ -79,15 +85,15 @@ it('resolves masked primary and shadow candidates without skipping coplanar surf
 
 it('resolves external raster receiver rays with shared materials and fresh replay in dawn', async () => {
   const { verifyInitialPathRays } = await import('./path-source.fixture');
-  await verifyInitialPathRays(await prepareRayPathFixture());
+  await verifyInitialPathRays(await prepareRayPathFixture(['emission']));
 }, 120000);
 
 it('separates the diffuse receiver from the full BSDF under an open-sky white furnace', async () => {
   const { verifyPathReceiver } = await import('./path-receiver.fixture');
-  await verifyPathReceiver(await prepareRayPathFixture());
+  await verifyPathReceiver(await prepareRayPathFixture(['white', 'matte', 'metal']));
 }, 120000);
 
 it('matches cold ray transport after refitting and uploading only changed scene rows', async () => {
   const { verifyRaySceneRefit } = await import('./scene-refit.gpu-fixture');
-  await verifyRaySceneRefit(await prepareRayPathFixture());
+  await verifyRaySceneRefit(await prepareRayPathFixture(['matte']));
 }, 120000);

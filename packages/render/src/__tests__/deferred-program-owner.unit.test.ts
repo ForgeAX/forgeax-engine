@@ -18,10 +18,6 @@ import { buildReflectionProbeTable, type ReflectionProbeTableRow } from '../refl
 import type { RenderPipelineFrame } from '../render-pipeline';
 
 vi.mock('../record/frame-lighting', () => ({
-  resolveReflectionProbeBinding: vi.fn((selection, table) => ({
-    probeIndex: table?.cpuIndexByPrimitive(String(selection.entityKey)),
-    useSkylight: selection.kind === 'skylight',
-  })),
   buildPerFrameBindGroups: vi.fn(),
   buildViewBindGroup: vi.fn(),
 }));
@@ -50,14 +46,15 @@ async function fixture() {
   vi.mocked(buildViewBindGroup).mockImplementation(() => group);
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
-      irradianceView: view,
+      skySh: buffer,
+      irradianceSampler: sampler,
       prefilterView: view,
       brdfLutView: view,
-      irradianceSampler: sampler,
       prefilterSampler: sampler,
       intensityBuffer: buffer,
     },
-  } as ReturnType<typeof prepareMaterialSkylight>);
+    activeViews: undefined,
+  });
   const frame = {
     runtime: {
       device,
@@ -203,7 +200,7 @@ it('waits for CPU source preparation before reading the selected shader or creat
   try {
     const render = f.build();
     render.prepareSource();
-    expect(prepareDeferredLighting).toHaveBeenCalledExactlyOnceWith(false, false);
+    expect(prepareDeferredLighting).toHaveBeenCalledExactlyOnceWith(false, false, 0);
     expect(read).not.toHaveBeenCalled();
     expect(f.makePipeline).not.toHaveBeenCalled();
     render.prepare();
@@ -294,17 +291,18 @@ it('retains only immutable lighting programs across graph/extent changes and reb
   const f = await fixture();
   try {
     const first = f.build()();
-    const groups = vi.mocked(f.context.pass.setBindGroup).mock.calls.map(([, group]) => group);
+    const bindings = vi.mocked(f.context.pass.setBindGroup).mock.calls;
+    expect(bindings.map(([slot]) => slot)).toEqual([0, 1]);
+    const groups = bindings.map(([, group]) => group);
     expect(f.build({ width: 1280 })()).toBe(first);
     expect(f.makePipeline).toHaveBeenCalledOnce();
     const next = vi
       .mocked(f.context.pass.setBindGroup)
-      .mock.calls.slice(4)
+      .mock.calls.slice(groups.length)
       .map(([, group]) => group);
     expect(next[0]).toBe(groups[0]);
     expect(next[1]).not.toBe(groups[1]);
-    expect(next[2]).not.toBe(groups[2]);
-    expect(next[3]).not.toBe(groups[3]);
+    expect(next).toHaveLength(groups.length);
     expect(f.context.pass.draw).toHaveBeenCalledTimes(2);
   } finally {
     f.dispose();
@@ -496,7 +494,7 @@ it.each([
     Object.assign(f.device.limits, {
       maxSampledTexturesPerShaderStage:
         textureLimit === 'one-class'
-          ? 11 +
+          ? 10 +
             buildPbrViewBglEntries({ storageBuffer: f.device.caps.storageBuffer }).filter(
               (entry) => (entry.visibility & 2) !== 0 && entry.texture !== undefined,
             ).length
@@ -532,7 +530,7 @@ it.each([
         {
           name: 'vs_standard_deferred_reflection_overflow',
           stage: 'vertex',
-          bindings: [{ group: 3, binding: 3 }],
+          bindings: [],
         },
         {
           name: 'fs_standard_deferred_reflections_overflow',
@@ -575,7 +573,6 @@ it.each([
           generation: mixedGeneration === true ? i + 1 : 1,
           size: 64 << slot,
           format: 'rgba16float',
-          diffusePayload: [0.5, 1, 2, i * 2 + 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 1],
         },
       };
     });
@@ -628,7 +625,7 @@ it.each([
       for (let index = 1; index < draws; index++) {
         expect(f.context.pass.draw).toHaveBeenNthCalledWith(
           index + 1,
-          6,
+          3,
           1,
           0,
           expectedArrays + index - 1,
@@ -655,9 +652,9 @@ it.each([
     } else {
       expect(table).toBeInstanceOf(Float32Array);
       const floats = table as Float32Array;
-      expect([...floats.slice(16, 24)]).toEqual([0, 2, 3, -2, 4, 5, 6, 64]);
-      expect([...floats.slice(24, 32)]).toEqual(Array(8).fill(0));
-      expect([...floats.slice(32, 40)]).toEqual([
+      expect([...floats.slice(0, 8)]).toEqual([0, 2, 3, -2, 4, 5, 6, 64]);
+      expect([...floats.slice(8, 16)]).toEqual(Array(8).fill(0));
+      expect([...floats.slice(16, 24)]).toEqual([
         1,
         2,
         3,

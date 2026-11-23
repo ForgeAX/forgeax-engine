@@ -33,18 +33,20 @@ export function publicationCanvasFrames(
       for (const source of sources) {
         if (!isCanvasTextureSource(source) || frames.has(renderTextureSourceKey(source))) continue;
         const state = canvasTextureState(source);
+        const image = state?.frame ?? state?.canvas;
         const live =
           state !== undefined &&
           !state.lifetime.signal.aborted &&
-          state.canvas.width > 0 &&
-          state.canvas.height > 0;
+          image !== undefined &&
+          ('displayWidth' in image ? image.displayWidth : image.width) > 0 &&
+          ('displayHeight' in image ? image.displayHeight : image.height) > 0;
         frames.set(renderTextureSourceKey(source), {
           id: renderTextureSourceKey(source),
           version: state?.version ?? 1,
           flipY: state?.flipY ?? false,
           disposed: state === undefined || state.lifetime.signal.aborted,
           ...(live
-            ? { frame: new VideoFrame(state.canvas, { timestamp: state.version, alpha: 'keep' }) }
+            ? { frame: new VideoFrame(image, { timestamp: state.version, alpha: 'keep' }) }
             : {}),
         });
       }

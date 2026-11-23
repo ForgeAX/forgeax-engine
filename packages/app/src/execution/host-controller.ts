@@ -34,7 +34,7 @@ import {
   type ExecutionFaultMessage,
   type ExecutionFrameMessage,
   FrameCreditLedger,
-  forwardPipelineLibraries,
+  forwardPipelinePreparation,
   forwardResourceBudgets,
   renderPipelineCapacityOf,
 } from './protocol';
@@ -174,7 +174,7 @@ export async function createWorkerExecutionApp(
         ? {}
         : { diagnostics: executionOptions.diagnostics }),
       ...forwardGpuStub(options.appOptions),
-      ...forwardPipelineLibraries(options.appOptions),
+      ...forwardPipelinePreparation(options.appOptions),
       ...(options.appOptions.outputColorSpace === undefined
         ? {}
         : { outputColorSpace: options.appOptions.outputColorSpace }),
@@ -1053,7 +1053,7 @@ export async function createWorkerExecutionApp(
         kind: 'render-replace',
         epoch: renderEpoch,
         canvas: offscreen,
-        ...forwardPipelineLibraries(options.appOptions),
+        ...forwardPipelinePreparation(options.appOptions),
       },
       [offscreen],
     );

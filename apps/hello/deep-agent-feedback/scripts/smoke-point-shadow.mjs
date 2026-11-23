@@ -299,10 +299,23 @@ try {
   });
   let frames = 0;
   let receipt;
+  let pointPasses = [];
   for (let frame = 0; frame < frameTarget; frame += 1) {
     world.update(1 / 60).unwrap();
     receipt = await drawReadyFrame(renderer, { source: attachment.value });
     frames += 1;
+    // Retained depth views may already be current on the last completed frame.
+    const names = renderer.inspect({ fields: ['perFramePassNames'] }).perFramePassNames;
+    const pointFaces = names.filter((name) => /^point-shadow-\d+-\d+$/.test(name));
+    if (pointFaces.length > pointPasses.length) pointPasses = pointFaces;
+    for (const name of names) {
+      if (
+        (name === 'shadowCascade0' || name === 'directional-shadow-observation') &&
+        !directionalPassNames.includes(name)
+      ) {
+        directionalPassNames.push(name);
+      }
+    }
   }
   if (receipt === undefined) throw new Error('point-shadow smoke: no FrameReceipt');
   await sharedDevice?.queue.onSubmittedWorkDone();
@@ -316,12 +329,7 @@ try {
   assert.equal(pointShadow.shadowed, 1);
   assert.equal(pointShadow.shadowAtlasOccupancy, 1);
   assert.equal(pointShadow.shadowAtlasCapacity, atlasCapacity);
-  // Each face may also record retained static-layer passes (`.static`, `.static-copy`).
-  const pointPasses = inspection.perFramePassNames.filter((name) => /^point-shadow-\d+-\d+$/.test(name));
   assert.equal(pointPasses.length, 6, `expected one point light x six faces, got ${pointPasses.length}`);
-  directionalPassNames = inspection.perFramePassNames.filter(
-    (name) => name === 'shadowCascade0' || name === 'directional-shadow-observation',
-  );
   assert.ok(directionalPassNames.includes('shadowCascade0'), 'directional CSM pass must be real');
   assert.ok(
     directionalPassNames.includes('directional-shadow-observation'),

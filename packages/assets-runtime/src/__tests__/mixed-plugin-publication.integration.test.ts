@@ -1,11 +1,10 @@
 import {
-  createRuntimePackPublication,
   type FixedPackExecution,
   preparePackProgram,
   validateFixedPackPublication,
 } from '@forgeax/engine-pack/runtime';
 import type { PluginBuildTarget } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import {
   createFixedRuntimePackSnapshot,
   RuntimePackProducer,
@@ -14,6 +13,7 @@ import { captureAssetPublication } from '../capture-publication.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
+import { catalogPack } from './fixtures/catalog-pack';
 import { runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const backend = '01900000-0000-7000-8000-000000000995';
@@ -21,21 +21,21 @@ const frontend = '01900000-0000-7000-8000-000000000996';
 const shared = '01900000-0000-7000-8000-000000000997';
 
 function fixture() {
-  const publication = createRuntimePackPublication({
-    scopeId: 'original',
-    sourcePath: 'mixed.pack.json',
-    sourceRevision: 'mixed',
-    packageUrl: 'https://original.invalid/mixed.pack.json',
-    pack: {
-      assets: [backend, frontend, shared].map((guid) => ({
-        guid,
-        kind: 'plugin',
-        payload: { kind: 'plugin', program: guid === shared ? 'shared' : guid },
-        refs: [],
-        artifacts: {},
-      })),
+  const publication = catalogPack(
+    [backend, frontend, shared].map((guid) => ({
+      guid,
+      kind: 'plugin',
+      payload: { kind: 'plugin', program: guid === shared ? 'shared' : guid },
+      refs: [],
+      artifacts: {},
+    })),
+    {
+      scopeId: 'original',
+      sourcePath: 'mixed.pack.json',
+      sourceRevision: 'mixed',
+      packageUrl: 'https://original.invalid/mixed.pack.json',
     },
-  });
+  );
   const rows = publication.publication.outputs.map((output) => ({
     guid: output.guid,
     kind: output.kind,
@@ -113,19 +113,16 @@ it('captures all realm attachments without conflating same program keys or evalu
     validate: async (state, fetcher) =>
       validateAssetPublication(state.rows, fetcher, undefined, { decoders: runtimePackDecoders }),
   });
-  try {
-    // Backend bytes remain durable but do not require Node capabilities here.
-    expect((await producer.restore(snapshot)).ok).toBe(true);
-    expect(producer.rows()).toHaveLength(3);
-    const saved = producer.snapshot();
-    expect(
-      Object.values(saved.closure?.recipes ?? {}).some(
-        (recipe) => 'fixed' in recipe && recipe.fixed.executions?.host?.programs.shared,
-      ),
-    ).toBe(true);
-  } finally {
-    producer.dispose();
-  }
+  onTestFinished(() => producer.dispose());
+  // Backend bytes remain durable but do not require Node capabilities here.
+  expect((await producer.restore(snapshot)).ok).toBe(true);
+  expect(producer.rows()).toHaveLength(3);
+  const saved = producer.snapshot();
+  expect(
+    Object.values(saved.closure?.recipes ?? {}).some(
+      (recipe) => 'fixed' in recipe && recipe.fixed.executions?.host?.programs.shared,
+    ),
+  ).toBe(true);
 });
 
 it.each([

@@ -1,5 +1,5 @@
 import { ok, type SamplerAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { prepareRuntimePackContent, RuntimePackProducer } from '../runtime-pack';
 
 const packageId = '01900000-0000-7000-8000-000000000198';
@@ -21,23 +21,20 @@ describe('Runtime Pack publication reentrancy', () => {
         else producer.dispose();
       },
     });
-    try {
-      const first = (
-        await producer.admit((await prepareRuntimePackContent(packageId, { sampler })).unwrap())
-      ).unwrap();
-      expect(first.rows).toHaveLength(1);
-      if (!first.publication) throw new Error('missing accepted publication');
-      sampler = { kind: 'sampler', minFilter: 'linear' };
-      const candidate = (await prepareRuntimePackContent(packageId, { sampler })).unwrap();
-      interrupt = true;
-      const result = await producer.replace(candidate, first.publication);
-      expect(result).toMatchObject({ ok: false, error: { code: 'runtime-pack-cancelled' } });
-      expect(producer.rows()).toEqual([]);
-      expect(producer.snapshot().packs).toEqual([]);
-      if (action === 'withdraw') expect((await producer.admit(candidate)).ok).toBe(true);
-    } finally {
-      producer.dispose();
-    }
+    onTestFinished(() => producer.dispose());
+    const first = (
+      await producer.admit((await prepareRuntimePackContent(packageId, { sampler })).unwrap())
+    ).unwrap();
+    expect(first.rows).toHaveLength(1);
+    if (!first.publication) throw new Error('missing accepted publication');
+    sampler = { kind: 'sampler', minFilter: 'linear' };
+    const candidate = (await prepareRuntimePackContent(packageId, { sampler })).unwrap();
+    interrupt = true;
+    const result = await producer.replace(candidate, first.publication);
+    expect(result).toMatchObject({ ok: false, error: { code: 'runtime-pack-cancelled' } });
+    expect(producer.rows()).toEqual([]);
+    expect(producer.snapshot().packs).toEqual([]);
+    if (action === 'withdraw') expect((await producer.admit(candidate)).ok).toBe(true);
   });
 
   it('cancels a first admission withdrawn synchronously before visibility', async () => {
@@ -52,15 +49,12 @@ describe('Runtime Pack publication reentrancy', () => {
         producer.withdraw(packageId);
       },
     });
-    try {
-      const result = await producer.admit(
-        (await prepareRuntimePackContent(packageId, { sampler })).unwrap(),
-      );
-      expect(result).toMatchObject({ ok: false, error: { code: 'runtime-pack-cancelled' } });
-      expect(producer.rows()).toEqual([]);
-      expect(producer.snapshot().packs).toEqual([]);
-    } finally {
-      producer.dispose();
-    }
+    onTestFinished(() => producer.dispose());
+    const result = await producer.admit(
+      (await prepareRuntimePackContent(packageId, { sampler })).unwrap(),
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: 'runtime-pack-cancelled' } });
+    expect(producer.rows()).toEqual([]);
+    expect(producer.snapshot().packs).toEqual([]);
   });
 });

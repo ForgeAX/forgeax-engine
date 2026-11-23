@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { scan } from '../scanner.js';
 
 const EMPTY_PACK = JSON.stringify({
-  schemaVersion: '1.0.0',
-  kind: 'internal-text-package',
-  assets: [],
+  schemaVersion: '3.0.0',
+  packageId: '019e3800-0000-7000-8000-73742e747331',
+  assets: {},
 });
 
 describe('asset scanner test-directory boundary', () => {

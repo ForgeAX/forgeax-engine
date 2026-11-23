@@ -113,7 +113,10 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
         const file = event.target.files?.[0]; event.target.value = '';
         if (file) void act(async () => {
           const value = JSON.parse(await file.text());
-          return value.schemaVersion === 'runtime-pack-source/2' ? call('restore', { snapshot: value }) : call('admit', { content: value });
+          if (value?.schemaVersion === 'runtime-pack-source/2' || value?.schemaVersion === 'runtime-pack-source/3') {
+            return call('restore', { snapshot: value });
+          }
+          return call('admit', { content: value });
         });
       }} />
     </Toolbar>

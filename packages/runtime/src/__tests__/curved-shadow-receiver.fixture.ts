@@ -8,6 +8,7 @@ import { quat } from '@forgeax/engine-math';
 import {
   Camera,
   DirectionalLight,
+  DirectionalShadowFilterValue,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -40,7 +41,7 @@ interface ReceiverCase {
 export const CURVED_SHADOW_CASES: readonly ReceiverCase[] = (['wave', 'fold'] as const).flatMap(
   (kind) =>
     [512, 2048].flatMap((mapSize) =>
-      [1, 2, 3, 4, 5, 6, 7, 8].flatMap((filter) =>
+      Object.values(DirectionalShadowFilterValue).flatMap((filter) =>
         (['forward', 'deferred'] as const).map((renderPath) => ({
           kind,
           mapSize,
@@ -49,6 +50,18 @@ export const CURVED_SHADOW_CASES: readonly ReceiverCase[] = (['wave', 'fold'] as
         })),
       ),
     ),
+);
+
+/** Keep both render paths per filter, with complementary receivers and map sizes. */
+export const CURVED_SHADOW_REPRESENTATIVES = CURVED_SHADOW_CASES.filter(
+  ({ kind, mapSize, filter, renderPath }) => {
+    const forward = renderPath === 'forward';
+    const even = filter % 2 === 0;
+    const large = filter % 4 < 2;
+    return (
+      kind === (even === forward ? 'wave' : 'fold') && mapSize === (large === forward ? 2048 : 512)
+    );
+  },
 );
 
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {

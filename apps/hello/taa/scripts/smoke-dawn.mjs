@@ -858,6 +858,11 @@ const { renderer, assets: sceneAssets, errors } = await bootRenderer({
   mockCanvas: shim.mockCanvas,
   shaderManifestUrl,
 });
+// The unlit motion carrier measures resource creation across the MotionBlur toggle.
+renderer.setProfile({
+  ...renderer.inspect().profile,
+  ambientOcclusion: { enabled: false },
+}).unwrap();
 const world = new World({ assets: sceneAssets });
 const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 // Keep the Dawn camera-pan carrier visually falsifiable. A single solid cube

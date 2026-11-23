@@ -5,18 +5,10 @@ import {
   type MaterialCookProgram,
   type MaterialCookRasterContext,
 } from '../evidence/material-cook.js';
+import { forwardRasterContext } from './support/material-raster-context.js';
 
 it('preserves the program manifest digest across sorting and byte transport', () => {
-  const context: MaterialCookRasterContext = {
-    backend: 'webgpu',
-    capability: 'storage-buffer',
-    pipeline: 'forward',
-    geometry: 'mesh',
-    pass: 'forward',
-    profile: 'forgeax-material-wgsl-v1',
-    toolchain: 'naga-oil',
-    instrumentation: 'none',
-  };
+  const context: MaterialCookRasterContext = forwardRasterContext;
   const programs: MaterialCookProgram[] = ['z', 'a'].map((key) => ({
     specializationKey: key,
     artifact: {

@@ -1,4 +1,5 @@
 import { defineSystem, World } from '@forgeax/engine-ecs';
+import { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
@@ -6,7 +7,16 @@ import { createRenderer } from '../assembly/factory';
 import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { CubeCamera } from '../components/cube-camera';
-import { type ScenePassRequest, scenePassRequests } from '../record/scene-pass-work';
+import {
+  REFLECTION_PROBE_UPDATE_CONTINUOUS,
+  ReflectionProbe,
+} from '../components/reflection-probe';
+import {
+  captureRecordingRequests,
+  NativeProbeCapture,
+  NativeTargetCapture,
+} from '../record/native-target-capture';
+import type { ScenePassRequest } from '../record/scene-pass-work';
 import * as graphs from '../record/typed-frame-graph';
 import {
   RenderCaptureGraphCompileOrder,
@@ -111,15 +121,18 @@ it("records the multi-view shared capture attempt on the primary recorder's view
       },
     });
     renderWorld.addSystem(RenderRecord, systemToken3).unwrap();
-    const compile = graphs.compileTargetCaptureFrameGraph;
+    const compile = graphs.prepareTargetCaptureRecording;
     const calls: boolean[] = [];
     const captureRequests: (readonly ScenePassRequest[])[] = [];
     const captureCompile = vi
-      .spyOn(graphs, 'compileTargetCaptureFrameGraph')
+      .spyOn(graphs, 'prepareTargetCaptureRecording')
       .mockImplementation((...args) => {
         calls.push(compilingCaptures);
+        const before = renderGraphCompileCount();
         const graph = compile(...args);
-        captureRequests.push(scenePassRequests(graph));
+        expect(renderGraphCompileCount()).toBe(before);
+        expect(graph).toBeInstanceOf(NativeTargetCapture);
+        captureRequests.push(captureRecordingRequests(graph));
         return graph;
       });
     expect(world.update().ok).toBe(true);
@@ -145,8 +158,7 @@ it("records the multi-view shared capture attempt on the primary recorder's view
         attempt: renderSubmission(renderWorld).frame,
       }),
     ]);
-    // Each face still compiles a fresh graph. Its retained view must not cold-start
-    // CPU Scene Pass preparation merely because the graph object changed.
+    // The same physical view keeps its scene requests across face and camera updates.
     for (let index = 0; index < 2; index += 1) {
       expect(world.update().ok).toBe(true);
       const next = renderer.draw(input);
@@ -163,6 +175,74 @@ it("records the multi-view shared capture attempt on the primary recorder's view
     }
   } finally {
     vi.restoreAllMocks();
+    await renderer.dispose();
+  }
+});
+
+it('records two generations of changing probe faces using the issued capture view', async () => {
+  const renderer = await createRenderer(
+    { width: 64, height: 64, getContext: () => null },
+    { rhi },
+    { shaderManifestUrl: renderLifecycleManifestUrl() },
+  );
+  const prepare = graphs.prepareTargetCaptureRecording;
+  const faces: number[] = [];
+  const generations: number[] = [];
+  const spy = vi.spyOn(graphs, 'prepareTargetCaptureRecording').mockImplementation((...args) => {
+    const before = renderGraphCompileCount();
+    const recording = prepare(...args);
+    const probe = args[7];
+    if (probe?.rawCaptureFace !== undefined) {
+      expect(renderGraphCompileCount()).toBe(before);
+      expect(recording).toBeInstanceOf(NativeProbeCapture);
+      const requests = captureRecordingRequests(recording);
+      expect(requests).toHaveLength(1);
+      const camera = requests[0]?.camera?.();
+      expect(camera).toBe(probe.faceCamera);
+      expect(recording instanceof NativeProbeCapture && recording.declarations()).toContainEqual({
+        kind: 'raster',
+        name: `reflection-probe.${probe.probeIndex}.capture.${probe.rawCaptureFace}`,
+      });
+      faces.push(probe.rawCaptureFace);
+      generations.push(probe.captureGeneration ?? 0);
+    }
+    return recording;
+  });
+  try {
+    expect((await renderer.initialization).ok).toBe(true);
+    const world = new World();
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    registerPropagateTransforms(world);
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 3] } },
+        {
+          component: Camera,
+          data: { fov: 1, aspect: 1, near: 0.1, far: 20, antialias: ANTIALIAS_NONE },
+        },
+      )
+      .unwrap();
+    world
+      .spawn(
+        { component: Transform, data: {} },
+        {
+          component: ReflectionProbe,
+          data: { resolution: 64, updateIntent: REFLECTION_PROBE_UPDATE_CONTINUOUS },
+        },
+      )
+      .unwrap();
+    for (let frame = 0; frame < 120 && faces.length < 12; frame++) {
+      world.update(1 / 60).unwrap();
+      const submitted = renderer.draw({ source: attached.value });
+      if (!submitted.ok) throw submitted.error;
+      if (submitted.value !== undefined) expect((await submitted.value.completed).ok).toBe(true);
+    }
+    expect(faces).toEqual([0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]);
+    expect(generations[0]).not.toBe(generations[6]);
+    expect(renderer.inspect().reflectionProbes.activeCount).toBe(1);
+  } finally {
+    spy.mockRestore();
     await renderer.dispose();
   }
 });

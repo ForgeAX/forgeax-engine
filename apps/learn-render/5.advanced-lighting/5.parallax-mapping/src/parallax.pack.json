@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "6bab6a0e-7684-5556-8eb6-b12b6da6b2a0",
+  "schemaVersion": "3.0.0",
+  "packageId": "6b04a34d-3e84-5fae-a399-01d448f38093",
+  "assets": {
+    "parallax.wgsl": {
       "kind": "material",
-      "sourceKey": "parallax.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -55,5 +53,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

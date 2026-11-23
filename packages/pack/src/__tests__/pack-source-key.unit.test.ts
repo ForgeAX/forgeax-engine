@@ -45,20 +45,23 @@ describe('Pack source-key failures name the fix', () => {
     });
   });
 
-  it('reports a pack.json asset key with its property path and suggestion', () => {
+  it.each([
+    'material/rockLight',
+    ' material/rock-light',
+  ])('reports the path and suggestion for invalid pack.json key %s', (key) => {
     const parsed = parsePackSourceJson({
       schemaVersion: '3.0.0',
       packageId: '019fb7ce-2200-7000-8000-000000000000',
-      assets: { 'material/rockLight': { kind: 'material' } },
+      assets: { [key]: { kind: 'material' } },
     });
     expect(parsed).toMatchObject({
       ok: false,
       error: {
         code: 'pack-source-key-invalid',
-        actual: 'material/rockLight',
+        actual: key,
         detail: {
-          propertyPath: '$.assets.material/rockLight',
-          sourceKey: 'material/rockLight',
+          propertyPath: `$.assets.${key}`,
+          sourceKey: key,
           suggestedSourceKey: 'material/rock-light',
         },
       },

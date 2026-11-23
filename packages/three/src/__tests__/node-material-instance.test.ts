@@ -230,7 +230,9 @@ it('rejects distinct instance scene overrides before touching getter-only covera
     expect(() => projection.sync(scene, camera, cameraData(camera, NoToneMapping, 1))).toThrow(
       'NodeMaterialInstance scene override',
     );
-    expect(projection.entityFor(mesh)).toBeUndefined();
+    const pending = projection.entityFor(mesh);
+    if (pending === undefined) throw new Error('expected a projected pose');
+    expect(projection.world.hasComponent(pending, MeshRenderer)).toBe(false);
   } finally {
     projection.dispose();
     assets.dispose();
@@ -257,7 +259,9 @@ it.each([
     expect(() => projection.sync(scene, camera, cameraData(camera, NoToneMapping, 1))).toThrow(
       'three-unsupported',
     );
-    expect(projection.entityFor(sprite)).toBeUndefined();
+    const pending = projection.entityFor(sprite);
+    if (pending === undefined) throw new Error('expected a projected pose');
+    expect(projection.world.hasComponent(pending, MeshRenderer)).toBe(false);
   } finally {
     Reflect.set(instance, 'nodeMaterial', definition);
     projection.dispose();

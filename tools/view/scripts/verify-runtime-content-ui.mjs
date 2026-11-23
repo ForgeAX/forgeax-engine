@@ -97,6 +97,12 @@ try {
   'repeated saves retain only the latest export');
   await importRuntimeContent(page, page.getByTestId('runtime-content'), { name: 'saved.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) });
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.some(call => call.operation === 'runtime-pack.restore'));
+  const currentSnapshot = { ...saved, schemaVersion: 'runtime-pack-source/3' };
+  await importRuntimeContent(page, page.getByTestId('runtime-content'), {
+    name: 'saved-v3.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(currentSnapshot)),
+  });
+  await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.some(call =>
+    call.operation === 'runtime-pack.restore' && call.args.snapshot.schemaVersion === 'runtime-pack-source/3'));
   await page.getByLabel('width', { exact: true }).fill('8');
   await page.getByRole('button', { name: 'Generate', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'Width must be at most 5' }).waitFor();

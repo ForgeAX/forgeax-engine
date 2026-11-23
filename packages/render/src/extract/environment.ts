@@ -29,6 +29,7 @@ export interface AtmosphereParameters {
   readonly absorptionHalfWidth: number;
   readonly groundAlbedo: readonly [number, number, number];
   readonly multipleScattering: number;
+  readonly transmittanceMinLightElevationDegrees?: number;
   readonly sunAngularRadius: number;
   readonly aerialPerspectiveStart: number;
   readonly aerialPerspectiveDistanceScale: number;
@@ -53,6 +54,7 @@ export const ATMOSPHERE_PARAMETER_RANGES: Readonly<
   absorptionHalfWidth: { min: 1, max: 1e8 },
   groundAlbedo: { min: 0, max: 1 },
   multipleScattering: { min: 0, max: 2 },
+  transmittanceMinLightElevationDegrees: { min: -90, max: 90 },
   sunAngularRadius: { min: 0, max: 0.1 },
   aerialPerspectiveStart: { min: 0, max: 1e8 },
   aerialPerspectiveDistanceScale: { min: 0, max: 10 },
@@ -249,6 +251,7 @@ export function validateAtmosphereParameters(
     ATMOSPHERE_PARAMETER_RANGES,
   ) as (keyof typeof ATMOSPHERE_PARAMETER_RANGES)[]) {
     const value = parameters[field];
+    if (field === 'transmittanceMinLightElevationDegrees' && value === undefined) continue;
     const range = ATMOSPHERE_PARAMETER_RANGES[field];
     const channels = typeof value === 'number' ? [value] : value;
     if (channels === undefined || (typeof value !== 'number' && channels.length !== 3)) {

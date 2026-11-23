@@ -12,6 +12,7 @@ import type { GpuDrivenView, GpuDrivenViewCreationStep } from '../gpu-driven/vie
 import type { GpuViewInputPreparation } from '../gpu-driven/view-input-bindings';
 import type { GpuScene } from '../gpu-scene';
 import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
+import { hasForwardShadowCoverage } from '../pipeline/forward-shadow-admission';
 import { gpuShadowViewRequests } from '../record/frame-gpu-driven';
 import { buildFrameGpuDrivenInput } from '../record/frame-gpu-driven-input';
 import {
@@ -240,6 +241,7 @@ export interface SourceViewPreparation extends Generator<GpuDrivenViewCreationSt
 }
 interface InitialSourceScope {
   ready: boolean;
+  viewObsolete: boolean;
   readonly graphs: Pick<PreparedViewGraph, 'isCurrent' | 'retire'>[];
   readonly preparations: ProductionViewPreparation[];
   readonly storages: ProductionViewStorage[];
@@ -261,6 +263,7 @@ export function prepareInitialSourceViews(
   const owners = captureSourceViews(host, group, () => !closing && current() && !closing);
   const scope: InitialSourceScope = {
     ready: false,
+    viewObsolete: false,
     graphs: [],
     preparations: [],
     storages: [],
@@ -275,7 +278,9 @@ export function prepareInitialSourceViews(
   return Object.freeze(
     Object.assign(work, {
       isObsolete: () =>
-        !closing && current() && (!owners.live() || !scope.demands.every((demand) => demand())),
+        !closing &&
+        current() &&
+        (scope.viewObsolete || !owners.live() || !scope.demands.every((demand) => demand())),
       isCurrent: () =>
         scope.ready &&
         scope.demands.every((demand) => demand()) &&
@@ -395,7 +400,7 @@ function* initialSourceViews(
       yield;
     }
     yield* prepareInitialInputs(host, scene, device, live);
-    yield* prepareInitialMainGraphs(host, initial, scope, device, live);
+    yield* prepareInitialMainGraphs(host, initial, scope, device, group, live);
     if (
       !live() ||
       !storages.every((storage) => storage.isCurrent()) ||
@@ -443,13 +448,22 @@ function* prepareInitialShadowViews(
     const topology = viewTopologyOf(host.world, entity);
     if (lights === undefined || topology?.kind !== 'planned')
       throw invalid('actual fitted shadow lights and View topology');
+    const staticLayers = owner.gpuDriven.sourceShadowPool().staticLayers;
     const requests = gpuShadowViewRequests(
       lights,
       shadowViewPlanesByView(lights.shadowViews),
       topology.topology.shadowMapSize,
       owner.frameState.compiledFrameGraphGeneration,
       lights.cascades?.cascadeCount,
+      topology.topology.spotShadowMapSize ?? 1024,
+      owner.internals.options?.staticShadowBudgetBytes,
+      staticLayers,
     );
+    const memory = staticLayers.staticPlan;
+    if (memory !== undefined) {
+      const revision = memory.revision;
+      scope.releases.push(() => memory.cancel(revision));
+    }
     const projected = owner.gpuDriven.prepareSourceShadowLayers(sourceInput, requests);
     scope.demands.push(projected.current);
     for (const request of projected.layers) {
@@ -483,11 +497,32 @@ interface InitialSourceView {
   readonly request: GpuDrivenPrepareInput;
 }
 
+/** Prepare the active draws plus the Source whose visibility has not been published. */
+function sourceReceiverDispatch(
+  entry: CompositionEntry,
+  slots: ReturnType<CompositionEntry['projection']['slotsSnapshot']>,
+  group: RenderResidencyGroup,
+) {
+  const active = entry.topology.captureResidencySelection();
+  const resident = entry.materialDispatch.queryResident(
+    slots,
+    entry.topology.captureResidentSelection(),
+    entry.projection.meshFrame(),
+  );
+  return resident.dispatch.filter((draw) => {
+    const slot = slots.at(draw.renderableIndex);
+    if (slot === undefined) return false;
+    const owner = slot.snapshot.residencyGroup;
+    return owner === group || active.includes(owner);
+  });
+}
+
 function* prepareInitialMainGraphs(
   host: SourceViewHost,
   initial: readonly InitialSourceView[],
   scope: InitialSourceScope,
   device: RhiDevice,
+  group: RenderResidencyGroup,
   current: () => boolean,
 ): Generator<GpuDrivenViewCreationStep> {
   for (const { owner, view, request } of initial) {
@@ -503,6 +538,10 @@ function* prepareInitialMainGraphs(
     if (entry === undefined || lighting?.kind !== 'prepared' || !lighting.lighting.ok)
       throw invalid('the actual Source and main lighting');
     const slots = entry.projection.slotsSnapshot();
+    const { renderPath } = lighting.lighting.value.standard.prepared;
+    const forwardShadowCoverage =
+      renderPath === 'forward' &&
+      hasForwardShadowCoverage(sourceReceiverDispatch(entry, slots, group));
     const pass = planSourcePasses({
       requested: request.camera.transparency ?? 'sorted',
       rgba16floatRenderable: device.caps.rgba16floatRenderable,
@@ -514,7 +553,8 @@ function* prepareInitialMainGraphs(
         entry.topology.captureResidencySelection(),
       ),
       materials: native.materials,
-      renderPath: lighting.lighting.value.standard.prepared.renderPath,
+      ...(forwardShadowCoverage ? { forwardShadowCoverage: true } : {}),
+      renderPath,
       gpuOcclusion: owner.frameState.installedPipelineConfig?.gpuOcclusion,
     });
     const actual = readSourceViewGraphInput(
@@ -526,6 +566,7 @@ function* prepareInitialMainGraphs(
         clearOnly: false,
         subsurfaceClass: 'none',
         rendererRecording: true,
+        currentGpuCamera: request.geometryLane !== 'direct',
         shadowDepthLayers: ensureShadowDepthLayers(owner.frameState, device),
       },
       pass,
@@ -547,9 +588,15 @@ function* prepareInitialMainGraphs(
     yield;
     yield* prepareSourceMainPipelines(owner, native, graph, current);
     (yield* native.prepareWindows()).unwrap();
-    (yield* graph.installed.graph.prepareResources(
-      () => current() && graph.isCurrent() && native.isCurrent(),
-    )).unwrap();
+    const currentResources = () => current() && graph.isCurrent() && native.isCurrent();
+    const resources = yield* graph.installed.graph.prepareResources(currentResources);
+    // Frame recording can supersede this View graph while its native work is suspended.
+    if (!currentResources()) {
+      scope.viewObsolete = true;
+      const obsolete = invalid('current main graph resource preparation');
+      throw resources.ok ? obsolete : Object.assign(obsolete, { cause: resources.error });
+    }
+    resources.unwrap();
     const bindings = yield* prepareSourceMainBindings(
       host.world,
       entity,

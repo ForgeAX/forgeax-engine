@@ -17,12 +17,11 @@ const TAG = '[perf-shadow-stress/dawn]';
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const distRoot = resolve(appRoot, 'dist');
-const width = 320;
-const height = 180;
+const [width, height] = (process.env.PERF_DAWN_SIZE ?? '320x180').split('x').map(Number);
 const query = process.env.PERF_QUERY ?? '';
+const shadowProjection = new URLSearchParams(query).get('shadowProjection');
 const outputPath = process.env.PERF_DAWN_OUTPUT ?? resolve(appRoot, 'artifacts', 'dawn.json');
 const screenshotPath = process.env.PERF_DAWN_SCREENSHOT ?? `${outputPath}.png`;
-const BASE_VIEW_COUNT = 8;
 mkdirSync(dirname(outputPath), { recursive: true });
 mkdirSync(dirname(screenshotPath), { recursive: true });
 
@@ -30,6 +29,11 @@ function fail(message) {
   console.error(`${TAG} FAIL ${message}`);
   process.exit(1);
 }
+
+if (![width, height].every((value) => Number.isInteger(value) && value > 0 && value <= 4096))
+  fail('PERF_DAWN_SIZE must be WIDTHxHEIGHT from 1 to 4096');
+if (shadowProjection !== null && shadowProjection !== 'screen')
+  fail('shadowProjection must be screen');
 
 const entryName = readdirSync(resolve(distRoot, 'assets')).find((name) => /^index-.*\.js$/u.test(name));
 if (entryName === undefined) fail('dist entry missing; run the app build first');
@@ -55,6 +59,7 @@ const PIPELINE_RELEASE_CALLBACK = 32;
 let releasePipelines;
 const pipelineRelease = new Promise((resolve) => { releasePipelines = resolve; });
 let sharedDevice;
+let gpuAdapterInfo;
 // Diagnostic A/B: comma-separated device features to refuse, e.g. to run the
 // capability-less path (`indirect-first-instance`) on a capable adapter.
 const withheldFeatures = new Set((process.env.PERF_WITHHOLD_FEATURES ?? '').split(',').filter(Boolean));
@@ -62,6 +67,8 @@ const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (...args) => {
   const adapter = await originalRequestAdapter(...args);
   if (adapter === null) return adapter;
+  const { vendor, architecture, device, description, isFallbackAdapter } = adapter.info ?? {};
+  gpuAdapterInfo = { vendor, architecture, device, description, isFallbackAdapter };
   const originalRequestDevice = adapter.requestDevice.bind(adapter);
   adapter.requestDevice = async (descriptor, ...rest) => {
     const requiredFeatures = descriptor?.requiredFeatures?.filter((feature) => !withheldFeatures.has(feature));
@@ -339,7 +346,8 @@ const cpuPhasesMicros = Object.fromEntries(
   [...phaseDurations.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, values]) => [key, distribution(values)]),
 );
 const samples = evidence.shadowRasterSamples;
-const expectedViewCount = BASE_VIEW_COUNT + 6 * (evidence.options.pointCount ?? 0);
+const expectedSpotShadows = shadowProjection === null ? 4 : 3;
+const expectedViewCount = 4 + expectedSpotShadows + 6 * (evidence.options.pointCount ?? 0);
 const reasons = {};
 for (const sample of samples) {
   for (const miss of sample.misses) {
@@ -421,6 +429,7 @@ const summary = {
 };
 const result = {
   backend: 'webgpu',
+  gpuAdapterInfo,
   observedFrames: evidence.completedFrames,
   drivenRafCallbacks,
   profileComplete,
@@ -437,8 +446,11 @@ const result = {
       evidence.pendingMeasuredFrames === 0,
     exactPostSpawn:
       evidence.postSpawn.staticCasterCount === evidence.options.staticCasterCount &&
-      evidence.postSpawn.spotShadowCount === 4 &&
+      evidence.postSpawn.spotShadowCount === expectedSpotShadows &&
       evidence.postSpawn.directionalCascadeCount === 4,
+    projectionAdmitted:
+      evidence.shadowProjection?.requested !== 'screen' ||
+      evidence.shadowProjection.observed?.mode === 'screen',
     sampledEveryFrame: samples.length === sampleFrames,
     gpuDrivenSampledEveryFrame: evidence.gpuDrivenSamples.length === profileFrames + sampleFrames - 1,
     everyShadowViewReported: samples.every(
@@ -479,13 +491,18 @@ const result = {
       evidence.capsuleShadow?.admitted === evidence.options.characterCount,
   },
 };
-writeFileSync(outputPath, JSON.stringify(result, null, 2));
+writeFileSync(outputPath, JSON.stringify(result, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
 writeFileSync(screenshotPath, encodePng(width, height, pixels));
 
 const failed = Object.entries(result.assertions).filter(([, value]) => value !== true);
-if (failed.length > 0) fail(`assertions failed: ${JSON.stringify(Object.fromEntries(failed))}`);
+if (failed.length > 0) {
+  if (!profileComplete) {
+    console.error(`${TAG} profiler ${JSON.stringify({ completeness: profile?.completeness, firstSourceFailure: evidence.profileSourceFailure })}`);
+  }
+  fail(`assertions failed: ${JSON.stringify(Object.fromEntries(failed))}`);
+}
 console.log(`${TAG} PASS ${JSON.stringify({ observedFrames: result.observedFrames, profileComplete, summary, readback: result.readback })}`);
 sharedDevice?.destroy?.();
 delete globalThis.navigator.gpu;
-emitSmokeReceipt('perf-shadow-stress/smoke', result.observedFrames);
+if (shadowProjection === null) emitSmokeReceipt('perf-shadow-stress/smoke', result.observedFrames);
 process.exit(0);

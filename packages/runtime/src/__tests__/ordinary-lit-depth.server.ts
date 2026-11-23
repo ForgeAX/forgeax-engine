@@ -21,17 +21,18 @@ export async function startOrdinaryLitDepthServer() {
     join(assets, 'lit-depth.wgsl'),
     `#define_import_path game::ordinary_lit_depth
 #import forgeax_view::common::{view, meshes, instances}
-#import forgeax_material::lighting_inputs::{irradianceMap, irradianceSampler}
+#import forgeax_material::lighting_inputs::{skySh}
+#import forgeax_pbr::sky_sh_polynomial::{evaluateSkyPolynomial}
 @group(0) @binding(1) var sceneDepth: texture_depth_2d;
-struct VertexOut { @builtin(position) position: vec4<f32>, @location(0) ambient: f32 }
+struct VertexOut { @builtin(position) position: vec4<f32> }
 @vertex fn vs_main(@location(0) p: vec3<f32>, @builtin(instance_index) idx: u32) -> VertexOut {
  let world = meshes[0].worldFromLocal * instances[idx].localFromInstance * vec4<f32>(p, 1.0);
- let ambient = textureSampleLevel(irradianceMap, irradianceSampler, vec3<f32>(0,1,0), 0).r;
- return VertexOut(view.worldViewProj * world, ambient);
+ return VertexOut(view.worldViewProj * world);
 }
 @fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
  let depth = textureLoad(sceneDepth, vec2<i32>(v.position.xy), 0);
- return vec4<f32>(select(1.0, 0.0, depth > 0.0), select(0.0, 1.0, depth > 0.0), v.ambient * .001, 1.0);
+ let ambient = evaluateSkyPolynomial(skySh, vec3<f32>(0,1,0)).r;
+ return vec4<f32>(select(1.0, 0.0, depth > 0.0), select(0.0, 1.0, depth > 0.0), ambient * .001, 1.0);
 }
 `,
   );

@@ -42,6 +42,7 @@ import {
   type RenderInspection,
   RenderPublicationError,
   RenderPublicationTargetOwner,
+  type RenderWorldLease,
 } from '@forgeax/engine-render';
 import {
   createWaterInfoSourceFeature,
@@ -86,6 +87,8 @@ import {
 import { workerEngineProfile } from '../internal/worker-engine-profile';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { AppLevelOwner } from '../levels/app-level-owner';
+import { levelServicePlugin } from '../levels/level-service';
+import { createLocalLevelOwner } from '../levels/local-app-levels';
 import { type AppObservation, createAppObservation } from '../observation';
 import { createRenderFeatureHost, type RenderFeatureHost } from '../renderer-plugin';
 import { APP_PHASE_CATALOG, type CanvasDrawingBufferSize } from '../types';
@@ -112,6 +115,7 @@ import type {
   HostToEngineMessage,
   RetainedExecutionInit,
 } from './protocol';
+import { browserRenderWorkerSource } from './render-worker-browser-channel';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import {
@@ -165,6 +169,7 @@ interface WorkerRealm {
     readonly cancel: () => void;
   };
   renderWorker?: SourceRenderWorker;
+  sourceLease?: RenderWorldLease;
   levels?: AppLevelOwner;
   stoppingLevels?: true;
   publicationTargets?: RenderPublicationTargetOwner;
@@ -184,6 +189,10 @@ interface WorkerRealm {
   rhiCapture: RhiCapture | undefined;
   rhiAttachment: RecorderAttachment | undefined;
 }
+
+const browserRenderWorkers = browserRenderWorkerSource((message, transfer) =>
+  scope.postMessage(message, transfer ?? []),
+);
 
 let realm: WorkerRealm | undefined;
 const rebuildQueue = new SerializedRebuildQueue();
@@ -304,6 +313,24 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
           engine: { realm: 'worker' },
           world: { identity: target.world.identity },
         }),
+        requestViewportHit: async (
+          request: import('@forgeax/engine-render').ViewportHitRequest,
+          signal?: AbortSignal,
+        ): Promise<import('@forgeax/engine-render').ViewportHitResult> => {
+          if (
+            realm !== target ||
+            realmTransitions > 0 ||
+            inspectionsClosed ||
+            request.worldIdentity !== target.world.identity
+          )
+            return { kind: 'stale', reason: 'world-or-request' };
+          const result = await (target.renderWorker === undefined
+            ? renderer?.requestViewportHit?.(request, signal)
+            : target.renderWorker.requestViewportHit(request, signal));
+          return realm !== target || realmTransitions > 0 || inspectionsClosed
+            ? { kind: 'stale', reason: 'render-session' }
+            : (result ?? { kind: 'unavailable', reason: 'backend' });
+        },
         observeNextGeometry: async (options?: { readonly signal?: AbortSignal }) => {
           if (
             realm !== target ||
@@ -563,6 +590,8 @@ async function disposeRealm(target: WorkerRealm): Promise<void> {
   }
   try {
     await target.renderWorker?.dispose();
+    target.sourceLease?.dispose();
+    delete target.sourceLease;
   } catch (cause) {
     renderFailure =
       renderFailure === undefined ? cause : new AggregateError([renderFailure, cause]);
@@ -700,11 +729,15 @@ function realmRendererOptions(
       : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
     ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
     ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+    ...(init.viewportHitWarmup === true ? { viewportHitWarmup: true } : {}),
     ...(init.backgroundPipelineLibraryConcurrency === undefined
       ? {}
       : { backgroundPipelineLibraryConcurrency: init.backgroundPipelineLibraryConcurrency }),
     ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
     ...(init.renderBackend === undefined ? {} : { renderBackend: init.renderBackend }),
+    ...(init.staticShadowBudgetBytes === undefined
+      ? {}
+      : { staticShadowBudgetBytes: init.staticShadowBudgetBytes }),
     ...(init.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: init.dynamicGeometryMeshBudgetBytes }),
@@ -924,6 +957,7 @@ function realmExtensionPlugins(
       realmBootstrapHost(candidate, stagedRenderWorker, renderer),
       renderer,
     ),
+    ...(candidate.levels === undefined ? [] : [levelServicePlugin(candidate.levels.service)]),
     ...(prepared.plugins ?? []),
   ];
 }
@@ -951,8 +985,19 @@ function stageSourceRenderWorker(
   candidate: WorkerRealm,
   assets: AssetRegistry,
   sourceFeatures: RenderFeature<unknown>[],
+  renderer: Renderer | undefined,
 ): SourceRenderWorker | undefined {
-  if (!candidate.init.workers.render.enabled) return undefined;
+  if (!candidate.init.workers.render.enabled) {
+    if (renderer !== undefined)
+      candidate.levels = createLocalLevelOwner(
+        candidate.world,
+        assets,
+        renderer,
+        () => performance.now(),
+        () => candidate.stoppingLevels === true,
+      );
+    return undefined;
+  }
   const worker = new SourceRenderWorker(
     candidate.world,
     assets,
@@ -961,6 +1006,9 @@ function stageSourceRenderWorker(
     sourceFeatures,
     candidate.publicationTargets,
     realmTaskPool(candidate),
+    candidate.init.diagnostics?.browserRenderPresentation === true
+      ? browserRenderWorkers.open
+      : undefined,
   );
   candidate.levels = new AppLevelOwner({
     world: candidate.world,
@@ -1089,7 +1137,12 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const catalogSource = realmCatalogSource(init);
     const { assets, ready: assetReadiness } = stageRealmAssets(init, host, bundler);
     candidate.assetAssembly = admitRealmAssetAssembly(init, assets, catalogSource);
-    stagedRenderWorker = stageSourceRenderWorker(candidate, assets, sourceFeatures);
+    stagedRenderWorker = stageSourceRenderWorker(
+      candidate,
+      assets,
+      sourceFeatures,
+      candidateRenderer,
+    );
     const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
     if (assetReadiness !== undefined) await assetReadiness;
     const endPlugins = beginLoadTimeline('boot', 'plugin-bootstrap');
@@ -1137,7 +1190,10 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const committed =
       candidateRenderer === undefined
         ? true
-        : await commitAttachedWorld(candidateRenderer, nextWorld, async () => true);
+        : await commitAttachedWorld(candidateRenderer, nextWorld, async (source) => {
+            candidate.sourceLease = source;
+            return true;
+          });
     if (!committed) {
       await disposeRealm(candidate);
       if (previousSurfaceReleased) previousRenderer?.restoreSurface();
@@ -1367,15 +1423,15 @@ function postSimulationComplete(
   });
 }
 
-function publishSourceFrame(
+async function publishSourceFrame(
   activeRealm: WorkerRealm,
   renderWorker: SourceRenderWorker,
   message: ExecutionFrameMessage,
   sampleTimeSeconds: number,
   simulation: FrameSimulationTiming,
   creditWaitMs: number,
-): void {
-  renderWorker.publish(message, sampleTimeSeconds, simulation.engineUpdateMs, creditWaitMs);
+): Promise<void> {
+  await renderWorker.publish(message, sampleTimeSeconds, simulation.engineUpdateMs, creditWaitMs);
   renderSampleTimeSeconds = sampleTimeSeconds;
   lastFrameId = message.frameId;
   postSimulationComplete(activeRealm, message.frameId, simulation);
@@ -1389,13 +1445,13 @@ function drawFrame(
   profileSession: RecorderSession | undefined,
   profileFrame: ProfileFrameToken | undefined,
 ): ReturnType<Renderer['draw']> {
-  const attached = activeRenderer.attach(activeRealm.world);
-  if (!attached.ok) throw attached.error;
+  const source = activeRealm.sourceLease;
+  if (source === undefined) throw Error('The Engine Worker World has no committed Render lease');
   localHdr.beforeDraw(activeRenderer);
   const geometryLane = activeRealm.init.diagnostics?.geometryLane;
   return profilePhase(profileSession, 'renderer-draw', () =>
     activeRenderer.draw({
-      source: attached.value,
+      source,
       sampleTimeSeconds,
       ...(message.temporalReset ? { temporalReset: true } : {}),
       ...(profileFrame === undefined ? {} : { profileFrame }),
@@ -1608,7 +1664,10 @@ async function advanceFrame(
       world.update(message.deltaSeconds),
     );
     if (!update.ok) throw update.error;
-    if (postWorldPoisoned(world)) return;
+    if (postWorldPoisoned(world)) {
+      activeRealm.levels?.stopRequests();
+      return;
+    }
     const updateFinished = performance.now();
     const simulation = frameSimulationTiming(
       updateFinished - started,
@@ -1624,7 +1683,7 @@ async function advanceFrame(
       return;
     }
     if (activeRealm.renderWorker !== undefined) {
-      publishSourceFrame(
+      await publishSourceFrame(
         activeRealm,
         activeRealm.renderWorker,
         message,
@@ -1645,6 +1704,7 @@ async function advanceFrame(
       profileFrame,
     );
   } catch (cause) {
+    if (world.execution.health === 'poisoned') activeRealm.levels?.stopRequests();
     postFrameFault(world, cause);
   } finally {
     endProfileFrame(profileSession, profileFrame);
@@ -1679,6 +1739,8 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
     }
     const canvas = message.canvas ?? activeRealm.canvas;
     if (canvas === undefined) throw new Error('World rebuild requires a fresh rendering canvas');
+    activeRealm.stoppingLevels = true;
+    await activeRealm.levels?.closeStopped('replace-world');
     await activeRealm.renderWorker?.dispose();
     const init: ExecutionInitMessage = {
       ...activeRealm.init,
@@ -1706,6 +1768,9 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
 
 function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): boolean {
   switch (message.kind) {
+    case 'browser-render-error':
+      browserRenderWorkers.failed(message.workerId, message.message);
+      return true;
     case 'native-frame-request':
       nativeFrames?.receive(message);
       return true;

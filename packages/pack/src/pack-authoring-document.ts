@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import ts from 'typescript';
 import { PackageId } from './guid.js';
 import {
@@ -8,11 +11,13 @@ import {
 import type { PackDraftDocument, PackDraftField } from './pack-authoring-draft.js';
 import {
   type PackAuthoringLiteral,
+  packAuthoringLiteral,
   packSourceFailure,
   packSourceRevision,
+  patchPackLiterals,
+  patchPackLiteralValues,
   readPackAuthoringDeclaration,
   readPackLiteral,
-  writePackAuthoringDefaults,
 } from './pack-authoring-literals.js';
 
 export interface PackDraftSource {
@@ -64,10 +69,10 @@ function key(path: readonly string[]): string {
 /** Canonical code identity excludes parameter defaults; effective generation values form the other input. */
 function codeIdentity(source: string): string {
   const declaration = readPackAuthoringDeclaration('generation.pack.ts', source).unwrap();
-  let projected = source;
-  for (const literal of [...declaration.defaults.values()].sort((a, b) => b.start - a.start)) {
-    projected = `${projected.slice(0, literal.start)}null${projected.slice(literal.end)}`;
-  }
+  const projected = patchPackLiterals(
+    source,
+    [...declaration.defaults.values()].map(({ start, end }) => ({ start, end, text: 'null' })),
+  );
   const file = ts.createSourceFile('generation.pack.ts', projected, ts.ScriptTarget.Latest, true);
   return packSourceRevision(ts.createPrinter({ removeComments: true }).printFile(file));
 }
@@ -98,7 +103,16 @@ export function readPackDraftSource(
         fields,
         generationIdentity: codeIdentity(declaration.generationSource),
       },
-      write: (changes) => writePackAuthoringDefaults(declaration, changes).unwrap(),
+      write(changes) {
+        const updated = patchPackLiteralValues(
+          sourcePath,
+          source,
+          declaration.defaults,
+          changes,
+        ).unwrap();
+        readPackAuthoringDeclaration(sourcePath, updated).unwrap();
+        return updated;
+      },
     };
   }
   if (!sourcePath.endsWith('.pack.json'))
@@ -112,17 +126,8 @@ export function readPackDraftSource(
   const visit = (node: ts.Node, path: string[]) => {
     if (path.length > 32) throw packSourceFailure(sourcePath, 'author field exceeds maximum depth');
     const value = readPackLiteral(node);
-    if (valueType(value)) {
-      const start = node.getStart(file);
-      const at = file.getLineAndCharacterOfPosition(start);
-      literals.set(key(path), {
-        path,
-        start,
-        end: node.end,
-        value,
-        location: { line: at.line + 1, column: at.character + 1 },
-      });
-    } else if (ts.isObjectLiteralExpression(node))
+    if (valueType(value)) literals.set(key(path), packAuthoringLiteral(file, node, path, value));
+    else if (ts.isObjectLiteralExpression(node))
       for (const property of node.properties) {
         if (!ts.isPropertyAssignment(property) || !ts.isStringLiteral(property.name))
           throw packSourceFailure(sourcePath, 'JSON properties must have literal names');
@@ -208,17 +213,55 @@ export function readPackDraftSource(
         for (const [name, value] of changes) json.values[name] = value;
         return `${JSON.stringify(json, null, 2)}\n`;
       }
-      const edits = [...changes].map(([name, value]) => {
-        const literal = literals.get(name);
-        if (!literal)
-          throw packSourceFailure(sourcePath, `field ${name} is not an editable literal`);
-        return { ...literal, text: JSON.stringify(value) };
-      });
-      let updated = source;
-      for (const edit of edits.sort((a, b) => b.start - a.start))
-        updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
+      const updated = patchPackLiteralValues(sourcePath, source, literals, changes).unwrap();
       parsePackSourceJson(JSON.parse(updated)).unwrap();
       return updated;
     },
   };
+}
+
+export class PackSourceRevisionConflict extends Error {
+  constructor(readonly revision: string) {
+    super('Pack source changed before it could be saved');
+  }
+}
+
+export async function assertPackSourceRevision(path: string, expected: string): Promise<void> {
+  const revision = packSourceRevision(await readFile(path, 'utf8'));
+  if (revision !== expected) throw new PackSourceRevisionConflict(revision);
+}
+
+const sourceWrites = new Map<string, Promise<void>>();
+
+export async function writePackSourceAtomically(
+  path: string,
+  source: string,
+  options: { readonly expectedRevision?: string; readonly validate?: () => Promise<void> } = {},
+): Promise<void> {
+  const identity = await realpath(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT' || options.expectedRevision !== undefined) throw error;
+    return path;
+  });
+  const previous = sourceWrites.get(identity) ?? Promise.resolve();
+  const write = previous
+    .catch(() => {})
+    .then(async () => {
+      const temporary = resolve(dirname(path), `.${randomUUID()}.pack-source.tmp`);
+      try {
+        const mode = options.expectedRevision === undefined ? undefined : (await stat(path)).mode;
+        await writeFile(temporary, source, { encoding: 'utf8', flag: 'wx', mode });
+        await options.validate?.();
+        if (options.expectedRevision !== undefined)
+          await assertPackSourceRevision(path, options.expectedRevision);
+        await rename(temporary, path);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    });
+  sourceWrites.set(identity, write);
+  try {
+    await write;
+  } finally {
+    if (sourceWrites.get(identity) === write) sourceWrites.delete(identity);
+  }
 }

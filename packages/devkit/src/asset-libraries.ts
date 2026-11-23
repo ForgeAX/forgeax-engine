@@ -66,6 +66,7 @@ async function workspacePackageRoot(
 async function libraryPackageRoot(
   projectRoot: string,
   specifier: string,
+  readBinding: () => ReturnType<typeof readEngineBinding>,
 ): Promise<CommandResult<{ readonly name: string; readonly root: string | undefined }>> {
   if (!specifier.startsWith(ENGINE_FACADE_PREFIX)) {
     return {
@@ -75,7 +76,7 @@ async function libraryPackageRoot(
   }
   const directory = specifier.slice(ENGINE_FACADE_PREFIX.length);
   const name = `@forgeax/engine-${directory}`;
-  const binding = await readEngineBinding(projectRoot);
+  const binding = await readBinding();
   if (!binding.ok) return binding;
   if (binding.value !== null)
     return {
@@ -104,8 +105,10 @@ export async function resolveAssetLibraries(
   specifiers: readonly string[],
 ): Promise<CommandResult<readonly ProjectAssetLibrary[]>> {
   const libraries: ProjectAssetLibrary[] = [];
+  let binding: ReturnType<typeof readEngineBinding> | undefined;
+  const readBinding = () => (binding ??= readEngineBinding(projectRoot));
   for (const specifier of specifiers) {
-    const located = await libraryPackageRoot(projectRoot, specifier);
+    const located = await libraryPackageRoot(projectRoot, specifier, readBinding);
     if (!located.ok) return located;
     const { name, root: packageRoot } = located.value;
     if (packageRoot === undefined) {

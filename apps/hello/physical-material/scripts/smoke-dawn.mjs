@@ -282,7 +282,7 @@ const packIndexPath = resolve(here, '..', 'dist', 'pack-index.json');
 const packIndexWire = JSON.parse(readFileSync(packIndexPath, 'utf8'));
 const packIndex = decodeCatalogWire(packIndexWire).unwrap();
 const hdrGuid = '019e4a26-3c29-7420-af5d-20f2724a16b0';
-const fullPhysicalMaterialGuid = '8a5a0001-0000-4000-8000-000000000008';
+const fullPhysicalMaterialGuid = '57fdfe2f-0978-56de-a112-883c404b18ed';
 const hdrEntry = packIndex.find((entry) => entry.guid === hdrGuid);
 const fullPhysicalMaterialEntry = packIndex.find((entry) => entry.guid === fullPhysicalMaterialGuid);
 let hdrPod;

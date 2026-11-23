@@ -10,13 +10,16 @@ import { GpuBuffer } from '../../gpu-resource';
 import { disposeInstanceBufferChunks, disposeInstanceBuffers } from '../../instance-buffer-cache';
 import { MaterialResource } from '../../material-resource';
 import { worldRenderResources } from '../../publication/resource-scope';
+import type { DispatchEntry } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
+import type { ValidatedRenderable } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
+import { MaterialPasses } from '../material-pass-groups';
 import { flushMeshDrawUploads } from '../mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../render-context';
 
-type Entry = _InternalRenderPipelineContext['validatedOrdered'][number];
+type Entry = ValidatedRenderable;
 export const CPU_SETUP_SHADER = `
 struct Instance { current: mat4x4<f32>, previous: mat4x4<f32> };
 @group(1) @binding(0) var<uniform> tint: vec4<f32>;
@@ -28,6 +31,85 @@ struct Instance { current: mat4x4<f32>, previous: mat4x4<f32> };
 @fragment fn fragment() -> @location(0) vec4<f32> { return tint; }
 `;
 const matrix = (x = 0) => Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1);
+
+/** Native phase selection and current physical bindings for the ordinary Direct recorder. */
+export function nativeGeometryFixture(
+  f: ReturnType<typeof cpuSetupFixture>,
+  selectedSubmeshes = false,
+  instances?: number,
+) {
+  const first = f.add({
+    entity: 1,
+    submeshes: 1,
+    ...(instances === undefined ? {} : { instances }),
+  });
+  f.add({ entity: 2, submeshes: 1, x: 1.1 });
+  const dispatch: DispatchEntry[] = f.entries.map((entry) => ({
+    entityIndex: entry.source.entityKey,
+    renderableIndex: entry.renderableIndex,
+    materialHandle: 7,
+    passIndex: 0,
+    queue: 2000,
+    layer: 0,
+    tags: { LightMode: 'Forward' },
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialShaderId: 'forgeax::default-unlit',
+  }));
+  const pipelineEntry = { pipeline: f.pipeline, group2Contract: 'mesh' };
+  Object.assign(f.c.runtime, { getMaterialShaderPipelineEntry: () => pipelineEntry });
+  const byRow = dispatch.map((item) => new MaterialPasses().set(7, item));
+  let selectionReads = 0;
+  const groups = {
+    temporal: false,
+    size: byRow.length,
+    get: (row: number) => {
+      selectionReads++;
+      return byRow[row];
+    },
+    has: (row: number) => byRow[row] !== undefined,
+    values: () => byRow.values(),
+    keys: () => byRow.keys(),
+  };
+  Object.assign(f.c, {
+    dispatch,
+    geometryMaterialPasses: {
+      dispatch,
+      validatedOrdered: f.entries,
+      ordered: true,
+      temporal: false,
+      groups,
+    },
+  });
+  return {
+    first,
+    get selectionReads() {
+      return selectionReads;
+    },
+    record(commands: RhiRenderPassEncoder, offset: number | ((slot: number) => number) = 0) {
+      commands.setBindGroup(0, f.viewGroup);
+      recordGeometryDraws(
+        f.c,
+        commands,
+        selectedSubmeshes ? groups : null,
+        f.c.materialSlotIndices,
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        (slot) => ({
+          group: f.materialGroup,
+          byteOffset: (typeof offset === 'number' ? offset : offset(slot)) + slot * 256,
+          dynamicOffsetCount: 1,
+        }),
+        'forward',
+        dispatch,
+        ['rgba8unorm'],
+      );
+    },
+  };
+}
 
 /** Real record owner and RHI resources; only the material pipeline lookup is supplied. */
 export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
@@ -359,7 +441,7 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
         1,
         meshGroup,
         meshGroup,
-        () => materialGroup,
+        () => ({ group: materialGroup, byteOffset: 0, dynamicOffsetCount: 1 }),
         kind,
       );
       afterRecord?.();

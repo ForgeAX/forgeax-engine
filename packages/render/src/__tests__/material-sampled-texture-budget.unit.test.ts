@@ -1,13 +1,20 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderRegistry, STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
+import { derive, materialLightingInputBindings } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../assembly/device-feature-admission';
+import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import {
   materialSampledTextureBudget,
   WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE,
 } from '../material-sampled-texture-budget';
 import { Materials } from '../materials';
+import {
+  buildBindGroupLayoutDescriptor,
+  canProjectOpaqueStandardMaterial,
+  projectOpaqueStandardMaterialEntries,
+} from '../pbr-pipeline';
 import { testAssets } from './helpers/runtime-assets';
 
 function fixture() {
@@ -25,6 +32,72 @@ function fixture() {
   world.bindAssets(assets).unwrap();
   return { world, assets };
 }
+
+describe('opaque Standard material layout', () => {
+  const entries = (transmissionBackdrop: boolean) =>
+    buildBindGroupLayoutDescriptor(
+      {
+        shader: { id: 'forgeax::default-standard-pbr', passKind: 'forward', variantSet: undefined },
+        attachments: { colorFormats: [], depthFormat: undefined, sampleCount: 1 },
+        geometry: { topology: 'triangle-list', vertexLayout: {} },
+        renderState: undefined,
+      },
+      { kind: 'pbr-material-merged', caps: { storageBuffer: true, transmissionBackdrop } },
+    ).entries;
+  const fragmentTextures = (bindings: ReturnType<typeof entries>) =>
+    bindings.filter(
+      (entry) => entry.texture && (entry.visibility & GPU_SHADER_STAGE_FRAGMENT) !== 0,
+    );
+  const { brdfLut, irradianceSampler } = materialLightingInputBindings(
+    derive(STANDARD_PIPELINE_PARAM_SCHEMA).userRegionBindingEnd,
+  );
+  it('omits dedicated transmission maps without shifting surface bindings', () => {
+    const full = entries(true);
+    const opaque = projectOpaqueStandardMaterialEntries(full);
+    expect(opaque).toEqual(
+      entries(false).filter(
+        (entry) => entry.binding !== brdfLut && entry.binding !== irradianceSampler,
+      ),
+    );
+    const opaqueTextureSlots = new Set(fragmentTextures(opaque).map((entry) => entry.binding));
+    expect(
+      fragmentTextures(full)
+        .filter((entry) => !opaqueTextureSlots.has(entry.binding))
+        .map((entry) => entry.binding),
+    ).toEqual([12, 14]);
+  });
+
+  it('requires the selected vertex and opaque fragment to prove disuse of every removed slot', () => {
+    const vertex = { name: 'vs_main', stage: 'vertex', bindings: [] } as const;
+    const fragment = { name: 'fs_opaque', stage: 'fragment', bindings: [] } as const;
+    expect(canProjectOpaqueStandardMaterial([vertex, fragment], undefined, 'fs_opaque')).toBe(true);
+    expect(canProjectOpaqueStandardMaterial([fragment], undefined, 'fs_opaque')).toBe(false);
+    expect(canProjectOpaqueStandardMaterial([vertex, fragment], undefined, 'fs_main')).toBe(false);
+    const omitted = entries(true).filter(
+      (entry) =>
+        !projectOpaqueStandardMaterialEntries(entries(true)).some(
+          (remaining) => remaining.binding === entry.binding,
+        ),
+    );
+    for (const entry of omitted) {
+      const reads = [{ group: 1, binding: entry.binding }] as const;
+      expect(
+        canProjectOpaqueStandardMaterial(
+          [vertex, { ...fragment, bindings: reads }],
+          undefined,
+          'fs_opaque',
+        ),
+      ).toBe(false);
+      expect(
+        canProjectOpaqueStandardMaterial(
+          [{ ...vertex, bindings: reads }, fragment],
+          undefined,
+          'fs_opaque',
+        ),
+      ).toBe(false);
+    }
+  });
+});
 
 describe('materialSampledTextureBudget', () => {
   it('leaves custom shaders to own their layout', () => {

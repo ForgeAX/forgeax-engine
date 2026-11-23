@@ -5,6 +5,7 @@ import type { Asset, MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { sceneSnapshot } from '../scene/__tests__/scene-row-writes';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene-view';
 import { SceneRows } from '../scene/scene-rows';
@@ -12,7 +13,7 @@ import { collectWeakOwners } from './weak-owner-collection-fixture';
 
 function snapshot(entityKey: number, x = 0): RenderableSnapshot {
   const world = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1);
-  return { entityKey, transform: { world } } as RenderableSnapshot;
+  return sceneSnapshot(entityKey, world);
 }
 
 function preparedGeometryFixture() {

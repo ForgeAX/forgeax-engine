@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
 import { access, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
@@ -19,17 +19,20 @@ import {
   type ExecutionWorkersOptions,
   isExecutionReport,
 } from '@forgeax/engine-app';
+import { sha256 } from '@forgeax/engine-types';
 import type { JSHandle } from 'playwright';
 import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
-import { backendHeapEnv } from './backend-heap.js';
+import { processAlive } from './backend-lifetime.js';
 import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
 import { captureRenderFailure } from './capture-render-failure.js';
+import { backendHeapEnv, stopChildProcess } from './child-process.js';
 import { liveDevBrowserHeadless } from './chromium-sandbox.js';
 import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { failureSummary } from './failure-summary.js';
-import type { StartupUiState } from './host/startup-ui.js';
+import { writeFileAtomic } from './filesystem-path.js';
+import { observeBrowserStartup, readStartupObservation } from './host/startup-ui.js';
 import { LIVE_BRIDGE_OWNER_PARAM, ownerPageUrl } from './live-bridge-url.js';
 import {
   acquireStartLock,
@@ -40,10 +43,8 @@ import {
   liveDaemonProcess,
   liveDevBuildIdentity,
   liveSessionRecordPath,
-  processAlive,
   type RequestedOwnerOptions,
   terminateLiveDaemon,
-  writeFileAtomic,
 } from './live-dev-owner.js';
 import {
   type LookDriver,
@@ -53,11 +54,22 @@ import {
   parseLookRequest,
 } from './live-look.js';
 import { liveProjectReadyLogLine, readLiveProjectInputs } from './live-project-inputs.js';
+import {
+  materializeViteDevPort,
+  probeLoopbackPort,
+  readLoopbackJson,
+  writeLoopbackJson,
+} from './loopback.js';
 import type { LuminanceObservation } from './luminance-heatmap.js';
 import type { PlayOptions } from './play.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
-import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
+import {
+  beforeDeadline,
+  DEV_EXECUTION_TIMEOUT_MS,
+  DEV_PREPARATION_TIMEOUT_MS,
+} from './startup-budget.js';
 import { logLiveInputTiming, traceDevStartup } from './startup-timing.js';
+import { TargetRequests } from './target-requests.js';
 import type {
   BrowserCarrierAdapter,
   BrowserCarrierRunIdentity,
@@ -65,6 +77,7 @@ import type {
   BrowserExecutionTarget,
 } from './tools/display-carrier.js';
 import type { CommandError, CommandResult } from './types.js';
+import { completeCommand, rejectCommand } from './types.js';
 
 // Both published entrypoints live beside the same DevKit CLI artifact.
 const CLI_ENTRY = fileURLToPath(new URL('./cli.mjs', import.meta.url));
@@ -138,29 +151,70 @@ interface LiveDevSessionFile {
   readonly options?: LiveOwnerOptions;
 }
 
+type LiveOwnerStatus = Omit<LiveDevStatus, 'unfinishedEval'>;
+
 interface LiveEvaluation {
   /** Its caller wait ended (`live-eval-continuing`); release depends on the realm returning. */
   continuing: boolean;
 }
 
-type LiveOperation =
-  | 'status'
-  | 'observe'
-  | 'reload'
-  | 'stop'
-  | 'capture'
-  | 'look'
-  | 'verify'
-  | 'rhi/capture'
-  | 'profile/capture'
-  | 'eval'
-  | 'camera/get'
-  | 'camera/set'
-  | 'pick'
-  | 'camera/release'
-  | 'find'
-  | 'focus'
-  | 'play';
+type LiveObservationScript = (args: Readonly<Record<string, unknown>>) => string;
+type LiveOperationPolicy =
+  | { readonly readiness?: never; readonly observation?: never; readonly startOwner?: never }
+  | {
+      readonly readiness: 'observe' | 'mutate';
+      readonly observation?: LiveObservationScript;
+      readonly startOwner?: true;
+    };
+
+/** One policy determines readiness waiting, replay safety and the observation route. */
+const liveOperationPolicies = {
+  status: {},
+  observe: {},
+  reload: {},
+  stop: {},
+  capture: { readiness: 'observe', startOwner: true },
+  look: { readiness: 'observe', startOwner: true },
+  verify: { readiness: 'observe', startOwner: true },
+  'rhi/capture': { readiness: 'observe' },
+  'profile/capture': { readiness: 'observe' },
+  eval: { readiness: 'mutate', startOwner: true },
+  'camera/get': {
+    readiness: 'observe',
+    observation: () => 'return simulation.observation?.camera.get();',
+  },
+  'camera/set': {
+    readiness: 'mutate',
+    observation: (args) => `return simulation.observation?.camera.set(${JSON.stringify(args)});`,
+  },
+  pick: {
+    readiness: 'observe',
+    observation: (args) =>
+      `return simulation.observation.pick(${JSON.stringify({ x: args.x, y: args.y })});`,
+  },
+  'camera/release': {
+    readiness: 'mutate',
+    observation: () =>
+      'simulation.observation.release(); return simulation.observation.camera.get();',
+  },
+  find: {
+    readiness: 'observe',
+    observation: (args) => `return simulation.observation.find(${JSON.stringify(args)});`,
+  },
+  focus: {
+    readiness: 'mutate',
+    observation: (args) => `return simulation.observation?.focus(${JSON.stringify(args)});`,
+  },
+  play: { readiness: 'mutate' },
+} as const satisfies Readonly<Record<string, LiveOperationPolicy>>;
+
+type LiveOperation = keyof typeof liveOperationPolicies;
+
+function liveOperationPolicy(operation: string): LiveOperationPolicy | undefined {
+  return Object.hasOwn(liveOperationPolicies, operation)
+    ? liveOperationPolicies[operation as LiveOperation]
+    : undefined;
+}
 
 interface LiveDevDaemonState {
   stopPromise?: Promise<void>;
@@ -189,7 +243,7 @@ interface LiveDevDaemonState {
   readonly gpuPassTiming: boolean;
   session: BrowserCaptureSession | undefined;
   projectUrl: string | undefined;
-  status: LiveDevStatus;
+  status: LiveOwnerStatus;
   /**
    * The admitted evaluation that holds the realm (eval, RHI or profile
    * capture). Its object identity is the ownership token: only the request
@@ -202,16 +256,7 @@ interface LiveDevDaemonState {
   /** Minted per opened page; only the page this owner launched presents it. */
   bridgeToken: string;
   bridgeNextId: number;
-  bridgePending: Map<
-    number,
-    {
-      readonly resolve: (value: unknown) => void;
-      readonly reject: (error: unknown) => void;
-      readonly timer: ReturnType<typeof setTimeout> | undefined;
-      readonly progress: { started: boolean };
-      cancelResolve: ((admitted: boolean) => void) | undefined;
-    }
-  >;
+  bridgePending: TargetRequests<number, BridgeRequestProgress>;
   projectProcess: ChildProcess | undefined;
   inputs: string | undefined;
   projectInputPaths: readonly string[] | undefined;
@@ -262,6 +307,10 @@ function sessionPath(root: string, snapshot = false): string {
   return liveSessionRecordPath(root);
 }
 
+function statusSnapshot(state: LiveDevDaemonState): LiveDevStatus {
+  return { ...state.status, unfinishedEval: state.evaluation !== undefined };
+}
+
 function publicStatus(status: LiveDevStatus): unknown {
   const { loadId: _load, worldIdentity: _world, generation: _generation, ...value } = status;
   return value;
@@ -287,37 +336,8 @@ function observationValue(value: unknown, revision: string): Record<string, unkn
   return rest;
 }
 
-/** The realm script of one observation route; `pick` and reads leave the World unchanged. */
-function observationScript(operation: string, args: Record<string, unknown>): string {
-  switch (operation) {
-    case 'camera/get':
-      return 'return simulation.observation?.camera.get();';
-    case 'camera/release':
-      return 'simulation.observation.release(); return simulation.observation.camera.get();';
-    case 'find':
-      return `return simulation.observation.find(${JSON.stringify(args)});`;
-    case 'pick':
-      return `return simulation.observation.pick(${JSON.stringify({ x: args.x, y: args.y })});`;
-    case 'camera/set':
-      return `return simulation.observation?.camera.set(${JSON.stringify(args)});`;
-    default:
-      return `return simulation.observation?.focus(${JSON.stringify(args)});`;
-  }
-}
-
-const READ_ONLY_OBSERVATIONS: ReadonlySet<string> = new Set(['camera/get', 'find', 'pick']);
-
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
-  response.statusCode = status;
-  response.setHeader('content-type', 'application/json');
-  response.end(`${JSON.stringify(value)}\n`);
-}
-
-async function body(request: IncomingMessage): Promise<unknown> {
-  let raw = '';
-  for await (const chunk of request) raw += String(chunk);
-  if (raw.trim().length === 0) return {};
-  return JSON.parse(raw) as unknown;
+  writeLoopbackJson(response, status, value, true);
 }
 
 function commandError(code: string, hint: string, detail: Record<string, unknown> = {}) {
@@ -351,12 +371,18 @@ export function currentLiveDevBuild(): Promise<string> {
   return liveDevBuildIdentity(CLI_ENTRY);
 }
 
-function ownsSessionRecord(state: LiveDevDaemonState, recorded: unknown): boolean {
+function sameSessionOwner(
+  expected: Pick<LiveDevSessionFile, 'pid' | 'endpoint'>,
+  recorded: unknown,
+): boolean {
   const record = recorded as Partial<LiveDevSessionFile> | undefined;
-  return record?.pid === state.status.pid && record.endpoint === state.status.endpoint;
+  return record?.pid === expected.pid && record.endpoint === expected.endpoint;
 }
 
-async function writeSessionRecord(state: LiveDevDaemonState): Promise<void> {
+async function synchronizeSessionRecord(
+  state: LiveDevDaemonState,
+  action: 'publish' | 'check-owner',
+): Promise<void> {
   // A stopped owner never publishes again: its record would outlive it.
   if (isStopped(state)) return;
   if (state.sessionWritten) {
@@ -366,39 +392,42 @@ async function writeSessionRecord(state: LiveDevDaemonState): Promise<void> {
     );
     // Another owner replaced this one (or stop removed the record): never
     // overwrite it. A displaced owner releases its browser and project child.
-    if (!ownsSessionRecord(state, recorded)) {
+    if (!sameSessionOwner(state.status, recorded)) {
       if (!isStopped(state)) void stopLiveDaemon(state).catch(() => {});
       return;
     }
   }
-  await writeFileAtomic(
-    state.sessionPath,
-    `${JSON.stringify({
-      root: state.root,
-      sessionPath: state.sessionPath,
-      ...(state.controlToken ? { controlToken: state.controlToken } : {}),
-      endpoint: state.status.endpoint,
-      pid: state.status.pid,
-      revision: state.status.revision,
-      loadId: state.status.loadId,
-      build: await currentLiveDevBuild(),
-      options: {
-        headless: state.status.headless,
-        backend: state.status.backendRequested,
-        rhiCapture: state.rhiCapture,
-        gpuPassTiming: state.gpuPassTiming,
-        workers: state.requestedWorkers ?? {},
-        animation: state.animation,
-      },
-    } satisfies LiveDevSessionFile)}\n`,
-  );
+  if (action === 'check-owner') return;
+  const contents = `${JSON.stringify({
+    root: state.root,
+    sessionPath: state.sessionPath,
+    ...(state.controlToken ? { controlToken: state.controlToken } : {}),
+    endpoint: state.status.endpoint,
+    pid: state.status.pid,
+    revision: state.status.revision,
+    loadId: state.status.loadId,
+    build: await currentLiveDevBuild(),
+    options: {
+      headless: state.status.headless,
+      backend: state.status.backendRequested,
+      rhiCapture: state.rhiCapture,
+      gpuPassTiming: state.gpuPassTiming,
+      workers: state.requestedWorkers ?? {},
+      animation: state.animation,
+    },
+  } satisfies LiveDevSessionFile)}\n`;
+  await mkdir(dirname(state.sessionPath), { recursive: true });
+  await writeFileAtomic(state.sessionPath, contents, { mode: 0o600 });
   state.sessionWritten = true;
 }
 
-function writeSessionFile(state: LiveDevDaemonState): Promise<void> {
+function writeSessionFile(
+  state: LiveDevDaemonState,
+  action: 'publish' | 'check-owner' = 'publish',
+): Promise<void> {
   const next = (state.sessionWrite ?? Promise.resolve())
     .catch(() => {})
-    .then(() => writeSessionRecord(state));
+    .then(() => synchronizeSessionRecord(state, action));
   state.sessionWrite = next;
   return next;
 }
@@ -410,44 +439,19 @@ export async function waitForFirstFrame(
   const realm: BrowserExecutionTarget['realm'] = session.execution?.realm ?? session.page;
   let observation: JSHandle<unknown>;
   try {
-    observation = await realm.waitForFunction(
-      () => {
-        const startup = (
-          Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
-        )?.inspect?.();
-        if (startup?.phase === 'failed' && startup.recovery !== 'retrying')
-          return (startup.diagnostics || startup.message || 'Engine startup failed').slice(
-            0,
-            16_384,
-          );
-        const fatal = document.querySelector('#forgeax-fatal');
-        if (startup === undefined && fatal?.checkVisibility())
-          return (
-            document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
-            fatal.textContent?.trim() ||
-            'Engine startup failed'
-          ).slice(0, 16_384);
-        return (
-          (document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? 0) > 0
-        );
-      },
-      undefined,
-      { timeout: timeoutMs ?? 0 },
-    );
+    observation = await realm.waitForFunction(observeBrowserStartup, 'frame' as const, {
+      timeout: timeoutMs ?? 0,
+    });
   } catch {
     return false;
   }
-  try {
-    const result: unknown = await observation.jsonValue();
-    if (typeof result === 'string')
-      throw Object.assign(new Error(`live-startup-failed: ${result}`), {
-        code: 'live-startup-failed',
-        detail: { reason: result },
-      });
-    return result === true;
-  } finally {
-    await observation.dispose();
-  }
+  const result = await readStartupObservation(observation);
+  if (typeof result === 'string')
+    throw Object.assign(new Error(`live-startup-failed: ${result}`), {
+      code: 'live-startup-failed',
+      detail: { reason: result },
+    });
+  return result === true;
 }
 
 async function submittedFrameId(session: BrowserCaptureSession): Promise<number | undefined> {
@@ -585,7 +589,7 @@ function assertLiveIdentity(
   return undefined;
 }
 
-function assertRuntimeHealth(status: LiveDevStatus): ReturnType<typeof commandError> | undefined {
+function assertRuntimeHealth(status: LiveOwnerStatus): ReturnType<typeof commandError> | undefined {
   const execution = status.execution;
   if (!isExecutionReport(execution) || execution.world.identity !== status.worldIdentity) {
     return commandError(
@@ -631,6 +635,11 @@ function bridgeError(code: string, hint: string): Error & { readonly code: strin
   return error;
 }
 
+interface BridgeRequestProgress {
+  started: boolean;
+  cancelResolve: ((admitted: boolean) => void) | undefined;
+}
+
 interface BridgeCall {
   readonly promise: Promise<unknown>;
   readonly started: () => boolean;
@@ -657,49 +666,39 @@ function bridgeRequest(
     };
   }
   const id = state.bridgeNextId++;
-  const progress = { started: false };
-  const promise = new Promise((resolveResult, rejectResult) => {
-    const timer =
+  const progress: BridgeRequestProgress = { started: false, cancelResolve: undefined };
+  const promise = state.bridgePending
+    .open(
+      id,
+      progress,
       timeoutMs === null
         ? undefined
-        : setTimeout(() => {
-            state.bridgePending.delete(id);
-            rejectResult(
-              bridgeError(
+        : {
+            ms: timeoutMs,
+            error: () => {
+              progress.cancelResolve?.(false);
+              return bridgeError(
                 'live-app-bridge-timeout',
                 'The actual App execution bridge did not answer before the deadline.',
-              ),
-            );
-          }, timeoutMs);
-    state.bridgePending.set(id, {
-      resolve: resolveResult,
-      reject: rejectResult,
-      timer,
-      progress,
-      cancelResolve: undefined,
+              );
+            },
+          },
+    )
+    .then((payload) => {
+      if (payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === false) {
+        const error = Reflect.get(payload, 'error');
+        const failure = operationError(error, 'live-app-eval-failed', 'The App evaluation failed.');
+        throw Object.assign(new Error(failure.hint), failure);
+      }
+      return payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === true
+        ? Reflect.get(payload, 'value')
+        : payload;
     });
-    try {
-      state.bridge?.send(
-        JSON.stringify({
-          id,
-          ...request,
-        }),
-      );
-    } catch (error) {
-      if (timer !== undefined) clearTimeout(timer);
-      state.bridgePending.delete(id);
-      rejectResult(error);
-    }
-  }).then((payload) => {
-    if (payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === false) {
-      const error = Reflect.get(payload, 'error');
-      const failure = operationError(error, 'live-app-eval-failed', 'The App evaluation failed.');
-      throw Object.assign(new Error(failure.hint), failure);
-    }
-    return payload !== null && typeof payload === 'object' && Reflect.get(payload, 'ok') === true
-      ? Reflect.get(payload, 'value')
-      : payload;
-  });
+  try {
+    state.bridge.send(JSON.stringify({ id, ...request }));
+  } catch (cause) {
+    state.bridgePending.get(id)?.reject(cause);
+  }
   return {
     promise,
     started: () => progress.started,
@@ -745,36 +744,20 @@ function bridgeEval(
   return bridgeCall(state, code, timeoutMs).promise;
 }
 
-/** Revoke the synthetic input lease out-of-band from user eval. This message
- * is handled by both the main-realm and Worker bridges immediately, so a
- * disconnected HTTP caller cannot leave a held key waiting for another eval. */
-function revokeLiveInput(state: LiveDevDaemonState): void {
-  try {
-    if (state.bridge?.readyState === WebSocket.OPEN)
-      state.bridge.send(JSON.stringify({ type: 'input-clear' }));
-  } catch {
-    // Bridge teardown already revokes the page-side lease.
-  }
-}
+type BridgeNotification =
+  | { readonly type: 'input-clear' | 'input-lease-open' }
+  | {
+      readonly type: 'profile-finish';
+      readonly worldIdentity: string | undefined;
+      readonly captureId: string;
+    };
 
-function openLiveInput(state: LiveDevDaemonState): void {
+/** Notify the realm out of band. Bridge teardown also clears its input lease. */
+function notifyLiveBridge(state: LiveDevDaemonState, message: BridgeNotification): void {
   try {
-    if (state.bridge?.readyState === WebSocket.OPEN)
-      state.bridge.send(JSON.stringify({ type: 'input-lease-open' }));
+    if (state.bridge?.readyState === WebSocket.OPEN) state.bridge.send(JSON.stringify(message));
   } catch {
-    // A disconnected bridge cannot admit this evaluation anyway.
-  }
-}
-
-function finishLiveProfiler(
-  state: LiveDevDaemonState,
-  expected?: { readonly worldIdentity?: string; readonly captureId?: string },
-): void {
-  try {
-    if (state.bridge?.readyState === WebSocket.OPEN)
-      state.bridge.send(JSON.stringify({ type: 'profile-finish', ...(expected ?? {}) }));
-  } catch {
-    // Diagnostic cleanup is best effort and never changes the App state.
+    // Notifications can race transport teardown.
   }
 }
 
@@ -826,23 +809,26 @@ async function refreshBridgeStatus(state: LiveDevDaemonState): Promise<boolean> 
   return true;
 }
 
-async function requireCurrentBridge(state: LiveDevDaemonState, reply: LiveReply): Promise<boolean> {
+async function requireCurrentBridge(
+  state: LiveDevDaemonState,
+  replyFailure: LiveReply,
+): Promise<boolean> {
   try {
     if (isStopped(state)) {
-      reply(409, {
-        ok: false,
-        error: commandError('live-not-running', 'The live owner stopped; run forgeax dev start.'),
-      });
+      replyFailure(
+        409,
+        commandError('live-not-running', 'The live owner stopped; run forgeax dev start.'),
+      );
       return false;
     }
     if (!(await reconcileProjectInputs(state))) {
-      reply(409, {
-        ok: false,
-        error: commandError(
+      replyFailure(
+        409,
+        commandError(
           'live-not-ready',
           state.status.error ?? 'Project inputs changed; wait for the new runtime.',
         ),
-      });
+      );
       return false;
     }
     if (
@@ -850,24 +836,24 @@ async function requireCurrentBridge(state: LiveDevDaemonState, reply: LiveReply)
       state.reloadRequested ||
       state.status.phase === 'reloading'
     ) {
-      reply(409, {
-        ok: false,
-        error: commandError('live-not-ready', 'Project inputs changed; wait for the new runtime.'),
-      });
+      replyFailure(
+        409,
+        commandError('live-not-ready', 'Project inputs changed; wait for the new runtime.'),
+      );
       return false;
     }
     if (state.status.phase === 'failed') {
-      reply(409, {
-        ok: false,
-        error: commandError('live-not-ready', state.status.error ?? 'Project startup failed.'),
-      });
+      replyFailure(
+        409,
+        commandError('live-not-ready', state.status.error ?? 'Project startup failed.'),
+      );
       return false;
     }
     if (await refreshBridgeStatus(state)) return true;
   } catch (error) {
-    reply(409, {
-      ok: false,
-      error: commandError(
+    replyFailure(
+      409,
+      commandError(
         typeof (error as { readonly code?: unknown })?.code === 'string'
           ? ((error as { readonly code: string }).code ?? 'live-app-bridge-unavailable')
           : 'live-app-bridge-unavailable',
@@ -875,16 +861,16 @@ async function requireCurrentBridge(state: LiveDevDaemonState, reply: LiveReply)
           ? error.message
           : 'The actual App execution realm is not available for this request.',
       ),
-    });
+    );
     return false;
   }
-  reply(409, {
-    ok: false,
-    error: commandError(
+  replyFailure(
+    409,
+    commandError(
       'live-app-bridge-unavailable',
       'The actual App execution realm is not connected; wait for dev status to report ready.',
     ),
-  });
+  );
   return false;
 }
 
@@ -897,33 +883,6 @@ interface LiveOutcome {
   readonly admitted: boolean;
 }
 
-/** Observations: re-running one against the replacement runtime has no effect to duplicate. */
-const LIVE_OBSERVATIONS: ReadonlySet<string> = new Set([
-  'capture',
-  'look',
-  'verify',
-  'rhi/capture',
-  'profile/capture',
-  'camera/get',
-  'find',
-  'pick',
-]);
-const LIVE_MUTATIONS: ReadonlySet<string> = new Set([
-  'eval',
-  'camera/set',
-  'camera/release',
-  'focus',
-  'play',
-]);
-/** Routes that act on the observation: camera control, find, pick and focus. */
-const LIVE_OBSERVATION_ROUTES: ReadonlySet<string> = new Set([
-  '/camera/get',
-  '/camera/set',
-  '/camera/release',
-  '/find',
-  '/pick',
-  '/focus',
-]);
 /** Self-resolving rejections: a reload, a replaced World, or another request still running. */
 const LIVE_TRANSIENT_CODES: ReadonlySet<string> = new Set([
   'live-not-ready',
@@ -934,10 +893,6 @@ const LIVE_TRANSIENT_CODES: ReadonlySet<string> = new Set([
   'live-app-bridge-disconnected',
   'live-reload-cancelled',
 ]);
-
-function isWaitingOperation(operation: string): boolean {
-  return LIVE_OBSERVATIONS.has(operation) || LIVE_MUTATIONS.has(operation);
-}
 
 function pinnedRevision(args: Record<string, unknown>): string | undefined {
   if (typeof args.revision === 'string') return args.revision;
@@ -976,7 +931,9 @@ export function retryable(
   if (!outcome.admitted) return true;
   // A look that waited out the game's whole startup budget would only wait it again.
   if (outcomeErrorDetail(outcome)?.startupWaited === true) return false;
-  return LIVE_OBSERVATIONS.has(operation) && pinnedRevision(args) === undefined;
+  return (
+    liveOperationPolicy(operation)?.readiness === 'observe' && pinnedRevision(args) === undefined
+  );
 }
 
 /** Wait until the owner can admit a request, a pinned revision is gone, or waiting cannot help. */
@@ -1113,14 +1070,13 @@ async function runWhenReady(
         outcome = {
           status: 409,
           admitted: false,
-          value: {
-            ok: false,
-            error: commandError(
+          value: rejectCommand(
+            commandError(
               'live-revision-stale',
               'The runtime was replaced while this request waited; inspect the current runtime before repeating it.',
               { revision: state.status.revision },
             ),
-          },
+          ),
         };
         break;
       }
@@ -1135,11 +1091,9 @@ async function runWhenReady(
 
 function rejectBridgePending(state: LiveDevDaemonState, error: unknown): void {
   for (const pending of state.bridgePending.values()) {
-    if (pending.timer !== undefined) clearTimeout(pending.timer);
     pending.cancelResolve?.(false);
     pending.reject(error);
   }
-  state.bridgePending.clear();
 }
 
 function installBridgeRelay(state: LiveDevDaemonState): void {
@@ -1180,6 +1134,7 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
     state.bridgeLostAt = undefined;
     state.status = { ...state.status, bridgeConnected: true };
     client.on('message', (raw) => {
+      if (state.bridge !== client) return;
       let message: {
         readonly type?: string;
         readonly id?: number;
@@ -1196,7 +1151,7 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
       const pending = state.bridgePending.get(id);
       if (pending === undefined) return;
       if (message.type === 'started') {
-        pending.progress.started = true;
+        pending.started = true;
         return;
       }
       if (message.type === 'canceled') {
@@ -1204,8 +1159,6 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
         pending.cancelResolve?.(admitted);
         pending.cancelResolve = undefined;
         if (!admitted) {
-          if (pending.timer !== undefined) clearTimeout(pending.timer);
-          state.bridgePending.delete(id);
           pending.reject(
             bridgeError(
               'live-eval-cancelled-before-execution',
@@ -1213,13 +1166,11 @@ function installBridgeRelay(state: LiveDevDaemonState): void {
             ),
           );
         } else {
-          pending.progress.started = true;
+          pending.started = true;
         }
         return;
       }
       if (message.type !== 'result') return;
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      state.bridgePending.delete(id);
       pending.cancelResolve?.(true);
       pending.resolve(message.payload);
     });
@@ -1286,7 +1237,6 @@ async function openSession(
     loadId,
     generation: state.status.generation + 1,
     phase: 'starting',
-    unfinishedEval: false,
     bridgeConnected: false,
     worldIdentity: undefined,
     frameId: undefined,
@@ -1509,7 +1459,6 @@ async function reloadSessionOwned(state: LiveDevDaemonState, pageOnly = false): 
   await state.session?.close();
   state.session = undefined;
   state.evaluation = undefined;
-  state.status = { ...state.status, unfinishedEval: false };
   // A second edit can arrive while the old project process is being torn
   // down. Do not spend another cold build on that intermediate input: the
   // reload loop will immediately consume the latest hash and start only the
@@ -1641,32 +1590,8 @@ function pollProjectInputs(state: LiveDevDaemonState, delayMs = 1_000): void {
 async function stopProjectProcess(state: LiveDevDaemonState): Promise<void> {
   const child = state.projectProcess;
   state.projectProcess = undefined;
-  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolveStop) => {
-    // Wait for the exit after SIGKILL as well, so a replacement can bind the
-    // released Vite port; the final bound covers a process that never reports.
-    let timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      timer = setTimeout(resolveStop, 1_000);
-      timer.unref();
-    }, 2_000);
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolveStop();
-    });
-    child.kill('SIGTERM');
-  });
-}
-
-async function loopbackPortFree(port: number): Promise<boolean> {
-  const probe = createServer();
-  try {
-    await once(probe.listen(port, '127.0.0.1'), 'listening');
-  } catch {
-    return false;
-  }
-  await new Promise<void>((resolveClose) => probe.close(() => resolveClose()));
-  return true;
+  // Wait for the exit after SIGKILL so a replacement can bind the released Vite port.
+  if (child !== undefined) await stopChildProcess(child, 1_000);
 }
 
 /**
@@ -1677,7 +1602,7 @@ async function loopbackPortFree(port: number): Promise<boolean> {
 async function replacementProjectPort(previousUrl: string | undefined): Promise<number> {
   const port = previousUrl === undefined ? 0 : Number(new URL(previousUrl).port);
   if (!Number.isSafeInteger(port) || port <= 0) return 0;
-  return (await loopbackPortFree(port)) ? port : 0;
+  return probeLoopbackPort(port).catch(() => 0);
 }
 
 /**
@@ -1917,18 +1842,19 @@ export async function runLiveProjectProcess(
 }
 
 function respondObservation(state: LiveDevDaemonState, response: ServerResponse): void {
-  const { endpoint: _endpoint, url: _url, ...status } = state.status;
-  jsonResponse(response, 200, {
-    ok: true,
-    value: {
+  const { endpoint: _endpoint, url: _url, ...status } = statusSnapshot(state);
+  jsonResponse(
+    response,
+    200,
+    completeCommand({
       status,
       image: state.observation ?? null,
       logs: state.logs,
       firstLogSequence: state.logs[0]?.sequence ?? state.logSequence + 1,
       nextLogSequence: state.logSequence + 1,
       droppedLogs: state.logSequence - state.logs.length,
-    },
-  });
+    }),
+  );
 }
 
 async function respondStatus(state: LiveDevDaemonState, response: ServerResponse): Promise<void> {
@@ -1957,7 +1883,7 @@ async function respondStatus(state: LiveDevDaemonState, response: ServerResponse
         }
       });
   }
-  jsonResponse(response, 200, { ok: true, value: publicStatus(state.status) });
+  jsonResponse(response, 200, { ok: true, value: publicStatus(statusSnapshot(state)) });
 }
 
 async function handleRequest(
@@ -1982,24 +1908,24 @@ async function handleRequest(
     return;
   }
   if (request.method !== 'POST') {
-    jsonResponse(response, 405, {
-      ok: false,
-      error: commandError(
-        'live-method-not-allowed',
-        'Use GET /status or a supported POST operation.',
+    jsonResponse(
+      response,
+      405,
+      rejectCommand(
+        commandError('live-method-not-allowed', 'Use GET /status or a supported POST operation.'),
       ),
-    });
+    );
     return;
   }
   const operation = url.pathname.slice(1);
-  if (!isWaitingOperation(operation)) {
+  if (liveOperationPolicy(operation)?.readiness === undefined) {
     const outcome = await runLiveOperation(state, url, {}, request, response);
     jsonResponse(response, outcome.status, outcome.value);
     return;
   }
   let input: Record<string, unknown>;
   try {
-    const parsed = await body(request);
+    const parsed = await readLoopbackJson(request, { emptyObject: true });
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       jsonResponse(response, 400, {
         ok: false,
@@ -2009,13 +1935,16 @@ async function handleRequest(
     }
     input = parsed as Record<string, unknown>;
   } catch (error) {
-    jsonResponse(response, 400, {
-      ok: false,
-      error: commandError(
-        'live-operation-failed',
-        error instanceof Error ? error.message : String(error),
+    jsonResponse(
+      response,
+      400,
+      rejectCommand(
+        commandError(
+          'live-operation-failed',
+          error instanceof Error ? error.message : String(error),
+        ),
       ),
-    });
+    );
     return;
   }
   const { readyTimeoutMs, ...args } = input;
@@ -2025,13 +1954,16 @@ async function handleRequest(
       !Number.isSafeInteger(readyTimeoutMs) ||
       readyTimeoutMs < 0)
   ) {
-    jsonResponse(response, 400, {
-      ok: false,
-      error: commandError(
-        'live-invalid-timeout',
-        'readyTimeoutMs must be a non-negative integer; 0 disables waiting.',
+    jsonResponse(
+      response,
+      400,
+      rejectCommand(
+        commandError(
+          'live-invalid-timeout',
+          'readyTimeoutMs must be a non-negative integer; 0 disables waiting.',
+        ),
       ),
-    });
+    );
     return;
   }
   const outcome = await runWhenReady(
@@ -2097,7 +2029,7 @@ function captureResponseError(result: unknown, code: string, hint: string): unkn
   return commandError(code, hint);
 }
 
-function sameLiveInstance(before: LiveDevStatus, after: LiveDevStatus): boolean {
+function sameLiveInstance(before: LiveOwnerStatus, after: LiveOwnerStatus): boolean {
   return (
     before.revision === after.revision &&
     before.loadId === after.loadId &&
@@ -2138,7 +2070,7 @@ function lookDriver(
 }
 
 function lookResponse(
-  status: LiveDevStatus,
+  status: LiveOwnerStatus,
   look: LookResult,
   session: BrowserCaptureSession,
   elapsedMs: number,
@@ -2190,341 +2122,293 @@ async function routeLiveOperation(
   response: ServerResponse,
   attempt: LiveAttempt,
 ): Promise<void> {
+  const operation = url.pathname.slice(1);
+  const policy = liveOperationPolicy(operation);
   const reply: LiveReply = (status, value) => {
     attempt.outcome = { status, value };
   };
+  const replyFailure: LiveReply = (status, error) => reply(status, rejectCommand(error));
+  const replySuccess: LiveReply = (status, value) => reply(status, completeCommand(value));
   // Every admission point follows awaits, so re-check the caller right before it.
   const admit = (): boolean => {
     if (attempt.abandoned()) {
-      reply(409, {
-        ok: false,
-        error: commandError(
+      replyFailure(
+        409,
+        commandError(
           'live-request-abandoned',
           'The caller disconnected before the request was admitted.',
         ),
-      });
+      );
       return false;
     }
     attempt.admitted = true;
     return true;
   };
   let evaluation: LiveEvaluation | undefined;
-  let profileCaptureId: string | undefined;
-  let profileCaptureWorldIdentity: string | undefined;
+  let captureHeld = false;
+  let profileCapture: { worldIdentity: string | undefined; captureId: string } | undefined;
   let revokeLeaseForRequest: (() => void) | undefined;
-  /** Release only this request's evaluation; a replaced World keeps the same owner. */
-  const releaseEvaluation = (owned: LiveEvaluation | undefined): boolean => {
+  function releaseEvaluation(owned = evaluation): boolean {
+    if (owned === evaluation) evaluation = undefined;
     if (owned === undefined || state.evaluation !== owned) return false;
     state.evaluation = undefined;
-    state.status = { ...state.status, unfinishedEval: false };
     return true;
+  }
+  const checkSessionOwner = () => writeSessionFile(state, 'check-owner');
+  function releaseEvaluationInBackground(owned = evaluation): void {
+    if (releaseEvaluation(owned)) void checkSessionOwner().catch(() => undefined);
+  }
+  async function beginEvaluation(busyHint: string): Promise<boolean> {
+    // The first check can precede I/O. Acquire here before another request
+    // can claim the same execution realm.
+    if (!requireIdleEvaluation(busyHint)) return false;
+    if (attempt.abandoned()) return admit();
+    const previous = state.status;
+    const owned = { continuing: false };
+    evaluation = state.evaluation = owned;
+    await checkSessionOwner();
+    if (
+      state.evaluation === owned &&
+      state.status.phase === 'ready' &&
+      sameLiveInstance(previous, state.status)
+    )
+      return admit();
+    replyFailure(
+      409,
+      commandError('live-instance-changed', 'The runtime changed before evaluation began.'),
+    );
+    return false;
+  }
+  const holdCapture = () => {
+    captureHeld = true;
+    state.captureRunning = true;
+    return state.observationInFlight;
   };
-  const clearEvalState = async (): Promise<void> => {
-    const owned = evaluation;
-    evaluation = undefined;
-    if (!releaseEvaluation(owned)) return;
-    state.status = { ...state.status, unfinishedEval: false };
-    await writeSessionFile(state);
+  const liveNotReady = () =>
+    commandError('live-not-ready', 'Wait for the live instance to reach a submitted frame.');
+  const replyLiveNotReady = () => replyFailure(409, liveNotReady());
+  const requireIdleEvaluation = (hint: string): boolean => {
+    if (state.evaluation === undefined) return true;
+    replyFailure(409, commandError('live-eval-running', hint));
+    return false;
+  };
+  const requireCaptureAvailable = (hint = 'Wait for the current capture.') => {
+    if (!state.captureRunning) return true;
+    replyFailure(409, commandError('run-capture-busy', hint));
+    return false;
+  };
+  const requireCurrentCommand = (): boolean => {
+    if (state.status.phase !== 'ready') {
+      replyLiveNotReady();
+      return false;
+    }
+    const error = assertLiveIdentity(state, input);
+    if (error === undefined) return true;
+    replyFailure(409, error);
+    return false;
+  };
+  const currentCaptureTarget = async (refreshFrame = false) => {
+    if (!(await requireCurrentBridge(state, replyFailure))) return undefined;
+    if (refreshFrame) await refreshFrameStatus(state);
+    const status = state.status;
+    const session = state.session;
+    const error =
+      assertLiveIdentity(state, input) ??
+      (session === undefined || status.phase !== 'ready' ? liveNotReady() : undefined);
+    if (error !== undefined) replyFailure(409, error);
+    return error === undefined && session !== undefined ? { status, session } : undefined;
+  };
+  const stillCurrent = async (before: LiveOwnerStatus, hint: string, refreshFrame = false) => {
+    if (!(await requireCurrentBridge(state, replyFailure))) return undefined;
+    if (refreshFrame) await refreshFrameStatus(state);
+    if (sameLiveInstance(before, state.status)) return state.status;
+    replyFailure(409, commandError('live-instance-changed', hint));
+    return undefined;
   };
   async function captureRhi(): Promise<void> {
-    if (state.evaluation !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-eval-running',
-          'RHI capture is blocked until the current evaluation completes.',
-        ),
-      });
-      return;
-    }
+    const busyHint = 'RHI capture is blocked until the current evaluation completes.';
+    if (!requireIdleEvaluation(busyHint)) return;
     const args = input;
     if (!state.rhiCapture) {
-      reply(409, { ok: false, error: rhiCaptureDisabledError() });
+      replyFailure(409, rhiCaptureDisabledError());
       return;
     }
-    if (!(await requireCurrentBridge(state, reply))) return;
-    const before = state.status;
-    const identityError = assertLiveIdentity(state, args);
-    if (identityError !== undefined) {
-      reply(409, { ok: false, error: identityError });
-      return;
-    }
-    if (state.session === undefined || before.phase !== 'ready') {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
+    const target = await currentCaptureTarget();
+    if (target === undefined) return;
+    const { status: before } = target;
     const runId = `live-rhi-${randomUUID()}`;
-    if (!admit()) return;
-    evaluation = { continuing: false };
-    state.evaluation = evaluation;
-    state.status = { ...state.status, unfinishedEval: true };
-    await writeSessionFile(state);
-    try {
-      const captured = await bridgeEval(state, rhiCaptureScript(runId), 120_000);
-      if (
-        captured === null ||
-        typeof captured !== 'object' ||
-        Reflect.get(captured, 'ok') !== true
-      ) {
-        const error = captureResponseError(
-          captured,
-          'capture-unavailable',
-          'The live App did not return an RHI tape.',
-        );
-        reply(409, { ok: false, error });
-        return;
-      }
-      if (!(await requireCurrentBridge(state, reply))) return;
-      const after = state.status;
-      if (
-        before.revision !== after.revision ||
-        before.loadId !== after.loadId ||
-        before.worldIdentity !== after.worldIdentity
-      ) {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-instance-changed',
-            'The live instance changed while capturing RHI work; retry against the new status.',
-          ),
-        });
-        return;
-      }
-      const value = Reflect.get(captured, 'value');
-      if (value === null || typeof value !== 'object') {
-        reply(500, {
-          ok: false,
-          error: commandError(
-            'capture-artifact-invalid',
-            'The live RHI provider returned no artifact reference.',
-          ),
-        });
-        return;
-      }
-      const artifact = value as Record<string, unknown>;
-      if (typeof args.output === 'string' && typeof artifact.path === 'string') {
-        const output = resolve(state.root, args.output);
-        await mkdir(dirname(output), { recursive: true });
-        await writeFile(output, await readFile(artifact.path));
-        artifact.path = output;
-      }
-      const { submittedFrame, ...tape } = artifact;
-      const frame = await capturedFrame(state, submittedFrame);
-      reply(200, {
-        ok: true,
-        value: { revision: after.revision, ...frame, ...tape },
-      });
+    if (!(await beginEvaluation(busyHint))) return;
+    const captured = await bridgeEval(state, rhiCaptureScript(runId), 120_000);
+    if (captured === null || typeof captured !== 'object' || Reflect.get(captured, 'ok') !== true) {
+      const error = captureResponseError(
+        captured,
+        'capture-unavailable',
+        'The live App did not return an RHI tape.',
+      );
+      replyFailure(409, error);
       return;
-    } finally {
-      await clearEvalState();
     }
+    const after = await stillCurrent(
+      before,
+      'The live instance changed while capturing RHI work; retry against the new status.',
+    );
+    if (after === undefined) return;
+    const value = Reflect.get(captured, 'value');
+    if (value === null || typeof value !== 'object') {
+      replyFailure(
+        500,
+        commandError(
+          'capture-artifact-invalid',
+          'The live RHI provider returned no artifact reference.',
+        ),
+      );
+      return;
+    }
+    const artifact = value as Record<string, unknown>;
+    if (typeof args.output === 'string' && typeof artifact.path === 'string') {
+      const output = resolve(state.root, args.output);
+      await mkdir(dirname(output), { recursive: true });
+      await writeFile(output, await readFile(artifact.path));
+      artifact.path = output;
+    }
+    const { submittedFrame, ...tape } = artifact;
+    const frame = await capturedFrame(state, submittedFrame);
+    if (releaseEvaluation()) await checkSessionOwner();
+    replySuccess(200, { revision: after.revision, ...frame, ...tape });
+    return;
   }
 
   async function captureImage(): Promise<void> {
     const verifying = url.pathname === '/verify';
-    if (state.captureRunning) {
-      reply(409, {
-        ok: false,
-        error: commandError('run-capture-busy', 'Wait for the current capture.'),
+    if (!requireCaptureAvailable()) return;
+    await holdCapture();
+    if (!requireIdleEvaluation('Capture is blocked until the current evaluation completes.'))
+      return;
+    const args = input as {
+      readonly output?: unknown;
+      readonly checkpoint?: unknown;
+      readonly requireUi?: boolean;
+      readonly revision?: unknown;
+      readonly timeoutMs?: number;
+    };
+    function validCaptureArgs(): boolean {
+      // Without a revision, verify checks whichever execution is current; the
+      // before/after identity check below still rejects a change during capture.
+      if (
+        verifying &&
+        args.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(args.timeoutMs) || args.timeoutMs < 1)
+      ) {
+        replyFailure(
+          400,
+          commandError(
+            'live-invalid-timeout',
+            'Verification timeoutMs must be a positive integer.',
+          ),
+        );
+        return false;
+      }
+      return true;
+    }
+    if (!validCaptureArgs()) return;
+    const target = await currentCaptureTarget(true);
+    if (target === undefined) return;
+    const { status: before, session } = target;
+    function requireHealthyCapture(status: LiveOwnerStatus): boolean {
+      if (!verifying) return true;
+      const error = assertRuntimeHealth(status);
+      if (error === undefined) return true;
+      replyFailure(409, error);
+      return false;
+    }
+    if (!requireHealthyCapture(before)) return;
+    // Fail before entering the 120s compositor wait when the project has no
+    // renderable camera. Capture is an observation of the live World, so the
+    // realm's structured camera error is the honest terminal result.
+    async function captureCameraReady(): Promise<boolean> {
+      try {
+        await bridgeCall(state, 'return simulation.observation?.camera.get();', 5_000).promise;
+      } catch (error) {
+        replyFailure(
+          409,
+          operationError(
+            error,
+            'live-camera-unavailable',
+            error instanceof Error ? error.message : 'The live World has no active camera.',
+          ),
+        );
+        return false;
+      }
+      return true;
+    }
+    if (!(await captureCameraReady())) return;
+    if (!admit()) return;
+    function captureRecord() {
+      return session.capture(typeof args.checkpoint === 'string' ? args.checkpoint : undefined, {
+        purpose: verifying ? 'validate' : 'observe',
+        ...(verifying && before.frameId !== undefined ? { afterFrameId: before.frameId } : {}),
+        ...(verifying && args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+        ...(args.requireUi === undefined ? {} : { requireUi: args.requireUi }),
+        ...(typeof args.output === 'string' ? { output: args.output } : {}),
       });
+    }
+    const record = await captureRecord();
+    const after = await stillCurrent(
+      before,
+      'The live instance changed while capturing; retry against the new status.',
+      true,
+    );
+    if (after === undefined) return;
+    if (!requireHealthyCapture(after)) return;
+    const report = session.report();
+    const renderFailure = captureRenderFailure(record);
+    const reportPath = `${record.output}.json`;
+    const reportBytes = `${JSON.stringify({ revision: after.revision, ...(verifying ? { execution: after.execution } : {}), record, consoleErrors: report.consoleErrors, pageErrors: report.pageErrors }, null, 2)}\n`;
+    await writeFile(reportPath, reportBytes, 'utf8');
+    if (
+      verifying &&
+      (!record.ok || report.consoleErrors.length > 0 || report.pageErrors.length > 0)
+    ) {
+      replyFailure(
+        409,
+        commandError('live-runtime-failed', 'Runtime errors were observed during verification.', {
+          output: record.output,
+          report: reportPath,
+        }),
+      );
       return;
     }
-    state.captureRunning = true;
-    await state.observationInFlight;
-    try {
-      if (state.evaluation !== undefined) {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-eval-running',
-            'Capture is blocked until the current evaluation completes.',
-          ),
-        });
-        return;
-      }
-      const args = input as {
-        readonly output?: unknown;
-        readonly checkpoint?: unknown;
-        readonly requireUi?: boolean;
-        readonly revision?: unknown;
-        readonly timeoutMs?: number;
-      };
-      function validCaptureArgs(): boolean {
-        // Without a revision, verify checks whichever execution is current; the
-        // before/after identity check below still rejects a change during capture.
-        if (
-          verifying &&
-          args.timeoutMs !== undefined &&
-          (!Number.isSafeInteger(args.timeoutMs) || args.timeoutMs < 1)
-        ) {
-          reply(400, {
-            ok: false,
-            error: commandError(
-              'live-invalid-timeout',
-              'Verification timeoutMs must be a positive integer.',
-            ),
-          });
-          return false;
-        }
-        return true;
-      }
-      if (!validCaptureArgs()) return;
-      if (!(await requireCurrentBridge(state, reply))) return;
-      await refreshFrameStatus(state);
-      const before = state.status;
-      const identityError = assertLiveIdentity(state, args);
-      if (identityError !== undefined) {
-        reply(409, { ok: false, error: identityError });
-        return;
-      }
-      if (state.session === undefined || before.phase !== 'ready') {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-not-ready',
-            'Wait for the live instance to reach a submitted frame.',
-          ),
-        });
-        return;
-      }
-      const healthError = verifying ? assertRuntimeHealth(before) : undefined;
-      if (healthError !== undefined) {
-        reply(409, { ok: false, error: healthError });
-        return;
-      }
-      // Fail before entering the 120s compositor wait when the project has no
-      // renderable camera. Capture is an observation of the live World, so the
-      // realm's structured camera error is the honest terminal result.
-      async function captureCameraReady(): Promise<boolean> {
-        try {
-          await bridgeCall(state, 'return simulation.observation?.camera.get();', 5_000).promise;
-        } catch (error) {
-          reply(409, {
-            ok: false,
-            error: operationError(
-              error,
-              'live-camera-unavailable',
-              error instanceof Error ? error.message : 'The live World has no active camera.',
-            ),
-          });
-          return false;
-        }
-        return true;
-      }
-      if (!(await captureCameraReady())) return;
-      if (!admit()) return;
-      function imageOptions() {
-        return {
-          purpose: verifying ? ('validate' as const) : ('observe' as const),
-          ...(verifying && before.frameId !== undefined ? { afterFrameId: before.frameId } : {}),
-          ...(verifying && args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
-          ...(args.requireUi === undefined ? {} : { requireUi: args.requireUi }),
-          ...(typeof args.output === 'string' ? { output: args.output } : {}),
-        };
-      }
-      const record = await state.session.capture(
-        typeof args.checkpoint === 'string' ? args.checkpoint : undefined,
-        imageOptions(),
-      );
-      if (!(await requireCurrentBridge(state, reply))) return;
-      await refreshFrameStatus(state);
-      const after = state.status;
-      if (
-        before.revision !== after.revision ||
-        before.loadId !== after.loadId ||
-        before.worldIdentity !== after.worldIdentity
-      ) {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-instance-changed',
-            'The live instance changed while capturing; retry against the new status.',
-          ),
-        });
-        return;
-      }
-      const finalHealthError = verifying ? assertRuntimeHealth(after) : undefined;
-      if (finalHealthError !== undefined) {
-        reply(409, { ok: false, error: finalHealthError });
-        return;
-      }
-      const session = state.session;
-      await publishImageResult();
-      async function publishImageResult(): Promise<void> {
-        const report = session.report();
-        const renderFailure = captureRenderFailure(record);
-        const reportPath = `${record.output}.json`;
-        const reportBytes = `${JSON.stringify({ revision: after.revision, ...(verifying ? { execution: after.execution } : {}), record, consoleErrors: report.consoleErrors, pageErrors: report.pageErrors }, null, 2)}\n`;
-        await writeFile(reportPath, reportBytes, 'utf8');
-        if (
-          verifying &&
-          (!record.ok || report.consoleErrors.length > 0 || report.pageErrors.length > 0)
-        ) {
-          reply(409, {
-            ok: false,
-            error: commandError(
-              'live-runtime-failed',
-              'Runtime errors were observed during verification.',
-              {
-                output: record.output,
-                report: reportPath,
-              },
-            ),
-          });
-          return;
-        }
-        reply(200, {
-          ok: true,
-          artifacts: [
-            { kind: 'png', uri: record.output, mediaType: 'image/png', digest: record.digest },
-            {
-              kind: 'tool-result',
-              uri: reportPath,
-              mediaType: 'application/json',
-              digest: `sha256:${createHash('sha256').update(reportBytes).digest('hex')}`,
-            },
-          ],
-          value: {
-            revision: after.revision,
-            ...(verifying ? { verified: 'runtime' as const } : {}),
-            ...(state.snapshot ? { runId: after.runId, inputVersion: after.inputVersion } : {}),
-            frameId: record.runtime.engineFrameId,
-            screenshot: {
-              kind: 'screenshot',
-              uri: record.output,
-              mediaType: 'image/png',
-              digest: record.digest,
-            },
-            report: {
-              kind: 'tool-result',
-              uri: reportPath,
-              mediaType: 'application/json',
-              digest: `sha256:${createHash('sha256').update(reportBytes).digest('hex')}`,
-            },
-            pixels: {
-              width: record.pixels.width,
-              height: record.pixels.height,
-              rendered: renderFailure === undefined,
-              ...(renderFailure === undefined ? {} : { reason: renderFailure.reason }),
-            },
-            ...(renderFailure === undefined ? {} : { hint: renderFailure.hint }),
-            ...(record.runtime.rendererError === null
-              ? {}
-              : { rendererError: record.runtime.rendererError }),
-            errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
-          },
-        });
-        return;
-      }
-    } finally {
-      state.captureRunning = false;
-    }
+    const screenshot = { uri: record.output, mediaType: 'image/png', digest: record.digest };
+    const reportArtifact = {
+      kind: 'tool-result',
+      uri: reportPath,
+      mediaType: 'application/json',
+      digest: `sha256:${sha256(reportBytes)}`,
+    };
+    reply(200, {
+      ok: true,
+      artifacts: [{ kind: 'png', ...screenshot }, reportArtifact],
+      value: {
+        revision: after.revision,
+        ...(verifying ? { verified: 'runtime' as const } : {}),
+        ...(state.snapshot ? { runId: after.runId, inputVersion: after.inputVersion } : {}),
+        frameId: record.runtime.engineFrameId,
+        screenshot: { kind: 'screenshot', ...screenshot },
+        report: reportArtifact,
+        pixels: {
+          width: record.pixels.width,
+          height: record.pixels.height,
+          rendered: renderFailure === undefined,
+          ...(renderFailure === undefined ? {} : { reason: renderFailure.reason }),
+        },
+        ...(renderFailure === undefined ? {} : { hint: renderFailure.hint }),
+        ...(record.runtime.rendererError === null
+          ? {}
+          : { rendererError: record.runtime.rendererError }),
+        errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
+      },
+    });
+    return;
   }
 
   /**
@@ -2536,51 +2420,36 @@ async function routeLiveOperation(
    */
   async function playInPage(): Promise<void> {
     if (state.snapshot || state.carrier !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
+      replyFailure(
+        409,
+        commandError(
           'live-play-unavailable',
           state.snapshot
             ? 'A sealed run snapshot cannot host a play; use `forgeax dev start`.'
             : 'A borrowed display carrier cannot host a play; rerun without --session.',
         ),
-      });
+      );
       return;
     }
-    if (state.captureRunning) {
-      reply(409, {
-        ok: false,
-        error: commandError('run-capture-busy', 'Wait for the current capture or play.'),
-      });
-      return;
-    }
-    if (state.evaluation !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-eval-running',
-          'A play is blocked until the current evaluation completes.',
-        ),
-      });
-      return;
-    }
+    if (!requireCaptureAvailable('Wait for the current capture or play.')) return;
+    if (!requireIdleEvaluation('A play is blocked until the current evaluation completes.')) return;
     // The first page is still opening; the play reloads only an owner past startup.
     if (state.status.phase === 'starting') {
-      reply(409, {
-        ok: false,
-        error: commandError('live-not-ready', 'Wait for the live instance to finish starting.'),
-      });
+      replyFailure(
+        409,
+        commandError('live-not-ready', 'Wait for the live instance to finish starting.'),
+      );
       return;
     }
     if (!admit()) return;
-    state.captureRunning = true;
+    const observing = holdCapture();
     // A caller that disconnects cancels the play instead of leaving it to run unseen.
     const cancel = new AbortController();
     const watch = setInterval(() => {
       if (attempt.abandoned()) cancel.abort();
     }, 500);
     try {
-      await state.observationInFlight;
+      await observing;
       const { playCommand } = await import('./play.js');
       const { root: _root, session: _session, ...options } = input as Record<string, unknown>;
       const result = await playCommand(
@@ -2604,53 +2473,20 @@ async function routeLiveOperation(
       reply(200, result);
     } finally {
       clearInterval(watch);
-      state.captureRunning = false;
     }
   }
 
   /** `dev look`: views of the current revision with an automatic visual report. */
   async function captureLook(): Promise<void> {
-    if (state.captureRunning) {
-      reply(409, {
-        ok: false,
-        error: commandError('run-capture-busy', 'Wait for the current capture.'),
-      });
-      return;
-    }
-    state.captureRunning = true;
-    await state.observationInFlight;
+    if (!requireCaptureAvailable()) return;
     try {
+      await holdCapture();
       const startedAt = Date.now();
-      if (state.evaluation !== undefined) {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-eval-running',
-            'Look is blocked until the current evaluation completes.',
-          ),
-        });
-        return;
-      }
+      if (!requireIdleEvaluation('Look is blocked until the current evaluation completes.')) return;
       const request = parseLookRequest(input);
-      if (!(await requireCurrentBridge(state, reply))) return;
-      await refreshFrameStatus(state);
-      const before = state.status;
-      const identityError = assertLiveIdentity(state, input);
-      if (identityError !== undefined) {
-        reply(409, { ok: false, error: identityError });
-        return;
-      }
-      const session = state.session;
-      if (session === undefined || before.phase !== 'ready') {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-not-ready',
-            'Wait for the live instance to reach a submitted frame.',
-          ),
-        });
-        return;
-      }
+      const target = await currentCaptureTarget(true);
+      if (target === undefined) return;
+      const { status: before, session } = target;
       if (!admit()) return;
       const outputDir =
         typeof input.output === 'string'
@@ -2662,149 +2498,69 @@ async function routeLiveOperation(
         undefined,
         attempt.startupWaitMs,
       );
-      if (!(await requireCurrentBridge(state, reply))) return;
-      await refreshFrameStatus(state);
-      if (!sameLiveInstance(before, state.status)) {
-        reply(409, {
-          ok: false,
-          error: commandError(
-            'live-instance-changed',
-            'The live instance changed while looking; look again at the new revision.',
-          ),
-        });
-        return;
-      }
-      reply(200, lookResponse(state.status, look, session, Date.now() - startedAt));
+      const after = await stillCurrent(
+        before,
+        'The live instance changed while looking; look again at the new revision.',
+        true,
+      );
+      if (after === undefined) return;
+      reply(200, lookResponse(after, look, session, Date.now() - startedAt));
     } catch (error) {
       if (!(error instanceof LookRequestError)) throw error;
-      reply(400, { ok: false, error: commandError(error.code, error.hint) });
-    } finally {
-      state.captureRunning = false;
+      replyFailure(400, commandError(error.code, error.hint));
     }
   }
 
-  async function applyObservation(): Promise<void> {
-    if (state.evaluation !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-eval-running',
-          'Observation mutation is blocked until the current evaluation completes.',
-        ),
-      });
+  async function applyObservation(observation: LiveObservationScript): Promise<void> {
+    if (
+      !requireIdleEvaluation(
+        'Observation mutation is blocked until the current evaluation completes.',
+      )
+    )
       return;
-    }
-    if (state.session === undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
     const args = input;
-    if (!(await requireCurrentBridge(state, reply))) return;
-    if (state.status.phase !== 'ready') {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
-    const identityError = assertLiveIdentity(state, args);
-    if (identityError !== undefined) {
-      reply(409, { ok: false, error: identityError });
-      return;
-    }
+    if (state.session === undefined) return replyLiveNotReady();
+    if (!(await requireCurrentBridge(state, replyFailure)) || !requireCurrentCommand()) return;
+    const before = state.status;
     if (
       url.pathname === '/focus' &&
       (typeof args.name === 'string') === (typeof args.ref === 'string')
     ) {
-      reply(400, {
-        ok: false,
-        error: commandError('live-target-required', 'Pass exactly one of --name or --ref.'),
-      });
+      replyFailure(
+        400,
+        commandError('live-target-required', 'Pass exactly one of --name or --ref.'),
+      );
       return;
     }
-    const before = state.status;
-    const operation = url.pathname.slice(1);
-    const script = observationScript(operation, args);
+    const script = observation(args);
     if (!admit()) return;
     // A pick samples the next presented HDR frame, which the realm bounds at 30 s.
     const result = await bridgeEval(state, script, operation === 'pick' ? 35_000 : undefined);
-    if (!READ_ONLY_OBSERVATIONS.has(operation))
-      await waitForFrameAfter(state.session, before.frameId);
-    if (!(await requireCurrentBridge(state, reply))) return;
-    await refreshFrameStatus(state);
-    if (
-      before.revision !== state.status.revision ||
-      before.loadId !== state.status.loadId ||
-      before.worldIdentity !== state.status.worldIdentity
-    ) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-instance-changed',
-          'The live instance or World changed while applying the camera operation; retry against the new status.',
-        ),
-      });
-      return;
-    }
-    reply(200, {
-      ok: true,
-      value: {
-        revision: state.status.revision,
-        frameId: state.status.frameId,
-        ...observationValue(result, state.status.revision),
-      },
+    if (policy?.readiness === 'mutate') await waitForFrameAfter(state.session, before.frameId);
+    const after = await stillCurrent(
+      before,
+      'The live instance or World changed while applying the camera operation; retry against the new status.',
+      true,
+    );
+    if (after === undefined) return;
+    replySuccess(200, {
+      revision: after.revision,
+      frameId: after.frameId,
+      ...observationValue(result, after.revision),
     });
     return;
   }
 
   async function captureProfile(): Promise<void> {
-    if (state.evaluation !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError('live-eval-running', 'Profile capture is already running.'),
-      });
-      return;
-    }
+    const busyHint = 'Profile capture is already running.';
+    if (!requireIdleEvaluation(busyHint)) return;
     const args = input;
-    if (!(await requireCurrentBridge(state, reply))) return;
-    const before = state.status;
-    const identityError = assertLiveIdentity(state, args);
-    if (identityError !== undefined) {
-      reply(409, { ok: false, error: identityError });
-      return;
-    }
-    if (state.session === undefined || before.phase !== 'ready') {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
+    const target = await currentCaptureTarget();
+    if (target === undefined) return;
+    const { status: before } = target;
     const frameLimit = boundedCaptureLimit(args.frameLimit, 1, 120, 30);
     const eventLimit = boundedCaptureLimit(args.eventLimit, 64, 20_000, 4_096);
-    if (!admit()) return;
-    evaluation = { continuing: false };
-    state.evaluation = evaluation;
-    profileCaptureWorldIdentity = before.worldIdentity;
-    state.status = { ...state.status, unfinishedEval: true };
-    await writeSessionFile(state);
-    const clearProfileState = async (): Promise<void> => {
-      const owned = evaluation;
-      evaluation = undefined;
-      if (releaseEvaluation(owned)) await writeSessionFile(state);
-    };
+    if (!(await beginEvaluation(busyHint))) return;
     const started = await bridgeEval(
       state,
       `return (() => {
@@ -2815,19 +2571,17 @@ async function routeLiveOperation(
       10_000,
     );
     if (started === null || typeof started !== 'object' || Reflect.get(started, 'ok') !== true) {
-      await clearProfileState();
       const error = captureResponseError(
         started,
         'profile-capture-unavailable',
         'The live App did not start profiling.',
       );
-      reply(409, { ok: false, error });
+      replyFailure(409, error);
       return;
     }
-    profileCaptureId =
-      typeof Reflect.get(started, 'captureId') === 'string'
-        ? (Reflect.get(started, 'captureId') as string)
-        : undefined;
+    const captureId = Reflect.get(started, 'captureId');
+    if (typeof captureId === 'string')
+      profileCapture = { captureId, worldIdentity: before.worldIdentity };
     await waitForProfilerCompletion(state, before.frameId, 120_000);
     const capture = await bridgeEval(state, 'return profiler?.latestCapture() ?? null;', 10_000);
     if (capture === null || typeof capture !== 'object') {
@@ -2836,26 +2590,11 @@ async function routeLiveOperation(
         'The live profiler finished without an artifact.',
       );
     }
-    if (!(await requireCurrentBridge(state, reply))) {
-      await clearProfileState();
-      return;
-    }
-    const after = state.status;
-    if (
-      before.revision !== after.revision ||
-      before.loadId !== after.loadId ||
-      before.worldIdentity !== after.worldIdentity
-    ) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-instance-changed',
-          'The live instance changed while profiling; retry against the new status.',
-        ),
-      });
-      await clearProfileState();
-      return;
-    }
+    const after = await stillCurrent(
+      before,
+      'The live instance changed while profiling; retry against the new status.',
+    );
+    if (after === undefined) return;
     const output = resolve(
       state.root,
       typeof args.output === 'string'
@@ -2865,17 +2604,13 @@ async function routeLiveOperation(
     await mkdir(dirname(output), { recursive: true });
     const bytes = `${JSON.stringify(capture, null, 2)}\n`;
     await writeFile(output, bytes, 'utf8');
-    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    await clearProfileState();
-    profileCaptureId = undefined;
-    profileCaptureWorldIdentity = undefined;
-    reply(200, {
-      ok: true,
-      value: {
-        revision: after.revision,
-        captureId: Reflect.get(capture, 'captureId'),
-        artifact: { kind: 'profile-capture', uri: output, path: output, digest },
-      },
+    const digest = `sha256:${sha256(bytes)}`;
+    if (releaseEvaluation()) await checkSessionOwner();
+    profileCapture = undefined;
+    replySuccess(200, {
+      revision: after.revision,
+      captureId: Reflect.get(capture, 'captureId'),
+      artifact: { kind: 'profile-capture', uri: output, path: output, digest },
     });
     return;
   }
@@ -2888,74 +2623,35 @@ async function routeLiveOperation(
       readonly lease?: unknown;
     };
     if (typeof args.revision !== 'string') {
-      reply(400, {
-        ok: false,
-        error: commandError(
+      replyFailure(
+        400,
+        commandError(
           'live-revision-required',
           'Pass --revision from dev status before evaluating code.',
         ),
-      });
+      );
       return;
     }
     if (typeof args.code !== 'string' || args.code.trim().length === 0) {
-      reply(400, {
-        ok: false,
-        error: commandError(
-          'live-invalid-eval',
-          'Provide a non-empty JavaScript expression in code.',
-        ),
-      });
+      replyFailure(
+        400,
+        commandError('live-invalid-eval', 'Provide a non-empty JavaScript expression in code.'),
+      );
       return;
     }
-    if (state.evaluation !== undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-eval-running',
-          'Only status, reload, and stop are available while eval is running.',
-        ),
-      });
-      return;
-    }
-    if (state.session === undefined) {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
-    if (!(await requireCurrentBridge(state, reply))) return;
-    if (state.status.phase !== 'ready') {
-      reply(409, {
-        ok: false,
-        error: commandError(
-          'live-not-ready',
-          'Wait for the live instance to reach a submitted frame.',
-        ),
-      });
-      return;
-    }
+    const busyHint = 'Only status, reload, and stop are available while eval is running.';
+    if (!requireIdleEvaluation(busyHint)) return;
+    if (state.session === undefined) return replyLiveNotReady();
+    if (!(await requireCurrentBridge(state, replyFailure)) || !requireCurrentCommand()) return;
     const before = state.status;
-    const identityError = assertLiveIdentity(state, args);
-    if (identityError !== undefined) {
-      reply(409, { ok: false, error: identityError });
-      return;
-    }
-    if (!admit()) return;
-    evaluation = { continuing: false };
-    state.evaluation = evaluation;
-    state.status = { ...state.status, unfinishedEval: true };
-    await writeSessionFile(state);
+    if (!(await beginEvaluation(busyHint))) return;
     const timeout = typeof args.timeoutMs === 'number' ? Math.max(0, args.timeoutMs) : 30_000;
     // The caller timeout only bounds the HTTP wait. The bridge request stays
     // pending until the actual realm returns or a hard reload/stop closes it.
     // `lease: true` makes synthetic input a lexical session resource. The
     // actual realm clears it after normal return or throw; bridge teardown
     // and Worker disconnects cover the remaining owner boundaries.
-    openLiveInput(state);
+    notifyLiveBridge(state, { type: 'input-lease-open' });
     const evaluationCode =
       args.lease === true
         ? `try { ${args.code} } finally { simulation?.input?.revokeInjectedLease?.(); if (simulation?.input?.revokeInjectedLease === undefined) simulation?.input?.clearInjected?.(); }`
@@ -2965,7 +2661,7 @@ async function routeLiveOperation(
     const revokeLease = (): void => {
       if (!leaseActive) return;
       leaseActive = false;
-      revokeLiveInput(state);
+      notifyLiveBridge(state, { type: 'input-clear' });
       void evaluationCall.cancel().catch(() => {});
     };
     const finishLease = (): void => {
@@ -2980,142 +2676,104 @@ async function routeLiveOperation(
       response.once('close', revokeLease);
     }
     const evaluationResult = evaluationCall.promise;
-    const timed = await Promise.race([
+    const timed = await beforeDeadline(
       evaluationResult.then((value) => ({ state: 'completed' as const, value })),
-      new Promise<{ state: 'continuing' }>((resolveTimeout) =>
-        setTimeout(() => resolveTimeout({ state: 'continuing' }), timeout),
-      ),
-    ]);
+      timeout,
+      () => ({ state: 'continuing' as const }),
+    );
     if (timed.state === 'continuing') {
       if (!evaluationCall.started()) {
-        const admitted = await Promise.race([
-          evaluationCall.cancel(),
-          new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 2_000)),
-        ]);
+        const admitted = await beforeDeadline(evaluationCall.cancel(), 2_000, () => true);
         void evaluationResult.catch(() => {});
         if (!admitted) {
           finishLease();
-          releaseEvaluation(evaluation);
-          evaluation = undefined;
-          await writeSessionFile(state);
-          reply(409, {
-            ok: false,
-            error: commandError(
+          if (releaseEvaluation()) await checkSessionOwner();
+          replyFailure(
+            409,
+            commandError(
               'live-eval-cancelled-before-execution',
               'The evaluation did not start before the caller deadline and was cancelled.',
               { continuing: false, revision: before.revision },
             ),
-          });
+          );
           return;
         }
       }
-      reply(408, {
-        ok: false,
-        error: commandError(
+      replyFailure(
+        408,
+        commandError(
           'live-eval-continuing',
           'The caller wait ended; the owner still tracks the evaluation.',
           { continuing: true, revision: before.revision },
         ),
-      });
+      );
       const continuing = evaluation;
       if (continuing !== undefined) continuing.continuing = true;
       // This request no longer releases it on exit; the realm's return does.
       evaluation = undefined;
       const release = () => {
         finishLease();
-        if (releaseEvaluation(continuing)) void writeSessionFile(state);
+        releaseEvaluationInBackground(continuing);
       };
       void evaluationResult.then(release, release);
       return;
     }
     finishLease();
-    releaseEvaluation(evaluation);
-    evaluation = undefined;
-    if (!(await requireCurrentBridge(state, reply))) return;
-    await writeSessionFile(state);
-    reply(200, {
-      ok: true,
-      value: { revision: before.revision, result: timed.value },
-    });
-    return;
+    releaseEvaluation();
+    if (!(await requireCurrentBridge(state, replyFailure))) return;
+    await checkSessionOwner();
+    replySuccess(200, { revision: before.revision, result: timed.value });
   }
 
-  function replyOperationFailure(error: unknown): void {
-    reply(500, {
-      ok: false,
-      error: operationError(
+  try {
+    if (policy?.observation !== undefined) return await applyObservation(policy.observation);
+    switch (operation) {
+      case 'reload':
+        await reloadSession(state);
+        reply(
+          state.status.phase === 'ready' ? 200 : 409,
+          readyResult({ ok: true, value: publicStatus(statusSnapshot(state)) }),
+        );
+        return;
+      case 'stop':
+        await stopLiveDaemon(state);
+        replySuccess(200, publicStatus(statusSnapshot(state)));
+        return;
+      case 'rhi/capture':
+        return await captureRhi();
+      case 'capture':
+      case 'verify':
+        return await captureImage();
+      case 'look':
+        return await captureLook();
+      case 'play':
+        return await playInPage();
+      case 'profile/capture':
+        return await captureProfile();
+      case 'eval':
+        return await evaluate();
+      default:
+        replyFailure(
+          404,
+          commandError('live-route-not-found', 'Use status, reload, stop, eval, capture, or play.'),
+        );
+    }
+  } catch (error) {
+    if (profileCapture !== undefined)
+      notifyLiveBridge(state, { type: 'profile-finish', ...profileCapture });
+    revokeLeaseForRequest?.();
+
+    replyFailure(
+      500,
+      operationError(
         error,
         'live-operation-failed',
         error instanceof Error ? error.message : String(error),
       ),
-    });
-  }
-
-  try {
-    if (url.pathname === '/reload') {
-      await reloadSession(state);
-      reply(
-        state.status.phase === 'ready' ? 200 : 409,
-        readyResult({ ok: true, value: publicStatus(state.status) }),
-      );
-      return;
-    }
-    if (url.pathname === '/stop') {
-      await stopLiveDaemon(state);
-      reply(200, { ok: true, value: publicStatus(state.status) });
-      return;
-    }
-    if (url.pathname === '/rhi/capture') {
-      await captureRhi();
-      return;
-    }
-    if (url.pathname === '/capture' || url.pathname === '/verify') {
-      await captureImage();
-      return;
-    }
-    if (url.pathname === '/look') {
-      await captureLook();
-      return;
-    }
-    if (url.pathname === '/play') {
-      await playInPage();
-      return;
-    }
-    if (LIVE_OBSERVATION_ROUTES.has(url.pathname)) {
-      await applyObservation();
-      return;
-    }
-    if (url.pathname === '/profile/capture') {
-      await captureProfile();
-      return;
-    }
-    if (url.pathname === '/eval') {
-      await evaluate();
-      return;
-    }
-    reply(404, {
-      ok: false,
-      error: commandError(
-        'live-route-not-found',
-        'Use status, reload, stop, eval, capture, or play.',
-      ),
-    });
-  } catch (error) {
-    if (profileCaptureId !== undefined) {
-      finishLiveProfiler(state, {
-        ...(profileCaptureWorldIdentity === undefined
-          ? {}
-          : { worldIdentity: profileCaptureWorldIdentity }),
-        captureId: profileCaptureId,
-      });
-    }
-    profileCaptureId = undefined;
-    profileCaptureWorldIdentity = undefined;
-    revokeLeaseForRequest?.();
-    revokeLeaseForRequest = undefined;
-    if (releaseEvaluation(evaluation)) void writeSessionFile(state);
-    evaluation = undefined;
-    replyOperationFailure(error);
+    );
+  } finally {
+    if (captureHeld) state.captureRunning = false;
+    releaseEvaluationInBackground();
   }
 }
 
@@ -3185,7 +2843,6 @@ function stopLiveDaemon(state: LiveDevDaemonState): Promise<void> {
       loadId: randomUUID(),
     };
     state.evaluation = undefined;
-    state.status = { ...state.status, unfinishedEval: false };
     const failures: unknown[] = [];
     const release = async (cleanup: () => unknown | Promise<unknown>) => {
       try {
@@ -3215,7 +2872,7 @@ function stopLiveDaemon(state: LiveDevDaemonState): Promise<void> {
     }
     await release(async () => {
       const current = await readSession(state.root, state.snapshot).catch(() => undefined);
-      if (current?.pid === process.pid && current.endpoint === state.status.endpoint)
+      if (sameSessionOwner(state.status, current))
         await removeLiveDevSession(state.root, { snapshot: state.snapshot });
     });
     if (failures.length) throw new AggregateError(failures, 'Live owner cleanup failed');
@@ -3277,7 +2934,6 @@ export async function runLiveDevDaemon(
       revision: randomUUID(),
       loadId: randomUUID(),
       phase: 'starting',
-      unfinishedEval: false,
       url: undefined,
       frameId: undefined,
       worldIdentity: undefined,
@@ -3304,7 +2960,7 @@ export async function runLiveDevDaemon(
     bridge: undefined,
     bridgeToken: randomUUID(),
     bridgeNextId: 1,
-    bridgePending: new Map(),
+    bridgePending: new TargetRequests(),
     projectProcess: undefined,
     inputs: undefined,
     projectInputPaths: undefined,
@@ -3356,7 +3012,7 @@ export async function runLiveDevDaemon(
         await reloadSession(state);
       }
     }
-    options.onReady?.(state.status);
+    options.onReady?.(statusSnapshot(state));
     await closed;
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
@@ -3469,9 +3125,7 @@ async function removeSessionRecord(
   if (current.kind === 'none') return;
   if (
     current.kind === 'record' &&
-    (expected === undefined ||
-      current.session.pid !== expected.pid ||
-      current.session.endpoint !== expected.endpoint)
+    (expected === undefined || !sameSessionOwner(expected, current.session))
   )
     return;
   await removeLiveDevSession(root, { snapshot });
@@ -3504,15 +3158,12 @@ export async function liveDevStatus(
       await removeSessionRecord(root, options.snapshot === true, session);
       return stoppedResult(root);
     }
-    return {
-      ok: true,
-      value: {
-        root,
-        phase: 'unreachable',
-        endpoint: session.endpoint,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
+    return completeCommand({
+      root,
+      phase: 'unreachable',
+      endpoint: session.endpoint,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -3533,7 +3184,7 @@ async function terminateOrphanOwners(root: string, snapshot: boolean): Promise<v
 const LIVE_STOP_REQUEST_TIMEOUT_MS = 30_000;
 const LIVE_UNRESPONSIVE_MS = 10_000;
 
-async function gracefulStop(session: LiveDevSessionFile): Promise<boolean> {
+async function stopOwnerRequest(session: LiveDevSessionFile): Promise<unknown> {
   try {
     const response = await requestJson(
       session,
@@ -3542,10 +3193,11 @@ async function gracefulStop(session: LiveDevSessionFile): Promise<boolean> {
       undefined,
       LIVE_STOP_REQUEST_TIMEOUT_MS,
     );
-    return (response as { ok?: unknown } | null)?.ok === true;
+    if ((response as { ok?: unknown } | null)?.ok === true) return response;
   } catch {
-    return false;
+    // The owner may already be stopped; the caller can recover through the recorded process.
   }
+  return undefined;
 }
 
 /**
@@ -3558,7 +3210,7 @@ async function endOwnerProcess(
   session: LiveDevSessionFile,
   graceful: boolean,
 ): Promise<CommandError | undefined> {
-  const stopped = graceful && (await gracefulStop(session));
+  const stopped = graceful && (await stopOwnerRequest(session)) !== undefined;
   if (!processAlive(session.pid)) return undefined;
   const kind = await liveDaemonProcess(session.pid, await projectRootSpellings(root));
   if (kind === 'daemon') {
@@ -3664,20 +3316,10 @@ async function clearDeadRunClaim(root: string): Promise<void> {
 async function stopRecordedOwner(root: string, snapshot: boolean): Promise<unknown> {
   const record = await readSessionRecord(root, snapshot);
   if (record.kind === 'record') {
-    try {
-      const response = await requestJson(
-        record.session,
-        '/stop',
-        'POST',
-        undefined,
-        LIVE_STOP_REQUEST_TIMEOUT_MS,
-      );
-      if ((response as { ok?: unknown } | null)?.ok === true) {
-        if (snapshot) await clearDeadRunClaim(root).catch(() => {});
-        return response;
-      }
-    } catch {
-      // Retired below; a dead or unresponsive owner is still a stopped owner afterwards.
+    const response = await stopOwnerRequest(record.session);
+    if (response !== undefined) {
+      if (snapshot) await clearDeadRunClaim(root).catch(() => {});
+      return response;
     }
   }
   const session = record.kind === 'record' ? record.session : undefined;
@@ -3699,7 +3341,7 @@ export async function liveDevControl(
 ): Promise<unknown> {
   const root = resolve(rootInput);
   if (operation === 'stop') return stopRecordedOwner(root, options.snapshot === true);
-  const onDemand = options.snapshot !== true && ON_DEMAND_OPERATIONS.has(operation);
+  const onDemand = options.snapshot !== true && liveOperationPolicy(operation)?.startOwner === true;
   const first = await sendToRecordedOwner(root, operation, value, options);
   if (first.kind === 'response') return first.value;
   if (!onDemand || first.kind === 'unreachable') return first.result;
@@ -3710,14 +3352,6 @@ export async function liveDevControl(
   const second = await sendToRecordedOwner(root, operation, value, options);
   return second.kind === 'response' ? second.value : second.result;
 }
-
-/** Observations whose result does not depend on who started the owner. */
-const ON_DEMAND_OPERATIONS: ReadonlySet<LiveOperation> = new Set([
-  'capture',
-  'look',
-  'verify',
-  'eval',
-]);
 
 type OwnerDelivery =
   | { readonly kind: 'response'; readonly value: unknown }
@@ -3742,9 +3376,8 @@ async function sendToRecordedOwner(
     const result =
       operation === 'observe'
         ? { ok: true, value: { status: { root, phase: 'stopped' }, image: null, logs: [] } }
-        : {
-            ok: false,
-            error: commandError(
+        : rejectCommand(
+            commandError(
               'live-not-running',
               'Start the live execution owner for this project; static project preview serves sealed files and cannot accept live commands.',
               {
@@ -3754,7 +3387,7 @@ async function sendToRecordedOwner(
                 start: ['forgeax', snapshot ? 'run' : 'dev', 'start', '--root', root],
               },
             ),
-          };
+          );
     return { kind: 'absent', result };
   }
   try {
@@ -3770,14 +3403,11 @@ async function sendToRecordedOwner(
       ),
     };
   } catch (error) {
-    const result = {
-      ok: false,
-      error: commandError(
-        'live-unreachable',
-        'The recorded owner did not respond; inspect dev status.',
-        { cause: error instanceof Error ? error.message : String(error) },
-      ),
-    };
+    const result = rejectCommand(
+      commandError('live-unreachable', 'The recorded owner did not respond; inspect dev status.', {
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+    );
     // A refused connection never reached an owner; a dead recorded pid cannot answer.
     return refused(error) && !processAlive(record.session.pid)
       ? { kind: 'absent', result }
@@ -3789,14 +3419,13 @@ async function sendToRecordedOwner(
 function readyResult(result: unknown): unknown {
   const response = result as { ok: boolean; value?: { phase?: string; error?: string } };
   if (!response.ok || response.value?.phase === 'ready') return result;
-  return {
-    ok: false,
-    error: commandError(
+  return rejectCommand(
+    commandError(
       'live-not-ready',
       response.value?.error ?? 'The owner is not ready; inspect dev status before retrying.',
       { status: response.value },
     ),
-  };
+  );
 }
 
 function ownerPhase(status: unknown): unknown {
@@ -3814,19 +3443,14 @@ async function awaitExistingOwner(
   options: { readonly snapshot?: boolean },
   existing: unknown,
 ): Promise<unknown> {
-  // The same non-terminal phases a newly spawned owner is polled through.
-  const replacing = (status: unknown) =>
-    ownerPhase(status) === 'starting' ||
-    ownerPhase(status) === 'waiting' ||
-    ownerPhase(status) === 'reloading';
-  if (!replacing(existing)) return existing;
+  if (!ownerTransitioning(ownerPhase(existing))) return existing;
   const { readProjectStartupTimeoutMs } = await import('./project.js');
   const policy = await readProjectStartupTimeoutMs(root);
   if (!policy.ok) return policy;
   const budget = policy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : policy.value;
   const deadline = budget === null ? Infinity : Date.now() + budget;
   let status = existing;
-  while (replacing(status) && Date.now() < deadline) {
+  while (ownerTransitioning(ownerPhase(status)) && Date.now() < deadline) {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, LIVE_DEV_POLL_INTERVAL_MS));
     status = await liveDevStatus(root, options);
   }
@@ -3867,13 +3491,12 @@ function startLockPath(root: string, snapshot: boolean): string {
 }
 
 function startTimeout(): CommandResult<never> {
-  return {
-    ok: false,
-    error: commandError(
+  return rejectCommand(
+    commandError(
       'live-start-timeout',
       'Startup did not finish before the deadline; dev status reports whether the owner is still running.',
     ),
-  };
+  );
 }
 
 /**
@@ -3926,14 +3549,13 @@ async function startLocked(
       if (failure !== undefined) return { ok: false, error: failure };
     }
   } catch (error) {
-    return {
-      ok: false,
-      error: commandError(
+    return rejectCommand(
+      commandError(
         'live-discovery-invalid',
         'Inspect the existing dev session before starting another owner.',
         { cause: String(error) },
       ),
-    };
+    );
   }
   if (snapshot) {
     await clearDeadRunClaim(root).catch(() => {});
@@ -3945,19 +3567,14 @@ async function startLocked(
       },
     );
     if (claimed)
-      return {
-        ok: false,
-        error: commandError(
+      return rejectCommand(
+        commandError(
           'run-owner-busy',
           'The previous run is starting or stopping. Wait for its lifecycle to finish; use stop to clear a dead owner.',
         ),
-      };
+      );
   }
-  const portProbe = createServer();
-  await once(portProbe.listen(0, '127.0.0.1'), 'listening');
-  const address = portProbe.address();
-  const port = typeof address === 'object' && address !== null ? address.port : 0;
-  await new Promise<void>((resolveClose) => portProbe.close(() => resolveClose()));
+  const port = await materializeViteDevPort();
   if (options.inProcess !== undefined) return startInProcess(root, options, port);
   return startDetached(root, options, port, deadline);
 }
@@ -4001,11 +3618,8 @@ function daemonEnvironment(options: LiveStartOptions): NodeJS.ProcessEnv {
   };
 }
 
-function settledPhase(status: unknown): boolean {
-  const phase = ownerPhase(status);
-  return (
-    phase !== undefined && phase !== 'starting' && phase !== 'waiting' && phase !== 'reloading'
-  );
+function ownerTransitioning(phase: unknown): boolean {
+  return phase === 'starting' || phase === 'waiting' || phase === 'reloading';
 }
 
 /** A short status timeout cannot decide the longer startup of our own still-live child. */
@@ -4021,8 +3635,7 @@ async function ownStartupTimeout(
   if (childPid === undefined) return false;
   const recorded = await readSession(root, options.snapshot).catch(() => undefined);
   return (
-    recorded?.pid === childPid &&
-    recorded.endpoint === `http://127.0.0.1:${port}` &&
+    sameSessionOwner({ pid: childPid, endpoint: `http://127.0.0.1:${port}` }, recorded) &&
     processAlive(childPid)
   );
 }
@@ -4068,8 +3681,10 @@ async function startDetached(
         options,
         Math.max(1, Math.min(LIVE_DEV_STARTUP_STATUS_TIMEOUT_MS, deadline - Date.now())),
       );
+      const phase = ownerPhase(status);
       if (
-        settledPhase(status) &&
+        phase !== undefined &&
+        !ownerTransitioning(phase) &&
         !(await ownStartupTimeout(root, options, status, child.pid, port))
       )
         return readyResult(status);

@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile);
 const APP = '@forgeax/hello-custom-shader';
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url));
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const FIXTURE_PATH = resolve(APP_ROOT, 'assets/pulse-material.pack.json');
+const FIXTURE_PATH = resolve(APP_ROOT, 'fixtures/pulse-material.runtime-pack.json');
 const RECOOK_SCRIPT = resolve(APP_ROOT, 'scripts/recook-material-pack.mjs');
 const ARTIFACT_DIR = resolve(
   process.env.FORGEAX_MATERIAL_ARTIFACT_DIR ?? resolve(ROOT, '.forgeax-m36-artifacts'),
@@ -91,7 +91,7 @@ try {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
 
-  const targetUrl = `${url}?m36=stale-recook`;
+  const targetUrl = `${url}?m36=stale-recook&materialPack=/fixtures/pulse-material.runtime-pack.json`;
   await page.goto(targetUrl, { waitUntil: 'networkidle' });
   await page.waitForFunction(
     () =>
@@ -126,7 +126,7 @@ try {
   const stalePath = resolve(ARTIFACT_DIR, 'm36-browser-stale.png');
   await page.screenshot({ path: stalePath, fullPage: false });
 
-  const recook = await execFileAsync(process.execPath, [RECOOK_SCRIPT, '--write'], {
+  const recook = await execFileAsync(process.execPath, [RECOOK_SCRIPT, '--alternate', '--write'], {
     cwd: ROOT,
     env: { ...process.env, FORGEAX_SKIP_HARNESS_SYNC: '1' },
     maxBuffer: 16 * 1024 * 1024,
@@ -136,7 +136,7 @@ try {
     `${recook.stdout}${recook.stderr}`,
   );
   const recookedFixture = readFileSync(FIXTURE_PATH);
-  writeFileSync(resolve(ARTIFACT_DIR, 'm36-browser-recooked.pack.json'), recookedFixture);
+  writeFileSync(resolve(ARTIFACT_DIR, 'm36-browser-recooked.runtime-pack.json'), recookedFixture);
 
   const fresh = await page.evaluate(async () => {
     const control = globalThis.__forgeaxMaterialEvidence?.materialGeneration;
@@ -157,8 +157,22 @@ try {
     return control.publishRecooked();
   });
   assert(JSON.stringify(freshAgain) === JSON.stringify(fresh), 'recook cleanup was not idempotent');
-  await page.waitForFunction(() => globalThis.__forgeaxMaterialEvidence?.frameCount >= 8, null, {
-    timeout: 30000,
+  await page.waitForFunction((handle) => {
+    const evidence = globalThis.__forgeaxMaterialEvidence;
+    const frame = evidence?.materialGeneration?.presentedFrame;
+    const readback = evidence?.renderDiagnostics.readback;
+    return evidence?.frameCount >= 8 && frame?.materialHandle === handle &&
+      readback?.status === 'ok' && readback.frameId >= frame.frameId;
+  }, fresh.currentMaterialHandle, { timeout: 30000 }).catch(async (error) => {
+    const frame = await page.evaluate(() => {
+      const evidence = globalThis.__forgeaxMaterialEvidence;
+      return {
+        presented: evidence?.materialGeneration?.presentedFrame,
+        readback: evidence?.renderDiagnostics.readback,
+        rendererErrors: evidence?.rendererErrorCodes,
+      };
+    });
+    throw new Error(`fresh material presentation timed out: ${JSON.stringify(frame)}`, { cause: error });
   });
   const afterPath = resolve(ARTIFACT_DIR, 'm36-browser-after.png');
   await page.screenshot({ path: afterPath, fullPage: false });

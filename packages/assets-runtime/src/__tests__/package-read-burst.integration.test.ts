@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { bytesOf, readPackage } from '../internal/package-read.js';
 
 it('loads a large artifact burst without overflowing the transport while bodies are pending', async () => {
@@ -56,10 +57,7 @@ it('releases transfer slots after malformed bodies and preserves failure diagnos
 });
 
 it('does not send a queued read after its owner aborts', async () => {
-  let finish!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
+  const { promise: gate, resolve: finish } = testGate();
   const fetcher = vi.fn(async () => new Response('body'));
   const active = Array.from({ length: 32 }, () =>
     readPackage(fetcher, 'https://fixture.test/active', async (response) => {

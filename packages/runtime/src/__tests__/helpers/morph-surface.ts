@@ -21,7 +21,6 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import {
   decodeGBufferNormalXYZ10,
   decodeMaterialNormalX12Y12,
-  decodeSsaoRawNormal,
 } from '../../../../render/src/__tests__/gtao-reference';
 import {
   captureForwardGtaoTarget,
@@ -29,6 +28,7 @@ import {
   type ForwardGtaoTargetCapture,
 } from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
+import type { createForwardGtaoSceneDataConsumer } from './forward-gtao-scene-data';
 import { observeMorphSubmission, preserveMorphFailure } from './morph-original-frame';
 import {
   attachStandardPbrSkin,
@@ -38,9 +38,35 @@ import {
 
 export const MORPH_SURFACE_SIZE = 96;
 
+type SurfaceNormalObserver = ReturnType<typeof createForwardGtaoSceneDataConsumer>;
+
+function observeInlineSsrNormal(
+  renderer: Renderer,
+  debug: ForwardGtaoCaptureHost,
+  observer: SurfaceNormalObserver,
+): (() => void) | undefined {
+  if (renderer.inspect().ssr.lane !== 'forward') return undefined;
+  if (debug.getCurrentGraphTarget('standard-scene-surface-normal') !== undefined) return undefined;
+  // Explicit SceneData demand makes the same deformed normal available to read back.
+  const buffer = debug.device
+    .createBuffer({
+      label: 'morph-surface-normal-observation',
+      size: observer.observationBytes,
+      usage: 0x80 | 0x04,
+    })
+    .unwrap();
+  observer.setObservationBuffer(buffer);
+  observer.setEnabled(true);
+  return () => {
+    observer.setEnabled(false);
+    debug.device.destroyBuffer(buffer).unwrap();
+  };
+}
+
 /** Verify the actual deformed surface consumed by AO and Forward SSR. */
 export async function verifyMorphSurface(
   host: RendererHostAssembly,
+  normalObserver: SurfaceNormalObserver,
   onState: (name: string, facts: unknown) => Promise<void>,
   skin = false,
   onFailure?: (draw: () => Promise<unknown>, cause: unknown) => Promise<void>,
@@ -143,17 +169,22 @@ export async function verifyMorphSurface(
       );
     }
   };
+  let releaseNormalObservation: (() => void) | undefined;
   try {
+    const aoCenters: number[] = [];
     for (const ssr of [false, true]) {
       captureSsr = ssr;
-      if (ssr)
+      if (ssr) {
         world
           .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 8 } })
           .unwrap();
+        await (await draw()).completed;
+        releaseNormalObservation = observeInlineSsrNormal(renderer, debug, normalObserver);
+      }
       for (const [state, weight] of [0, 0.5, 1, 0].entries()) {
         world.set(subject, MorphWeights, { weights: [weight] }).unwrap();
         for (let frame = 0; frame < (weight === 1 ? 60 : 2); frame++) await draw();
-        let normal: readonly number[];
+        let surface: { normal: readonly number[] } | { aoCenter: number };
         if (ssr) {
           const captured = await captureForwardGtaoTarget(
             debug,
@@ -162,7 +193,7 @@ export async function verifyMorphSurface(
               : 'standard-scene-surface-normal',
             draw,
           );
-          normal = centerSurfaceNormal(captured);
+          const normal = centerSurfaceNormal(captured);
           const magnitude = Math.hypot(weight * 0.4, 1);
           expect(normal[0]).toBeCloseTo(
             (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
@@ -173,28 +204,26 @@ export async function verifyMorphSurface(
             (Math.cos(angle) - Math.sin(angle) * weight * 0.4) / magnitude,
             2,
           );
+          surface = { normal };
         } else {
-          // AO alone leaves a depth-only prepass: AO reconstructs the posed face
-          // normal from depth, which the uniform morph translation keeps unchanged.
-          const raw = await captureForwardGtaoTarget(debug, 'ssao-raw', draw);
-          const at = (Math.floor(raw.height / 2) * raw.width + Math.floor(raw.width / 2)) * 4;
-          normal = decodeSsaoRawNormal(
-            (raw.bytes[at + 1] ?? NaN) / 255,
-            (raw.bytes[at + 2] ?? NaN) / 255,
+          expect(renderer.inspect().standardLighting?.ambientOcclusion?.input.normalSchema).toBe(
+            'depth-reconstruction',
           );
-          expect(normal[0]).toBeCloseTo(Math.sin(angle), 1);
-          expect(normal[1]).toBeCloseTo(0, 1);
-          expect(normal[2]).toBeCloseTo(Math.cos(angle), 1);
+          const visibility = await captureForwardGtaoTarget(debug, 'ssao-calc', draw);
+          const aoCenter = horizontalOcclusionCenter(visibility);
+          aoCenters.push(aoCenter);
+          surface = { aoCenter };
         }
         expect(renderer.inspect().standardLighting?.ambientOcclusion?.status).toBe('active');
         await onState(`${skin ? 'skin' : 'mesh'}-${ssr ? 'ao-ssr' : 'ao'}-${state}-${weight}`, {
-          normal,
+          ...surface,
           inspection: renderer.inspect(),
           completedFramesThisState: weight === 1 ? 60 : 2,
         });
         if (ssr) expect(renderer.inspect().ssr.status).toBe('admitted');
       }
     }
+    expectOcclusionFollowsMorph(aoCenters);
     expect(errors).toEqual([]);
   } catch (cause) {
     await preserveMorphFailure(onFailure, draw, cause);
@@ -202,6 +231,7 @@ export async function verifyMorphSurface(
     lease.dispose();
     unsubscribe();
     debug.setClusterWorkObservationForConformance(false);
+    releaseNormalObservation?.();
   }
 }
 
@@ -215,6 +245,26 @@ function attachForwardMorphScene(renderer: Renderer, world: World) {
     throw profiled.error;
   }
   return attached.value;
+}
+
+function expectOcclusionFollowsMorph(aoCenters: readonly number[]) {
+  const [start, half, full, restored] = aoCenters;
+  expect(half, JSON.stringify(aoCenters)).toBeGreaterThan((start ?? NaN) + 0.5);
+  expect(full, JSON.stringify(aoCenters)).toBeGreaterThan((half ?? NaN) + 0.5);
+  expect(restored, JSON.stringify(aoCenters)).toBeCloseTo(start ?? NaN, 4);
+}
+
+function horizontalOcclusionCenter(capture: ForwardGtaoTargetCapture): number {
+  expect(capture.format).toBe('r8unorm');
+  let weight = 0;
+  let moment = 0;
+  for (const [index, visibility] of capture.bytes.entries()) {
+    const occlusion = 255 - visibility;
+    weight += occlusion;
+    moment += (index % capture.width) * occlusion;
+  }
+  expect(weight).toBeGreaterThan(0);
+  return moment / weight;
 }
 
 function centerSurfaceNormal(captured: ForwardGtaoTargetCapture) {

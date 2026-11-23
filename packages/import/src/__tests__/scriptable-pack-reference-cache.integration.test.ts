@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { err, ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
 import { buildScriptablePackWorklist } from '../scriptable-pack-build.js';
 import { materialAssetOutputProducer } from '../scriptable-pack-output-producers.js';
@@ -22,6 +22,7 @@ const material = {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-reference-cache-'));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   const sourcePath = join(root, 'materials.pack.ts');
   let source = 'source-a';
   let compiler = 'compiler-a/profile-a';
@@ -109,96 +110,71 @@ async function fixture() {
     changeContent(value: string | undefined) {
       currentContent = value;
     },
-    close: () => rm(root, { recursive: true, force: true }),
   };
 }
 
 describe('Pack product cache reference and content boundaries', () => {
   it('reuses a reference-only material after recreating its cache owner without cooking or reading its target', async () => {
     const f = await fixture();
-    try {
-      const first = await f.run();
-      expect(first.ok).toBe(true);
-      if (!first.ok) throw first.error;
-      expect(first.value.buildProducts[0]?.externalEvidence).toEqual([
-        { guid: target, usage: 'reference' },
-      ]);
-      const warm = await f.run();
-      expect(warm).toEqual(first);
-      expect(f.counts).toEqual({ builds: 1, cooks: 1, reads: 0 });
-    } finally {
-      await f.close();
-    }
+    const first = await f.run();
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw first.error;
+    expect(first.value.buildProducts[0]?.externalEvidence).toEqual([
+      { guid: target, usage: 'reference' },
+    ]);
+    const warm = await f.run();
+    expect(warm).toEqual(first);
+    expect(f.counts).toEqual({ builds: 1, cooks: 1, reads: 0 });
   });
 
   it('misses when source bytes or the compiler/profile identity changes', async () => {
     const f = await fixture();
-    try {
-      expect((await f.run()).ok).toBe(true);
-      await f.changeSource();
-      expect((await f.run()).ok).toBe(true);
-      f.changeCompiler();
-      expect((await f.run()).ok).toBe(true);
-      expect(f.counts).toEqual({ builds: 3, cooks: 3, reads: 0 });
-      expect((await f.run()).ok).toBe(true);
-      expect(f.counts).toEqual({ builds: 3, cooks: 3, reads: 0 });
-    } finally {
-      await f.close();
-    }
+    expect((await f.run()).ok).toBe(true);
+    await f.changeSource();
+    expect((await f.run()).ok).toBe(true);
+    f.changeCompiler();
+    expect((await f.run()).ok).toBe(true);
+    expect(f.counts).toEqual({ builds: 3, cooks: 3, reads: 0 });
+    expect((await f.run()).ok).toBe(true);
+    expect(f.counts).toEqual({ builds: 3, cooks: 3, reads: 0 });
   });
 
   it('rejects a missing referenced GUID on a warm product without recooking it', async () => {
     const f = await fixture();
-    try {
-      expect((await f.run()).ok).toBe(true);
-      expect(await f.run({ available: false })).toMatchObject({
-        ok: false,
-        error: { code: 'pack-output-reference-missing', detail: { guids: [target] } },
-      });
-      expect(f.counts).toEqual({ builds: 1, cooks: 1, reads: 0 });
-    } finally {
-      await f.close();
-    }
+    expect((await f.run()).ok).toBe(true);
+    expect(await f.run({ available: false })).toMatchObject({
+      ok: false,
+      error: { code: 'pack-output-reference-missing', detail: { guids: [target] } },
+    });
+    expect(f.counts).toEqual({ builds: 1, cooks: 1, reads: 0 });
   });
 
   it('rejects malformed native references before cache publication', async () => {
     const f = await fixture();
-    try {
-      expect(await f.run({ ref: 'not-a-guid' })).toMatchObject({
-        ok: false,
-        error: { code: 'pack-source-output-invalid' },
-      });
-    } finally {
-      await f.close();
-    }
+    expect(await f.run({ ref: 'not-a-guid' })).toMatchObject({
+      ok: false,
+      error: { code: 'pack-source-output-invalid' },
+    });
   });
 
   it('still checks actual content digests for a product that also has reference-only rows', async () => {
     const f = await fixture();
-    try {
-      expect((await f.run({ readContent: true })).ok).toBe(true);
-      expect((await f.run({ readContent: true })).ok).toBe(true);
-      expect(f.counts.builds).toBe(1);
-      expect(f.counts.cooks).toBe(1);
-      f.changeContent('content-b');
-      expect((await f.run({ readContent: true })).ok).toBe(true);
-      expect(f.counts.builds).toBe(2);
-      expect(f.counts.cooks).toBe(2);
-    } finally {
-      await f.close();
-    }
+    expect((await f.run({ readContent: true })).ok).toBe(true);
+    expect((await f.run({ readContent: true })).ok).toBe(true);
+    expect(f.counts.builds).toBe(1);
+    expect(f.counts.cooks).toBe(1);
+    f.changeContent('content-b');
+    expect((await f.run({ readContent: true })).ok).toBe(true);
+    expect(f.counts.builds).toBe(2);
+    expect(f.counts.cooks).toBe(2);
   });
 
   it('rejects an unavailable content dependency instead of reusing the cached product', async () => {
     const f = await fixture();
-    try {
-      expect((await f.run({ readContent: true })).ok).toBe(true);
-      f.changeContent(undefined);
-      expect((await f.run({ readContent: true })).ok).toBe(false);
-      expect(f.counts.builds).toBe(2);
-      expect(f.counts.cooks).toBe(1);
-    } finally {
-      await f.close();
-    }
+    expect((await f.run({ readContent: true })).ok).toBe(true);
+    f.changeContent(undefined);
+    expect((await f.run({ readContent: true })).ok).toBe(false);
+    expect(f.counts.builds).toBe(2);
+    expect(f.counts.cooks).toBe(1);
   });
 });

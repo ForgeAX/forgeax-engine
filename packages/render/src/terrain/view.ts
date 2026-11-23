@@ -12,7 +12,6 @@ import {
   type DispatchEntry,
   type ExtractedFrame,
   type RenderableSnapshot,
-  sortDispatchByQueue,
 } from '../render-system-extract.js';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { TerrainLayers } from './layers';
@@ -62,24 +61,21 @@ export function projectTerrainView(
   if (camera === undefined) return { frame, materials };
   const renderables: RenderableSnapshot[] = [],
     dispatch: DispatchEntry[] = [];
-  const dispatchByRenderable = new Map<number, DispatchEntry[]>();
-  for (const entry of frame.dispatch) {
-    const entries = dispatchByRenderable.get(entry.renderableIndex);
-    if (entries === undefined) dispatchByRenderable.set(entry.renderableIndex, [entry]);
-    else entries.push(entry);
-  }
+  // Terrain roots expand into contiguous sections. Only these boundaries change
+  // source row addresses, regardless of the number of ordinary meshes.
+  const terrainRows: number[] = [];
+  const offsetsAfterTerrain: number[] = [];
   const shadowFamilies = new Map(
     terrainShadowReceivers(frame.renderables).map(
       (root, index) => [root.entityKey, index + 1] as const,
     ),
   );
-  for (const [oldIndex, source] of frame.renderables.entries()) {
+  let oldIndex = -1;
+  for (const source of frame.renderables) {
+    oldIndex++;
     const terrain = source.terrain;
     if (terrain === undefined) {
-      const index = renderables.length;
       renderables.push(source);
-      for (const entry of dispatchByRenderable.get(oldIndex) ?? [])
-        dispatch.push({ ...entry, renderableIndex: index });
       continue;
     }
     const world = sourceScope;
@@ -522,6 +518,34 @@ export function projectTerrainView(
       }
     };
     sealTerrainProjectionFacts();
+    terrainRows.push(oldIndex);
+    offsetsAfterTerrain.push(renderables.length - oldIndex - 1);
   }
-  return { frame: { ...frame, renderables, dispatch: sortDispatchByQueue(dispatch) }, materials };
+  for (const entry of frame.dispatch) {
+    const sourceIndex = entry.renderableIndex;
+    if (
+      !Number.isInteger(sourceIndex) ||
+      sourceIndex < 0 ||
+      sourceIndex >= frame.renderables.length
+    )
+      continue;
+    let first = 0;
+    let end = terrainRows.length;
+    while (first < end) {
+      const middle = first + Math.floor((end - first) / 2);
+      if ((terrainRows[middle] as number) < sourceIndex) first = middle + 1;
+      else end = middle;
+    }
+    if (terrainRows[first] === sourceIndex) continue;
+    const offset = first === 0 ? 0 : (offsetsAfterTerrain[first - 1] as number);
+    dispatch.push(
+      offset === 0 && Object.isFrozen(entry)
+        ? entry
+        : { ...entry, renderableIndex: sourceIndex + offset },
+    );
+  }
+  // Preserve queue order, then source/section order and original per-row pass order.
+  // The array belongs to this projection and can be ordered in place.
+  dispatch.sort((a, b) => a.queue - b.queue || a.renderableIndex - b.renderableIndex);
+  return { frame: { ...frame, renderables, dispatch }, materials };
 }

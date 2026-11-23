@@ -10,6 +10,7 @@ import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildProjectShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { testAssets } from '../helpers/runtime-assets';
@@ -48,20 +49,13 @@ const fixture = JSON.parse(
   readFileSync(
     fileURLToPath(
       new URL(
-        '../../../../../apps/hello/custom-shader/assets/pulse-material.pack.json',
+        '../../../../../apps/hello/custom-shader/fixtures/pulse-material.runtime-pack.json',
         import.meta.url,
       ),
     ),
     'utf8',
   ),
 ) as { readonly assets: readonly MaterialRow[] };
-
-const authoredShaderPackage = fileURLToPath(
-  new URL(
-    '../../../../../apps/hello/custom-shader/src/pulse-material.shader.pack.json',
-    import.meta.url,
-  ),
-);
 
 const materialRows = fixture.assets.filter((asset) => asset.kind === 'material');
 const root = materialRows.find((asset) => asset.payload.parent === undefined);
@@ -72,9 +66,7 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
   // Authored packages compile from source. Keep that cold preparation outside
   // the unchanged 60-second GPU test budget and fail once if compilation fails.
   beforeAll(async () => {
-    manifest = await buildProjectShaderTemplateManifest({
-      materialPackages: [authoredShaderPackage],
-    });
+    manifest = await buildProjectShaderTemplateManifest({});
   }, 300_000);
 
   it('keeps browser and Dawn on the same cooked payload with the child override', () => {
@@ -176,8 +168,8 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
       // above; the pack payload does not carry a second `role` discriminator.
       if (root === undefined) throw new Error('missing root publication');
       const textureEntries = [
-        ['01935b00-7d8c-7c4e-9f12-345678abcd11', [220, 100, 40, 255]],
-        ['01935b00-7d8c-7c4e-9f12-345678abcd12', [128, 128, 255, 255]],
+        ['3acd39d8-0434-5941-8ee5-385cb024d91d', [220, 100, 40, 255]],
+        ['2382ad16-6ed8-5602-8d9e-74a0f8fea0cb', [128, 128, 255, 255]],
       ] as const;
       publishRuntimeAssets(assets, [
         ...textureEntries.map(([guid, color]) => ({
@@ -270,9 +262,8 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
         )
         .unwrap();
       for (let index = 0; index < 60; index++) {
-        draw();
-        // Match the host's frame boundary so queued shader/texture preparation runs.
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        world.update().unwrap();
+        await drawReadyFrame(renderer, frame, undefined, { timeoutMs: 15_000 });
       }
       const pixel = await readPixel();
       expect(errors).toEqual([]);

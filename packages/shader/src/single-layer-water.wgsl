@@ -1,4 +1,9 @@
 #define_import_path forgeax::single-layer-water
+#import forgeax_view::common::{forwardScreenSurface}
+#import forgeax_cloud::layer::{viewLinearSampler}
+
+#import forgeax_ssr::forward::{forwardSsrWater}
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 #if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
 #import forgeax_material::water_transition_continuity::{waterMeshTransitionContinuity}
 #endif
@@ -26,7 +31,7 @@
 #import forgeax_shadow::surface::{projectShadowPosition}
 #if WATER_SHADOW_PASS == false
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
-#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleSkylightRadiance, evaluateStandardDirect}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleStandardReflectionRadiance, evaluateStandardDirect}
 #import forgeax_pbr::brdf::{standardDielectricF0}
 #import forgeax_view::atmosphere::{view_apply_ground_direct_solar}
 #ifdef CLUSTER_FORWARD_AVAILABLE
@@ -72,13 +77,18 @@ struct WaterSceneMaterialRow { payload: array<vec4<f32>, MATERIAL_SCENE_ROW_VEC4
 
 // User textures precede this region. Cook relocates these exact engine names.
 #if WATER_SHADOW_PASS == false
-@group(1) @binding(1) var mediumIrradianceMap: texture_cube<f32>;
+@group(1) @binding(1) var<uniform> mediumSkySh: SkyShPolynomial;
 @group(1) @binding(2) var mediumIrradianceSampler: sampler;
 @group(1) @binding(3) var mediumPrefilterMap: texture_2d<f32>;
 @group(1) @binding(4) var mediumPrefilterSampler: sampler;
 @group(1) @binding(5) var mediumBrdfLut: texture_2d<f32>;
 @group(1) @binding(6) var<uniform> mediumSkylight: SkylightUniforms;
-@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>;
+#ifdef EXTENDED_LIGHTING_AVAILABLE
+#if WATER_USE_SSR == true
+@group(0) @binding(27) var forwardHiZ: texture_2d<f32>;
+@group(0) @binding(28) var forwardSsrColor: texture_2d<f32>;
+#endif
+#endif
 @group(1) @binding(7) var surfaceBackdropSampler: sampler;
 @group(1) @binding(8) var surfaceBackdropTexture: texture_2d<f32>;
 @group(1) @binding(9) var surfaceRawDepthSampler: sampler;
@@ -87,12 +97,6 @@ struct WaterSceneMaterialRow { payload: array<vec4<f32>, MATERIAL_SCENE_ROW_VEC4
 @group(1) @binding(12) var surfaceNearestLayerTexture: texture_2d<f32>;
 @group(1) @binding(13) var surfaceNearestDepthSampler: sampler;
 @group(1) @binding(14) var surfaceNearestDepthTexture: texture_2d<f32>;
-#ifdef CLUSTER_FORWARD_AVAILABLE
-#if STORAGE_BUFFER_AVAILABLE == true
-@group(2) @binding(7) var ssaoBlurredTexture: texture_2d<f32>;
-@group(2) @binding(8) var ssaoBlurredSampler: sampler;
-#endif
-#endif
 #if WATER_OCEAN_FOAM == true
 #if WATER_USE_FOAM == true
 @group(1) @binding(17) var surfaceFoamSimulationSampler: sampler;
@@ -247,6 +251,17 @@ struct WaterPrepassOutput {
     vec4<f32>(ssrCoverage, 0.0, 0.0, coverage),
     packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0));
 }
+struct WaterVisibilityOutput {
+  @location(0) coverage: vec4<f32>,
+  @location(1) temporal: vec4<f32>,
+};
+@fragment fn fs_water_visibility(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterVisibilityOutput {
+  let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
+  if (!waterCoverage(input, surface)) { discard; }
+  let coverage = clamp(surface.coverage * input.maskAndVertexFlow.x, 0.0, 1.0);
+  return WaterVisibilityOutput(vec4<f32>(0.0, 0.0, 0.0, coverage),
+    packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0));
+}
 @fragment fn fs_water_velocity(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
   let surfaceInput = waterSurfaceInput(input, frontFacing);
   let surface = evaluate_surface(surfaceInput);
@@ -278,6 +293,7 @@ struct WaterSceneSample { color: vec3<f32>, depthM: f32, valid: bool };
 // Color and depth share one bilateral 2x2 footprint.
 fn waterSceneSample(uv: vec2<f32>, surfaceDepthM: f32, depthGradientM: f32) -> WaterSceneSample {
   let size = vec2<i32>(textureDimensions(surfaceRawDepthTexture));
+  let linearDepth = textureNumLevels(surfaceRawDepthTexture) > 1u;
   let sampleUv = uv + vec2<f32>(0.5 / 256.0) / vec2<f32>(size);
   let position = sampleUv * vec2<f32>(size) - vec2<f32>(0.5);
   let first = vec2<i32>(floor(position));
@@ -288,8 +304,9 @@ fn waterSceneSample(uv: vec2<f32>, surfaceDepthM: f32, depthGradientM: f32) -> W
     if (any(pixel < vec2<i32>(0)) || any(pixel >= size)) { continue; }
     let raw = textureLoad(surfaceRawDepthTexture, pixel, 0).r;
     let tapUv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / vec2<f32>(size);
-    var depthM = waterViewDepth(tapUv, raw);
-    if (raw == 0.0) { depthM = view.temporalProjection.y; }
+    var depthM = view.temporalProjection.y;
+    if (linearDepth) { depthM = min(raw, depthM); }
+    else if (raw > 0.0) { depthM = waterViewDepth(tapUv, raw); }
     if (depthM + depthGradientM < surfaceDepthM) { continue; }
     let weight = select(1.0 - fraction.x, fraction.x, x == 1) * select(1.0 - fraction.y, fraction.y, y == 1);
     total += weight; depth += depthM * weight;
@@ -353,7 +370,7 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let cosine = dot(normalize(-view.lightDir), refracted);
   let phaseDenominator = 1.0 + k * cosine;
   let phase = select(0.0, (1.0 - k * k) / (12.5663706144 * max(phaseDenominator * phaseDenominator, 1e-8)), dot(refracted, refracted) > 0.0);
-  let skyDiffuse = sampleSkylightDiffuse(mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler)
+  let skyDiffuse = sampleSkylightDiffuse(mediumSkylight, normal, mediumSkySh)
     + mediumSkylight.ambientIrradiance.xyz * 0.3183098861837907;
   // Diffuse indirect E/pi combines with the isotropic 1/(4*pi) phase as one quarter.
   let ambient = skyDiffuse * 0.25;
@@ -385,11 +402,7 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   );
   var surfaceVisibility = 1.0;
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#if STORAGE_BUFFER_AVAILABLE == true
-  surfaceVisibility = sampleStandardAmbientOcclusion(input.positionWS, view.worldViewProj, ssaoBlurredTexture, ssaoBlurredSampler);
-#else
-  surfaceVisibility = sampleStandardAmbientOcclusion(input.positionWS, view.worldViewProj);
-#endif
+  surfaceVisibility = sampleStandardAmbientOcclusion(input.positionWS, view.worldViewProj, forwardScreenSurface, viewLinearSampler);
 #endif
   let surfaceDiffuse = skyDiffuse * surfaceVisibility * max(surface.baseColor, vec3<f32>(0.0)) * baseMaterialCoverageOverWater;
   let basePassColor = direct.radiance + surfaceDiffuse + volume * waterVisibility + surface.emissive;
@@ -399,10 +412,17 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   // Legacy SLW keeps its dominant direction unnormalized before probe projection.
   let r2 = roughness * roughness;
   let reflectionDirection = mix(normal, reflect(-toCamera, normal), (1.0 - r2) * (sqrt(1.0 - r2) + r2));
-  captureSky = sampleSkylightRadiance(mediumSkylight, input.positionWS, reflectionDirection, roughness,
-    mediumPrefilterMap, mediumPrefilterSampler, skylightPrefilterMap);
+  captureSky = sampleStandardReflectionRadiance(mediumSkylight, input.positionWS, reflectionDirection, roughness,
+    mediumPrefilterMap, mediumPrefilterSampler);
   let shoreFade = clamp(max(0.0, behind.depthM - surfaceDepthM) * 2.0, 0.0, 1.0);
   reflectionWeight = envBrdf * shoreFade;
+#ifdef EXTENDED_LIGHTING_AVAILABLE
+#if WATER_USE_SSR == true
+  let screenReflection = forwardSsrWater(forwardHiZ, forwardSsrColor, view,
+    input.positionWS, normal, toCamera, roughness);
+  captureSky = screenReflection.rgb + captureSky * (1.0 - screenReflection.a);
+#endif
+#endif
 #endif
   let coverage = clamp(surface.coverage * input.maskAndVertexFlow.x, 0.0, 1.0);
   return WaterColorOutput(vec4<f32>(max(basePassColor, vec3<f32>(0.0)), coverage), vec4<f32>(captureSky, coverage), vec4<f32>(reflectionWeight, roughness, 0.0, coverage));
@@ -415,6 +435,15 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let nearest = textureLoad(surfaceNearestDepthTexture, pixel, 0).r;
   if (input.clip.z + 1e-7 < nearest) { discard; }
   return waterColor(input, surface, frontFacing);
+}
+@fragment fn fs_water_forward_color(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
+  let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
+  if (!waterCoverage(input, surface)) { discard; }
+  let pixel = vec2<i32>(input.clip.xy);
+  let nearest = textureLoad(surfaceNearestDepthTexture, pixel, 0).r;
+  if (input.clip.z + 1e-7 < nearest) { discard; }
+  let lit = waterColor(input, surface, frontFacing);
+  return vec4<f32>(lit.color.rgb + lit.captureSky.rgb * lit.reflectionWeight.r, lit.color.a);
 }
 @fragment fn fs_main(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterColorOutput {
   let surfaceInput = waterSurfaceInput(input, frontFacing);

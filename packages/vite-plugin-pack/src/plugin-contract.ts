@@ -4,6 +4,8 @@ import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { Importer, PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 
+export const CATALOG_DELTA_EVENT = 'forgeax:catalog-delta';
+
 interface AssetHostRefreshServer {
   readonly ws?: { send(payload: { type: 'full-reload' }): void } | undefined;
 }
@@ -91,7 +93,6 @@ export interface PluginPackOptions extends Pick<PackageFinalizePolicy, 'material
   /** Sealed build-program graph, including its resolved native import identities. */
   readonly producerIdentity?: string | undefined;
   /** Target admission has selected offline generation for these authored package IDs. */
-  readonly cookedRuntimePacks?: ReadonlySet<string>;
 }
 
 export interface PluginPackDdcOptions {

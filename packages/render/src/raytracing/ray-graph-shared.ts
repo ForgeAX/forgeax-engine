@@ -10,7 +10,11 @@ import { ok } from '@forgeax/engine-types';
 import { computeBindGroup } from '../compute-graph-state';
 import { createRasterState, type RasterState } from '../raster-graph-state';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { createRenderPipelineTarget, type RenderPipelineFrame } from '../render-pipeline';
+import {
+  createRenderPipelineTarget,
+  type RenderPipelineFrame,
+  type RenderPipelineTarget,
+} from '../render-pipeline';
 import type { createRayDiffuseComposite } from './diffuse-composite';
 import type { ExactRayDiffuseTargets, RayDiffuseTargets } from './diffuse-graph';
 import { DIFFUSE_HISTORY_BYTES } from './diffuse-reconstruction';
@@ -220,37 +224,25 @@ export function addRayDiffuseCompositePass(
   current: () => Extract<ReturnType<typeof createRayDiffuseComposite>, { ok: true }>['value'],
   target: RayDiffuseTargets,
   irradiance: GraphBuffer,
-  view: GraphBuffer,
   pixelCount: number,
-  reflectionResponse: GraphTextureView | undefined,
 ) {
+  const { diffuseGiBaseline: baseline, subsurfaceDiffuse: subsurface } = target;
   return graph.addRasterPass(name, {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
-      ...(target.subsurfaceDiffuse === undefined
+      { resource: baseline, usage: 'storage-read' },
+      ...(subsurface === undefined
         ? []
-        : [{ resource: target.subsurfaceDiffuse.view, usage: 'color-attachment' as const }]),
+        : [{ resource: subsurface.view, usage: 'color-attachment' as const }]),
       { resource: irradiance, usage: 'storage-read' },
       { resource: target.depth, usage: 'sampled-read' },
       { resource: target.normal.view, usage: 'sampled-read' },
-      { resource: target.albedo.view, usage: 'sampled-read' },
-      { resource: target.f0.view, usage: 'sampled-read' },
-      { resource: view, usage: 'uniform-read' },
-      ...(reflectionResponse === undefined
-        ? []
-        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
     ],
     colorAttachments: [
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
-      ...(target.subsurfaceDiffuse === undefined
+      ...(subsurface === undefined
         ? []
-        : [
-            {
-              view: target.subsurfaceDiffuse.view,
-              loadOp: 'load' as const,
-              storeOp: 'store' as const,
-            },
-          ]),
+        : [{ view: subsurface.view, loadOp: 'load' as const, storeOp: 'store' as const }]),
     ],
     encodeDirect: (pass, _graphframe, resources) =>
       current()
@@ -258,19 +250,40 @@ export function addRayDiffuseCompositePass(
           pass,
           {
             irradiance: resources.buffer(irradiance).unwrap(),
-            ...(reflectionResponse === undefined
-              ? {}
-              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
+            baseline: resources.buffer(baseline).unwrap(),
+            ...(target.compactGbuffer === true ? { compactGbuffer: true as const } : {}),
+            subsurface: subsurface !== undefined,
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
-            albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
-            ...(target.compactGbuffer === true ? { compactGbuffer: true } : {}),
-            ...(target.subsurfaceDiffuse === undefined ? {} : { subsurface: true }),
-            dielectricSpecular: resources.textureView(target.f0.view).unwrap(),
-            view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
           },
           pixelCount,
         )
         .unwrap(),
   });
+}
+
+/** Borrow the directional fallback before the full-screen pass replaces it. */
+export function snapshotRayReflectionFallback(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  name: string,
+  source: RenderPipelineTarget,
+) {
+  const texture = graph.createTextureLike(name, source.texture);
+  if (!texture.ok) return texture;
+  const view = graph.view(texture.value);
+  if (!view.ok) return view;
+  const copy = graph.addCopyPass(`${name}.copy`, {
+    accesses: [
+      { resource: source.view, usage: 'copy-src' },
+      { resource: view.value, usage: 'copy-dst' },
+    ],
+    encodeDirect(encoder, _frame, resources) {
+      encoder.copyTextureToTexture(
+        { texture: resources.texture(source.texture).unwrap() },
+        { texture: resources.texture(texture.value).unwrap() },
+        { ...resources.textureViewExtent(source.view).unwrap(), depthOrArrayLayers: 1 },
+      );
+    },
+  });
+  return copy.ok ? view : copy;
 }

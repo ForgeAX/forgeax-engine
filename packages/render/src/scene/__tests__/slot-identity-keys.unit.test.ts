@@ -5,6 +5,7 @@ import {
   suppressionPatchOf,
 } from '../../gpu-driven/production-raster-prepare';
 import type { RenderableSnapshot } from '../../render-system-extract';
+import { FrameSet } from '../frame-set';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { type SceneSlotFrame, SceneSlots, SlotIdentityKeys } from '../scene-slots';
 import { setSceneRow } from './scene-row-writes';
@@ -99,11 +100,11 @@ it('patches view suppression from logged row and roster changes, at any scene si
     setSceneRow(slots, count, sceneSlot(count));
     const after = slots.capture();
     let reads = 0;
-    const read = after.slotAt;
-    Object.defineProperty(after, 'slotAt', {
-      value: (slot: number) => {
+    const read = after.readContentSlot.bind(after);
+    Object.defineProperty(after, 'readContentSlot', {
+      value: (...args: Parameters<typeof read>) => {
         reads++;
-        return read(slot);
+        return read(...args);
       },
     });
     const patched = patchSuppressedPrimitiveWords(
@@ -138,6 +139,45 @@ it('patches view suppression from logged row and roster changes, at any scene si
   // Row updates (slot 3) never re-evaluate a bit: only entered/left rows do.
   expect(evaluations).toEqual([4, 4]);
   expect(changedWords[0]).toBe(changedWords[1]);
+});
+
+it('patches moving view members only within their own physical address space', () => {
+  const slots = new SceneSlots();
+  for (const [slot, entity] of [
+    [0, 55],
+    [2, 17],
+    [4, 9],
+  ] as const)
+    setSceneRow(slots, slot, row(entity));
+  const source = slots.capture();
+  const full = new SlotIdentityKeys(source, undefined, true);
+  expect([...full]).toEqual([55, 17, 9]);
+  const first = new SlotIdentityKeys(source, FrameSet.from([0, 4]), true);
+  const second = new SlotIdentityKeys(source, FrameSet.from([2, 4]), true);
+  expect([...first]).toEqual([55, 9]);
+  expect(first.has(17)).toBe(false);
+  const addresses = identityAddresses(8);
+  const words = suppressedPrimitiveWords(source, first, addresses);
+  const before = { slots: source, activeEntityKeys: first, words, addressRevision: 0 };
+  expect(words[0]).toBe(1 << 2);
+  expect(patchSuppressedPrimitiveWords(before, source, second, addresses)?.[0]).toBe(1);
+  expect(patchSuppressedPrimitiveWords(before, source, full, addresses)?.[0]).toBe(0);
+  const other = new SceneSlots();
+  setSceneRow(other, 1, row(55));
+  setSceneRow(other, 2, row(9));
+  setSceneRow(other, 3, row(17));
+  const foreign = other.capture();
+  const previousKeys = new SlotIdentityKeys(foreign, FrameSet.from([1, 2]), true);
+  const nextKeys = new SlotIdentityKeys(foreign, FrameSet.from([2, 3]), true);
+  expect(
+    patchSuppressedPrimitiveWords(
+      { ...before, activeEntityKeys: previousKeys },
+      source,
+      nextKeys,
+      addresses,
+    ),
+  ).toBeUndefined();
+  expect(suppressedPrimitiveWords(source, nextKeys, addresses)[0]).toBe(1);
 });
 
 function identityAddresses(rowAddressExtent: number) {

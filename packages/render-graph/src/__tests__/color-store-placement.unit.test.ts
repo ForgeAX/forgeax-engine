@@ -5,6 +5,7 @@ import { RenderGraphBuilder } from '../builder.js';
 
 async function fixture(
   options: {
+    ordered?: boolean;
     store?: 'auto' | 'store' | 'discard';
     imported?: boolean;
     persistent?: boolean;
@@ -18,8 +19,12 @@ async function fixture(
   } = {},
 ) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const graph = new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
   const shape = { size: { width: 4, height: 4 }, format: 'rgba8unorm' as const, sampleCount: 4 };
+  const inputs = { device, surfaceSize: shape.size };
+  const procedure = options.ordered
+    ? RenderGraphBuilder.procedure<{ encoder: RhiCommandEncoder }>(inputs)
+    : undefined;
+  const graph = procedure?.passes ?? new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
   const external = options.imported
     ? device.createTexture({ ...shape, usage: 0x10 }).unwrap()
     : undefined;
@@ -75,7 +80,7 @@ async function fixture(
   }
   if (options.subgraph)
     graph.addSubgraphPass('opaque-domain', { accesses: [], commands() {} }).unwrap();
-  const compiled = graph.compile({ device, surfaceSize: shape.size }).unwrap();
+  const compiled = (procedure?.bindResources() ?? graph.compile(inputs)).unwrap();
   const encoder = device.createCommandEncoder().unwrap();
   const begin = vi.spyOn(encoder, 'beginRenderPass');
   compiled.execute({ encoder }).unwrap();
@@ -117,6 +122,24 @@ describe('resolved color attachment store placement', () => {
       expect(f.stores).toEqual(['store']);
     } finally {
       await f.dispose();
+    }
+  });
+
+  it.each([
+    { chain: true },
+    { chain: true, consumer: true },
+    { chain: true, subgraph: true },
+    { chain: true, conditional: true },
+    { imported: true },
+    { persistent: true },
+  ])('binds the same physical stores from an ordered procedure with %j', async (options) => {
+    const declared = await fixture(options);
+    const ordered = await fixture({ ...options, ordered: true });
+    try {
+      expect(ordered.stores).toEqual(declared.stores);
+    } finally {
+      await ordered.dispose();
+      await declared.dispose();
     }
   });
 

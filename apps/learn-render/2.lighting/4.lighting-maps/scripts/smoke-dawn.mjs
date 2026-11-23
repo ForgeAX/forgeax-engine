@@ -80,7 +80,7 @@ const SPECULAR_META_PATH = resolve(TEXTURES_DIR, 'container2_specular.png.meta.j
 const SMOKE_WALL_BUDGET_MS = Number.parseInt(process.env.SMOKE_WALL_BUDGET_MS ?? '45000', 10);
 
 const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e3969-2000-7000-8000-000000000001';
+const CUBE_MATERIAL_GUID = '4be7356b-265b-534e-9cd0-4846b961041b';
 // LO 4.2 lighting_maps_specular_map.cpp lightPos canonical literal.
 const LIGHT_POS_X = 1.2;
 const LIGHT_POS_Y = 1.0;

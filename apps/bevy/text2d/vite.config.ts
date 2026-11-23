@@ -11,7 +11,7 @@ import { defineConfig } from 'vite';
 const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
 const dejavuFonts = resolve(monorepoRoot, 'forgeax-engine-assets', 'dejavu-fonts');
-const legacyFontRoots = [
+const bakedFontRoots = [
   resolve(dejavuFonts, 'DejaVuSansMono.atlas.png'),
   resolve(dejavuFonts, 'DejaVuSansMono.atlas.png.meta.json'),
   resolve(dejavuFonts, 'DejaVuSansMono.font.pack.json'),
@@ -22,10 +22,10 @@ export default defineConfig({
   plugins: [
     forgeaxShader() as never,
     vitePluginRhiDebug(),
-    ...optionalAssetPack(legacyFontRoots, () =>
+    ...optionalAssetPack(bakedFontRoots, () =>
       pluginPack({
         runtimeBinding,
-        roots: legacyFontRoots,
+        roots: bakedFontRoots,
         importers: [imageImporter],
         refresh: reloadAssetHost(),
       }),

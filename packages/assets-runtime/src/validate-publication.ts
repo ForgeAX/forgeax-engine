@@ -17,7 +17,6 @@ import {
 import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
 import { DecoderRegistry } from './internal/decoder-registry';
-import { readDocumentJson } from './internal/pack-json.js';
 import { PackReader } from './internal/pack-reader.js';
 import { validatePublicationReferences } from './internal/publication-references.js';
 import {
@@ -90,15 +89,12 @@ export async function preparePublicationPayloads(
       if (!references.ok) return references;
       let pack = packs.get(row.packageUrl);
       if (pack === undefined) {
-        let input = services.pack;
-        if (input === undefined) {
-          const response = await read(row.packageUrl);
-          if (!response.ok) throw new TypeError('candidate Pack unavailable');
-          input = (await readDocumentJson(response)) as RuntimePackEnvelope;
-        }
         const tuple = row.publication;
         if (!tuple) throw new TypeError('candidate publication missing');
-        const verified = reader.verify(input, { ...tuple, scopeId: input.scopeId });
+        const verified =
+          services.pack === undefined
+            ? await reader.openDetached(row.packageUrl, tuple, read)
+            : reader.verify(services.pack, tuple);
         if (!verified.ok) return verified;
         pack = verified.value;
         packs.set(row.packageUrl, pack);

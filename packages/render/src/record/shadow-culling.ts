@@ -16,6 +16,7 @@ export function shadowViewContains(
   if (planes === undefined || planes.length === 0) return true;
   if (source.spriteInstances !== undefined) return true;
   if (source.instances?.instanceCount === 0) return false;
+  if (source.frustumCulled === false) return true;
   // Bounds come only from the persistent scene owner. Without one, or when it
   // reports unknown bounds, the caster stays conservative; recording never
   // re-derives an instance union per view.

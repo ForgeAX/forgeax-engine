@@ -6,6 +6,7 @@ import {
   DAWN_GATE_SHARDS,
   DAWN_ORDINARY_FILE_FAMILIES,
   dawnAuthoringCapturesOutsideCi,
+  dawnNativeLaneReserve,
 } from '../scripts/ci/dawn-gate-roster.mjs';
 import coverageTimings from '../scripts/ci/modeling-coverage-file-seconds.json' with {
   type: 'json',
@@ -89,12 +90,15 @@ function planDawnFileOwners(
   );
   const bins = DAWN_GATE_SHARDS.map((owners) => ({
     files: [] as TestSpecification[],
-    seconds: owners.reduce((sum, owner) => {
-      if (owner.startsWith('ordinary-')) return sum;
-      const forecast = tailSeconds.get(owner);
-      if (forecast === undefined) throw new Error(`Dawn owner has no placement forecast: ${owner}`);
-      return sum + forecast;
-    }, 0),
+    seconds: dawnNativeLaneReserve(
+      DAWN_GATE_GROUPS.filter(({ id }) => owners.includes(id)),
+      tailSeconds,
+      ordinaryWorkers === 2 &&
+        process.env.FORGEAX_CI_CORE_VALIDATION === '1' &&
+        process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1'
+        ? 2
+        : 1,
+    ),
   }));
   return partitionFiles(files, root, bins, weights, true);
 }

@@ -16,7 +16,7 @@ const RESIZED_WIDTH = 256;
 const RESIZED_HEIGHT = 192;
 const BYTES_PER_PIXEL = 4;
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const FIXTURE_PATH = resolve(APP_ROOT, 'assets', 'pulse-material.pack.json');
+const FIXTURE_PATH = resolve(APP_ROOT, 'fixtures', 'pulse-material.runtime-pack.json');
 const MANIFEST_PATH = resolve(APP_ROOT, 'dist', 'shaders', 'manifest.json');
 const RECOOK_SCRIPT = resolve(APP_ROOT, 'scripts', 'recook-material-pack.mjs');
 const ARTIFACT_DIR = process.env.FORGEAX_MATERIAL_ARTIFACT_DIR;
@@ -126,7 +126,7 @@ const fixture = JSON.parse(originalFixture);
 let cookedByGuid = new Map(
   fixture.assets.map((entry) => [entry.guid.toLowerCase(), entry.payload?.cooked]),
 );
-const { createMaterialLoader, MaterialGenerationCache } =
+const { createMaterialLoader, installMaterialReadyShaders, MaterialGenerationCache } =
   await import('@forgeax/engine-assets-runtime');
 const loader = createMaterialLoader({
   loadPublication: async (guid) => {
@@ -161,8 +161,8 @@ const loadCachedMaterial = (guid) =>
       return { generation, value: loaded };
     }),
   );
-const rootResult = await loadCachedMaterial('01935b00-7d8c-7c4e-9f12-345678abcd02');
-const derivedResult = await loadCachedMaterial('01935b00-7d8c-7c4e-9f12-345678abcd03');
+const rootResult = await loadCachedMaterial('330a8d22-5e43-5aab-8cd4-5d920045f7a8');
+const derivedResult = await loadCachedMaterial('3cb62ea4-3628-5912-83b0-d4f2ee2ae351');
 assert(rootResult.ok && derivedResult.ok, 'inheritance material generations are not runtime-ready');
 const root = rootResult.value;
 const derived = derivedResult.value;
@@ -253,15 +253,13 @@ assert(renderer.inspect().capabilities.backendKind === 'webgpu', `unexpected bac
 const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const baseColorTexturePayload = {
-  kind: 'texture', shape: { viewDimension: '2d', extent: { width: 2, height: 2 } }, format: 'rgba8unorm-srgb',
-  data: new Uint8Array([255, 96, 32, 255, 32, 96, 255, 255, 32, 96, 255, 255, 255, 96, 32, 255]),
-  colorSpace: 'srgb', mips: { kind: 'none' },
+const texturePayload = (guid) => {
+  const row = fixture.assets.find((asset) => asset.guid === guid && asset.kind === 'texture');
+  assert(row !== undefined, `fixture texture ${guid} is missing`);
+  return { ...row.payload, data: new Uint8Array(row.payload.data) };
 };
-const normalTexturePayload = {
-  ...baseColorTexturePayload,
-  data: new Uint8Array([32, 224, 32, 255, 224, 32, 32, 255, 224, 32, 32, 255, 32, 224, 32, 255]),
-};
+const baseColorTexturePayload = texturePayload('3acd39d8-0434-5941-8ee5-385cb024d91d');
+const normalTexturePayload = texturePayload('2382ad16-6ed8-5602-8d9e-74a0f8fea0cb');
 const liveSwapBaseColorTexturePayload = {
   ...baseColorTexturePayload,
   data: new Uint8Array([32, 224, 224, 255, 224, 224, 32, 255, 224, 224, 32, 255, 32, 224, 224, 255]),
@@ -292,8 +290,15 @@ const swapMaterial = materialFromRecord(
       ? liveSwapNormalHandle
       : normalHandle,
 );
-const normalMaterialHandle = assets.create(normalMaterial).unwrap();
-const swapMaterialHandle = assets.create(swapMaterial).unwrap();
+const createMaterialInstance = (material, ready) => {
+  assets.materialPayloadProjections.set(
+    material,
+    installMaterialReadyShaders(assets.shaderRegistry, ready, assets.materialArtifactRegistry),
+  );
+  return assets.create(material).unwrap();
+};
+const normalMaterialHandle = createMaterialInstance(normalMaterial, derived);
+const swapMaterialHandle = createMaterialInstance(swapMaterial, derived);
 const box = createBoxGeometry(1, 1, 1);
 assert(box.ok, 'box geometry creation failed');
 const boxHandle = assets.create(box.value).unwrap();
@@ -379,7 +384,7 @@ let m36StalePixels;
 if (m36Mode) {
   materialCache.bump(materialDependencies[1]);
   destabilizeMaterialLoad = true;
-  m36Stale = await loadCachedMaterial('01935b00-7d8c-7c4e-9f12-345678abcd03');
+  m36Stale = await loadCachedMaterial('3cb62ea4-3628-5912-83b0-d4f2ee2ae351');
   destabilizeMaterialLoad = false;
   assert(!m36Stale.ok, 'Dawn stale cooked material was accepted');
   assert(
@@ -395,25 +400,28 @@ if (m36Mode) {
   for (let frame = 0; frame < Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10)); frame += 1) await drawFrame(`stale-${frame}`);
   m36StalePixels = await readback('stale');
 
-  const recook = await execFileAsync(process.execPath, [RECOOK_SCRIPT, '--write'], {
+  const recook = await execFileAsync(process.execPath, [RECOOK_SCRIPT, '--alternate', '--write'], {
     cwd: resolve(APP_ROOT, '../../..'),
     env: { ...process.env, FORGEAX_SKIP_HARNESS_SYNC: '1' },
     maxBuffer: 16 * 1024 * 1024,
   });
   if (ARTIFACT_DIR !== undefined) {
     writeFileSync(resolve(ARTIFACT_DIR, 'm36-dawn-producer.log'), `${recook.stdout}${recook.stderr}`);
-    writeFileSync(resolve(ARTIFACT_DIR, 'm36-dawn-recooked.pack.json'), readFileSync(FIXTURE_PATH));
+    writeFileSync(resolve(ARTIFACT_DIR, 'm36-dawn-recooked.runtime-pack.json'), readFileSync(FIXTURE_PATH));
   }
   const recooked = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
   cookedByGuid = new Map(
     recooked.assets.map((entry) => [entry.guid.toLowerCase(), entry.payload?.cooked]),
   );
   materialCache.bump(materialDependencies[1]);
-  const fresh = await loadCachedMaterial('01935b00-7d8c-7c4e-9f12-345678abcd03');
+  const fresh = await loadCachedMaterial('3cb62ea4-3628-5912-83b0-d4f2ee2ae351');
   assert(fresh.ok, `Dawn fresh recook failed: ${fresh.ok ? '' : fresh.error.code}`);
   assert(fresh.value.record.artifactDigest !== derived.record.artifactDigest, 'Dawn recook kept the stale digest');
-  assert(materialCache.generationError('01935b00-7d8c-7c4e-9f12-345678abcd03') === undefined, 'Dawn stale diagnostic survived recook');
-  const freshMaterialHandle = assets.create(materialFromRecord(fresh.value.record, baseColorHandle, normalHandle)).unwrap();
+  assert(materialCache.generationError('3cb62ea4-3628-5912-83b0-d4f2ee2ae351') === undefined, 'Dawn stale diagnostic survived recook');
+  const freshMaterialHandle = createMaterialInstance(
+    materialFromRecord(fresh.value.record, baseColorHandle, normalHandle),
+    fresh.value,
+  );
   const freshMutation = world.set(entity, MeshRenderer, { materials: [freshMaterialHandle] });
   assert(freshMutation.ok, `Dawn fresh material publication failed: ${freshMutation.ok ? '' : freshMutation.error.code}`);
   const allocationRelease = assets.release(freshMaterialHandle);

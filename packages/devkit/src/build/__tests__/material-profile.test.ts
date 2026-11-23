@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { materialBuildCapabilityGuard } from '../material-profile.js';
+import { materialBuildCapabilityGuard } from '../../host/engine-configuration.js';
 
 it('requires actual WebGPU compute/storage facts in both local and Render Worker startup', async () => {
   expect(materialBuildCapabilityGuard(undefined)).toBe('');

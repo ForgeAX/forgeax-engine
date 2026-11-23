@@ -1,7 +1,5 @@
-import {
-  createRuntimeAssetEvidenceAdapter,
-  type RuntimeEvidenceSource,
-} from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import type { AssetEvidenceInputs } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 
 const GUID = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4e01';
@@ -16,22 +14,21 @@ const receipt = {
 } as const;
 const artifact = { path: 'lab/body.bin', mediaType: 'application/octet-stream', byteLength: 4 };
 
-type Inputs = Exclude<Awaited<ReturnType<RuntimeEvidenceSource['evidence']>>, { ok: boolean }>;
-
-async function inspect(inputs: Inputs) {
-  return createRuntimeAssetEvidenceAdapter({ evidence: async () => inputs }).inspect(GUID);
-}
-
 export default defineFeature({
   title: 'AssetEvidence',
   catalog: 'AssetEvidence',
   kind: 'headless',
   summary:
-    'Runtime evidence adapter joins source, receipt, package, artifact, and runtime facts; unknown is never passed.',
+    'AssetRegistry joins source, receipt, package, artifact, and runtime facts; unknown is never passed.',
   expect:
     'Missing facts stay unknown/notChecked, stale receipts are stale, conflicts return structured asset-evidence-* codes.',
   async run(checks) {
-    const missing = await createRuntimeAssetEvidenceAdapter().inspect(GUID);
+    const registry = new AssetRegistry();
+    const inspect = (inputs: AssetEvidenceInputs) => {
+      registry.configureAssetEvidence({ evidence: async () => inputs });
+      return registry.inspect(GUID);
+    };
+    const missing = await registry.inspect(GUID);
     checks.equal(
       'no source returns capability-missing',
       missing.ok ? 'ok' : missing.error.code,

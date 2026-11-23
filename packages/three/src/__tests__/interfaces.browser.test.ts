@@ -12,6 +12,35 @@ import { renderReference } from './webgpu-reference.fixture';
 
 const rendererFor = browserRendererFixture();
 
+it('renders a manual mesh matrix with only its shear removed', { timeout: 120000 }, async () => {
+  const renderer = rendererFor();
+  await renderer.init();
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+  camera.position.z = 3;
+  const geometry = new THREE.PlaneGeometry(1, 1);
+  const material = new THREE.MeshBasicMaterial({ color: 0x59c7ef });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.matrixAutoUpdate = false;
+  mesh.matrix.set(0.8, 0.5, 0, 0.15, 0, 0.65, 0, -0.2, 0, 0, 1, 0, 0, 0, 0, 1);
+  scene.add(mesh);
+  try {
+    await readyFrames(renderer, scene, camera, 60);
+    const approximate = displayPixels(await renderer.captureFrame(scene, camera));
+    expect(mesh.matrixWorld.elements[4]).toBe(0.5);
+
+    mesh.matrix.elements[4] = 0;
+    mesh.matrixWorldNeedsUpdate = true;
+    await readyFrames(renderer, scene, camera, 1);
+    const exact = displayPixels(await renderer.captureFrame(scene, camera));
+    expect(approximate).toEqual(exact);
+    comparePixels(approximate, await renderReference(scene, camera));
+  } finally {
+    geometry.dispose();
+    material.dispose();
+  }
+});
+
 it('renders storage-backed grouped objects and a reusable fullscreen triangle on r187', {
   timeout: 120000,
 }, async () => {

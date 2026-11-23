@@ -5,6 +5,7 @@ import {
 } from '@forgeax/engine-shader';
 import { derive, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { projectSurfaceMaterialBindings, retainProjectedMaterialSlots } from '../pbr-pipeline';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
@@ -68,9 +69,19 @@ function dependencies(
         }
       : {}),
   };
+  const materialBindGroupLayout = resource();
+  if (options.selectedShader === SHA_MEDIUM_SHADER) {
+    // Bind-group assembly consumes the slots retained during layout creation.
+    const registry = (runtime as unknown as TestDependencies['runtime']).shaderRegistry;
+    const entries = [{ binding: 0 }, { binding: derive([]).userRegionBindingEnd + 9 }];
+    retainProjectedMaterialSlots(
+      materialBindGroupLayout,
+      projectSurfaceMaterialBindings(entries, registry, SHA_MEDIUM_SHADER),
+    );
+  }
   const pipelineState = {
     skylightFallback: null,
-    materialBindGroupLayout: resource(),
+    materialBindGroupLayout,
     materialUniformBuffer: { buffer: resource() },
     meshStorageBuffer: { buffer: resource() },
     viewUniformBuffer: resource(),
@@ -89,10 +100,9 @@ function dependencies(
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: {
-      irradianceView: resource(),
+      skySh: resource(),
       irradianceSampler: resource(),
       prefilterView: resource(),
-      skylightPrefilterView: resource(),
       prefilterSampler: resource(),
       brdfLutView: resource(),
       intensityBuffer: resource(),

@@ -31,7 +31,7 @@ export async function produceWorkerMaterialTemplate() {
           sourceClosure: [],
           policy: {
             base: '/',
-            packagePath: 'worker-material-template.pack.json',
+            packagePath: 'worker-material-template.runtime-pack.json',
             artifactPath: (guid, key) => `worker-material-template/${guid}/${key}`,
           },
         },
@@ -42,7 +42,7 @@ export async function produceWorkerMaterialTemplate() {
     .unwrap()
     .get(sourcePath);
   if (product === undefined) throw new Error('Missing Worker material Pack');
-  const { finalized, facts, publication } = product;
+  const { finalized, publication } = product;
   const material = finalized.pack.assets[0];
   if (material === undefined || finalized.artifacts.length !== 1)
     throw new Error('Expected one source artifact in the Worker material Pack');
@@ -54,7 +54,7 @@ export async function produceWorkerMaterialTemplate() {
     packageUrl: finalized.packageUrl,
     inputFingerprint: publication.receipt.inputFingerprint,
     digest: finalized.digest,
-    outputs: facts.outputs,
+    outputs: publication.outputs,
     externalEvidence: publication.externalEvidence,
   });
   return {

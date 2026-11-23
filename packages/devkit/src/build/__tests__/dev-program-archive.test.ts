@@ -6,9 +6,8 @@ import { loadPackProgram } from '@forgeax/engine-pack/runtime';
 import { createServer, type Plugin, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { defined } from '../../__tests__/assert-defined.js';
-import { markDevProgramResources } from '../dev-program-resources.js';
 import { executionWorkerEntries } from '../execution-workers.js';
-import { captureDevPluginPrograms } from '../plugin-programs-dev.js';
+import { captureDevPluginPrograms, markDevProgramResources } from '../plugin-programs-dev.js';
 
 const resourceEvidence: Plugin = {
   name: 'test:dev-resource-evidence',
@@ -96,7 +95,10 @@ it('freezes plugin bytes after the initial native dependency scan completes', as
         'engine',
       );
       expect(captured.archive.error).toBeUndefined();
-      const program = defined(captured.archive.programs?.plugin);
+      const program = {
+        ...defined(captured.archive.graph),
+        ...defined(captured.archive.programs?.plugin),
+      };
       expect((await loadPackProgram(program, {})).unwrap()).toBe(42);
     } finally {
       clearTimeout(timer);
@@ -149,7 +151,10 @@ it.each([
     if (resource) expect(captured.archive.error).toContain('portable producer');
     else {
       expect(captured.archive.error).toBeUndefined();
-      const program = defined(captured.archive.programs?.plugin);
+      const program = {
+        ...defined(captured.archive.graph),
+        ...defined(captured.archive.programs?.plugin),
+      };
       const value = (await loadPackProgram(program, {})).unwrap();
       expect(value).toBe(_name === 'raw text' ? '<svg/>' : '/fake.svg');
     }

@@ -79,7 +79,7 @@ it.each([
 ])('retirement uses actual encoding and physical completion: encoded=%s', async (encoded) => {
   const f = await fixture();
   const retired = vi.fn();
-  const batch = { cube: [{ graph: { retire: retired } }], probes: [] };
+  const batch = { cube: [{ recording: { retire: retired } }], probes: [] };
   const state = f.world
     .resolveUniqueRef<{
       outcome: unknown;
@@ -120,7 +120,7 @@ it('retains a frozen successful pass vocabulary only while its producer is uncha
     value: {
       cube: [
         {
-          graph: {
+          recording: {
             inspect: () => ({
               passes: [
                 { name: 'capture-face.4', kind: 'raster', executionIndex: 0 },
@@ -176,7 +176,7 @@ it('does not retain capture declarations without a configured Profiler', async (
     value: {
       cube: [
         {
-          graph: {
+          recording: {
             inspect: () => ({ passes: [{ name: 'capture-face.4', kind: 'raster' }] }),
             retire: vi.fn(),
           },
@@ -204,7 +204,7 @@ it('drops retained capture vocabulary when the device or view identity changes',
     value: {
       cube: [
         {
-          graph: {
+          recording: {
             inspect: () => ({ passes: [{ name: 'capture-face.4', kind: 'raster' }] }),
             retire: vi.fn(),
           },
@@ -229,7 +229,7 @@ it('drops retained capture vocabulary when the device or view identity changes',
     value: {
       cube: [
         {
-          graph: {
+          recording: {
             inspect: () => ({ passes: [{ name: 'capture-face.5', kind: 'raster' }] }),
             retire: vi.fn(),
           },

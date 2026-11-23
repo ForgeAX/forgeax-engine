@@ -1,8 +1,9 @@
 import { err, ok, type Result } from '@forgeax/engine-rhi';
-import type {
-  AssetPublicationEnvelope,
-  CatalogEntry,
-  ScenePublicationFence as EngineScenePublicationFence,
+import {
+  type AssetPublicationEnvelope,
+  assetPublicationReceiptMatches,
+  type CatalogEntry,
+  type ScenePublicationFence as EngineScenePublicationFence,
 } from '@forgeax/engine-types';
 
 export const SCENE_PUBLICATION_FENCE_SCHEMA = 'scene-publication-fence/1' as const;
@@ -28,11 +29,6 @@ export interface ScenePublicationFenceError {
   readonly lastKnownGood?: ScenePublicationFence;
   readonly retryable: boolean;
   readonly recoveryActions: readonly string[];
-}
-
-export interface ScenePublicationObservation {
-  readonly fence: ScenePublicationFence;
-  readonly outputs: readonly string[];
 }
 
 /** Both synchronous spawning and fixed-content preparation validate the same producer edge. */
@@ -93,10 +89,6 @@ function errorFor(
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 function sameFence(left: ScenePublicationFence, right: ScenePublicationFence): boolean {
   return (
     left.schemaVersion === right.schemaVersion &&
@@ -124,13 +116,7 @@ export function createScenePublicationFence(
     );
   }
   const receipt = publication.receipt;
-  if (
-    receipt.schemaVersion !== 'asset-publication-receipt/1' ||
-    receipt.sourcePath !== publication.sourcePath ||
-    receipt.sourceRevision !== publication.sourceRevision ||
-    receipt.outputDigest !== publication.digest ||
-    receipt.outputSetDigest !== publication.outputSetDigest
-  ) {
+  if (!assetPublicationReceiptMatches(publication)) {
     return err(
       errorFor('publication', 'publication receipt does not match the complete output tuple', {
         publication,
@@ -156,37 +142,6 @@ export function createScenePublicationFence(
     outputSetDigest: publication.outputSetDigest,
     receiptIdentity: receipt.inputFingerprint,
   });
-}
-
-/** Parse the persisted fence without guessing legacy generation or identity. */
-export function parseScenePublicationFence(
-  value: unknown,
-): Result<ScenePublicationFence, ScenePublicationFenceError> {
-  if (
-    !isRecord(value) ||
-    value.schemaVersion !== SCENE_PUBLICATION_FENCE_SCHEMA ||
-    typeof value.sourcePath !== 'string' ||
-    typeof value.sourceRevision !== 'string' ||
-    !Number.isSafeInteger(value.publicationGeneration) ||
-    (value.publicationGeneration as number) < 1 ||
-    typeof value.outputDigest !== 'string' ||
-    typeof value.outputSetDigest !== 'string' ||
-    typeof value.receiptIdentity !== 'string'
-  ) {
-    return err(errorFor('publication', 'publication fence shape is incomplete or invalid'));
-  }
-  const generation = value.publicationGeneration as number;
-  return ok(
-    Object.freeze({
-      schemaVersion: SCENE_PUBLICATION_FENCE_SCHEMA,
-      sourcePath: value.sourcePath,
-      sourceRevision: value.sourceRevision,
-      publicationGeneration: generation,
-      outputDigest: value.outputDigest,
-      outputSetDigest: value.outputSetDigest,
-      receiptIdentity: value.receiptIdentity,
-    }),
-  );
 }
 
 /** Compare all fence fields; no single generation or GUID may stand in for it. */
@@ -227,69 +182,43 @@ function alignedPublications(
   return true;
 }
 
-/** Derive a fence only when every Catalog row for the source publication is present and aligned. */
-export function scenePublicationFenceFromCatalog(
-  entries: readonly CatalogEntry[],
-  outputGuid: string,
-): Result<ScenePublicationFence, ScenePublicationFenceError> {
-  const row = entries.find((entry) => entry.guid.toLowerCase() === outputGuid.toLowerCase());
+/** Check only the siblings declared by the accepted publication. */
+export function scenePublicationFenceForRow(
+  row: CatalogEntry | undefined,
+  lookup: (guid: string) => CatalogEntry | undefined,
+): Result<{ fence: ScenePublicationFence; entries: CatalogEntry[] }, ScenePublicationFenceError> {
   const publication = row?.publication;
-  if (publication === undefined) {
+  if (row === undefined || publication === undefined)
     return err(errorFor('catalog', 'Catalog row has no complete publication tuple'));
-  }
   const created = createScenePublicationFence(publication);
   if (!created.ok) return created;
-  const expected = new Set(publication.outputs.map((output) => output.guid.toLowerCase()));
-  const observed = entries.filter((entry) => expected.has(entry.guid.toLowerCase()));
-  if (observed.length !== expected.size || !alignedPublications(observed, created.value)) {
+  const entries: CatalogEntry[] = [];
+  for (const output of publication.outputs) {
+    const guid = output.guid.toLowerCase();
+    const entry = row.guid.toLowerCase() === guid ? row : lookup(guid);
+    if (entry?.guid.toLowerCase() === guid) entries.push(entry);
+  }
+  if (entries.length !== publication.outputs.length || !alignedPublications(entries, created.value))
     return err(
       errorFor('catalog', 'Catalog does not contain one complete publication tuple', {
         publication,
       }),
     );
-  }
-  return created;
+  return ok({ fence: created.value, entries });
 }
 
-export async function observeScenePublication(input: {
-  readonly publication: AssetPublicationEnvelope;
-  readonly waitForOutput: (guid: string) => Promise<void>;
-  readonly timeoutMs?: number;
-  readonly lastKnownGood?: ScenePublicationFence;
-}): Promise<Result<ScenePublicationObservation, ScenePublicationFenceError>> {
-  const created = createScenePublicationFence(input.publication);
-  if (!created.ok) return created;
-  const timeoutMs = input.timeoutMs ?? 5_000;
-  const wait = Promise.all(
-    input.publication.outputs.map((output) => input.waitForOutput(output.guid)),
-  );
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      wait,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('publication-observation-timeout')), timeoutMs);
-      }),
-    ]);
-  } catch {
-    const failureInput = {
-      publication: input.publication,
-      actual: created.value,
-      retryable: true,
-      ...(input.lastKnownGood === undefined ? {} : { lastKnownGood: input.lastKnownGood }),
-    };
-    return err(
-      errorFor(
-        'observation',
-        'publication output observation did not complete before the fence deadline',
-        failureInput,
-      ),
-    );
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
+/** Derive a fence only when every Catalog row for the source publication is present and aligned. */
+export function scenePublicationFenceFromCatalog(
+  entries: readonly CatalogEntry[],
+  outputGuid: string,
+): Result<ScenePublicationFence, ScenePublicationFenceError> {
+  const byGuid = new Map<string, CatalogEntry | undefined>();
+  for (const entry of entries) {
+    const key = entry.guid.toLowerCase();
+    byGuid.set(key, byGuid.has(key) ? undefined : entry);
   }
-  return ok({
-    fence: created.value,
-    outputs: input.publication.outputs.map((output) => output.guid),
-  });
+  const checked = scenePublicationFenceForRow(byGuid.get(outputGuid.toLowerCase()), (guid) =>
+    byGuid.get(guid),
+  );
+  return checked.ok ? ok(checked.value.fence) : checked;
 }

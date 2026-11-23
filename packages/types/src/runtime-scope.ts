@@ -46,21 +46,6 @@ export interface RuntimeCatalogSnapshot {
   readonly diagnostics: readonly CatalogDiagnostic[];
 }
 
-/** Validate the existing Catalog containers; callers validate rows and expected scope. */
-export function readCatalogRows(value: unknown): readonly unknown[] | undefined {
-  if (Array.isArray(value)) return value;
-  if (value === null || typeof value !== 'object') return undefined;
-  const snapshot = value as Record<string, unknown>;
-  return snapshot.schemaVersion === RUNTIME_CATALOG_SNAPSHOT_SCHEMA &&
-    typeof snapshot.scopeId === 'string' &&
-    typeof snapshot.generation === 'number' &&
-    Number.isSafeInteger(snapshot.generation) &&
-    snapshot.authority === 'authoritative' &&
-    Array.isArray(snapshot.entries)
-    ? snapshot.entries
-    : undefined;
-}
-
 /**
  * Make a route below the engine's scoped runtime namespace. The helper is
  * deliberately pure so hosts and tests cannot drift on URL construction.

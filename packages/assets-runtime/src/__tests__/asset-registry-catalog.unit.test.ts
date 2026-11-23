@@ -164,10 +164,10 @@ describe('AssetRegistry.enumerateCatalog', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.get(guid)?.subject).toBe('internal-asset');
-    expect(result.value.get(guid)?.execution).toBe('cooked');
-    expect(result.value.get(guid)?.lifecycle).toBe('current');
-    expect(result.value.get(guid)?.projection).toEqual(raw[0]?.projection);
+    expect(result.value.find((row) => row.guid === guid)?.subject).toBe('internal-asset');
+    expect(result.value.find((row) => row.guid === guid)?.execution).toBe('cooked');
+    expect(result.value.find((row) => row.guid === guid)?.lifecycle).toBe('current');
+    expect(result.value.find((row) => row.guid === guid)?.projection).toEqual(raw[0]?.projection);
   });
 
   it('keeps non-current cooked states explicit even when the locator looks runnable', () => {
@@ -200,7 +200,7 @@ describe('AssetRegistry.enumerateCatalog', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const row = result.value.get(guid);
+    const row = result.value.find((row) => row.guid === guid);
     expect(row?.lifecycle).toBe('stale');
     expect(row?.projection?.lastKnownGood?.packageUrl).toBe('/opaque/runtime/old.pack.json');
   });

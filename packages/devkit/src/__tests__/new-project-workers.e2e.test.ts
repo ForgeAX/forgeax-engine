@@ -17,9 +17,9 @@ import {
 } from '../../scripts/live-sync-inputs.mjs';
 import { browserLaunchArgs } from '../browser-capture.js';
 import { createViteConfig } from '../host.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { readProjectFacts } from '../project.js';
 import { writeProjectIdentity } from '../templates/materialize.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
 import { nativeUnitCommand, runPreparedNativeUnit } from './native-unit-owner.js';
 
 interface PlayerState {
@@ -95,15 +95,47 @@ async function workerProjectDirectory(
 async function prepareLightweightWorkerFixture(root: string, captureIbl: boolean): Promise<void> {
   await reduceTestProject(root, { omitEngineContent: true });
   if (captureIbl) return;
-  // The interaction journey needs the real skinned player and direct Scene
-  // rendering. The optional local probe starts separate cubemap material PSOs.
+  // Keep the authored player, camera, ground and direct lighting. The
+  // reflection showcase, atmosphere, fog and shadow variants belong to the
+  // render gates and add cold pipelines to this Worker interaction journey.
   const path = resolve(root, 'assets/scene.pack.ts');
   const authored = await readFile(path, 'utf8');
-  const scene = authored.replace(
-    /^ {6}keyed\('sphere-reflection', \{\r?\n[\s\S]*?^ {6}\}\),\r?\n/m,
-    '',
-  );
+  const scene = authored
+    .replace(/^ {6}meshEntity\(\r?\n {8}'iron-sphere',\r?\n[\s\S]*?^ {6}\),\r?\n/m, '')
+    .replace(
+      /^ {6}keyed\('(?:atmosphere|height-fog|sphere-reflection)', \{\r?\n[\s\S]*?^ {6}\}\),\r?\n/gm,
+      '',
+    )
+    .replace(/(\bcastShadow:\s*)true\b/, '$1false');
   if (scene !== authored) await writeFile(path, scene);
+
+  // The same skinned mesh and distinct colored surfaces exercise native
+  // publication without separate texture and clearcoat pipeline variants.
+  const groundPath = resolve(root, 'assets/materials.pack.ts');
+  const convoyPath = resolve(root, 'assets/player/convoy-model.ts');
+  const [ground, convoy] = await Promise.all([
+    readFile(groundPath, 'utf8'),
+    readFile(convoyPath, 'utf8'),
+  ]);
+  await Promise.all([
+    writeFile(
+      groundPath,
+      ground.replace(/^ {8}baseColorTexture: \{\r?\n[\s\S]*?^ {8}\},\r?\n/m, ''),
+    ),
+    writeFile(
+      convoyPath,
+      convoy
+        .replace('const { materialId: _materialId, ...surface }', 'const { baseColor }')
+        .replace(
+          /Materials\.standard\(\{ \.\.\.surface, normalTexture: [^\n]+\}\)/,
+          'Materials.standard({ baseColor })',
+        )
+        .replace(
+          /('material\/convoy': skinMaterial\(Materials\.standard\(\{)\r?\n[\s\S]*?^ {4}\}\)\),/m,
+          '$1 baseColor: [0.8, 0.15, 0.08, 1] })),',
+        ),
+    ),
+  ]);
 }
 
 function nativeFailure(error: unknown): unknown {
@@ -195,7 +227,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
           },
         ];
       }
-      const port = await allocateLoopbackPort();
+      const port = await materializeViteDevPort();
       server = await createServer({
         ...config,
         server: { ...config.server, host: '127.0.0.1', port, strictPort: true },

@@ -99,6 +99,7 @@ export async function prepareConfiguredApp(
     'textureMipSkip',
     'assetBudgetBytes',
     'dynamicGeometryMeshBudgetBytes',
+    'staticShadowBudgetBytes',
     'featureTextureReadbackBudgetBytes',
     'time',
     'animation',

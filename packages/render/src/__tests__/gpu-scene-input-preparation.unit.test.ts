@@ -61,6 +61,67 @@ function mappedDescriptor(bytes: Uint8Array, root: number, slot: number): number
   return descriptor;
 }
 
+it('prepares the same Source mapping again after a live frame grows the Inputs buffer', async () => {
+  const f = await fixture();
+  const descriptor = f.inputs.arena.reserveDescriptor(4, (_address, words) =>
+    words.setUint32(0, 71, true),
+  );
+  const mapping = f.inputs.reserveResource(descriptor);
+  const begin = () => {
+    const work = f.inputs.prepareResourceBuffer(
+      [mapping],
+      () => true,
+      () => {},
+    );
+    let next = work.next();
+    while (!next.done) next = work.next();
+    return next.value;
+  };
+  const first = begin();
+  first.step(64).unwrap();
+  expect(first.superseded()).toBe(false);
+  const words = first.byteLength / 4 + 4;
+  const grown = f.inputs.arena.allocateDescriptor(words);
+  const live = f.inputs.capture();
+  let replacement: GpuSceneInputPreparation | undefined;
+  try {
+    const { buffer } = live.buffer().unwrap();
+    live.seal().unwrap();
+    expect(buffer).not.toBe(f.previous.buffer);
+    expect(first.isCurrent()).toBe(false);
+    expect(first.superseded()).toBe(true);
+    first.release();
+    for (let step = 0; step < 64; step++) {
+      const retirement = first.retirement().unwrap();
+      if (retirement.done) break;
+      await retirement.pending;
+    }
+    expect(first.retirement().unwrap().done).toBe(true);
+    expect(mapping.isCurrent()).toBe(true);
+    replacement = begin();
+    finish(replacement);
+    replacement.commitPrepared().unwrap();
+    expect(replacement.superseded()).toBe(false);
+    const result = f.inputs.capture();
+    const accepted = result.buffer().unwrap();
+    result.seal().unwrap();
+    result.release();
+    expect(accepted.buffer).toBe(replacement.buffer);
+    const bytes = f.observed.bytes.get(accepted.buffer);
+    assert(bytes);
+    expect(mappedDescriptor(bytes, accepted.resourceRoot, mapping.logicalSlot)).toBe(
+      mapping.descriptor,
+    );
+  } finally {
+    first.release();
+    replacement?.release();
+    live.release();
+    mapping.release();
+    descriptor.release();
+    f.inputs.arena.releaseDescriptor(grown, words);
+  }
+});
+
 it.each([
   'before',
   'after',

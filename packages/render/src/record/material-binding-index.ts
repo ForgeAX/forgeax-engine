@@ -6,8 +6,8 @@ import { FrameListBase, FrameProjection } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { changes, type Node, nodes, put, remove } from '../scene/frame-tree';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import type { MaterialBinding, MaterialTable } from './fold-buckets';
-import type { ValidatedRenderable } from './frame-snapshot';
+import type { MaterialBinding, MaterialBindingSlots, MaterialTable } from './fold-buckets';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
 
 /** Ownership and intrinsic empty classes are decided before maintaining any rows. */
@@ -287,6 +287,7 @@ export class MaterialBindingIndex {
   private slots: FrameList<readonly number[]> = [];
   private resources: readonly MaterialResource[] = [];
   private firstReaders: readonly number[] = [];
+  private bindingSlots: MaterialBindingSlots = new Map();
   readonly work = { changedRows: 0, indexedRows: 0, rebuilt: 0 };
 
   clear(): void {
@@ -297,17 +298,18 @@ export class MaterialBindingIndex {
     this.slots = [];
     this.resources = [];
     this.firstReaders = [];
+    this.bindingSlots = new Map();
   }
 
   build(
     frames: readonly MaterialRelationFrame[],
-    shadows: readonly ValidatedRenderable[],
+    shadows: DrawRows,
     materials: MaterialFrame,
-    rows: readonly ValidatedRenderable[],
+    rows: DrawRows,
   ): MaterialTable {
     this.shadows.begin(materials);
     for (let index = 0; index < shadows.length; index++)
-      this.shadows.write(index, shadows[index] as ValidatedRenderable);
+      this.shadows.write(index, shadows.at(index) as ValidatedRenderable);
     const shadow = this.shadows.finish(shadows.length);
     const segments: Segment[] = [];
     let offset = 0;
@@ -334,7 +336,7 @@ export class MaterialBindingIndex {
       slots: snapshots,
       bindings: this.resources.map((resource, slot): MaterialBinding => {
         const first = this.firstReaders[slot] as number;
-        const row = first < rows.length ? rows[first] : shadows[first - rows.length];
+        const row = first < rows.length ? rows.at(first) : shadows.at(first - rows.length);
         if (row === undefined) throw new Error('Material reader has no submitted row');
         return {
           material: resource,
@@ -343,9 +345,7 @@ export class MaterialBindingIndex {
           entityKey: row.source.entityKey,
         };
       }),
-      bindingSlots: new Map(
-        this.resources.map((resource, slot) => [resource, new Map([['', slot]])]),
-      ),
+      bindingSlots: this.bindingSlots,
       slotCount: snapshots.length,
     };
   }
@@ -396,6 +396,7 @@ export class MaterialBindingIndex {
         });
     }
     edits.forEach((keys, resource) => {
+      this.work.indexedRows += keys.size;
       // Compact ranges can overlap when an earlier Pass grows or shrinks.
       // Membership belongs to the final fixed relation, independent of edit order.
       keys.forEach((_present, index) => {
@@ -406,25 +407,46 @@ export class MaterialBindingIndex {
       else this.readers.set(resource, members);
     });
     const ordered = [...this.readers].map(([resource, readers]) => {
-      const first = readers.values().next().value;
+      const first = readers.at(0);
       const row = first === undefined ? undefined : next.at(first);
       if (row === undefined) throw new Error('Material reader has no live relation');
       return { resource, first: first as number, lane: row.indexOf(resource) };
     });
     ordered.sort((left, right) => left.first - right.first || left.lane - right.lane);
-    const slots = new Map<MaterialResource, number>();
-    this.resources = ordered.map(({ resource }, slot) => {
-      slots.set(resource, slot);
-      return resource;
-    });
+    if (
+      ordered.length !== this.resources.length ||
+      ordered.some((entry, slot) => this.resources[slot] !== entry.resource)
+    ) {
+      const slots = new Map<MaterialResource, ReadonlyMap<string, number>>();
+      this.resources = ordered.map(({ resource }, slot) => {
+        slots.set(resource, new Map([['', slot]]));
+        return resource;
+      });
+      this.bindingSlots = slots;
+    }
     this.firstReaders = ordered.map(({ first }) => first);
+    const slots = this.bindingSlots;
     const tuples = new WeakMap<Tuple, readonly number[]>();
+    const singletons: (readonly number[] | undefined)[] = [];
     this.slots = new FrameProjection(next, (row) => {
+      if (
+        row.length === 1 &&
+        Object.getPrototypeOf(row) === Array.prototype &&
+        !Object.hasOwn(row, 'map')
+      ) {
+        const resource = row[0];
+        if (resource !== undefined) {
+          const slot = slots.get(resource)?.get('');
+          if (slot === undefined) throw new Error('Material tuple has no live slot');
+          singletons[slot] ??= Object.freeze([slot]);
+          return singletons[slot];
+        }
+      }
       let indices = tuples.get(row);
       if (indices === undefined) {
         indices = Object.freeze(
           row.map((resource) => {
-            const slot = slots.get(resource);
+            const slot = slots.get(resource)?.get('');
             if (slot === undefined) throw new Error('Material tuple has no live slot');
             return slot;
           }),
@@ -434,7 +456,6 @@ export class MaterialBindingIndex {
       return indices;
     });
     this.relations = next;
-    this.work.indexedRows += [...edits.values()].reduce((count, keys) => count + keys.size, 0);
     this.work.rebuilt++;
   }
 }

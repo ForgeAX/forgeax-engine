@@ -5,11 +5,7 @@ import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
-import {
-  SHADOW_CASTER_PROMOTE_WINDOW,
-  SHADOW_CASTER_SETTLE_FRAMES,
-  ShadowCasterClassifier,
-} from '../gpu-driven/shadow-caster-classes';
+import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
@@ -76,6 +72,7 @@ function placed(entityKey: number, x: number): RenderableSnapshot {
   world[12] = x;
   return preparedPbrSnapshot({
     assetHandle: entityKey + 3,
+    mobility: 'static',
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     material,
@@ -294,13 +291,10 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
   };
 }
 
-/** Frames until both casters are static; the static layer then holds `raster.staticDepth`. */
-async function settleBoth(frame: () => Promise<{ readonly staticSlots: ReadonlySet<number> }>) {
-  const limit = SHADOW_CASTER_SETTLE_FRAMES + 2 * SHADOW_CASTER_PROMOTE_WINDOW;
-  let settled = await frame();
-  for (let step = 0; step < limit && settled.staticSlots.size < 2; step += 1)
-    settled = await frame();
-  expect([...settled.staticSlots]).toEqual([0, 1]);
+async function requireStaticPair(
+  frame: () => Promise<{ readonly staticSlots: ReadonlySet<number> }>,
+) {
+  expect([...(await frame()).staticSlots]).toEqual([0, 1]);
 }
 
 describe('static shadow layer across caster class flips (Dawn pixel readback)', () => {
@@ -339,10 +333,9 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
     // Caster 1 sits inside the light frustum, caster 2 far outside it.
     const { apply, frame, dispose } = await harness([placed(1, 0), placed(2, 50)]);
 
-    // Both casters settle into the static layer, which rasters at depth 0.3.
+    // Both authored static casters enter the static layer, which rasters at depth 0.3.
     raster.staticDepth = 0.3;
-    const settleLimit = SHADOW_CASTER_SETTLE_FRAMES + 2 * SHADOW_CASTER_PROMOTE_WINDOW;
-    await settleBoth(frame);
+    await requireStaticPair(frame);
     const baseline = (await frame()).centre;
     expect(baseline).toBeCloseTo(0.3, 5);
 
@@ -354,15 +347,21 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
     expect([...flipped.staticSlots]).toEqual([0]);
     expect(flipped.cache).toBe('hit');
     expect(flipped.centre).toBe(baseline);
-    // The out-of-view caster stays dynamic, then settles back: no static raster.
-    // A move right after promotion may back off its settle threshold.
-    let rejoined = flipped;
-    for (let step = 0; step < 4 * settleLimit && rejoined.staticSlots.size < 2; step += 1) {
-      rejoined = await frame();
-      expect(rejoined.cache).toBe('hit');
-      expect(rejoined.centre).toBe(baseline);
+    // Elapsed time cannot re-admit the moving caster.
+    for (let step = 0; step < 132; step++) {
+      const quiet = await frame();
+      expect(quiet.cache).toBe('hit');
+      expect(quiet.centre).toBe(baseline);
+      expect([...quiet.staticSlots]).toEqual([0]);
     }
+    const { mobility: _mobility, ...dynamic } = placed(2, 61);
+    apply([dynamic]);
+    await frame();
+    apply([placed(2, 62)]);
+    const rejoined = await frame();
     expect([...rejoined.staticSlots]).toEqual([0, 1]);
+    expect(rejoined.cache).toBe('hit');
+    expect(rejoined.centre).toBe(baseline);
     expect(raster.staticDraws).toBe(drawsBefore);
 
     // Falsifier: the in-view caster flipping must re-raster the static layer.
@@ -389,7 +388,7 @@ describe('static shadow layer across caster class flips (Dawn pixel readback)', 
       depth[(MAP_SIZE / 2) * 64 + Math.floor(((x + 32) / 64) * MAP_SIZE)];
 
     raster.staticDepth = 0.3;
-    await settleBoth(frame);
+    await requireStaticPair(frame);
     const baseline = await frame();
     expect(baseline.cache).toBe('hit');
     expect(texel(-10, baseline.depth)).toBeCloseTo(0.3, 5);

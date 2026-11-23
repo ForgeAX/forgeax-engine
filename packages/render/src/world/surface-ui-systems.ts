@@ -91,11 +91,15 @@ export function encodeSurfaceUi(
   if (output === undefined)
     throw new RendererContractFailureError('draw', 'screen UI needs a surface');
   if (!output.ok) throw output.error;
-  const encoded = ui.owner.encode(frame, encoder, output.value, !sceneOutputEncoded);
+  const encoded = ui.owner.encode(
+    frame,
+    encoder,
+    output.value,
+    !sceneOutputEncoded,
+    internals.framePassNames,
+  );
   if (encoded.kind === 'failed') throw new RendererContractFailureError('draw', encoded.detail);
   internals.observationCaptureOwner?.recordGraph(frame, ui.owner.generation);
-  internals.framePassNames?.push('screen-ui-composite');
-  if (ui.owner.output !== undefined) internals.framePassNames?.push('screen-ui-present');
   encodeFrameObservationCapture(
     {
       device: internals.device,

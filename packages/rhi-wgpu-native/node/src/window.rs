@@ -12,6 +12,14 @@ use std::cell::RefCell;
 #[path = "window_winit.rs"]
 mod winit_host;
 
+#[cfg(target_os = "windows")]
+#[path = "window_gamepad.rs"]
+mod gamepad;
+
+#[cfg(target_os = "macos")]
+#[path = "window_gamepad_macos.rs"]
+mod gamepad_macos;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeWindowFacts {
@@ -21,17 +29,34 @@ pub struct NativeWindowFacts {
     pub visible: bool,
 }
 
+#[derive(Serialize)]
+pub struct NativeGamepad {
+    index: u32,
+    buttons: [f64; 17],
+    axes: [f64; 4],
+}
+
 /// Calling-thread native drawable owner. It contains no GPU or UI policy.
 /// Drop releases its native window, after NativeWindow has retired the Surface.
 pub trait NativeWindowHost: HasWindowHandle + HasDisplayHandle {
     fn facts(&self) -> Result<NativeWindowFacts>;
     fn resize(&self, width: u32, height: u32) -> Result<()>;
     fn request_redraw(&self) -> Result<()>;
+    fn set_pointer_lock(&self, _locked: bool) -> Result<bool> {
+        Ok(false)
+    }
+    fn gamepads(&self) -> Option<Vec<NativeGamepad>> {
+        None
+    }
+    fn set_ime_area(&self, _area: Option<[f64; 4]>) -> u32 {
+        0
+    }
     fn poll_events(&self) -> Result<Vec<Value>>;
     fn pre_present_notify(&self) {}
 }
 
 struct ConfiguredSurface {
+    descriptor: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
@@ -136,6 +161,19 @@ impl NativeWindow {
     }
 
     #[napi(catch_unwind)]
+    pub fn supported_texture_usages(&self) -> Result<u32> {
+        let surface = self.surface.borrow();
+        let surface = surface
+            .as_ref()
+            .ok_or_else(|| failure("native window is closed"))?;
+        let adapter = self.adapter.borrow();
+        let adapter = adapter
+            .as_ref()
+            .ok_or_else(|| failure("request a compatible adapter first"))?;
+        Ok(surface.get_capabilities(adapter).usages.bits())
+    }
+
+    #[napi(catch_unwind)]
     pub fn configure(&self, device: &NativeDevice, descriptor: String) -> Result<()> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -187,6 +225,7 @@ impl NativeWindow {
         self.frame.borrow_mut().take();
         device.configure_surface(surface, &config)?;
         *self.configured.borrow_mut() = Some(ConfiguredSurface {
+            descriptor: config,
             device: device.surface_device().clone(),
             queue: device.surface_queue().clone(),
         });
@@ -205,17 +244,26 @@ impl NativeWindow {
         if self.frame.borrow().is_some() {
             return Err(failure("native surface already has an acquired frame"));
         }
-        let surface = self.surface.borrow();
-        let surface = surface
-            .as_ref()
-            .ok_or_else(|| failure("native window is closed"))?;
-        let frame = match surface.get_current_texture() {
+        let mut acquired = self.acquire_surface_texture()?;
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Lost) {
+            self.surface.borrow_mut().take();
+            let surface = self.with_host(create_surface_for_host)?;
+            *self.surface.borrow_mut() = Some(surface);
+        }
+        if matches!(
+            acquired,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated
+        ) {
+            self.with_surface(|surface| device.configure_surface(surface, &configured.descriptor))?;
+            acquired = self.acquire_surface_texture()?;
+        }
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             status => {
                 return Err(failure(format!(
                     "native surface acquisition failed: {status:?}"
-                )))
+                )));
             }
         };
         let id = device.import_surface_texture(frame.texture.clone());
@@ -267,6 +315,32 @@ impl NativeWindow {
     }
 
     #[napi(catch_unwind)]
+    pub fn set_pointer_lock(&self, locked: bool) -> Result<bool> {
+        self.with_host(|host| host.set_pointer_lock(locked))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn gamepads(&self) -> Result<String> {
+        serde_json::to_string(&self.with_host(|host| Ok(host.gamepads()))?).map_err(failure)
+    }
+
+    #[napi(catch_unwind)]
+    pub fn set_ime_area(&self, area: Option<String>) -> Result<u32> {
+        let area: Option<[f64; 4]> = area
+            .map(|area| serde_json::from_str(&area))
+            .transpose()
+            .map_err(failure)?;
+        if area.is_some_and(|[x, y, width, height]| {
+            ![x, y, width, height].iter().all(|value| value.is_finite())
+                || width < 0.0
+                || height < 0.0
+        }) {
+            return Err(failure("invalid logical IME area"));
+        }
+        self.with_host(|host| Ok(host.set_ime_area(area)))
+    }
+
+    #[napi(catch_unwind)]
     pub fn poll_events(&self) -> Result<String> {
         serde_json::to_string(&self.with_host(|host| host.poll_events())?).map_err(failure)
     }
@@ -288,15 +362,7 @@ impl NativeWindow {
     /// dropped. NativeWindow drops every acquired image and Surface before the host.
     /// No JS number, IPC message or cross-process address may supply these handles.
     pub unsafe fn from_host(host: Box<dyn NativeWindowHost>) -> Result<Self> {
-        let raw_display_handle = Some(host.display_handle().map_err(failure)?.as_raw());
-        let raw_window_handle = host.window_handle().map_err(failure)?.as_raw();
-        let surface = unsafe {
-            instance().create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle,
-                raw_window_handle,
-            })
-        }
-        .map_err(failure)?;
+        let surface = create_surface_for_host(host.as_ref())?;
         Ok(Self {
             frame: RefCell::new(None),
             configured: RefCell::new(None),
@@ -306,10 +372,34 @@ impl NativeWindow {
         })
     }
 
+    fn with_surface<T>(&self, run: impl FnOnce(&wgpu::Surface<'static>) -> Result<T>) -> Result<T> {
+        let surface = self.surface.borrow();
+        run(surface
+            .as_ref()
+            .ok_or_else(|| failure("native window is closed"))?)
+    }
+
+    fn acquire_surface_texture(&self) -> Result<wgpu::CurrentSurfaceTexture> {
+        self.with_surface(|surface| Ok(surface.get_current_texture()))
+    }
+
     fn with_host<T>(&self, run: impl FnOnce(&dyn NativeWindowHost) -> Result<T>) -> Result<T> {
         let host = self.host.borrow();
         run(host
             .as_deref()
             .ok_or_else(|| failure("native window is closed"))?)
     }
+}
+
+// Raw handles remain valid while the borrowed host is owned by NativeWindow.
+fn create_surface_for_host(host: &dyn NativeWindowHost) -> Result<wgpu::Surface<'static>> {
+    let raw_display_handle = Some(host.display_handle().map_err(failure)?.as_raw());
+    let raw_window_handle = host.window_handle().map_err(failure)?.as_raw();
+    unsafe {
+        instance().create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle,
+            raw_window_handle,
+        })
+    }
+    .map_err(failure)
 }

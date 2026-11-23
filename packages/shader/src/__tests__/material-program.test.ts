@@ -264,7 +264,7 @@ describe('registry-owned material programs', () => {
     }
   });
   it('shares one source analysis across registrations, variants, lookups and device replacement', () => {
-    const source = '@group(2) @binding(3) var<uniform> cluster: vec4f;';
+    const source = '@group(0) @binding(33) var<uniform> cluster_uniform: vec4f;';
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     const analyze = vi.spyOn(programs, 'createMaterialShaderProgram');
     try {

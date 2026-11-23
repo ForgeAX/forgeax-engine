@@ -6,7 +6,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { DEFAULT_REPLICATION_LIMITS, decodeReplicationPacket } from '@forgeax/engine-net';
-import { HOST_ACTIVATION_REPORT_SERVICE } from '@forgeax/engine-host/transport';
 import { startAuthority } from './authority-e2e.mjs';
 import { startChaosWebSocketProxy } from './chaos-websocket.mjs';
 import { installTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
@@ -299,6 +298,7 @@ function createJourney() {
     chaosMode: process.env.M17_CHAOS_MODE ?? '',
     authority: undefined,
     chaosProxy: undefined,
+    lateJoinProxy: undefined,
     vite: undefined,
     browsers: [],
     contexts: [],
@@ -319,6 +319,7 @@ async function releaseJourney(journey) {
   console.log(JSON.stringify({ phase: 'cleanup', owner: 'vite' }));
   await stopProcess(journey.vite?.child);
   console.log(JSON.stringify({ phase: 'cleanup', owner: 'network' }));
+  await journey.lateJoinProxy?.close().catch(() => {});
   await journey.chaosProxy?.close().catch(() => {});
   await journey.authority?.kill().catch(() => {});
   console.log(JSON.stringify({ phase: 'cleanup', owner: 'complete' }));
@@ -944,57 +945,29 @@ async function runRespawnPhase(journey, page, page0Player, { deathBefore, deathA
   console.log(JSON.stringify({ phase: 'respawn', before: deathAfter, after: respawnAfter }));
 }
 
-/** Drops ACKs only on the blocked late connection; native server messages and close forwarding stay intact. */
-async function routeLateGameTransport(latePage, connectionUrl, lateTransport) {
-  await latePage.routeWebSocket(connectionUrl, route => {
-    const connection = ++lateTransport.connections;
-    const server = route.connectToServer();
-    route.onMessage(message => {
-      const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : message;
-      const packet = decodeReplicationPacket(bytes, DEFAULT_REPLICATION_LIMITS);
-      if (connection === lateTransport.blockedConnection && packet.ok && packet.value.kind === 'ack') {
-        lateTransport.ackDrops++;
-        return;
-      }
-      server.send(message);
-    });
-  });
-}
-
-// Host activation can finish after the finite game-session ACK budget.
-// Delay only its real response; the game transport and retry policy stay live.
-async function holdLateHostActivation(latePage, hostConnectionUrl, lateTransport) {
-  await latePage.routeWebSocket(hostConnectionUrl, route => {
-    const server = route.connectToServer();
-    let reportId;
-    let timer;
-    route.onMessage(message => {
-      const packet = JSON.parse(String(message));
-      if (packet.kind === 'request' && packet.service === HOST_ACTIVATION_REPORT_SERVICE &&
-        packet.payload?.state === 'active') reportId = packet.id;
-      server.send(message);
-    });
-    server.onMessage(message => {
-      const packet = JSON.parse(String(message));
-      if (packet.kind === 'response' && packet.id === reportId) {
-        reportId = undefined;
-        lateTransport.delayedActivationReports++;
-        console.log(JSON.stringify({ phase: 'late-join-host-activation-held', delayMs: 2500 }));
-        timer = setTimeout(() => { timer = undefined; route.send(message); }, 2500);
-      } else route.send(message);
-    });
-    route.onClose(() => { clearTimeout(timer); server.close(); });
-    server.onClose(() => { clearTimeout(timer); route.close(); });
-  });
-}
-
 async function openLateJoinClient(journey, endpoints) {
   const latePage = await openClientPage(journey);
   if (journey.chaosProxy !== undefined) journey.chaosProxy.markLateJoin();
-  const lateTransport = { connections: 0, blockedConnection: undefined, ackDrops: 0, delayedActivationReports: 0 };
-  await routeLateGameTransport(latePage, endpoints.connectionUrl, lateTransport);
-  await holdLateHostActivation(latePage, endpoints.hostConnectionUrl, lateTransport);
-  await latePage.goto(`${endpoints.base}?server=${endpoints.connectionUrl}${endpoints.hostQuery}&m16-reconnect=1`, { waitUntil: 'domcontentloaded' });
+  const lateTransport = {
+    connections: 0,
+    blockedConnection: undefined,
+    ackDrops: 0,
+    delayedActivationReports: 0,
+  };
+  // Keep browser sockets native. A Playwright route can deliver an in-flight
+  // frame to its injected WebSocket after the client has begun to close it.
+  const proxy = await startChaosWebSocketProxy({
+    targetUrl: endpoints.connectionUrl,
+    targetHostUrl: endpoints.hostConnectionUrl,
+    mode: '',
+    lateTransport,
+  });
+  journey.lateJoinProxy = proxy;
+  if (proxy.hostUrl === undefined) throw new Error('Late-join Host proxy did not start');
+  const host = encodeURIComponent(proxy.hostUrl);
+  await latePage.goto(`${endpoints.base}?server=${proxy.url}&host=${host}&m16-reconnect=1`, {
+    waitUntil: 'domcontentloaded',
+  });
   await waitForBrowserReady(journey, latePage, 'late-join');
   assertSemantic(journey, 'late-join-host-activation-held', lateTransport.delayedActivationReports === 1,
     'the late client must complete one delayed native Host activation report');
@@ -1029,18 +1002,27 @@ async function proveAckTimeoutRecovery(journey, lateJoin, page, secondPage) {
   const { latePage, lateTransport } = lateJoin;
   const beforeAckLoss = await readRecoverySnapshot(latePage);
   lateTransport.blockedConnection = lateTransport.connections;
-  await latePage.waitForFunction(previousEpoch => {
+  // Net can become active before the game processes the new epoch's join.
+  // Sample the transport and the projected player in the same browser turn.
+  const recovered = await latePage.waitForFunction(({ previousEpoch, playerNetworkId }) => {
     const snapshot = globalThis.__forgeaxSnake?.snapshot();
     if (snapshot?.state.kind === 'failed') throw new Error(JSON.stringify(snapshot.state));
-    return snapshot?.state.kind === 'active' && snapshot.epoch > previousEpoch;
-  }, beforeAckLoss.epoch, { timeout: 10_000 });
-  const afterAckLoss = await readRecoverySnapshot(latePage);
+    if (snapshot?.state.kind !== 'active' || snapshot.epoch <= previousEpoch) return false;
+    const node = document.querySelector('[data-testid="snake-state"]');
+    if (node?.dataset.netEpoch !== String(snapshot.epoch)) return false;
+    const text = node.textContent ?? '';
+    if (!text.startsWith('{')) return false;
+    const state = JSON.parse(text);
+    return state.snakes?.some(snake => snake.playerNetworkId === playerNetworkId)
+      ? { snapshot, state } : false;
+  }, { previousEpoch: beforeAckLoss.epoch, playerNetworkId: lateJoin.cIdentity }, { timeout: 10_000 });
+  const { snapshot: afterAckLoss, state: afterAckLossState } = await recovered.jsonValue();
+  await recovered.dispose();
   const lateAckDrops = lateTransport.ackDrops;
   const lateConnections = lateTransport.connections;
   assertSemantic(journey, 'ack-timeout-recovery', lateAckDrops > 0 && lateConnections > lateTransport.blockedConnection &&
     afterAckLoss.sessionId === beforeAckLoss.sessionId && afterAckLoss.epoch > beforeAckLoss.epoch,
     `ACK loss must retire the old transport and recover the same SessionId: ${JSON.stringify({lateAckDrops,lateConnections,beforeAckLoss,afterAckLoss})}`);
-  const afterAckLossState = await readState(latePage);
   assertSemantic(journey, 'ack-timeout-player-continuity', byPlayer(afterAckLossState, lateJoin.cIdentity) !== undefined,
     'the late player must retain logical identity after ACK timeout recovery');
   assertSemantic(journey, 'ack-timeout-isolation',

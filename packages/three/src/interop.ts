@@ -9,7 +9,7 @@ import {
   SkyboxBackground,
   Skylight,
 } from '@forgeax/engine-render';
-import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
+import { Name, Transform } from '@forgeax/engine-scene';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   Camera,
@@ -21,7 +21,6 @@ import {
   Scene,
   type ToneMapping,
 } from 'three/src/Three.Core.js';
-import { cameraData, writeSceneClearColor } from './camera';
 import { ThreeCompatibilityError } from './errors';
 import { prepareMaterialPrograms } from './material-programs';
 import { SceneProjection } from './scene';
@@ -44,6 +43,7 @@ export interface ThreeSceneMount {
   readonly source: RenderWorldLease;
   /** Project author changes before native simulation. Does not tick, propagate or draw. */
   sync(): Result<void, ThreeCompatibilityError>;
+  sourceWork(): ReturnType<SceneProjection['sourceWork']>;
   entityFor(object: Object3D): Result<EntityHandle, ThreeCompatibilityError>;
   dispose(): Result<void, ThreeCompatibilityError>;
 }
@@ -84,7 +84,6 @@ export async function mountThreeScene(
   let unsubscribe: (() => void) | undefined;
   let syncing = false;
   let retiring = false;
-  const clearColor = new Float32Array(4);
   const fallback = new Color(0);
   const createGlobals = () =>
     [NativeCamera, Skylight, SkyboxBackground, Fog].map((component) => ({
@@ -102,8 +101,6 @@ export async function mountThreeScene(
     if (entity === undefined) return;
     if (!world.hasComponent(entity, Transform) || !world.hasComponent(entity, Name))
       throw failure(`Source entity is stale or missing owned components: ${object.uuid}`);
-    if (world.hasComponent(entity, ChildOf))
-      throw failure(`Source entity cannot have a native parent: ${object.uuid}`);
     if (
       world.hasComponent(entity, CharacterController) ||
       (world.hasComponent(entity, RigidBody) &&
@@ -111,6 +108,9 @@ export async function mountThreeScene(
     )
       throw failure(`Source Transform cannot have a native pose writer: ${object.uuid}`);
   };
+  let validatedStructure = -1;
+  let validatedCamera: EntityHandle | undefined;
+  let validatedScene: EntityHandle | undefined;
   const sync = (): Result<void, ThreeCompatibilityError> => {
     if (input === undefined || projection === undefined || retiring)
       return err(failure('Three scene mount is disposed'));
@@ -119,11 +119,21 @@ export async function mountThreeScene(
     try {
       const cameraEntity = projection.entityFor(input.camera);
       const sceneEntity = projection.entityFor(input.scene);
-      for (const { component, query } of globals)
-        query.forEach((row) => {
-          if (row.entity !== (component === NativeCamera ? cameraEntity : sceneEntity))
-            throw failure(`Mixed World has another ${component.name} owner`);
-        });
+      const structure = world.getStructureEpoch();
+      if (
+        structure !== validatedStructure ||
+        cameraEntity !== validatedCamera ||
+        sceneEntity !== validatedScene
+      ) {
+        for (const { component, query } of globals)
+          query.forEach((row) => {
+            if (row.entity !== (component === NativeCamera ? cameraEntity : sceneEntity))
+              throw failure(`Mixed World has another ${component.name} owner`);
+          });
+        validatedStructure = structure;
+        validatedCamera = cameraEntity;
+        validatedScene = sceneEntity;
+      }
       const mode = input.toneMapping ?? NoToneMapping;
       if (input.shadowMap?.transmitted === true)
         throw new ThreeCompatibilityError(
@@ -131,16 +141,14 @@ export async function mountThreeScene(
           'Transmitted-color shadows',
           'Native colored shadow transport is not implemented.',
         );
-      projection.sync(
+      projection.syncCamera(
         input.scene,
         input.camera,
         {
-          ...cameraData(
-            input.camera,
-            mode === NoToneMapping ? LinearToneMapping : mode,
-            mode === NoToneMapping ? 1 : (input.toneMappingExposure ?? 1),
-          ),
-          clearColor: writeSceneClearColor(clearColor, input.scene, fallback, 0),
+          toneMapping: mode === NoToneMapping ? LinearToneMapping : mode,
+          exposure: mode === NoToneMapping ? 1 : (input.toneMappingExposure ?? 1),
+          clearColor: fallback,
+          clearAlpha: 0,
         },
         {
           depth: true,
@@ -191,6 +199,7 @@ export async function mountThreeScene(
     projection = new SceneProjection(assets, undefined, prepare, {
       world,
       validateSource,
+      validateComponents: [RigidBody, CharacterController],
       propagate: false,
     });
     const admitted = sync();
@@ -209,6 +218,7 @@ export async function mountThreeScene(
     });
     return ok({
       source: attached.value,
+      sourceWork: () => projection?.sourceWork(),
       sync,
       dispose,
       entityFor(object) {

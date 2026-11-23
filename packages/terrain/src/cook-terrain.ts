@@ -24,6 +24,17 @@ export interface CookedTerrain extends Pick<TerrainAsset, 'heightRange'> {
   readonly sections: readonly CookedTerrainSection[];
 }
 
+function materialEncodingFailure(
+  source: TerrainSource,
+  materialEncoding: TerrainMaterialEncoding,
+): Result<never, TerrainError> | undefined {
+  if (!materialEncoding || !['weights', 'ids'].includes(materialEncoding.kind))
+    return terrainFailure('terrain-layer-invalid', 'materialEncoding', 'weights or budgeted IDs');
+  if (materialEncoding.kind === 'ids' && source.weightDetail !== undefined)
+    return terrainFailure('terrain-layer-invalid', 'weightDetail', 'weight control encoding');
+  return undefined;
+}
+
 /** Deterministic bounded derivation; stable identities are supplied by Pack, not this kernel. */
 export function cookTerrain(
   source: TerrainSource,
@@ -31,8 +42,8 @@ export function cookTerrain(
 ): Result<CookedTerrain, TerrainError> {
   const checked = validateTerrain(source);
   if (!checked.ok) return checked;
-  if (!materialEncoding || !['weights', 'ids'].includes(materialEncoding.kind))
-    return terrainFailure('terrain-layer-invalid', 'materialEncoding', 'weights or budgeted IDs');
+  const encodingFailure = materialEncodingFailure(source, materialEncoding);
+  if (encodingFailure !== undefined) return encodingFailure;
   const ids =
     materialEncoding.kind === 'ids'
       ? cookTerrainIds(source, materialEncoding.maxWeightError)

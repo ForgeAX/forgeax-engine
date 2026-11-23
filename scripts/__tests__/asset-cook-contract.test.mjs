@@ -1,34 +1,21 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { scanAssetCookContract } from '../asset-cook-contract.mjs';
+import { scanAssetCookContract, scanPackAuthoring } from '../asset-cook-contract.mjs';
 
 describe('asset cook contract sweep', () => {
   it('scans the three channels and reports legacy protocol hits as failures', () => {
     const root = mkdtempSync(join(tmpdir(), 'asset-cook-contract-'));
     mkdirSync(join(root, 'packages/assets-runtime/src'), { recursive: true });
-    for (const fixture of [
-      'apps/hello/room/assets/room.pack.json',
-      'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-    ]) {
-      mkdirSync(join(root, dirname(fixture)), { recursive: true });
-    }
+    mkdirSync(join(root, 'apps/hello'), { recursive: true });
     writeFileSync(
       join(root, 'packages/assets-runtime/src/fixture.ts'),
       'export const ok = true;\n',
     );
     writeFileSync(join(root, 'apps/hello/fixture.mjs'), 'export const ok = true;\n');
-    const pack = JSON.stringify({
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [{ guid: 'g', kind: 'mesh', payload: {}, refs: [], artifacts: {} }],
-    });
-    for (const fixture of [
-      'apps/hello/room/assets/room.pack.json',
-      'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-    ])
-      writeFileSync(join(root, fixture), pack);
+    writeFileSync(join(root, 'apps/hello/fixture.pack.json'), '{}');
 
     expect(scanAssetCookContract(root).ok).toBe(true);
     writeFileSync(
@@ -48,5 +35,29 @@ describe('asset cook contract sweep', () => {
       'json-meta-pack',
     ]);
     expect(report.channels.every(([, files]) => files.length > 0)).toBe(true);
+  });
+
+  it('audits current authoring files regardless of name and skips published Runtime Packs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forgeax-pack-authoring-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      writeFileSync(
+        join(root, 'renamed.pack.json'),
+        JSON.stringify({
+          schemaVersion: '3.0.0',
+          packageId: '019fb264-1000-7000-8000-000000000104',
+          assets: {},
+        }),
+      );
+      writeFileSync(join(root, 'renamed.runtime-pack.json'), '{"schemaVersion":"2.0.0"}');
+      expect(await scanPackAuthoring(root)).toEqual({ count: 1, errors: [] });
+
+      writeFileSync(join(root, 'renamed.pack.json'), '{"schemaVersion":"2.0.0"}');
+      const audit = await scanPackAuthoring(root);
+      expect(audit.count).toBe(1);
+      expect(audit.errors).toEqual([expect.stringContaining('renamed.pack.json:')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

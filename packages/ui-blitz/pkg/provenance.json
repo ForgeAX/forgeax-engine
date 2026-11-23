@@ -8,16 +8,16 @@
   "wasmBindgen": "0.2.129",
   "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
   "profile": "release",
-  "sourceDigest": "ace9b4f72e9d3a8c3510e14bb7db15be532e361ff5ec967fd331ff1a3cef4b27",
+  "sourceDigest": "f1faf66c2544a4f554a0ecde90c5737aad5b2b47434804ccf37329994816d5c2",
   "inputs": {
-    "packages/ui-blitz/Cargo.lock": "6dd8de56b7822694db88cc4cdb8bae4678347e50328bf3f1863e5b6d8daace0f",
+    "packages/ui-blitz/Cargo.lock": "a2f532a4d7bfc8c773b05bfdbb8b992b409fd39920eaacc94ea72234a36591f0",
     "packages/ui-blitz/Cargo.toml": "e64df485b0d0898a72e7fbe28eceb96cd2f9e53d71848e214f3b9da3a9ce42c4",
     "packages/ui-blitz/rust/control_tests.rs": "b750f9c92bacb50c7683bf676609711cd1d06ffa9058c84a2cbff43b5a5d8572",
     "packages/ui-blitz/rust/focus_tests.rs": "edb3359f2b921a6f032c64aa924759479a472e24a84a4825b30b66a8bff9ec52",
     "packages/ui-blitz/rust/form_tests.rs": "29f0e6be07dcea666437a24d5396e81e7a94ca0952e7b5e33507b0180363001b",
     "packages/ui-blitz/rust/gpu.rs": "f51f309ff4071e79092648c302c98688201b2beeb0b60fbf14a00f9d2ae916f0",
     "packages/ui-blitz/rust/image_tests.rs": "0e6ffe0862c70043338c965757ae05bbce9f07e69c7fe2adf6472560bfde7c01",
-    "packages/ui-blitz/rust/lib.rs": "73db70afca100d643fc156f2e57529a997b563ad5f820bcf9b2fa726a75dd939",
+    "packages/ui-blitz/rust/lib.rs": "dceef2175b70a64002490cf7af3c009cc7b311a0b5225cfca05a593a385adcc0",
     "packages/ui-blitz/rust/resources.rs": "6b5a99190e2308a6535441139761a5eae9c7d05e22620bc8116af9d65a0f4564",
     "packages/ui-blitz/rust/scroll_tests.rs": "bad72d5586ce760630cac0d33b11e32ad04aecc347d5453c7646ac2e7250459e",
     "packages/ui-blitz/rust/test-assets/aspect-pattern.txt": "c9f46a837298d171e114a9b636266b453315b8e5b4d7527fa360559bc5886d98",
@@ -1004,7 +1004,7 @@
       ]
     },
     {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.2",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#form_urlencoded@1.2.3",
       "features": [
         "alloc",
         "std"
@@ -2015,7 +2015,7 @@
       "features": []
     },
     {
-      "id": "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#url@2.5.9",
       "features": [
         "default",
         "serde",
@@ -2219,28 +2219,28 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 17073853,
-      "sha256": "ef8d40053d3c4358b298d5a127dbf12b2317eb175d5026843c60122c2dc8e48f"
+      "bytes": 17077571,
+      "sha256": "f71239eaf4bccd4aa248e472d980395b877c0bb397226fca18050210fd14d1f6"
     },
     "ui_blitz_bg.wasm.d.ts": {
-      "bytes": 8798,
-      "sha256": "cb091bac3820edc8e673454f74c7f17575c678a2f0536c22626607b518fcb50b"
+      "bytes": 9010,
+      "sha256": "34272fef4231a47a4ad8264b05ea01e1f1ba6365549183e7d35782b392146fee"
     },
     "ui_blitz.js": {
-      "bytes": 45563,
-      "sha256": "ceef45a1f310d612e8f7573d03ee9b2fa91743834e61c9affe12ddae5359e561"
+      "bytes": 46363,
+      "sha256": "8b706fce631877487fa397f093a003bc2cbb70262326d733abc5c91c7789936f"
     },
     "ui_blitz.d.ts": {
-      "bytes": 14922,
-      "sha256": "a5f99aeabc3b64085a61f31fc88c89b72120c68c990cc79ffa1a76e2be49a100"
+      "bytes": 15348,
+      "sha256": "cc863167b2cda8aa2a995d657b0c91b7e438cd9ec5e91706067a85985ceccd92"
     },
     "ui-native.mjs": {
-      "bytes": 44084,
-      "sha256": "f2a4a36724d83dcc748e62d5f3098f147540862b1a7faf7c45280f02e51bafea"
+      "bytes": 44884,
+      "sha256": "6482ed99c2d9da60325fecae9a78c450e70f0aab217be4527bb88ac7bff7c5a7"
     },
     "ui-native.d.mts": {
-      "bytes": 5281,
-      "sha256": "bea6cff41e3802897ef07b5972596699c930e25f747390fc67d571a906f203db"
+      "bytes": 5495,
+      "sha256": "f271509d5f09599a743b869cb13cddd0eb5dc5aa470bb59241db53b1e5ae3028"
     }
   }
 }

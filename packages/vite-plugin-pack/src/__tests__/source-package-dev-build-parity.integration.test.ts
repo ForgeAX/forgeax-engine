@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { DdcEntryStore, DdcLifecycle } from '@forgeax/engine-ddc';
@@ -10,66 +9,17 @@ import {
   runtimeScopePath,
 } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import {
+  metaFixture,
+  packAssetFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { createServer, requestServer } from './middleware-fixture.js';
+import { recordNamedBundle } from './vite-fixtures.js';
 
 const MAIN_GUID = '00000000-0000-4000-8000-000000000001';
 const CHILD_GUID = '00000000-0000-4000-8000-000000000002';
-
-interface Response {
-  statusCode: number;
-  body: string | Uint8Array | undefined;
-  headers: Record<string, string>;
-}
-
-interface Server {
-  middlewares: { use(handler: Handler): void };
-  ws: { send(): void };
-  handler?: Handler;
-}
-
-type Handler = (
-  req: { url?: string; method?: string; headers?: Record<string, string> },
-  res: Response & {
-    setHeader(name: string, value: string): void;
-    end(body?: string | Uint8Array): void;
-  },
-  next: () => void,
-) => void | Promise<void>;
-
-function createServer(): Server {
-  const server: Server & { handler?: Handler } = {
-    middlewares: {
-      use(handler) {
-        server.handler = handler;
-      },
-    },
-    ws: { send() {} },
-  };
-  return server;
-}
-
-async function request(
-  server: Server,
-  url: string,
-  headers?: Record<string, string>,
-): Promise<Response> {
-  const response: Response = { statusCode: 200, body: undefined, headers: {} };
-  if (server.handler === undefined) throw new Error('plugin middleware was not registered');
-  await server.handler(
-    { url, method: 'GET', ...(headers === undefined ? {} : { headers }) },
-    {
-      ...response,
-      setHeader(name, value) {
-        response.headers[name] = value;
-      },
-      end(body) {
-        response.body = body;
-      },
-    },
-    () => {},
-  );
-  return response;
-}
 
 function fixtureImporterWithBody(bytes: Uint8Array): Importer {
   return {
@@ -87,13 +37,10 @@ function fixtureImporterWithBody(bytes: Uint8Array): Importer {
               body: { mediaType: 'application/octet-stream', bytes },
             },
           },
-          {
-            guid: CHILD_GUID,
+          packAssetFixture(CHILD_GUID, 'fixture-material', {
             kind: 'fixture-material',
-            payload: { kind: 'fixture-material', label: 'fixture' },
-            refs: [],
-            artifacts: {},
-          },
+            label: 'fixture',
+          }),
         ],
         sourceDependencies: ['scene.fixture'],
       },
@@ -103,17 +50,10 @@ function fixtureImporterWithBody(bytes: Uint8Array): Importer {
 const fixtureImporter = fixtureImporterWithBody(new Uint8Array([1, 2, 3]));
 
 function meta(): string {
-  return JSON.stringify({
-    schemaVersion: '1.0.0',
-    kind: 'external-asset-package',
-    importer: 'fixture',
-    source: 'scene.fixture',
-    importSettings: {},
-    subAssets: [
-      { guid: MAIN_GUID, sourceIndex: 0, sourceKey: 'mesh/main', kind: 'fixture-mesh' },
-      { guid: CHILD_GUID, sourceIndex: 1, sourceKey: 'material/main', kind: 'fixture-material' },
-    ],
-  });
+  return metaFixture('scene.fixture', 'fixture', [
+    { guid: MAIN_GUID, sourceIndex: 0, sourceKey: 'mesh/main', kind: 'fixture-mesh' },
+    { guid: CHILD_GUID, sourceIndex: 1, sourceKey: 'material/main', kind: 'fixture-material' },
+  ]);
 }
 
 function semanticPack(pack: {
@@ -144,62 +84,92 @@ function semanticPack(pack: {
 }
 
 describe('source package dev/build parity', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await scratch.clear();
   });
 
-  it('reopens unchanged Meta catalog and artifact routes without republishing DDC', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-meta-publication-warm-'));
-    roots.push(root);
+  async function metaProject(label: string) {
+    const root = await scratch.make(label);
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(join(assets, 'scene.fixture'), 'fixture source');
     await writeFile(join(assets, 'scene.fixture.meta.json'), meta());
+    return { root, assets };
+  }
+
+  it.each([
+    'before-consume',
+    'on-demand',
+  ] as const)('reopens unchanged Meta routes without republishing DDC (%s)', async (producerReadiness) => {
+    const { root, assets } = await metaProject('forgeax-meta-publication-warm-');
     const previousCwd = process.cwd();
     process.chdir(root);
     try {
       const binding = createStandaloneRuntimeAssetBinding('warm-publication');
       const expectedBytes = new Uint8Array(4096).fill(7);
       const importer = fixtureImporterWithBody(expectedBytes);
-      const reopen = async () => {
-        const plugin = pluginPack({ roots: [assets], importers: [importer] });
+      const cooked = vi.spyOn(importer, 'import');
+      const lazy = producerReadiness === 'on-demand';
+      const ddcRoot = join(root, 'ddc');
+      const reopen = async (firstOpen: boolean) => {
+        const plugin = pluginPack({
+          roots: [assets],
+          importers: [importer],
+          producerReadiness,
+          ddc: { projectDdcRoot: ddcRoot },
+          runtimeBinding: binding,
+        });
         const server = createServer();
         plugin.configureServer(server);
         try {
           await plugin.rebind(binding, [assets]);
-          const catalogResponse = await request(server, binding.catalogUrl);
+          if (firstOpen && lazy) {
+            const imported = await requestServer(
+              server,
+              `${binding.importUrlBase}/${MAIN_GUID}`,
+              'POST',
+            );
+            expect(imported.statusCode).toBe(200);
+          }
+          const catalogResponse = await requestServer(server, binding.catalogUrl);
           expect(catalogResponse.statusCode, String(catalogResponse.body)).toBe(200);
           const decoded = decodeCatalogWire(JSON.parse(String(catalogResponse.body)));
           expect(decoded.ok, String(catalogResponse.body)).toBe(true);
           const catalog = decoded.unwrap();
           const row = catalog.find((entry) => entry.guid === MAIN_GUID);
           if (row === undefined) throw new Error('missing restored catalog row');
-          const response = await request(server, row.packageUrl);
+          const response = await requestServer(server, row.packageUrl);
           expect(response.statusCode).toBe(200);
           const pack = JSON.parse(String(response.body));
-          const artifact = await request(
+          const artifact = await requestServer(
             server,
             `${runtimeScopePath(binding)}/asset/__forgeax-ddc/${MAIN_GUID}/body.bin`,
-            { 'accept-encoding': 'gzip' },
+            'GET',
+            lazy ? undefined : { 'accept-encoding': 'gzip' },
           );
           expect(artifact.statusCode).toBe(200);
-          expect(artifact.headers['Content-Encoding']).toBe('gzip');
-          expect(new Uint8Array(gunzipSync(artifact.body as Uint8Array))).toEqual(expectedBytes);
+          expect(artifact.headers['Content-Encoding']).toBe(lazy ? undefined : 'gzip');
+          const bytes = artifact.body as Uint8Array;
+          expect(lazy ? bytes : new Uint8Array(gunzipSync(bytes))).toEqual(expectedBytes);
           return { row, pack };
         } finally {
           await plugin.closeBundle();
         }
       };
-      const first = await reopen();
+      const first = await reopen(true);
+      expect(cooked).toHaveBeenCalledTimes(1);
       const begin = vi.spyOn(DdcLifecycle.prototype, 'beginWithSnapshot');
       const stage = vi.spyOn(DdcEntryStore.prototype, 'stage');
-      const second = await reopen();
+      const second = await reopen(false);
       expect(second.pack).toEqual(first.pack);
-      expect(second.row.revision).toMatchObject({ digest: first.row.revision?.digest });
-      expect(second.row.publication).toEqual(first.row.publication);
+      if (lazy) expect(cooked).toHaveBeenCalledTimes(1);
+      else {
+        expect(second.row.revision).toMatchObject({ digest: first.row.revision?.digest });
+        expect(second.row.publication).toEqual(first.row.publication);
+      }
       expect(begin).not.toHaveBeenCalled();
       expect(stage).not.toHaveBeenCalled();
     } finally {
@@ -208,8 +178,7 @@ describe('source package dev/build parity', () => {
   });
 
   it('retains warm DDC entries when a source revision changes without changing cooked bytes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-publication-key-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-publication-key-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(join(assets, 'scene.fixture.meta.json'), meta());
@@ -230,12 +199,12 @@ describe('source package dev/build parity', () => {
         plugin.configureServer(server);
         try {
           await plugin.rebind(binding, [assets]);
-          const response = await request(server, binding.catalogUrl);
+          const response = await requestServer(server, binding.catalogUrl);
           expect(response.statusCode).toBe(200);
           const catalog = decodeCatalogWire(JSON.parse(String(response.body))).unwrap();
           const row = catalog.find((entry) => entry.guid === MAIN_GUID);
           if (row?.publication === undefined) throw new Error('expected the source publication');
-          const pack = JSON.parse(String((await request(server, row.packageUrl)).body));
+          const pack = JSON.parse(String((await requestServer(server, row.packageUrl)).body));
           return { publication: row.publication, pack };
         } finally {
           await plugin.closeBundle();
@@ -262,12 +231,7 @@ describe('source package dev/build parity', () => {
   });
 
   it('keeps semantic product facts equal while sink locators differ', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-parity-'));
-    roots.push(root);
-    const assets = join(root, 'assets');
-    await mkdir(assets);
-    await writeFile(join(assets, 'scene.fixture'), 'fixture source');
-    await writeFile(join(assets, 'scene.fixture.meta.json'), meta());
+    const { root, assets } = await metaProject('forgeax-pack-parity-');
     const previousCwd = process.cwd();
     process.chdir(root);
     try {
@@ -277,28 +241,22 @@ describe('source package dev/build parity', () => {
       const binding = createStandaloneRuntimeAssetBinding('pack-parity');
       await dev.rebind(binding, [assets]);
       const catalog = decodeCatalogWire(
-        JSON.parse(String((await request(server, binding.catalogUrl)).body)),
+        JSON.parse(String((await requestServer(server, binding.catalogUrl)).body)),
       ).unwrap();
       const devRow = catalog.find((entry) => entry.guid.toLowerCase() === MAIN_GUID);
       expect(devRow).toBeDefined();
       expect(devRow?.publication?.sourcePath).toBe(devRow?.sourcePath);
       const devPack = JSON.parse(
-        String(await request(server, devRow?.packageUrl ?? '').then((result) => result.body)),
+        String(await requestServer(server, devRow?.packageUrl ?? '').then((result) => result.body)),
       ) as Parameters<typeof semanticPack>[0];
 
       const emitted: Array<{ fileName?: string; name?: string; source?: string | Uint8Array }> = [];
       const build = pluginPack({ roots: [assets], importers: [fixtureImporter] });
-      await build.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return `assets/${referenceId}`;
-        },
-      });
+      await build.generateBundle.call(
+        recordNamedBundle(emitted, (referenceId) => `assets/${referenceId}`),
+      );
       const buildPackAsset = emitted.find((asset) =>
-        asset.name?.startsWith(`${MAIN_GUID}.pack.json`),
+        asset.name?.startsWith(`${MAIN_GUID}.runtime-pack.json`),
       );
       expect(buildPackAsset).toBeDefined();
       expect(buildPackAsset?.source).toBeInstanceOf(Uint8Array);
@@ -319,8 +277,7 @@ describe('source package dev/build parity', () => {
     }
   });
   it('uses the standard bounded production executor for a cold live Pack', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-pack-production-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-live-pack-production-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(
@@ -344,7 +301,7 @@ describe('source package dev/build parity', () => {
     try {
       const binding = createStandaloneRuntimeAssetBinding('cold-production');
       await plugin.rebind(binding, [assets]);
-      const response = await request(server, binding.catalogUrl);
+      const response = await requestServer(server, binding.catalogUrl);
       const catalog = decodeCatalogWire(JSON.parse(String(response.body))).unwrap();
       expect(catalog.some((row) => row.kind === 'sampler')).toBe(true);
     } finally {

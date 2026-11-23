@@ -480,7 +480,6 @@ try {
   assert.equal(await view.locator('iframe[data-forgeax-project-document]').getAttribute('data-forgeax-project-document'), targetId,
     'reopening the same View must retain the existing document and Engine target');
   const previousTargetId = targetId;
-  const previousUrl = await page.locator('#opened').innerText();
   console.error('MCP App stage: initial scene and reopening passed');
   await assertNoRuntimeFailure(view.frameLocator('iframe[data-forgeax-project-document]'), 'Preview before backend replacement', errors, consoleErrors);
   // Backend retirement deliberately produces connection failures. Observe the
@@ -492,8 +491,8 @@ try {
   await page.getByRole('button', { name: 'Restart backend', exact: true }).click();
   assert.equal((await restartResponse).status(), 200, 'Backend restart request must succeed; inspect failed CLI records');
   recordBackendReplacement('restart-response');
-  await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
-  recordBackendReplacement('view-url-changed');
+  // The View service can reopen at the same URL. The project document target
+  // identifies the newly started Engine and fences out the previous scene.
   await view.locator(`iframe[data-forgeax-project-document]:not([data-forgeax-project-document="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
   recordBackendReplacement('preview-iframe-attached');
   await waitForViewProjectReady(view, 'template-game-3d', performance.now() + 60000);

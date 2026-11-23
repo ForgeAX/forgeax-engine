@@ -1,4 +1,5 @@
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
+import { compiledRenderGraphGeneration } from '@forgeax/engine-render-graph';
 import type {
   LodOcclusionInspection,
   LodOcclusionReceiptObservation,
@@ -299,12 +300,15 @@ function currentCaptureFailure(
 /** The compiled-graph generation and incarnation a view's owner currently holds. */
 export function graphFacts({ frameState }: ViewSettlementOwner) {
   const graph = frameState.compiledFrameGraph?.graph;
-  return { generation: graph?.inspect().generation ?? 0, incarnation: graph as object | undefined };
+  return {
+    generation: graph === undefined ? 0 : compiledRenderGraphGeneration(graph),
+    incarnation: graph as object | undefined,
+  };
 }
 
 function graphMatchesGeneration(view: LodObservationViewCapture): boolean {
   const graph = view.owner.frameState.compiledFrameGraph?.graph;
-  return graph !== undefined && graph.inspect().generation === view.graphGeneration;
+  return graph !== undefined && compiledRenderGraphGeneration(graph) === view.graphGeneration;
 }
 
 function graphMatchesCapture(view: LodObservationViewCapture): boolean {
@@ -312,7 +316,7 @@ function graphMatchesCapture(view: LodObservationViewCapture): boolean {
   return (
     view.graphIncarnation !== undefined &&
     graph === view.graphIncarnation &&
-    graph.inspect().generation === view.graphGeneration
+    compiledRenderGraphGeneration(graph) === view.graphGeneration
   );
 }
 

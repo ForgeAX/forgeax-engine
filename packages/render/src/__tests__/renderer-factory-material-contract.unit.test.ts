@@ -692,13 +692,11 @@ fn cloud_direct_solar_factorX() -> f32 {
       pbrSkinPipelineLayout: 'skin-urp' as never,
       gpuDrivenPbrPipelineLayout: 'gpu-urp' as never,
       gpuDrivenPbrSkinPipelineLayout: 'gpu-skin-urp' as never,
-      gpuDrivenClusterPbrPipelineLayout: 'gpu-cluster' as never,
-      gpuDrivenClusterPbrSkinPipelineLayout: 'gpu-skin-cluster' as never,
     };
 
-    expect(selectPipelineLayoutForVariant(state, '', 'gpu-driven-cluster-pbr')).toBe('gpu-cluster');
+    expect(selectPipelineLayoutForVariant(state, '', 'gpu-driven-cluster-pbr')).toBe('gpu-urp');
     expect(selectPipelineLayoutForVariant(state, '', 'gpu-driven-cluster-skin')).toBe(
-      'gpu-skin-cluster',
+      'gpu-skin-urp',
     );
   });
 
@@ -799,11 +797,20 @@ fn cloud_direct_solar_factorX() -> f32 {
         variants,
         'webgpu',
         true,
-        25,
+        26,
+      ),
+    ).toBe('EXTENDED_LIGHTING_AVAILABLE=false');
+    expect(
+      resolveMaterialShaderVariantSet(
+        'EXTENDED_LIGHTING_AVAILABLE=true',
+        variants,
+        'webgpu',
+        true,
+        27,
       ),
     ).toBe('');
     expect(
-      resolveMaterialShaderVariantSet(undefined, variants, 'webgpu', true, 25),
+      resolveMaterialShaderVariantSet(undefined, variants, 'webgpu', true, 27),
     ).toBeUndefined();
     expect(
       resolveMaterialShaderVariantSet(
@@ -811,7 +818,7 @@ fn cloud_direct_solar_factorX() -> f32 {
         variants,
         'webgpu',
         true,
-        25,
+        27,
       ),
     ).toBe('');
     expect(

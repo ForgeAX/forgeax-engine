@@ -190,6 +190,35 @@ test('a missing required dependency blocks the tarball before publication', asyn
   }
 });
 
+test('dependencies resolved through the local pnpm store stay outside the Engine archive', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-pnpm-store-'));
+  try {
+    const stage = resolve(root, 'stage');
+    const archive = resolve(root, 'engine.tgz');
+    await fixture(resolve(stage, 'package'), '@forgeax/engine', '1.2.3', '');
+    await writePackageArchive(stage, archive);
+    const leaf = resolve(root, 'member');
+    await fixture(leaf, '@forgeax/engine-leaf', '1.2.3', '', { external: '^1.0.0' });
+    const registry = resolve(root, 'node_modules/.pnpm/external@1.0.0/node_modules/external');
+    await fixture(registry, 'external', '1.0.0', '');
+    await mkdir(resolve(leaf, 'node_modules'));
+    await symlink(registry, resolve(leaf, 'node_modules/external'), 'junction');
+    const result = await bundleEngineArchive({
+      engineArchive: archive,
+      members: [{ name: '@forgeax/engine-leaf', root: leaf }],
+      version: '1.2.3',
+    });
+    const manifest = JSON.parse(
+      (await execute('tar', ['-xOf', archive, 'package/package.json'])).stdout,
+    );
+    assert.equal(result.registryDependencies, 1);
+    assert.equal(manifest.dependencies.external, '1.0.0');
+    assert.deepEqual(manifest.bundledDependencies, ['@forgeax/engine-leaf']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('npm aliases occupy their import name once instead of duplicating the canonical package', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-alias-'));
   try {

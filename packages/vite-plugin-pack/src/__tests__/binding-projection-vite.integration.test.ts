@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { createServer } from 'vite';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import { pluginPack } from '../index.js';
 
 async function fixture() {
@@ -34,6 +34,10 @@ async function fixture() {
     server: { host: '127.0.0.1', port: 0 },
     optimizeDeps: { noDiscovery: true },
   });
+  onTestFinished(async () => {
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  });
   await server.listen();
   await plugin.ready();
   return {
@@ -45,73 +49,76 @@ async function fixture() {
         { ...createStandaloneRuntimeAssetBinding('binding-projection'), generation: index + 1 },
         [roots[index]],
       ),
-    close: async () => {
-      await server.close();
-      await rm(root, { recursive: true, force: true });
-    },
   };
 }
 
 it('publishes declarations under the resolved Vite root without changing process cwd', async () => {
   const host = await fixture();
   const other = await fixture();
-  try {
-    expect(host.root).not.toBe(process.cwd());
-    await Promise.all([host.bind(0), other.bind(1)]);
-    await expect(
-      readFile(join(host.root, '.forgeax/generated/assets.d.ts'), 'utf8'),
-    ).resolves.toContain('"effect/0"');
-    const otherDeclaration = await readFile(
-      join(other.root, '.forgeax/generated/assets.d.ts'),
-      'utf8',
-    );
-    expect(otherDeclaration).toContain('"effect/1"');
-    expect(otherDeclaration).not.toContain('"effect/0"');
-    const declaration = join(host.root, '.forgeax/generated/assets.d.ts');
-    const accepted = await lstat(declaration);
-    await host.bind(0);
-    const unchanged = await lstat(declaration);
-    expect([unchanged.ino, unchanged.mtimeMs]).toEqual([accepted.ino, accepted.mtimeMs]);
-  } finally {
-    await Promise.all([host.close(), other.close()]);
-  }
+  expect(host.root).not.toBe(process.cwd());
+  await Promise.all([host.bind(0), other.bind(1)]);
+  await expect(
+    readFile(join(host.root, '.forgeax/generated/assets.d.ts'), 'utf8'),
+  ).resolves.toContain('"effect/0"');
+  const otherDeclaration = await readFile(
+    join(other.root, '.forgeax/generated/assets.d.ts'),
+    'utf8',
+  );
+  expect(otherDeclaration).toContain('"effect/1"');
+  expect(otherDeclaration).not.toContain('"effect/0"');
+  const declaration = join(host.root, '.forgeax/generated/assets.d.ts');
+  const accepted = await lstat(declaration);
+  await host.bind(0);
+  const unchanged = await lstat(declaration);
+  expect([unchanged.ino, unchanged.mtimeMs]).toEqual([accepted.ino, accepted.mtimeMs]);
 });
 
 it('invalidates transformed asset bindings on rebind and retains them after failed replacement', async () => {
   const host = await fixture();
   const load = () => host.server.transformRequest('virtual:forgeax/assets');
-  try {
-    expect((await load())?.code).toContain('effect/0');
-    const broken = join(host.root, 'broken');
-    await mkdir(broken);
-    await writeFile(join(broken, 'effect.pack.json'), '{invalid');
-    await expect(
-      host.plugin.rebind(
-        { ...createStandaloneRuntimeAssetBinding('binding-projection'), generation: 2 },
-        [broken],
-      ),
-    ).resolves.toMatchObject({ status: 'degraded' });
-    expect((await load())?.code).toContain('effect/0');
-    await expect(
-      readFile(join(host.root, '.forgeax/generated/assets.d.ts'), 'utf8'),
-    ).resolves.toContain('"effect/0"');
-    await host.bind(1);
-    const second = (await load())?.code;
-    expect(second).toContain('effect/1');
-    expect(second).not.toContain('effect/0');
-  } finally {
-    await host.close();
-  }
+  const loadRuntime = () => host.server.transformRequest('virtual:forgeax/pack-runtime');
+  expect((await load())?.code).toContain('effect/0');
+  expect((await loadRuntime())?.code).toContain('"generation":1');
+  const broken = join(host.root, 'broken');
+  await mkdir(broken);
+  await writeFile(join(broken, 'effect.pack.json'), '{invalid');
+  await expect(
+    host.plugin.rebind(
+      { ...createStandaloneRuntimeAssetBinding('binding-projection'), generation: 2 },
+      [broken],
+    ),
+  ).resolves.toMatchObject({ status: 'degraded' });
+  expect((await load())?.code).toContain('effect/0');
+  await expect(
+    readFile(join(host.root, '.forgeax/generated/assets.d.ts'), 'utf8'),
+  ).resolves.toContain('"effect/0"');
+  await host.bind(1);
+  const second = (await load())?.code;
+  expect(second).toContain('effect/1');
+  expect(second).not.toContain('effect/0');
+  expect((await loadRuntime())?.code).toContain('"generation":2');
 });
 
-it('projects the active runtime scope into the transformed runtime module', async () => {
+it('restores an authored publication when the binding declaration cannot be installed', async () => {
   const host = await fixture();
-  const load = () => host.server.transformRequest('virtual:forgeax/pack-runtime');
-  try {
-    expect((await load())?.code).toContain('"generation":1');
-    await host.bind(1);
-    expect((await load())?.code).toContain('"generation":2');
-  } finally {
-    await host.close();
-  }
+  const declaration = join(host.root, '.forgeax/generated/assets.d.ts');
+  const sourcePath = join(host.root, 'first', 'effect.pack.json');
+  const before = host.plugin.catalogSnapshot()[0]?.publication;
+  expect(before?.generation).toBe(1);
+  const source = JSON.parse(await readFile(sourcePath, 'utf8'));
+  await rm(declaration);
+  await mkdir(declaration);
+  source.assets['effect/0'].payload = { marker: 'rejected' };
+  await writeFile(sourcePath, JSON.stringify(source));
+
+  await expect(host.plugin.rebuildCatalogInPlace([sourcePath])).resolves.toBe(false);
+  expect(host.plugin.catalogSnapshot()[0]?.publication).toEqual(before);
+
+  await rm(declaration, { recursive: true });
+  source.assets['effect/0'].payload = { marker: 'accepted' };
+  await writeFile(sourcePath, JSON.stringify(source));
+  await expect(host.plugin.rebuildCatalogInPlace([sourcePath])).resolves.toBe(true);
+  const accepted = host.plugin.catalogSnapshot()[0]?.publication;
+  expect(accepted?.generation).toBe(2);
+  expect(accepted?.digest).not.toBe(before?.digest);
 });

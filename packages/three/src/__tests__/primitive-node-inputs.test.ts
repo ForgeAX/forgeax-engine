@@ -127,7 +127,9 @@ it('rejects Sprite graph getters before publication and keeps material assets qu
   const sync = () => projection.sync(scene, camera, cameraData(camera, NoToneMapping, 1));
   try {
     expect(sync).toThrow('NodeMaterial.positionNode');
-    expect(projection.entityFor(sprite)).toBeUndefined();
+    const pending = projection.entityFor(sprite);
+    if (pending === undefined) throw new Error('expected a projected pose');
+    expect(projection.world.hasComponent(pending, MeshRenderer)).toBe(false);
     const position = new UniformNode<'vec3', Vector3>(new Vector3(0, 0, 0));
     material.positionNode = position;
     sync();

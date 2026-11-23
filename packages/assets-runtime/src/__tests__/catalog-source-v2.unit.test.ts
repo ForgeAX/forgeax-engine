@@ -29,7 +29,9 @@ describe('catalog source v2', () => {
     const result = parseCatalog(staticSnapshot, undefined, undefined, expectedScope);
     expect(result.ok).toBe(true);
     if (result.ok)
-      expect(result.value.get(packageRow.guid)?.packageUrl).toBe(packageRow.packageUrl);
+      expect(result.value.find((row) => row.guid === packageRow.guid)?.packageUrl).toBe(
+        packageRow.packageUrl,
+      );
   });
 
   it.each([
@@ -117,16 +119,14 @@ describe('catalog source v2', () => {
 
     expect(result).toEqual({
       ok: true,
-      value: new Map([
-        [
-          packageRow.guid,
-          {
-            packageUrl: 'https://example.test/preview/packages/model',
-            kind: 'mesh',
-            sourcePath: 'model.glb',
-          },
-        ],
-      ]),
+      value: [
+        {
+          guid: packageRow.guid,
+          packageUrl: 'https://example.test/preview/packages/model',
+          kind: 'mesh',
+          sourcePath: 'model.glb',
+        },
+      ],
     });
     expect(resolveUrl).toHaveBeenCalledWith('/preview/packages/model');
   });
@@ -178,19 +178,17 @@ describe('catalog source v2', () => {
 
     expect(result).toEqual({
       ok: true,
-      value: new Map([
-        [
-          packageRow.guid,
-          {
-            packageUrl: packageRow.packageUrl,
-            kind: packageRow.kind,
-            sourcePath: packageRow.sourcePath,
-            sourceKey: 'mesh/main',
-            sourceOverrides,
-            sourceOverrideDescriptors,
-          },
-        ],
-      ]),
+      value: [
+        {
+          guid: packageRow.guid,
+          packageUrl: packageRow.packageUrl,
+          kind: packageRow.kind,
+          sourcePath: packageRow.sourcePath,
+          sourceKey: 'mesh/main',
+          sourceOverrides,
+          sourceOverrideDescriptors,
+        },
+      ],
     });
   });
 
@@ -233,17 +231,15 @@ describe('catalog source v2', () => {
 
     expect(result).toEqual({
       ok: true,
-      value: new Map([
-        [
-          packageRow.guid,
-          {
-            kind: packageRow.kind,
-            packageUrl: packageRow.packageUrl,
-            sourcePath: packageRow.sourcePath,
-            publication,
-          },
-        ],
-      ]),
+      value: [
+        {
+          guid: packageRow.guid,
+          kind: packageRow.kind,
+          packageUrl: packageRow.packageUrl,
+          sourcePath: packageRow.sourcePath,
+          publication,
+        },
+      ],
     });
   });
 

@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
-import * as catalogClientSurface from '../catalog-client.js';
 import * as publicSurface from '../index.js';
 
 const packageManifest = JSON.parse(
@@ -14,9 +13,25 @@ describe('vite-plugin-pack public surface', () => {
     expect(typeof publicSurface.reloadAssetHost).toBe('function');
   });
 
-  test('exposes only the catalog client runtime value', () => {
-    expect(Object.keys(catalogClientSurface).sort()).toEqual(['createCatalogClient']);
-    expect(typeof catalogClientSurface.createCatalogClient).toBe('function');
+  test('exposes the build and serve hooks through the public factory', () => {
+    const plugin = publicSurface.pluginPack({ roots: [] });
+    expect(plugin).toMatchObject({
+      name: 'forgeax:pack',
+      configureServer: expect.any(Function),
+      generateBundle: expect.any(Function),
+      closeBundle: expect.any(Function),
+    });
+  });
+
+  test('keeps the entry as a composition root', () => {
+    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    expect(source.split('\n').length - 1).toBeLessThanOrEqual(1500);
+    for (const owner of ['ddc-cache.js', 'package-finalizer.js', 'producer/', 'material/'])
+      expect(source).not.toContain(`from './${owner}`);
+  });
+
+  test('publishes the Catalog HTTP producer through the build-only root', () => {
+    expect(packageManifest.exports).not.toHaveProperty('./catalog-client');
   });
 
   test('does not publish a browser-shaped no-op for the build-only package', () => {

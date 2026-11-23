@@ -1,5 +1,6 @@
-import { cpSync, existsSync, globSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, globSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { cachePath, inventoryMatches, workspacePackages } from '../build-task-cache.mjs';
 import {
   assertCoreSource,
   coreBaseShaderDirectory,
@@ -13,6 +14,64 @@ export function sdkCoreBuildRoot(root, core) {
     throw new Error('SDK artifact reuse is incompatible with disabled task caches');
   assertCoreSource(root, core);
   return core;
+}
+
+function restorePackageSourceMap(root, core, path, position) {
+  const compact = JSON.parse(readFileSync(join(core, path), 'utf8'));
+  const sourcesContent = compact.sources.map((name) => {
+    const source = resolve(root, dirname(path), compact.sourceRoot ?? '', name);
+    const location = relative(root, source);
+    if (location === '..' || location.startsWith(`..${sep}`))
+      throw new Error('SDK Core source map refers outside the checkout');
+    return readFileSync(source, 'utf8');
+  });
+  const fields = Object.entries(compact);
+  fields.splice(position, 0, ['sourcesContent', sourcesContent]);
+  writeFileSync(join(core, path), JSON.stringify(Object.fromEntries(fields)));
+}
+
+/** The normal package scheduler rechecks source, dependency and output fingerprints. */
+export function seedSdkPackageBuilds(root, core) {
+  const positionsPath = join(core, 'package-map-source-positions.json');
+  if (!existsSync(positionsPath)) return;
+  const positions = JSON.parse(readFileSync(positionsPath, 'utf8'));
+  let prepared = 0;
+  for (const pkg of workspacePackages(root)) {
+    const targetReceipt = cachePath(root, 'receipts/packages', pkg.manifest.name);
+    const receiptPath = join(core, 'package-build-receipts', basename(targetReceipt));
+    if (!existsSync(receiptPath)) continue;
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    const dist = join(pkg.relativeDirectory, 'dist');
+    const files = receipt.outputInventory?.files;
+    if (
+      !files?.length ||
+      files.some(({ path }) =>
+        path.split('/').some((part) => part === '' || part === '.' || part === '..'),
+      )
+    )
+      continue;
+    try {
+      for (const file of files) {
+        const path = join(dist, file.path).split(sep).join('/');
+        if (Number.isInteger(positions[path]))
+          restorePackageSourceMap(root, core, path, positions[path]);
+      }
+      if (!inventoryMatches(join(core, dist), receipt.outputInventory)) continue;
+    } catch {
+      // A missing source or a package-specific generated map is rebuilt by
+      // its original producer. No shortened map is accepted as a cache hit.
+      continue;
+    }
+    for (const file of files) {
+      const path = join(dist, file.path);
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      cpSync(join(core, path), join(root, path));
+    }
+    mkdirSync(dirname(targetReceipt), { recursive: true });
+    cpSync(receiptPath, targetReceipt);
+    prepared++;
+  }
+  console.log(`[sdk-build-inputs] offered ${prepared} Core package receipts to the package cache`);
 }
 
 /** Warm TS module resolution. The checked build still owns emission and declaration maps. */

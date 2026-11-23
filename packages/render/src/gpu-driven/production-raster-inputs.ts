@@ -1,6 +1,5 @@
 import { type BindGroup, type Buffer, err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { GpuScene, GpuSceneTableBindingTarget } from '../gpu-scene';
-import type { ClusterMeshBindingPreparation } from '../record/cluster-mesh-binding-preparation';
 import type { MaterialTableBindingPreparation } from '../record/material-bg-assembly-cache';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { LiveRasterBatch, LiveRasterCache } from './live-raster';
@@ -134,6 +133,7 @@ function projectMainInputs(
   visible: ReadonlySet<Buffer>,
   map: MapWindows,
   identity: (value: unknown) => unknown,
+  captured: ReadonlyMap<LiveRasterBatch, LiveWindowFacts>,
   pending: Map<LiveRasterBatch, LiveRasterBatch['visibleBindGroups']>,
   caches: Set<LiveRasterBatch['bundles']>,
   storage: ViewStorageTarget | undefined,
@@ -141,7 +141,7 @@ function projectMainInputs(
   const main = state.main;
   if (main === undefined || !visible.has(main.visibleBuffer)) return main;
   for (const live of main.value) {
-    const groups = live.visibleBindGroups;
+    const groups = captured.get(live);
     const skin = live.batch.prepared?.identity.deformation === 'skin';
     const binding = skin ? main.skinBindings : main.rigidBindings;
     const adapter = skin ? state.skin : state.rigid;
@@ -222,10 +222,8 @@ export function prepareProductionRasterInputs(
   accept: (main: LiveRasterCache | undefined, shadows: ProductionRasterInputs['shadows']) => void,
   current: () => boolean,
   tables?: GpuSceneTableBindingTarget,
-  clusterPreparation?: ClusterMeshBindingPreparation,
   materialPreparation?: MaterialTableBindingPreparation,
 ): Result<GpuViewInputPreparation, RhiError> {
-  let clusters = clusterPreparation;
   let materialTables = materialPreparation;
   let tableTarget = tables;
   let before: ProductionRasterInputs | undefined = read();
@@ -271,12 +269,12 @@ export function prepareProductionRasterInputs(
   const tableCurrent = () =>
     tableTarget === undefined ||
     (tableTarget.owner.inputs === inputs && tableTarget.owner.capacityTargetMatches(tableTarget));
+  const stagingCurrent = () => !closed && tableCurrent();
   const rootCurrent = () => {
     if (
-      closed ||
+      !stagingCurrent() ||
       ownerCurrent?.() !== true ||
-      !tableCurrent() ||
-      closed ||
+      !stagingCurrent() ||
       before === undefined ||
       readOwner === undefined
     )
@@ -296,10 +294,12 @@ export function prepareProductionRasterInputs(
       return false;
     return true;
   };
-  const materialsCurrent = () => rootCurrent() && materialTasks.every((task) => task.isCurrent());
+  // Qualify the captured Production at transaction boundaries. Native bind
+  // group creation also checks it before issuing another allocation. Bundle
+  // and retained command staging use their own receipts until publication.
   const allCurrent = () =>
-    materialsCurrent() &&
-    (clusters?.isCurrent() ?? true) &&
+    rootCurrent() &&
+    materialTasks.every((task) => task.isCurrent()) &&
     (materialTables?.isCurrent() ?? true) &&
     bundleTasks.every((task) => task.isCurrent()) &&
     (retained?.isCurrent() ?? true);
@@ -310,8 +310,6 @@ export function prepareProductionRasterInputs(
     retained = undefined;
     materialTables?.release();
     materialTables = undefined;
-    clusters?.release();
-    clusters = undefined;
     tableTarget = undefined;
     for (const task of bundleTasks) task.release();
     for (const task of materialTasks) task.release();
@@ -354,7 +352,6 @@ export function prepareProductionRasterInputs(
         [...visible],
         rootCurrent,
         tables,
-        [...skinFacts.values()].filter((task): task is SkinTaskBinding => task !== undefined),
       );
       if (!task.ok) return task;
       materialTasks.push(task.value);
@@ -408,7 +405,7 @@ export function prepareProductionRasterInputs(
         for (const [projection, source] of nextSources)
           before.shadowSources.set(projection, source);
         for (const [key, observation] of nextObservations) before.unchanged.set(key, observation);
-        const owners = publishBindings([clusters, materialTables]);
+        const owners = publishBindings([materialTables]);
         if (!owners.ok) return owners;
         acceptOwner(nextMain, nextShadows);
         release();
@@ -443,26 +440,14 @@ export function prepareProductionRasterInputs(
           return replacement;
         }
       }
-      throw stale();
-    };
-    const mapMesh = (binding: BindGroup): BindGroup => {
-      if (tables === undefined) return binding;
-      for (const task of materialTasks) {
-        const mapped = task.prepareMesh(binding).unwrap();
-        if (mapped !== undefined) {
-          remaps.set(binding, mapped);
-          return mapped;
-        }
-      }
-      const clustered = clusters?.replacement(binding);
-      if (clustered !== undefined) {
-        const mapped = clustered.unwrap();
-        if (mapped !== undefined) {
-          remaps.set(binding, mapped);
-          return mapped;
-        }
-      }
-      throw stale();
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected:
+          storage === undefined
+            ? 'a retained Scene raster window'
+            : 'a retained View raster window',
+        hint: 'resolve the bundle window in the original raster binding owner',
+      });
     };
     const mapMaterial = (group: BindGroup): BindGroup => {
       if (materialTables === undefined) return group;
@@ -499,15 +484,15 @@ export function prepareProductionRasterInputs(
       visible,
       mapWindows,
       identity,
+      liveWindows,
       nextWindows,
       caches,
       storage,
     );
     const shadowNext = new Map<string, ShadowBatchProjections>();
-    for (const [key, projections] of snapshot.shadows) {
-      const source = snapshot.shadowSources.get(projections);
-      if (source === undefined) return err(stale());
-      if (!visible.has(source.visibleBuffer)) {
+    for (const [key, projections] of shadowRows) {
+      const source = sourceFacts.get(projections);
+      if (source === undefined) {
         shadowNext.set(key, projections);
         continue;
       }
@@ -527,7 +512,6 @@ export function prepareProductionRasterInputs(
               {
                 ...projection,
                 visibleBindGroups: mapWindows(projection.visibleBindGroups, binding, adapter),
-                meshBindGroup: mapMesh(projection.meshBindGroup),
               },
             ] as const;
           }),
@@ -539,9 +523,6 @@ export function prepareProductionRasterInputs(
         {
           ...source,
           visibleBuffer: identity(source.visibleBuffer) as Buffer,
-          meshBinding: mapMesh(source.meshBinding),
-          skinMeshBinding:
-            source.skinMeshBinding === undefined ? undefined : mapMesh(source.skinMeshBinding),
           visibleBindingIdentity: identity(source.visibleBindingIdentity) as object,
           skinVisibleBindingIdentity: identity(source.skinVisibleBindingIdentity) as
             | object
@@ -557,9 +538,8 @@ export function prepareProductionRasterInputs(
       caches,
       bundleTasks,
       mapWindow,
-      mapMesh,
       mapMaterial,
-      materialsCurrent,
+      stagingCurrent,
       storage,
     );
     if (!preparedBundles.ok) return preparedBundles;
@@ -572,7 +552,7 @@ export function prepareProductionRasterInputs(
         }
         return undefined;
       },
-      () => materialsCurrent() && bundleTasks.every((task) => task.isCurrent()),
+      stagingCurrent,
       (values) => remapRetainedRasterStorage(values, storage),
     );
     if (!mapped.ok) return mapped;
@@ -623,31 +603,26 @@ function prepareBundles(
   caches: ReadonlySet<PreparedRasterBundleCache>,
   tasks: PreparedRasterWindowPreparation[],
   mapWindow: (group: BindGroup) => BindGroup,
-  mapMesh: (group: BindGroup) => BindGroup,
   mapMaterial: (group: BindGroup) => BindGroup,
   current: () => boolean,
   storage?: ViewStorageTarget,
 ): Result<void, RhiError> {
   for (const cache of caches) {
-    const result = cache.prepareBindings(
-      (binding) => ({
+    const result = cache.prepareBindings((binding) => {
+      // A View capacity change only replaces that View's physical buffers.
+      // Retained variants for another View already have their actual bindings.
+      if (storage !== undefined && binding.indirect !== storage.before.indirect) return binding;
+      return {
         ...binding,
         windows: binding.windows.map(mapWindow),
-        mesh: mapMesh(binding.mesh),
         material: mapMaterial(binding.material),
-        indirect:
-          storage !== undefined && binding.indirect === storage.before.indirect
-            ? storage.after.indirect
-            : binding.indirect,
+        indirect: storage?.after.indirect ?? binding.indirect,
         indirectOffset:
-          storage !== undefined &&
-          binding.indirect === storage.before.indirect &&
-          binding.indirectOffset >= storage.previousLateIndirectBase
+          storage !== undefined && binding.indirectOffset >= storage.previousLateIndirectBase
             ? binding.indirectOffset - storage.previousLateIndirectBase + storage.lateIndirectBase
             : binding.indirectOffset,
-      }),
-      current,
-    );
+      };
+    }, current);
     if (!result.ok) return result;
     tasks.push(result.value);
   }

@@ -10,6 +10,7 @@ import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type Middleware, requestMiddleware } from './middleware-fixture.js';
 
 type ProjectedPack = ReturnType<typeof projectImportProductForBuild>;
 const captured = vi.hoisted(() => ({ projections: [] as ProjectedPack[] }));
@@ -35,42 +36,10 @@ const packageId = parsed.value;
 const OUTPUT_GUID = AssetGuid.format(AssetGuid.derive(packageId, 'fixture/typed'));
 const REF_GUID = AssetGuid.format(AssetGuid.derive(packageId, 'scene/ref'));
 
-type Middleware = (
-  request: { readonly url: string; readonly method: string },
-  response: {
-    statusCode: number;
-    setHeader(name: string, value: string): void;
-    end(body?: string | Uint8Array): void;
-  },
-  next: () => void,
-) => unknown;
-
 async function request(middlewares: readonly Middleware[], url: string) {
-  const response = { status: 200, body: '' as string | Uint8Array };
-  for (const middleware of middlewares) {
-    let next = false;
-    await middleware(
-      { url, method: 'GET' },
-      {
-        get statusCode() {
-          return response.status;
-        },
-        set statusCode(value) {
-          response.status = value;
-        },
-        setHeader() {},
-        end(body) {
-          response.body = body ?? '';
-        },
-      },
-      () => {
-        next = true;
-      },
-    );
-    if (!next) break;
-  }
-  expect(response.status, JSON.stringify({ url, body: response.body })).toBe(200);
-  return response.body;
+  const { statusCode, body } = await requestMiddleware(middlewares, url);
+  expect(statusCode, JSON.stringify({ url, body })).toBe(200);
+  return body ?? '';
 }
 
 function source(marker: number): string {
@@ -162,12 +131,12 @@ async function verifyTransport(
   );
   const expected = await finalizePackageTransportSource(projected, {
     base: '/',
-    packagePath: `__forgeax-ddc/${PACKAGE}.${revision}.pack.json`,
+    packagePath: `__forgeax-ddc/${PACKAGE}.${revision}.runtime-pack.json`,
     artifactPath: (guid, key) =>
       `${guid.toLowerCase()}/${revision}/${key.includes('.') ? key : `${key}.bin`}`,
   });
   expect(expected.sourceRevision).toBe(packageTransportRevision(projected));
-  expect(entry.packageUrl).toContain(`${PACKAGE}.${revision}.pack.json`);
+  expect(entry.packageUrl).toContain(`${PACKAGE}.${revision}.runtime-pack.json`);
   expect(entry.cookReceiptUrl).toContain(`${OUTPUT_GUID}.${revision}.receipt.json`);
   expect(entry.refs).toEqual([REF_GUID]);
   expect(entry.publication.digest).toBe(expected.digest);

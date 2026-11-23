@@ -217,7 +217,10 @@ export function hasRequiredVertexInputs(
       (candidate) =>
         candidate.semantic === input.semantic &&
         candidate.location === input.location &&
-        candidate.format === input.format,
+        (candidate.format === input.format ||
+          (input.semantic === 'skinWeight' &&
+            input.format === 'float32x4' &&
+            (candidate.format === 'unorm8x4' || candidate.format === 'unorm16x4'))),
     ),
   );
   if (admissions !== undefined && isImmutableVertexInputs(expected)) {

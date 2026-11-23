@@ -68,6 +68,90 @@ function updateSnapshot(value: RenderableSnapshot) {
 }
 
 describe('GpuScene Dawn residency', () => {
+  it('reads the moving pose and its previous pose from the smaller physical table', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const available = GpuScene.create(device, 8).unwrap();
+    if (available.status !== 'available') throw Error('Expected a Dawn GPU Scene');
+    const scene = available.scene;
+    const projection = new RenderScene();
+    const count = 4096;
+    const large = {
+      ...snapshot(9, 0),
+      instances: {
+        instanceCount: count,
+        transforms: new Float32Array(count * 16),
+        archVersion: 1,
+        cacheKey: 9,
+      },
+    };
+    let readback: import('@forgeax/engine-rhi').Buffer | undefined;
+    try {
+      scene
+        .sync(projection.apply([updateSnapshot(snapshot(7, 0)), updateSnapshot(large)]))
+        .unwrap();
+      scene.commitFrame().unwrap();
+      const peak = scene.transformByteLength;
+      for (let i = 1; i <= 40; i++) {
+        const move = {
+          kind: 'update' as const,
+          entityKey: 7,
+          world: snapshot(7, i).transform.world,
+        };
+        scene
+          .sync(projection.apply(i === 2 ? [{ kind: 'remove', entityKey: 9 }, move] : [move]))
+          .unwrap();
+        scene.commitFrame().unwrap();
+      }
+      scene
+        .sync(
+          projection.apply([
+            { kind: 'update', entityKey: 7, world: snapshot(7, 41).transform.world },
+          ]),
+        )
+        .unwrap();
+      const length = scene.transformByteLength;
+      expect(length).toBeLessThan(peak / 4);
+      const primitive = GPU_SCENE_LAYOUTS.primitive;
+      const transform = GPU_SCENE_LAYOUTS.transform;
+      readback = device
+        .createBuffer({
+          size: primitive.stride + length,
+          usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+        })
+        .unwrap();
+      const encoder = device.createCommandEncoder().unwrap();
+      const index = scene.primitiveIndexForSlot(0);
+      if (index === undefined) throw Error('Expected the surviving primitive');
+      encoder.copyBufferToBuffer(
+        scene.primitiveBuffer,
+        index * primitive.stride,
+        readback,
+        0,
+        primitive.stride,
+      );
+      encoder.copyBufferToBuffer(scene.transformBuffer, 0, readback, primitive.stride, length);
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+      try {
+        const data = new DataView(mapped.getMappedRange().unwrap());
+        const root = data.getUint32(gpuSceneFieldOffset(primitive, 'transformIndex'), true);
+        const at = (row: number, field: string) =>
+          primitive.stride + transform.stride * row + gpuSceneFieldOffset(transform, field);
+        const prior = data.getUint32(at(root, 'previousIndex'), true);
+        expect(data.getUint32(at(root, 'stamp'), true)).toBe(data.getUint32(at(0, 'stamp'), true));
+        expect(data.getFloat32(at(root, 'currentWorld') + 48, true)).toBe(41);
+        expect(data.getFloat32(at(prior, 'currentWorld') + 48, true)).toBe(40);
+      } finally {
+        mapped.unmap();
+      }
+    } finally {
+      scene.dispose();
+      projection.dispose();
+      if (readback !== undefined) device.destroyBuffer(readback);
+    }
+  });
+
   it('uploads all five schema-derived tables to real GPU buffers', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();

@@ -137,7 +137,7 @@ describe('material payload transport', () => {
       {
         importer: 'material-fixture',
         source: 'fixture.bin',
-        buildPack: false,
+
         subAssets: [
           { guid: GUID, kind: 'material', sourceIndex: 0, sourceKey: 'fixture:material' },
         ],

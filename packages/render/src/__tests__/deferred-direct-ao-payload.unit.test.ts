@@ -8,7 +8,7 @@ import {
 
 type Pass = { encodeDirect: (encoder: never, frame: never, resources: never) => void };
 
-function fixture(screenAo: boolean, strength: number | undefined) {
+function fixture(screenAo: boolean) {
   let copy!: Pass;
   let raster!: Pass;
   const graph = {
@@ -46,7 +46,7 @@ function fixture(screenAo: boolean, strength: number | undefined) {
   const frame = {
     frameState: {
       installedPipelineConfig: {
-        ambientOcclusion: { enabled: true, intensity: 1.4, directLightingStrength: strength },
+        ambientOcclusion: { enabled: true, intensity: 1.4 },
       },
     },
     camera: {},
@@ -59,44 +59,33 @@ function fixture(screenAo: boolean, strength: number | undefined) {
   return { graph, writeBuffer, raster, frame, encodeCopy };
 }
 
-describe('actual deferred direct AO uniform owners', () => {
-  it('uploads the dynamic direct AO strength sequence without changing the deferred payload ABI', () => {
-    const f = fixture(true, 0);
-    const strengths: number[] = [];
-    for (const strength of [0, 1, 0] as const) {
-      f.frame.frameState.installedPipelineConfig.ambientOcclusion.directLightingStrength = strength;
-      f.encodeCopy();
-      const payload = f.writeBuffer.mock.calls.at(-1)?.[2] as Float32Array | undefined;
-      if (payload === undefined) throw new Error('Deferred lighting parameter upload is missing');
-      strengths.push(payload[4] ?? Number.NaN);
-    }
-    expect(strengths).toEqual([0, 1, 0]);
-  });
-
-  it.each([
-    undefined,
-    0,
-    0.5,
-    1,
-  ])('uploads two complete lanes and the authored strength (%s)', (strength) => {
-    const f = fixture(true, strength);
+describe('deferred lighting AO uniform owner', () => {
+  it('binds the resolved indirect AO weight without applying AO intensity again', () => {
+    const f = fixture(true);
     expect(DEFERRED_LIGHTING_PARAMS_BYTES).toBe(32);
     expect(f.graph.createBuffer).toHaveBeenCalledWith('deferred-lighting-params', { size: 32 });
-    const payload = f.writeBuffer.mock.calls[0]?.[2] as unknown as Float32Array;
-    expect(payload.byteLength).toBe(32);
-    // Intensity is applied to raw AO before denoising, exactly once.
-    expect(payload[0]).toBe(1);
-    expect(payload[4]).toBe(strength ?? 0);
-    expect([...payload.slice(5)]).toEqual([0, 0, 0]);
+    const weights: number[] = [];
+    for (const intensity of [0, 0.5, 1.4]) {
+      f.frame.frameState.installedPipelineConfig.ambientOcclusion.intensity = intensity;
+      f.encodeCopy();
+      const payload = f.writeBuffer.mock.calls.at(-1)?.[2];
+      if (payload === undefined) throw new Error('Deferred lighting parameter upload is missing');
+      expect(payload.byteLength).toBe(32);
+      weights.push(payload[0] ?? Number.NaN);
+      expect([...payload.slice(4)]).toEqual([0, 0, 0, 0]);
+    }
+    expect(weights).toEqual([1, 1, 1]);
   });
-  it('uploads neutral direct AO when no screen occlusion target is admitted', () => {
-    const f = fixture(false, 1);
+
+  it('uploads neutral AO when no screen occlusion target is admitted', () => {
+    const f = fixture(false);
     const payload = f.writeBuffer.mock.calls[0]?.[2] as unknown as Float32Array;
     expect(payload[0]).toBe(0);
-    expect(payload[4]).toBe(0);
+    expect([...payload.slice(4)]).toEqual([0, 0, 0, 0]);
   });
+
   it('gives the actual uniform binding the same minimum byte size as its allocation', () => {
-    const f = fixture(true, 0.5);
+    const f = fixture(true);
     const scope = DeviceScope.create(1, 'deferred-direct-ao-payload');
     const stop = new Error('binding layout observed');
     const createBindGroupLayout = vi.fn((_descriptor: unknown) => {

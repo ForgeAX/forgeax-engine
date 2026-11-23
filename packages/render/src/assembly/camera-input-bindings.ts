@@ -4,10 +4,6 @@ import { sameInputViews } from '../gpu-driven/production-input-bindings';
 import type { GpuViewInputPreparation } from '../gpu-driven/view-input-bindings';
 import type { GpuScene, GpuSceneTableBindingTarget } from '../gpu-scene';
 import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
-import {
-  type ClusterMeshBindingPreparation,
-  prepareClusterMeshBindings,
-} from '../record/cluster-mesh-binding-preparation';
 import type { MaterialTableBindingPreparation } from '../record/material-bg-assembly-cache';
 import { prepareShadowMaterialTableBindings } from '../record/shadow-material-table-bindings';
 import type { SceneComposition } from '../scene/scene-composition';
@@ -52,20 +48,27 @@ function ownerFacts(owner: ViewSettlementOwner, scene: GpuScene) {
 
 type OwnerFacts = ReturnType<typeof ownerFacts>;
 
-function sameOwner(facts: OwnerFacts, scene: GpuScene): boolean {
+/** Address growth carries the current bytes at publish; only native view ownership constrains it. */
+function sameAddressOwner(facts: OwnerFacts, scene: GpuScene): boolean {
   const context = recordContext(facts.owner.internals);
   return (
     context === facts.context &&
-    context.getPipelineState() === facts.pipeline &&
-    facts.owner.frameState.meshBindGroupCache === facts.meshCache &&
-    facts.owner.frameState.materialBgAssemblyCache === facts.materialCache &&
     context.deviceScope === facts.scope &&
     facts.scope.isAlive() &&
     facts.owner.internals.device === facts.device &&
     facts.owner.gpuDriven === facts.production &&
-    facts.owner.frameState.compiledFrameGraph === facts.graph &&
-    facts.owner.frameState.compiledFrameGraphGeneration === facts.graphGeneration &&
     sameInputViews(facts.views, facts.production.inputBindingViews(scene))
+  );
+}
+
+function sameOwner(facts: OwnerFacts, scene: GpuScene): boolean {
+  return (
+    sameAddressOwner(facts, scene) &&
+    facts.context.getPipelineState() === facts.pipeline &&
+    facts.owner.frameState.meshBindGroupCache === facts.meshCache &&
+    facts.owner.frameState.materialBgAssemblyCache === facts.materialCache &&
+    facts.owner.frameState.compiledFrameGraph === facts.graph &&
+    facts.owner.frameState.compiledFrameGraphGeneration === facts.graphGeneration
   );
 }
 
@@ -106,7 +109,7 @@ export class CameraInputBindings {
       return (
         now.length === records.length &&
         now.every((record, index) => record === records[index] && !record.retired) &&
-        facts.every((fact) => sameOwner(fact, scene)) &&
+        facts.every((fact) => sameAddressOwner(fact, scene)) &&
         this.host === host &&
         this.cancellation === cancellation &&
         !renderSubmission(host.world).open &&
@@ -203,28 +206,6 @@ function inputAddressCoverage(
     extent !== undefined &&
     facts.every((fact) => fact.views.every((view) => view.coversAddressExtent(scene, extent)))
   );
-}
-
-function prepareOwnerClusters(
-  fact: OwnerFacts,
-  target: GpuSceneTableBindingTarget | undefined,
-  current: () => boolean,
-): Result<ClusterMeshBindingPreparation | undefined, RhiError> {
-  if (target === undefined) return ok(undefined);
-  const clusters = prepareClusterMeshBindings(
-    fact.owner.internals,
-    fact.meshCache,
-    target,
-    current,
-  );
-  if (fact.graph !== null) {
-    const issued = clusters.prepareIssued(fact.graph.graph);
-    if (!issued.ok) {
-      clusters.release();
-      return issued;
-    }
-  }
-  return ok(clusters);
 }
 
 function prepareCameraInputs(
@@ -351,9 +332,6 @@ function prepareCameraInputs(
     for (const fact of facts) {
       if (!live()) return err(stale());
       if (fact.views.length === 0 || prepared.has(fact.production)) continue;
-      const preparedClusters = prepareOwnerClusters(fact, tableTarget, scopeCurrent);
-      if (!preparedClusters.ok) return preparedClusters;
-      const clusters = preparedClusters.value;
       let material: MaterialTableBindingPreparation | undefined;
       let transferred = false;
       try {
@@ -380,7 +358,6 @@ function prepareCameraInputs(
           input,
           scopeCurrent,
           tableTarget,
-          clusters,
           material,
         );
         if (!result.ok) return result;
@@ -390,7 +367,6 @@ function prepareCameraInputs(
       } finally {
         if (!transferred) {
           material?.release();
-          clusters?.release();
         }
       }
       if (!live()) return err(stale());

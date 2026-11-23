@@ -27,6 +27,7 @@ import {
   resolveAutoExposureShaderModuleFactory,
 } from './graph';
 import { autoExposureCapabilityFailure } from './inspection';
+import { createWhiteBalanceMatrixWriter } from './oracle';
 import { addAutoExposureFragmentPasses } from './raster';
 
 export const AUTO_EXPOSURE_HISTOGRAM_BYTES = 1024;
@@ -476,22 +477,8 @@ interface AutoExposureWhiteBalance {
   readonly tint: number;
 }
 
-function wgslFloat(value: number): string {
-  // WGSL uses context-typed decimal float literals; unlike GLSL, it does not
-  // accept an `f` suffix. Keep the literal decimal and let the `f32` constant
-  // declaration provide the scalar type.
-  return Number.isFinite(value) ? value.toFixed(8) : '0.0';
-}
-
-/**
- * Build the sole linear-HDR exposure/white-balance consumer.  The camera
- * projection supplies temperature/tint as immutable shader constants for the
- * frame topology; the candidate remains a same-frame GPU buffer when auto
- * exposure is enabled.  Keeping this in one source prevents a renderer-side
- * WB override from becoming a second color-stage authority.
- */
+/** Both execution paths consume the current view's linear HDR color matrix. */
 export function createAutoExposureApplyWgsl(
-  whiteBalance: AutoExposureWhiteBalance = { temperature: 6504, tint: 0 },
   hasCandidate = true,
   execution: 'compute' | 'fragment' = 'compute',
 ): string {
@@ -508,81 +495,12 @@ export function createAutoExposureApplyWgsl(
   return /* wgsl */ `
 ${candidateBinding}
 
-const WB_TEMPERATURE: f32 = ${wgslFloat(whiteBalance.temperature)};
-const WB_TINT: f32 = ${wgslFloat(whiteBalance.tint)};
-
-fn mul_rgb_to_xyz(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    dot(vec3<f32>(0.4124564, 0.3575761, 0.1804375), value),
-    dot(vec3<f32>(0.2126729, 0.7151522, 0.0721750), value),
-    dot(vec3<f32>(0.0193339, 0.1191920, 0.9503041), value)
-  );
-}
-
-// Inverse of mul_rgb_to_xyz: adapted XYZ must return to linear sRGB.
-fn mul_xyz_to_rgb(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    dot(vec3<f32>(3.2404548, -1.5371389, -0.4985315), value),
-    dot(vec3<f32>(-0.9692664, 1.8760109, 0.0415561), value),
-    dot(vec3<f32>(0.0556434, -0.2040259, 1.0572252), value)
-  );
-}
-
-fn mul_bradford(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    dot(vec3<f32>(0.8951, 0.2664, -0.1614), value),
-    dot(vec3<f32>(-0.7502, 1.7135, 0.0367), value),
-    dot(vec3<f32>(0.0389, -0.0685, 1.0296), value)
-  );
-}
-
-fn mul_bradford_inverse(value: vec3<f32>) -> vec3<f32> {
-  return vec3<f32>(
-    dot(vec3<f32>(0.9869929, -0.1470543, 0.1599627), value),
-    dot(vec3<f32>(0.4323053, 0.5183603, 0.0492912), value),
-    dot(vec3<f32>(-0.0085287, 0.0400428, 0.9684867), value)
-  );
-}
-
-fn blackbody_white_point(temperature: f32) -> vec3<f32> {
-  if (temperature == 6504.0) { return vec3<f32>(0.95047, 1.0, 1.08883); }
-  let t = clamp(temperature, 1000.0, 40000.0);
-  var x: f32;
-  if (t <= 4000.0) {
-    x = -0.2661239e9 / (t * t * t) - 0.234358e6 / (t * t) + 0.8776956e3 / t + 0.17991;
-  } else {
-    x = -3.0258469e9 / (t * t * t) + 2.1070379e6 / (t * t) + 0.2226347e3 / t + 0.24039;
-  }
-  var y: f32;
-  if (t <= 2222.0) {
-    y = -1.1063814 * x * x * x - 1.3481102 * x * x + 2.18555832 * x - 0.20219683;
-  } else if (t <= 4000.0) {
-    y = -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867;
-  } else {
-    y = 3.081758 * x * x * x - 5.8733867 * x * x + 3.75112997 * x - 0.37001483;
-  }
-  return vec3<f32>(x / y, 1.0, (1.0 - x - y) / y);
-}
-
-fn apply_white_balance(value: vec3<f32>) -> vec3<f32> {
-  if (WB_TEMPERATURE == 6504.0 && WB_TINT == 0.0) { return value; }
-  let source_lms = mul_bradford(vec3<f32>(0.95047, 1.0, 1.08883));
-  let target_lms = mul_bradford(blackbody_white_point(WB_TEMPERATURE));
-  let scale = target_lms / source_lms;
-  let adapted_lms = mul_bradford(mul_rgb_to_xyz(value)) * scale;
-  let adapted_xyz = mul_bradford_inverse(adapted_lms);
-  let adapted_rgb = mul_xyz_to_rgb(adapted_xyz);
-  return adapted_rgb * vec3<f32>(
-    max(0.0, 1.0 + WB_TINT),
-    max(0.0, 1.0 - WB_TINT),
-    max(0.0, 1.0 + WB_TINT)
-  );
-}
+@group(0) @binding(2) var<uniform> whiteBalance: array<vec4<f32>, 3>;
 
 @fragment fn color_stage_fs(input: VertexOutput) -> @location(0) vec4<f32> {
   let color = textureSampleLevel(source, sourceSampler, input.uv, 0.0);
   let exposed = color.rgb * ${candidateValue};
-  return vec4<f32>(apply_white_balance(exposed), color.a);
+  return vec4<f32>(vec3<f32>(dot(whiteBalance[0].xyz, exposed), dot(whiteBalance[1].xyz, exposed), dot(whiteBalance[2].xyz, exposed)), color.a);
 }`;
 }
 
@@ -594,13 +512,19 @@ export function addAutoExposureExposurePass(
   resources: AutoExposureGraphResources | undefined,
   whiteBalance: AutoExposureWhiteBalance = { temperature: 6504, tint: 0 },
 ): Result<void, RenderGraphError> {
+  const writeMatrix = createWhiteBalanceMatrixWriter();
   let candidateLayout: BindGroupLayout | undefined;
   return addStandardColorStagePass(
     context.graph,
     'standard-exposure-white-balance',
     input,
     output,
-    createAutoExposureApplyWgsl(whiteBalance, resources !== undefined, resources?.execution),
+    createAutoExposureApplyWgsl(resources !== undefined, resources?.execution),
+    12,
+    (values, frame) => {
+      const output = frame.camera?.output ?? whiteBalance;
+      writeMatrix(values, 0, output.temperature, output.tint);
+    },
     resources === undefined
       ? undefined
       : {

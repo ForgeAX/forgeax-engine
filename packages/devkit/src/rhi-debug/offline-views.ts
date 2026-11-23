@@ -11,6 +11,7 @@ import {
   type WorkInspection,
 } from '@forgeax/engine-rhi-debug';
 import type { CommandResult } from '../types.js';
+import { completeCommand, failCommand } from '../types.js';
 
 /** `rhi summary --passes`: one row per pass, without the per-work inventory. */
 export interface RhiPassesSummary {
@@ -64,27 +65,21 @@ export function projectSummary(
   if (options.passes !== true && options.label === undefined) return { ok: true, value: summary };
   const pattern = options.label === undefined ? undefined : compilePattern(options.label);
   if (options.label !== undefined && pattern === undefined)
-    return {
-      ok: false,
-      error: {
-        code: 'label-invalid',
-        expected: 'label to be a valid regular expression',
-        hint: 'Pass a JavaScript regular expression source such as "planar|reflection".',
-        detail: { label: options.label },
-      },
-    };
+    return failCommand(
+      'label-invalid',
+      'label to be a valid regular expression',
+      'Pass a JavaScript regular expression source such as "planar|reflection".',
+      { label: options.label },
+    );
   const passes =
     pattern === undefined ? summary.passes : summary.passes.filter((p) => passMatches(p, pattern));
   const { works: _works, passes: _passes, ...counts } = summary;
-  return {
-    ok: true,
-    value: {
-      ...counts,
-      passes,
-      passLines: passes.map(passLine),
-      ...(pattern === undefined ? {} : { resources: summarizeResources(model, pattern) }),
-    },
-  };
+  return completeCommand({
+    ...counts,
+    passes,
+    passLines: passes.map(passLine),
+    ...(pattern === undefined ? {} : { resources: summarizeResources(model, pattern) }),
+  });
 }
 
 /** Fields answerable from the tape alone; `pixels` and `outputs` need replayed GPU state. */
@@ -107,36 +102,30 @@ export function inspectStructure(
       requested: workIndex,
       available: model.works.length,
     });
-    return {
-      ok: false,
-      error: {
-        code: error.code,
-        expected: error.expected,
-        hint: `${error.hint}: requested ${workIndex}, available ${model.works.length}`,
-        detail: { requested: workIndex, available: model.works.length },
-      },
-    };
+    return failCommand(
+      error.code,
+      error.expected,
+      `${error.hint}: requested ${workIndex}, available ${model.works.length}`,
+      { requested: workIndex, available: model.works.length },
+    );
   }
   const wanted = fields ?? ['pipeline', 'bindings'];
-  return {
-    ok: true,
-    value: {
-      workIndex: work.workIndex,
-      eventIndex: work.eventIndex,
-      passIndex: work.passIndex,
-      attachment: undefined,
-      ...(wanted.includes('pipeline') ? { pipeline: work.pipeline } : {}),
-      ...(wanted.includes('bindings')
-        ? {
-            bindings: work.bindings,
-            vertexBuffers: work.vertexBuffers,
-            indexBuffer: work.indexBuffer,
-            shaders: work.pipeline.shaders,
-            resourceIds: work.bindings
-              .map((binding) => binding.resourceId)
-              .filter((resourceId): resourceId is string => resourceId !== null),
-          }
-        : {}),
-    },
-  };
+  return completeCommand({
+    workIndex: work.workIndex,
+    eventIndex: work.eventIndex,
+    passIndex: work.passIndex,
+    attachment: undefined,
+    ...(wanted.includes('pipeline') ? { pipeline: work.pipeline } : {}),
+    ...(wanted.includes('bindings')
+      ? {
+          bindings: work.bindings,
+          vertexBuffers: work.vertexBuffers,
+          indexBuffer: work.indexBuffer,
+          shaders: work.pipeline.shaders,
+          resourceIds: work.bindings
+            .map((binding) => binding.resourceId)
+            .filter((resourceId): resourceId is string => resourceId !== null),
+        }
+      : {}),
+  });
 }

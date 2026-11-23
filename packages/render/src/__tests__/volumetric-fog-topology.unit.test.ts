@@ -219,7 +219,7 @@ describe('volumetric fog RenderGraph topology', () => {
       'utf8',
     );
     const submitSource = readFileSync(
-      fileURLToPath(new URL('../record/typed-frame-graph.ts', import.meta.url)),
+      fileURLToPath(new URL('../record/compiled-frame-recording.ts', import.meta.url)),
       'utf8',
     );
     expect(recordSource).not.toContain('temporalFrameTransaction.stage');

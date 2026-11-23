@@ -85,6 +85,7 @@ export interface StandardTemporalDemandInput {
   readonly taa: boolean;
   readonly motionBlur: boolean;
   readonly ssr?: boolean;
+  readonly gtao?: boolean;
   readonly visibleSurface?: boolean;
   /** Diffuse GI reprojects its history through the shared motion target. */
   readonly diffuseGi?: boolean;
@@ -95,6 +96,7 @@ export interface StandardTemporalDemand {
     | 'taa'
     | 'motion-blur'
     | 'ssr'
+    | 'gtao'
     | 'visible-surface'
     | 'diffuse-gi'
   )[];
@@ -119,6 +121,7 @@ export function aggregateTemporalDemand(
     ...(input.taa ? (['taa'] as const) : []),
     ...(input.motionBlur ? (['motion-blur'] as const) : []),
     ...(input.ssr ? (['ssr'] as const) : []),
+    ...(input.gtao ? (['gtao'] as const) : []),
     ...(input.visibleSurface ? (['visible-surface'] as const) : []),
     ...(input.diffuseGi ? (['diffuse-gi'] as const) : []),
   ];
@@ -373,11 +376,14 @@ export function addStandardSceneSurfaceDataPass(
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   name = 'standard-scene-surface-data',
   fragmentEntryPoint = 'fs_ao_input',
+  forwardDisplayDepth?: 'prepass',
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
     name,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     gpuDrivenFilter: 'opaque',
+    standardOpaqueRows: true,
+    ...(forwardDisplayDepth === undefined ? {} : { forwardDisplayDepth }),
     ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
     depth: targets.depth,
     selector: FORWARD_PASS_SELECTOR,

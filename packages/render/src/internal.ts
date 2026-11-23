@@ -7,6 +7,7 @@ export {
   meshTransfers,
 } from './assembly/dynamic-geometry-host';
 export {
+  installPublishedLevelPrograms,
   type LevelSourceHost,
   levelSourceHost,
   preparePublishedLevel,
@@ -14,6 +15,7 @@ export {
 } from './assembly/level-source-access';
 export type { PublishedLevelPreparation } from './assembly/published-level-preparation';
 export type { SourceViewPreparation } from './assembly/source-view-preparation';
+export { assertCameraProjectionOffset, validateCameraPerspectiveFov } from './components/camera';
 export { DeviceScope } from './device/device-scope';
 export { assertTextureMipSkip } from './device/texture-mip-skip';
 export { createLightResourceUnavailable } from './errors/render';
@@ -51,6 +53,7 @@ export { encodeClosedLevelRows, sameClosedLevelRows } from './publication/closed
 export type {
   MeshPipelinePreparation,
   PublishedAssetVersion,
+  RenderPublication,
   RenderPublicationRows,
 } from './publication/contract';
 export { publicationDependencies } from './publication/dependencies';
@@ -61,12 +64,14 @@ export {
   type PackedRowsMesh,
   packedRowsEligible,
 } from './publication/packed-rows-mesh';
+export { captureLevelMaterialPrograms } from './publication/programs';
 export {
   adoptWorkerPublicationMaterials,
   ownReceivedPublicationMaterials,
 } from './publication/received-materials';
 export {
   type ClosedLevelAssetHold,
+  type ClosedLevelAssetPayload,
   type ClosedLevelAssetPublication,
   decodeClosedLevelRows,
   RenderPublicationReceiver,
@@ -74,6 +79,7 @@ export {
 export {
   decodeRenderPublication,
   encodeRenderPublication,
+  prepareRenderPublicationTransfer,
   publicationAssetPayloadTransfers,
   renderPublicationTiming,
 } from './publication/record';
@@ -246,28 +252,9 @@ export {
   type StagedMeshSourceFailure,
   type StagedMeshSourceStatus,
 } from './scene/staged-mesh-source';
-export {
-  createSsrHistoryOwner,
-  SSR_HISTORY_FORMAT,
-  type SsrHistoryCandidate,
-  type SsrHistoryError,
-  type SsrHistoryInspection,
-  SsrHistoryOwner,
-  type SsrHistoryResetReason,
-  type SsrHistoryResources,
-  type SsrHistorySlot,
-  type SsrHistoryState,
-} from './ssr/history';
 export { estimateSsrSpatialMemory } from './ssr/resources';
-export {
-  createSsrTemporalConsumer,
-  type SsrTemporalCandidate,
-  SsrTemporalConsumer,
-  type SsrTemporalError,
-  type SsrTemporalExecutionError,
-  type SsrTemporalInspection,
-} from './ssr/temporal';
 export { type StreamingMaterialRejection, streamingMaterialRejection } from './streaming-material';
+export { setViewDrawOrder, type ViewDrawOrderSource } from './systems/view-draw-order';
 export { TemporalFrameCoordinator } from './temporal/frame-coordinator';
 export {
   createWaterUnderwaterFeature,

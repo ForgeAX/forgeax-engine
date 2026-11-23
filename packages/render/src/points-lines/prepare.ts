@@ -12,7 +12,11 @@ import type { PointsLinesPreparedSnapshot } from './snapshot';
 
 export interface PointsLinesGpuResourceAdapter<Resource> {
   create(geometry: PointsLinesExpandedGeometry): Result<Resource, Error>;
-  upload(resource: Resource, geometry: PointsLinesExpandedGeometry): Result<number, Error>;
+  upload(
+    resource: Resource,
+    geometry: PointsLinesExpandedGeometry,
+    residentGeometry?: PointsLinesExpandedGeometry,
+  ): Result<number, Error>;
   validate(resource: Resource, geometry: PointsLinesExpandedGeometry): Result<void, Error>;
   destroy(resource: Resource): void;
 }
@@ -131,7 +135,7 @@ export class PointsLinesPreparation<Resource> {
   ): Result<PointsLinesPreparedResource<Resource>, PointsLinesPrepareFailedError> {
     const validated = this.options.adapter.validate(live.resource, geometry);
     if (!validated.ok) return this.fail(snapshot, validated.error);
-    const uploaded = this.options.adapter.upload(live.resource, geometry);
+    const uploaded = this.options.adapter.upload(live.resource, geometry, live.geometry);
     if (!uploaded.ok) {
       // The resident contents are partial: rebuild on the next preparation.
       this.options.adapter.destroy(live.resource);

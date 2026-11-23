@@ -7,7 +7,7 @@ import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { create, globals } from '@forgeax/engine-dawn-node';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const FIXTURE_PATH = resolve(APP_ROOT, 'assets', 'pulse-material.pack.json');
+const FIXTURE_PATH = resolve(APP_ROOT, 'fixtures', 'pulse-material.runtime-pack.json');
 const variant = process.env.FORGEAX_MATERIAL_DAWN_VARIANT === 'normal-slot-swap'
   ? 'normal-slot-swap'
   : 'normal';
@@ -18,7 +18,7 @@ function assert(condition, message) {
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
 const authoredMaterial = fixture.assets.find(
-  (entry) => entry.guid?.toLowerCase() === '01935b00-7d8c-7c4e-9f12-345678abcd02',
+  (entry) => entry.guid?.toLowerCase() === '330a8d22-5e43-5aab-8cd4-5d920045f7a8',
 );
 const authoredNormalTextureGuid = authoredMaterial?.payload?.values?.normalTexture?.texture;
 assert(typeof authoredNormalTextureGuid === 'string', 'authored normalTexture slot is absent');
@@ -42,10 +42,10 @@ const loader = createMaterialLoader({
   },
   loadReference: async () => true,
 });
-const rootRecord = cookedByGuid.get('01935b00-7d8c-7c4e-9f12-345678abcd02');
+const rootRecord = cookedByGuid.get('330a8d22-5e43-5aab-8cd4-5d920045f7a8');
 assert(rootRecord !== undefined, 'cooked root material record is absent');
 const material = await loader.load({
-  guid: '01935b00-7d8c-7c4e-9f12-345678abcd02',
+  guid: '330a8d22-5e43-5aab-8cd4-5d920045f7a8',
   specializationKey: rootRecord.specializationKey,
 });
 assert(material.status === 'Ready', 'authored material record is not runtime-ready');

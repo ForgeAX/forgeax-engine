@@ -250,6 +250,14 @@ try {
   await writeFile(join(output, 'data/step-03-select.json'), JSON.stringify(at7, null, 2));
  }
  assert.deepEqual(errors, [], 'the page reports no uncaught errors');
+ // The browser owns the live preview. Retire it through the workspace
+ // while that browser can acknowledge cleanup, then stop the daemon.
+ if (process.env.FORGEAX_MODELING_VIEW_KEEP !== '1') {
+  const { project } = await client.getState();
+  assert.ok(project, 'the Modeling project stays open until explicit closure');
+  await client.closeProject(project.id);
+  assert.equal((await client.getState()).project ?? null, null, 'the Modeling project is retired');
+ }
  await writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: true }, null, 2));
 } catch (error) {
  failed = true;

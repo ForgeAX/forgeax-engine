@@ -131,50 +131,54 @@ export function addSubsurfaceDiffusion(
   const vertical = halfTarget('subsurface-half-vertical');
   if (!vertical.ok) return vertical;
 
-  const upload = graph.addCopyPass('subsurface-prepare', {
-    accesses: [
-      { resource: params.value, usage: 'copy-dst' },
-      { resource: tiles.value, usage: 'copy-dst' },
-      { resource: commands.value, usage: 'copy-dst' },
-    ],
-    encodeDirect: (encoder, frame, resources) => {
-      const { camera, runtime } = frame;
-      const limits = runtime.device.limits;
-      const rowLength = Math.min(1024, tileCount, limits.maxComputeWorkgroupsPerDimension);
-      if (
-        !(rowLength > 0) ||
-        Math.max(tilesX, tilesY, Math.ceil(tileCount / rowLength)) >
-          limits.maxComputeWorkgroupsPerDimension ||
-        Math.max(guideBytes, tileBytes, COMMAND_BYTES) > limits.maxStorageBufferBindingSize
-      )
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected:
-            'subsurface tile grid and guide fit the device dispatch and storage binding limits',
-          hint: 'reduce the internal render extent of this view',
-        });
-      encoder.clearBuffer(resources.buffer(tiles.value).unwrap(), 0, tileBytes);
-      encoder.clearBuffer(resources.buffer(commands.value).unwrap(), 0, COMMAND_BYTES);
-      const payload = new ArrayBuffer(PARAM_BYTES);
-      new Float32Array(payload).set([
-        camera.near,
-        camera.far,
-        camera.projection === 'orthographic' ? 1 : 0,
-        input.quality === 'low' ? 2 : 3,
-        input.scale[0] * (size.width / input.size.width),
-        input.scale[1] * (size.height / input.size.height),
-        rowLength,
-        input.quality === 'low' ? 6 : 9,
-      ]);
-      const profileTable = (frame as _InternalRenderPipelineContext).frameState
-        .compactSubsurfaceProfiles;
-      if (input.compact === true && profileTable !== undefined)
-        new Uint32Array(payload, 32).set(profileTable);
-      runtime.device.queue
-        .writeBuffer(resources.buffer(params.value).unwrap(), 0, payload)
-        .unwrap();
+  const upload = graph.addCopyPass(
+    'subsurface-prepare',
+    {
+      accesses: [
+        { resource: params.value, usage: 'copy-dst' },
+        { resource: tiles.value, usage: 'copy-dst' },
+        { resource: commands.value, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder, frame, resources) => {
+        const { camera, runtime } = frame;
+        const limits = runtime.device.limits;
+        const rowLength = Math.min(1024, tileCount, limits.maxComputeWorkgroupsPerDimension);
+        if (
+          !(rowLength > 0) ||
+          Math.max(tilesX, tilesY, Math.ceil(tileCount / rowLength)) >
+            limits.maxComputeWorkgroupsPerDimension ||
+          Math.max(guideBytes, tileBytes, COMMAND_BYTES) > limits.maxStorageBufferBindingSize
+        )
+          throw new RhiError({
+            code: 'rhi-not-available',
+            expected:
+              'subsurface tile grid and guide fit the device dispatch and storage binding limits',
+            hint: 'reduce the internal render extent of this view',
+          });
+        encoder.clearBuffer(resources.buffer(tiles.value).unwrap(), 0, tileBytes);
+        encoder.clearBuffer(resources.buffer(commands.value).unwrap(), 0, COMMAND_BYTES);
+        const payload = new ArrayBuffer(PARAM_BYTES);
+        new Float32Array(payload).set([
+          camera.near,
+          camera.far,
+          camera.projection === 'orthographic' ? 1 : 0,
+          input.quality === 'low' ? 2 : 3,
+          input.scale[0] * (size.width / input.size.width),
+          input.scale[1] * (size.height / input.size.height),
+          rowLength,
+          input.quality === 'low' ? 6 : 9,
+        ]);
+        const profileTable = (frame as _InternalRenderPipelineContext).frameState
+          .compactSubsurfaceProfiles;
+        if (input.compact === true && profileTable !== undefined)
+          new Uint32Array(payload, 32).set(profileTable);
+        runtime.device.queue
+          .writeBuffer(resources.buffer(params.value).unwrap(), 0, payload)
+          .unwrap();
+      },
     },
-  });
+    'transfer',
+  );
   if (!upload.ok) return upload;
 
   let module: ShaderModule | undefined;

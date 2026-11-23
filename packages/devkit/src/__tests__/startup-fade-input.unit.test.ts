@@ -100,7 +100,7 @@ describe('startup overlay fade', () => {
     try {
       expect(document.documentElement.lang).toBe(labels.lang);
       expect(document.querySelector('#forgeax-status')?.textContent).toBe(
-        `${labels.host.game} game-1 | ${labels.host.engine} engine-1 | FPS --`,
+        `${labels.host.game} game-1 | ${labels.host.engine} engine-1 | Render FPS -- `,
       );
       expect(document.querySelector('#forgeax-status version')).toBeNull();
       expect(document.querySelector('#forgeax-fps')?.getAttribute('aria-label')).toBe(

@@ -178,7 +178,7 @@ describe('Materials.standard clearcoat public contract', () => {
     const merged = assembleMaterialWithSkylightEntries(
       entries,
       {
-        irradianceView: view,
+        skySh: view,
         irradianceSampler: sampler,
         prefilterView: view,
         prefilterSampler: sampler,

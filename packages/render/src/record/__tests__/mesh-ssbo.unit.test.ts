@@ -1,13 +1,13 @@
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
-  bindGroupByteRangeLeaf4,
+  bindGroupByteRangeLeaf2,
   bindGroupChainLeaf,
   bindGroupChainLeaf2,
   bindGroupChainLeaf3,
   bindGroupChainLeaf4,
   bindGroupChainLeaf6,
-  bindGroupSkinRangeLeaf6,
+  bindGroupSkinRangeLeaf4,
   getOrCreateFromChain,
   getOrCreateFromChainResult,
   rememberBindGroup,
@@ -19,24 +19,22 @@ describe('mesh bind-group cache chains', () => {
     const a = {},
       b = {},
       c = {},
-      d = {},
-      e = {},
-      f = {};
+      d = {};
     const group = { id: 'range' } as never;
     const counts = { createBindGroup: 0, keys: [] as string[] };
-    const mesh = bindGroupByteRangeLeaf4(root, a, b, c, d);
+    const mesh = bindGroupByteRangeLeaf2(root, a, b);
     rememberBindGroup(mesh, 256, group, counts, 'gpu-driven-hdrp:256');
-    expect(bindGroupByteRangeLeaf4(root, a, b, c, d).get(256)).toBe(group);
+    expect(bindGroupByteRangeLeaf2(root, a, b).get(256)).toBe(group);
     expect(mesh.get(512)).toBeUndefined();
     expect(bindGroupChainLeaf4(root, a, b, c, d).get('256')).toBeUndefined();
-    const skin = bindGroupSkinRangeLeaf6(root, a, b, c, d, e, f, 256, 32);
+    const skin = bindGroupSkinRangeLeaf4(root, a, b, c, d, 256, 32);
     rememberBindGroup(skin, 64, group, counts, 'gpu-driven-hdrp-skin:256:32:64');
-    expect(bindGroupSkinRangeLeaf6(root, a, b, c, d, e, f, 256, 32).get(64)).toBe(group);
-    expect(bindGroupSkinRangeLeaf6(root, a, b, c, d, e, f, 512, 32).get(64)).toBeUndefined();
-    expect(bindGroupSkinRangeLeaf6(root, a, b, c, d, e, f, 256, 48).get(64)).toBeUndefined();
+    expect(bindGroupSkinRangeLeaf4(root, a, b, c, d, 256, 32).get(64)).toBe(group);
+    expect(bindGroupSkinRangeLeaf4(root, a, b, c, d, 512, 32).get(64)).toBeUndefined();
+    expect(bindGroupSkinRangeLeaf4(root, a, b, c, d, 256, 48).get(64)).toBeUndefined();
     expect(skin.get(128)).toBeUndefined();
-    expect(bindGroupSkinRangeLeaf6(root, a, b, c, d, e, {}, 256, 32).get(64)).toBeUndefined();
-    expect(bindGroupByteRangeLeaf4(new WeakMap(), a, b, c, d).get(256)).toBeUndefined();
+    expect(bindGroupSkinRangeLeaf4(root, a, b, c, {}, 256, 32).get(64)).toBeUndefined();
+    expect(bindGroupByteRangeLeaf2(new WeakMap(), a, b).get(256)).toBeUndefined();
     expect(counts).toEqual({
       createBindGroup: 2,
       keys: ['gpu-driven-hdrp:256', 'gpu-driven-hdrp-skin:256:32:64'],

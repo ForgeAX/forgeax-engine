@@ -81,6 +81,8 @@ export {
   STANDARD_DERIVED_LAYOUT_PROJECTIONS,
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_OBJECT_SPACE_NORMAL_BIT,
+  STANDARD_ORM_REUSE_BIT,
+  STANDARD_ORM_REUSE_OVERRIDE,
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
   STANDARD_PARALLAX_HEIGHT_DEFINE,
   STANDARD_PARALLAX_HEIGHT_PAIR,
@@ -105,6 +107,7 @@ export {
   STANDARD_TRIPLANAR_PROJECTION_BIT,
   type StandardPhysicalTextureField,
   type StandardSharedTransmissionHost,
+  standardCoverageTextureMask,
   standardLeanInputDefines,
   standardLeanInputMaskCompatible,
   standardMaskHasBit,
@@ -115,6 +118,7 @@ export {
   standardSharedTransmissionConflicts,
   standardSharedTransmissionDefines,
   standardTextureMask,
+  standardVertexTextureMask,
 } from './material-schemas.js';
 export {
   DEPTH_PYRAMID_SHADER_MODULES,
@@ -143,6 +147,7 @@ export {
 export {
   isSupportedVariantDefines,
   isSupportedVariantKey,
+  projectStandardCoverageDefines,
   VARIANT_PERMUTATION_RULES,
   type VariantPermutationRule,
   violatedVariantPermutationRules,
@@ -180,6 +185,7 @@ export {
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_WGSL,
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
 } from './single-layer-medium-raw-depth.js';
+export { SKY_SH_WGSL } from './sky-sh-source';
 
 /**
  * Material modules whose shader source and parameter contract are owned by
@@ -193,6 +199,8 @@ export const ENGINE_MATERIAL_MODULES = [
   'forgeax::default-standard-pbr',
   'forgeax::standard-terrain',
   'forgeax::standard-terrain-ids',
+  'forgeax::standard-terrain-detail',
+  'forgeax::standard-terrain-detail-shadow',
   'forgeax::standard-terrain-shadow',
   'forgeax::standard-terrain-ids-shadow',
   'forgeax::single-layer-medium',

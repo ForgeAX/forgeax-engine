@@ -7,18 +7,29 @@ export {
 export { validateArtifactPath } from './artifact-path.js';
 export { decodePackBlob, type PackBlob, validatePackBlob } from './blob.js';
 export { projectPackageCatalog } from './catalog-projection.js';
-export { decodeCatalogWire, encodeCatalogWire } from './catalog-wire.js';
+export {
+  type CatalogNavigationRow,
+  decodeCatalogWire,
+  encodeCatalogWire,
+  readCatalogNavigationRow,
+} from './catalog-wire.js';
 export {
   copyPackData,
   copyPackOutputData,
   decodePackData,
+  decodePackDataRecord,
   encodePackData,
+  encodePackDataRecord,
   type PackBinary,
   packArrayKind,
   packArrayStorage,
   packBufferLength,
 } from './data.js';
-export { validateFixedPackPublication } from './fixed-publication.js';
+export {
+  fixedPublicationDependencies,
+  matchesFixedDependency,
+  validateFixedPackPublication,
+} from './fixed-publication.js';
 export { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 export { createPackageResponse } from './package-response.js';
 export { validatePluginAsset } from './plugin-asset.js';
@@ -48,4 +59,4 @@ export {
   type RuntimePackPublicationInput,
   stripRuntimePackLifecycle,
 } from './runtime-publication.js';
-export { parsePackV2, validateMeta, validatePack, validatePackV2 } from './schema-compiled.js';
+export { parsePackV2, validateMeta, validatePackV2 } from './schema-compiled.js';

@@ -1,3 +1,7 @@
+import type {} from '@forgeax/engine-host/platform';
+import type { PackProgramHostFactory } from '@forgeax/engine-pack/runtime';
+
+export type { PackProgramHostFactory } from '@forgeax/engine-pack/runtime';
 export { assetLibrarySourceIdentity } from './asset-libraries.js';
 export { createDevKitBackend, type DevKitBackend } from './backend.js';
 export { retainBackendLifetime } from './backend-lifetime.js';
@@ -78,6 +82,7 @@ export {
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
+export { createInitPlan } from './init.js';
 export {
   browseProjectDirectories,
   type KnownProject,
@@ -135,11 +140,6 @@ export type {
 } from './play.js';
 export { playCommand } from './play.js';
 export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migration.js';
-export {
-  type BootstrapRoot,
-  createInitPlan,
-  readProjectFacts,
-} from './project/index.js';
 export type {
   ProjectLintDiagnostic,
   ProjectLintError,
@@ -149,6 +149,7 @@ export type {
   ProjectOwnershipGraph,
   ProjectOwnershipNode,
 } from './project/lint.js';
+export { readProjectFacts } from './project.js';
 export type {
   ArtifactRef,
   CapturedRhiTape,
@@ -172,7 +173,6 @@ export {
   renderRhiDebugHelp,
   runRhiDebugOperation,
 } from './rhi-debug/operations.js';
-export type { PackProgramHostFactory } from './runtime-pack-platform.js';
 export type {
   SingleHtmlBundle,
   SingleHtmlBundleArtifact,
@@ -191,6 +191,7 @@ export type {
   AssetAddOptions,
   AssetInspectOptions,
   AssetListOptions,
+  BootstrapRoot,
   BrowserCaptureOptions,
   BuildOptions,
   CaptureBackend,
@@ -223,3 +224,10 @@ export {
   type DevKitWorkspaceProviderOptions,
   type DevKitWorkspaceTargetOptions,
 } from './workspace-provider.js';
+
+declare module '@forgeax/engine-host/platform' {
+  interface FrontendPlatform {
+    /** Borrowed realm module delivery when a native frontend cannot own a ServiceWorker. */
+    readonly createPackProgramHost?: PackProgramHostFactory;
+  }
+}

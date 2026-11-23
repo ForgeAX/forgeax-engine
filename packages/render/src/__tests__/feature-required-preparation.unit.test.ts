@@ -31,6 +31,27 @@ async function frame(feature: RenderFeature<{ required: boolean }>) {
   return { host, run, device };
 }
 
+it('reports the material owner code raised by a required feature plan', async () => {
+  const f = await frame({
+    identity: 'particle-program',
+    requiresPreparation: () => true,
+    extract: () => ok({ required: true }),
+    plan: () => {
+      throw Object.assign(new Error('Missing particle program'), {
+        code: 'material-specialization-not-cooked',
+      });
+    },
+  });
+  try {
+    expect(f.run().frame.preparationPendingReason).toMatchObject({
+      preparationStage: 'source-plan',
+      reason: 'material-specialization-not-cooked',
+    });
+  } finally {
+    f.host.dispose();
+  }
+});
+
 it('waits for a declared pending source without admitting or acknowledging work, then retries ready', async () => {
   let pending = true;
   const aborted = vi.fn(),

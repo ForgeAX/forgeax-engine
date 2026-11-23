@@ -1,10 +1,10 @@
 import { createServer } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { allocateLoopbackPort } from '../browser-host.js';
+import { materializeViteDevPort } from '../../loopback.js';
 
 describe('Browser Host loopback port', () => {
   it('returns a bindable OS-assigned port instead of Vite default port semantics', async () => {
-    const port = await allocateLoopbackPort();
+    const port = await materializeViteDevPort();
     expect(port).toBeGreaterThan(0);
 
     const server = createServer();

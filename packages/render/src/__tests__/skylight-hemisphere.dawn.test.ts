@@ -32,6 +32,7 @@ const imports = Object.fromEntries(
     'shadow-pcf',
     'standard-gbuffer',
     'standard-lighting',
+    'sky-sh-polynomial',
     'cluster-texture-data',
     'standard-cluster',
     'view-atmosphere',
@@ -45,22 +46,22 @@ const imports = Object.fromEntries(
 );
 
 // Pixel 0: normal +Y, pixel 1: normal -Y, pixel 2: normal +X; the view vector
-// equals the normal so Fresnel and the BRDF LUT read the same texel everywhere.
-const SOURCE = `#import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment}
+// equals the normal so the analytic BRDF sees the same angle everywhere.
+const SOURCE = `#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleStandardDiffuseIrradiance, evaluateStandardEnvironment}
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 struct Parameters { tint: vec4<f32>, ground: vec4<f32> };
 @group(0) @binding(101) var<uniform> parameters: Parameters;
-@group(0) @binding(102) var irradiance: texture_cube<f32>;
+@group(0) @binding(102) var<uniform> skySh: SkyShPolynomial;
 @group(0) @binding(103) var prefilter: texture_2d<f32>;
-@group(0) @binding(104) var brdf: texture_2d<f32>;
 @group(0) @binding(105) var sampleState: sampler;
 fn ambient(normal: vec3<f32>) -> vec3<f32> {
   let sky = SkylightUniforms(1.0, parameters.tint.x, parameters.tint.y, parameters.tint.z,
     vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0),
     parameters.ground);
-  var sh: array<vec4<f32>, 9>;
+  let irradiance = sampleStandardDiffuseIrradiance(sky, normal, vec3<f32>(0.0), skySh);
   let result = evaluateStandardEnvironment(vec3<f32>(0.0), normal, normal, vec3<f32>(1.0),
     vec3<f32>(0.0), 0.0, 1.0, vec3<f32>(0.04), vec4<f32>(0.04, 0.04, 0.04, 1.0), vec3<f32>(1.0),
-    sky, irradiance, sampleState, prefilter, sampleState, brdf, prefilter, sh, 0.0);
+    sky, sky.ambientIrradiance.xyz, irradiance, prefilter, sampleState);
   return result.diffuse;
 }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -100,6 +101,14 @@ it('Skylight groundColor lerps the diffuse tint by normal.y and is off by defaul
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
+  const skySh = device.createBuffer({
+    size: 112,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const white = new Float32Array(28);
+  for (const channel of [0, 1, 2]) white[channel * 4 + 3] = 1;
+  device.queue.writeBuffer(skySh, 0, white);
   const readback = device.createBuffer({
     size: 256,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -109,26 +118,17 @@ it('Skylight groundColor lerps the diffuse tint by normal.y and is off by defaul
     format: 'rgba32float',
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
-  // White irradiance cube (the solid-color fallback), grey prefilter, a BRDF LUT texel.
-  const textures = [
-    { layers: 6, texel: [255, 255, 255, 255] },
-    { layers: 1, texel: [128, 128, 128, 255] },
-    { layers: 1, texel: [128, 64, 0, 255] },
-  ].map(({ layers, texel }) => {
-    const texture = device.createTexture({
-      size: [1, 1, layers],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    const bytes = new Uint8Array(layers * 4);
-    for (let i = 0; i < bytes.length; i += 4) bytes.set(texel, i);
-    device.queue.writeTexture({ texture }, bytes, { bytesPerRow: 4, rowsPerImage: 1 }, [
-      1,
-      1,
-      layers,
-    ]);
-    return texture;
+  const prefilter = device.createTexture({
+    size: [1, 1],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
+  device.queue.writeTexture(
+    { texture: prefilter },
+    new Uint8Array([128, 128, 128, 255]),
+    { bytesPerRow: 4, rowsPerImage: 1 },
+    [1, 1],
+  );
   try {
     const module = device.createShaderModule({ code: compiled.value.wgsl });
     const pipeline = await device.createRenderPipelineAsync({
@@ -136,14 +136,13 @@ it('Skylight groundColor lerps the diffuse tint by normal.y and is off by defaul
       vertex: { module, entryPoint: 'vs' },
       fragment: { module, entryPoint: 'fs', targets: [{ format: 'rgba32float' }] },
     });
-    const [cube, prefilter, brdf] = textures as [GPUTexture, GPUTexture, GPUTexture];
     const group = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
+        { binding: 0, resource: { buffer: view } },
         { binding: 101, resource: { buffer: uniform } },
-        { binding: 102, resource: cube.createView({ dimension: 'cube' }) },
+        { binding: 102, resource: { buffer: skySh } },
         { binding: 103, resource: prefilter.createView({ dimension: '2d' }) },
-        { binding: 104, resource: brdf.createView() },
         {
           binding: 105,
           resource: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }),
@@ -201,9 +200,11 @@ it('Skylight groundColor lerps the diffuse tint by normal.y and is off by defaul
     for (const [i, rgb] of same.entries()) close(rgb, [lit, 0, 0], `same ${i}`);
     expect(errors).toEqual([]);
   } finally {
-    for (const texture of textures) texture.destroy();
+    prefilter.destroy();
     output.destroy();
     uniform.destroy();
+    view.destroy();
+    skySh.destroy();
     readback.destroy();
     device.destroy();
   }

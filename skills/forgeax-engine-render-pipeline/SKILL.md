@@ -72,6 +72,8 @@ alone does not establish sailing behavior. See [Render](../../packages/render/RE
 
 For live native compilation detail, read `renderer.inspect().pipelineLibrary.pending`
 or `execution.inspectRenderer({fields:['pipelineLibrary']})` in a Worker host.
+For external queries, cold-to-warm counters and submitted bindings, follow
+[Audit shader and pipeline work](../forgeax-engine-performance/SKILL.md#audit-shader-and-pipeline-work).
 Rows contain the complete recorded recipe, semantic SHA-256 identity, shader
 digests, native request origin, stage and elapsed time. `preload` distinguishes
 exact startup/background membership, absence and unresolved indexing; runtime
@@ -507,10 +509,9 @@ receipt. See [target lifecycle](../../packages/render/README.md#target-and-probe
 Enable `DirectionalLight.castShadow: true` before choosing a shadow filter;
 bare lights default off. DirectionalLight.shadowFilter selects the receiver.
 It is an ECS enum; assign
-DirectionalShadowFilterValue.pcfVogel, .pcf1, .pcf3, .pcf5, .pcfSoft, .variance,
+DirectionalShadowFilterValue.pcfVogel, .pcf1, .pcf3, .pcf5, .pcfSoft,
 .pcssMedium, or .pcssHigh numeric constants, not string labels. Valid labels are
-pcfVogel, pcf1, pcf3, pcf5, pcfSoft (Three.js PCFSoftShadowMap), variance (Three.js
-VSMShadowMap), pcssMedium, pcssHigh; default is pcfVogel. Do not create
+pcfVogel, pcf1, pcf3, pcf5, pcfSoft (Three.js PCFSoftShadowMap), pcssMedium, pcssHigh; default is pcfVogel. Do not create
 numeric or compatibility aliases. PCSS
 shadowAngularRadius is in radians, defaults to 0.00465, and accepts
 [0.0001, 0.05]. maxPenumbraTexels is in texels, defaults to 32, and must be
@@ -1174,58 +1175,17 @@ check actual light/receiver carriers and matching shader work.
 
 ## Screen-space AO
 
-Project `settings.rendering.ambientOcclusion` or the Standard profile selects
-`enabled` and `method` separately. The method defaults to `ssao`. A camera's
-`AmbientOcclusion` component inherits that method and overrides enablement and
-view parameters. Set `method: 'gtao'` for GTAO. Use `resolutionScale: 0.5` to
-evaluate AO at half resolution in each dimension. Eligible WebGPU and `wgpu-WebGL2` devices support AO
-through Forward input as well as the existing Deferred route; AO alone does not
-force a Deferred profile. WebGPU uses the production raster route and exercises
-compute through the internal Renderer acceptance override. WebGL2 uses fragment
-passes and co-locates visibility with Cluster data in one integer texture to
-preserve the full material texture budget. Raw intensity is applied before the
-existing bilateral filter. `directLightingStrength` defaults to zero and
-independently controls AO attenuation of direct lighting in both render paths.
-See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
-for input eligibility, budgets and retained mathematical differences.
-
-For runtime diagnosis, read `renderer.inspect().standardLighting.ambientOcclusion`
-after a submitted frame. Its passes and graph generation describe the accepted
-graph; requested-but-unavailable state includes the missing active-graph stage
-and retry/rebuild recovery. It also reports the material-normal/depth SceneData
-schema, numerical settings, known allocation bytes and raw/filter work budgets.
-Treat omitted byte sizes as unknown and the work counts as declared workload
-budgets, not measured GPU time. A disabled request owns no AO passes, Cluster
-region, history or per-frame upload. Public camera setup and `ssao-*` recovery
-examples live in the [render README](../../packages/render/README.md#screen-space-ambient-occlusion).
-
-Binding `Camera.colorLut` applies it with default strength 1; explicit strength 0
-disables it. No LUT creates no LUT work. FXAA follows Three GPU r184's six-step
-search, relative threshold 0.063 and subpixel blend 1. The public
-[comparison page](../../apps/parity/color-lighting/render-defaults.html) and its
-verification script use production shaders and the pinned Three dependency.
-
-Bloom is opt-in and independent of tone mapping. Defaults follow Unreal:
-threshold -1 (no threshold, every pixel scatters by its energy), intensity 0.5,
-smooth width 0.01, radius 0; a positive threshold blooms only highlights (WebGPU
-BloomNode uses threshold 0 and intensity 1). Use
-`bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
-`bloomThreshold < 0` (range `[-1, 65504]`, Unreal's `-1` = no BloomSetup) disables
-thresholding. Each level downsamples with Unreal's 4-tap HIGH (4x4) filter and the
-threshold reads that filtered half-res colour, so sub-pixel specular glints do not
-toggle the bloom frame to frame.
-The five Gaussian levels and their weighted composite share one Renderer graph.
-SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and
-maxRoughness 1; 1080p temporal descriptors need about 182 MiB in Deferred compute or 261 MiB in portable Forward, within the 320 MiB per-view cap. TAA motion uses
-input pixels / 128, with default current weights 0.05 (TAA) and 0.025 (TAAU).
-TAA flickering analysis (UE TSR port, `Camera.taaFlickering`, default on, 0 = off) widens the luma clip box where a 2-frame oscillation is detected; reactive/moving pixels still update. Costs an extra rgba8unorm history (TAA history 42 B/px).
-Point/Spot shadow near/far defaults are 0.5/500; a positive finite light range
-replaces far. RectAreaLight defaults to 10x10 with unlimited range.
-Directional/Spot shadow maps default off; set `castShadow: true` explicitly, as
-the game template does. Mesh participation stays on unless ShadowParticipation
-opts out; Point lights require PointLightShadow. No renderer-wide gate is needed.
-The game-3d template inherits projection/CSM defaults while retaining its
-explicit artistic ACES/FXAA, light color and intensity choices.
+Standard enables SSAO by default. Set project
+`settings.rendering.ambientOcclusion.enabled` to disable it or select
+`method: 'gtao'` for Deferred. A camera's `AmbientOcclusion` component
+overrides enablement and numeric view parameters. Omitted values inherit.
+Forward and WebGL2 use single-level SSAO and report a GTAO request as a
+Forward SSAO selection. Deferred GTAO uses its own submitted per-view history,
+independent of the main antialiasing mode. AO consumes current depth and
+attenuates indirect light. Use the
+[AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
+and `renderer.inspect().standardLighting.ambientOcclusion` to trace effective
+method, passes, resource extent and accepted history.
 
 ## Portable Hi-Z, SSR and exposure
 
@@ -1239,7 +1199,7 @@ never mean luminance. Read the [portable contract](../../packages/render/README.
 for capacity, format receipts, physical pass inspection and real GPU gates.
 The public WebGL2 World/Camera owner is
 `packages/runtime/src/__tests__/standard-effects-webgl2.browser.test.ts`: exposure,
-SSR and their GTAO combination retain 60 completed frames, actual fragment work,
+SSR and their SSAO combination retain 60 completed frames, actual fragment work,
 paired pixels and disable-to-baseline recovery. AO admits opaque/masked Unlit
 surface inputs; Forward SSR still requires built-in Standard receivers. Standard
 Morph and Skin+Morph surface inputs consume the same position/normal/tangent

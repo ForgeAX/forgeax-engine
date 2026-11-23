@@ -11,7 +11,6 @@ export default defineConfig({
     'schema-build': 'src/schema-build.ts',
     guid: 'src/guid.ts',
     errors: 'src/errors.ts',
-    bridge: 'src/bridge.ts',
     scanner: 'src/scanner.ts',
     name: 'src/deriveAssetName.ts',
     'resolve-asset-source': 'src/resolve-asset-source.ts',

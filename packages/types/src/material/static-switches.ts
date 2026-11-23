@@ -17,8 +17,8 @@ export const MATERIAL_STATIC_SWITCH_NAMES = [
   'triplanarProjection',
   'objectSpaceNormal',
   'directMultiscattering',
-  // Standard split-sum environment BRDF: absent/false compiles the
-  // preintegrated LUT fetch; true compiles UE EnvBRDFApproxLazarov (ALU only).
+  // Standard split-sum environment BRDF defaults to the analytic fit.
+  // Explicit false compiles the preintegrated LUT fetch.
   // Selects code only, never the ABI.
   'environmentBrdfApprox',
   'waterWaves',

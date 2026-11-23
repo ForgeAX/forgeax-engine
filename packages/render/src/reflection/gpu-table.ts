@@ -17,8 +17,6 @@ export interface ReflectionProbeTableRow {
     readonly generation: number;
     readonly size: number;
     readonly format: TextureFormat;
-    /** Shared sky lanes published to this probe's standalone uniform. */
-    readonly diffusePayload: readonly number[];
   };
   readonly generation: number;
   /** Renderer-owned filtered cube used by the Standard material lane. */

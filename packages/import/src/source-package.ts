@@ -1,3 +1,10 @@
+import {
+  createRuntimePackPublication,
+  finalizePackageTransportSource,
+  type PackageFinalizePolicy,
+  type RuntimePackPublication,
+  type RuntimePackPublicationInput,
+} from '@forgeax/engine-pack/build';
 import { type NativeCooker, NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type {
   CookProduct,
@@ -14,6 +21,7 @@ import type { TerminalImportProduct } from './import-product.js';
 import type { ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import { runImport } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
+import { projectImportProductForBuild } from './pack-projection.js';
 import {
   persistSourcePackageBuildProduct,
   prepareSourcePackageBuildProduct,
@@ -105,6 +113,55 @@ export async function finalizeSourcePackage(
   });
 }
 
+type ImportedPackTransport = Awaited<ReturnType<typeof finalizePackageTransportSource>>;
+type ImportedPackIdentity = Omit<
+  RuntimePackPublicationInput,
+  'pack' | 'digest' | 'packageUrl' | 'sourceRevision'
+> &
+  Partial<Pick<RuntimePackPublicationInput, 'packageUrl' | 'sourceRevision'>>;
+
+/** Assemble the published Pack and its navigation facts after the host finalizes URLs. */
+export async function prepareImportedPackPublication(
+  source: ImportProduct<unknown>,
+  policy: PackageFinalizePolicy,
+  identity: (
+    transport: ImportedPackTransport,
+    product: ImportProduct<unknown>,
+  ) => ImportedPackIdentity,
+  owner?: {
+    readonly finalize: NonNullable<Parameters<typeof finalizeSourcePackage>[1]>;
+    readonly artifactUrl: ImportProductFinalizeOptions['artifactUrl'];
+  },
+): Promise<
+  Result<
+    RuntimePackPublication & {
+      readonly artifacts: ImportedPackTransport['artifacts'];
+    },
+    SourcePackageFinalizeError
+  >
+> {
+  const result =
+    owner === undefined
+      ? ok(source)
+      : await finalizeSourcePackage(source, owner.finalize, owner.artifactUrl);
+  if (!result.ok) return result;
+  const product = result.value;
+  const finalized = await finalizePackageTransportSource(
+    projectImportProductForBuild(product),
+    policy,
+  );
+  return ok({
+    ...createRuntimePackPublication({
+      packageUrl: finalized.packageUrl,
+      sourceRevision: finalized.sourceRevision,
+      ...identity(finalized, product),
+      pack: finalized.pack,
+      digest: finalized.digest,
+    }),
+    artifacts: finalized.artifacts,
+  });
+}
+
 export type SourcePackageProducerResult =
   | { readonly ok: true; readonly value: SourcePackageProduct }
   | { readonly ok: false; readonly error: SourcePackageClosureError | ImportError };
@@ -180,7 +237,7 @@ export async function runSourcePackageImport(
   if (cached !== undefined && (await input.ddc?.isCurrent?.().catch(() => false)) !== false)
     return ok({ product: cached.product });
   const result = await runImport(
-    { ...(prepared?.meta ?? input.meta), buildPack: false },
+    prepared?.meta ?? input.meta,
     input.registry,
     prepared?.fs ?? input.fs,
     cookers,

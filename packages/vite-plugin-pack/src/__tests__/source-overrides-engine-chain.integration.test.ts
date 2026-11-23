@@ -1,6 +1,3 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   type BuildDdcInput,
   DdcEntryStore,
@@ -8,13 +5,25 @@ import {
   ddcOutputDigest,
   semanticBuildKey,
 } from '@forgeax/engine-ddc';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
-import { projectCookedPackageEntry } from '@forgeax/engine-pack/build';
-import type { Asset, ImportContext, ImportedAsset } from '@forgeax/engine-types';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  publishImportedCatalogRows,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
+import { currentProjectionFor } from '@forgeax/engine-pack/build';
+import {
+  type Asset,
+  createAssetPublication,
+  type ImportContext,
+  type ImportedAsset,
+} from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 
 const GUID = '11111111-1111-4111-8111-111111111111';
-const roots: string[] = [];
+const scratch = temporaryDirectories();
 
 function meta(sourceOverrides?: Record<string, Record<string, unknown>>): RunImportMeta {
   return {
@@ -88,14 +97,11 @@ async function writeEntry(root: string, key: string, payload: unknown) {
   });
 }
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
 
 describe('source override Engine consumer chain', () => {
   it('consumes producer Meta through ImportContext, DDC current, and Pack Catalog projection', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-engine-chain-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-engine-chain-');
     const received: { value?: unknown } = {};
     const override = { 'mesh/main': { lod: 2 } };
     const imported = await runImport(meta(override), registry(received), fs());
@@ -104,8 +110,13 @@ describe('source override Engine consumer chain', () => {
     if (!imported.ok || 'skipped' in imported.value) return;
 
     const desiredKey = semanticBuildKey(semantic(override));
-    await writeEntry(root, desiredKey, imported.value.pack);
+    expect(desiredKey).not.toBe(semanticBuildKey(semantic()));
     const lifecycle = new DdcLifecycle(root);
+    const missing = await lifecycle.begin(GUID, desiredKey);
+    expect((await lifecycle.commit(missing, desiredKey)).result).toBe('invalid');
+    expect((await lifecycle.inspect(GUID, desiredKey)).state).toBe('failed');
+
+    await writeEntry(root, desiredKey, projectImportPack(imported.value.product));
     const lease = await lifecycle.begin(GUID, desiredKey);
     expect((await lifecycle.commit(lease, desiredKey)).result).toBe('current');
 
@@ -128,8 +139,7 @@ describe('source override Engine consumer chain', () => {
   });
 
   it('keeps LKG when the same producer chain fails validation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-engine-chain-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-engine-chain-');
     const oldKey = semanticBuildKey(semantic());
     const desiredKey = semanticBuildKey(semantic({ 'mesh/main': { lod: 3 } }));
     await writeEntry(root, oldKey, { version: 'old' });
@@ -138,32 +148,62 @@ describe('source override Engine consumer chain', () => {
     await lifecycle.commit(oldLease, oldKey);
     const failedLease = await lifecycle.begin(GUID, desiredKey);
     await lifecycle.fail(failedLease, { code: 'validation-failed', detail: 'fixture failure' });
+    await expect(new DdcEntryStore(root).read(oldKey)).resolves.toMatchObject({ guid: GUID });
     expect(await lifecycle.inspect(GUID, desiredKey)).toMatchObject({
       state: 'failed',
       currentKey: oldKey,
       lastKnownGoodKey: oldKey,
+      failure: { code: 'validation-failed' },
     });
   });
 
   it('projects a current cooked row without changing the Meta/DDC identity', async () => {
     const desiredKey = semanticBuildKey(semantic({ 'mesh/main': { lod: 4 } }));
-    const projected = projectCookedPackageEntry(
+    const entries: import('@forgeax/engine-types').PackIndexEntry[] = [
       {
         guid: GUID,
         packageUrl: 'fixture.source.meta.json',
         kind: 'mesh',
         sourcePath: 'fixture.source',
       },
+    ];
+    const [projected] = publishImportedCatalogRows(
+      entries,
       {
+        guids: [GUID],
         packageUrl: `/preview/${desiredKey}`,
         revision: { digest: desiredKey, observedAt: 4, rootId: 'fixture-root' },
-        refs: [],
+        publication: createAssetPublication({
+          sourcePath: 'fixture.source',
+          sourceRevision: desiredKey,
+          inputFingerprint: desiredKey,
+          digest: desiredKey,
+          packageUrl: `/preview/${desiredKey}`,
+          externalEvidence: [],
+          outputs: [
+            {
+              guid: GUID,
+              sourceKey: 'mesh/main',
+              kind: 'mesh',
+              digest: desiredKey,
+              refs: ['dependency-guid'],
+            },
+          ],
+        }),
+        projection: currentProjectionFor('imported-output', 'cooked'),
+        meta: meta({ 'mesh/main': { lod: 4 } }),
       },
+      new Map([[GUID, '/preview/cooked.receipt.json']]),
     );
     expect(projected).toMatchObject({
       guid: GUID,
       packageUrl: `/preview/${desiredKey}`,
       revision: { digest: desiredKey },
+      subject: 'imported-output',
+      execution: 'cooked',
+      refs: ['dependency-guid'],
+      sourceOverrides: { 'mesh/main': { lod: 4 } },
+      cookReceiptUrl: '/preview/cooked.receipt.json',
       lifecycle: 'current',
       projection: { lifecycle: 'current' },
     });

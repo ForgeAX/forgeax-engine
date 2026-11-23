@@ -39,7 +39,6 @@ function admittedAdmission() {
       near: 0.1,
       far: 100,
       screenSpaceReflection: {
-        waterTemporal: 0,
         maxDistance: 40,
         thickness: 0.2,
         maxRoughness: 0.6,
@@ -132,7 +131,7 @@ it.each([
   );
 });
 
-it('prepares the declared SSR trace and temporal programs before either compute encode', async () => {
+it('prepares the declared SSR trace program before compute encode', async () => {
   const graph = new RenderGraphBuilder<Frame>();
   const passes = vi.spyOn(graph, 'addComputePass');
   const depth = input(graph, 'depth', 'r32float');
@@ -151,14 +150,6 @@ it('prepares the declared SSR trace and temporal programs before either compute 
     currentTemporal: scene,
     depthPyramid: pyramid.pyramid,
     view: params,
-    temporal: {
-      profile: 'opaque',
-      previousHistory: scene,
-      outputHistory: scene,
-      previousSurface: scene,
-      outputSurface: scene,
-      params,
-    },
   }).unwrap();
   const queue = new RecordingNullQueue();
   const device = createDevice(queue);
@@ -174,7 +165,7 @@ it('prepares the declared SSR trace and temporal programs before either compute 
   const frame = {
     frameState: {},
     bindGroupCounts: { createBindGroup: 0, keys: [] as string[] },
-    ssrShaders: { trace: 'trace-source', temporal: 'temporal-source' },
+    ssrShaders: { trace: 'trace-source' },
     runtime: {
       device,
       shaderModuleFactory: {
@@ -192,8 +183,6 @@ it('prepares the declared SSR trace and temporal programs before either compute 
   prepare();
   expect(create.mock.calls.map(([descriptor]) => descriptor.compute.entryPoint)).toEqual([
     'ssr_trace',
-    'ssr_temporal',
-    'ssr_reflection_mip',
   ]);
   expect(sync).not.toHaveBeenCalled();
   expect(frame.frameState).toMatchObject({ pipelinePreparationPending: true });
@@ -226,9 +215,9 @@ it('prepares the declared SSR trace and temporal programs before either compute 
     }
   };
   execute();
-  expect(pass.setPipeline).toHaveBeenCalledTimes(3);
-  expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(4);
-  expect(create).toHaveBeenCalledTimes(3);
+  expect(pass.setPipeline).toHaveBeenCalledTimes(1);
+  expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledTimes(1);
   expect(sync).not.toHaveBeenCalled();
   expect(queue.submitCount).toBe(0);
   device.destroyBuffer(buffer).unwrap();

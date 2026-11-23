@@ -724,14 +724,14 @@ function currentContribution(
   input: Pick<ResidentBatchPreparationInput, 'scene' | 'plan' | 'groupPlan' | 'isCurrent'>,
   scene: GpuScene,
 ): SubmissionPlan | undefined {
-  const cursor = scene.contentCursor;
+  const revision = scene.syncRevision;
   if (input.isCurrent() !== true) return undefined;
   const current = input.scene.residentExecution ?? input.scene.plan;
   const matches =
     input.groupPlan === undefined
       ? current === input.plan
       : matchesResidentGroupPlan(input.groupPlan, input.plan, current);
-  return matches && scene.live && scene.contentCursor === cursor && input.scene.scene === scene
+  return matches && scene.live && scene.syncRevision === revision && input.scene.scene === scene
     ? current
     : undefined;
 }

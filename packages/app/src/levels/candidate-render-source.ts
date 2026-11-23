@@ -25,6 +25,7 @@ export interface CandidateRenderPreparation {
 
 export interface CandidateRenderHost {
   current(): boolean;
+  batchSelections?(apply: () => void): void;
   beginStagedGroup(
     observation: SceneRosterObservation,
     content: AssetContentLease,

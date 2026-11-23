@@ -148,6 +148,7 @@ export function addDepthOfFieldPasses(
     if (!enabled) continue;
     const prefilter = target(graph, `dof-prefilter-${side}`, {
       format: 'rgba16float',
+      lifetime: 'pass-local',
       size: halfSize,
     });
     if (!prefilter.ok) return prefilter;
@@ -163,6 +164,7 @@ export function addDepthOfFieldPasses(
     if (!prefilterPass.ok) return prefilterPass;
     const prefilterMetadata = target(graph, `dof-prefilter-${side}-metadata`, {
       format: 'rgba16float',
+      lifetime: 'pass-local',
       size: halfSize,
     });
     if (!prefilterMetadata.ok) return prefilterMetadata;

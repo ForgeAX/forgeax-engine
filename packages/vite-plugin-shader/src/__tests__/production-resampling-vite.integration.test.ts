@@ -155,8 +155,8 @@ it(
         expect(variant.reflection).toEqual(compiled.manifestEntry.reflection);
         expect(variant.reflection?.boundGlobals).toContainEqual(
           expect.objectContaining({
-            group: 2,
-            binding: 3,
+            group: 0,
+            binding: 30,
             resourceKind: storage ? 'storage-buffer' : 'texture',
             ...(storage ? { addressSpace: 'storage' } : {}),
           }),

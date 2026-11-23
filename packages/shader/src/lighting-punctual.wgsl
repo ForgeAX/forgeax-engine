@@ -36,13 +36,13 @@
 
 // extendedLighting is one closed resource topology for IES, Cookie, and
 // probe factors. The ordinary path supplies identity factors.
-#import forgeax_pbr::lighting_attenuation::{evalSpotCone, evalDistanceAttenuation, evalSpotAttenuation, projectSpotUv}
+#import forgeax_pbr::lighting_attenuation::{evalSpotCone, evalDistanceAttenuation, evalSpotAttenuation}
 // feat-20260625-spot-light-shadow-mapping M3 / w15 (plan-strategy D-3 + D-5):
 // spot shadow sampling reuses the shared 2D 9-tap PCF core (sample_shadow_2d)
 // and the always-on `spotShadowMap` (binding 8) + `shadowSampler` (binding 4).
 // `shadowSampler` is imported UNCONDITIONALLY here (spot is always-on, D-5):
 // the point-shadow #ifdef block below must NOT re-import it (double import).
-#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d_punctual, sample_shadow_2d_soft, sample_shadow_variance}
+#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d_punctual, sample_shadow_2d_soft}
 #import forgeax_view::common::{spotShadowMap, shadowSampler}
 #ifdef POINT_SHADOW_AVAILABLE
 #import forgeax_pbr::shadow_pcf::{sample_shadow_cube_vogel}
@@ -117,6 +117,11 @@ fn spotConeReaches(
 ) -> bool {
   let l = normalize(lightPos - worldPos);
   return !(evalSpotCone(cosInner, cosOuter, dot(l, -lightDir)) == 0.0);
+}
+
+// The publication without point shadows uses the compact fixed Spot filter.
+fn spotDefaultShadowParams(metadata : u32) -> vec4<f32> {
+  return vec4<f32>(f32(max(metadata >> 8u, 1u)), 0.0, 6.0, 1.0);
 }
 
 // Shared punctual BRDF body returning brdf *
@@ -355,6 +360,15 @@ fn evalPointShadowedLobes(
   // Unlit (out of range, back-facing without transmission): the shadow
   // factor in [0, 1] can only scale zero, so skip the cube taps.
   if (all(directLobesRadiance(lit) == vec3<f32>(0.0))) { return lit; }
+  return scaleDirectLobes(lit, vec3<f32>(pointShadowVisibility(lightPos, worldPos, normal,
+    shadowAtlasLayer, near, far, depthBias, normalBias, shadowControls, shadowPosition, pixel)));
+}
+
+fn pointShadowVisibility(
+  lightPos : vec3<f32>, worldPos : vec3<f32>, normal : vec3<f32>,
+  shadowAtlasLayer : i32, near : f32, far : f32, depthBias : f32, normalBias : f32,
+  shadowControls : vec4<f32>, shadowPosition : vec3<f32>, pixel : vec2<f32>,
+) -> f32 {
   // Bevy fetch_point_shadow: bias the receiver in world space. The normal
   // offset is normalBias cube texels at this distance (the host pre-scales it
   // by the face texel angle), pushed toward the lit hemisphere so a
@@ -376,7 +390,7 @@ fn evalPointShadowedLobes(
   // z_ndc = near * (far - largest) / (largest * (far - near)).
   let absV = abs(fromLight);
   let largest = max(absV.x, max(absV.y, absV.z));
-  if (constantBias && !(largest >= near && largest <= far)) { return lit; }
+  if (constantBias && !(largest >= near && largest <= far)) { return 1.0; }
   let largestAxis = max(largest - select(depthBias, 0.0, constantBias), near);
   let denom = max(largestAxis * (far - near), 1e-6);
   let depthRef = clamp(near * (far - largestAxis) / denom, 0.0, 1.0) + select(0.0, depthBias, constantBias);
@@ -391,7 +405,7 @@ fn evalPointShadowedLobes(
     shadowAtlas, shadowSampler, direction, shadowAtlasLayer, depthRef,
     select(shadowControls.x, 1.0, shadowControls.w == 1.0), pixel,
   );
-  return scaleDirectLobes(lit, vec3<f32>(mix(1.0, shadowFactor, shadowControls.z)));
+  return mix(1.0, shadowFactor, shadowControls.z);
 }
 #endif
 
@@ -503,20 +517,34 @@ fn evalSpotShadowedLobes(
   // transmission) stays zero under any shadow factor; skip the PCF taps.
   if (all(directLobesRadiance(body) == vec3<f32>(0.0))) { return body; }
 
+  return scaleDirectLobes(body, vec3<f32>(spotShadowVisibility(lightPos, worldPos, normal,
+    lightViewProj, shadowAtlasTile, depthBias, normalBias, shadowControls, shadowIntensity, pixel)));
+}
+
+fn spotShadowVisibility(
+  lightPos : vec3<f32>, worldPos : vec3<f32>, normal : vec3<f32>,
+  lightViewProj : mat4x4<f32>, shadowAtlasTile : i32, depthBias : f32, normalBias : f32,
+  shadowControls : vec4<f32>, shadowIntensity : f32, pixel : vec2<f32>,
+) -> f32 {
   // normalBias is a world-space offset, independent of the shadow camera.
   // Fold the normal toward the light for transmitting back-lit surfaces.
   let facing = select(-normal, normal, dot(normal, lightPos - worldPos) >= 0.0);
   let receiver = worldPos + select(facing, normal, shadowControls.y > 0.5) * normalBias;
   let splane = lightViewProj * vec4<f32>(receiver, 1.0);
-  // Perspective divide; guard a zero/near-zero w (fragment behind the light or
-  // a degenerate matrix) so the OOB gate below catches it as fully lit.
+  return spotShadowVisibilityAtClip(splane, shadowAtlasTile, depthBias, shadowControls, shadowIntensity, pixel);
+}
+
+fn spotShadowVisibilityAtClip(
+  splane : vec4<f32>, shadowAtlasTile : i32, depthBias : f32,
+  shadowControls : vec4<f32>, shadowIntensity : f32, pixel : vec2<f32>,
+) -> f32 {
   let invW = select(1.0 / splane.w, 0.0, abs(splane.w) < 1e-6);
-  let clipUv = projectSpotUv(lightViewProj, receiver);
+  let clipUv = splane.xy * invW * vec2<f32>(0.5, -0.5) + 0.5;
   let depthRef = splane.z * invW;
   // OOB / NaN gate: outside the light frustum (or NaN from a degenerate matrix)
   // returns fully lit. Mirrors the directional `>= 0 && <= 1` NaN-safe form.
   if (!(clipUv.x >= 0.0 && clipUv.x <= 1.0 && clipUv.y >= 0.0 && clipUv.y <= 1.0 && depthRef >= 0.0 && depthRef <= 1.0)) {
-    return body;
+    return 1.0;
   }
 
   // Each shadow-casting spot owns layer `shadowAtlasTile` of the array. The
@@ -528,8 +556,6 @@ fn evalSpotShadowedLobes(
   var shadowFactor = 1.0;
   if (shadowControls.z == 1.0) {
     shadowFactor = sample_shadow_2d_nearest(spotShadowMap, shadowSampler, uv, shadowAtlasTile, depthRef + depthBias, viewportScale);
-  } else if (shadowControls.z == 8.0) {
-    shadowFactor = sample_shadow_variance(uv, shadowAtlasTile + 4, depthRef + depthBias, viewportScale, true);
   } else if (shadowControls.z == 7.0) {
     let texel = vec2<f32>(1.0, 1.0) / vec2<f32>(textureDimensions(spotShadowMap, 0));
     shadowFactor = sample_shadow_2d_soft(spotShadowMap, shadowSampler, uv, shadowAtlasTile, texel, depthRef + depthBias, viewportScale);
@@ -543,7 +569,7 @@ fn evalSpotShadowedLobes(
   // Three's SpotLight.shadow.intensity is the opacity of the shadow, not a
   // multiplier on the light's candela radiance. A value of 1 keeps the
   // sampled visibility fully opaque; 0 leaves the unshadowed body intact.
-  return scaleDirectLobes(body, vec3<f32>(mix(1.0, shadowFactor, clamp(shadowIntensity, 0.0, 1.0))));
+  return mix(1.0, shadowFactor, clamp(shadowIntensity, 0.0, 1.0));
 }
 
 

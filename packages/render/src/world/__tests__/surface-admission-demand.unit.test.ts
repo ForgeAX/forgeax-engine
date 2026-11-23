@@ -11,7 +11,7 @@ import {
 } from '../../features/surface-data-usage';
 import { needsSceneSurfaceAdmission } from '../feature-view-systems';
 
-const forward = { renderPath: 'forward' as const, ambientOcclusion: { enabled: false } };
+const forward = 'forward';
 const unused = captureUnusedSurfaceData({
   identity: 'unused',
   extract: () => ok(undefined),
@@ -19,28 +19,17 @@ const unused = captureUnusedSurfaceData({
 });
 const host = (features: readonly object[]) => ({ features }) as Pick<RenderFeatureHost, 'features'>;
 
-it('omits surface admission only for explicitly disabled stock consumers and declared nonconsumers', () => {
-  expect(needsSceneSurfaceAdmission(forward, true, undefined, host([unused]))).toBe(false);
-  expect(needsSceneSurfaceAdmission(forward, true, false, host([]))).toBe(false);
+it('omits surface admission in Forward with declared nonconsumers', () => {
+  expect(needsSceneSurfaceAdmission(forward, true, host([unused]))).toBe(false);
+  expect(needsSceneSurfaceAdmission(forward, true, host([]))).toBe(false);
 });
 
-it('keeps unknown features, SSAO, Deferred, custom pipelines and conformance diagnostics conservative', () => {
-  expect(needsSceneSurfaceAdmission(forward, true, undefined, host([{}]))).toBe(true);
-  expect(needsSceneSurfaceAdmission(forward, true, undefined, undefined)).toBe(true);
-  expect(needsSceneSurfaceAdmission(forward, true, true, host([unused]))).toBe(true);
-  expect(
-    needsSceneSurfaceAdmission(
-      { ...forward, ambientOcclusion: { enabled: true } },
-      true,
-      false,
-      host([unused]),
-    ),
-  ).toBe(true);
-  expect(
-    needsSceneSurfaceAdmission({ ...forward, renderPath: 'deferred' }, true, false, host([unused])),
-  ).toBe(true);
-  expect(needsSceneSurfaceAdmission(forward, false, false, host([unused]))).toBe(true);
-  expect(needsSceneSurfaceAdmission(forward, true, false, host([unused]), true)).toBe(true);
+it('keeps unknown features, Deferred, custom pipelines and conformance diagnostics conservative', () => {
+  expect(needsSceneSurfaceAdmission(forward, true, host([{}]))).toBe(true);
+  expect(needsSceneSurfaceAdmission(forward, true, undefined)).toBe(true);
+  expect(needsSceneSurfaceAdmission('deferred', true, host([unused]))).toBe(true);
+  expect(needsSceneSurfaceAdmission(forward, false, host([unused]))).toBe(true);
+  expect(needsSceneSurfaceAdmission(forward, true, host([unused]), true)).toBe(true);
 });
 
 it('observes feature demand changes on the next call without retaining a second roster', () => {
@@ -49,9 +38,9 @@ it('observes feature demand changes on the next call without retaining a second 
     extract: () => ok(undefined),
     plan: () => ok({ work: [] }),
   });
-  expect(needsSceneSurfaceAdmission(forward, true, false, host([feature]))).toBe(false);
+  expect(needsSceneSurfaceAdmission(forward, true, host([feature]))).toBe(false);
   feature.plan = () => ok({ work: [] });
-  expect(needsSceneSurfaceAdmission(forward, true, false, host([feature]))).toBe(true);
+  expect(needsSceneSurfaceAdmission(forward, true, host([feature]))).toBe(true);
 });
 
 it('uses declarations from the real built-in feature producers rather than their identities', () => {
@@ -64,5 +53,5 @@ it('uses declarations from the real built-in feature producers rather than their
   ];
   expect(features.every((feature) => !featureUsesSurfaceData(feature))).toBe(true);
   expect(featureUsesSurfaceData(Object.freeze({ ...fullscreen }))).toBe(true);
-  expect(needsSceneSurfaceAdmission(forward, true, false, host(features))).toBe(false);
+  expect(needsSceneSurfaceAdmission(forward, true, host(features))).toBe(false);
 });

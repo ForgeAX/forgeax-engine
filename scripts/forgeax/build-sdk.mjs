@@ -234,6 +234,13 @@ const licenseReport = stable(
   ),
 );
 const engineCommit = await git(['rev-parse', 'HEAD']);
+const nativePlayerArtifact = value('--native-player-artifact');
+if (
+  args.includes('--native-player-artifact') &&
+  (nativePlayerArtifact === undefined || nativePlayerArtifact.startsWith('--'))
+)
+  throw new Error('sdk-native-player-artifact-path-missing');
+
 await rm(outputRoot, { recursive: true, force: true });
 await mkdir(resolve(stage, 'packages'), { recursive: true });
 await mkdir(resolve(stage, 'store', 'pnpm'), { recursive: true });
@@ -826,6 +833,19 @@ await writeFile(
   resolve(stage, 'licenses', 'THIRD_PARTY_NOTICES.json'),
   `${JSON.stringify(licenseReport, null, 2)}\n`,
 );
+if (nativePlayerArtifact !== undefined) {
+  const { filename, sourceInputs, verifyArtifact } = await import(
+    '../../packages/rhi-wgpu-native/scripts/windows-artifact.mjs'
+  );
+  const input = resolve(nativePlayerArtifact);
+  const manifest = verifyArtifact(input, sourceInputs());
+  if (manifest.engineCommit !== engineCommit) throw new Error('sdk-native-player-engine-mismatch');
+  const destination = resolve(stage, 'native-player/win32-x64');
+  await mkdir(destination, { recursive: true });
+  for (const file of [filename, 'manifest.json'])
+    await cp(resolve(input, file), resolve(destination, file));
+}
+
 const artifacts = await sdkStage('hash archive inventory', async () => {
   const paths = (await filesUnder(stage)).filter((path) => !path.endsWith('/sdk-manifest.json'));
   return mapConcurrent(paths, (path) => artifact(stage, path));

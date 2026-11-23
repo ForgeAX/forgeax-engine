@@ -18,6 +18,7 @@ interface RayReflectionCompositeInputs {
   readonly depth: TextureView;
   readonly normal: TextureView;
   readonly response: TextureView;
+  readonly previous: TextureView;
 }
 
 const ADDITIVE = {
@@ -41,6 +42,7 @@ export function createRayReflectionComposite(
       { binding: 2, visibility: 2, texture: { sampleType: 'depth' } },
       { binding: 3, visibility: 2, texture: { sampleType: 'uint' } },
       { binding: 4, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 5, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   if (!layout.ok) return layout;
@@ -98,7 +100,7 @@ export function createRayReflectionComposite(
               value: filtered ?? raw,
             },
           },
-          ...[input.depth, input.normal, input.response].map((value, i) => ({
+          ...[input.depth, input.normal, input.response, input.previous].map((value, i) => ({
             binding: i + 2,
             resource: { kind: 'textureView' as const, value },
           })),

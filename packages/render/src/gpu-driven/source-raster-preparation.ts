@@ -12,7 +12,6 @@ import type {
   GpuDrivenGraphProjection,
   GpuDrivenMaterialBinding,
   GpuDrivenPrepareInput,
-  GpuDrivenShadowBatchProjection,
   PreparedGpuDrivenFrame,
 } from './production-raster';
 import type {
@@ -21,18 +20,42 @@ import type {
   RasterProjectionFrame,
 } from './production-raster-frame';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
-import type { PreparedBatch } from './production-raster-prepare';
+import {
+  assembleFilteredGroups,
+  type FilteredProductionPlan,
+  type PreparedBatch,
+} from './production-raster-prepare';
 import {
   captureShadowBatchFacts,
   createShadowBatchProjection,
+  type GpuDrivenShadowBatchProjection,
   type ShadowBatchFacts,
   type ShadowBatchProjections,
   sameShadowBatchProjection,
 } from './production-raster-shadow';
-import { sceneTransformBytes } from './production-raster-support';
+import { isSkinPreparedBatch, requiresGpuSurfacePreparation } from './production-raster-support';
 import { type ShadowViewIdentity, shadowViewIdentityKey } from './shadow-views';
 import { prepareSourceRasterBundles, type SourceRasterPassBindings } from './source-raster-bundles';
 import type { GpuDrivenView } from './view-gpu';
+
+export function prospectiveMainRaster(
+  input: GpuDrivenPrepareInput,
+  filtered: FilteredProductionPlan,
+): FilteredProductionPlan {
+  if (
+    input.geometryLane !== 'direct' ||
+    requiresGpuSurfacePreparation(input) ||
+    !filtered.batches.some(isSkinPreparedBatch)
+  )
+    return filtered;
+  // Ordinary direct draws already own Skin demand. Preparing a rigid Source
+  // must not require a GPU Skin task from a View that does not submit one.
+  return assembleFilteredGroups(
+    filtered.plan,
+    filtered.batches.filter((batch) => !isSkinPreparedBatch(batch)),
+    [...filtered.plan.batches].filter((batch) => batch.prepared?.identity.deformation !== 'skin'),
+  );
+}
 
 export interface SourceShadowRow {
   readonly view: GpuDrivenView;
@@ -47,7 +70,6 @@ export interface NativeMainGraphPreparation {
   readonly projection: GpuDrivenGraphProjection;
   readonly materials: MaterialFrame;
   readonly materialBindings: readonly GpuDrivenMaterialBinding[];
-  readonly meshBinding: { readonly buffer: Buffer; readonly bytes: number };
   readonly materialBuffer: Buffer;
   isCurrent(): boolean;
   attachGraph(graph: InstalledFrameGraph): Generator<void, Result<void, RhiError>>;
@@ -122,9 +144,7 @@ export class SourceRasterPreparations {
 
   isCurrent(projection: GpuDrivenGraphProjection): boolean {
     const demand = this.issued.get(projection);
-    return (
-      demand !== undefined && demand.heldCurrent() && demand.receipts.every((receipt) => receipt())
-    );
+    return demand?.heldCurrent() === true && demand.receipts.every((receipt) => receipt());
   }
 
   retain(projection: GpuDrivenGraphProjection): () => void {
@@ -295,7 +315,14 @@ interface NativeMainHost {
   ): Result<RasterProjectionFrame, RhiError | GpuDrivenPreparationError>;
   signatures(
     frame: RasterProjectionFrame,
-  ): Pick<GpuDrivenGraphProjection, 'topologySignature' | '_recordingTopologySignature'>;
+  ): Pick<
+    GpuDrivenGraphProjection,
+    'topologySignature' | '_recordingTopologySignature' | 'cameraRasterIdentity'
+  >;
+  projectCamera(
+    frame: RasterProjectionFrame,
+    target: Parameters<NonNullable<PreparedGpuDrivenFrame['projectCamera']>>[0],
+  ): ReturnType<NonNullable<PreparedGpuDrivenFrame['projectCamera']>>;
   project(
     frame: RasterProjectionFrame,
     args: Parameters<PreparedGpuDrivenFrame['project']>,
@@ -344,6 +371,7 @@ export function prepareNativeMainGraph(
   let attached: RenderPipelineGpuDrivenSourcePreparation | undefined;
   const projection: GpuDrivenGraphProjection = Object.freeze({
     ...host.signatures(frame),
+    projectCamera: (target) => host.projectCamera(frame, target),
     projectShadow: (builder, identity, _force, pyramid) =>
       frame.shadowViewPool.projectSource(builder, identity, scene.scene, pyramid),
     shadowViewPool: frame.shadowViewPool,
@@ -368,10 +396,6 @@ export function prepareNativeMainGraph(
           materials,
           materialBindings: frame.filtered.materialBindings,
           materialBuffer: scene.scene.materialBuffer,
-          meshBinding: Object.freeze({
-            buffer: scene.scene.transformBuffer,
-            bytes: sceneTransformBytes(scene),
-          }),
           isCurrent: () => physicalCurrent() && preparations.isCurrent(projection),
           *attachGraph(graph: InstalledFrameGraph) {
             if (!isCurrent() || graph.graph.isRetired()) return invalid();
@@ -420,9 +444,7 @@ function* prepareSourceShadowRows(
     executions: frame.input.batchExecutions,
     materialRaster: frame.materialRaster,
   };
-  const meshBinding = frame.materialRaster
-    .sceneMeshBindGroup(frame.scene.scene.transformBuffer, sceneTransformBytes(frame.scene))
-    .unwrap();
+  const meshBinding = frame.materialRaster.primitiveBindGroup().unwrap();
   for (const scope of frame.shadowViewPool.sourceViews(frame.scene.scene)) {
     const visible = scope.view.visibleBuffer;
     if (visible === undefined)
@@ -432,7 +454,22 @@ function* prepareSourceShadowRows(
         hint: 'prepare its real capacity first',
       });
     const live = () => current() && scope.isCurrent() && scope.view.visibleBuffer === visible;
-    for (const batch of filtered.plan.batches) {
+    const layer = frame.shadowViewPool.sourceLayerPlan(
+      scope.identity,
+      filtered.plan,
+      frame.scene.scene,
+    );
+    if (layer === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'the prepared Source shadow layer and filtered topology',
+        hint: 'reprepare the original per-view shadow layer',
+      });
+    const skinTask = scope.view.skinTaskBinding();
+    const skinMeshBinding =
+      skinTask === undefined ? undefined : frame.skinRaster?.primitiveBindGroup(skinTask).unwrap();
+    for (const batch of layer.batches) {
+      if (batch.visibleCapacity === 0) continue;
       if (!live())
         throw new RhiError({
           code: 'rhi-descriptor-invalid',
@@ -442,11 +479,18 @@ function* prepareSourceShadowRows(
       const facts = captureShadowBatchFacts(
         pass,
         batch,
-        { visibleBuffer: visible, meshBinding, skinMeshBinding: undefined },
+        { visibleBuffer: visible, meshBinding, skinMeshBinding },
         frame.skinRaster,
       ).unwrap();
       const old = existing.get(shadowViewIdentityKey(scope.identity))?.get(batch.batchId);
-      const projection = createShadowBatchProjection(batch, facts, visible, old).unwrap();
+      // Live recording can replace a pass variant while the hidden Source waits
+      // for its selection frame. Let each owner retain its own variant.
+      const projection = createShadowBatchProjection(
+        batch,
+        facts,
+        visible,
+        old?.bundles.fork(),
+      ).unwrap();
       rows.push({
         ...scope,
         batch,

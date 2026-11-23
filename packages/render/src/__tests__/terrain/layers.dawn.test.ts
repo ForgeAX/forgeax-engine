@@ -51,11 +51,14 @@ it('reads actual cooked layer channels through the Landscape fragment kernel and
   const idSurface = source('terrain-id-surface.wgsl')
     .replace(/terrain\w+_sampler/g, 'samp')
     .replace('fn evaluate_surface', 'fn evaluate_id_surface');
+  const detailedSurface = source('terrain-detail-surface.wgsl')
+    .replace('terrainWeightDetail_sampler', 'samp')
+    .replace('fn evaluate_surface', 'fn evaluate_detail_surface');
   const code =
     source('surface_v1.wgsl') +
     source('tbn.wgsl') +
     `
-struct Material { terrainLayerModes:vec4<f32>, terrainLayerRoots:vec4<f32>, terrainLayerIndices:vec4<f32>, terrainLayerLevels:vec4<f32>, strategy:f32, padding:f32, uv:vec2<f32> };
+struct Material { terrainLayerModes:vec4<f32>, terrainLayerRoots:vec4<f32>, terrainLayerIndices:vec4<f32>, terrainLayerLevels:vec4<f32>, strategy:f32, padding:f32, uv:vec2<f32>, terrainWeightDetailParams:vec2<f32> };
 @group(0) @binding(0) var<uniform> material:Material;
 @group(0) @binding(1) var terrainWeightTexture:texture_2d<f32>;
 @group(0) @binding(2) var terrainColorLayers:texture_2d_array<f32>;
@@ -63,10 +66,12 @@ struct Material { terrainLayerModes:vec4<f32>, terrainLayerRoots:vec4<f32>, terr
 @group(0) @binding(4) var terrainOrmLayers:texture_2d_array<f32>;
 @group(0) @binding(5) var terrainEmissionLayers:texture_2d_array<f32>;
 @group(0) @binding(6) var samp:sampler;
+@group(0) @binding(7) var terrainWeightDetail:texture_2d<f32>;
 ` +
     source('terrain-layer-sampling.wgsl').replace(/terrain\w+_sampler/g, 'samp') +
     surface +
     idSurface +
+    detailedSurface +
     `
 @vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
   let positions=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));
@@ -76,6 +81,7 @@ fn channels()->SurfaceData {
   var input:SurfaceInput; input.uv0=material.uv; input.vertexNormalWS=vec3<f32>(0.0,1.0,0.0);
   input.tangentWS=vec4<f32>(1.0,0.0,0.0,1.0); input.frontFacing=true;
   if (material.strategy == 1.0) { return evaluate_id_surface(input); }
+  if (material.strategy == 2.0) { return evaluate_detail_surface(input); }
   return evaluate_weight_surface(input);
 }
 @fragment fn color()->@location(0) vec4<f32> { let s=channels(); return vec4<f32>(s.baseColor,s.opacity); }
@@ -96,6 +102,7 @@ fn channels()->SurfaceData {
           },
         })),
         { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
+        { binding: 7, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     })
     .unwrap();
@@ -119,7 +126,7 @@ fn channels()->SurfaceData {
     .unwrap();
   const view = device.createTextureView(target, {}).unwrap();
   const read = device.createBuffer({ size: 256, usage: 0x01 | 0x08 }).unwrap();
-  const uniform = device.createBuffer({ size: 80, usage: 0x40 | 0x08 }).unwrap();
+  const uniform = device.createBuffer({ size: 96, usage: 0x40 | 0x08 }).unwrap();
   const sampler = device
     .createSampler({
       magFilter: 'linear',
@@ -128,6 +135,31 @@ fn channels()->SurfaceData {
       addressModeV: 'clamp-to-edge',
     })
     .unwrap();
+  const registerTerrainFixtureAssets = (
+    registry: AssetRegistry,
+    assets: Readonly<Record<string, Asset>>,
+  ) => {
+    const references = new Map<string, number>();
+    for (const [key, asset] of Object.entries(assets))
+      if (asset.kind === 'texture') references.set(key, registry.create(asset).unwrap());
+    for (const [key, asset] of Object.entries(assets))
+      if (asset.kind === 'material')
+        references.set(
+          key,
+          registry
+            .create({
+              ...asset,
+              values: Object.fromEntries(
+                Object.entries(asset.values ?? {}).map(([name, value]) => [
+                  name,
+                  typeof value === 'string' ? (references.get(value) ?? value) : value,
+                ]),
+              ),
+            })
+            .unwrap(),
+        );
+    return references;
+  };
   const run = async (
     layers: readonly TerrainLayer[],
     weights: readonly number[],
@@ -156,25 +188,7 @@ fn channels()->SurfaceData {
     if (!Array.isArray(modes)) throw new Error('missing layer modes');
     const registry = new AssetRegistry();
     registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
-    const references = new Map<string, number>();
-    for (const [key, asset] of Object.entries(assets))
-      if (asset.kind === 'texture') references.set(key, registry.create(asset).unwrap());
-    for (const [key, asset] of Object.entries(assets))
-      if (asset.kind === 'material')
-        references.set(
-          key,
-          registry
-            .create({
-              ...asset,
-              values: Object.fromEntries(
-                Object.entries(asset.values ?? {}).map(([name, value]) => [
-                  name,
-                  typeof value === 'string' ? (references.get(value) ?? value) : value,
-                ]),
-              ),
-            })
-            .unwrap(),
-        );
+    const references = registerTerrainFixtureAssets(registry, assets);
     const root = registry
       .create({
         kind: 'terrain',
@@ -186,6 +200,16 @@ fn channels()->SurfaceData {
           heights: new Float32Array(4),
           weights: Float32Array.from(Array.from({ length: 4 }, () => weights).flat()),
         }),
+        ...(controls?.weightDetail === undefined
+          ? {}
+          : {
+              weightDetail: {
+                ...controls.weightDetail,
+                texture: references.get(
+                  String(controls.weightDetail.texture),
+                ) as import('@forgeax/engine-types').AssetHandle<'texture'>,
+              },
+            }),
         layers: layers.map((layer) => ({
           ...layer,
           material: references.get(
@@ -231,9 +255,11 @@ fn channels()->SurfaceData {
           0,
           0,
           0,
-          encoding.kind === 'ids' ? 1 : 0,
+          encoding.kind === 'ids' ? 1 : controls?.weightDetail === undefined ? 0 : 2,
           0,
           ...uv,
+          1 / (controls?.weightDetail?.period ?? 1),
+          controls?.weightDetail?.strength ?? 0,
         ]),
       )
       .unwrap();
@@ -256,7 +282,23 @@ fn channels()->SurfaceData {
         { width, height, depthOrArrayLayers: 1 },
       )
       .unwrap();
-    const textures = [weightTexture];
+    const detailTexture = device
+      .createTexture({
+        size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+        format: 'rgba8unorm',
+        usage: 0x02 | 0x04,
+      })
+      .unwrap();
+    const bias = assets.bias;
+    device.queue
+      .writeTexture(
+        { texture: detailTexture },
+        bias?.kind === 'texture' ? bias.data : new Uint8Array(4),
+        { bytesPerRow: 4, rowsPerImage: 1 },
+        { width: 1, height: 1, depthOrArrayLayers: 1 },
+      )
+      .unwrap();
+    const textures = [weightTexture, detailTexture];
     const layerViews = [
       'terrainColorLayers',
       'terrainNormalHeightLayers',
@@ -278,6 +320,13 @@ fn channels()->SurfaceData {
             resource: { kind: 'textureView' as const, value: view },
           })),
           { binding: 6, resource: { kind: 'sampler', value: sampler } },
+          {
+            binding: 7,
+            resource: {
+              kind: 'textureView',
+              value: device.createTextureView(detailTexture, {}).unwrap(),
+            },
+          },
         ],
       })
       .unwrap();
@@ -340,6 +389,30 @@ fn channels()->SurfaceData {
       green: material([0, 1, 0, 1]),
       blue: material([0, 0, 1, 1]),
     };
+    const detailLayers = ['red', 'green', 'blue'].map((key) => ({
+      material: key,
+      blend: 'weight' as const,
+    }));
+    const detailed = await run(
+      detailLayers,
+      [0.5, 0, 0.5],
+      { ...colors, bias: texel([255, 0, 128, 0]) },
+      { kind: 'weights' },
+      {
+        columns: 2,
+        rows: 2,
+        subsectionVertices: 2,
+        spacing: 1,
+        heights: new Float32Array(4),
+        weights: Float32Array.from([0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 0, 0.5]),
+        layers: detailLayers,
+        weightDetail: { texture: 'bias', period: 5, strength: 2 },
+      },
+    );
+    expect(detailed[0]?.[0]).toBeCloseTo(0.8, 2);
+    expect(detailed[0]?.[1]).toBe(0);
+    expect(detailed[0]?.[2]).toBeCloseTo(0.2, 2);
+    expect(detailed[0]?.[3]).toBeCloseTo(1, 4);
     const idPolicy = { kind: 'ids', maxWeightError: 0.01 } as const;
     const idZero = await run([{ material: 'red', blend: 'weight' }], [0], colors, idPolicy);
     expect(idZero).toEqual(zero);

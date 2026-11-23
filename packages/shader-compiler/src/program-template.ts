@@ -9,6 +9,7 @@ import {
   engineMaterialArtifactReceipt,
   engineMaterialForwardFog,
   engineShaderDefines,
+  prepareEngineShaderImportScanner,
   prepareEngineShaderSource,
 } from './engine-program.js';
 import { ShaderError } from './errors.js';
@@ -22,6 +23,10 @@ export async function prepareShaderProgramCompiler(): Promise<
   const prepared = await prepareShaderCompiler();
   if (!prepared.ok) return prepared;
   const compiler = prepared.value;
+  const importScanners = new WeakMap<
+    ShaderProgramTemplate,
+    ReturnType<typeof prepareEngineShaderImportScanner>
+  >();
   const profile = Object.freeze({ ...MATERIAL_WGSL_PROFILE });
   return ok(
     Object.freeze({
@@ -48,10 +53,21 @@ export async function prepareShaderProgramCompiler(): Promise<
           ...(engine?.surfaceModule === undefined ? {} : { surfaceModule: engine.surfaceModule }),
           ...(engine?.program === undefined ? {} : { program: engine.program }),
         };
+        let readImports = importScanners.get(template);
+        if (engine !== undefined && readImports === undefined) {
+          readImports = prepareEngineShaderImportScanner(template.imports);
+          importScanners.set(template, readImports);
+        }
         const lowered =
           engine === undefined
             ? ok({ source: template.source, imports: template.imports })
-            : prepareEngineShaderSource(file, template.imports, template.imports, effectiveDefines);
+            : prepareEngineShaderSource(
+                file,
+                template.imports,
+                template.imports,
+                effectiveDefines,
+                readImports,
+              );
         if (!lowered.ok)
           return err(
             new ShaderError({

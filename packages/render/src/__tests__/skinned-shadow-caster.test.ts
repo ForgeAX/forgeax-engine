@@ -85,7 +85,8 @@ describe('skinned shadow caster', () => {
     expect(shader).toContain('out.color = in.color;');
     expect(record).toContain("runtime.skinTask?.(entry.source, 'shadow')");
     expect(record).toContain('geometrySkinBindGroup(');
-    expect(builder).toContain('buffers: ctx.vertexBuffers');
+    expect(builder).toContain('vertexBuffers: ctx.vertexBuffers');
+    expect(builder).toContain('buffers: vertexBuffers');
   });
 
   it('keeps the optional scene-material binding out of the WebGL2 shadow singleton', () => {
@@ -101,7 +102,7 @@ describe('skinned shadow caster', () => {
     expect(singleton).toContain('binding: 46');
     const sceneMaterialEntry = singleton.slice(singleton.lastIndexOf('binding: 46'));
     expect(singleton).toContain('c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer');
-    expect(singleton).toContain('meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer');
+    expect(singleton).toContain('meshSsboBuffer(pipelineState.meshStorageBuffer, 0)');
     expect(singleton).not.toContain('pipelineState.meshStorageBuffer.buffer');
     expect(sceneMaterialEntry).not.toContain('pipelineState.materialUniformBuffer.buffer');
     expect(singleton.indexOf('if (runtime.device.caps.storageBuffer)')).toBeLessThan(

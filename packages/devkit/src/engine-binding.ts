@@ -1,21 +1,17 @@
-import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import {
-  access,
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import type { LoadScriptablePackOptions } from '@forgeax/engine-pack/source-node';
-import { filesystemPathRelative } from './filesystem-path.js';
+import { sha256 } from '@forgeax/engine-types';
+import {
+  filesystemPathRelative,
+  isMissingPathError,
+  pathExists,
+  writeFileAtomic,
+} from './filesystem-path.js';
 import { readProjectFacts } from './project.js';
 import type { CommandError, CommandResult, ProjectCommandOptions } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 export const ENGINE_BINDING_SCHEMA_VERSION = '1.0.0' as const;
 
@@ -91,31 +87,9 @@ interface PackageManifest extends Readonly<Record<string, unknown>> {
 
 const bindingFile = (root: string): string => resolve(root, '.forgeax', 'engine-binding.json');
 
-function bindingError(
-  code: string,
-  expected: string,
-  hint: string,
-  detail: Readonly<Record<string, unknown>> = {},
-): CommandResult<never> {
-  return { ok: false, error: { code, expected, hint, detail } };
-}
-
-function isMissing(cause: unknown): boolean {
-  return cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 'ENOENT';
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function parseBinding(value: unknown, path: string): CommandResult<EngineBinding> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return bindingError(
+    return failCommand(
       'engine-binding-invalid',
       'engine-binding.json to contain one object',
       'Run forgeax project engine unlink, then select a binding again.',
@@ -127,7 +101,7 @@ function parseBinding(value: unknown, path: string): CommandResult<EngineBinding
     readonly path?: unknown;
   };
   if (candidate.schemaVersion !== ENGINE_BINDING_SCHEMA_VERSION) {
-    return bindingError(
+    return failCommand(
       'engine-binding-version-unsupported',
       `engine-binding.json schemaVersion ${ENGINE_BINDING_SCHEMA_VERSION}`,
       'Upgrade the SDK or remove the stale binding with forgeax project engine unlink.',
@@ -135,20 +109,17 @@ function parseBinding(value: unknown, path: string): CommandResult<EngineBinding
     );
   }
   if (typeof candidate.path !== 'string' || candidate.path.length === 0) {
-    return bindingError(
+    return failCommand(
       'engine-binding-path-missing',
       'engine-binding.json to contain one non-empty local Engine path',
       'Run forgeax project engine use-local <engine-directory>.',
       { path },
     );
   }
-  return {
-    ok: true,
-    value: {
-      schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
-      path: resolve(candidate.path),
-    },
-  };
+  return completeCommand({
+    schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
+    path: resolve(candidate.path),
+  });
 }
 
 export async function readEngineBinding(
@@ -160,8 +131,8 @@ export async function readEngineBinding(
     const value = JSON.parse(await readFile(path, 'utf8')) as unknown;
     return parseBinding(value, path);
   } catch (cause) {
-    if (isMissing(cause)) return { ok: true, value: null };
-    return bindingError(
+    if (isMissingPathError(cause)) return { ok: true, value: null };
+    return failCommand(
       'engine-binding-unreadable',
       'engine-binding.json to be readable JSON',
       'Repair or remove .forgeax/engine-binding.json, then select a binding again.',
@@ -191,19 +162,20 @@ export async function projectEngineSourceOptions(
 
 async function writeEngineBinding(root: string, binding: EngineBinding): Promise<void> {
   const path = bindingFile(root);
-  const partial = `${path}.partial-${process.pid}`;
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(partial, `${JSON.stringify(binding, null, 2)}\n`, 'utf8');
-  await rename(partial, path);
+  await writeFileAtomic(path, `${JSON.stringify(binding, null, 2)}\n`);
 }
 
-function conditionalExport(value: unknown): string | undefined {
+export function selectEnginePackageExport(
+  value: unknown,
+  conditions: readonly string[] = ['import', 'browser', 'node', 'default', 'require', 'types'],
+): string | undefined {
   if (typeof value === 'string') return value;
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  for (const key of ['import', 'browser', 'node', 'default', 'require', 'types']) {
+  for (const key of conditions) {
     const candidate = record[key];
-    const selected = conditionalExport(candidate);
+    const selected = selectEnginePackageExport(candidate, conditions);
     if (selected !== undefined) return selected;
   }
   return undefined;
@@ -220,16 +192,12 @@ function canonicalJson(value: unknown): unknown {
   return value;
 }
 
-function digestBytes(bytes: Uint8Array): string {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function digestText(value: string): string {
-  return digestBytes(Buffer.from(value, 'utf8'));
+function digestValue(bytes: string | Uint8Array): string {
+  return `sha256:${sha256(bytes)}`;
 }
 
 function manifestDigest(manifest: PackageManifest): string {
-  return digestText(JSON.stringify(canonicalJson(manifest)));
+  return digestValue(JSON.stringify(canonicalJson(manifest)));
 }
 
 const nonRuntimeSuffixes = ['.d.ts.map', '.d.ts', '.map', '.tsbuildinfo', '.md'];
@@ -250,24 +218,28 @@ function packageRelativePath(packageRoot: string, target: string): string | null
   return candidate.split(sep).join('/');
 }
 
+/** Traverse a package manifest target without applying execution conditions. */
+export function packageTargetPaths(value: unknown, skipCondition?: string): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value))
+    return value.flatMap((entry) => packageTargetPaths(entry, skipCondition));
+  if (value === null || typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    key === skipCondition ? [] : packageTargetPaths(child, skipCondition),
+  );
+}
+
 function manifestRuntimeTargets(manifest: PackageManifest): readonly string[] {
-  const targets: string[] = [];
-  const visit = (value: unknown, key?: string): void => {
-    if (key === 'types') return;
-    if (typeof value === 'string') {
-      if (value.startsWith('./') && !value.includes('*') && value !== './package.json') {
-        targets.push(value);
-      }
-      return;
-    }
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      if (Array.isArray(value)) for (const item of value) visit(item);
-      return;
-    }
-    for (const [childKey, childValue] of Object.entries(value)) visit(childValue, childKey);
-  };
-  for (const key of ['exports', 'main', 'module', 'browser', 'bin'] as const) visit(manifest[key]);
-  return [...new Set(targets)].sort();
+  const targets = (['exports', 'main', 'module', 'browser', 'bin'] as const).map(
+    (key) => manifest[key],
+  );
+  return [
+    ...new Set(
+      packageTargetPaths(targets, 'types').filter(
+        (value) => value.startsWith('./') && !value.includes('*') && value !== './package.json',
+      ),
+    ),
+  ].sort();
 }
 
 async function collectRuntimeFiles(
@@ -275,30 +247,21 @@ async function collectRuntimeFiles(
   manifest: PackageManifest,
 ): Promise<readonly EngineRuntimeFile[]> {
   const paths = new Set<string>();
-  const addFile = async (absolute: string, relativePath?: string): Promise<void> => {
-    let metadata: Awaited<ReturnType<typeof stat>>;
-    try {
-      metadata = await stat(absolute);
-    } catch {
-      return;
-    }
-    if (!metadata.isFile()) return;
-    const path = relativePath ?? packageRelativePath(packageRoot, absolute);
-    if (path === null || !isRuntimeFile(path)) return;
-    paths.add(path);
-  };
   const walk = async (directory: string): Promise<void> => {
     let entries: Dirent<string>[];
     try {
       entries = await readdir(directory, { withFileTypes: true });
     } catch (cause) {
-      if (isMissing(cause)) return;
+      if (isMissingPathError(cause)) return;
       throw cause;
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const absolute = resolve(directory, entry.name);
       if (entry.isDirectory()) await walk(absolute);
-      else if (entry.isFile()) await addFile(absolute);
+      else if (entry.isFile()) {
+        const path = packageRelativePath(packageRoot, absolute);
+        if (path !== null && isRuntimeFile(path)) paths.add(path);
+      }
     }
   };
 
@@ -308,18 +271,20 @@ async function collectRuntimeFiles(
   for (const root of ['dist', 'pkg', 'assets']) await walk(resolve(packageRoot, root));
   for (const target of manifestRuntimeTargets(manifest)) {
     const path = packageRelativePath(packageRoot, target);
-    if (path !== null) await addFile(resolve(packageRoot, path), path);
+    if (path === null || paths.has(path) || !isRuntimeFile(path)) continue;
+    const info = await stat(resolve(packageRoot, path)).catch(() => undefined);
+    if (info?.isFile()) paths.add(path);
   }
 
   const result: EngineRuntimeFile[] = [];
   for (const path of [...paths].sort()) {
-    result.push({ path, digest: digestBytes(await readFile(resolve(packageRoot, path))) });
+    result.push({ path, digest: digestValue(await readFile(resolve(packageRoot, path))) });
   }
   return result;
 }
 
 function runtimeDigest(files: readonly EngineRuntimeFile[]): string {
-  return digestText(files.map((file) => `${file.path}\0${file.digest}`).join('\n'));
+  return digestValue(files.map((file) => `${file.path}\0${file.digest}`).join('\n'));
 }
 
 function packageEntry(manifest: PackageManifest): string | undefined {
@@ -328,7 +293,7 @@ function packageEntry(manifest: PackageManifest): string | undefined {
     if (typeof exportsValue === 'object' && exportsValue !== null && !Array.isArray(exportsValue)) {
       const exportMap = exportsValue as Record<string, unknown>;
       const root = exportMap['.'];
-      const selectedRoot = conditionalExport(root);
+      const selectedRoot = selectEnginePackageExport(root);
       if (selectedRoot !== undefined) return selectedRoot;
 
       // Some valid packages expose only named entry points (for example the
@@ -345,11 +310,11 @@ function packageEntry(manifest: PackageManifest): string | undefined {
             !candidate.includes('*'),
         )
         .sort()) {
-        const selected = conditionalExport(exportMap[key]);
+        const selected = selectEnginePackageExport(exportMap[key]);
         if (selected !== undefined) return selected;
       }
     }
-    const selected = conditionalExport(exportsValue);
+    const selected = selectEnginePackageExport(exportsValue);
     if (selected !== undefined) return selected;
   }
   return typeof manifest.module === 'string'
@@ -367,10 +332,22 @@ async function readManifest(path: string): Promise<PackageManifest> {
   return value as PackageManifest;
 }
 
+/** Enumerate Engine packages in a source checkout or staged SDK closure. */
+export async function* enginePackageManifests(packageRoot: string) {
+  for (const entry of await readdir(packageRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const root = resolve(packageRoot, entry.name);
+    const manifest = await readManifest(resolve(root, 'package.json')).catch(() => undefined);
+    const name = manifest?.name;
+    if (manifest !== undefined && typeof name === 'string' && name.startsWith('@forgeax/engine'))
+      yield { name, root, manifest };
+  }
+}
+
 /** Byte identity for a selected installed package; shared with frontend source admission. */
 export async function enginePackageRuntimeIdentity(packageRoot: string): Promise<string> {
   const manifest = await readManifest(resolve(packageRoot, 'package.json'));
-  return digestText(
+  return digestValue(
     `${manifestDigest(manifest)}\0${runtimeDigest(await collectRuntimeFiles(packageRoot, manifest))}`,
   );
 }
@@ -382,39 +359,33 @@ export async function inspectEngineWorkspace(
   const packageRoot = resolve(root, 'packages');
   try {
     await access(resolve(root, 'pnpm-workspace.yaml'));
-    const entries = await readdir(packageRoot, { withFileTypes: true });
     const packages: EnginePackageStatus[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const packagePath = resolve(packageRoot, entry.name);
-      let manifest: PackageManifest;
-      try {
-        manifest = await readManifest(resolve(packagePath, 'package.json'));
-      } catch {
-        continue;
-      }
-      if (typeof manifest.name !== 'string' || !manifest.name.startsWith('@forgeax/engine'))
-        continue;
+    for await (const { name, root: packagePath, manifest } of enginePackageManifests(packageRoot)) {
       if (typeof manifest.version !== 'string') {
-        return bindingError(
+        return failCommand(
           'engine-package-version-missing',
           'every local Engine package to declare a version',
           'Restore the package manifest version before selecting a local Engine.',
-          { package: manifest.name, root: packagePath },
+          { package: name, root: packagePath },
         );
       }
       const target = packageEntry(manifest);
       const entryPath = target === undefined ? undefined : resolve(packagePath, target);
+      const runtimeFiles = await collectRuntimeFiles(packagePath, manifest);
       let entryDigest: string | null = null;
       let builtAt: string | null = null;
       if (entryPath !== undefined && (await pathExists(entryPath))) {
-        const [bytes, metadata] = await Promise.all([readFile(entryPath), stat(entryPath)]);
-        entryDigest = digestBytes(bytes);
+        const entryRelative = packageRelativePath(packagePath, entryPath);
+        const runtimeEntry = runtimeFiles.find((file) => file.path === entryRelative);
+        const [digest, metadata] = await Promise.all([
+          runtimeEntry?.digest ?? readFile(entryPath).then(digestValue),
+          stat(entryPath),
+        ]);
+        entryDigest = digest;
         builtAt = metadata.mtime.toISOString();
       }
-      const runtimeFiles = await collectRuntimeFiles(packagePath, manifest);
       packages.push({
-        name: manifest.name,
+        name,
         root: packagePath,
         version: manifest.version,
         entry: entryPath ?? null,
@@ -428,7 +399,7 @@ export async function inspectEngineWorkspace(
     }
     packages.sort((a, b) => a.name.localeCompare(b.name));
     if (packages.length === 0) {
-      return bindingError(
+      return failCommand(
         'engine-workspace-empty',
         'the local Engine workspace to contain @forgeax/engine packages',
         'Pass the Engine repository or its source/engine SDK directory.',
@@ -442,33 +413,27 @@ export async function inspectEngineWorkspace(
         .flatMap((item) => (item.builtAt === null ? [] : [item.builtAt]))
         .sort()
         .at(-1) ?? null;
-    const digest = `sha256:${createHash('sha256')
-      .update(
-        packages
-          .map((item) => `${item.name}\0${item.version}\0${item.entryDigest ?? 'unbuilt'}`)
-          .map((identity, index) => {
-            const item = packages[index];
-            return `${identity}\0${item?.manifestDigest ?? 'unmanifested'}\0${item?.runtimeDigest ?? 'unruntime'}\0${item?.runtimeFiles.map((file) => `${file.path}\0${file.digest}`).join('\0') ?? ''}`;
-          })
-          .join('\n'),
-      )
-      .digest('hex')}`;
-    return {
-      ok: true,
-      value: {
-        root,
-        packageCount: packages.length,
-        builtPackages: packages.length - missingBuilds.length,
-        missingBuilds,
-        versions,
-        packages,
-        digest,
-        builtAt,
-      },
-    };
+    const digest = digestValue(
+      packages
+        .map(
+          ({ name, version, entryDigest, manifestDigest, runtimeDigest, runtimeFiles }) =>
+            `${name}\0${version}\0${entryDigest ?? 'unbuilt'}\0${manifestDigest}\0${runtimeDigest}\0${runtimeFiles.map((file) => `${file.path}\0${file.digest}`).join('\0')}`,
+        )
+        .join('\n'),
+    );
+    return completeCommand({
+      root,
+      packageCount: packages.length,
+      builtPackages: packages.length - missingBuilds.length,
+      missingBuilds,
+      versions,
+      packages,
+      digest,
+      builtAt,
+    });
   } catch (cause) {
-    return bindingError(
-      isMissing(cause) ? 'engine-workspace-missing' : 'engine-workspace-unreadable',
+    return failCommand(
+      isMissingPathError(cause) ? 'engine-workspace-missing' : 'engine-workspace-unreadable',
       'a readable Engine workspace with pnpm-workspace.yaml and packages/',
       'Pass the Engine repository root, not its packages/ directory.',
       { root, packageRoot, reason: cause instanceof Error ? cause.message : String(cause) },
@@ -524,91 +489,62 @@ export async function engineStatusCommand(
   const bindingResult = await readEngineBinding(facts.value.root);
   if (!bindingResult.ok) return bindingResult;
   const binding = bindingResult.value;
-  const mode: EngineBindingMode = binding === null ? 'sdk' : 'local';
   const projectDependencies = projectDependencyMode(facts.value.packageJson);
-  if (binding !== null) {
-    const localPath = binding.path;
-    const localBinding: EngineBinding = {
-      schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
-      path: localPath,
-    };
-    const workspaceResult = await inspectEngineWorkspace(localPath);
-    if (!workspaceResult.ok) {
-      const resolved: EngineStatusReport['resolved'] = {
-        root: localPath,
-        version: null,
-        entry: null,
-        built: false,
-        source: 'local',
-      };
-      return {
-        ok: true,
-        value: {
-          schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
-          root: facts.value.root,
-          binding: localBinding,
-          mode,
-          resolved,
-          workspace: null,
-          projectDependencies,
-          npmCompatible: projectDependencies === 'registry' || projectDependencies === 'none',
-          healthy: false,
-          next: [
-            'forgeax project engine unlink',
-            'forgeax project engine use-local <engine-directory>',
-          ],
-          diagnostic: workspaceResult.error,
-        },
-      };
-    }
-    const workspace = workspaceResult.value;
-    const version = workspace.versions.length === 1 ? (workspace.versions[0] ?? null) : null;
-    const umbrella = workspace.packages.find((item) => item.name === '@forgeax/engine');
-    const resolved: EngineStatusReport['resolved'] = {
-      root: localPath,
-      version,
-      entry: umbrella?.entry ?? null,
-      built: umbrella?.built ?? false,
-      source: 'local',
-    };
-    const healthy = workspace.versions.length === 1 && workspace.missingBuilds.length === 0;
-    return {
-      ok: true,
-      value: {
-        schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
-        root: facts.value.root,
-        binding: localBinding,
-        mode,
-        resolved,
-        workspace,
-        projectDependencies,
-        npmCompatible: projectDependencies === 'registry' || projectDependencies === 'none',
-        healthy,
-        next: healthy
-          ? ['forgeax project build', 'forgeax project capture --backend auto']
-          : ['pnpm build:engine', 'forgeax project engine check'],
-      },
-    };
-  }
-  const resolved = await sdkResolution(facts.value.root);
-  return {
-    ok: true,
-    value: {
+  const status = (
+    resolved: EngineStatusReport['resolved'],
+    workspace: EngineWorkspaceStatus | null,
+    healthy: boolean,
+    recovery: readonly string[],
+    diagnostic?: CommandError,
+  ) =>
+    completeCommand<EngineStatusReport>({
       schemaVersion: ENGINE_BINDING_SCHEMA_VERSION,
       root: facts.value.root,
       binding,
-      mode,
+      mode: binding === null ? 'sdk' : 'local',
       resolved,
-      workspace: null,
+      workspace,
       projectDependencies,
       npmCompatible: projectDependencies === 'registry' || projectDependencies === 'none',
-      healthy: resolved.source === 'sdk' && resolved.built,
-      next:
-        resolved.source === 'sdk' && resolved.built
-          ? ['forgeax project build', 'forgeax project capture --backend auto']
-          : ['pnpm install', 'forgeax project check'],
+      healthy,
+      next: healthy
+        ? ['forgeax project build', 'forgeax project capture --backend auto']
+        : recovery,
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    });
+  if (binding === null) {
+    const resolved = await sdkResolution(facts.value.root);
+    return status(resolved, null, resolved.source === 'sdk' && resolved.built, [
+      'pnpm install',
+      'forgeax project check',
+    ]);
+  }
+
+  const root = binding.path;
+  const inspected = await inspectEngineWorkspace(root);
+  if (!inspected.ok)
+    return status(
+      { root, version: null, entry: null, built: false, source: 'local' },
+      null,
+      false,
+      ['forgeax project engine unlink', 'forgeax project engine use-local <engine-directory>'],
+      inspected.error,
+    );
+
+  const workspace = inspected.value;
+  const umbrella = workspace.packages.find((item) => item.name === '@forgeax/engine');
+  return status(
+    {
+      root,
+      version: workspace.versions.length === 1 ? (workspace.versions[0] ?? null) : null,
+      entry: umbrella?.entry ?? null,
+      built: umbrella?.built ?? false,
+      source: 'local',
     },
-  };
+    workspace,
+    workspace.versions.length === 1 && workspace.missingBuilds.length === 0,
+    ['pnpm build:engine', 'forgeax project engine check'],
+  );
 }
 
 export async function engineUseLocalCommand(
@@ -616,7 +552,7 @@ export async function engineUseLocalCommand(
 ): Promise<CommandResult<EngineStatusReport>> {
   const root = resolve(options.root ?? process.cwd());
   if (options.path === undefined || options.path.trim().length === 0) {
-    return bindingError(
+    return failCommand(
       'engine-binding-path-missing',
       'forgeax project engine use-local <engine-directory>',
       'Pass the local Engine repository or SDK source directory.',
@@ -626,7 +562,7 @@ export async function engineUseLocalCommand(
   try {
     localPath = await realpath(resolve(root, options.path));
   } catch (cause) {
-    return bindingError(
+    return failCommand(
       'engine-workspace-missing',
       'the local Engine directory to exist',
       'Pass an existing Engine repository or SDK source directory.',
@@ -645,16 +581,13 @@ export async function engineUseLocalCommand(
   if (options.dryRun !== true) await writeEngineBinding(root, binding);
   const status = await engineStatusCommand({ root });
   if (!status.ok) return status;
-  return {
-    ok: true,
-    value: {
-      ...status.value,
-      next:
-        workspace.value.missingBuilds.length === 0
-          ? ['forgeax project build', 'forgeax project capture --backend auto']
-          : ['pnpm build:engine', 'forgeax project engine check'],
-    },
-  };
+  return completeCommand({
+    ...status.value,
+    next:
+      workspace.value.missingBuilds.length === 0
+        ? ['forgeax project build', 'forgeax project capture --backend auto']
+        : ['pnpm build:engine', 'forgeax project engine check'],
+  });
 }
 
 export async function engineUnlinkCommand(
@@ -672,19 +605,14 @@ export async function engineDoctorCommand(
   if (!status.ok) return status;
   if (status.value.diagnostic !== undefined) return { ok: false, error: status.value.diagnostic };
   if (!status.value.healthy) {
-    return {
-      ok: false,
-      error: {
-        code:
-          status.value.mode === 'local' ? 'engine-local-build-missing' : 'engine-sdk-unresolved',
-        expected: 'the selected Engine binding to resolve to built packages',
-        hint:
-          status.value.mode === 'local'
-            ? 'Run pnpm build:engine in the selected Engine checkout, then rerun forgeax project engine check.'
-            : 'Run pnpm install in the game project or select a valid local Engine checkout.',
-        detail: { status: status.value },
-      },
-    };
+    return failCommand(
+      status.value.mode === 'local' ? 'engine-local-build-missing' : 'engine-sdk-unresolved',
+      'the selected Engine binding to resolve to built packages',
+      status.value.mode === 'local'
+        ? 'Run pnpm build:engine in the selected Engine checkout, then rerun forgeax project engine check.'
+        : 'Run pnpm install in the game project or select a valid local Engine checkout.',
+      { status: status.value },
+    );
   }
   return status;
 }

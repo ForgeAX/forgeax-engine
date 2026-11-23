@@ -20,6 +20,15 @@ export type OitDrawEligibility =
   | { readonly eligible: true; readonly premultiplied: boolean }
   | { readonly eligible: false; readonly reason: OitIneligibleReason };
 
+const PROGRAM_UNAVAILABLE = Object.freeze({
+  eligible: false,
+  reason: 'program-without-oit-output',
+} as const);
+const UNSUPPORTED_BLEND = Object.freeze({ eligible: false, reason: 'blend-not-eligible' } as const);
+const DEPTH_WRITES = Object.freeze({ eligible: false, reason: 'depth-write-enabled' } as const);
+const STRAIGHT_OVER = Object.freeze({ eligible: true, premultiplied: false } as const);
+const PREMULTIPLIED_OVER = Object.freeze({ eligible: true, premultiplied: true } as const);
+
 /** The OIT accumulation fragment entries on Standard PBR and Unlit. */
 export const OIT_FRAGMENT_ENTRY = 'fs_oit';
 export const OIT_PREMULTIPLIED_FRAGMENT_ENTRY = 'fs_oit_premultiplied';
@@ -86,14 +95,14 @@ export function classifyOitDraw(input: {
     (input.fragmentEntry !== undefined && input.fragmentEntry !== 'fs_main') ||
     input.renderState?.outputs !== undefined
   ) {
-    return { eligible: false, reason: 'program-without-oit-output' };
+    return PROGRAM_UNAVAILABLE;
   }
   const premultiplied = overBlendKind(input.renderState?.blend);
-  if (premultiplied === null) return { eligible: false, reason: 'blend-not-eligible' };
+  if (premultiplied === null) return UNSUPPORTED_BLEND;
   if (input.renderState?.depthWriteEnabled === true) {
-    return { eligible: false, reason: 'depth-write-enabled' };
+    return DEPTH_WRITES;
   }
-  return { eligible: true, premultiplied };
+  return premultiplied ? PREMULTIPLIED_OVER : STRAIGHT_OVER;
 }
 
 /**

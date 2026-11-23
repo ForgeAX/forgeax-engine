@@ -1,15 +1,15 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "cd16a32c-0fd2-4c02-861d-a5537baaa794",
+  "schemaVersion": "3.0.0",
+  "packageId": "c01907ff-2942-50d8-b443-85ce6778bf8f",
+  "assets": {
+    "material/arc-nova-ember-shard": {
       "kind": "material",
-      "execution": "cooked",
       "name": "Arc Nova Ember Facet",
       "payload": {
         "kind": "material",
-        "staticSwitches": { "clearcoat": true },
+        "staticSwitches": {
+          "clearcoat": true
+        },
         "passes": [
           {
             "name": "forward",
@@ -48,5 +48,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

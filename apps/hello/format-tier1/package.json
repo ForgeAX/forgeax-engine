@@ -51,6 +51,7 @@
     "@types/node": "^25.8.0",
     "@webgpu/types": "^0.1.74",
     "@forgeax/engine-fbx": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
     "@forgeax/engine-import": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",

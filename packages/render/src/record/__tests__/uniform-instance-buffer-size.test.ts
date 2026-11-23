@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../../gpu-usage';
 import { resolveFoldInstanceBuffer } from '../fold-instance-buffer';
+import type { ValidatedRenderable } from '../frame-snapshot';
 import { type FoldBucket, INSTANCE_UBO_FULL_ARRAY_BYTES } from '../mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../render-context';
 import { resolveSpriteInstanceDraws, uploadSpriteInstanceBuffer } from '../sprite-instance-buffer';
@@ -135,7 +136,7 @@ it.each([
   const snapshot = { transforms, regions, instanceCount: count, cacheKey: 7, archVersion: 1 };
   const entry = {
     source: { spriteInstances: snapshot },
-  } as _InternalRenderPipelineContext['validatedOrdered'][number];
+  } as ValidatedRenderable;
   try {
     const draws = resolveSpriteInstanceDraws(c, entry);
     expect(draws.map((draw) => draw.count)).toEqual(

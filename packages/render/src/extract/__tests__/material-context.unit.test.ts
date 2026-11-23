@@ -31,7 +31,7 @@ describe('material context publication', () => {
     const definitions = new Set<unknown>();
     for (const backendKind of ['webgpu', 'wgpu-native', 'wgpu-webgl2', 'null'] as const) {
       for (const storageBuffer of [false, true]) {
-        for (const limit of [undefined, -1, 0, 20, 21, 24, 25, 31, 32, Infinity, NaN]) {
+        for (const limit of [undefined, -1, 0, 20, 21, 24, 25, 26, 27, 31, 32, Infinity, NaN]) {
           for (const visibleSurface of [false, true]) {
             const caps = { backendKind, storageBuffer };
             const limits = limit === undefined ? {} : { maxSampledTexturesPerShaderStage: limit };
@@ -41,7 +41,7 @@ describe('material context publication', () => {
               ? 'uniform-fallback'
               : limit !== undefined && limit >= 32
                 ? 'storage-buffer-atmosphere'
-                : limit === undefined || limit >= 25
+                : limit === undefined || limit >= 27
                   ? 'storage-buffer'
                   : limit >= 21
                     ? 'storage-buffer-projector'

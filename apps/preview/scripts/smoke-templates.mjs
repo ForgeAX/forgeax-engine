@@ -1509,7 +1509,7 @@ async function smokeGame3d(evidence) {
 
 async function smokeEmptyStartupReadiness(evidence) {
   const catalog = decodeCatalogWire(await (await fetch(`${ORIGIN}${CATALOG_URL}`)).json()).unwrap();
-  const scene = catalog.find((entry) => entry.guid === '019fb7ce-1000-7000-8000-000000000001');
+  const scene = catalog.find((entry) => entry.guid === 'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125');
   if (scene?.kind !== 'scene' || typeof scene.packageUrl !== 'string') {
     throw new Error('empty startup disposal requires the ordinary scene Catalog entry');
   }

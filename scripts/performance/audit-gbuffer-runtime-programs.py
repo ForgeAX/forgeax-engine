@@ -91,7 +91,7 @@ def main():
     matched_packs = []
     # Match exact material and selected specialization, never an arbitrary GUID alias.
     for path, artifact in artifacts.items():
-        if not path.endswith('.pack.json'):
+        if not path.endswith('.runtime-pack.json'):
             continue
         pack_path = root / path
         raw = pack_path.read_bytes()

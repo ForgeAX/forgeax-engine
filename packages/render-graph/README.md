@@ -11,13 +11,15 @@ A graph author declares four facts once:
 3. the exact access mode;
 4. the pass kind and declaration order.
 
-The compiler derives physical usage, RAW/WAR/WAW dependencies, lifetime bounds, capability requirements, and pass-local resource visibility from those facts. It does not invent backend barriers or reorder a future writer before an earlier reader.
+Stock pipelines use `RenderGraphBuilder.procedure(options)`. Appending a pass emits its ordered resource operands. `bindResources()` checks inherited texture contents, finalizes attachment stores and resolves, and binds the physical resources. Authored pipelines can supply all declarations before analysis through `compile(options)` or the procedure's `'deferred'` mode. Both modes execute in declaration order and expose RAW/WAR/WAW dependencies through inspection.
 
 ```mermaid
 flowchart LR
-  OWNER["Pipeline or feature owner"] --> BUILDER["RenderGraphBuilder"]
-  BUILDER --> COMPILE["compile once"]
-  COMPILE --> GRAPH["immutable CompiledRenderGraph"]
+  OWNER["Pipeline or feature owner"] --> BUILDER["Declare passes"]
+  BUILDER -->|stock| ORDERED["Emit ordered operands"]
+  BUILDER -->|authored| DEFERRED["Analyze declarations"]
+  ORDERED --> GRAPH["Bind physical resources"]
+  DEFERRED --> GRAPH
   GRAPH --> EXEC["execute frames"]
   GRAPH --> INSPECT["inspect"]
   GRAPH --> RETIRE["fence-aware retire"]
@@ -31,6 +33,8 @@ Each compiled graph retains its fixed resource order while imported resolvers
 observe the current frame on every execution. Recursive execution of that same
 graph is rejected before resource resolution, including calls from an imported
 resolver. A failed resolution releases admission so the next frame can retry.
+
+A replacement borrows compatible textures from their named physical owners on the same device. Logical views of the same physical texture and subresource descriptor share a native view, including pass-local aliases. The replacement retains only its active bindings. Retirement revokes lending immediately. Native texture destruction waits for the queue fence and the last lease.
 
 ## Native resource preparation
 

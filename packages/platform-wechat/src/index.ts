@@ -185,4 +185,9 @@ export {
   type WechatDownloadSource,
   type WechatRemotePackageOptions,
 } from './remote-fetch.js';
+export {
+  createWechatFileStore,
+  createWechatRecordStore,
+  type WechatStorageSource,
+} from './storage.js';
 export { createWechatWasmHost, createWechatWgpuHost, type WechatWasmSource } from './wasm.js';

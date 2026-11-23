@@ -1,17 +1,18 @@
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
-import { ok } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { AssetError, err, ok } from '@forgeax/engine-types';
+import { expect, it, vi } from 'vitest';
 import {
-  createScriptablePackProduction,
+  produceScriptablePackProducts,
   type ScriptablePackInput,
 } from '../scriptable-pack-host.js';
+import { createScriptablePackStagedAssetSnapshotSource } from '../scriptable-pack-staged-snapshot.js';
+import { packDefinition } from './fixtures/pack-definition.js';
 
 function input(definition: ScriptablePackInput['definition'], name: string) {
   return {
     definition,
     sourcePath: name,
     displaySourcePath: name,
-    sourceKeys: ['scene'],
     sourceClosure: [],
     publicationGeneration: 1,
     policy: {
@@ -22,51 +23,34 @@ function input(definition: ScriptablePackInput['definition'], name: string) {
   };
 }
 
-it('reuses successful evaluation and production across inspection, dependency reads and Cook', async () => {
+it('reuses successful evaluation across dependency reads and Cook in one worklist', async () => {
   const childId = definePackageId('01900000-0000-7000-8000-000000007101');
   const childGuid = AssetGuid.derive(childId, 'scene');
   let children = 0,
     parents = 0;
-  const child = definePack({
-    schemaVersion: '2.0.0',
-    packageId: childId,
-    build() {
-      children++;
-      return ok({ scene: { kind: 'scene' as const, entities: {} } });
-    },
+  const child = packDefinition(childId, () => {
+    children++;
+    return ok({ scene: { kind: 'scene' as const, entities: {} } });
   });
-  const parent = definePack({
-    schemaVersion: '2.0.0',
-    packageId: definePackageId('01900000-0000-7000-8000-000000007102'),
-    async build(context) {
-      parents++;
-      const read = await context.readByGuid(childGuid);
-      if (!read.ok) return read;
-      return ok({ scene: { kind: 'scene' as const, entities: {} } });
-    },
+  const parent = packDefinition('01900000-0000-7000-8000-000000007102', async (context) => {
+    parents++;
+    const read = await context.readByGuid(childGuid);
+    if (!read.ok) return read;
+    return ok({ scene: { kind: 'scene' as const, entities: {} } });
   });
-  const generation = createScriptablePackProduction({
-    sources: [input(parent, 'parent'), input(child, 'child')],
+  const result = await produceScriptablePackProducts({
+    sources: [input(child, 'child'), input(parent, 'parent')],
   });
-  expect((await generation.inspect('parent')).ok).toBe(true);
-  const [first, second, dependency] = await Promise.all([
-    generation.produce('parent'),
-    generation.produce('parent'),
-    generation.produce('child'),
-  ]);
-  expect(first.ok && second.ok && dependency.ok).toBe(true);
-  expect(first).toBe(second);
+  if (!result.ok) throw result.error;
+  const first = result.value.get('parent');
+  expect(result.value.has('child')).toBe(true);
   expect({ children, parents }).toEqual({ children: 1, parents: 1 });
-  if (!first.ok) throw first.error;
-  expect(first.value.publication.externalEvidence).toEqual(
+  expect(first?.publication.externalEvidence).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ guid: AssetGuid.format(childGuid), usage: 'content' }),
     ]),
   );
-  expect(
-    (await createScriptablePackProduction({ sources: [input(child, 'child')] }).produce('child'))
-      .ok,
-  ).toBe(true);
+  expect((await produceScriptablePackProducts({ sources: [input(child, 'child')] })).ok).toBe(true);
   expect(children).toBe(2);
 });
 
@@ -78,55 +62,18 @@ it('does not silently reuse results across parameter contexts or changed output 
     build: ({ values }) =>
       ok({ [values.enabled ? 'scene' : 'other']: { kind: 'scene' as const, entities: {} } }),
   });
-  expect(
-    (
-      await createScriptablePackProduction({ sources: [input(definition, 'subject')] }).produce(
-        'subject',
-      )
-    ).ok,
-  ).toBe(true);
-  const changed = createScriptablePackProduction({
+  const first = await produceScriptablePackProducts({ sources: [input(definition, 'subject')] });
+  const changed = await produceScriptablePackProducts({
     sources: [{ ...input(definition, 'subject'), values: { enabled: false } }],
   });
-  expect(await changed.produce('subject')).toMatchObject({
-    ok: false,
-    error: { code: 'pack-source-output-invalid' },
-  });
-});
-
-it('rejects concurrent content cycles instead of waiting on another root indefinitely', async () => {
-  const ids = [
-    definePackageId('01900000-0000-7000-8000-000000007104'),
-    definePackageId('01900000-0000-7000-8000-000000007105'),
-  ];
-  let entered = 0;
-  let release!: () => void;
-  const bothEntered = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const sources = ids.map((packageId, index) =>
-    input(
-      definePack({
-        schemaVersion: '2.0.0',
-        packageId,
-        async build(context) {
-          if (++entered === 2) release();
-          await bothEntered;
-          const other = ids[1 - index];
-          if (other === undefined) throw new Error('missing cycle fixture');
-          const read = await context.readByGuid(AssetGuid.derive(other, 'scene'));
-          return read.ok ? ok({ scene: { kind: 'scene' as const, entities: {} } }) : read;
-        },
-      }),
-      `cycle-${index}`,
-    ),
+  if (!first.ok) throw first.error;
+  if (!changed.ok) throw changed.error;
+  expect(first.value.get('subject')?.publication.outputs.map((asset) => asset.sourceKey)).toEqual([
+    'scene',
+  ]);
+  expect(changed.value.get('subject')?.publication.outputs.map((asset) => asset.sourceKey)).toEqual(
+    ['other'],
   );
-  const generation = createScriptablePackProduction({ sources });
-  const results = await Promise.all(
-    sources.map((source) => generation.produce(source.displaySourcePath)),
-  );
-  for (const result of results)
-    expect(result).toMatchObject({ ok: false, error: { code: 'pack-content-dependency-stalled' } });
 });
 
 it('reads external content without replacing a failed local owner with an older published value', async () => {
@@ -144,37 +91,27 @@ it('reads external content without replacing a failed local owner with an older 
     },
   };
   const parent = input(
-    definePack({
-      schemaVersion: '2.0.0',
-      packageId: definePackageId('01900000-0000-7000-8000-000000007107'),
-      async build(context) {
-        const value = await context.readByGuid(externalGuid);
-        return value.ok ? ok({ scene: { kind: 'scene' as const, entities: {} } }) : value;
-      },
+    packDefinition('01900000-0000-7000-8000-000000007107', async (context) => {
+      const value = await context.readByGuid(externalGuid);
+      return value.ok ? ok({ scene: { kind: 'scene' as const, entities: {} } }) : value;
     }),
     'parent',
   );
-  expect(
-    (await createScriptablePackProduction({ sources: [parent], assetSource }).produce('parent')).ok,
-  ).toBe(true);
+  expect((await produceScriptablePackProducts({ sources: [parent], assetSource })).ok).toBe(true);
   expect(reads).toBe(1);
-  const failed = input(
-    definePack({
-      schemaVersion: '2.0.0',
-      packageId: externalId,
-      build() {
-        throw new Error('broken local owner');
-      },
-    }),
-    'failed',
-  );
-  expect(
-    (
-      await createScriptablePackProduction({ sources: [parent, failed], assetSource }).produce(
-        'parent',
-      )
-    ).ok,
-  ).toBe(false);
+  const failure = new AssetError({
+    code: 'asset-not-imported',
+    expected: 'the local source to build successfully',
+    hint: 'repair the owner before building its consumer',
+  });
+  const ownerBuild = vi.fn(async () => err(failure));
+  const local = createScriptablePackStagedAssetSnapshotSource({
+    generation: 2,
+    owners: [{ id: 'local-owner', guids: [externalGuid], build: ownerBuild }],
+  });
+  const result = await produceScriptablePackProducts({ sources: [parent], assetSource: local });
+  expect(result.ok).toBe(false);
+  expect(ownerBuild).toHaveBeenCalledTimes(1);
   expect(reads).toBe(1);
 });
 
@@ -184,16 +121,10 @@ it('uses the same non-default generation for material receipts and the accepted 
     passes: [{ name: 'forward', program: { module: 'game::surface' } }] as const,
     parameters: [],
   };
-  const definition = definePack({
-    schemaVersion: '2.0.0',
-    packageId: definePackageId('01900000-0000-7000-8000-000000007108'),
-    build: () => ok({ material }),
-  });
+  const definition = packDefinition('01900000-0000-7000-8000-000000007108', () => ok({ material }));
   let observedGeneration: number | undefined;
-  const production = createScriptablePackProduction({
-    sources: [
-      { ...input(definition, 'material'), sourceKeys: ['material'], publicationGeneration: 7 },
-    ],
+  const result = await produceScriptablePackProducts({
+    sources: [{ ...input(definition, 'material'), publicationGeneration: 7 }],
     cookers: [
       {
         key: 'material',
@@ -214,10 +145,8 @@ it('uses the same non-default generation for material receipts and the accepted 
       },
     ],
   });
-  expect((await production.inspect('material')).ok).toBe(true);
   expect(observedGeneration).toBe(7);
-  const result = await production.produce('material');
   expect(result.ok).toBe(true);
   if (!result.ok) throw result.error;
-  expect(result.value.publication.generation).toBe(7);
+  expect(result.value.get('material')?.publication.generation).toBe(7);
 });

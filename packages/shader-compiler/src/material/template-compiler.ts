@@ -4,15 +4,14 @@ import type {
   MaterialShaderTemplate,
   PreparedMaterialShaderTemplate,
 } from '@forgeax/engine-shader';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, type MaterialProgramAddress, ok, type Result } from '@forgeax/engine-types';
 import type { PreparedShaderCompiler } from '../compile.js';
 import { ShaderError } from '../errors.js';
-import { compileMaterialSelection } from './cook.js';
+import { compileMaterialAddressSelection, compileMaterialSelection, selectionAbi } from './cook.js';
 import {
   supportsMaterialLodCoverage,
   supportsMaterialViewClipping,
 } from './pack-material-contract.js';
-import { selectionAbi } from './publication.js';
 import { compileRayMaterialSelection } from './ray-material.js';
 import { buildMaterialSourceCatalog } from './source-catalog.js';
 
@@ -43,7 +42,39 @@ export function prepareMaterialShaderTemplate(
     table: { [template.guid]: template.material },
     sources: catalog.value,
   };
-  return ok({
+  return ok<PreparedMaterialShaderTemplate>({
+    selectAddress(request: MaterialShaderSelection, address: MaterialProgramAddress) {
+      const { pass, context, vertexColorAvailable } = request;
+      if (context.pipeline === 'ray') {
+        if (address !== 'direct') return ok(undefined);
+        const selected = this.select(request);
+        if (!selected.ok) return selected;
+        return ok(selected.value === undefined ? undefined : { program: selected.value.direct });
+      }
+      const compiled = compileMaterialAddressSelection(
+        { ...material, context, vertexColorAvailable },
+        compiler,
+        { pass, address },
+      );
+      if (!compiled.ok) return materialCompileFailure(compiled.error);
+      const result = compiled.value;
+      if (result === undefined) return ok(undefined);
+      const entry = address === 'scene-index' ? result.abi.sceneIndexEntry : result.abi.directEntry;
+      return ok({
+        program: {
+          wgsl: result.compile.wgsl,
+          ...(entry === undefined ? {} : { entry }),
+          abi: selectionAbi(result.abi, result.compile),
+        },
+        ...(supportsMaterialViewClipping(result.module)
+          ? {
+              rasterCoverage: supportsMaterialLodCoverage(result, address === 'scene-index')
+                ? 'clipping-and-lod'
+                : 'clipping',
+            }
+          : {}),
+      });
+    },
     select({
       pass,
       context,

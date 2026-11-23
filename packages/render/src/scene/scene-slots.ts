@@ -1,8 +1,9 @@
-import type { RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, FrameListBase, type SparseRowKind } from './frame-list';
-import { FrameSet } from './frame-set';
-import { type Node, put, remove } from './frame-tree';
+import { FrameSet, popcount } from './frame-set';
+import { type Node, nodes, put, remove } from './frame-tree';
 import { IdentityMap, IdentityMapEditor } from './identity-map';
+import { SceneDrawSlot, SceneMeshDrawShapes } from './mesh-draw';
+import type { MeshFrame } from './mesh-frame';
 import { hasRasterDemand } from './raster-demand';
 import type { RenderSceneSlot } from './render-scene-types';
 import { type RowChange, RowChangeLog } from './row-change-log';
@@ -49,6 +50,8 @@ interface Page {
   readonly ids: Float64Array;
   readonly versions: Float64Array;
   readonly poses: readonly Float32Array[];
+  readonly lowMask: number;
+  readonly highMask: number;
   readonly count: number;
 }
 interface WritablePage {
@@ -60,7 +63,23 @@ interface WritablePage {
   poses: Float32Array[];
   /** Pending chunks copied or created by this page; captured chunks are immutable. */
   ownsPoses: number;
+  lowMask: number;
+  highMask: number;
   count: number;
+}
+
+function laneAtRank(page: Page, rank: number): number {
+  if (page.count === PAGE_SIZE) return rank;
+  const lowCount = popcount(page.lowMask);
+  let word = page.lowMask;
+  let base = 0;
+  if (rank >= lowCount) {
+    rank -= lowCount;
+    base = 32;
+    word = page.highMask;
+  }
+  while (rank-- > 0) word &= word - 1;
+  return base + 31 - Math.clz32(word & -word);
 }
 
 /**
@@ -70,7 +89,8 @@ interface WritablePage {
  * Retired pages release their table through the weak key, without a row sweep.
  */
 export class RowViews {
-  private pages = new WeakMap<Page, (RenderSceneSlot | undefined)[]>();
+  readonly shapes = new SceneMeshDrawShapes();
+  private pages = new WeakMap<Page, (SceneDrawSlot | undefined)[]>();
 
   copy(before: Page, after: Page): void {
     const views = this.pages.get(before);
@@ -94,14 +114,16 @@ export class RowViews {
     const entityKey = ids[at] as number;
     const offset = poseOffset(lane);
     const poses = page.poses[poseChunk(lane)] as Float32Array;
-    const world = poses.subarray(offset, offset + POSE);
-    view = {
+    view = new SceneDrawSlot(
       slot,
-      generation: ids[at + 1] as number,
+      ids[at + 1] as number,
       version,
       entityKey,
-      snapshot: { ...content, entityKey, transform: { world } } as RenderableSnapshot,
-    };
+      content,
+      poses,
+      offset,
+      this.shapes,
+    );
     views[lane] = view;
     return view;
   }
@@ -114,8 +136,8 @@ export class RowViews {
 
   /** An escaped matrix may still read this pending page's current pose backing. */
   sharesPose(page: Page, slot: number): boolean {
-    const pose = this.pages.get(page)?.[slot & PAGE_MASK]?.snapshot.transform.world;
-    return pose?.buffer === page.poses[poseChunk(slot & PAGE_MASK)]?.buffer;
+    const view = this.pages.get(page)?.[slot & PAGE_MASK];
+    return view !== undefined && view.poseColumn === page.poses[poseChunk(slot & PAGE_MASK)];
   }
 
   clear(): void {
@@ -135,11 +157,9 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
   readonly length: number;
   private cachedPageIndex = -1;
   private cachedPage: Page | undefined;
-  /** Page and lane of the last `readContentAt`, with the frame rank its page starts at. */
+  /** Current numeric page for rank and physical-slot readers on this immutable frame. */
   private rankNode: Node<Page> | undefined;
   private rankStart = 0;
-  private rankOrdinal = 0;
-  private rankLane = 0;
   constructor(
     readonly root: Node<Page> | undefined,
     readonly capacity: number,
@@ -156,6 +176,8 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     readonly contentEpoch?: object,
     /** Whether this exact row root can contribute authored or generated Water draws. */
     readonly mayHaveWaterSources = true,
+    /** Captured from live membership; ownerless frames have no default-layer proof. */
+    readonly allDefaultRenderLayers = false,
   ) {
     super();
     this.length = root?.count ?? 0;
@@ -212,12 +234,10 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
         index -= left + node.weight;
         node = node.right;
       } else {
-        index -= left;
-        for (let lane = 0; lane < PAGE_SIZE; lane++) {
-          if (node.value.contents[lane] !== undefined && index-- === 0)
-            return this.views.read(node.value, node.key * PAGE_SIZE + lane);
-        }
-        return undefined;
+        return this.views.read(
+          node.value,
+          node.key * PAGE_SIZE + laneAtRank(node.value, index - left),
+        );
       }
     }
     return undefined;
@@ -231,6 +251,45 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
       Object.getOwnPropertyDescriptor(frame, 'at') === undefined &&
       Object.getOwnPropertyDescriptor(frame, 'length')?.value === frame.#nativeLength &&
       Object.getOwnPropertyDescriptor(SceneSlotFrame.prototype, 'at')?.value === sceneSlotFrameAt
+    );
+  }
+
+  /** Find the first consumer result in the immutable page and occupied-lane order.
+   * Returning a result stops before the next row or Mesh is observed. */
+  findContent<T>(
+    visit: (content: RowContent, entity: number, slot: number) => T | undefined,
+  ): T | undefined {
+    for (const node of nodes(this.root)) {
+      const page = node.value;
+      const first = node.key * PAGE_SIZE;
+      for (let half = 0; half < PAGE_SIZE; half += 32) {
+        let word = half === 0 ? page.lowMask : page.highMask;
+        while (word !== 0) {
+          const lane = half + 31 - Math.clz32(word & -word);
+          word &= word - 1;
+          const result = visit(
+            page.contents[lane] as RowContent,
+            page.ids[lane * IDS] as number,
+            first + lane,
+          );
+          if (result !== undefined) return result;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /** Resolve the exact same Mesh and appended water materials as the public draw row. */
+  drawContent(content: RowContent, meshes: MeshFrame): RowContent {
+    return this.views.shapes.resolve(content, meshes);
+  }
+
+  static hasNativeIteration(frame: SceneSlotFrame): boolean {
+    return (
+      Object.getPrototypeOf(frame) === SceneSlotFrame.prototype &&
+      Object.getOwnPropertyDescriptor(frame, Symbol.iterator) === undefined &&
+      Object.getOwnPropertyDescriptor(SceneSlotFrame.prototype, Symbol.iterator)?.value ===
+        sceneSlotIterator
     );
   }
 
@@ -256,19 +315,12 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
     if (!Number.isInteger(index) || index < 0 || index >= this.length) return undefined;
-    // Ranks usually arrive ascending; resume inside the page the last read ended on.
-    // The captured root is immutable, so the remembered page and lane stay exact.
+    // The current page and its base rank belong to this immutable frame.
     let node = this.rankNode;
-    let ordinal = 0;
-    let lane = 0;
     let start = this.rankStart;
     let target: number;
     if (node !== undefined && index >= start && index < start + node.weight) {
       target = index - start;
-      if (target >= this.rankOrdinal) {
-        ordinal = this.rankOrdinal;
-        lane = this.rankLane;
-      }
     } else {
       node = this.root;
       let rest = index;
@@ -285,21 +337,14 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
       target = rest - left;
       start = index - target;
     }
-    for (; lane < PAGE_SIZE; lane++) {
-      if (node.value.contents[lane] === undefined) continue;
-      if (ordinal++ !== target) continue;
-      this.rankNode = node;
-      this.rankStart = start;
-      this.rankOrdinal = target;
-      this.rankLane = lane;
-      const ids = lane * IDS;
-      return read(
-        node.value.contents[lane] as RowContent,
-        node.value.ids[ids] as number,
-        node.key * PAGE_SIZE + lane,
-      );
-    }
-    return undefined;
+    this.rankNode = node;
+    this.rankStart = start;
+    const lane = laneAtRank(node.value, target);
+    return read(
+      node.value.contents[lane] as RowContent,
+      node.value.ids[lane * IDS] as number,
+      node.key * PAGE_SIZE + lane,
+    );
   }
 
   /**
@@ -323,42 +368,90 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
   /** Resolve only one known slot when assembling its actual dispatch entry. */
   indexOfSlot(slot: number): number | undefined {
     if (!validSlot(slot)) return undefined;
+    // Capacity is the exclusive physical high-water address. A full domain has rank equal to slot.
+    if (this.#nativeLength === this.capacity) return slot < this.capacity ? slot : undefined;
     const page = Math.floor(slot / PAGE_SIZE);
-    let node = this.root;
-    let rank = 0;
-    while (node !== undefined) {
-      if (page < node.key) node = node.left;
-      else if (page > node.key) {
-        rank += (node.left?.count ?? 0) + node.weight;
-        node = node.right;
-      } else {
-        const lane = slot & PAGE_MASK;
-        if (node.value.contents[lane] === undefined) return undefined;
-        rank += node.left?.count ?? 0;
-        for (let index = 0; index < lane; index++)
-          if (node.value.contents[index] !== undefined) rank++;
-        return rank;
+    let node = this.rankNode;
+    if (node === undefined || node.key !== page) {
+      node = this.root;
+      let start = 0;
+      while (node !== undefined && node.key !== page) {
+        if (page < node.key) node = node.left;
+        else {
+          start += (node.left?.count ?? 0) + node.weight;
+          node = node.right;
+        }
       }
+      if (node === undefined) return undefined;
+      this.rankNode = node;
+      this.rankStart = start + (node.left?.count ?? 0);
     }
-    return undefined;
+    const lane = slot & PAGE_MASK;
+    if (node.weight === PAGE_SIZE) return this.rankStart + lane;
+    const mask = lane < 32 ? node.value.lowMask : node.value.highMask;
+    const bit = 1 << (lane & 31);
+    if ((mask & bit) === 0) return undefined;
+    return (
+      this.rankStart + (lane < 32 ? 0 : popcount(node.value.lowMask)) + popcount(mask & (bit - 1))
+    );
   }
 
-  *[Symbol.iterator](): Generator<RenderSceneSlot> {
-    const pending: Node<Page>[] = [];
-    let node = this.root;
-    while (node !== undefined || pending.length > 0) {
-      while (node !== undefined) {
-        pending.push(node);
-        node = node.left;
+  [Symbol.iterator](): IterableIterator<RenderSceneSlot> {
+    return new SceneSlotIterator(this.root, this.views);
+  }
+}
+
+/** Each walk pins its own immutable pages and has one result cell. Only occupied lanes visit RowViews. */
+class SceneSlotIterator implements IterableIterator<RenderSceneSlot> {
+  private pages: IterableIterator<Node<Page>> | undefined;
+  private page: Page | undefined;
+  private base = 0;
+  private word = 0;
+  private high = 0;
+  private readonly result: { value: RenderSceneSlot | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+
+  constructor(
+    root: Node<Page> | undefined,
+    private readonly views: RowViews,
+  ) {
+    this.pages = nodes(root);
+  }
+
+  next(): IteratorResult<RenderSceneSlot> {
+    while (this.word === 0) {
+      if (this.high !== 0) {
+        this.base += 32;
+        this.word = this.high;
+        this.high = 0;
+      } else {
+        const next = this.pages?.next();
+        if (next === undefined || next.done) return this.return();
+        this.page = next.value.value;
+        this.base = next.value.key * PAGE_SIZE;
+        this.word = this.page.lowMask;
+        this.high = this.page.highMask;
       }
-      const current = pending.pop();
-      if (current === undefined) return;
-      for (let lane = 0; lane < PAGE_SIZE; lane++) {
-        const slot = this.views.read(current.value, current.key * PAGE_SIZE + lane);
-        if (slot !== undefined) yield slot;
-      }
-      node = current.right;
     }
+    const lane = 31 - Math.clz32(this.word & -this.word);
+    this.word &= this.word - 1;
+    this.result.value = this.views.read(this.page as Page, this.base + lane);
+    return this.result as IteratorResult<RenderSceneSlot>;
+  }
+
+  return(): IteratorResult<RenderSceneSlot> {
+    this.pages = undefined;
+    this.page = undefined;
+    this.word = this.high = 0;
+    this.result.value = undefined;
+    this.result.done = true;
+    return this.result as IteratorResult<RenderSceneSlot>;
+  }
+
+  [Symbol.iterator](): IterableIterator<RenderSceneSlot> {
+    return this;
   }
 }
 
@@ -376,6 +469,7 @@ interface LodBucket {
  * Maintained from slot writes and Mesh changes, so a frame reads it in O(1).
  */
 const sceneSlotFrameAt = SceneSlotFrame.prototype.at;
+const sceneSlotIterator = SceneSlotFrame.prototype[Symbol.iterator];
 
 class LodCandidates {
   total = 0;
@@ -481,7 +575,7 @@ export class SceneSlots {
   get journal(): RowChangeLog {
     return this.log;
   }
-  private contentEpoch: object = Object.freeze({});
+  private contentEpoch: object | undefined = Object.freeze({});
   private frame = new SceneSlotFrame(
     undefined,
     0,
@@ -503,8 +597,10 @@ export class SceneSlots {
   private copiedBytes = 0;
   private sourceCounts = emptySourceCounts();
   private authoredWaterOwners = 0;
+  private nonDefaultRenderLayers = 0;
   private lods = new LodCandidates();
   private terrainSlots = new SlotIndex();
+  private viewSourceSlots = new SlotIndex();
   private capsuleSlots = new SlotIndex();
   private pointsLinesSlots = new SlotIndex();
   private skinSlots = new SlotIndex();
@@ -570,6 +666,8 @@ export class SceneSlots {
     switch (kind) {
       case 'terrain':
         return this.terrainSlots.slots();
+      case 'viewSource':
+        return this.viewSourceSlots.slots();
       case 'capsule':
         return this.capsuleSlots.slots();
       case 'skin':
@@ -668,6 +766,8 @@ export class SceneSlots {
               ownsContent: true,
               poses: Array.from({ length: POSE_CHUNKS }, () => new Float32Array(POSE_ROWS * POSE)),
               ownsPoses: (1 << POSE_CHUNKS) - 1,
+              lowMask: 0,
+              highMask: 0,
               count: 0,
             }
           : {
@@ -678,6 +778,8 @@ export class SceneSlots {
               ownsContent: false,
               poses: before.poses.slice(),
               ownsPoses: 0,
+              lowMask: before.lowMask,
+              highMask: before.highMask,
               count: before.count,
             };
       if (before !== undefined) this.views.copy(before, page);
@@ -731,9 +833,18 @@ export class SceneSlots {
     if (content.tilemap !== undefined) this.sourceCounts.tilemap += sign;
     if (content.waterMeshSource !== undefined) this.sourceCounts.waterMeshSource += sign;
     if (content.waterOwner !== undefined) this.authoredWaterOwners += sign;
+    if ((content.renderLayers ?? 1) !== 1) this.nonDefaultRenderLayers += sign;
     this.lods.slot(content, sign);
     if (sign === 1) {
       this.terrainSlots.set(slot, content.terrain !== undefined);
+      this.viewSourceSlots.set(
+        slot,
+        content.glyph !== undefined ||
+          content.tilemap !== undefined ||
+          content.terrain !== undefined ||
+          content.terrainSection !== undefined ||
+          content.generatedMesh !== undefined,
+      );
       this.capsuleSlots.set(slot, content.capsuleShadowRequested === true);
       this.pointsLinesSlots.set(slot, content.pointsLines !== undefined);
       this.skinSlots.set(slot, content.skinBinding !== undefined);
@@ -765,13 +876,15 @@ export class SceneSlots {
         this.logChange(slot, 'leave', ids[at + 1] as number);
       } else change = 'update';
     } else {
+      if (lane < 32) page.lowMask |= 1 << lane;
+      else page.highMask |= 1 << (lane - 32);
       page.count++;
       this.live++;
       this.identities.set(row.entityKey, slot);
     }
     this.logChange(slot, change, row.generation);
     if (change !== 'update' || previous !== row.content || ids[at + 1] !== row.generation)
-      this.contentEpoch = Object.freeze({});
+      this.contentEpoch = undefined;
     page.contents[lane] = row.content;
     ids[at] = row.entityKey;
     ids[at + 1] = row.generation;
@@ -824,15 +937,18 @@ export class SceneSlots {
     const entityKey = page.ids[at] as number;
     this.account(slot, page.contents[lane], -1);
     this.terrainSlots.set(slot, false);
+    this.viewSourceSlots.set(slot, false);
     this.capsuleSlots.set(slot, false);
     this.pointsLinesSlots.set(slot, false);
     this.skinSlots.set(slot, false);
     this.rasterSlots.set(slot, false);
     if (this.identities.get(entityKey) === slot) this.identities.delete(entityKey);
     this.logChange(slot, 'leave', page.ids[at + 1] as number);
-    this.contentEpoch = Object.freeze({});
+    this.contentEpoch = undefined;
     page.contents[lane] = undefined;
     this.views.remove(page, slot);
+    if (lane < 32) page.lowMask &= ~(1 << lane);
+    else page.highMask &= ~(1 << (lane - 32));
     page.count--;
     this.live--;
   }
@@ -844,6 +960,7 @@ export class SceneSlots {
     for (const [key, page] of this.pending)
       root = page.count === 0 ? remove(root, 0, key) : put(root, page, 0, key, page.count);
     this.pending.clear();
+    this.contentEpoch ??= Object.freeze({});
     this.frame = new SceneSlotFrame(
       root,
       this.highWater,
@@ -853,6 +970,7 @@ export class SceneSlots {
       this.log.position,
       {
         terrain: this.indexedSlots('terrain'),
+        viewSource: this.indexedSlots('viewSource'),
         capsule: this.indexedSlots('capsule'),
         skin: this.indexedSlots('skin'),
         raster: this.indexedSlots('raster'),
@@ -860,6 +978,7 @@ export class SceneSlots {
       },
       this.contentEpoch,
       this.authoredWaterOwners > 0 || this.hasSource('waterMeshSource'),
+      this.nonDefaultRenderLayers === 0,
     );
     return this.frame;
   }
@@ -889,8 +1008,10 @@ export class SceneSlots {
     this.generations = new Uint32Array(64);
     this.sourceCounts = emptySourceCounts();
     this.authoredWaterOwners = 0;
+    this.nonDefaultRenderLayers = 0;
     this.lods = new LodCandidates();
     this.terrainSlots = new SlotIndex();
+    this.viewSourceSlots = new SlotIndex();
     this.capsuleSlots = new SlotIndex();
     this.pointsLinesSlots = new SlotIndex();
     this.skinSlots = new SlotIndex();
@@ -913,26 +1034,70 @@ export class SceneSlots {
     };
   }
 }
-/** Stable entity keys read from a captured roster without materializing rows. */
+function entityOf(_content: RowContent, entity: number): number {
+  return entity;
+}
+
+/** The identities admitted by this view's fixed Scene rows. Physical membership,
+ * source iteration order and entity lookup all refer to the same captured frame. */
 export class SlotIdentityKeys implements ReadonlySet<number> {
-  private readonly identities: IdentityMap;
-  constructor(private readonly roster: SceneSlotFrame) {
-    this.identities = roster.identities;
-  }
+  constructor(
+    private readonly roster: SceneSlotFrame,
+    private readonly members?: FrameSet,
+    private readonly sourceOrder = false,
+  ) {}
   get size(): number {
-    return this.identities.size;
+    return this.members?.size ?? this.roster.identities.size;
   }
-  /** Visit membership changes when both captures belong to the same row journal. */
+  usesSlotsOf(frame: SceneSlotFrame): boolean {
+    return this.roster.journal !== undefined && this.roster.journal === frame.journal;
+  }
+  /** Visit physical slots whose admitted identity may have changed. The journal
+   * covers reuse at one address. The view bitmap covers motion across its frustum. */
   changesSince(previous: SlotIdentityKeys, visit: (slot: number) => void): boolean {
-    return this.roster.changesSince(previous.roster, (slot, kind) => {
-      if (kind !== 'update') visit(slot);
-    });
+    if (!this.usesSlotsOf(previous.roster)) return false;
+    const before = previous.members;
+    const after = this.members;
+    if (
+      this.roster.identities !== previous.roster.identities &&
+      !this.roster.changesSince(previous.roster, (slot, kind) => {
+        if (kind !== 'update' && (before?.has(slot) !== false || after?.has(slot) !== false))
+          visit(slot);
+      })
+    )
+      return false;
+    if (before === after) return true;
+    if (before !== undefined && after !== undefined) {
+      after.changesSince(before, visit);
+    } else {
+      // Only a full/subset transition needs to enumerate the full frame's addresses.
+      const partial = after ?? before;
+      const full = after === undefined ? this.roster : previous.roster;
+      full.findContent((_content, _entity, slot) => {
+        if (!partial?.has(slot)) visit(slot);
+        return undefined;
+      });
+    }
+    return true;
   }
   has(entity: number): boolean {
-    return this.identities.has(entity);
+    const slot = this.roster.identitySlot(entity);
+    return slot !== undefined && this.members?.has(slot) !== false;
   }
   *values(): SetIterator<number> {
-    for (const [entity] of this.identities.entries()) yield entity;
+    if (this.members !== undefined) {
+      for (const slot of this.members.borrowKeys()) {
+        const entity = this.roster.readContentSlot(slot, entityOf);
+        if (entity !== undefined) yield entity;
+      }
+    } else if (this.sourceOrder) {
+      for (let rank = 0; rank < this.roster.length; rank++) {
+        const entity = this.roster.readContentAt(rank, entityOf);
+        if (entity !== undefined) yield entity;
+      }
+    } else {
+      for (const [entity] of this.roster.identities.entries()) yield entity;
+    }
   }
   keys(): SetIterator<number> {
     return this.values();

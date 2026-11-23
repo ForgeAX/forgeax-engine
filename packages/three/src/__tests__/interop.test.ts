@@ -21,7 +21,13 @@ import {
   type Renderer,
   type RendererEvent,
 } from '@forgeax/engine-render';
-import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
+import {
+  ChildOf,
+  GlobalTransform,
+  propagateTransforms,
+  scenePlugin,
+  Transform,
+} from '@forgeax/engine-scene';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import {
   BoxGeometry,
@@ -37,6 +43,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contributions';
 import { mountThreeScene, type ThreeSceneMount } from '../index';
 import { prepareMaterialPrograms } from '../material-programs';
+import { setThreeSceneTracking } from '../source-changes';
+import { initializePoseLayout } from '../source-fields';
 
 // These tests isolate ECS/lifecycle policy. Cooked program admission and actual
 // submission use the real public factory in interop.browser/dawn.test.ts.
@@ -324,4 +332,130 @@ it('collides a real native dynamic body with a Three-owned static collider and r
     await context.fiber.dispose();
     physics.dispose();
   }
+});
+
+it('isolates native edits by entity and restores the mapped owner while tracking', async () => {
+  const f = fixture();
+  for (let i = 0; i < 64; i++) {
+    const glass = f.mesh.clone();
+    glass.material = new MeshBasicMaterial({ transparent: true });
+    f.scene.add(glass);
+  }
+  setThreeSceneTracking(f.scene, true);
+  const mount = (await mountThreeScene(f)).unwrap();
+  f.item.mount = mount;
+  const source = mount.entityFor(f.mesh).unwrap();
+  mount.sync().unwrap();
+  const native = f.world.spawn({ component: Transform, data: {} }).unwrap();
+  f.world.set(native, Transform, { pos: [9, 2, 1] }).unwrap();
+  mount.sync().unwrap();
+  expect(mount.sourceWork()).toMatchObject({ mode: 'tracked', sourceNodes: 0, meshPlans: 0 });
+  const glass = f.scene.children[2];
+  if (!glass) throw new Error('Missing retained transparent mesh');
+  const glassEntity = mount.entityFor(glass).unwrap();
+  f.world.set(glassEntity, MeshRenderer, { materials: [] }).unwrap();
+  mount.sync().unwrap();
+  expect(mount.sourceWork()).toMatchObject({ mode: 'tracked', sourceNodes: 1, meshPlans: 1 });
+  expect(f.world.get(glassEntity, MeshRenderer).unwrap().materials).toHaveLength(1);
+  f.world.set(source, Transform, { pos: [1, 4, 9] }).unwrap();
+  mount.sync().unwrap();
+  expect(mount.sourceWork()).toMatchObject({ mode: 'tracked', sourceNodes: 1 });
+  expect(f.world.get(source, Transform).unwrap().pos[0]).toBe(0);
+  f.world
+    .addComponent(source, { component: RigidBody, data: { type: RigidBodyTypeValue.static } })
+    .unwrap();
+  mount.sync().unwrap();
+  f.world.set(source, RigidBody, { type: RigidBodyTypeValue.dynamic }).unwrap();
+  expect(mount.sync().ok).toBe(false);
+  f.world.removeComponent(source, RigidBody).unwrap();
+  mount.sync().unwrap();
+});
+
+it('coalesces tracked local edits into the correct ECS position at each mount boundary', async () => {
+  const a = fixture(),
+    b = fixture();
+  b.scene = a.scene;
+  initializePoseLayout(a.mesh.position, false);
+  const parent = new Mesh(new BoxGeometry(), new MeshBasicMaterial());
+  a.scene.add(parent);
+  parent.add(a.mesh);
+  parent.position.x = 10;
+  setThreeSceneTracking(a.scene, true);
+  const first = (await mountThreeScene(a)).unwrap(),
+    second = (await mountThreeScene(b)).unwrap();
+  a.item.mount = first;
+  b.item.mount = second;
+  const entity = first.entityFor(a.mesh).unwrap(),
+    other = second.entityFor(a.mesh).unwrap();
+  const alias = a.mesh.position;
+  const marker = defineComponent('DirectPositionMigration', { value: 'u32' });
+  a.world.addComponent(entity, { component: marker, data: { value: 1 } }).unwrap();
+  first.sync().unwrap();
+  const writes = vi.spyOn(a.world, 'set');
+  const ranges = vi.spyOn(a.world, 'setArrayRange');
+  alias.x = 2;
+  alias.x = 16777217;
+  expect(a.world.get(entity, Transform).unwrap().pos[0]).toBe(0);
+  first.sync().unwrap();
+  expect(alias.x).toBe(16777217);
+  expect(a.world.get(entity, ChildOf).unwrap().parent).toBe(first.entityFor(parent).unwrap());
+  expect(a.world.get(entity, Transform).unwrap().pos[0]).toBe(Math.fround(alias.x));
+  propagateTransforms(a.world).unwrap();
+  expect(a.world.get(entity, GlobalTransform).unwrap().world[12]).toBe(
+    Math.fround(Math.fround(alias.x) + 10),
+  );
+  expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(0);
+  expect(writes.mock.calls.filter(([e, c]) => e === entity && c === Transform)).toHaveLength(1);
+  expect(ranges.mock.calls.some(([e, c]) => e === entity && c === Transform)).toBe(false);
+  alias.x -= 0.1;
+  first.sync().unwrap();
+  expect(writes.mock.calls.filter(([e, c]) => e === entity && c === Transform)).toHaveLength(1);
+  second.sync().unwrap();
+  expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(Math.fround(alias.x));
+  first.dispose().unwrap();
+  delete a.item.mount;
+  const replacement = a.world.spawn({ component: Transform, data: { pos: [99, 0, 0] } }).unwrap();
+  alias.x = 4;
+  second.sync().unwrap();
+  expect(a.world.get(replacement, Transform).unwrap().pos[0]).toBe(99);
+  expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(4);
+  setThreeSceneTracking(a.scene, false);
+  second.sync().unwrap();
+  expect(a.mesh.position).toBe(alias);
+  expect(Object.getOwnPropertyDescriptor(alias, 'x')).toEqual({
+    value: 4,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+  expect(Object.getOwnPropertySymbols(alias)).toHaveLength(0);
+  setThreeSceneTracking(a.scene, true);
+  second.sync().unwrap();
+  alias.x = 8;
+  second.sync().unwrap();
+  expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(8);
+  propagateTransforms(b.world).unwrap();
+  expect(b.world.get(other, GlobalTransform).unwrap().world[12]).toBe(18);
+});
+
+it.each([
+  true,
+  false,
+])('restores a rotated and scaled source after a native write and a translation (tracking %s)', async (tracked) => {
+  const f = fixture();
+  f.mesh.rotation.y = Math.PI / 3;
+  f.mesh.scale.set(2, 3, 4);
+  setThreeSceneTracking(f.scene, tracked);
+  const mount = (await mountThreeScene(f)).unwrap();
+  f.item.mount = mount;
+  const entity = mount.entityFor(f.mesh).unwrap();
+  const original = f.world.get(entity, Transform).unwrap();
+  const expected = { quat: [...original.quat], scale: [...original.scale] };
+  f.mesh.position.set(4, 5, 6);
+  f.world.set(entity, Transform, { quat: [0, 0, 0, 1], scale: [1, 1, 1] }).unwrap();
+  mount.sync().unwrap();
+  const restored = f.world.get(entity, Transform).unwrap();
+  expect([...restored.pos]).toEqual([4, 5, 6]);
+  expect([...restored.quat]).toEqual(expected.quat);
+  expect([...restored.scale]).toEqual(expected.scale);
 });

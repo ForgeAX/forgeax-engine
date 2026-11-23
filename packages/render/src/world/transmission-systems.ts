@@ -20,7 +20,7 @@ import {
 } from '../transmission/inspection';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -62,12 +62,7 @@ export const ViewTransmission = defineComponent('ViewTransmission', {
 });
 
 function stateOf(world: World, entity: EntityHandle | undefined) {
-  if (entity === undefined || !world.hasComponent(entity, ViewTransmission)) return undefined;
-  return world
-    .resolveUniqueRef<ViewTransmissionState>(
-      requireViewField(world, entity, ViewTransmission, 'state'),
-    )
-    .unwrap();
+  return readViewState<ViewTransmissionState>(world, entity, ViewTransmission);
 }
 
 /** The view's admission written this renderer frame; undefined when the system did not run for it. */
@@ -177,33 +172,42 @@ function refreshInspection(
     state.key = '';
     return;
   }
-  const physical = submitted
-    ? frameState.compiledFrameGraph?.graph
-        .inspect()
-        .resources.find(
-          (resource) => resource.kind === 'texture' && resource.label === 'transmission-backdrop',
-        )
-    : undefined;
+  const current = submitted ? frameState.currentTransmissionTargets?.current : undefined;
+  const physical =
+    submitted && current === undefined
+      ? frameState.compiledFrameGraph?.graph
+          .inspect()
+          .resources.find(
+            (resource) => resource.kind === 'texture' && resource.label === 'transmission-backdrop',
+          )
+      : undefined;
   const descriptor = physical?.descriptor.kind === 'texture' ? physical.descriptor : undefined;
   const extent = {
-    width: descriptor?.width ?? Math.max(1, recordContext(internals).canvas.width),
-    height: descriptor?.height ?? Math.max(1, recordContext(internals).canvas.height),
+    width:
+      current?.width ?? descriptor?.width ?? Math.max(1, recordContext(internals).canvas.width),
+    height:
+      current?.height ?? descriptor?.height ?? Math.max(1, recordContext(internals).canvas.height),
   };
   const topology = resolveTransmissionBackdropTopology({
     demand,
     sourceSampleCount: isMultisampleAntialias(antialias) ? 4 : 1,
   });
-  const format = descriptor?.format ?? 'rgba16float';
+  const format = current?.format ?? descriptor?.format ?? 'rgba16float';
   const mipCount =
-    descriptor?.mipLevelCount ?? (topology.mipCount === 0 ? 1 : numMipLevels(extent));
+    (current === undefined ? undefined : frameState.currentTransmissionTargets?.mipCount) ??
+    descriptor?.mipLevelCount ??
+    (topology.mipCount === 0 ? 1 : numMipLevels(extent));
   const resource =
-    descriptor === undefined
+    current === undefined && descriptor === undefined
       ? undefined
       : ({
           extent,
           format,
           mipCount,
-          bytes: physical?.byteSize ?? estimateTransmissionBackdropBytes(extent, mipCount, format),
+          bytes:
+            current?.color.allocation.bytes ??
+            physical?.byteSize ??
+            estimateTransmissionBackdropBytes(extent, mipCount, format),
           deviceGeneration: recordContext(internals).deviceScope.generation,
         } as const);
   const key = `${demand.activeCount}:${demand.needsRoughMips}:${extent.width}:${extent.height}:${recordContext(internals).deviceScope.generation}:${format}:${mipCount}:${resource?.bytes ?? 0}:${antialias}:${submitted}`;

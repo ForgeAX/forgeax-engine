@@ -208,6 +208,30 @@ describe('owned runtime asset content', () => {
     observer.dispose();
   });
 
+  test('commits only the patched field and discards an aborted field candidate', () => {
+    const records = new AssetRecords();
+    const initial = { kind: 'material', values: { rgb: [1, 1, 1] }, passes: ['forward'] };
+    const handle = records.create('material', initial).unwrap();
+    const observer = records.observe().unwrap();
+    const before = records.inspect();
+    expect(() =>
+      records.adoptClosure(() => {
+        records.update(handle, { rgb: [0, 1, 0] }, { field: 'values' }).unwrap();
+        expect(records.read(handle).unwrap()).toEqual({ ...initial, values: { rgb: [0, 1, 0] } });
+        throw new Error('abort candidate');
+      }),
+    ).toThrow('abort candidate');
+    expect(records.inspect()).toEqual(before);
+    expect(records.read(handle).unwrap()).toEqual(initial);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    records
+      .adoptClosure(() => records.update(handle, { rgb: [0, 1, 0] }, { field: 'values' }))
+      .unwrap();
+    expect(records.read(handle).unwrap()).toEqual({ ...initial, values: { rgb: [0, 1, 0] } });
+    expect(observer.read().unwrap().changes[0]?.fields).toEqual(['values']);
+    observer.dispose();
+  });
+
   test('rejects partial, duplicate and reentrant updates during closure preparation', () => {
     const records = new AssetRecords();
     const root = records.create('material', material()).unwrap();
@@ -259,8 +283,8 @@ describe('owned runtime asset content', () => {
     const b = records.create('material', material()).unwrap();
     const observer = records.observe().unwrap();
     records
-      .adoptClosure(
-        () => records.adopt('material', material(0.2), [b], undefined, a),
+      .adoptPreparedClosure(
+        (candidate) => candidate.adopt('material', material(0.2), [b], undefined, a),
         () => {
           expect(records.read(a).unwrap()).toEqual(material(0.2));
           // Graph validation has finished. A second replacement here would
@@ -309,8 +333,8 @@ describe('owned runtime asset content', () => {
     const before = records.inspect();
     const rejected = new Error('consumer rejected');
     expect(() =>
-      records.adoptClosure(
-        () => records.adopt('material', material(0.2), [], undefined, a),
+      records.adoptPreparedClosure(
+        (candidate) => candidate.adopt('material', material(0.2), [], undefined, a),
         () => {
           records.retain(a).unwrap();
           throw rejected;
@@ -324,6 +348,28 @@ describe('owned runtime asset content', () => {
     records.update(a, { ...material(0.3) }).unwrap();
     records.release(a).unwrap();
     expect(records.inspect().assets).toBe(0);
+  });
+
+  test('retires a rejected prepared closure when its last provisional consumer releases', () => {
+    const records = new AssetRecords();
+    let staged = 0;
+    expect(() =>
+      records.adoptPreparedClosure(
+        (candidate) => {
+          const handle = candidate.adopt('texture', new Uint8Array([1]));
+          staged = handle.unwrap();
+          return handle;
+        },
+        () => {
+          records.retain(staged).unwrap();
+          throw new Error('consumer rejected');
+        },
+      ),
+    ).toThrow('consumer rejected');
+    expect(records.validate(staged).ok).toBe(false);
+    expect(records.inspect()).toMatchObject({ assets: 0, adoptionAssets: 1 });
+    records.release(staged).unwrap();
+    expect(records.inspect()).toMatchObject({ assets: 0, adoptionAssets: 0, adoptionBytes: 0 });
   });
 
   test('replaces existing source identities atomically, retaining fixed closures and dependency holds', () => {

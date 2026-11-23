@@ -79,6 +79,24 @@ function fixture() {
   };
 }
 describe('private streaming prepared raster recording', () => {
+  it('keeps a prepared shadow bundle current when a live frame replaces its variant', () => {
+    const f = fixture();
+    const pass = f.pass('shadow');
+    const live = f.resolve(f.bindings, 'shadow');
+    const staged = f.cache.fork();
+    expect(staged.resolveOne(pass, f.device, f.bindings, f.counters)).toBe(live);
+
+    const bindings = { ...f.bindings, indirectOffset: f.bindings.indirectOffset + 20 };
+    const prepared = staged.resolveOne(pass, f.device, bindings, f.counters);
+    const isCurrent = staged.captureCurrent(pass);
+    expect(prepared).not.toBe(live);
+    expect(f.resolve(f.bindings, 'shadow')).toBe(live);
+    f.resolve({ ...f.bindings, viewOffset: 512 }, 'shadow');
+
+    expect(isCurrent?.()).toBe(true);
+    expect(staged.resolveOne(pass, f.device, bindings, f.counters)).toBe(prepared);
+  });
+
   it.each([
     'pipeline',
     'view',

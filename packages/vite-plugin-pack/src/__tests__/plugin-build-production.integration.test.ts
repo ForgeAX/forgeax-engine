@@ -1,17 +1,21 @@
-import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import {
+  directPackFixture,
+  metaFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
-import { installPackAuthorDependencies } from './pack-author-dependencies.js';
+import { installPackAuthorDependencies, writeFilterPack } from './pack-author-dependencies.js';
+import { recordNamedBundle } from './vite-fixtures.js';
 
-const GUID = '00000000-0000-4000-8000-000000000003';
+const GUID = '51921a9b-ac23-5b6b-b565-848f32149c95';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const fixtureImporter: Importer = {
@@ -35,45 +39,41 @@ const fixtureImporter: Importer = {
   }),
 };
 
-describe('production Pack bundle contract', () => {
-  const roots: string[] = [];
+function bundleCatalog(emitted: readonly { fileName?: string; source?: unknown }[]) {
+  const entry = emitted.find((asset) => asset.fileName === 'pack-index.json');
+  if (!entry) throw new Error('missing emitted Catalog');
+  return decodeCatalogWire(JSON.parse(String(entry.source))).unwrap();
+}
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+describe('production Pack bundle contract', () => {
+  const scratch = temporaryDirectories();
+
+  afterEach(scratch.clear);
 
   it('writes each complete publication once in a bound production catalog', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-scoped-catalog-build-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-scoped-catalog-build-');
     const assets = resolve(root, 'assets');
     await mkdir(assets);
     const count = 16;
     await writeFile(
       resolve(assets, 'samplers.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: '019a0000-0000-7000-8000-000000000083',
-        assets: Object.fromEntries(
-          Array.from({ length: count }, (_, index) => [
-            `sampler/${index}`,
-            { kind: 'sampler', payload: { kind: 'sampler', magFilter: 'linear' }, refs: [] },
-          ]),
+      JSON.stringify(
+        directPackFixture(
+          '019a0000-0000-7000-8000-000000000083',
+          Object.fromEntries(
+            Array.from({ length: count }, (_, index) => [
+              `sampler/${index}`,
+              { kind: 'sampler', payload: { kind: 'sampler', magFilter: 'linear' }, refs: [] },
+            ]),
+          ),
         ),
-      }),
+      ),
     );
     const binding = createStandaloneRuntimeAssetBinding('scoped-catalog');
     const plugin = pluginPack({ roots: [assets], runtimeBinding: binding });
     const emitted: Array<{ fileName?: string; source?: string | Uint8Array }> = [];
     try {
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return referenceId;
-        },
-      });
+      await plugin.generateBundle.call(recordNamedBundle(emitted));
       const serialized = String(
         emitted.find((asset) => asset.fileName === 'pack-index.json')?.source,
       );
@@ -105,9 +105,8 @@ describe('production Pack bundle contract', () => {
   ])(
     'validates direct plugin references after dynamic outputs exist: present=%s bound=%s',
     async (present, bound) => {
-      const project = await mkdtemp(join(tmpdir(), 'forgeax-plugin-reference-build-'));
+      const project = await scratch.make('forgeax-plugin-reference-build-');
       await installPackAuthorDependencies(project);
-      roots.push(project);
       const assets = resolve(project, 'assets');
       await mkdir(assets);
       await writeFile(
@@ -137,10 +136,8 @@ export default definePack({
       await writeFile(resolve(assets, 'game.ts'), 'export default { apply() {} };');
       await writeFile(
         resolve(assets, 'game.pack.json'),
-        JSON.stringify({
-          schemaVersion: '3.0.0',
-          packageId: '019a0000-0000-7000-8000-000000000082',
-          assets: {
+        JSON.stringify(
+          directPackFixture('019a0000-0000-7000-8000-000000000082', {
             'plugin/root': {
               kind: 'plugin',
               payload: {
@@ -148,8 +145,8 @@ export default definePack({
                 config: { sampler: { $asset: samplerGuid } },
               },
             },
-          },
-        }),
+          }),
+        ),
       );
       const previousCwd = process.cwd();
       process.chdir(project);
@@ -161,15 +158,7 @@ export default definePack({
       });
       try {
         const emitted: Array<{ fileName?: string; source?: string | Uint8Array }> = [];
-        const production = plugin.generateBundle.call({
-          emitFile(asset) {
-            emitted.push(asset);
-            return asset.fileName ?? asset.name ?? 'asset';
-          },
-          getFileName(referenceId) {
-            return referenceId;
-          },
-        });
+        const production = plugin.generateBundle.call(recordNamedBundle(emitted));
         if (!present) {
           await expect(production).rejects.toMatchObject({ code: 'pack-output-reference-missing' });
           expect(emitted.some((asset) => asset.fileName === 'pack-index.json')).toBe(false);
@@ -202,23 +191,15 @@ export default definePack({
   );
 
   it('emits the source-package product through the hashed production sink', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-build-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-build-');
     const assets = resolve(root, 'assets');
     await mkdir(assets);
     await writeFile(resolve(assets, 'fixture.scene'), 'fixture');
     await writeFile(
       resolve(assets, 'fixture.scene.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'fixture.scene',
-        importSettings: {},
-        subAssets: [
-          { guid: GUID, sourceIndex: 0, sourceKey: 'fixture/main', kind: 'fixture-mesh' },
-        ],
-      }),
+      metaFixture('fixture.scene', 'fixture', [
+        { guid: GUID, sourceIndex: 0, sourceKey: 'fixture/main', kind: 'fixture-mesh' },
+      ]),
     );
     const previousCwd = process.cwd();
     process.chdir(root);
@@ -243,18 +224,10 @@ export default definePack({
       plugin.configResolved?.({ base: '/preview/' } as Parameters<
         NonNullable<typeof plugin.configResolved>
       >[0]);
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return `assets/${referenceId}-hash`;
-        },
-      });
-      const catalog = decodeCatalogWire(
-        JSON.parse(String(emitted.find((asset) => asset.fileName === 'pack-index.json')?.source)),
-      ).unwrap();
+      await plugin.generateBundle.call(
+        recordNamedBundle(emitted, (referenceId) => `assets/${referenceId}-hash`),
+      );
+      const catalog = bundleCatalog(emitted);
       const row = catalog.find((entry) => entry.guid.toLowerCase() === GUID);
       expect(row?.packageUrl).toMatch(/^\/preview\/assets\/.*-hash$/);
       expect(row?.publication?.outputs).toEqual([
@@ -274,24 +247,14 @@ export default definePack({
       const warm = pluginPack(options);
       const restored: typeof emitted = [];
       try {
-        await warm.generateBundle.call({
-          emitFile(asset) {
-            restored.push(asset);
-            return asset.fileName ?? asset.name ?? 'asset';
-          },
-          getFileName(referenceId) {
-            return `assets/${referenceId}-hash`;
-          },
-        });
+        await warm.generateBundle.call(
+          recordNamedBundle(restored, (referenceId) => `assets/${referenceId}-hash`),
+        );
         expect(imports).toBe(1);
         expect(
           restored.find((asset) => asset.fileName === `assets/${GUID}-body.bin`)?.source,
         ).toEqual(new Uint8Array([4, 5, 6]));
-        const warmRows = decodeCatalogWire(
-          JSON.parse(
-            String(restored.find((asset) => asset.fileName === 'pack-index.json')?.source),
-          ),
-        ).unwrap();
+        const warmRows = bundleCatalog(restored);
         expect(
           warmRows.find((entry) => entry.guid.toLowerCase() === GUID)?.publication?.outputs,
         ).toEqual(row?.publication?.outputs);
@@ -322,23 +285,15 @@ export default definePack({
   });
 
   it('retains the missing importer module in a failed production build', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-missing-module-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-missing-module-');
     const assets = resolve(root, 'assets');
     await mkdir(assets);
     await writeFile(resolve(assets, 'fixture.scene'), 'fixture');
     await writeFile(
       resolve(assets, 'fixture.scene.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'fixture.scene',
-        importSettings: {},
-        subAssets: [
-          { guid: GUID, sourceIndex: 0, sourceKey: 'fixture/main', kind: 'fixture-mesh' },
-        ],
-      }),
+      metaFixture('fixture.scene', 'fixture', [
+        { guid: GUID, sourceIndex: 0, sourceKey: 'fixture/main', kind: 'fixture-mesh' },
+      ]),
     );
     const missingModule = resolve(root, 'pkg/missing-importer.mjs');
     const importer: Importer = {
@@ -371,27 +326,18 @@ export default definePack({
   });
 
   it('resolves a logical Catalog Pack path back through a symlinked build root', async () => {
-    const project = await mkdtemp(join(tmpdir(), 'forgeax-pack-logical-build-'));
-    roots.push(project);
+    const project = await scratch.make('forgeax-pack-logical-build-');
     const physicalAssets = resolve(project, 'game', 'assets');
     const farmAssets = resolve(project, 'host-games', 'sample', 'assets');
     await mkdir(physicalAssets, { recursive: true });
     await mkdir(dirname(farmAssets), { recursive: true });
     await symlink(physicalAssets, farmAssets);
-    const packSource = JSON.stringify({
-      schemaVersion: '1.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        {
-          guid: GUID,
-          kind: 'fixture-scene',
-          payload: { kind: 'fixture-scene' },
-          refs: [],
-        },
-      ],
-    });
+    const packSource = JSON.stringify(
+      directPackFixture('00000000-0000-4000-8000-000000000003', {
+        output: { kind: 'fixture-scene', payload: { kind: 'fixture-scene' }, refs: [] },
+      }),
+    );
     await writeFile(resolve(physicalAssets, 'scene.pack.json'), packSource);
-    const sourceRevision = `sha256:${createHash('sha256').update(packSource).digest('hex')}`;
 
     const previousCwd = process.cwd();
     process.chdir(project);
@@ -409,28 +355,23 @@ export default definePack({
       plugin.configResolved?.({ base: '/preview/' } as Parameters<
         NonNullable<typeof plugin.configResolved>
       >[0]);
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return `assets/${referenceId}-hash`;
-        },
-      });
+      await plugin.generateBundle.call(
+        recordNamedBundle(emitted, (referenceId) => `assets/${referenceId}-hash`),
+      );
 
-      const catalog = decodeCatalogWire(
-        JSON.parse(String(emitted.find((asset) => asset.fileName === 'pack-index.json')?.source)),
-      ).unwrap();
+      const catalog = bundleCatalog(emitted);
       expect(catalog).toContainEqual(
         expect.objectContaining({
           guid: GUID,
           sourcePath: 'assets/scene.pack.json',
           publication: expect.objectContaining({
             sourcePath: 'assets/scene.pack.json',
-            sourceRevision,
+            sourceRevision: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
           }),
         }),
+      );
+      expect(catalog[0]?.publication?.receipt.sourceRevision).toBe(
+        catalog[0]?.publication?.sourceRevision,
       );
     } finally {
       process.chdir(previousCwd);
@@ -449,37 +390,13 @@ export default definePack({
   });
 
   it('emits ScriptablePack roots and v3 instances as independent production packages', async () => {
-    const project = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-pack-build-'));
+    const project = await scratch.make('forgeax-scriptable-pack-build-');
     await installPackAuthorDependencies(project);
-    roots.push(project);
     const assets = resolve(project, 'assets');
     await mkdir(assets);
     const rootPackageId = '019a0000-0000-7000-8000-000000000011';
     const instancePackageId = '019a0000-0000-7000-8000-000000000012';
-    await writeFile(
-      resolve(assets, 'filter.pack.ts'),
-      `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
-import { ok } from '@forgeax/engine-types';
-
-export default definePack({
-  schemaVersion: '2.0.0',
-  packageId: definePackageId('${rootPackageId}'),
-  parameters: [{ name: 'filter', type: 'enum', values: ['linear', 'nearest'], default: 'linear' }],
-  build({ values }) {
-    return ok({ 'sampler/main': { kind: 'sampler', magFilter: values.filter } });
-  },
-});
-`,
-    );
-    await writeFile(
-      resolve(assets, 'nearest.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: instancePackageId,
-        parent: rootPackageId,
-        values: { filter: 'nearest' },
-      }),
-    );
+    await writeFilterPack(assets, rootPackageId, instancePackageId);
 
     const previousCwd = process.cwd();
     process.chdir(project);
@@ -493,25 +410,17 @@ export default definePack({
       plugin.configResolved?.({ base: '/preview/' } as Parameters<
         NonNullable<typeof plugin.configResolved>
       >[0]);
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return `assets/${referenceId}-hash`;
-        },
-      });
-      const catalog = decodeCatalogWire(
-        JSON.parse(String(emitted.find((asset) => asset.fileName === 'pack-index.json')?.source)),
-      ).unwrap();
+      await plugin.generateBundle.call(
+        recordNamedBundle(emitted, (referenceId) => `assets/${referenceId}-hash`),
+      );
+      const catalog = bundleCatalog(emitted);
       expect(catalog).toHaveLength(2);
       expect(catalog.map((entry) => entry.packageId).sort()).toEqual(
         [rootPackageId, instancePackageId].sort(),
       );
       expect(catalog.every((entry) => entry.sourceKey === 'sampler/main')).toBe(true);
       const packages = emitted
-        .filter((asset) => (asset.fileName ?? asset.name)?.endsWith('.pack.json'))
+        .filter((asset) => (asset.fileName ?? asset.name)?.endsWith('.runtime-pack.json'))
         .map(
           (asset) =>
             JSON.parse(
@@ -532,8 +441,7 @@ export default definePack({
   });
 
   it('cooks direct producer-backed outputs before emitting the production Pack', async () => {
-    const project = await mkdtemp(join(tmpdir(), 'forgeax-direct-pack-build-'));
-    roots.push(project);
+    const project = await scratch.make('forgeax-direct-pack-build-');
     const assets = resolve(project, 'assets');
     await mkdir(assets);
     const packageId = '019a0000-0000-7000-8000-000000000013';
@@ -543,10 +451,8 @@ export default definePack({
     const samplerGuid = AssetGuid.format(AssetGuid.derive(parsedPackageId.value, 'sampler/main'));
     await writeFile(
       resolve(assets, 'direct.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId,
-        assets: {
+      JSON.stringify(
+        directPackFixture(packageId, {
           'sampler/main': {
             kind: 'sampler',
             payload: {
@@ -567,8 +473,8 @@ export default definePack({
             },
             refs: [samplerGuid],
           },
-        },
-      }),
+        }),
+      ),
     );
     const cooker: NativeCooker = {
       key: 'particle-effect',
@@ -604,18 +510,10 @@ export default definePack({
       plugin.configResolved?.({ base: '/preview/' } as Parameters<
         NonNullable<typeof plugin.configResolved>
       >[0]);
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName(referenceId) {
-          return `assets/${referenceId}-hash`;
-        },
-      });
-      const catalog = decodeCatalogWire(
-        JSON.parse(String(emitted.find((asset) => asset.fileName === 'pack-index.json')?.source)),
-      ).unwrap();
+      await plugin.generateBundle.call(
+        recordNamedBundle(emitted, (referenceId) => `assets/${referenceId}-hash`),
+      );
+      const catalog = bundleCatalog(emitted);
       const particle = catalog.find((entry) => entry.guid === particleGuid);
       expect(particle).toMatchObject({
         guid: particleGuid,
@@ -626,7 +524,7 @@ export default definePack({
         refs: [samplerGuid],
       });
       const packageAsset = emitted.find((asset) =>
-        asset.fileName?.endsWith(`${packageId}.pack.json`),
+        asset.fileName?.endsWith(`${packageId}.runtime-pack.json`),
       );
       expect(packageAsset).toBeDefined();
       if (packageAsset === undefined) throw new Error('expected the direct Pack output');

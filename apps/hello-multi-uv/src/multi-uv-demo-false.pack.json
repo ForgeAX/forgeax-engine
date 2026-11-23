@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "4950c480-8910-553f-879a-0b19ecb1b72a",
+  "schemaVersion": "3.0.0",
+  "packageId": "aa71a10b-ef36-58b6-90f0-2cb8100a21e3",
+  "assets": {
+    "multi-uv-demo-false.wgsl": {
       "kind": "material",
-      "sourceKey": "multi-uv-demo-false.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -16,14 +14,31 @@
               "vertexEntry": "vs_main",
               "fragmentEntry": "fs_main"
             },
-            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
           }
         ],
         "parameters": [
-          { "name": "baseColor", "type": "color" },
-          { "name": "baseColorUvTransform", "type": "vec4" },
-          { "name": "baseColorTexture", "type": "texture" },
-          { "name": "detailTexture", "type": "texture" }
+          {
+            "name": "baseColor",
+            "type": "color"
+          },
+          {
+            "name": "baseColorUvTransform",
+            "type": "vec4"
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          },
+          {
+            "name": "detailTexture",
+            "type": "texture"
+          }
         ],
         "values": {
           "baseColor": [0.7, 0.7, 0.7, 1],
@@ -32,5 +47,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

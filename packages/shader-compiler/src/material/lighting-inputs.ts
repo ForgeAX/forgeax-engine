@@ -50,13 +50,13 @@ export function materialLightingModule(derived: DerivedMaterialInterface): strin
   const b = materialLightingInputBindings(derived.userRegionBindingEnd);
   return `#define_import_path ${MATERIAL_LIGHTING_INPUT_MODULE}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms}
-@group(1) @binding(${b.irradianceMap}) var irradianceMap: texture_cube<f32>;
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
+@group(1) @binding(${b.skySh}) var<uniform> skySh: SkyShPolynomial;
 @group(1) @binding(${b.irradianceSampler}) var irradianceSampler: sampler;
 @group(1) @binding(${b.prefilterMap}) var prefilterMap: texture_2d<f32>;
 @group(1) @binding(${b.prefilterSampler}) var prefilterSampler: sampler;
 @group(1) @binding(${b.brdfLut}) var brdfLut: texture_2d<f32>;
 @group(1) @binding(${b.skylight}) var<uniform> skylight: SkylightUniforms;
-@group(1) @binding(${b.skylightPrefilterMap}) var skylightPrefilterMap: texture_2d<f32>;
 `;
 }
 
@@ -81,11 +81,11 @@ function importedName(name: string): string {
 }
 
 function resourceMatches(name: string, entry: BindGroupLayoutEntry): boolean {
-  if (name === 'skylight') return entry.buffer?.type === 'uniform';
+  if (name === 'skylight' || name === 'skySh') return entry.buffer?.type === 'uniform';
   if (name.endsWith('Sampler'))
     return entry.sampler !== undefined && entry.sampler.type !== 'comparison';
   return (
-    entry.texture?.viewDimension === (name === 'irradianceMap' ? 'cube' : '2d') &&
+    entry.texture?.viewDimension === '2d' &&
     entry.texture.multisampled !== true &&
     (entry.texture.sampleType === 'float' || entry.texture.sampleType === 'unfilterable-float')
   );

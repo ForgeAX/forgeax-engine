@@ -347,3 +347,49 @@ it.each([
   closure.set('section/0/material', { ...material, passes: [first, ...rest] });
   expect(terrainDerivedClosureValid(root, closure)).toBe(false);
 });
+
+it('retains authored controls and admits the shared Terrain detail through its canonical binding', () => {
+  const material: MaterialAsset = {
+    kind: 'material',
+    parameters: standardSurfaceParameters([]),
+    passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+  };
+  const bias = {
+    kind: 'gpu-texture',
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    shape: { viewDimension: '2d', extent: { width: 128, height: 128 } },
+    mips: { kind: 'generate' },
+    source: { kind: 'generated', generator: 'generator', output: 'bias' },
+  } as const;
+  const terrain = source(3, 2, [0, 0, 0, 1, 1, 1]);
+  const detailed = { ...terrain, weightDetail: { texture: 'bias', period: 48, strength: 2 } };
+  const assets = { material, bias };
+  const plain = buildTerrainAssets(terrain, (key) => key, assets).unwrap();
+  const built = buildTerrainAssets(detailed, (key) => key, assets).unwrap();
+  expect(built.height).toEqual(plain.height);
+  expect(built['section/0/weights']).toEqual(plain['section/0/weights']);
+  expect(built['section/1/weights']).toEqual(plain['section/1/weights']);
+  const root = built.terrain;
+  const section = built['section/0/material'];
+  if (root?.kind !== 'terrain' || section?.kind !== 'material')
+    throw new Error('expected terrain output');
+  const closure = new Map<string, Asset>(Object.entries({ ...assets, ...built }));
+  expect(terrainDerivedClosureValid(root, closure)).toBe(true);
+  closure.delete('bias');
+  expect(terrainDerivedClosureValid(root, closure)).toBe(false);
+  closure.set('bias', bias);
+  closure.set('section/0/material', {
+    ...section,
+    values: { ...section.values, terrainWeightDetailParams: [1 / 24, 2] },
+  });
+  expect(terrainDerivedClosureValid(root, closure)).toBe(false);
+  expect(buildTerrainAssets(detailed, (key) => key, { material }).ok).toBe(false);
+  expect(
+    buildTerrainAssets(detailed, (key) => key, {
+      material,
+      bias: { ...bias, colorSpace: 'srgb', format: 'rgba8unorm-srgb' },
+    }).ok,
+  ).toBe(false);
+  expect(cookTerrain(detailed, { kind: 'ids', maxWeightError: 0.001 }).ok).toBe(false);
+});

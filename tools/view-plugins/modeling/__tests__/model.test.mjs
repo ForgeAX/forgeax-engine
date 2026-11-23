@@ -88,14 +88,16 @@ test('highlight overlays add or remove one preview overlay key', () => {
 
 test('model.* calls go through the Engine workspace call service with fixed render defaults', async () => {
  const calls = [];
- const ops = modelingOperations(async (service, payload) => { calls.push([service, payload]); return {}; });
- await ops.render({ source: 'a.pack.ts', views: ['top'] });
+ const ops = modelingOperations(async (service, payload, signal) => { calls.push([service, payload, signal]); return {}; });
+ const { signal } = new AbortController();
+ await ops.render({ source: 'a.pack.ts', views: ['top'] }, signal);
  await ops.select({ source: 'a.pack.ts', selector: 'sel.all()' });
  await ops.synthesize({ source: 'a.pack.ts', pick: { faces: [1] } });
  assert.equal(calls.every(([service]) => service === ENGINE_WORKSPACE_CALL_SERVICE), true);
  assert.deepEqual(calls.map(([, p]) => p.operation), ['model.render', 'model.select', 'model.synthesize']);
  assert.deepEqual(calls[0][1].args.views, ['top']);
  assert.equal(calls[0][1].args.projection, 'orthographic');
+ assert.equal(calls[0][2], signal);
  assert.equal(calls[1][1].args.highlight, true);
  assert.ok(calls.every(([, p]) => p.args.timeoutMs === CAPTURE_TIMEOUT_MS));
 });

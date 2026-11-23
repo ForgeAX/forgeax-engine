@@ -134,7 +134,8 @@ export interface VertexAttributeMap {
   uv?: ArrayBuffer | Float32Array | Uint16Array;
   tangent?: ArrayBuffer | Float32Array | Uint16Array;
   skinIndex?: ArrayBuffer | Float32Array | Uint16Array;
-  skinWeight?: ArrayBuffer | Float32Array | Uint16Array;
+  /** Float weights or normalized unsigned integer weights decoded by the vertex input. */
+  skinWeight?: ArrayBuffer | Float32Array | Uint8Array | Uint16Array;
   /** UV set 1 (feat-20260629-multi-uv-set-support m3-w3, pre-added by M1 for bridge typecheck). */
   uv1?: ArrayBuffer | Float32Array | Uint16Array;
   /** UV set 2 */
@@ -157,7 +158,13 @@ export interface VertexAttributeMap {
 }
 
 /** Closed storage vocabulary used by the geometry pack boundary. */
-export type VertexAttributeStorage = 'array-buffer' | 'float32' | 'uint16' | 'uint32' | 'other';
+export type VertexAttributeStorage =
+  | 'array-buffer'
+  | 'float32'
+  | 'uint8'
+  | 'uint16'
+  | 'uint32'
+  | 'other';
 
 /** Lossless detail for one rejected canonical vertex attribute pack. */
 export type VertexAttributePackDetail =
@@ -179,7 +186,7 @@ export type VertexAttributePackDetail =
   | {
       readonly field: keyof VertexAttributeMap;
       readonly reason: 'attribute-storage-invalid';
-      readonly expectedStorage: 'float32' | 'uint16' | 'uint32';
+      readonly expectedStorage: 'float32' | 'uint8' | 'uint16' | 'uint32';
       readonly actualStorage: VertexAttributeStorage;
     }
   | {

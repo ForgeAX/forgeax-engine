@@ -276,7 +276,8 @@ function analyzeMaterialShaderSource(
     (match) => Number(match[1]),
   );
   const skin = bindings.includes(1) || bindings.includes(2);
-  const cluster = bindings.some((binding) => binding >= 3);
+  // The View ABI reserves these slots for packed light data and cluster parameters.
+  const cluster = /@group\s*\(\s*0\s*\)\s*@binding\s*\(\s*(?:30|33)\s*\)\s*var\b/u.test(code);
   return {
     vertexInputs: Object.freeze(
       Object.fromEntries(

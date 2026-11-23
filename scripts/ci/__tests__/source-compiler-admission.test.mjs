@@ -60,9 +60,14 @@ test('the original source coverage owner receives parallel compilation and one f
   );
 });
 
-for (const file of [
-  'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
-  'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+for (const [file, workerLimit] of [
+  ['packages/pack/src/__tests__/material-surface-publication.unit.test.ts', '7'],
+  ['packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts', '7'],
+  ['packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts', '7'],
+  [
+    'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
+    '5',
+  ],
 ])
   test(`serial material coverage uses the ordinary heap and spare program capacity for ${file}`, () => {
     const group = coverageGroups(allProjectNames(), 8).find(({ files }) => files.includes(file));
@@ -73,7 +78,7 @@ for (const file of [
     );
     const native = coverageGroupEnvironment(group, resources, undefined, {});
     assert.equal(native.NODE_OPTIONS, '--max-old-space-size=4096');
-    assert.equal(native.FORGEAX_SHADER_COMPILE_WORKERS, '7');
+    assert.equal(native.FORGEAX_SHADER_COMPILE_WORKERS, workerLimit);
     assert.equal(
       coverageGroupEnvironment(group, resources, 4, {}).FORGEAX_SHADER_COMPILE_WORKERS,
       '4',
@@ -91,6 +96,14 @@ for (const file of [
         .FORGEAX_SHADER_COMPILE_WORKERS,
     );
   });
+
+test('the cold Standard source alias has its own coverage process', () => {
+  const file = 'packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts';
+  const owners = coverageGroups(allProjectNames(), 8).filter(({ files }) => files.includes(file));
+  assert.equal(owners.length, 1);
+  assert.deepEqual(owners[0].files, [file]);
+  assert.equal(owners[0].packagesOnly, true);
+});
 
 test('source coverage focus matches the exclusive compiler and heap admission', () => {
   const prior = process.env.FORGEAX_SHADER_COMPILE_WORKERS;

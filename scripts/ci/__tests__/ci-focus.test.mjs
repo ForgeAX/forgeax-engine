@@ -168,6 +168,18 @@ test('focused and full Smoke routes carry 300 through all four shards', () => {
   assert.doesNotMatch(workflow, /--allow-blocked/);
 });
 
+test('retains the procedural GI smoke while deferring its Sponza app build', () => {
+  const gi = focusPlan('smoke', 'hello-gi/smoke');
+  assert.equal(gi.entry.gateId, 'hello-gi/smoke');
+  assert.equal(gi.frames, 60);
+  assert.deepEqual(gi.apps, []);
+
+  const full = focusPlan('smoke', 'all');
+  assert.ok(full.entries.some((entry) => entry.gateId === gi.entry.gateId));
+  assert.ok(!full.apps.includes('apps/hello/gi'));
+  assert.ok(full.apps.includes('apps/hello/gltf-instancing'));
+});
+
 test('Boss Lightning full Smoke executes every native owner exactly once', () => {
   const manifest = JSON.parse(readFileSync('apps/hello/boss-lightning/package.json', 'utf8'));
   const entries = focusPlan('smoke', 'all').entries.filter(
@@ -254,6 +266,15 @@ test('a DevKit target lifetime unit gate consumes package outputs without compil
   assert.notEqual(focusPlan('unit', '@forgeax/engine-devkit').packagesOnly, true);
 });
 
+test('managed scene recording uses the fixture-owned shader manifest in package-only Focus', () => {
+  const file = 'packages/render/src/__tests__/managed-scene-recording.integration.test.ts';
+  const plan = focusPlan('unit', file);
+  assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+  assert.ok(plan.args.includes('@forgeax/engine-render'));
+  assert.ok(plan.args.includes('--passWithNoTests=false'));
+  assert.equal(plan.args.at(-1), file);
+});
+
 test('compiler unit bootstrap builds packages without precompiling the compiler product', () => {
   const owner = '@forgeax/engine-shader-compiler';
   const file =
@@ -328,6 +349,20 @@ test('template Browser, template unit and independent no-View Focus skip compile
     'scripts/build.mjs',
     '--packages-only',
   ]);
+});
+
+test('core Browser Focus enforces the CI case and device budgets', () => {
+  const file = 'packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts';
+  const previous = process.env.FORGEAX_CI_CORE_VALIDATION;
+  try {
+    process.env.FORGEAX_CI_CORE_VALIDATION = '1';
+    assert.equal(focusPlan('browser', file).env.FORGEAX_BROWSER_COST_REPORT, '1');
+    delete process.env.FORGEAX_CI_CORE_VALIDATION;
+    assert.equal(focusPlan('browser', file).env, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.FORGEAX_CI_CORE_VALIDATION;
+    else process.env.FORGEAX_CI_CORE_VALIDATION = previous;
+  }
 });
 
 test('CPU Node and Modeling focus retain package builds without a GPU product prerequisite', () => {

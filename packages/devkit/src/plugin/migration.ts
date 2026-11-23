@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -15,9 +14,12 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { AssetGuid, PackageId, parsePackSourceJson } from '@forgeax/engine-pack/source';
 import { GameProjectSchema } from '@forgeax/engine-project';
 import ts from 'typescript';
-import { build } from 'vite';
 import { discoverPluginAssets, pluginAssetClosure } from '../build/plugin-assets.js';
-import { pluginProgramSource, pluginRuntimeProjection } from '../build/plugin-programs.js';
+import {
+  compilePluginAuthoringCandidate,
+  copyProjectSourceCandidate,
+  pluginProgramSource,
+} from '../build/plugin-programs.js';
 import { isFilesystemPathWithin } from '../filesystem-path.js';
 import { commandError } from '../project.js';
 import { projectToolProjection } from '../tools/project-tools.js';
@@ -74,9 +76,10 @@ function entries(value: unknown, path: string): Entry[] {
 }
 
 /** Deliberately recognizes the finite static Group form, never guesses dynamic composition. */
-export function migrateStaticGroups(source: string, path: string): string {
+export function migrateStaticGroups(source: string, path: string, parsed?: ts.SourceFile): string {
   if (!/\b(?:definePluginGroup|usePlugin)\b/.test(source)) return source;
-  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const file =
+    parsed ?? ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const edits: { start: number; end: number; text: string }[] = [];
   const groupNames = new Set<string>(),
     useNames = new Set<string>();
@@ -346,15 +349,7 @@ export const scene = { inject: ['assets', 'world', 'pluginPrograms'], async appl
     parsePackSourceJson(pack).unwrap();
     await mkdir(dirname(output), { recursive: true });
     temporary = await mkdtemp(resolve(dirname(output), `.${basename(output)}-candidate-`));
-    await cp(root, temporary, {
-      recursive: true,
-      filter: (path) =>
-        !relative(root, path)
-          .split(/[\\/]/)
-          .some((part) =>
-            ['.git', 'node_modules', '.forgeax', 'dist', '.worktrees'].includes(part),
-          ),
-    });
+    await copyProjectSourceCandidate(root, temporary);
     const candidateRoot = temporary;
     async function migrateDirectory(path: string): Promise<void> {
       for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -375,7 +370,7 @@ export const scene = { inject: ['assets', 'world', 'pluginPrograms'], async appl
             ts.forEachChild(node, check);
           }
           check(ast);
-          const migrated = migrateStaticGroups(code, relative(candidateRoot, file));
+          const migrated = migrateStaticGroups(code, relative(candidateRoot, file), ast);
           if (migrated !== code) await writeFile(file, migrated);
         }
       }
@@ -400,32 +395,16 @@ export const scene = { inject: ['assets', 'world', 'pluginPrograms'], async appl
     }
     const inventory = await discoverPluginAssets({ root: temporary, assetRoots: ['assets'] });
     const { tools } = await projectToolProjection(temporary, inventory);
-    for (const [target, guid] of Object.entries(roots)) {
-      const input = resolve(temporary, '.forgeax/migration', `${target}.ts`);
-      await mkdir(dirname(input), { recursive: true });
-      await writeFile(
-        input,
-        `${pluginProgramSource(
-          pluginAssetClosure(inventory, guid),
-          target as 'build' | 'host' | 'engine' | 'frontend',
-          [],
-          tools,
-          temporary,
-        )}\nexport const validation = createPrograms("migration", "candidate", 0);`,
-      );
-      await build({
+    for (const [realm, guid] of Object.entries(roots)) {
+      const target = realm as 'build' | 'host' | 'engine' | 'frontend';
+      await compilePluginAuthoringCandidate({
         root: temporary,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [pluginRuntimeProjection(temporary)],
-        build: {
-          write: false,
-          ...(target === 'build' || target === 'host'
-            ? { ssr: input }
-            : { lib: { entry: input, formats: ['es'] as 'es'[], fileName: 'candidate' } }),
-          target: 'esnext',
-          minify: false,
-        },
+        input: resolve(temporary, '.forgeax/migration', `${target}.ts`),
+        source:
+          pluginProgramSource(pluginAssetClosure(inventory, guid), target, [], tools, temporary) +
+          '\nexport const validation = createPrograms("migration", "candidate", 0);',
+        target,
+        browserFileName: 'candidate',
       });
     }
     await rm(resolve(temporary, '.forgeax'), { recursive: true, force: true });

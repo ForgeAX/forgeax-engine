@@ -1,9 +1,5 @@
-import {
-  publishShaderProgramTemplates,
-  readShaderProgramTemplates,
-  type ShaderProgramTemplate,
-  type ShaderTemplateManifest,
-} from '@forgeax/engine-shader';
+import type { ShaderTemplateManifest } from '@forgeax/engine-shader';
+import { sha256 } from '@forgeax/engine-types';
 import {
   type buildEngineShaderManifest,
   type buildProjectShaderTemplateManifest,
@@ -38,34 +34,39 @@ export function shaderPublicationUrl(publication: object): string {
   return url;
 }
 
-/** Change each distinct source once and republish every original template recipe. */
+/** Replace published source digests while keeping every original template recipe. */
 export function rewriteShaderTemplateSources(
   manifest: ShaderTemplateManifest,
   rewrite: (source: string) => string,
 ) {
-  const programs = readShaderProgramTemplates(manifest.library).unwrap();
-  const changedSources = new Map<string, string>();
-  let patched = 0;
-  const replace = (source: string): string => {
-    const found = changedSources.get(source);
-    if (found !== undefined) return found;
-    const replacement = rewrite(source);
-    if (replacement !== source) patched++;
-    changedSources.set(source, replacement);
-    return replacement;
-  };
-  const templates = new Map<string, ShaderProgramTemplate>();
-  for (const [identifier, { template }] of programs) {
-    templates.set(identifier, {
-      ...template,
-      source: replace(template.source),
-      imports: Object.fromEntries(
-        Object.entries(template.imports).map(([name, source]) => [name, replace(source)]),
-      ),
-    });
-  }
+  const { library } = manifest;
+  const replacements = new Map<string, string>();
+  const sources = Object.fromEntries(
+    Object.entries(library.sources).map(([digest, source]) => {
+      const replacement = rewrite(source);
+      if (replacement === source) return [digest, source];
+      const next = sha256(replacement);
+      replacements.set(digest, next);
+      return [next, replacement];
+    }),
+  );
+  if (replacements.size === 0) return { manifest, patched: 0 };
+
+  const currentDigest = (digest: string) => replacements.get(digest) ?? digest;
+  const programs = Object.fromEntries(
+    Object.entries(library.programs).map(([identifier, template]) => [
+      identifier,
+      {
+        ...template,
+        source: currentDigest(template.source),
+        imports: Object.fromEntries(
+          Object.entries(template.imports).map(([name, digest]) => [name, currentDigest(digest)]),
+        ),
+      },
+    ]),
+  );
   return {
-    manifest: { ...manifest, library: publishShaderProgramTemplates(templates).unwrap() },
-    patched,
+    manifest: { ...manifest, library: { ...library, sources, programs } },
+    patched: replacements.size,
   };
 }

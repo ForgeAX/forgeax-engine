@@ -7,25 +7,20 @@ import {
   verifyInstanceBoundaries,
   verifyMaterialInstances,
 } from './node-material-instance.fixture';
-import { comparePixels, displayPixels } from './render.fixture';
+import { browserRendererFixture, comparePixels, displayPixels } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
+
+const rendererFor = browserRendererFixture();
 
 it.each(instanceModes)('matches independent r187 %s material instances and shared edits', {
   timeout: 120000,
 }, async (mode) => {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 128;
-  const renderer = new WebGPURenderer({ canvas });
-  try {
-    await verifyMaterialInstances(renderer, mode, async (name, frame, scene, camera) => {
-      const reference = await renderReference(scene, camera);
-      await saveBrowserEvidence(`r187-material-instance-${name}`, frame, reference);
-      comparePixels(displayPixels(frame), reference);
-      if (mode === 'dashed') comparePrimitivePixels(displayPixels(frame), reference, 128);
-    });
-  } finally {
-    await renderer.dispose();
-  }
+  await verifyMaterialInstances(rendererFor(), mode, async (name, frame, scene, camera) => {
+    const reference = await renderReference(scene, camera);
+    await saveBrowserEvidence(`r187-material-instance-${name}`, frame, reference);
+    comparePixels(displayPixels(frame), reference);
+    if (mode === 'dashed') comparePrimitivePixels(displayPixels(frame), reference, 128);
+  });
 });
 
 it('rejects unsupported instance boundaries before publication and recovers on the browser', {

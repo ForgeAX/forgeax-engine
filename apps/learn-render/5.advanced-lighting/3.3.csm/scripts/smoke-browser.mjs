@@ -159,19 +159,24 @@ function isIndexedDraw(event) {
 // its content is rastered either directly into that layer or into the
 // retained static layer and copied in before the dynamic pass loads it.
 function csmSampledShadowView(events) {
-  const viewBglIds = new Set(
-    events
-      .filter((event) => event.kind === 'createBindGroupLayout' && event.desc?.label === 'pbr-view-bgl')
-      .map((event) => event.handleId),
-  );
-  for (const group of events) {
-    if (group.kind !== 'createBindGroup' || !viewBglIds.has(group.layoutHandleId)) continue;
+  for (const bind of events) {
+    if (bind.kind !== 'setBindGroup' || bind.index !== 0 || bind.passHandleId === undefined)
+      continue;
+    const group = events.find(
+      (event) => event.kind === 'createBindGroup' && event.handleId === bind.bindGroupHandleId,
+    );
+    const layout = events.find(
+      (event) => event.kind === 'createBindGroupLayout' && event.handleId === group?.layoutHandleId,
+    );
+    const depth = layout?.desc?.entries?.find((entry) => entry.binding === 3)?.texture;
+    if (depth?.sampleType !== 'depth' || depth.viewDimension !== '2d-array') continue;
     const viewId = resourceIdForBinding(group, 3);
     const view = events.find((event) => event.kind === 'createTextureView' && event.resultHandleId === viewId);
     const texture = events.find(
       (event) => event.kind === 'createTexture' && event.handleId === view?.sourceHandleId,
     );
-    if (texture?.desc?.size?.depthOrArrayLayers === CSM_CASCADE_COUNT) return { view, texture };
+    if (texture?.desc?.size?.depthOrArrayLayers === CSM_CASCADE_COUNT)
+      return { bind, group, layout, view, texture };
   }
   return undefined;
 }
@@ -285,44 +290,49 @@ function assertCsmCascadeLayers(cascades) {
   );
 }
 
+function shaderFunctionBody(shaderCode, name) {
+  const compact = shaderCode.replace(/\s+/g, '');
+  const start = compact.indexOf(`fn${name}`);
+  if (start < 0) throw new Error(`compiled CSM helper is missing: ${name}`);
+  const open = compact.indexOf('{', start);
+  let depth = 1;
+  for (let index = open + 1; index < compact.length; index++) {
+    if (compact[index] === '{') depth++;
+    if (compact[index] === '}' && --depth === 0) return compact.slice(start, index + 1);
+  }
+  throw new Error(`compiled CSM helper is unterminated: ${name}`);
+}
+
 function assertCsmLayerSamplerFormula(shaderCode) {
   let gated = shaderCode;
   if (process.env.FALSIFY === 'force-csm-sampler-layer-formula') {
     gated = gated.replace(/let\s+shadowLayer(_\d+)?\s*=\s*i32\([^;]*\blayer(?:_\d+)?\b[^;]*;/, 'let shadowLayer$1 = 0i;');
     console.log('[csm] FALSIFY=force-csm-sampler-layer-formula -- pinned sampler to layer 0');
   }
-  const compact = gated.replace(/\s+/g, '');
-  const body = (name) => {
-    const start = compact.indexOf(`fn${name}`);
-    if (start < 0) throw new Error(`compiled CSM helper is missing: ${name}`);
-    const open = compact.indexOf('{', start);
-    let depth = 1;
-    for (let index = open + 1; index < compact.length; index++) {
-      if (compact[index] === '{') depth++;
-      if (compact[index] === '}' && --depth === 0) return compact.slice(start, index + 1);
-    }
-    throw new Error(`compiled CSM helper is unterminated: ${name}`);
-  };
-  const pcss = body('_samplePcssForCascade');
-  const sample = body('_sampleShadowForCascade');
+  const body = (name) => shaderFunctionBody(gated, name);
+  const pcss = body('sampleDirectionalPcss');
+  const cascade = body('_sampleShadowForCascade');
+  const sample = body('sampleDirectionalShadowClip');
   const plane = body('_directionalPlaneCompare');
   const comparison = body('shadow_sample_compare');
   const point = body('_directionalPointCompare');
   const vogel = body('_directionalVogel');
-  const soft = body('_directionalSoft');
-  const planeGradient = pcss.match(/let(\w+)=_directionalReceiverPlaneGradient[^;]*;/)?.[1];
+  const soft = body('sampleDirectionalSoftPcf');
+  const sized = body('sampleDirectionalSizedPcf');
+  const planeGradient = pcss.match(/,(planeGradient(?:_\d+)?):vec2<f32>,/)?.[1];
   if (planeGradient === undefined) throw new Error('PCSS receiver-plane gradient is missing');
   // Follow logical layer -> family base -> filter helper -> physical depth read.
   // Locals and functions may carry Naga's composition/alpha-renaming suffixes.
   const required = [
+    [/let(\w+)=sampleDirectionalShadowClip\w*\([^;]*,layer(?:_\d+)?,[^;]*,layerBase(?:_\d+)?,[^;]*\);return\1;/, cascade],
     [/let(?:tileUv|uv)(?:_\d+)?=vec2<f32>\([^;]*projCoords(?:_\d+)?\.x[^;]*projCoords(?:_\d+)?\.y[^;]*\);/, sample],
     [/letshadowLayer(?:_\d+)?=i32\(\(layer(?:_\d+)?\+layerBase(?:_\d+)?\)\);/, sample],
     [/lettileLo(?:_\d+)?=vec2<f32>\(\(1f\/texelDims[^;]*\);/, sample],
     [/lettileHi(?:_\d+)?=\(vec2\(1f\)-tileLo(?:_\d+)?\);/, sample],
-    [/letoffsetUv(?:_\d+)?=clamp\([^;]*,tileLo(?:_\d+)?,tileHi(?:_\d+)?\);/, sample],
-    [/_directionalPlaneCompare[^;(]*\(offsetUv(?:_\d+)?,shadowLayer(?:_\d+)?,[^;]*adjustedDepth(?:_\d+)?[^;]*\);/, sample],
+    [/letoffsetUv(?:_\d+)?=clamp\([^;]*,texel(?:_\d+)?,tileHi(?:_\d+)?\);/, sized],
+    [/_directionalPlaneCompare[^;(]*\(offsetUv(?:_\d+)?,layer(?:_\d+)?,[^;]*depth(?:_\d+)?[^;]*\);/, sized],
     [/shadow_load_raw_depth[^;]*,i32\(layer(?:_\d+)?\)\);/, pcss],
-    [new RegExp(String.raw`lettapDepth(?:_\d+)?=max\(0f,\(compareDepth(?:_\d+)?\+max\(0f,dot\(${planeGradient},[^;]*;`), pcss],
+    [new RegExp(String.raw`lettapDepth(?:_\d+)?=max\(0f,\(biasedDepth(?:_\d+)?\+max\(0f,dot\(${planeGradient},[^;]*;`), pcss],
     [/shadow_sample_compare[^;]*,i32\(layer(?:_\d+)?\),tapDepth(?:_\d+)?\);/, pcss],
     [/shadow_sample_compare[^;]*,layer(?:_\d+)?,depth(?:_\d+)?\)/, plane],
     [/textureSampleCompareLevel\([^;]*,layer(?:_\d+)?,depthRef(?:_\d+)?\)/, comparison],
@@ -458,6 +468,100 @@ function csmCasterSelectors(tape, handleId) {
   });
 }
 
+function bindGroup(events, bind) {
+  return events.find(
+    (event) => event.kind === 'createBindGroup' && event.handleId === bind?.bindGroupHandleId,
+  );
+}
+
+function boundDraw(events, bind, acceptsDraw) {
+  const afterBind = events.slice(events.indexOf(bind) + 1).filter(
+    (event) => event.passHandleId === bind.passHandleId,
+  );
+  const draw = afterBind.findIndex(acceptsDraw);
+  if (draw < 0 || afterBind.slice(0, draw).some(
+    (event) => event.kind === 'setBindGroup' && event.index === bind.index,
+  )) return undefined;
+  const drawEvent = afterBind[draw];
+  const beforeDraw = events.slice(0, events.indexOf(drawEvent));
+  const pipelineId = beforeDraw.findLast(
+    (event) => event.kind === 'setPipeline' && event.passHandleId === bind.passHandleId,
+  )?.pipelineHandleId;
+  const pipeline = events.find(
+    (event) => event.kind === 'createRenderPipeline' && event.handleId === pipelineId,
+  );
+  const shader = events.find(
+    (event) => event.kind === 'createShaderModule' && event.handleId === pipeline?.fragmentShaderModuleHandleId,
+  );
+  return { draw: drawEvent, pipeline, shaderCode: shader?.wgslCode };
+}
+
+function assertCsmProjectionShader(shaderCode) {
+  const cascade = shaderFunctionBody(shaderCode, 'screenDirectionalCascade');
+  const gather = shaderFunctionBody(shaderCode, 'projectionGather');
+  const pcf = shaderFunctionBody(shaderCode, 'projectionPcf');
+  const row = shaderFunctionBody(shaderCode, 'projectionFiveRow');
+  const layers = shaderFunctionBody(shaderCode, 'shadeDirectionalLayer');
+  let sampling = cascade;
+  if (process.env.FALSIFY === 'force-csm-sampler-layer-formula') {
+    sampling = sampling.replace(/(projectionPcf\([^,]+,)i32\(layer(?:_\d+)?\)/, (_, prefix) => `${prefix}0i`);
+  }
+  if (
+    !/screenDirectionalCascade\([^;]*,layer(?:_\d+)?,/.test(layers) ||
+    !/projectionPcf\(shadowMap[^,]*,i32\(layer(?:_\d+)?\),/.test(sampling) ||
+    !/projectionGather\(atlas(?:_\d+)?,layer(?:_\d+)?,/.test(pcf) ||
+    !/projectionFiveRow\(atlas(?:_\d+)?,layer(?:_\d+)?,/.test(pcf) ||
+    !/projectionGather\(atlas(?:_\d+)?,layer(?:_\d+)?,/.test(row) ||
+    !/textureGather\([^;]*,layer(?:_\d+)?\)/.test(gather)
+  ) {
+    throw new Error('CSM projected sampler lost the selected cascade layer');
+  }
+}
+
+function assertCsmScreenMask(events, projection) {
+  const pass = events.find(
+    (event) => event.kind === 'beginRenderPass' && event.passHandleId === projection.draw.passHandleId,
+  );
+  const mask = pass?.colorAttachmentViewHandleIds[0];
+  if (mask === undefined) throw new Error('CSM projection has no screen-mask attachment');
+  const consumer = events.slice(events.indexOf(projection.draw) + 1).find((event) =>
+    event.kind === 'setBindGroup' && event.index === 0 &&
+    resourceIdForBinding(bindGroup(events, event), 29) === mask,
+  );
+  const base = consumer === undefined ? undefined : boundDraw(events, consumer, isIndexedDraw);
+  const entry = 'fs_forward_sun_shadow';
+  if (
+    base?.pipeline?.desc?.fragment?.entryPoint !== entry ||
+    base.shaderCode === undefined ||
+    !shaderFunctionBody(base.shaderCode, entry).includes('standardForwardProjectedShadow(') ||
+    !/textureLoad\(forwardScreenSurface(?:X_naga_oil_mod_\w+)?[,)]/.test(
+      shaderFunctionBody(base.shaderCode, 'standardForwardProjectedShadow'),
+    )
+  ) {
+    throw new Error('CSM base pass did not draw with the projected shadow mask');
+  }
+  assertCsmLayerSamplerFormula(base.shaderCode);
+  console.log(`[csm] projected receiver mask=${mask} -> indexed Forward base pass`);
+}
+
+function assertCsmReceiver(events, viewBind) {
+  const receiver = boundDraw(events, viewBind, (event) => event.kind === 'draw' || isIndexedDraw(event));
+  if (receiver?.shaderCode === undefined) {
+    throw new Error('CSM receiver draw does not bind and draw from the cascade shadow array view');
+  }
+  if (receiver.pipeline?.desc?.label === 'forward-directional-shadow') {
+    assertCsmProjectionShader(receiver.shaderCode);
+    assertCsmScreenMask(events, receiver);
+    return receiver.draw;
+  }
+  const terms = ['pickCascadeLayer', '_sampleShadowForCascade', 'cascadeBlend', 'textureSampleCompareLevel'];
+  if (!isIndexedDraw(receiver.draw) || terms.some((term) => !receiver.shaderCode.includes(term))) {
+    throw new Error('CSM native receiver shader does not retain cascade selection and layer sampling');
+  }
+  assertCsmLayerSamplerFormula(receiver.shaderCode);
+  return receiver.draw;
+}
+
 /** @param {{ tape: { events: readonly object[], bootstrap?: readonly object[], blobPool: Map<string, ArrayBuffer> } }} input */
 function assertCsmTape({ tape }) {
   const events = [
@@ -468,19 +572,10 @@ function assertCsmTape({ tape }) {
   ];
   const cascades = csmCascadeLayers(events);
   assertCsmCascadeLayers(cascades);
-  const depthViewId = csmSampledShadowView(events)?.view.resultHandleId;
-  const viewBgl = events.find(
-    (event) => event.kind === 'createBindGroupLayout' && event.desc?.label === 'pbr-view-bgl',
-  );
-  const viewGroup = events.find(
-    (event) =>
-      event.kind === 'createBindGroup' &&
-      event.layoutHandleId === viewBgl?.handleId &&
-      event.resourceHandleIds?.some((id) => id === depthViewId),
-  );
-  if (!viewGroup) {
-    throw new Error('pbr-view bind group does not retain the cascade depth view');
-  }
+  const sampled = csmSampledShadowView(events);
+  if (sampled === undefined) throw new Error('CSM receiver did not bind the cascade depth array');
+  const { group: viewGroup, layout: viewBgl, bind: viewBind } = sampled;
+  const depthViewId = sampled.view.resultHandleId;
   const sampledDepthBinding = viewBgl?.desc?.entries?.find((entry) => entry.binding === 3);
   const comparisonSamplerBinding = viewBgl?.desc?.entries?.find((entry) => entry.binding === 4);
   const sampledDepthViewId =
@@ -616,71 +711,10 @@ function assertCsmTape({ tape }) {
     );
   }
 
-  const receiverPass = events
-    .map((event, index) => ({ event, index }))
-    .find(({ event, index }) => {
-      if (
-        event.kind !== 'beginRenderPass' ||
-        !event.colorAttachmentViewHandleIds.some((handleId) => typeof handleId === 'string')
-      ) {
-        return false;
-      }
-      const end = events.findIndex(
-        (candidate, candidateIndex) =>
-          candidateIndex > index && candidate.kind === 'endRenderPass',
-      );
-      return events
-        .slice(index, end < 0 ? events.length : end)
-        .some(isIndexedDraw);
-    });
-  if (receiverPass === undefined) {
-    throw new Error('CSM receiver render pass with indexed draws is missing');
-  }
-  const receiverEnd = events.findIndex(
-    (event, index) => index > receiverPass.index && event.kind === 'endRenderPass',
-  );
-  const receiverBody = events.slice(
-    receiverPass.index,
-    receiverEnd < 0 ? events.length : receiverEnd,
-  );
-  const receiverViewBindIndex = receiverBody.findIndex(
-    (event) =>
-      event.kind === 'setBindGroup' &&
-      event.index === 0 &&
-      event.bindGroupHandleId === viewGroup.handleId,
-  );
-  if (
-    receiverViewBindIndex < 0 ||
-    !receiverBody.slice(receiverViewBindIndex).some(isIndexedDraw) ||
-    resourceIdForBinding(viewGroup, 3) !== depthViewId
-  ) {
-    throw new Error('CSM receiver draw does not bind and draw from the cascade shadow array view');
-  }
-  const receiverPipelineId = receiverBody.find((event) => event.kind === 'setPipeline')?.pipelineHandleId;
-  const receiverPipeline = events.find(
-    (event) => event.kind === 'createRenderPipeline' && event.handleId === receiverPipelineId,
-  );
-  const receiverShader = events.find(
-    (event) =>
-      event.kind === 'createShaderModule' &&
-      event.handleId === receiverPipeline?.fragmentShaderModuleHandleId,
-  );
-  const cascadeShaderTerms = [
-    '_pickCascadeLayer',
-    '_sampleShadowForCascade',
-    'cascadeBlend',
-    'textureSampleCompareLevel',
-  ];
-  if (
-    receiverShader?.wgslCode === undefined ||
-    cascadeShaderTerms.some((term) => !receiverShader.wgslCode.includes(term))
-  ) {
-    throw new Error(`CSM receiver shader does not retain cascade selection/layer sampling: ${receiverShader?.handleId}`);
-  }
-  assertCsmLayerSamplerFormula(receiverShader.wgslCode);
+  const receiverDraw = assertCsmReceiver(events, viewBind);
   console.log(
     `[csm] receiver lineage selectors=${JSON.stringify(selectorValues)} ` +
-      `shadowArray=${depthViewId} draws=${receiverBody.filter(isIndexedDraw).length}`,
+      `shadowArray=${depthViewId} draw=${receiverDraw.kind}`,
   );
   const viewBufferId = resourceIdForBinding(viewGroup, 0);
   const viewBuffer = events.find(

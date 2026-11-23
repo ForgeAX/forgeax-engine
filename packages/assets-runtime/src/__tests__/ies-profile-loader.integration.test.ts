@@ -1,9 +1,9 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { IES_PROFILE_BYTE_LENGTH } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { iesProfileContribution } from '../loaders/ies-profile';
+import { catalogPack } from './fixtures/catalog-pack';
 
 it('loads published IES byte arrays through the owner decoder and rejects nonfinite half floats', async () => {
   const guid = '00000000-0000-7000-8000-000000000126';
@@ -11,34 +11,21 @@ it('loads published IES byte arrays through the owner decoder and rejects nonfin
   for (const high of [0x3c, 0x7c, 0x7d, 0xfc]) {
     const data = new Uint8Array(IES_PROFILE_BYTE_LENGTH);
     data[1] = high;
-    const publication = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath: 'ies.pack',
-      sourceRevision: String(high),
-      packageUrl,
-      pack: {
-        assets: [
-          {
-            guid,
-            kind: 'ies-profile',
-            refs: [],
-            artifacts: {},
-            payload: { kind: 'ies-profile', data: [...data] },
-          },
-        ],
-      },
-    });
+    const publication = catalogPack(
+      [
+        {
+          guid,
+          kind: 'ies-profile',
+          refs: [],
+          artifacts: {},
+          payload: { kind: 'ies-profile', data: [...data] },
+        },
+      ],
+      { sourcePath: 'ies.pack', sourceRevision: String(high), packageUrl },
+    );
     const assets = new AssetRegistry({
       catalog: createCatalogSource({
-        entries: [
-          {
-            guid,
-            kind: 'ies-profile',
-            packageUrl,
-            sourcePath: 'ies.pack',
-            publication: publication.publication,
-          },
-        ],
+        entries: publication.rows,
         fetch: async () => Response.json(publication.pack),
       }),
     });

@@ -50,6 +50,10 @@ test('the SDK only selects compact archive verification for known internal sourc
   const archiveInput = file('scripts/forgeax/sdk-source.mjs');
   assert.equal(sdkPrArchiveProfile({ files: [internal, docs] }), 'pr-consumer');
   assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/render/src/mesh/__tests__/mesh.dawn.test.ts')] }),
+    'pr-consumer',
+  );
+  assert.equal(
     sdkPrArchiveProfile({ files: [file('packages/devkit/src/workspace-provider.ts')] }),
     'pr-consumer',
   );
@@ -57,6 +61,11 @@ test('the SDK only selects compact archive verification for known internal sourc
     sdkPrArchiveProfile({ files: [file('packages/devkit/src/build/bundler.ts')] }),
     'pr-expanded',
   );
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/render/src/index.ts')] }),
+    'pr-expanded',
+  );
+  assert.equal(sdkPrArchiveProfile({ files: [{ ...internal, status: 'added' }] }), 'pr-expanded');
   assert.equal(sdkPrArchiveProfile({ files: [internal, archiveInput] }), 'pr-expanded');
   assert.equal(
     sdkPrArchiveProfile({ files: [file('packages/render/package.json')] }),
@@ -76,6 +85,15 @@ test('the SDK only selects compact archive verification for known internal sourc
   assert.equal(sdkPrArchiveProfile(undefined), 'pr-expanded');
 });
 
+const compactNpm = {
+  ...identity,
+  group: 'npm',
+  partition: 'game3d',
+  workloads: ['game3d-installed'],
+  packageCount: 69,
+};
+const archiveProject = reports.find(({ group }) => group === 'project');
+
 test('the SDK requires an expanded receipt on the expanded route', () => {
   const results = (profile) => reports.map((r) => (r.group === 'npm' ? r : { ...r, profile }));
   assert.throws(
@@ -84,7 +102,7 @@ test('the SDK requires an expanded receipt on the expanded route', () => {
   );
   assert.equal(
     aggregateSdkConsumers(
-      results('pr-expanded').filter(({ group }) => group !== 'source'),
+      [compactNpm, { ...archiveProject, profile: 'pr-expanded' }],
       head,
       version,
       undefined,
@@ -94,18 +112,15 @@ test('the SDK requires an expanded receipt on the expanded route', () => {
   );
 });
 
-test('compact SDK conserves three real consumers while expanded SDK additionally requires source', () => {
-  const compact = reports
-    .filter(({ group }) => group !== 'source')
-    .map((report) =>
-      report.group === 'project'
-        ? { ...report, profile: 'pr-consumer', previewBrowser: { readyFrames: 60 } }
-        : report,
-    );
-  assert.deepEqual(
-    sdkPrConsumerMatrix('pr-consumer').include.map(({ group }) => group),
-    ['project', 'npm', 'npm'],
-  );
+test('compact SDK conserves real archive and installed Game 3D consumers', () => {
+  const compact = [
+    compactNpm,
+    { ...archiveProject, profile: 'pr-consumer', previewBrowser: { readyFrames: 60 } },
+  ];
+  assert.deepEqual(sdkPrConsumerMatrix('pr-consumer').include, [
+    { group: 'project' },
+    { group: 'npm', partition: 'game3d' },
+  ]);
   assert.deepEqual(
     sdkPrConsumerMatrix('pr-expanded').include.map(({ group }) => group),
     ['project', 'source', 'npm', 'npm'],
@@ -603,7 +618,7 @@ test('archive group selection is explicit while release qualification retains th
   const publicSource = source.slice(
     source.indexOf("if (selected('source'))"),
     source.indexOf(
-      "if (selected('project') && expandedArchive)",
+      'const ownsIndependentRun =',
       source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
     ),
   );
@@ -611,7 +626,7 @@ test('archive group selection is explicit while release qualification retains th
   assert.match(publicSource, /verifyPublicSourceViewTool/);
   const installed = source.slice(
     source.indexOf(
-      "if (selected('project') && expandedArchive)",
+      'const ownsIndependentRun =',
       source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
     ),
   );
@@ -699,7 +714,7 @@ test('public source View uses the independently rebuilt Engine packages', async 
   const start = source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'");
   const body = source.slice(
     start,
-    source.indexOf("\n  }\n}\n\nif (selected('project') && expandedArchive)", start),
+    source.indexOf('\n  }\n}\n\n// PRs prove a real clean source template launch', start),
   );
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
     'context',
@@ -726,12 +741,12 @@ test('public source View uses the independently rebuilt Engine packages', async 
   assert.equal(options.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST, undefined);
 });
 
-test('archive project owns independent runs and installed View while source keeps separate inputs', async () => {
+test('expanded PR keeps installed View and reserves independent CLI runs for release', async () => {
   const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
   const body = source
     .slice(
       source.indexOf(
-        "if (selected('project') && expandedArchive)",
+        'const ownsIndependentRun =',
         source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
       ),
       source.indexOf("\nawait sdkStage('verifyImmutableSdkStore'"),
@@ -763,7 +778,13 @@ test('archive project owns independent runs and installed View while source keep
   const independentCommands = [];
   const viewSourceRoots = [];
   const modelingProbes = [];
-  for (const group of ['project', 'source', 'all']) {
+  for (const [group, prPreflight] of [
+    ['project', false],
+    ['source', false],
+    ['all', false],
+    ['project', true],
+    ['source', true],
+  ]) {
     const stages = [];
     await execute(
       group,
@@ -781,7 +802,7 @@ test('archive project owns independent runs and installed View while source keep
           viewSourceRoots.push({ group, root: options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT });
         if (args[0].endsWith('verify-independent-run.mjs'))
           independentCommands.push({
-            group,
+            group: prPreflight ? `pr-${group}` : group,
             executable,
             engine: options.env.FORGEAX_INDEPENDENT_ENGINE_PACKAGE,
           });
@@ -799,12 +820,17 @@ test('archive project owns independent runs and installed View while source keep
       '/project',
       {},
       async ({ sdkRoot, project, evidenceRoot }) => {
-        modelingProbes.push({ group, sdkRoot, project, evidenceRoot });
+        modelingProbes.push({
+          group: prPreflight ? `pr-${group}` : group,
+          sdkRoot,
+          project,
+          evidenceRoot,
+        });
       },
       true,
-      false,
+      prPreflight,
     );
-    observed[group] = stages;
+    observed[prPreflight ? `pr-${group}` : group] = stages;
   }
   assert.deepEqual(observed, {
     project: [
@@ -814,6 +840,11 @@ test('archive project owns independent runs and installed View while source keep
       ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
     ],
     source: [],
+    'pr-project': [
+      'verifyInstalledViewRuntime',
+      ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
+    ],
+    'pr-source': [],
     all: [
       'verifyIndependentRun',
       'verifyPairedViewTool',
@@ -824,7 +855,7 @@ test('archive project owns independent runs and installed View while source keep
   assert.deepEqual(
     modelingProbes,
     process.platform === 'linux'
-      ? ['project', 'all'].map((group) => ({
+      ? ['project', 'all', 'pr-project'].map((group) => ({
           group,
           sdkRoot: '/sdk',
           project: '/project',

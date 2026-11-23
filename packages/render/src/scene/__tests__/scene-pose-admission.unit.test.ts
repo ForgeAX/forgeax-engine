@@ -3,6 +3,8 @@ import { ok } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
+import { RenderScene } from '../render-scene-view';
+import { PreviousPoseRows } from '../scene-pose-admission';
 import { SceneRows, type WorldTransformSpan } from '../scene-rows';
 
 function fixture(count = 128) {
@@ -69,6 +71,32 @@ it('matches ordinary merging for offsets, duplicates, parity, missing rows and h
   assert(updated);
   expect(result.previous.get(updated)).toBe(old);
   expect(world.memoryStats().arena.active).toBe(false);
+});
+
+it('addresses prior poses by commit order when changed slots arrive out of order', () => {
+  const { rows, worlds, entities } = fixture();
+  const held = rows.capture();
+  const order = Array.from(entities, (entity) => (entity * 47) % entities.length);
+  for (const entity of entities) worlds[entity * 16 + 12] = 7;
+  const result = rows.apply([], [{ entities, worlds, rows: order }], true, new World());
+  const history = result.previous;
+  expect(history.size).toBe(order.length);
+  expect([...history.keys()]).toEqual(result.updatedSlots);
+  const old = [...history.values()];
+  expect(old.map((row) => row.slot)).toEqual(order);
+  let calls = 0;
+  history.forEach((before, after, owner) => {
+    expect(owner).toBe(history);
+    expect(after).toBe(result.updatedSlots[calls++]);
+    expect(before).toBe(held.slotAt(after.slot));
+    expect(history.get(after)).toBe(before);
+    expect(history.has({ ...after })).toBe(false);
+  });
+  expect(calls).toBe(order.length);
+  expect([...history][0]).toEqual([result.updatedSlots[0], old[0]]);
+  worlds.fill(0);
+  rows.apply([], [{ entities, worlds }], true, new World());
+  expect([...history.values()]).toEqual(old);
 });
 
 it('denies a later chunk before any write and retries a smaller update on the same healthy World', () => {
@@ -158,4 +186,31 @@ it('preserves strict NaN changes and tiny admission without requesting arena cap
   f.worlds[16 + 12] = 3;
   expect(f.rows.apply([], [{ ...span, rows: [1] }], true, world).updated).toBe(1);
   expect(world.memoryStats().arena.requests).toBe(requests);
+});
+
+it('uses the source World arena for local view movement and reconciles overlapping row replacements', () => {
+  const f = fixture(256),
+    world = new World();
+  const view = new RenderScene(f.rows, f.rows);
+  const floor = world.memoryStats().arena.requests;
+  for (let frame = 1; frame <= 100; frame++) {
+    for (let i = 0; i < f.entities.length; i++) f.worlds[i * 16 + 12] = frame + i;
+    const delta = view.apply([], [{ entities: f.entities, worlds: f.worlds }], world);
+    expect(delta.updated).toBe(256);
+    expect(delta.previous).toBeInstanceOf(PreviousPoseRows);
+    expect(world.memoryStats().arena.usedBytes).toBe(0);
+  }
+  expect(world.memoryStats().arena.requests).toBeGreaterThan(floor);
+  const held = view.slot(7);
+  assert(held);
+  const replacement = { ...held.snapshot, assetHandle: 17 };
+  f.worlds[7 * 16 + 12] = 45;
+  view.apply(
+    [{ kind: 'update', entityKey: 7, snapshot: replacement }],
+    [{ entities: f.entities, worlds: f.worlds, rows: [7] }],
+    world,
+  );
+  expect(view.slot(7)?.snapshot.assetHandle).toBe(17);
+  expect(view.slot(7)?.snapshot.transform.world[12]).toBe(45);
+  expect(held.snapshot.transform.world[12]).toBe(107);
 });

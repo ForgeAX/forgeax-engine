@@ -1723,8 +1723,8 @@ import {
     // (same body); the regression guard retargets at the new file path so
     // a future edit that re-inlines (e.g. paste-in fix-up) defeats the
     // module boundary at lint time.
-    it('default-standard-pbr.wgsl imports forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, applyTBN}', () => {
-      const src = readSource('default-standard-pbr.wgsl');
+    it('physical material inputs use the shared tangent basis to decode the coat normal', () => {
+      const src = readSource('material/standard-physical-inputs.wgsl');
       expect(src).toMatch(/#import\s+forgeax_pbr::tbn::/);
       expect(src).toMatch(/decodeTangentSpaceNormalRg/);
       expect(src).toMatch(/applyTBN/);

@@ -2,6 +2,7 @@ export {
   type BuildDdcInput,
   defaultBuildCacheRoot,
   resolveDdcRoot,
+  resolveRuntimeDdcRoot,
   semanticBuildKey,
 } from './build-cache.js';
 export {
@@ -16,27 +17,17 @@ export {
   type StagedDdcEntry,
 } from './entry-store.js';
 export {
+  type BrowserDdcRecoveryAction,
   DDC_ERROR_CODES,
   type DdcBrowserError,
   type DdcContractErrorCode,
   type DdcEntryErrorCode,
   type DdcErrorCode,
   type DdcErrorRootKind,
+  type DdcRecoveryAction,
   type DdcStoreErrorInit,
 } from './errors.js';
-export { collectDdcGarbage, type DdcGcInput, type DdcGcResult } from './gc.js';
 export { semanticDdcKey } from './key.js';
-export {
-  DDC_LAYOUT_VERSION,
-  type DdcBuildLayout,
-  type DdcLayout,
-  type DdcLayoutError,
-  type DdcLayoutFailure,
-  type DdcLayoutResult,
-  type DdcProjectLayout,
-  type DdcServeOptions,
-  resolveDdcLayout,
-} from './layout.js';
 export {
   type DdcBeginResult,
   type DdcCommitResult,
@@ -45,6 +36,7 @@ export {
   type DdcLease,
   DdcLifecycle,
   type DdcLifecycleState,
+  type DdcPublicationAttempt,
   type DdcRestoreFence,
   type DdcRestoreResult,
   type DdcRollbackSnapshot,
@@ -57,36 +49,3 @@ export {
   type NativeCookCacheOptions,
   type NativeCookGcResult,
 } from './native-cook-cache.js';
-export {
-  type AcceptedPublicationCandidate,
-  type AcceptedPublicationStore,
-  createAcceptedPublicationStore,
-  type ScriptablePackPublicationError,
-  type ScriptablePackPublicationSnapshot,
-} from './publication.js';
-export {
-  assertRuntimeScope,
-  createRuntimeScope,
-  type DdcRuntimeScope,
-} from './runtime-scope.js';
-export {
-  type DdcGenerationCandidate,
-  type DdcGenerationEntryCandidate,
-  DdcGenerationSession,
-  type DdcSessionMetrics,
-  type DdcSessionOptions,
-} from './session.js';
-export {
-  type BrowserDdcRecoveryAction,
-  type BrowserDdcStatus,
-  type BrowserDdcStatusLayer,
-  DDC_STATUS_SCHEMA,
-  type DdcRecoveryAction,
-  type DdcStatus,
-  type DdcStatusHealth,
-  type DdcStatusLayer,
-  type DdcStatusLayerKind,
-  type DdcStatusRootKind,
-  projectDdcStatusForBrowser,
-  serializeDdcStatus,
-} from './status.js';

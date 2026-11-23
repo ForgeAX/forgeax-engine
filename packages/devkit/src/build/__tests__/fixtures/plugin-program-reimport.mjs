@@ -92,7 +92,10 @@ try {
   function checkArchive(source) {
     const archive = JSON.parse(source);
     assert.equal(archive.error, undefined);
-    const programs = Object.values(archive.programs);
+    const programs = Object.values(archive.programs).map((entry) => ({
+      ...archive.graph,
+      ...entry,
+    }));
     assert.equal(programs.length, 1);
     const current = programs[0].imports['@forgeax/engine-scene'];
     assert.match(current, /^sha256:[0-9a-f]{64}$/);

@@ -1,13 +1,55 @@
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, posix, resolve } from 'node:path';
 import { compressZstd } from '@forgeax/engine-codec/encode';
 import { encodeAssetBundle, readAssetBundleTable } from '@forgeax/engine-pack/bundle';
-import type { ArtifactDescriptor } from '@forgeax/engine-types';
+import { type ArtifactDescriptor, type ContentEncoding, sha256 } from '@forgeax/engine-types';
 import { readDeliveryDocument } from './delivery-documents.js';
-import { compressShaderGroups } from './delivery-shader-groups.js';
-import type { DistArtifact } from './dist.js';
+import { type DistArtifact, withDistBytes } from './dist.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
+
+/** Limit shared decompression work; a single larger program remains indivisible. */
+export const SHADER_GROUP_TARGET_BYTES = 1024 * 1024;
+
+export interface ShaderGroupEntry {
+  readonly identity: string;
+  readonly bytes: Uint8Array;
+}
+
+/** Whole programs share compression history without parsing or changing WGSL. */
+export async function compressShaderGroups(entries: readonly ShaderGroupEntry[]) {
+  const groups: ShaderGroupEntry[][] = [];
+  let group: ShaderGroupEntry[] = [],
+    size = 0;
+  for (const entry of entries) {
+    if (group.length > 0 && size + entry.bytes.byteLength > SHADER_GROUP_TARGET_BYTES) {
+      groups.push(group);
+      group = [];
+      size = 0;
+    }
+    group.push(entry);
+    size += entry.bytes.byteLength;
+  }
+  if (group.length > 0) groups.push(group);
+  const output: {
+    bytes: Uint8Array;
+    members: { identity: string; decodedRange: NonNullable<ArtifactDescriptor['decodedRange']> }[];
+  }[] = [];
+  for (const members of groups) {
+    const bytes = new Uint8Array(members.reduce((sum, entry) => sum + entry.bytes.byteLength, 0));
+    let offset = 0;
+    const windows = members.map((entry) => {
+      bytes.set(entry.bytes, offset);
+      const decodedRange = { offset, length: entry.bytes.byteLength };
+      offset += entry.bytes.byteLength;
+      return { identity: entry.identity, decodedRange };
+    });
+    const compressed = await compressZstd(bytes, { level: 19 });
+    if (!compressed.ok)
+      throw new Error(`shader group compression failed: ${compressed.error.code}`);
+    output.push({ bytes: compressed.value, members: windows });
+  }
+  return output;
+}
 
 /** Automatic Bundles stop splitting at this size; one Pack is never split. */
 export const AUTO_BUNDLE_TARGET_BYTES = 8 * 1024 * 1024;
@@ -17,10 +59,9 @@ export interface AssetBundleInput {
   readonly outputRoot: string;
   /** Player artifacts after receipt removal, keyed by dist-relative path. */
   readonly artifacts: ReadonlyMap<string, DistArtifact>;
-  readonly catalog: unknown;
+  readonly sources: ReadonlyMap<string, string>;
   /** Resolve a catalog or Pack URL to its dist-relative artifact path. */
   readonly pathOf: (url: string, from: string) => string | undefined;
-  readonly packIndexPath: string;
   readonly delivery: DevKitDeliveryOptions;
   readonly targetBytes?: number;
   /** Native transports can compress the complete Bundle once instead. */
@@ -57,7 +98,7 @@ interface Window {
   readonly offset: number;
   readonly length: number;
   readonly bundleDigest: string;
-  readonly contentEncoding: 'identity' | 'zstd';
+  readonly contentEncoding: ContentEncoding;
   readonly decodedRange?: ArtifactDescriptor['decodedRange'];
 }
 
@@ -68,22 +109,23 @@ function packAssets(document: PackDocument): readonly { artifacts?: unknown }[] 
   return Array.isArray(assets) ? assets : [];
 }
 
-function bundleable(descriptor: ArtifactDescriptor): boolean {
-  return (
-    descriptor.delivery === undefined &&
-    descriptor.byteRange === undefined &&
-    descriptor.integrity !== undefined
-  );
-}
-
-function* descriptors(
-  document: PackDocument,
-): Generator<[Record<string, ArtifactDescriptor>, string, ArtifactDescriptor]> {
+function* descriptors(input: AssetBundleInput, document: PackDocument, pack: string) {
   for (const asset of packAssets(document)) {
     const artifacts = asset.artifacts;
     if (artifacts === null || typeof artifacts !== 'object') continue;
     const table = artifacts as Record<string, ArtifactDescriptor>;
-    for (const [key, descriptor] of Object.entries(table)) yield [table, key, descriptor];
+    for (const [key, descriptor] of Object.entries(table)) {
+      const path = input.pathOf(descriptor.path, pack);
+      const artifact = path === undefined ? undefined : input.artifacts.get(path);
+      if (path === undefined || artifact === undefined) continue;
+      const identity =
+        descriptor.delivery === undefined &&
+        descriptor.byteRange === undefined &&
+        descriptor.integrity !== undefined
+          ? `${artifact.sha256}:${descriptor.contentEncoding ?? 'identity'}`
+          : undefined;
+      yield { table, key, descriptor, path, artifact, identity };
+    }
   }
 }
 
@@ -112,16 +154,6 @@ function buckets<T>(
   );
 }
 
-/** Every catalog transport keeps Pack location and source path on its rows. */
-export function catalogRows(catalog: unknown): readonly Record<string, unknown>[] {
-  let rows = catalog;
-  for (let depth = 0; depth < 2 && !Array.isArray(rows); depth++)
-    rows = rows !== null && typeof rows === 'object' ? (rows as { entries?: unknown }).entries : [];
-  return Array.isArray(rows) ? rows.filter((row) => row !== null && typeof row === 'object') : [];
-}
-
-const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
-
 async function compressBundleEntry(bytes: Uint8Array, enabled: boolean) {
   if (!enabled || bytes.byteLength < 256) return undefined;
   return compressZstd(bytes, { level: 19 });
@@ -129,12 +161,7 @@ async function compressBundleEntry(bytes: Uint8Array, enabled: boolean) {
 
 /** Group each Pack's non-stream artifacts into Bundles; shared bytes are stored once. */
 export async function planAssetBundles(input: AssetBundleInput): Promise<AssetBundleResult> {
-  const sources = new Map<string, string>();
-  for (const row of catalogRows(input.catalog)) {
-    if (typeof row.packageUrl !== 'string' || typeof row.sourcePath !== 'string') continue;
-    const pack = input.pathOf(row.packageUrl, input.packIndexPath);
-    if (pack !== undefined) sources.set(pack, row.sourcePath.replaceAll('\\', '/'));
-  }
+  const { sources } = input;
   const packs = [...sources.keys()].filter((path) => input.artifacts.has(path)).sort();
 
   const { entries, retained, existing } = await collectEntries(input, packs);
@@ -172,11 +199,8 @@ async function collectEntries(input: AssetBundleInput, packs: readonly string[])
   const existing = new Map<string, Map<string, number>>();
   for (const pack of packs) {
     const document = JSON.parse(await readDeliveryDocument(resolve(input.sourceRoot, pack)));
-    for (const [, , descriptor] of descriptors(document)) {
-      const path = input.pathOf(descriptor.path, pack);
-      const artifact = path === undefined ? undefined : input.artifacts.get(path);
-      if (path === undefined || artifact === undefined) continue;
-      if (!bundleable(descriptor)) {
+    for (const { descriptor, path, artifact, identity } of descriptors(input, document, pack)) {
+      if (identity === undefined) {
         retained.add(path);
         const range = descriptor.byteRange;
         if (range !== undefined && path.startsWith('assets/bundles/')) {
@@ -192,7 +216,6 @@ async function collectEntries(input: AssetBundleInput, packs: readonly string[])
         }
         continue;
       }
-      const identity = `${artifact.sha256}:${descriptor.contentEncoding ?? 'identity'}`;
       const entry = entries.get(identity) ?? {
         path,
         paths: new Set<string>(),
@@ -309,12 +332,15 @@ async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
   const windows = new Map<string, Window>();
   const members = [...entries].sort((a, b) => a.identity.localeCompare(b.identity));
   const stored: Uint8Array[] = [];
-  const encodings: ('identity' | 'zstd')[] = [];
   const locations = new Map<
     string,
-    { index: number; decodedRange?: ArtifactDescriptor['decodedRange'] }
+    {
+      index: number;
+      contentEncoding: ContentEncoding;
+      decodedRange?: ArtifactDescriptor['decodedRange'];
+    }
   >();
-  const shaders = [];
+  const shaders: ShaderGroupEntry[] = [];
   for (const entry of members) {
     const bytes = new Uint8Array(await readFile(resolve(input.sourceRoot, entry.path)));
     sourceBytes += entry.decodedBytes;
@@ -322,51 +348,45 @@ async function writeBundle(input: AssetBundleInput, entries: readonly Entry[]) {
       shaders.push({ identity: entry.identity, bytes });
       continue;
     }
-    locations.set(entry.identity, { index: stored.length });
     const identity = entry.identity.endsWith(':identity');
     const compressed = identity
       ? await compressBundleEntry(bytes, input.compressEntries !== false)
       : undefined;
-    if (compressed?.ok === true && compressed.value.byteLength < bytes.byteLength * 0.9) {
-      stored.push(compressed.value);
-      encodings.push('zstd');
-    } else {
-      stored.push(bytes);
-      encodings.push(identity ? 'identity' : 'zstd');
-    }
+    const smaller = compressed?.ok === true && compressed.value.byteLength < bytes.byteLength * 0.9;
+    locations.set(entry.identity, {
+      index: stored.length,
+      contentEncoding: smaller || !identity ? 'zstd' : 'identity',
+    });
+    stored.push(smaller ? compressed.value : bytes);
   }
   for (const group of await compressShaderGroups(shaders)) {
     const index = stored.length;
     stored.push(group.bytes);
-    encodings.push('zstd');
-    for (const member of group.members)
-      locations.set(member.identity, { index, decodedRange: member.decodedRange });
+    for (const { identity, decodedRange } of group.members)
+      locations.set(identity, { index, contentEncoding: 'zstd', decodedRange });
   }
   const bundle = encodeAssetBundle(stored);
   const digest = sha256(bundle.bytes);
   const bundlePath = `assets/bundles/${digest}.bin`;
   await mkdir(dirname(resolve(input.outputRoot, bundlePath)), { recursive: true });
   await writeFile(resolve(input.outputRoot, bundlePath), bundle.bytes);
-  const artifact: DistArtifact = {
+  const artifact = {
     path: bundlePath,
     mediaType: 'application/octet-stream',
     bytes: bundle.bytes.byteLength,
     sha256: digest,
   };
-  members.forEach((entry) => {
-    const location = locations.get(entry.identity);
-    if (location === undefined) return;
-    const window = bundle.windows[location.index];
-    const contentEncoding = encodings[location.index];
-    if (window === undefined || contentEncoding === undefined) return;
-    windows.set(entry.identity, {
+  for (const [identity, { index, contentEncoding, decodedRange }] of locations) {
+    const window = bundle.windows[index];
+    if (window === undefined) continue;
+    windows.set(identity, {
       bundlePath,
       ...window,
       bundleDigest: `sha256:${digest}`,
       contentEncoding,
-      ...(location.decodedRange === undefined ? {} : { decodedRange: location.decodedRange }),
+      ...(decodedRange === undefined ? {} : { decodedRange }),
     });
-  });
+  }
   return { artifact, windows, sourceBytes };
 }
 
@@ -379,11 +399,8 @@ async function rewritePacks(
   for (const pack of packs) {
     const document = JSON.parse(await readDeliveryDocument(resolve(input.sourceRoot, pack)));
     let changed = false;
-    for (const [table, key, descriptor] of descriptors(document)) {
-      const path = input.pathOf(descriptor.path, pack);
-      const artifact = path === undefined ? undefined : input.artifacts.get(path);
-      if (artifact === undefined || !bundleable(descriptor)) continue;
-      const window = windows.get(`${artifact.sha256}:${descriptor.contentEncoding ?? 'identity'}`);
+    for (const { table, key, descriptor, identity } of descriptors(input, document, pack)) {
+      const window = identity === undefined ? undefined : windows.get(identity);
       if (window === undefined) continue;
       changed = true;
       table[key] = {
@@ -403,8 +420,7 @@ async function rewritePacks(
     await mkdir(dirname(resolve(input.outputRoot, pack)), { recursive: true });
     await writeFile(resolve(input.outputRoot, pack), bytes);
     const original = input.artifacts.get(pack);
-    if (original !== undefined)
-      written.push({ ...original, bytes: bytes.byteLength, sha256: sha256(bytes) });
+    if (original !== undefined) written.push(withDistBytes(original, bytes));
   }
 
   return written;

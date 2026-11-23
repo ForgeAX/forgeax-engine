@@ -7,7 +7,7 @@ import { expect, it } from 'vitest';
 import { createViteConfig } from '../src/host.js';
 import { readProjectFacts } from '../src/project.js';
 import { createWorkspaceThumbnails, readPreviewInputs } from '../src/workspace-thumbnails.js';
-import { createWorkspacePreviewBatch } from '../src/workspace-preview-batch.js';
+import { createWorkspacePreviewBatch } from '../src/workspace-thumbnails.js';
 import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 
 async function copySelectedSharedInputs(

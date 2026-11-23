@@ -32,14 +32,16 @@ function preparedFixture() {
     vertex = {},
     nextVertex = {};
   const owner = live(vertex);
+  const lives = Object.freeze([owner]);
+  const fixed = { lives, bindings: [3] };
   const identities: unknown[] = [identity, 'unchanged'];
-  const encode = encodes.begin(key, identities, material, owners);
-  const block = encode.record([owner], 0, 1, livePhysical);
+  const encode = encodes.begin(key, identities, material, owners, fixed);
+  const block = encode.record(lives, 0, 1, livePhysical);
   block.materials.set(3, material());
   block.classes.set(rasterClass, owners());
   block.bundle = bundle;
   block.draws = 1;
-  encodes.finish(key, identities, encode);
+  encodes.finish(key, identities, encode, fixed);
   const nextBundle = {} as RenderBundle;
   const prepare = (current = () => true) =>
     encodes.prepareInputs(
@@ -58,6 +60,8 @@ function preparedFixture() {
     vertex,
     nextVertex,
     owner,
+    fixed,
+    lives,
     identities,
     block,
     nextBundle,
@@ -68,16 +72,20 @@ function preparedFixture() {
 it('privately remaps retained bundle, pass identities and physical facts together', () => {
   const f = preparedFixture();
   const task = f.prepare().unwrap();
-  const previous = f.encodes.begin(f.key, f.identities, material, owners);
-  expect(previous.reuse([f.owner], 0, 1, livePhysical)).toBe(f.block);
-  f.encodes.finish(f.key, f.identities, previous);
+  const previous = f.encodes.begin(f.key, f.identities, material, owners, f.fixed);
+  expect(previous.fixedRunLength(f.lives, 0)).toBe(1);
+  expect(previous.reuse(f.lives, 0, 1, livePhysical)).toBe(f.block);
+  f.encodes.finish(f.key, f.identities, previous, f.fixed);
   expect(task.isCurrent()).toBe(true);
   task.publish().unwrap();
   expect(f.block.bundle).toBe(bundle);
   expect(f.block.physical).toEqual([f.vertex, undefined]);
   f.owner.meshBinding.vertex = f.nextVertex;
-  const next = f.encodes.begin(f.key, [f.nextIdentity, 'unchanged'], material, owners);
-  const accepted = next.reuse([f.owner], 0, 1, livePhysical);
+  const next = f.encodes.begin(f.key, [f.nextIdentity, 'unchanged'], material, owners, f.fixed);
+  const verifyPhysical = vi.fn(livePhysical);
+  expect(next.fixedRunLength(f.lives, 0)).toBe(0);
+  const accepted = next.reuse(f.lives, 0, 1, verifyPhysical);
+  expect(verifyPhysical).toHaveBeenCalledTimes(1);
   expect(accepted?.bundle).toBe(f.nextBundle);
   expect(accepted?.draws).toBe(1);
   expect(accepted?.materials.get(3)).toEqual(material());
@@ -343,6 +351,45 @@ it('replays a run whose rebuilt owners keep their command identities', () => {
   expect(
     changed.reuse([owner(commands[0] as object), owner({})], 0, 2, livePhysical),
   ).toBeUndefined();
+});
+
+it('uses a fixed producer to skip run walks while resolving physical bindings again', () => {
+  const encodes = new RetainedRasterEncodes();
+  const key = {};
+  const lives = Object.freeze([live(), live()]);
+  const identities = ['view'];
+  const fixed = { lives, bindings: [3] };
+  const emit = (slot: number) => (owner: object, consume: (value: unknown) => void) => {
+    livePhysical(owner, consume);
+    consume(slot);
+  };
+  const record = () => {
+    const frame = encodes.begin(key, identities, material, owners, fixed);
+    const block = frame.record(lives, 0, 2, emit(3));
+    block.materials.set(3, material());
+    block.classes.set(rasterClass, owners());
+    block.bundle = bundle;
+    encodes.finish(key, identities, frame, fixed);
+  };
+  record();
+  const same = encodes.begin(key, identities, material, owners, { lives, bindings: [3] });
+  const facts = vi.fn(emit(3));
+  expect(same.fixedRunLength(lives, 0)).toBe(2);
+  expect(same.reuse(lives, 0, 2, facts)?.bundle).toBe(bundle);
+  expect(facts).not.toHaveBeenCalled();
+
+  record();
+  const moved = encodes.begin(key, identities, () => ({ group, offset: 512 }), owners, fixed);
+  expect(moved.fixedRunLength(lives, 0)).toBe(2);
+  expect(moved.reuse(lives, 0, 2, facts)).toBeUndefined();
+  expect(facts).not.toHaveBeenCalled();
+
+  record();
+  const changed = encodes.begin(key, identities, material, owners, { lives, bindings: [4] });
+  const remapped = vi.fn(emit(4));
+  expect(changed.fixedRunLength(lives, 0)).toBe(0);
+  expect(changed.reuse(lives, 0, 2, remapped)).toBeUndefined();
+  expect(remapped).toHaveBeenCalledTimes(2);
 });
 
 it('retains Skin commands when their current pass and physical owners match', () => {

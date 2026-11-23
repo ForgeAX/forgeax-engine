@@ -227,6 +227,18 @@ export function completeSourceMaterialPayload(
   return { cooked: record as SourceMaterialPayload['cooked'], rasterSources };
 }
 
+/** An embedded publication already owns the exact artifact bytes admitted by Pack. */
+export function completeEmbeddedMaterial(
+  record: CookedMaterialRecord,
+): MaterialReady | MaterialLoadError {
+  const request = { guid: record.guid, specializationKey: record.specializationKey ?? '' };
+  const field = completeTupleField(record);
+  if (field !== undefined) return recordError(request, field);
+  if (record.materialGuid?.toLowerCase() !== record.guid.toLowerCase())
+    return recordError(request, 'materialGuid');
+  return { status: 'Ready', record: record as MaterialReady['record'] };
+}
+
 export function createMaterialLoader(options: MaterialLoaderOptions) {
   return {
     async load(request: MaterialLoadRequest): Promise<MaterialReady | MaterialLoadError> {

@@ -14,6 +14,7 @@ import {
   RuntimePackProducer,
 } from '../../../import/src/runtime-pack.js';
 import { parseRuntimePackSnapshot } from '../../../import/src/runtime-pack-content.js';
+import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
 import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
 import { captureAssetPublication } from '../capture-publication.js';
@@ -231,6 +232,25 @@ it.each([
   }
 });
 
+it('uses the same reference closure to save and restore independent fixed publication evidence', async () => {
+  const child = await material(leaf);
+  const evidence = {
+    guid: leaf,
+    usage: 'reference' as const,
+    digest: defined(child.row.publication?.outputs[0]).digest,
+  };
+  const source = await material(root, undefined, undefined, [evidence]);
+  const childSource = await createFixedRuntimePackSnapshot(child.fixed);
+  const saved = await createFixedRuntimePackSnapshot(source.fixed, new Map([[leaf, childSource]]));
+  const target = producer();
+  try {
+    (await target.restore(saved)).unwrap();
+    expect(target.rows().map((row) => row.guid)).toEqual([leaf, root]);
+  } finally {
+    target.dispose();
+  }
+});
+
 it('shares fixed rebuilds and reuses owned dependencies only while their full closure stays current', async () => {
   const right = '01900000-0000-7000-8000-000000000964';
   let child = await material(leaf);
@@ -253,7 +273,7 @@ it('shares fixed rebuilds and reuses owned dependencies only while their full cl
           return parseRuntimePackSnapshot(source);
         });
         return {
-          schemaVersion: 'runtime-pack-source/2',
+          schemaVersion: 'runtime-pack-source/3',
           packs: [],
           instances: [],
           recipeRoots: [...new Set(selected.flatMap((source) => source.recipeRoots ?? []))],
@@ -400,6 +420,8 @@ it('uses native fingerprint hashing when capturing and restoring fixed dependenc
     const snapshot = await pending;
     const saved = Object.values(snapshot.closure?.recipes ?? {})[0];
     expect(saved && 'fixed' in saved && saved.fixed.pack.scopeId).toBe('restored');
+    expect(snapshot.schemaVersion).toBe('runtime-pack-source/3');
+    expect(saved).not.toHaveProperty('outputs');
     expect(fingerprints).toBeGreaterThan(0);
     fingerprints = 0;
     expect((await target.restore(snapshot)).ok).toBe(true);
@@ -410,11 +432,39 @@ it('uses native fingerprint hashing when capturing and restoring fixed dependenc
   }
 });
 
+it('restores version 2 fixed recipes under their original fingerprint', async () => {
+  const source = await material(root);
+  const snapshot = parseRuntimePackSnapshot(await createFixedRuntimePackSnapshot(source.fixed));
+  const [saved] = Object.values(snapshot.closure?.recipes ?? {});
+  if (!snapshot.closure || !saved || !('fixed' in saved) || !source.row.publication)
+    throw new Error('missing fixed recipe');
+  const oldRecipe = { ...saved, outputs: source.row.publication.outputs };
+  const oldId = scriptablePackFingerprint(oldRecipe);
+  const target = producer();
+  try {
+    const restored = await target.restore({
+      ...snapshot,
+      schemaVersion: 'runtime-pack-source/2',
+      recipeRoots: [oldId],
+      closure: { ...snapshot.closure, recipes: { [oldId]: oldRecipe } },
+    });
+    expect(restored.ok).toBe(true);
+    expect(target.catalogRow(root)?.publication?.digest).toBe(source.row.publication.digest);
+  } finally {
+    target.dispose();
+  }
+});
+
 it.each([
   1, 3,
 ])('cancels a fixed dependency restore at native fingerprint %s before publication', async (cancelAt) => {
-  const source = await material(leaf);
-  const snapshot = await createFixedRuntimePackSnapshot(source.fixed);
+  const child = await material(leaf);
+  const source = await material(root, leaf);
+  const savedChild = await createFixedRuntimePackSnapshot(child.fixed);
+  const snapshot = await createFixedRuntimePackSnapshot(
+    source.fixed,
+    new Map([[leaf, savedChild]]),
+  );
   const controller = new AbortController();
   const digest = crypto.subtle.digest.bind(crypto.subtle);
   let fingerprints = 0;

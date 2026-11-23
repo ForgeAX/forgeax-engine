@@ -1,7 +1,9 @@
-import { defineSystem, Time, Update } from '../../packages/ecs/dist/index.mjs';
+import { createWorldStreaming } from '../../packages/app/dist/index.mjs';
+import { runtimeAssets } from '../../packages/assets-runtime/dist/internal.mjs';
+import { defineSystem, FixedUpdate, Time, Update } from '../../packages/ecs/dist/index.mjs';
 import { createBoxGeometry, createCylinderGeometry } from '../../packages/geometry/dist/index.mjs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY } from '../../packages/input/dist/index.mjs';
-import { vec3 } from '../../packages/math/dist/index.mjs';
+import { quat, vec3 } from '../../packages/math/dist/index.mjs';
 import physics3d, { RapierPhysicsWorld3D } from '../../packages/physics-rapier3d/dist/index.mjs';
 import {
   Camera,
@@ -13,11 +15,11 @@ import {
   Skylight,
 } from '../../packages/render/dist/index.mjs';
 import { ChildOf, Transform } from '../../packages/scene/dist/index.mjs';
+import { skinningPlugin } from '../../packages/skinning/dist/index.mjs';
 import {
   cellAt,
   cellMeters,
   cells,
-  distanceToCell,
   groundHeight,
   landscapeRibbon,
   roadX,
@@ -26,6 +28,7 @@ import {
   terrainMesh,
   worldEdge,
 } from './fixtures/level-streaming-landscape.mjs';
+import { createWildlife } from './fixtures/pine-basin-wildlife-runtime.mjs';
 import { registerBenchmarkVocabulary } from './level-streaming-world.mjs';
 
 const maximumSpeed = 120 / 3.6;
@@ -100,7 +103,7 @@ function landscape(world, assets) {
         },
       )
       .unwrap();
-    return (x, z, heading) => {
+    const place = (x, z, heading) => {
       const y = groundHeight(x, z);
       const camX = x - Math.sin(heading) * 41;
       const camZ = z + Math.cos(heading) * 41;
@@ -118,144 +121,174 @@ function landscape(world, assets) {
         })
         .unwrap();
     };
+    return {
+      place,
+      focus({ x, y, z }) {
+        const eye = [x + 5.6, y + 3.1, z + 5.2];
+        world
+          .set(camera, Transform, {
+            pos: eye,
+            quat: quat.fromLookAt(quat.create(), eye, [x, y + 1.25, z], [0, 1, 0]),
+          })
+          .unwrap();
+      },
+    };
   } finally {
     for (const handle of owned) assets.release(handle).unwrap();
   }
 }
 
-function lookahead(x, z, heading, cruise, entering, count) {
-  const current = cellAt(x, z);
-  const ahead = entering === current ? [] : [entering];
-  for (let distance = 24; distance <= cellMeters * 1.5 && ahead.length < count; distance += 24) {
-    const nextZ = z - Math.cos(heading) * distance;
-    const nextX = cruise ? roadX(nextZ) : x + Math.sin(heading) * distance;
-    const next = cellAt(nextX, nextZ);
-    if (next !== undefined && next !== current && !ahead.includes(next)) ahead.push(next);
+function* basinMetadata(manifest) {
+  for (const { id, collision, proxy, west, east } of manifest) {
+    const { x, z } = cells[id];
+    const bounds = { minX: x, minZ: z, maxX: x + cellMeters, maxZ: z + cellMeters };
+    const visualBounds = {
+      minX: x - 48,
+      minZ: z - 48,
+      maxX: x + cellMeters + 48,
+      maxZ: z + cellMeters + 48,
+    };
+    yield { key: `${id}/collision`, scene: collision, bounds, role: 'collision' };
+    const group = String(id);
+    yield {
+      key: `${id}/proxy`,
+      scene: proxy,
+      bounds: visualBounds,
+      role: 'visual',
+      layer: 'scenery',
+      replacement: { group, role: 'proxy' },
+    };
+    for (const [key, scene] of [
+      ['west', west],
+      ['east', east],
+    ])
+      yield {
+        key: `${id}/${key}`,
+        scene,
+        bounds: visualBounds,
+        role: 'visual',
+        layer: 'scenery',
+        replacement: { group, role: 'detail' },
+      };
   }
-  return ahead;
 }
 
-function streamCells({ assets, physics, levelCandidates, manifest, notify }) {
-  const live = new Map();
-  const loaded = new Set();
+function streamCells({ assets, physics, levels, manifest, notify }) {
+  const stream = createWorldStreaming(levels, {
+    grid: { cellSize: cellMeters, pageSize: 2, originX: -worldEdge, originZ: -worldEdge },
+    cells: basinMetadata(manifest),
+    buildUnitsPerStep: 24,
+    simultaneousPreparations: 2,
+  }).unwrap();
+  const visited = new Set();
   const retired = new Set();
+  let active = new Set();
   const origin = vec3.create();
   const down = vec3.create(0, -1, 0);
-  let failure;
-  let reading;
-  let disposed = false;
-  const ground = (id) => {
-    const cell = cells[id];
-    origin[0] = cell.x + cellMeters / 2;
+  const hasGround = (x, z) => {
+    origin[0] = x;
     origin[1] = 600;
-    origin[2] = cell.z + cellMeters / 2;
-    return physics.raycast(origin, down, 700);
+    origin[2] = z;
+    return physics.raycast(origin, down, 700) !== undefined;
   };
-  const request = async (id) => {
-    const controller = new AbortController();
-    const slot = { controller, target: 'prepared', phase: 'loading' };
-    live.set(id, slot);
-    reading = slot;
-    try {
-      const source = (
-        await assets.load(manifest[id].rootGuid, 'scene', { signal: controller.signal })
-      ).unwrap();
-      if (controller.signal.aborted) {
-        assets.release(source).unwrap();
-        return;
+  const activeAt = (x, z) =>
+    stream.inspectCell(`${cellAt(x, z)}/collision`)?.collisionAccepted === true && hasGround(x, z);
+  const observe = () => {
+    const snapshot = stream.inspect();
+    if (snapshot.failures.length > 0) throw snapshot.failures[0];
+    const live = [];
+    const next = new Set();
+    for (const { key, phase, target, failure } of snapshot.active) {
+      if (failure) throw failure;
+      if (!key.endsWith('/collision')) continue;
+      const id = Number(key.split('/')[0]);
+      live.push({ id, phase, target });
+      if (phase !== 'active') continue;
+      const { x, z } = cells[id];
+      if (!hasGround(x + cellMeters / 2, z + cellMeters / 2))
+        throw Error(`Missing collision in Cell ${id}`);
+      next.add(id);
+      if (!active.has(id)) {
+        visited.add(id);
+        retired.delete(id);
+        notify({ kind: 'cell', id, phase: 'active', collision: true });
       }
-      slot.source = source;
-      slot.level = levelCandidates.create(source).unwrap();
-    } catch (error) {
-      if (!controller.signal.aborted) failure = error;
-    } finally {
-      if (controller.signal.aborted && !slot.level) live.delete(id);
-      reading = undefined;
     }
-  };
-  const seek = (slot, target) => {
-    if (!slot.level) {
-      if (target === 'unloaded') slot.controller.abort();
-      return;
-    }
-    if (slot.target === target || slot.target === 'unloaded') return;
-    slot.level.target(target).unwrap();
-    slot.target = target;
-  };
-  const reconcileCell = (id, slot, x, z) => {
-    const read = slot.level?.inspect();
-    if (read?.failure || read?.cleanupFailure) throw read.failure ?? read.cleanupFailure;
-    if (read?.phase === 'retired') {
-      if (ground(id)) throw Error(`Retired cell ${id} still has its collision surface`);
-      assets.release(slot.source).unwrap();
-      live.delete(id);
+    for (const id of active) {
+      if (live.some((cell) => cell.id === id)) {
+        next.add(id);
+        continue;
+      }
+      const { x, z } = cells[id];
+      if (hasGround(x + cellMeters / 2, z + cellMeters / 2))
+        throw Error(`Retired Cell ${id} still collides`);
       retired.add(id);
       notify({ kind: 'cell', id, phase: 'retired', collision: false });
-      return;
     }
-    if (read && read.phase !== slot.phase) {
-      slot.phase = read.phase;
-      if (read.phase === 'active') {
-        if (!read.renderSelection || !ground(id))
-          throw Error(`Active cell ${id} lacks a completed picture or collision surface`);
-        loaded.add(id);
-        retired.delete(id);
-        notify({
-          kind: 'cell',
-          id,
-          phase: 'active',
-          collision: true,
-          picture: read.renderSelection,
-        });
-      }
-    }
-    const distance = distanceToCell(x, z, id);
-    if (distance > streamingRadius.retire) seek(slot, 'unloaded');
-    else if (distance <= streamingRadius.visible && read?.phase === 'prepared' && read.current)
-      seek(slot, 'active');
-    else if (distance > streamingRadius.visible + 96 && slot.target === 'active')
-      seek(slot, 'prepared');
+    active = next;
+    return {
+      live,
+      visited: visited.size,
+      retired: [...retired],
+      index: snapshot.index,
+      started: snapshot.started,
+      released: snapshot.retired,
+      residents: snapshot.active.length,
+      bytes: runtimeAssets(assets).inspect().bytes,
+      visual: snapshot.active.filter(({ key }) => !key.endsWith('/collision')),
+    };
   };
   return {
-    update(x, z, current, ahead) {
-      if (failure) throw failure;
-      for (const [id, slot] of live) reconcileCell(id, slot, x, z);
-      if (!reading && !disposed) {
-        const priority = !live.has(current) ? current : ahead.find((id) => !live.has(id));
-        if (priority !== undefined && distanceToCell(x, z, priority) <= streamingRadius.prepare) {
-          void request(priority);
-        } else if (
-          ![...live.values()].some(
-            (slot) => slot.target === 'prepared' && slot.phase !== 'prepared',
-          )
-        ) {
-          let nearest;
-          let best = streamingRadius.prepare;
-          for (const { id } of cells) {
-            if (live.has(id)) continue;
-            const distance = distanceToCell(x, z, id);
-            if (distance < best) {
-              nearest = id;
-              best = distance;
-            }
-          }
-          if (nearest !== undefined) void request(nearest);
-        }
-      }
+    update(x, z, heading, speed, destination) {
+      stream
+        .setSource('vehicle', {
+          x,
+          z,
+          prepareRadius: streamingRadius.prepare,
+          activeRadius: streamingRadius.visible,
+          detailRadius: 360,
+          hysteresis: streamingRadius.retire - streamingRadius.prepare,
+        })
+        .unwrap();
+      stream
+        .setSource('road-ahead', {
+          x: x + Math.sin(heading) * speed * 5,
+          z: z - Math.cos(heading) * speed * 5,
+          prepareRadius: 96,
+          activeRadius: 48,
+          roleFilter: 'collision',
+          priority: 2048,
+        })
+        .unwrap();
+      stream
+        .setSource(
+          'destination',
+          destination === undefined
+            ? undefined
+            : {
+                ...destination,
+                prepareRadius: 32,
+                activeRadius: 6,
+                roleFilter: 'collision',
+                priority: 4096,
+              },
+        )
+        .unwrap();
+      stream.step().unwrap();
     },
-    active: (id) => live.get(id)?.phase === 'active',
-    snapshot: () => ({
-      live: [...live].map(([id, slot]) => ({ id, phase: slot.phase, target: slot.target })),
-      visited: loaded.size,
-      retired: [...retired],
-    }),
-    dispose() {
-      disposed = true;
-      for (const slot of live.values()) {
-        slot.controller.abort();
-        if (slot.source) assets.release(slot.source).unwrap();
-      }
+    activeAt,
+    ready(destination) {
+      return (
+        stream.inspectEntry('destination', destination).state === 'ready' &&
+        activeAt(destination.x, destination.z)
+      );
     },
+    tookOver(destination) {
+      return stream.inspectEntry('vehicle', destination).state === 'ready';
+    },
+    setLayer: (enabled) => stream.setLayer('scenery', enabled),
+    snapshot: observe,
+    dispose: () => stream.close(),
   };
 }
 
@@ -268,7 +301,7 @@ function planDrive(out, x, z, yaw, dt, cruise, drive, steering, keys) {
         : 90 / 3.6
       : drive * (24 / 3.6);
   const heading = cruise
-    ? Math.atan2(roadX(z - 8) - roadX(z), 8)
+    ? Math.atan2(roadX(z - 8 * cruise) - roadX(z), 8 * cruise)
     : yaw + steering * (Math.abs(speed) > 0 ? 0.84 : 0.52) * dt;
   let nextZ = bound(z - Math.cos(heading) * speed * dt);
   let nextX = bound(cruise ? roadX(nextZ) : x + Math.sin(heading) * speed * dt);
@@ -282,6 +315,27 @@ function planDrive(out, x, z, yaw, dt, cruise, drive, steering, keys) {
   out.heading = heading;
   out.nextX = nextX;
   out.nextZ = nextZ;
+}
+
+function readDrivingInput(world) {
+  const keys = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
+    ? world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard
+    : undefined;
+  const key = (a, b) => Number(Boolean(keys?.downCode(a) || keys?.downCode(b)));
+  return {
+    keys,
+    drive: key('KeyW', 'ArrowUp') - key('KeyS', 'ArrowDown'),
+    steering: key('KeyD', 'ArrowRight') - key('KeyA', 'ArrowLeft'),
+  };
+}
+
+function stopCruise(cruise, z, drive, steering) {
+  return (
+    drive !== 0 ||
+    steering !== 0 ||
+    (cruise > 0 && z <= -worldEdge + 1) ||
+    (cruise < 0 && z >= worldEdge - 1)
+  );
 }
 
 function driveFailure(error) {
@@ -302,20 +356,29 @@ export default function pineBasin(input) {
   return {
     plugins: [
       physics3d,
+      skinningPlugin(),
       {
         name: 'pine-basin',
-        inject: ['world', 'assets', 'physics', 'executionBootstrapHost'],
-        apply({ world, assets, physics, executionBootstrapHost }) {
-          const { port, levelCandidates } = executionBootstrapHost;
-          if (!(physics instanceof RapierPhysicsWorld3D) || !port || !levelCandidates)
+        inject: ['world', 'assets', 'physics', 'levels', 'executionBootstrapHost'],
+        apply({ world, assets, physics, levels, executionBootstrapHost }) {
+          const { port } = executionBootstrapHost;
+          if (!(physics instanceof RapierPhysicsWorld3D) || !port)
             throw Error('Pine Basin requires the Engine Worker Level and Physics owners');
           registerBenchmarkVocabulary(world);
           const notify = (message) => port.postMessage(message);
-          const place = landscape(world, assets);
+          const view = landscape(world, assets);
+          const place = (x, z, yaw) => {
+            if (!focused) view.place(x, z, yaw);
+          };
+          const onFailure = (error) => {
+            failed = true;
+            notify(driveFailure(error));
+          };
+          const wildlife = createWildlife(world, assets, input.wildlife.scene, onFailure);
           const stream = streamCells({
             assets,
             physics,
-            levelCandidates,
+            levels,
             manifest: input.manifest,
             notify,
           });
@@ -323,79 +386,111 @@ export default function pineBasin(input) {
           let z = start.z;
           let yaw = Math.atan2(roadX(z - 8) - x, 8);
           let distance = 0;
-          let cruise = false;
+          let cruise = 0;
           let streaming = false;
+          let destination;
+          let arrivalHold;
+          let teleports = 0;
           let paused = false;
           const drivePlan = { speed: 0, heading: 0, nextX: 0, nextZ: 0 };
           let nextReport = 0;
           let failed = false;
+          let focused = false;
           place(x, z, yaw);
           port.onmessage = ({ data }) => {
-            if (data.kind === 'start-streaming') streaming = true;
-            if (data.kind === 'cruise') cruise = data.enabled;
+            if (data.kind === 'start-streaming') {
+              streaming = true;
+              wildlife.start();
+            }
+            if (data.kind === 'focus-wildlife') {
+              const position = wildlife.focus(data.enabled);
+              focused = data.enabled && position !== undefined;
+              if (focused) view.focus(position);
+              else place(x, z, yaw);
+            }
+            if (data.kind === 'cruise') cruise = data.enabled ? 1 : 0;
+            if (data.kind === 'cruise-direction') cruise = data.direction === -1 ? -1 : 0;
+            if (data.kind === 'scenery') stream.setLayer(data.enabled);
+            if (data.kind === 'teleport') {
+              cruise = 0;
+              const requestedZ = bound(data.z);
+              destination = { x: roadX(requestedZ), z: requestedZ };
+            }
           };
-          world
-            .addSystem(
-              Update,
-              defineSystem({
-                name: 'pine-basin-drive',
-                queries: [],
-                fn: () => {
-                  if (failed) return;
-                  try {
-                    const keys = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
-                      ? world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard
-                      : undefined;
-                    const key = (a, b) => Number(Boolean(keys?.downCode(a) || keys?.downCode(b)));
-                    const drive = key('KeyW', 'ArrowUp') - key('KeyS', 'ArrowDown');
-                    const steering = key('KeyD', 'ArrowRight') - key('KeyA', 'ArrowLeft');
-                    if (drive || steering || z <= -worldEdge + 1) cruise = false;
-                    const time = world.getResource(Time);
-                    const dt = time.delta;
-                    planDrive(drivePlan, x, z, yaw, dt, cruise, drive, steering, keys);
-                    const { speed, heading, nextX, nextZ } = drivePlan;
-                    const current = cellAt(x, z);
-                    const entering = cellAt(nextX, nextZ);
-                    const direction = heading + (speed < 0 ? Math.PI : 0);
-                    const ahead = lookahead(x, z, direction, cruise, entering, speed === 0 ? 1 : 2);
-                    if (streaming) stream.update(x, z, current, ahead);
-                    paused = speed !== 0 && !stream.active(entering);
-                    const movedX = paused ? x : nextX;
-                    const movedZ = paused ? z : nextZ;
-                    const travelled = Math.hypot(movedX - x, movedZ - z);
-                    if (x !== movedX || z !== movedZ || yaw !== heading) {
-                      distance += travelled;
-                      x = movedX;
-                      z = movedZ;
-                      yaw = heading;
-                      place(x, z, yaw);
-                    }
-                    if (time.elapsed >= nextReport) {
-                      nextReport = time.elapsed + 0.15;
-                      notify({
-                        kind: 'position',
-                        x,
-                        z,
-                        yaw,
-                        distance,
-                        speedKph: dt > 0 ? (travelled / dt) * 3.6 : 0,
-                        current: cellAt(x, z),
-                        cruise,
-                        paused,
-                        ...stream.snapshot(),
-                      });
-                    }
-                  } catch (error) {
-                    failed = true;
-                    notify(driveFailure(error));
-                  }
-                },
-              }),
-            )
-            .unwrap();
+          const teleport = defineSystem({
+            name: 'pine-basin-teleport',
+            queries: [],
+            fn: () => {
+              if (destination === undefined || !stream.ready(destination)) return;
+              x = destination.x;
+              z = destination.z;
+              yaw = Math.atan2(roadX(z - 8) - x, 8);
+              arrivalHold = destination;
+              destination = undefined;
+              teleports++;
+              place(x, z, yaw);
+            },
+          });
+          world.addSystem(FixedUpdate, teleport).unwrap();
+          const driver = defineSystem({
+            name: 'pine-basin-drive',
+            queries: [],
+            fn: () => {
+              if (failed) return;
+              try {
+                const { keys, drive, steering } = readDrivingInput(world);
+                if (stopCruise(cruise, z, drive, steering)) cruise = 0;
+                const time = world.getResource(Time);
+                const dt = time.delta;
+                wildlife.update(dt);
+                planDrive(drivePlan, x, z, yaw, dt, cruise, drive, steering, keys);
+                const { speed, heading, nextX, nextZ } = drivePlan;
+                if (streaming) {
+                  stream.update(x, z, heading, speed, destination ?? arrivalHold);
+                  if (arrivalHold !== undefined && stream.tookOver(arrivalHold))
+                    arrivalHold = undefined;
+                }
+                paused = speed !== 0 && !stream.activeAt(nextX, nextZ);
+                const movedX = paused ? x : nextX;
+                const movedZ = paused ? z : nextZ;
+                const travelled = Math.hypot(movedX - x, movedZ - z);
+                if (x !== movedX || z !== movedZ || yaw !== heading) {
+                  distance += travelled;
+                  x = movedX;
+                  z = movedZ;
+                  yaw = heading;
+                  place(x, z, yaw);
+                }
+                if (time.elapsed >= nextReport) {
+                  nextReport = time.elapsed + 0.15;
+                  notify({
+                    kind: 'position',
+                    x,
+                    z,
+                    yaw,
+                    distance,
+                    speedKph: dt > 0 ? (travelled / dt) * 3.6 : 0,
+                    current: cellAt(x, z),
+                    cruise: cruise !== 0,
+                    paused,
+                    teleportPending: destination !== undefined,
+                    teleports,
+                    wildlife: wildlife.inspect(),
+                    ...stream.snapshot(),
+                  });
+                }
+              } catch (error) {
+                onFailure(error);
+              }
+            },
+          });
+          world.addSystem(Update, driver).unwrap();
           return () => {
             port.onmessage = null;
+            world.removeSystem(Update, driver).unwrap();
+            world.removeSystem(FixedUpdate, teleport).unwrap();
             stream.dispose();
+            wildlife.dispose();
           };
         },
       },

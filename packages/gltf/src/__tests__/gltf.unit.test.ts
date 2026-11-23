@@ -106,7 +106,12 @@ function buildBase64Buffer(floats: number[]): string {
 const noopLoader = async (_: string) => new ArrayBuffer(0);
 
 import type { ImportRunnerFs } from '@forgeax/engine-import';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type {
@@ -1194,7 +1199,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const res = await runImport(fixtureMeta(), reg, fs);
         expect(res.ok).toBe(true);
         if (!res.ok || 'skipped' in res.value) throw new Error('expected a DDC pack');
-        const importerPack = res.value.pack;
+        const importerPack = projectImportPack(res.value.product);
 
         const doc = await parseFixture(bytes);
         const meshIr = doc.meshes[0];
@@ -3184,7 +3189,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const res = await runImport(meta, reg, fs);
         expect(res.ok).toBe(true);
         if (!res.ok || 'skipped' in res.value) throw new Error('expected a DDC pack');
-        const pack = res.value.pack;
+        const pack = projectImportPack(res.value.product);
         const mesh = pack.assets.find((a) => a.guid === NAME_MESH_GUID);
         const mat = pack.assets.find((a) => a.guid === NAME_MAT_GUID);
         expect(mesh?.name).toBe('Triangle');
@@ -3211,7 +3216,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const res = await runImport(meta, reg, fs);
         expect(res.ok).toBe(true);
         if (!res.ok || 'skipped' in res.value) throw new Error('expected a DDC pack');
-        const pack = res.value.pack;
+        const pack = projectImportPack(res.value.product);
         const scene = pack.assets.find((a) => a.guid === SCENE_GUID);
         expect(scene?.name).toBe('MainScene');
       });
@@ -3232,7 +3237,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
         const res = await runImport(meta, reg, fs);
         expect(res.ok).toBe(true);
         if (!res.ok || 'skipped' in res.value) throw new Error('expected a DDC pack');
-        const pack = res.value.pack;
+        const pack = projectImportPack(res.value.product);
         const scene = pack.assets.find((a) => a.guid === SINGLE_SCENE_GUID);
         expect(scene?.name).toBeUndefined();
       });

@@ -1,30 +1,31 @@
-import {
-  cp,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { brotliCompress, constants } from 'node:zlib';
+import type { AuthoredRuntimePack } from '@forgeax/engine-app';
 import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { prepareDist } from '../delivery-dist.js';
-import { collectDistArtifacts } from '../dist.js';
-import { engineConfigurationForAppOptions } from '../host/engine-configuration';
+import { collectDistManifest } from '../dist.js';
+import {
+  engineConfigurationForAppOptions,
+  nativeConfigurationControlSource,
+} from '../host/engine-configuration';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 import { type HostVersions, hostVersions } from '../host/versions.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
 import type { BuildOptions, ProjectFacts } from '../types.js';
-import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.js';
+import {
+  nativeGameSource,
+  nativeHostSource,
+  nativeWasmPackages,
+  releaseNativePlayerSource,
+} from './native-game-source.js';
+import { emitNativeUiFonts } from './native-ui-fonts.js';
+import { nativeGamePhysicsDimensions, type PluginSourceInventory } from './plugin-assets.js';
 import { staticPackProgramsSource } from './static-pack-programs.js';
 
 const STARTUP_PRESENTATION_FILE = 'forgeax-wechat-startup.json';
@@ -81,19 +82,10 @@ export async function prepareWechatBuild(
   generated: string,
   inventory: PluginSourceInventory,
   appOptions: DevKitAppOptions = {},
+  authoredPacks: readonly AuthoredRuntimePack[] = [],
 ) {
   const labels = resolveLoadProgressLabels(appOptions.loadingLabels);
-  const fontRoot = dirname(
-    createRequire(import.meta.url).resolve('@fontsource-variable/noto-sans-sc/package.json'),
-  );
-  const physics = [
-    ...new Set(
-      pluginAssetClosure(inventory, facts.roots.engine).flatMap((record) => {
-        const match = /(?:\/|-)rapier([23])d(?:\.[cm]?js)?$/.exec(record.module);
-        return match ? [match[1] as '2' | '3'] : [];
-      }),
-    ),
-  ];
+  const physics = nativeGamePhysicsDimensions(inventory, facts.roots.engine);
   const staging = await realpath(await mkdtemp(resolve(generated, 'wechat-')));
   const native = resolve(staging, 'wgpu');
   await writeFile(
@@ -108,10 +100,14 @@ export async function prepareWechatBuild(
       await hostVersions(facts),
     ),
   );
-  await writeFile(resolve(generated, 'wechat-game.ts'), wechatGameSource(physics, facts));
+  await writeFile(resolve(generated, 'wechat-game.ts'), nativeGameSource('wechat', physics, facts));
   await writeFile(
     resolve(generated, 'wechat-programs.ts'),
-    await staticPackProgramsSource(facts, inventory),
+    await staticPackProgramsSource(facts, inventory, {
+      packs: authoredPacks,
+      generatedRoot: generated,
+      localOnly: true,
+    }),
   );
   await writeFile(
     resolve(generated, 'wechat-entry.ts'),
@@ -191,14 +187,10 @@ launch();`,
       );
       // SDK native owners may be nested dependencies of the selected umbrella.
       const wgpuRoot = dirname(await packageManifest('@forgeax/engine-wgpu-wasm', engineManifest));
-      const uiRoot = dirname(await packageManifest('@forgeax/engine-ui-blitz', engineManifest));
-      const codecRoot = dirname(await packageManifest('@forgeax/engine-codec', engineManifest));
-      const physicsRoots = await Promise.all(
-        physics.map(async (dimension) => ({
-          dimension,
-          root: dirname(
-            await packageManifest(`@forgeax/engine-physics-rapier${dimension}d`, engineManifest),
-          ),
+      const payloads = await Promise.all(
+        nativeWasmPackages(physics).map(async (part) => ({
+          ...part,
+          root: dirname(await packageManifest(part.module, engineManifest)),
         })),
       );
       wgpuRequire = createRequire(resolve(wgpuRoot, 'package.json'));
@@ -209,41 +201,19 @@ launch();`,
       for (const [fileName, sourcePath] of [
         ['wasm/wgpu.wasm', resolve(native, 'wgpu.wasm')],
         ['wasm/wgpu.provenance.json', resolve(native, 'provenance.json')],
-        ['wasm/ui.wasm', resolve(uiRoot, 'pkg/ui_blitz_bg.wasm')],
-        ['wasm/ui.provenance.json', resolve(uiRoot, 'pkg/provenance.json')],
-        ['wasm/ui.LICENSE', resolve(uiRoot, 'LICENSE')],
-        ['wasm/basis_transcoder.wasm', resolve(codecRoot, 'pkg/basis_transcoder.wasm')],
-        [
-          'wasm/basis.provenance.json',
-          resolve(codecRoot, 'dist/basis-native-factory.provenance.json'),
-        ],
       ] as const) {
         this.emitFile({ type: 'asset', fileName, source: await readFile(sourcePath) });
       }
-      for (const { dimension, root } of physicsRoots) {
-        for (const [file, name] of [
-          ['rapier.wasm', `rapier${dimension}d.wasm`],
-          ['provenance.json', `rapier${dimension}d.provenance.json`],
-          ['LICENSE', `rapier${dimension}d.LICENSE`],
-        ] as const)
+      for (const { root, wasm, evidence } of payloads)
+        for (const [path, fileName] of [wasm, ...evidence])
           this.emitFile({
             type: 'asset',
-            fileName: `wasm/${name}`,
-            source: await readFile(resolve(root, 'pkg', file)),
+            fileName,
+            source: await readFile(resolve(root, path)),
           });
-      }
-      for (const file of [
-        'LICENSE',
-        'index.css',
-        ...(await readdir(resolve(fontRoot, 'files')))
-          .filter((file) => file.endsWith('.woff2'))
-          .map((file) => `files/${file}`),
-      ])
-        this.emitFile({
-          type: 'asset',
-          fileName: `ui-fonts/${file}`,
-          source: await readFile(resolve(fontRoot, file)),
-        });
+      await emitNativeUiFonts((fileName, source) => {
+        this.emitFile({ type: 'asset', fileName, source });
+      });
     },
     generateBundle() {
       this.emitFile({
@@ -274,38 +244,21 @@ export async function writeWechatProject(
   const payload = resolve(outDir, 'payload');
   const player = await prepareDist(
     outDir,
-    {
-      schemaVersion: '1.0.0',
-      target: 'wechat',
-      project: { id: facts.id, name: facts.name },
-      base: options.base ?? '/',
-      runtime: { packIndexUrl: 'pack-index.json', shaderManifestUrl: 'shaders/manifest.json' },
-      artifacts: await collectDistArtifacts(outDir),
-    },
+    await collectDistManifest(facts, options.base ?? '/', outDir, 'wechat', 'compiled'),
     // Native Brotli shares repeated WGSL across Bundle entries. Inner zstd
     // obscures that repetition and increases the deployed package size.
-    { compressDocuments: false, compressEntries: false },
+    {
+      distribution: 'payload',
+      payloadRoot: payload,
+      compressDocuments: false,
+      compressEntries: false,
+    },
   );
-  try {
-    await mkdir(payload);
-    await cp(player.root, payload, {
-      recursive: true,
-      filter: (source) => source !== resolve(player.root, 'forgeax-dist.json'),
-    });
-    for (const entry of entries) await rm(resolve(outDir, entry), { recursive: true });
-  } finally {
-    await rm(player.root, { recursive: true, force: true });
-  }
+  for (const entry of entries) await rm(resolve(outDir, entry), { recursive: true });
   const compress = promisify(brotliCompress);
-  const resources: string[] = [];
-  async function publish(directory: string): Promise<void> {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) await publish(path);
-      else if (!entry.name.endsWith('.js')) resources.push(path);
-    }
-  }
-  await publish(payload);
+  const resources = player.manifest.artifacts.flatMap(({ path }) =>
+    path.endsWith('.js') ? [] : [resolve(payload, path)],
+  );
   // Four independent files bound native compression memory without serializing the package.
   for (let start = 0; start < resources.length; start += 4) {
     await Promise.all(
@@ -412,30 +365,16 @@ export function wechatHostSource(
   versions?: HostVersions,
 ): string {
   const loadingLabels = resolveLoadProgressLabels(appOptions.loadingLabels);
-  return `import { createWechatPlatform, createWechatWasmHost, createWechatWgpuHost, createWechatInputBackend, createWechatAudioBackend, createWechatPackageFetcher } from '@forgeax/engine/platform-wechat';
-import { createBlitzUi, gpuShaders } from '@forgeax/engine/ui-blitz';
+  const assembly = nativeHostSource(appOptions, { target: 'wechat', rhiDebug, cpuProfile });
+  return `import { createWechatPlatform, createWechatWasmHost, createWechatWgpuHost, createWechatInputBackend, createWechatAudioBackend, createWechatPackageFetcher, createWechatRecordStore, createWechatFileStore } from '@forgeax/engine/platform-wechat';
 import { inspectUi } from '@forgeax/engine/ui';
 import { ensureReady, rhi } from '@forgeax/engine/rhi-wgpu';
 import * as nativeWgpu from ${JSON.stringify(resolve(native, 'wgpu-native.mjs'))};
-import { constructRuntimeRendererHost } from '@forgeax/engine/runtime/internal/renderer-host';
-import { ok, err } from '@forgeax/engine/types';
-import { createApp, inputPlugin, canvasAspectPlugin, prepareEngineStartup, projectEngineStartup, createEngineConfigurationControl, createEngineConfigurationStore, EngineConfigurationError } from '@forgeax/engine/app';
-import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine/physics';
-import { animationPlugin } from '@forgeax/engine/animation';
 ${rhiDebug ? "import { attachRecorder } from '@forgeax/engine/rhi-debug';\nimport { createRhiCapture, createRhiInstrumentation } from '@forgeax/engine/app';\nimport { createShaderModule, createShaderModuleImmediate } from '@forgeax/engine/rhi-wgpu';" : ''}
 ${cpuProfile ? "import { createProfiler } from '@forgeax/engine/profiler';" : ''}
-import { World } from '@forgeax/engine/ecs';
 import { inspectPluginFiber } from '@forgeax/engine/plugin';
-import { inputBackendPlugin } from '@forgeax/engine/input';
 import { audioBackendPlugin, audioPlugin } from '@forgeax/engine/audio';
-import { createCatalogSource } from '@forgeax/engine/assets-runtime';
-import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
-import { createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
-import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
-import { imports, programHost } from './wechat-programs.ts';
-import { createGameVfx } from './game-vfx';
-import { createGameRenderFeatures } from './game-render-features';
-const value = result => { if (!result.ok) throw result.error; return result.value; };
+${assembly.imports}
 let generation = 0;
 let displayCanvas;
 let uiWasm;
@@ -527,7 +466,7 @@ async function boot(identity, reload) {
   };`
       : ''
   }
-  ${gameProjectionSource}
+  ${releaseNativePlayerSource}${gameProjectionSource}
   const advance = next => {
     if (phase === next) return;
     phase = next;
@@ -542,12 +481,8 @@ async function boot(identity, reload) {
   };
   const inspection = { ${rhiDebug ? 'get rhiCapture() { return app?.rhiCapture; },' : ''}
     ui: request => inspectUi(!closed && globalThis.__forgeaxGameInspection === inspection ? ui?.document.body : undefined, request, ui),
-    list: () => ({ reads: Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id) }),
-    read: async id => {
-      const entry = gameProjectionDefinitions.get(id);
-      if (entry?.kind !== 'read') throw new Error('forgeax: game read projection not found ' + id);
-      return entry.definition.read();
-    }, assets: () => graphics?.assets.inspect(), world: () => app?.world.inspect(),
+    list: listGameProjection,
+    read: readGameProjection, assets: () => graphics?.assets.inspect(), world: () => app?.world.inspect(),
     plugins: () => {
       const fibers = [];
       if (app === undefined) return { fibers, status: 'not-started' };
@@ -602,8 +537,7 @@ async function boot(identity, reload) {
     const failures = [];
     try { startup?.destroy(); } catch (error) { failures.push(error); }
     try { if (app?.execution.report().engine.health === 'running') app.pause().unwrap(); } catch (error) { failures.push(error); }
-    for (const release of releases.reverse()) { try { await release(); } catch (error) { failures.push(error); } }
-    if (failures.length) throw new AggregateError(failures, 'WeChat Host cleanup failed');
+    await releaseNativePlayer(releases, 'WeChat Host cleanup failed', failures);
   };
   dispose = stop;
   try {
@@ -672,38 +606,27 @@ async function boot(identity, reload) {
       : ''
   }
   advance('graphics');
-  const gameFeatures = createGameRenderFeatures();
-  const gameVfx = createGameVfx({dependencies:${JSON.stringify(appOptions.vfxDependencies ?? [])},providers:gameFeatures.vfxProviders,providersForWorld:gameFeatures.vfxProvidersForWorld});
-  graphics = value(await constructRuntimeRendererHost(canvas, {
-    ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
-    features: [gameVfx.feature, ...gameFeatures.features],
-    dynamicGeometryMeshBudgetBytes: configured.dynamicGeometryMeshBudgetBytes,
-    textureMipSkip: configured.textureMipSkip,
-    assetBudgetBytes: configured.assetBudgetBytes,
-    pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
-    backgroundPipelineLibrary: ${JSON.stringify(appOptions.backgroundPipelineLibrary)},
-    backgroundPipelineLibraryConcurrency: ${JSON.stringify(appOptions.backgroundPipelineLibraryConcurrency)},
-    standardProfile: configured.standardProfile,
-    maxRenderShortSide: configured.sceneMaxRenderShortSide,
-    outputColorSpace: configured.outputColorSpace,
-    featureTextureReadbackBudgetBytes: configured.featureTextureReadbackBudgetBytes,
-    ${cpuProfile ? 'profiler,' : ''}
-    ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
-  }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));
+  ${assembly.graphics}
   releases.push(() => graphics.renderer.dispose());
-  const world = new World({ time: configured.time });
-  if (plan.settings.simulation?.physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, plan.settings.simulation.physics);
+  ${assembly.world}
   let game;
   let gameLoading;
-  const catalog = createCatalogSource({ url: 'https://forgeax.package/pack-index.json', fetch: fetcher });
+  ${assembly.catalog}
   advance('app');
-  app = (await createApp({ platform, renderer: graphics.renderer, world, assets: graphics.assets, assetCatalog: catalog,
+  const records = createWechatRecordStore(wx, ${JSON.stringify(facts.id)}, 'runtime-packs-v1');
+  const saves = createRecordGameSaves(createWechatRecordStore(wx, ${JSON.stringify(facts.id)}, 'game-saves-v1'));
+  const files = createWechatFileStore(wx, ${JSON.stringify(facts.id)}, 'game-files-v1');
+  const runtimePackCache = {
+    async read(key, signal) { return (await records.read(key, signal)).unwrap(); },
+    async write(key, bytes, signal) {
+      if (bytes.byteLength <= 32 * 1024 * 1024) (await records.replace(key, bytes, signal)).unwrap();
+    },
+  };
+  app = (await createApp({
+    ${assembly.app}
     ${rhiDebug ? 'rhiCapture,' : ''}
     ${cpuProfile ? 'profiler,' : ''}
     sceneAdmission: () => game !== undefined && startupError === undefined ? 'scene' : 'ui-only',
-    pluginPrograms: enginePrograms('wechat-' + identity, 'engine', identity),
-    runtimePacks: { scopeId: runtimeBinding.scopeId, imports, programHost },
-    plugins: [...(configured.animation === undefined ? [] : [animationPlugin(configured.animation)]), inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin, ...gameFeatures.plugins],
     onFrameSubmitted: detail => {
       configurationControl?.observe('submitted', { ...detail, presentation: detail.receipt?.presentation });
       if (closed || generation !== identity) return;
@@ -722,13 +645,7 @@ async function boot(identity, reload) {
       startup.enter(detail);
     },
   })).unwrap();
-  configurationControl = createEngineConfigurationControl(configurationDefinition, plan, {
-    store: configurationStore,
-    async apply(next) {
-      const accepted = graphics.renderer.setProfile(projectEngineStartup(next).standardProfile);
-      return accepted.ok ? ok(undefined) : err(new EngineConfigurationError('configuration-invalid', { path: 'rendering', reason: 'Renderer rejected the quality request', cause: accepted.error }));
-    },
-  });
+  configurationControl = ${nativeConfigurationControlSource('configurationDefinition', 'configurationStore')};
   Object.assign(app, { configuration: configurationControl });
   releases.push(async () => { configurationControl.dispose(); (await app.dispose()).unwrap(); });
   startup.bindSession(world.identity);
@@ -759,7 +676,7 @@ async function boot(identity, reload) {
     advance('scene');
     const module = await import('./wechat-game.ts');
     if (closed || generation !== identity) return;
-    gameLoading = module.activate({ app, graphics, ui, canvas, gameProjection,
+    gameLoading = module.activate({ app, graphics, ui, canvas, gameProjection, saves, files,
       generation: identity, signal: lifetime.signal, active: () => !closed && generation === identity });
     game = await gameLoading;
     if (closed || generation !== identity) { await game.dispose(); return; }
@@ -771,74 +688,6 @@ async function boot(identity, reload) {
     if (closed) return;
     fail(error);
     try { await stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'WeChat Host startup failed', { cause: error }); }
-    throw error;
-  }
-}
-`;
-}
-
-function wechatGameSource(physics: readonly ('2' | '3')[], facts: ProjectFacts): string {
-  const startupTimeout = JSON.stringify(facts.startupTimeoutMs ?? null);
-  return `import { activateExecutionRoot, gameHostPlugin } from '@forgeax/engine/app';
-import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { scenePlugin } from '@forgeax/engine/scene';
-import { skinningPlugin } from '@forgeax/engine/skinning';
-import { renderComponentsPlugin } from '@forgeax/engine/render';
-import { animationPlugin } from '@forgeax/engine/animation';
-import { statePlugin } from '@forgeax/engine/state';
-import { root as engineRoot } from 'virtual:forgeax/plugin-programs/engine';
-import { createPrograms as frontendPrograms, root as frontendRoot } from 'virtual:forgeax/plugin-programs/frontend';
-import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
-import { createWechatWasmHost } from '@forgeax/engine/platform-wechat';
-import { initBasisTranscoder } from '@forgeax/engine/codec';
-${physics.map((dimension) => `import { initializeNativeRapier${dimension}D } from '@forgeax/engine/physics-rapier${dimension}d/native';`).join('\n')}
-export async function activate({ app, graphics, ui, canvas, gameProjection, generation, signal, active }) {
-  await initBasisTranscoder(createWechatWasmHost({ wx, WXWebAssembly }, 'payload/wasm/basis_transcoder.wasm.br').unwrap());
-  ${physics.map((dimension) => `const physics${dimension} = await initializeNativeRapier${dimension}D(createWechatWasmHost({ wx, WXWebAssembly }, 'payload/wasm/rapier${dimension}d.wasm.br').unwrap()); if (physics${dimension}.code) throw physics${dimension};`).join('\n')}
-  const lifetime = new AbortController();
-  const abort = () => lifetime.abort();
-  signal.addEventListener('abort', abort, { once: true });
-  if (signal.aborted) abort();
-  const fibers = [];
-  const channel = new MessageChannel();
-  const assets = graphics.assets;
-  let disposed = false;
-  const cleanup = async () => {
-    if (disposed) return;
-    disposed = true; lifetime.abort(); signal.removeEventListener('abort', abort);
-    const failures = [];
-    for (const fiber of fibers.reverse()) { try { await fiber.dispose(); } catch (error) { failures.push(error); } }
-    channel.port1.close(); channel.port2.close();
-    if (failures.length) throw new AggregateError(failures, 'WeChat game cleanup failed');
-  };
-  try {
-  for (const plugin of [renderComponentsPlugin(), scenePlugin(), skinningPlugin(), animationPlugin(), statePlugin(), gameHostPlugin({ app, assets, canvas,
-    drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
-    renderer: app.renderer, port: channel.port1, uiRoot: ui.document.querySelector('#game-ui'), gameProjection,
-    startupTimeoutMs: ${startupTimeout},
-    controlMode: { read: () => 'touch', subscribe: () => () => {} },
-    setPointerLockAllowed: () => {},
-  })]) { const fiber = app.pluginContext.plugin(plugin); fibers.push(fiber); await fiber.await(); }
-  if (engineRoot !== null) {
-    const mounted = await activateExecutionRoot(app.pluginContext, { guid: engineRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
-    fibers.push(mounted.fiber);
-  }
-  if (frontendRoot !== null && active()) {
-    const frontend = app.pluginContext.isolate('assets').isolate('gameHost').isolate('pluginPrograms');
-    const provider = frontend.plugin({ name: 'wechat-frontend', provide: ['assets', 'gameHost', 'pluginPrograms'], apply(ctx) {
-      const runtime = app.pluginContext.runtimePacks;
-      const reader = new AssetRegistry({ catalog: runtime.catalog, fetcher: runtime.fetcher, scopeId: runtimeBinding.scopeId });
-      ctx.provide('assets', reader); ctx.effect(() => () => reader.dispose());
-      ctx.provide('gameHost', { ...app.pluginContext.gameHost, port: channel.port2 });
-      ctx.provide('pluginPrograms', frontendPrograms('wechat-' + generation, 'frontend', generation));
-    } });
-    fibers.push(provider); await provider.await();
-    const mounted = await activateExecutionRoot(frontend, { guid: frontendRoot }, { signal: lifetime.signal, timeoutMs: ${startupTimeout} });
-    fibers.push(mounted.fiber);
-  }
-  return { dispose: cleanup };
-  } catch (error) {
-    try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'WeChat game activation failed', { cause: error }); }
     throw error;
   }
 }

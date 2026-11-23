@@ -120,14 +120,7 @@ export class CandidateDomains {
     this.refreshViews = true;
   }
   *reprepare(): Generator<void> {
-    if (
-      this.closing ||
-      !this.options.current() ||
-      !this.options.source.capture().ok ||
-      !this.options.render.isCurrent() ||
-      (this.physics !== undefined && !this.physics.isCurrent())
-    )
-      throw Error('a changed Level source requires a new candidate');
+    if (!this.canReprepare()) throw Error('a changed Level source requires a new candidate');
     yield* this.retireNative();
     this.refreshViews = false;
     yield* this.prepareNative();
@@ -138,34 +131,52 @@ export class CandidateDomains {
       (!this.options.render.hasRasterRows || this.native?.isCurrent() === true)
     );
   }
-  isCurrent(): boolean {
+  canReprepare(): boolean {
     return (
       !this.closing &&
       this.options.current() &&
       this.options.host.current() &&
       this.options.source.capture().ok &&
       this.options.render.isCurrent() &&
-      this.viewsCurrent() &&
       (this.physics === undefined || this.physics.isCurrent())
     );
   }
+  isCurrent(): boolean {
+    return this.canReprepare() && this.viewsCurrent();
+  }
   /** Only the App fixed-boundary or stopped-owner path calls this synchronous operation. */
   accept(active: boolean, publishSelection: boolean): void | Promise<LevelRenderSelection> {
-    const { source, render, host, current } = this.options;
+    const { render, host } = this.options;
     this.checkWait();
-    if (this.closing || !current() || !host.current() || (active && !this.isCurrent()))
+    if (this.closing || (active && !this.isCurrent()))
       throw Error('Level participation requires current complete domain owners');
+    this.changeSource(active);
+    // The native/source callback may have partial effects on failure. Its owner retains them.
+    if (publishSelection && host.current()) return render.setActive(active).unwrap();
+  }
+  private changeSource(active: boolean): void {
+    const { source, render } = this.options;
     const previous = source.capture().unwrap();
     const acceptSource = () => {
       const next = source.setActive(active, previous);
-      if (!next.ok) return next;
-      return render.acceptSource(next.value);
+      return next.ok ? render.acceptSource(next.value) : next;
     };
     if (this.physics === undefined) acceptSource().unwrap();
     else this.physics.accept(active, acceptSource).unwrap();
-    // The native/source callback may have partial effects on failure. Its owner retains them.
-    if (publishSelection) return render.setActive(active).unwrap();
   }
+
+  get collisionAccepted(): boolean {
+    return this.physics?.inspect().participation === 'active';
+  }
+
+  get canExchangeVisual(): boolean {
+    return this.physics === undefined && this.options.render.hasRasterRows && this.isCurrent();
+  }
+
+  restoreVisualSource(active: boolean): void {
+    this.changeSource(active);
+  }
+
   get canRetireStopped(): boolean {
     return (
       this.options.stopped?.() === true &&

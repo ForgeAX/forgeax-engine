@@ -16,7 +16,11 @@ export class ResidualBoundsProof {
     this.meshReads = previous === undefined ? new WeakSet() : previous.meshReads;
   }
 
-  record(source: RenderableSnapshot, meshes: MeshFrame, bounds?: box3.Box3): void {
+  record(
+    source: Pick<RenderableSnapshot, 'assetHandle' | 'terrainSection' | 'generatedMesh'>,
+    meshes: MeshFrame,
+    bounds?: box3.Box3,
+  ): void {
     if (
       source.assetHandle !== undefined &&
       source.generatedMesh === undefined &&

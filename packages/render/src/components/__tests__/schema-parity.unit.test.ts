@@ -21,7 +21,6 @@ describe('render schema parity', () => {
       pcssHigh: 5,
       pcfVogel: 6,
       pcfSoft: 7,
-      variance: 8,
     });
     expect(DirectionalLight.fields.shadowFilter.default).toBe(6);
     expect('pcfKernelSize' in DirectionalLight.fields).toBe(false);

@@ -22,12 +22,11 @@ import {
   type RenderPipelineTarget,
 } from '../render-pipeline';
 import type { StandardSceneSurfaceDataTargets } from '../temporal/standard-scene-data';
-import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 /** Four surface-data tiles share the existing Forward sampled transport. */
 export const FORWARD_SCREEN_TILE_AXIS = 2;
 
-type ScreenProgram = 'forwardContact' | 'forwardScreenCompose' | 'forwardScreenPack';
+type ScreenProgram = 'forwardContact' | 'forwardScreenCompose';
 interface ScreenRaster {
   readonly program: ScreenProgram;
   readonly name: string;
@@ -35,8 +34,6 @@ interface ScreenRaster {
   readonly output: GraphTextureView;
   readonly format: GPUTextureFormat;
   readonly parameters: (frame: RenderPipelineFrame) => Uint32Array | Float32Array;
-  readonly load?: boolean;
-  readonly viewport?: { readonly y: number; readonly width: number; readonly height: number };
 }
 
 function screenLayout(program: ScreenProgram, inputCount: number): BindGroupLayoutEntry[] {
@@ -104,7 +101,7 @@ function addScreenRaster(graph: RenderGraphBuilder<RenderPipelineFrame>, work: S
     colorAttachments: [
       {
         view: work.output,
-        loadOp: work.load ? 'load' : 'clear',
+        loadOp: 'clear',
         storeOp: 'store',
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
       },
@@ -214,8 +211,6 @@ function addScreenRaster(graph: RenderGraphBuilder<RenderPipelineFrame>, work: S
         pass.setBindGroup(0, viewGroup, [internal.viewBindGroupDynamicOffset ?? 0]);
         pass.setBindGroup(1, group);
       } else pass.setBindGroup(0, group);
-      if (work.viewport !== undefined)
-        pass.setViewport(0, work.viewport.y, work.viewport.width, work.viewport.height, 0, 1);
       pass.draw(3);
     },
   });
@@ -310,7 +305,6 @@ export function addForwardScreenData(
     readonly capsules?: boolean;
     readonly decals: ProjectedDecalChannels | undefined;
     readonly ao: RenderPipelineTarget | undefined;
-    readonly clusters: StandardClusterGraphBuffers | null;
   },
 ) {
   const { size } = input;
@@ -402,21 +396,5 @@ export function addForwardScreenData(
       ]),
   });
   if (!composed.ok) return composed;
-  if (input.clusters?.kind === 'texture') {
-    const region = input.clusters.textureLayout.screen;
-    if (region === undefined)
-      throw new Error('Forward screen data requires its reserved Cluster texture region');
-    const packed = addScreenRaster(graph, {
-      program: 'forwardScreenPack',
-      name: 'forward-screen-pack',
-      inputs: [atlas.value.view],
-      output: input.clusters.texture,
-      format: 'rgba32uint',
-      parameters: () => new Uint32Array([region.originY, region.textureWidth, 0, 0]),
-      load: true,
-      viewport: { y: region.originY, width: region.textureWidth, height: region.writeHeight },
-    });
-    if (!packed.ok) return packed;
-  }
   return ok(atlas.value);
 }

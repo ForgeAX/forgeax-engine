@@ -1,4 +1,5 @@
 // Per-view recording kernels read the view owner directly; no constructor-captured frame state.
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { AssetHandle } from '@forgeax/engine-types';
@@ -9,11 +10,14 @@ import { reportPendingRenderFeatureErrors } from './features/error-reporting';
 import type { RenderFeatureFrameInput } from './features/host';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './gpu-driven/draw-selection';
 import { materialUsesLitSceneInputs } from './pbr-pipeline';
+import { hasForwardShadowCoverage } from './pipeline/forward-shadow-admission';
+import { premultipliedForwardOutput } from './pipeline/standard-forward-output';
 import { discardStandardOutputStates } from './pipeline/standard-output/resources';
 import { DEFAULT_STANDARD_PROFILE } from './pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from './publication/resource-scope';
 import { leanLightingFrame } from './record/directional-shadow-simple';
 import { createDrawObservation } from './record/draw-observation';
+import { forwardColorCanWriteDepth } from './record/forward-display-depth';
 import {
   type CubeCaptureFrameInput,
   type FrameRecordingInput,
@@ -46,6 +50,7 @@ import {
   recordFailureError,
 } from './render-system-record-attempt';
 import { FrameProjection } from './scene/frame-list';
+import { someCapturedMaterialPass } from './scene/material-dispatch';
 import type { PersistentGpuDrivenState } from './scene/render-scene';
 import { recordsViewWork, type ViewCaptureFrame, viewCaptureWorkOf } from './world/capture-systems';
 import { consumeViewEnvironment } from './world/environment-systems';
@@ -219,7 +224,16 @@ export function prepareRecordScene(
     owner.internals.viewEntity,
   );
   owner.recorded.camera = cameras[0];
-  const visibility = projectRecordVisibility(owner, attempt.sourceScope, frame, cameras.length);
+  // Feature, queue and temporal work all read this same extracted view. Only GPU
+  // raster admission consumes stable entity membership and its revision.
+  const presentationRenderables =
+    cameras.length === 0 || frame.gpuOwned !== undefined
+      ? []
+      : projectDisplayRenderables(
+          frame.renderables,
+          frame.dispatch,
+          attempt.mode === 'capture' ? undefined : cameras[0],
+        );
   owner.frameState.pipelinePreparationPending = false;
   delete owner.frameState.pipelinePreparationPendingReason;
   const presentation = initialFramePresentation(
@@ -230,11 +244,11 @@ export function prepareRecordScene(
   const lodCandidateCount = owner.lod.inspectFrame(
     owner.recorded.camera,
     frame,
-    visibility,
+    { projection: frame },
     attempt.sourceScope,
     lodFrameId,
   );
-  owner.scene.prepareTemporalFrame(visibility.projection.renderables, frame.gpuOwned?.slots);
+  owner.scene.prepareTemporalFrame(frame.renderables, frame.gpuOwned?.slots);
   if (
     consumeViewEnvironment(renderWorldFor(owner.internals), owner.internals.viewEntity) !==
     'admitted'
@@ -252,7 +266,7 @@ export function prepareRecordScene(
     shadowCasterProjection,
     reflectionProbes,
     ssrDependencies,
-    visibility,
+    presentationRenderables,
     presentation,
     lodFrameId,
     lodCandidateCount,
@@ -266,27 +280,6 @@ export function stagedViewScopes(owner: ViewSettlementOwner) {
   if (staged === undefined)
     throw new Error('A view prepares only the frame render-view-frame resolved this frame');
   return stagedViewInputs(renderWorld, staged);
-}
-
-export function projectRecordVisibility(
-  owner: ViewSettlementOwner,
-  sourceScope: RenderResourceScope,
-  frame: ExtractedFrame,
-  cameraCount: number,
-) {
-  const projection = owner.scene.projectVisibility(
-    sourceScope,
-    frame.renderables,
-    frame.dispatch,
-    frame.gpuOwned?.slots,
-  );
-  // A GPU-owned frame derives its display rows from the submitted selection;
-  // such frames carry no terrain or other view-generated rows.
-  const presentationRenderables =
-    cameraCount === 0 || frame.gpuOwned !== undefined
-      ? []
-      : projectDisplayRenderables(projection.renderables, projection.dispatch);
-  return { projection, presentationRenderables };
 }
 
 /**
@@ -528,13 +521,12 @@ export function stageRecordQueue(
   const entity = owner.internals.viewEntity;
   if (entity === undefined) throw new Error('A queued recording requires its view entity');
   const phases = viewPhaseQueue(world, entity);
-  const { projection } = scene.visibility;
   if (sorted)
     phases.stage({
-      dispatch: projection.dispatch,
+      dispatch: frame.dispatch,
       scope: resourceScope(attempt),
       cameras: view.cameras,
-      rows: new FrameProjection(projection.renderables, (source) => ({
+      rows: new FrameProjection(frame.renderables, (source) => ({
         transform: source.transform,
         material: source.material.snapshot,
       })),
@@ -547,6 +539,7 @@ export function stageRecordQueue(
     world,
     entity,
     view,
+    frame,
     scene,
     sorted,
     attempt.mode !== true,
@@ -561,7 +554,8 @@ export function stageRecordQueue(
       sourceScope: attempt.sourceScope,
       camera,
       lights: view.lights,
-      renderables: projection.renderables,
+      renderables: frame.renderables,
+      hasLightProbes: (frame.lightProbes?.length ?? 0) > 0,
       shadowCasterProjection: scene.shadowCasterProjection,
       materialBindingClasses: scene.reflectionProbes.bindingClasses,
       gpuDriven,
@@ -578,6 +572,39 @@ export function stageRecordQueue(
   return { gpuDriven, records, sorted };
 }
 
+/** Each occupied material pass selects one shader, regardless of its member count. */
+function dispatchUsesSceneDepth(
+  dispatch: DispatchList,
+  registry: NonNullable<RenderSystemInternals['shaderRegistry']>,
+): boolean {
+  const shared = someCapturedMaterialPass(dispatch, (pass) =>
+    materialUsesLitSceneInputs(registry, pass.materialShaderId),
+  );
+  if (shared !== undefined) return shared;
+  const checked = new Set<string>();
+  return dispatch.some(({ materialShaderId }) => {
+    if (materialShaderId === undefined || checked.has(materialShaderId)) return false;
+    checked.add(materialShaderId);
+    return materialUsesLitSceneInputs(registry, materialShaderId);
+  });
+}
+
+/**
+ * Keep a prepared resident Source's receiver graph across its inactive frames.
+ * The full topology and native ownership still have to match during graph selection.
+ */
+function retainEmptyForwardShadowGraph(
+  frame: ViewSettlementOwner['frameState'],
+  scene: PersistentGpuDrivenState | undefined,
+): boolean {
+  return (
+    scene !== undefined &&
+    scene.slots.length > 0 &&
+    (frame.compiledFrameGraph?.forwardShadowCoverage === true ||
+      frame.unsubmittedCompiledFrameGraph?.installed.forwardShadowCoverage === true)
+  );
+}
+
 /**
  * Stage what the pass-family RenderQueue systems plan this view from. A
  * Camera-less view is a clear-only frame without draws.
@@ -587,45 +614,53 @@ export function stageViewPassPlan(
   world: World,
   entity: EntityHandle,
   view: RecordView,
+  frame: ExtractedFrame,
   scene: RecordScene,
   phaseSorted: boolean,
   captureOnly: boolean,
   gpuDrivenScene: PersistentGpuDrivenState | undefined,
 ): void {
-  const { projection } = scene.visibility;
   const cameraless = view.cameras.length === 0;
-  const renderables = cameraless ? [] : projection.renderables;
-  const dispatch = cameraless ? [] : projection.dispatch;
+  const renderables = cameraless ? [] : frame.renderables;
+  const dispatch = cameraless ? [] : frame.dispatch;
   const shaderRegistry = owner.internals.shaderRegistry;
-  const checkedShaders = new Set<string>();
   const materialSceneDepth =
-    shaderRegistry !== undefined &&
-    dispatch.some(({ materialShaderId }) => {
-      if (materialShaderId === undefined || checkedShaders.has(materialShaderId)) return false;
-      checkedShaders.add(materialShaderId);
-      return materialUsesLitSceneInputs(shaderRegistry, materialShaderId);
-    });
+    shaderRegistry !== undefined && dispatchUsesSceneDepth(dispatch, shaderRegistry);
   const shadowCasterProjection = scene.shadowCasterProjection;
   const { materials, manualSubsurface } = resolveFrameMaterials(
     shadowCasterProjection,
     shadowCasterProjection?.renderables ?? renderables,
   );
   const camera = view.cameras[0] ?? makeZeroCameraFallbackSnapshot();
+  const profile =
+    owner.frameState.cameraStandardProfile ??
+    owner.internals.standardProfile ??
+    DEFAULT_STANDARD_PROFILE;
+  const forwardShadowCoverage =
+    profile.renderPath === 'forward' &&
+    hasForwardShadowCoverage(
+      dispatch,
+      retainEmptyForwardShadowGraph(owner.frameState, gpuDrivenScene),
+    );
+  const forwardColorWritesDepth =
+    !materialSceneDepth &&
+    !cameraless &&
+    premultipliedForwardOutput(owner.frameState.activePipeline) !== undefined &&
+    shaderRegistry !== undefined &&
+    forwardColorCanWriteDepth(dispatch, materials, shaderRegistry);
   viewPassPlanQueue(world, entity).stage({
     requested: view.cameras[0]?.transparency ?? 'sorted',
     rgba16floatRenderable: owner.internals.device.caps.rgba16floatRenderable,
     renderables,
     dispatch,
     ...(materialSceneDepth ? { materialSceneDepth: true } : {}),
+    ...(forwardColorWritesDepth ? { forwardColorWritesDepth: true } : {}),
+    ...(forwardShadowCoverage ? { forwardShadowCoverage: true } : {}),
     phaseSorted: phaseSorted && !cameraless,
     materials,
     sceneTransmission: owner.scene.transmissionTopologyDemand(),
     preparation: owner.frameState.candidatePipelinePreparations?.materials,
-    renderPath: (
-      owner.frameState.cameraStandardProfile ??
-      owner.internals.standardProfile ??
-      DEFAULT_STANDARD_PROFILE
-    ).renderPath,
+    renderPath: profile.renderPath,
     gpuOcclusion: owner.frameState.installedPipelineConfig?.gpuOcclusion,
     clearOnly: cameraless,
     ssr: {
@@ -656,7 +691,15 @@ export function recordingGpuDrivenInput(
   scene: RecordScene,
   gpuDrivenScene: PersistentGpuDrivenState | undefined,
 ): GpuDrivenRecordInput {
-  const { projection } = scene.visibility;
+  const projection =
+    gpuDrivenScene === undefined
+      ? undefined
+      : owner.scene.projectVisibility(
+          attempt.sourceScope,
+          frame.renderables,
+          frame.dispatch,
+          frame.gpuOwned?.slots,
+        );
   const frustumStats = frame.frustumStats;
   const captureOnly = attempt.mode === 'capture';
   const surfaceDynamicInput = surfaceDynamicInputOf(renderWorldFor(owner.internals));
@@ -665,8 +708,12 @@ export function recordingGpuDrivenInput(
     owner: owner.gpuDriven,
     scene: gpuDrivenScene,
     ...(sceneTextureTables === undefined ? {} : { sceneTextureTables }),
-    activeEntityKeys: projection.activeEntityKeys,
-    activeEntityRevision: projection.activeEntityRevision,
+    ...(projection === undefined
+      ? {}
+      : {
+          activeEntityKeys: projection.activeEntityKeys,
+          activeEntityRevision: projection.activeEntityRevision,
+        }),
     visibleRasterRows: () => Math.max(0, frustumStats.total - frustumStats.culled),
     ...(captureOnly || frame.cameraVisible === undefined
       ? {}
@@ -810,7 +857,6 @@ export function prepareViewFrameInput(
   const captureOnly = attempt.mode === 'capture';
   // Display media (volumes, cloud layers) never enter a capture view's raw scene.
   const displayMedia = !captureOnly && recordContext(owner.internals).captureView === undefined;
-  const { projection } = scene.visibility;
   const environment = frame.environment;
   const { dispatch: orderedDispatch } = queued;
   const bloomAdmitted = standardBloomAdmitted(cameras[0]);
@@ -842,7 +888,7 @@ export function prepareViewFrameInput(
     world: resourceScope(attempt),
     cameras: cameras,
     lights: lights,
-    renderables: projection.renderables,
+    renderables: frame.renderables,
     transparentDispatch: orderedDispatch,
     frameState: owner.frameState,
     dispatchCounts: owner.recording.dispatchCounts,

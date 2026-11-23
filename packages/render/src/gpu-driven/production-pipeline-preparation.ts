@@ -75,8 +75,6 @@ export function registerRasterPipelinePreparation(
     }
     return selected;
   };
-  ordinarySelection();
-  const { frame } = projected;
   const ownedFormats = [...formats];
   const formatKey = ownedFormats.join(',');
   const request = (pipelineFor: RasterPipelineFor, artifact: MaterialShaderArtifact) =>
@@ -99,6 +97,7 @@ export function registerRasterPipelinePreparation(
             shader: artifact.material.slice(0, 256),
           });
         }
+      const { frame } = projected;
       const hiddenReady = prepareHiddenGpuDrivenPipelines({
         entries,
         artifacts,

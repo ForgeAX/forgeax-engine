@@ -86,14 +86,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1376-byte payload, 1536-byte dynamic slot (256-byte alignment).
+// View UBO: 1392-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles.
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles; [1376..1392) ground solar reference.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -129,7 +129,7 @@ struct View {
   spotLightViewProj : array<mat4x4<f32>, 4>,
   temporalCurrentViewProj : mat4x4<f32>,
   temporalPreviousViewProj : mat4x4<f32>,
-  // x = near, y = far, z = 1 for orthographic and 0 for perspective.
+  // x = near, y = far, z = orthographic, w = projected Forward sun occupies R.
   temporalProjection : vec4<f32>,
   // Accepted camera origin at the previous submitted frame. This occupies
   // the existing tail padding and keeps temporal reprojection on one SSOT.
@@ -155,22 +155,63 @@ struct View {
   fogColorDensity : vec4<f32>,
   fogHeightOpacity : vec4<f32>,
   atmosphere : AtmosphereMedium,
-  // reference sample count (zero = LUT), sun radius, AP range km, flags (1 aerial perspective, 2 captured atmosphere sun).
+  // Reference samples (negative: fast samples per slice), sun radius, AP range in km.
+  // Flags: 1 AP, 2 sun, 4 scalar AP, 8 disable the fast height-fog sky term.
   atmosphereControl : vec4<f32>,
   // x = Fog.skyOpacity: scale of the fog opacity on background pixels under
   // an Atmosphere (1 = physical distant fog, 0 = sky unfogged).
   // y = admitted Forward vertex-height route; zero retains screen/capture
   // consumers. The View owner selects it, never the material author.
-  // z = perspective camera height density; w = packed Deferred channel projection.
+  // z = perspective camera height density; w packs Deferred channel projection
+  // in bits 0..19 and indirect specular controls in bits 20..21.
   fogSky : vec4<f32>,
   // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
   ssrQuality : vec4<f32>,
   // Index + 1 is the compact GBuffer subsurface profile ID; zero entries are unused.
   subsurfaceProfiles : array<vec4<u32>, 4>,
+  // CPU ground reference RGB. W = 0 for absent, 1 for ground direct lighting,
+  // 2 when surfaces request per-pixel transmittance.
+  groundSolar : vec4<f32>,
 };
 
-// Mesh contains only independent transform and temporal facts. Direct draws
-// bind aligned 256-byte slots; storage draws expose the 176-byte row.
+// Keep full SSR through half the authored cutoff, then fade linearly to zero.
+fn screenSpaceReflectionRoughnessFade(roughness: f32, maxRoughness: f32) -> f32 {
+  let enabled = maxRoughness > 0.0;
+  let limit = select(1.0, maxRoughness, enabled);
+  return select(0.0, clamp(2.0 - 2.0 * (roughness / limit), 0.0, 1.0), enabled);
+}
+
+// Level zero already covers the first full-resolution downsample. Keep the
+// roughness curve in source-scene texels and translate it to this mip chain.
+fn ssrSceneColorLod(roughness: f32, maxRoughness: f32, levels: u32) -> f32 {
+  let relativeRoughness = roughness / max(maxRoughness, 1e-6);
+  let span = clamp((relativeRoughness - 0.1) / 0.65, 0.0, 1.0);
+  return max(0.0, span * f32(levels) - 1.0);
+}
+
+fn sampleSsrSceneColorLevel(source: texture_2d<f32>, uv: vec2<f32>, level: u32) -> vec3<f32> {
+  let size = textureDimensions(source, level);
+  let position = clamp(uv * vec2<f32>(size) - 0.5, vec2<f32>(0.0), vec2<f32>(size - 1u));
+  let lower = vec2<i32>(floor(position));
+  let upper = min(lower + 1, vec2<i32>(size) - 1);
+  let f = fract(position);
+  let a = mix(textureLoad(source, lower, level).rgb,
+    textureLoad(source, vec2<i32>(upper.x, lower.y), level).rgb, f.x);
+  let b = mix(textureLoad(source, vec2<i32>(lower.x, upper.y), level).rgb,
+    textureLoad(source, upper, level).rgb, f.x);
+  return mix(a, b, f.y);
+}
+
+fn sampleSsrSceneColor(source: texture_2d<f32>, uv: vec2<f32>, lod: f32) -> vec3<f32> {
+  let lower = u32(floor(lod));
+  let fraction = fract(lod);
+  let base = sampleSsrSceneColorLevel(source, uv, lower);
+  if (fraction <= 0.0) { return base; }
+  return mix(base, sampleSsrSceneColorLevel(source, uv, lower + 1u), fraction);
+}
+
+// Direct Mesh draws bind aligned 256-byte slots, exposing a 208-byte storage
+// row or a 128-byte uniform row.
 struct Mesh {
   worldFromLocal : mat4x4<f32>,
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -185,6 +226,8 @@ struct Mesh {
   // Instance-local atlas rectangle; surface.w bit 0 selects it.
   // Uniform Mesh also carries meshSurfaceFlags no-receive bit 1 in surface.w.
   spriteRegion : vec4<f32>,
+  drawParameters : vec4<f32>,
+  drawParametersExtra : vec4<f32>,
 };
 
 // GPU Scene rows read directly by scene-index vertex entries. Render derives
@@ -309,7 +352,7 @@ struct DirectLightSlot {
   direction           : vec4<f32>, // row2: primary axis + second angular fact
   auxiliary           : vec4<f32>, // row3: auxiliary Rect axis
   metadata : vec4<u32>,
-  channels : vec4<u32>, // row5: raw channels, Spot decay bits, projected Deferred channels, reserved
+  channels : vec4<u32>, // row5: raw channels, Spot decay bits, projected Deferred channels, Forward shadow channel
 };
 
 @group(0) @binding(0) var<uniform> view : View;
@@ -319,6 +362,18 @@ fn viewDirectionToCamera(worldPosition : vec3<f32>) -> vec3<f32> {
   // column points toward the camera, including rotated and off-axis views.
   return normalize(select(view.cameraPos - worldPosition,
     view.inverseViewProj[2].xyz, view.temporalProjection.z > 0.5));
+}
+
+fn view_atmosphere_fast_ap(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 4u) != 0u;
+}
+
+fn view_atmosphere_fast_ap_samples(v: View, slice: u32) -> u32 {
+  return max(1u,u32(ceil(f32(slice+1u)*max(-v.atmosphereControl.x,1.0))));
+}
+
+fn view_atmosphere_affects_height_fog(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 8u) == 0u;
 }
 
 fn view_atmosphere_aerial_enabled(v: View) -> bool {
@@ -449,7 +504,6 @@ struct ShadowCasterCascade {
 // these declarations behind the same axis prevents a no-extension variant
 // from consuming texture budget or requiring absent bindings.
 #ifdef EXTENDED_LIGHTING_AVAILABLE
-@group(0) @binding(24) var shadowMoments : texture_2d_array<f32>;
 @group(0) @binding(9) var spotModifierSampler : sampler;
 @group(0) @binding(11) var iesProfileTexture : texture_2d_array<f32>;
 @group(0) @binding(12) var cookieTexture : texture_2d_array<f32>;
@@ -474,15 +528,13 @@ struct ShadowCasterCascade {
 #endif
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-// The scene-index variant binds the whole GPU Scene tables in the slots the
-// direct variant gives `meshes`/`instances`, so a variant declares only one
-// family.
-@group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
+// Scene-index and Scene Direct share the resident Scene transform slot.
+@group(3) @binding(9) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
 #else
 #ifdef GPU_SCENE_DIRECT
 #if STORAGE_BUFFER_AVAILABLE == true
-// Direct draws of a GPU Scene slot read its rows in place of `meshes`/`instances`.
-@group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
+// Direct draws read all resident rows from the Scene group.
+@group(3) @binding(9) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
 #else
 // Texture-table direct draws keep this group; the transform table is in group(3).
 @group(2) @binding(0) var<uniform> meshes : array<Mesh, 128>;
@@ -637,6 +689,15 @@ fn sceneTransformPrevious(row : GpuSceneTransform, frame : u32) -> mat4x4<f32> {
     return sceneTransforms[row.previousIndex].currentWorld;
   }
   return row.currentWorld;
+}
+
+// Current-pose coverage skips the temporal stamp and previous transform rows.
+fn sceneIndexCurrentWorld(instanceRow : u32) -> mat4x4<f32> {
+  let instance = sceneInstances[instanceRow];
+  let primitive = scenePrimitives[instance.primitiveIndex];
+  let world = sceneTransforms[primitive.transformIndex].currentWorld;
+  if (instance.transformIndex == 0u) { return world; }
+  return world * sceneTransforms[instance.transformIndex].currentWorld;
 }
 
 fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
@@ -826,3 +887,6 @@ fn applyLodCoverage(position : vec2<f32>, fade : f32) {
 fn lightingChannelsMatch(light : u32, receiver : u32) -> bool {
   return (light & receiver) != 0u;
 }
+
+// Shared screen-space surface input for Forward lighting.
+@group(0) @binding(29) var forwardScreenSurface: texture_2d<f32>;

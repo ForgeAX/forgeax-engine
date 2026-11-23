@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 
 const probeGate = vi.hoisted(() => ({
   root: '',
@@ -46,7 +46,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 import { createRevisionObserver } from '../dev/revision-observer.js';
 
 describe('revision observer probe scheduling', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
   afterEach(async () => {
     vi.useRealTimers();
@@ -60,14 +60,13 @@ describe('revision observer probe scheduling', () => {
     probeGate.trackCalls = false;
     probeGate.inFlight = 0;
     probeGate.maximumInFlight = 0;
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await scratch.clear();
   });
 
   it('reports actual snapshot I/O only when workspace timing is enabled', async () => {
     vi.stubEnv('FORGEAX_WORKSPACE_TIMING', '1');
     const logs = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-timing-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-timing-');
     await Promise.all(['a', 'b', 'c'].map((file) => writeFile(join(root, file), 'source')));
     const watcher = { close: () => {}, on: () => watcher, unref: () => {} } as never;
     const observer = createRevisionObserver({
@@ -99,8 +98,7 @@ describe('revision observer probe scheduling', () => {
   });
 
   it('bounds snapshot I/O while observing every file in a wide root', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-width-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-width-');
     const files = Array.from({ length: 32 }, (_, index) => join(root, `asset-${index}.png`));
     await Promise.all(files.map((file) => writeFile(file, 'old')));
     const observed = new Set<string>();
@@ -131,8 +129,7 @@ describe('revision observer probe scheduling', () => {
     [90_000, 60_000],
   ])('spaces a %i ms snapshot by %i ms after completion', async (cost, delay) => {
     vi.useFakeTimers();
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-spacing-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-spacing-');
     probeGate.root = root;
     probeGate.blockNext = true;
     const entered = new Promise<void>((resolve) => {
@@ -160,8 +157,7 @@ describe('revision observer probe scheduling', () => {
 
   it('does not turn a probe tick into another snapshot while one is in flight', async () => {
     vi.useFakeTimers();
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-probe-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-probe-');
     await mkdir(join(root, 'assets'));
     await writeFile(join(root, 'assets', 'hero.bin'), 'old');
     const watchedRoot = join(root, 'assets');

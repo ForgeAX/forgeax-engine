@@ -17,6 +17,7 @@ export function engineMaterialForwardFog(file: {
     case 'forgeax::points-lines':
     case 'forgeax::single-layer-medium':
     case 'forgeax::single-layer-water':
+    case 'forgeax::standard-terrain-detail':
     case 'forgeax::standard-terrain':
     case 'forgeax::standard-terrain-ids':
       return 'height-vertex/1';

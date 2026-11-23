@@ -30,11 +30,7 @@ export function beginObservationFrame(
   internals.observationFrameId = observationFrameId;
   internals.observationGraphGeneration = undefined;
   internals.observationCaptureDomains = pendingObservationDomains;
-  internals.gpuPassTimingFrameIdentity = {
-    frameId: observationFrameId,
-    deviceGeneration: deviceGeneration,
-    graphGeneration: 0,
-  };
+  internals.gpuPassTimingDeviceGeneration = deviceGeneration;
   const profileSession = activeRenderProfileSession(
     undefined,
     renderWorld,

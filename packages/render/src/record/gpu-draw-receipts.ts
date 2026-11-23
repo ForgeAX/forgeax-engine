@@ -1,5 +1,5 @@
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
-import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, rasterRowsOf } from '../scene/frame-list';
 import { hasRasterDemand } from '../scene/raster-demand';
@@ -15,6 +15,31 @@ export interface RenderableDrawReceipt {
   readonly waterBaked?: import('../world/view-draw-receipt').WaterBakedDrawReceiptFact;
   readonly lane: 'cpu' | 'gpu';
   readonly ready: boolean;
+}
+
+type PublishedMaterialProgram = NonNullable<
+  MaterialSnapshot['materialPublication']
+>['programs'][number];
+
+/** Resolve the accepted publication entry that actually produced the selected shader. */
+export function selectSubmittedMaterialProgram(
+  programs: readonly PublishedMaterialProgram[] | undefined,
+  hasPass: boolean,
+  passIndex: number,
+  submittedShader: string | undefined,
+): PublishedMaterialProgram | undefined {
+  if (submittedShader === undefined || programs === undefined) return undefined;
+  if (hasPass) {
+    const selected = programs[passIndex];
+    return selected?.specializationKey === submittedShader ? selected : undefined;
+  }
+  let match: PublishedMaterialProgram | undefined;
+  for (const program of programs) {
+    if (program.specializationKey !== submittedShader) continue;
+    if (match !== undefined) return undefined;
+    match = program;
+  }
+  return match;
 }
 
 export interface GpuDrawSummary {
@@ -42,6 +67,7 @@ export function emitGpuDrivenDrawReceipts(
     receipt: RenderableDrawReceipt,
   ) => void,
 ): void {
+  if (selection === EMPTY_GPU_DRAW_SELECTION) return;
   for (const source of rows) {
     if (!hasRasterDemand(source)) continue;
     const draws = source.gpuDrivenDraws;

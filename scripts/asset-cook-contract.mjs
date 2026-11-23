@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const LEGACY_PATTERNS = [
   {
@@ -29,10 +31,58 @@ const CHANNELS = {
   json: ['apps/hello'],
 };
 
-const FIXTURES = [
-  'apps/hello/room/assets/room.pack.json',
-  'apps/hello/scene-nesting/assets/outer-scene.pack.json',
-];
+const LEGACY_SCRIPTABLE_AUTHORING =
+  /schemaVersion:\s*['"]1\.0\.0['"]|\bexternalAssets\b|ScriptablePack(?:Definition|Outputs|AssetDeclaration)|output\.add\(|canonical-v1|BROTATO_ASSET_GUIDS|OUTPUT_GUIDS/;
+
+export async function scanPackAuthoring(root) {
+  const { parsePackSourceJson } = await import('@forgeax/engine-pack/source');
+  const assetRepository = resolve(root, 'forgeax-engine-assets');
+  const errors = [];
+  let count = 0;
+  for (const cwd of [
+    root,
+    ...(existsSync(join(assetRepository, '.git')) ? [assetRepository] : []),
+  ]) {
+    const files = execFileSync(
+      'git',
+      [
+        'ls-files',
+        '-z',
+        '--cached',
+        '--others',
+        '--exclude-standard',
+        '--',
+        '*.pack.json',
+        'templates/*.pack.ts',
+      ],
+      { cwd, encoding: 'utf8' },
+    );
+    for (const name of new Set(files.split('\0').filter(Boolean))) {
+      if (/(^|\/)tsconfig\./.test(name)) continue;
+      const path = resolve(cwd, name);
+      if (!existsSync(path)) continue;
+      count++;
+      try {
+        const source = readFileSync(path, 'utf8');
+        if (name.endsWith('.ts')) {
+          if (!/\bdefinePack\s*\(/.test(source) || LEGACY_SCRIPTABLE_AUTHORING.test(source)) {
+            errors.push(`invalid template Pack authoring: ${name}`);
+          }
+        } else {
+          const parsed = parsePackSourceJson(JSON.parse(source));
+          if (!parsed.ok) errors.push(`${name}: ${parsed.error.hint}`);
+        }
+      } catch (error) {
+        errors.push(`${name}: ${error.message}`);
+      }
+    }
+  }
+  for (const name of ['asset-ids.ts', 'asset-ids.generated.ts']) {
+    const path = `templates/game-3d/src/${name}`;
+    if (existsSync(resolve(root, path))) errors.push(`${path}: generated output identity table`);
+  }
+  return { count, errors };
+}
 
 function walk(root, extensions, files = []) {
   if (root.includes('/__tests__/') || root.endsWith('/asset-cook-contract.mjs')) return files;
@@ -72,30 +122,26 @@ export function scanAssetCookContract(root = process.cwd()) {
     }
   }
 
-  for (const fixture of FIXTURES) {
-    const path = resolve(root, fixture);
-    if (!existsSync(path)) {
-      errors.push(`missing fixture: ${fixture}`);
-      continue;
-    }
-    const pack = JSON.parse(readFileSync(path, 'utf8'));
-    if (pack.schemaVersion !== '2.0.0' || pack.kind !== 'internal-text-package')
-      errors.push(`not Pack v2: ${fixture}`);
-    if (!Array.isArray(pack.assets) || pack.assets.some((asset) => asset.artifacts === undefined))
-      errors.push(`asset-local artifacts missing: ${fixture}`);
-  }
-
   return { ok: errors.length === 0, channels, errors };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const result = scanAssetCookContract(process.cwd());
-  for (const [channel, files] of result.channels)
-    console.log(`[asset-cook-contract] ${channel}: ${files.length} files`);
-  if (!result.ok) {
-    for (const error of result.errors) console.error(`[asset-cook-contract] ${error}`);
-    process.exitCode = 1;
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  let errors;
+  if (process.argv.includes('--authoring')) {
+    const audit = await scanPackAuthoring(process.cwd()).catch((error) => {
+      if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;
+      throw new Error('Build the Engine before auditing Pack authoring: pnpm build:engine', {
+        cause: error,
+      });
+    });
+    console.log(`[asset-cook-contract] audited ${audit.count} Pack source files`);
+    errors = audit.errors;
   } else {
-    console.log('[asset-cook-contract] PASS - Pack v2/local artifact contract is clean');
+    const transport = scanAssetCookContract();
+    for (const [channel, files] of transport.channels)
+      console.log(`[asset-cook-contract] ${channel}: ${files.length} files`);
+    errors = transport.errors;
   }
+  for (const error of errors) console.error(`[asset-cook-contract] ${error}`);
+  if (errors.length > 0) process.exitCode = 1;
 }

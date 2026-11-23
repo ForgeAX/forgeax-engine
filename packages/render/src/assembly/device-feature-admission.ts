@@ -43,9 +43,9 @@ export function transmissionBackdropAvailable(limit: number | undefined): boolea
 
 /**
  * How one Standard transmission material fits the sampled-texture budget.
- * `dedicated` uses the full layout; `shared` binds transmission, thickness and
- * the backdrop through the split metallic/roughness/alpha pairs of the fixed
- * 16-texture layout; `exceeded` names the authored maps that occupy those pairs.
+ * `dedicated` uses the full layout. In `shared`, transmission and thickness
+ * reuse the metallic and roughness pairs of the 16-texture layout. The backdrop
+ * is a View resource. `exceeded` lists the maps that already occupy those pairs.
  */
 export type StandardTransmissionSlotAdmission =
   | { readonly kind: 'dedicated' }
@@ -102,7 +102,7 @@ export function standardParallaxAdmission(
  * provide it; lower-capability devices remain fail-closed at material
  * pipeline admission instead of receiving an invalid WebGPU layout.
  */
-export const STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES = 27;
+export const STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES = 29;
 
 export interface DeviceFeatureAdmission {
   readonly requiredFeatures: GPUFeatureName[];
@@ -292,6 +292,9 @@ function inspectDeviceInfo(device: RhiDevice, deviceGeneration: number): DeviceI
           device: adapterDevice,
           description,
           isFallbackAdapter: typeof isFallbackAdapter === 'boolean' ? isFallbackAdapter : null,
+          ...('backend' in info && typeof info.backend === 'string'
+            ? { nativeBackend: info.backend }
+            : {}),
         });
       }
     }

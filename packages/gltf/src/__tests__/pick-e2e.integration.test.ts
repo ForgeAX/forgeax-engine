@@ -37,7 +37,7 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
     expect(meshAsset.aabb?.[5]).toBe(-3);
 
     // --- 3. Encode via packMeshBin: converts aabb Float32Array to plain
-    //       array in the JSON tail (Array.from at import/src/mesh-bin.ts:153) ---
+    //       array in the JSON tail (the canonical Geometry encoder) ---
     const packed = packMeshBin(
       {
         vertices: meshAsset.vertices,

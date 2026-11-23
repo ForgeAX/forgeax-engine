@@ -49,6 +49,21 @@ export class SubsurfaceSelection {
   private frame: MaterialFrame | undefined;
   private profileKeys: SubsurfaceDemand | undefined;
 
+  /** Split an authored subset at its first excluded row, copying distinct bindings only. */
+  fork(): SubsurfaceSelection {
+    const split = new SubsurfaceSelection();
+    this.members.forEach((profile, material) => {
+      split.members.set(material, profile);
+    });
+    this.profiles.forEach((count, profile) => {
+      split.profiles.set(profile, count);
+    });
+    for (const material of this.unadmitted) split.unadmitted.add(material);
+    split.frame = this.frame;
+    split.profileKeys = this.profileKeys;
+    return split;
+  }
+
   /**
    * A row with authored overrides draws the effective Mesh bindings the
    * material dispatch admitted, not its direct placeholder resources; pass the

@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { directionalShadowPreparationLimit } from '../record/frame';
+import { frameGraphKeyText } from '../record/frame-graph-identity';
+import * as frameGraphKey from '../record/frame-graph-key';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
@@ -248,16 +250,20 @@ describe('detached recovery graph execution boundary', () => {
     harness.accept();
     const parse = vi.spyOn(JSON, 'parse');
     const inspect = vi.spyOn(original, 'inspect');
+    const policy = vi.spyOn(frameGraphKey, 'retainedFrameGraphPolicyMatches');
     try {
       expect(harness.compile()).toBe(original);
       expect(parse).not.toHaveBeenCalled();
       expect(inspect).not.toHaveBeenCalled();
+      expect(policy).not.toHaveBeenCalled();
       // A real compile failure still validates its fallback after normal admission.
       harness.setFail(true);
       expect(harness.compile(2)).toBe(original);
-      expect(parse).toHaveBeenCalledTimes(1);
+      expect(parse).not.toHaveBeenCalled();
+      expect(policy).toHaveBeenCalledTimes(1);
       expect(inspect).toHaveBeenCalledTimes(1);
     } finally {
+      policy.mockRestore();
       parse.mockRestore();
       inspect.mockRestore();
       await original.retire();
@@ -281,26 +287,31 @@ describe('detached recovery graph execution boundary', () => {
     const pipelineLookup = vi.spyOn(harness.internals, 'getPostProcessPipeline');
     const parse = vi.spyOn(JSON, 'parse');
     const inspect = vi.spyOn(original, 'inspect');
+    const policy = vi.spyOn(frameGraphKey, 'retainedFrameGraphPolicyMatches');
     try {
       expect(harness.compile(1, originalRoots)).toBe(original);
       expect(pipelineLookup.mock.invocationCallOrder[0]).toBeLessThan(
-        parse.mock.invocationCallOrder[0] ?? 0,
+        policy.mock.invocationCallOrder[0] ?? 0,
       );
-      expect(parse.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(policy.mock.invocationCallOrder[0]).toBeLessThan(
         inspect.mock.invocationCallOrder[0] ?? 0,
       );
-      expect(parse).toHaveBeenCalledTimes(1);
+      expect(parse).not.toHaveBeenCalled();
+      expect(policy).toHaveBeenCalledTimes(1);
       expect(inspect).toHaveBeenCalledTimes(1);
+      policy.mockClear();
       parse.mockClear();
       inspect.mockClear();
       harness.setFail(true);
       // Pending admission and failed-build fallback both refuse changed roots.
       expect(harness.compile(1, [{ entityKey: 8 }])).toBeNull();
-      expect(parse).toHaveBeenCalledTimes(2);
+      expect(parse).not.toHaveBeenCalled();
+      expect(policy).toHaveBeenCalledTimes(2);
       expect(inspect).not.toHaveBeenCalled();
       expect(harness.frameState.compiledFrameGraph?.graph).toBe(original);
     } finally {
       pipelineLookup.mockRestore();
+      policy.mockRestore();
       parse.mockRestore();
       inspect.mockRestore();
       await original.retire();
@@ -346,7 +357,7 @@ describe('detached recovery graph execution boundary', () => {
     expect(harness.compile(1, replacementRoots)).toBe(retry);
     const installed = harness.frameState.compiledFrameGraph;
     if (installed === null) throw new Error('retry graph was not installed');
-    const topology = JSON.parse(installed.topologyKey).topology;
+    const topology = JSON.parse(frameGraphKeyText(installed.topologyKey)).topology;
     expect(topology.shadow.directional.terrainReceivers).toEqual(replacementRoots);
     await retry.retire();
   });
@@ -359,7 +370,7 @@ describe('detached recovery graph execution boundary', () => {
     const directional = () => {
       const installed = harness.frameState.compiledFrameGraph;
       if (installed === null) throw new Error('no installed graph');
-      return JSON.parse(installed.topologyKey).topology.shadow.directional;
+      return JSON.parse(frameGraphKeyText(installed.topologyKey)).topology.shadow.directional;
     };
     const cached = harness.compile();
     if (cached === null) throw new Error('cached graph failed');
@@ -425,11 +436,15 @@ describe('detached recovery graph execution boundary', () => {
     if (second === null) throw new Error('replacement compile failed');
     expect(first).not.toBe(second);
     expect(creates).toHaveBeenCalledTimes(1);
+    const firstInspection = vi.spyOn(first, 'inspect');
+    const secondInspection = vi.spyOn(second, 'inspect');
     expect(inspectRenderGraphGenerationAllocation(harness.frameState)).toMatchObject({
       liveBytes: 16,
       pendingRetirementBytes: 0,
       peakBytes: 16,
     });
+    expect(firstInspection).not.toHaveBeenCalled();
+    expect(secondInspection).not.toHaveBeenCalled();
     expect(second.inspect().resourceAllocation).toMatchObject({
       successfulAllocationCount: 0,
       successfulAllocationBytes: 0,

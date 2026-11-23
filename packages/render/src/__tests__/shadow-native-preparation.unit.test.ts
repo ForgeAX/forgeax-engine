@@ -112,3 +112,32 @@ it('prepares only the requested active shadow prefix', async () => {
     owner.dispose();
   }
 });
+
+it('restores the submitted atlas and releases each failed resize before retry', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const owner = new ShadowDepthLayers(device);
+  const original = owner.texture('spot', 4, 2);
+  const destroyed = vi.spyOn(device, 'destroyTexture');
+  try {
+    for (const size of [8, 16, 32]) {
+      owner.beginReplacement();
+      const rejected = owner.texture('spot', size, 2);
+      const added = owner.texture('point', size, 6);
+      owner._abort();
+      expect(owner.allocation('spot')).toBe(original);
+      expect(owner.allocation('point')).toBeUndefined();
+      expect(destroyed).toHaveBeenCalledWith(rejected);
+      expect(destroyed).toHaveBeenCalledWith(added);
+      expect(destroyed).not.toHaveBeenCalledWith(original);
+    }
+    owner.beginReplacement();
+    const final = owner.texture('spot', 8, 2);
+    owner._commit();
+    expect(owner.allocation('spot')).toBe(final);
+    expect(destroyed).toHaveBeenCalledWith(original);
+    expect(destroyed).toHaveBeenCalledTimes(7);
+  } finally {
+    owner.dispose();
+    destroyed.mockRestore();
+  }
+});

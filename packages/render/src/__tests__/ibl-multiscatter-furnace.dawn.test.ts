@@ -15,7 +15,7 @@ const GOLD_F0 = [1.0, 0.782, 0.344] as const;
 /**
  * White-furnace proof for the split-sum specular albedo on a real Dawn device.
  * The LUT is produced by the shipped `brdfLutBake_fs`; the evaluator is the
- * shipped `specularEnvironmentAlbedo`. Under a uniform radiance of one, a white
+ * shipped `specularEnvironmentAlbedo` using the same baked LUT. With unit radiance, a white
  * metal must return one at every roughness, while the single-scatter split sum
  * it replaced (the falsifier) loses energy as roughness grows.
  */
@@ -54,7 +54,7 @@ const NDOTV: array<f32, ${NDOTV.length}> = array<f32, ${NDOTV.length}>(${NDOTV.m
   let dielectric = specularEnvironmentAlbedo(NdotV, roughness, vec3<f32>(0.04), lut, lutSampler);
   outputs[id.x + ${ROUGHNESS.length * NDOTV.length}u] = vec4<f32>(1.0 - dielectric, 1.0);
 }`,
-    { id: 'forgeax::ibl-furnace-probe-test', imports },
+    { id: 'forgeax::ibl-furnace-probe-test', imports, defines: { ENV_BRDF_LUT: true } },
   );
   if (!probe.ok) throw probe.error;
 

@@ -9,6 +9,12 @@ describe('material generation cache', () => {
 
     expect(first).toBe(second);
     await expect(first).resolves.toEqual({ value: 1 });
+    await expect(cache.resolve('mat-a', 'key-a', async () => ({ value: 7 }), 7)).resolves.toEqual({
+      value: 7,
+    });
+    await expect(cache.resolve('mat-a', 'key-a', async () => ({ value: 8 }), 8)).resolves.toEqual({
+      value: 8,
+    });
     cache.storeArtifact('key-a', Object.freeze({ bytes: new Uint8Array([1]) }));
     expect(cache.getArtifact('key-a')).toEqual({ bytes: new Uint8Array([1]) });
   });

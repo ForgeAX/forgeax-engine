@@ -41,6 +41,19 @@ test('explicit Windows native admission removes only software adapter selection'
   assert.ok(launch.args.includes('--use-vulkan=swiftshader'));
 });
 
+test('macOS native admission keeps normal features but removes software GPU selection', () => {
+  const native = browserGpuLaunchOptions(
+    launch,
+    { FORGEAX_BROWSER_GPU: 'native', CI: 'true' },
+    'darwin',
+  );
+  const software = browserGpuLaunchOptions(launch, { CI: 'true' }, 'darwin');
+  assert.equal(native.chromiumSandbox, true);
+  assert.ok(native.args.includes('--enable-features=UseSkiaRenderer,SharedArrayBuffer'));
+  assert.ok(!native.args.some((flag) => /swiftshader|use-angle|Vulkan/.test(flag)));
+  assert.ok(software.args.includes('--use-angle=swiftshader'));
+});
+
 test('unqualified Windows and Linux retain the required software Browser carrier', () => {
   const windows = browserGpuLaunchOptions(launch, { CI: 'true' }, 'win32');
   const linux = browserGpuLaunchOptions(launch, { CI: 'true' }, 'linux');

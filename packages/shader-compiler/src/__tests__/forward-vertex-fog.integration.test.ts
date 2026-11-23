@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { derive, materialLightingInputBindings } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { compileShader } from '../compile';
 import {
@@ -76,6 +77,48 @@ it.each(
       ),
     ).toBe(true);
     const compiled = result.unwrap();
+    if (identifier === 'forgeax::default-standard-pbr' || identifier === 'forgeax::pbr-skin') {
+      const { bglEntries, resourceBindings, userRegionBindingEnd } = derive(paramSchema);
+      const { irradianceSampler } = materialLightingInputBindings(userRegionBindingEnd);
+      // The parameter generator owns both slots and the reflection types.
+      // The entry still reads the same pair after removing its handwritten declarations.
+      for (const resource of resourceBindings.filter(
+        ({ parameter }) => parameter === 'baseColorTexture',
+      )) {
+        const shape = bglEntries.find(({ binding }) => binding === resource.binding);
+        expect(
+          compiled.reflection.boundGlobals.find(
+            ({ group, binding }) => group === 1 && binding === resource.binding,
+          ),
+        ).toMatchObject(
+          resource.kind === 'sampler'
+            ? { samplerType: shape?.sampler?.type }
+            : {
+                sampleType: shape?.texture?.sampleType,
+                viewDimension: shape?.texture?.viewDimension,
+              },
+        );
+      }
+      const reads = (shader: typeof compiled, group: number, binding: number) =>
+        shader.reflection.entryPoints
+          ?.find(({ name }) => name === 'fs_main')
+          ?.bindings.some((read) => read.group === group && read.binding === binding);
+      expect(reads(compiled, 0, 39)).toBe(false);
+      expect(reads(compiled, 1, irradianceSampler)).toBe(false);
+
+      const explicitLut = await compileShader(prepared.source, {
+        imports: prepared.imports,
+        defines: { ...defines, ENV_BRDF_LUT: true },
+        renderEntries: { vertex: 'vs_main', fragment: 'fs_main' },
+      });
+      const lut = explicitLut.unwrap();
+      expect(reads(lut, 0, 39)).toBe(true);
+      expect(reads(lut, 0, 17)).toBe(true);
+      expect(reads(lut, 1, irradianceSampler)).toBe(false);
+    }
+    expect(compiled.wgsl).not.toMatch(
+      /probeBlendRecords|applyStandardProbeIrradiance|mixProbeIrradiance/,
+    );
     expect(compiled.reflection.entryPoints?.some((entry) => entry.name === 'vs_main')).toBe(true);
     expect(compiled.reflection.entryPoints?.some((entry) => entry.name === 'fs_main')).toBe(true);
   }

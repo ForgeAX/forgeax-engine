@@ -247,7 +247,7 @@ fn cloud_optical_transmittance(opticalDepth: f32) -> f32 {
 // `PROJECTOR_AVAILABLE=false`; authored and standalone programs without the
 // override keep the regular 16/17 bindings.
 // The sampler is shared with atmosphere table consumers and costs no texture slot.
-@group(0) @binding(17) var cloudShadowSampler: sampler;
+@group(0) @binding(17) var viewLinearSampler: sampler;
 #ifndef CLOUD_SHADOW_LOW_LIMIT
 @group(0) @binding(16) var cloudShadowMap: texture_2d<f32>;
 
@@ -258,13 +258,16 @@ fn cloud_direct_solar_factor(
   shadowUp: vec3<f32>,
   shadowProjection: vec4<f32>,
 ) -> f32 {
+  let available = (shadowProjection.w > 0.5 || shadowProjection.y > 0.5) && shadowProjection.z < 0.5 && shadowProjection.x > 0.0;
+  if (!available) { return 1.0; }
   let validReceiver =
     worldPosition.x == worldPosition.x && worldPosition.y == worldPosition.y &&
     worldPosition.z == worldPosition.z && all(abs(worldPosition) < vec3<f32>(3.402823e+38));
+  if (!validReceiver) { return 1.0; }
   let offset = worldPosition - shadowOrigin;
   let uv = vec2<f32>(dot(offset, shadowRight), dot(offset, shadowUp)) / max(shadowProjection.x, 1e-6) + vec2<f32>(0.5);
   let inRange = all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
-  let available = (shadowProjection.w > 0.5 || shadowProjection.y > 0.5) && shadowProjection.z < 0.5 && shadowProjection.x > 0.0;
+  if (!inRange) { return 1.0; }
   let dimensions = vec2i(textureDimensions(cloudShadowMap));
   let samplePosition = clamp(uv, vec2f(0.0), vec2f(1.0)) * vec2f(dimensions) - 0.5;
   let base = vec2i(floor(samplePosition));
@@ -281,9 +284,7 @@ fn cloud_direct_solar_factor(
     let tau = min(encoded.z, encoded.y * max(0.0, depthMeters - encoded.x));
     sampled = mix(1.0, exp(-tau), clamp(shadowProjection.y,0.0,1.0));
   }
-  // Low sun, no cloud producer, malformed receivers and receivers outside the
-  // bounded map all retain the direct-sun fallback of one.
-  return select(1.0, clamp(sampled, 0.0, 1.0), validReceiver && inRange && available);
+  return clamp(sampled, 0.0, 1.0);
 }
 
 fn cloud_apply_direct_solar(

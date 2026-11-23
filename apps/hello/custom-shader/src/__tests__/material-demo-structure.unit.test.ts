@@ -5,14 +5,14 @@ const appRoot = new URL('../..', import.meta.url);
 const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
 const shader = readFileSync(new URL('../pulse-material.wgsl', import.meta.url), 'utf8');
 const fixture = JSON.parse(
-  readFileSync(new URL('../../assets/pulse-material.pack.json', import.meta.url), 'utf8'),
+  readFileSync(new URL('../../fixtures/pulse-material.runtime-pack.json', import.meta.url), 'utf8'),
 );
-const ROOT_MATERIAL_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd02';
-const DERIVED_MATERIAL_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd03';
+const ROOT_MATERIAL_GUID = '330a8d22-5e43-5aab-8cd4-5d920045f7a8';
+const DERIVED_MATERIAL_GUID = '3cb62ea4-3628-5912-83b0-d4f2ee2ae351';
 
 describe('material-inheritance-demo structure', () => {
   it('loads root and derived MaterialAsset records through the runtime', () => {
-    expect(source).toContain("assets.load(rootGuid.value, 'material')");
+    expect(source).toContain("assets.load(guid, 'material')");
     expect(source).toContain('createMaterialLoader');
     expect(source).toContain('loadCookedMaterial');
     expect(source).toContain('materialFromCookedRecord');
@@ -117,17 +117,17 @@ describe('material-inheritance-demo structure', () => {
       (asset: { guid?: string }) => asset.guid === ROOT_MATERIAL_GUID,
     );
     expect(root?.payload?.values?.baseColorTexture).toBe(
-      '01935b00-7d8c-7c4e-9f12-345678abcd11',
+      '3acd39d8-0434-5941-8ee5-385cb024d91d',
     );
     expect(root?.payload?.values?.baseColorTexture).not.toEqual(
       expect.objectContaining({ coordinates: expect.anything() }),
     );
     expect(root?.payload?.cooked?.refs?.textures).toEqual([
-      '01935b00-7d8c-7c4e-9f12-345678abcd11',
-      '01935b00-7d8c-7c4e-9f12-345678abcd12',
+      '2382ad16-6ed8-5602-8d9e-74a0f8fea0cb',
+      '3acd39d8-0434-5941-8ee5-385cb024d91d',
     ]);
     expect(root?.payload?.cooked?.resolved?.values?.baseColorTexture).toBe(
-      '01935b00-7d8c-7c4e-9f12-345678abcd11',
+      '3acd39d8-0434-5941-8ee5-385cb024d91d',
     );
     const derived = fixture.assets.find(
       (asset: { guid?: string }) => asset.guid === DERIVED_MATERIAL_GUID,

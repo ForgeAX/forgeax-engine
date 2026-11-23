@@ -8,8 +8,9 @@ import {
   translateErrorEventToRhiError as translateWebgpuError,
 } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
+import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
-import type { TextureAsset } from '@forgeax/engine-types';
+import { derive, type TextureAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
@@ -22,6 +23,7 @@ import {
   TONEMAP_LINEAR,
 } from '../../components';
 import { constructRendererHost, type RhiBackendPack } from '../../construct-renderer';
+import { estimateDepthPyramidMemory } from '../../depth-pyramid/graph';
 import { Materials } from '../../materials';
 import { DEFAULT_STANDARD_PROFILE } from '../../pipeline/standard-profile';
 import type { FrameReceipt } from '../../render-contract';
@@ -69,6 +71,9 @@ interface TransmissionCase {
   readonly renderPath?: 'forward' | 'deferred';
   readonly surfaceQuat?: readonly [number, number, number, number];
   readonly directionalLight?: boolean;
+  readonly directionalShadow?: boolean;
+  readonly alternateRoughBacks?: boolean;
+  readonly cycleOpaque?: boolean;
   readonly localLight?: boolean;
   readonly splitBackdrop?: boolean;
   /** Clamp the device below the dedicated 21-texture transmission layout. */
@@ -129,6 +134,7 @@ async function createTransmissionHost(testCase: TransmissionCase) {
   let device: GPUDevice | undefined;
   let configuredDevice: GPUDevice | undefined;
   let target: GPUTexture | undefined;
+  const opaqueMaterialBindings: number[][] = [];
   const originalRequestAdapter = globalThis.navigator.gpu.requestAdapter.bind(
     globalThis.navigator.gpu,
   );
@@ -148,6 +154,14 @@ async function createTransmissionHost(testCase: TransmissionCase) {
               },
             },
       );
+      const createBindGroup = next.createBindGroup.bind(next);
+      next.createBindGroup = (description) => {
+        const group = createBindGroup(description);
+        if (description.layout.label === 'pbr-opaque-material-bgl') {
+          opaqueMaterialBindings.push(Array.from(description.entries, (entry) => entry.binding));
+        }
+        return group;
+      };
       nativeDeviceRequests++;
       device ??= next;
       return next;
@@ -204,6 +218,7 @@ async function createTransmissionHost(testCase: TransmissionCase) {
   return {
     ...host.value,
     device,
+    opaqueMaterialBindings,
     renderPath: undefined as TransmissionCase['renderPath'],
     get configuredDevice() {
       return configuredDevice;
@@ -264,6 +279,7 @@ async function renderCase(
   readonly errors: readonly string[];
   readonly errorEvents: readonly { readonly code: string; readonly detail?: unknown }[];
   readonly framesObserved: number;
+  readonly opaqueMaterialBindings: readonly (readonly number[])[];
 }> {
   let pending = hosts.get(testCase.sampledTextureLimit);
   if (pending === undefined) {
@@ -271,6 +287,7 @@ async function renderCase(
     hosts.set(testCase.sampledTextureLimit, pending);
   }
   const fixture = await pending;
+  const firstOpaqueBinding = fixture.opaqueMaterialBindings.length;
   const { renderer, device } = fixture;
   selectTransmissionProfile(fixture, testCase.renderPath);
   let lease: ReturnType<typeof renderer.attach> | undefined;
@@ -347,6 +364,34 @@ async function renderCase(
         : {}),
     });
     const materialHandle = assets.create(material).unwrap();
+    const changingMaterial = () => {
+      if (!testCase.alternateRoughBacks) return undefined;
+      const forward = material.passes?.find((pass) => pass.name === 'forward');
+      if (forward === undefined || material.passes === undefined)
+        throw new Error('Missing Forward pass');
+      return assets
+        .create({
+          ...material,
+          values: { ...material.values, roughness: 0.65 },
+          passes: [
+            {
+              ...forward,
+              name: 'transmission-back',
+              renderState: {
+                ...forward.renderState,
+                tags: { LightMode: 'TransmissionBack' },
+                cullMode: 'front',
+              },
+            },
+            ...material.passes,
+          ],
+        })
+        .unwrap();
+    };
+    const roughBacks = changingMaterial();
+    const opaque = testCase.cycleOpaque
+      ? assets.create({ ...material, values: { ...material.values, transmission: 0 } }).unwrap()
+      : undefined;
     const meshEntity = world.spawn(
       {
         component: Transform,
@@ -412,7 +457,15 @@ async function renderCase(
     if (testCase.directionalLight !== false) {
       const lightEntity = world.spawn({
         component: DirectionalLight,
-        data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
+        data: {
+          direction: [0, 0, -1],
+          color: [1, 1, 1],
+          intensity: 1,
+          castShadow: testCase.directionalShadow === true,
+          mapSize: 32,
+          cascadeCount: 1,
+          shadowDistance: 8,
+        },
       });
       expect(lightEntity.ok, `${testCase.name}: light spawn must succeed`).toBe(true);
       if (!lightEntity.ok) throw lightEntity.error;
@@ -429,15 +482,96 @@ async function renderCase(
       throw new Error(`invalid transmission frame count: ${frameCount}`);
     world.update().unwrap();
     let lastDraw: FrameReceipt | undefined;
+    let initialCompiles: number | undefined;
+    let initialAllocations: number | undefined;
+    const phasePixels: number[][] = [];
+    let shadowSelections = 0;
+    const pyramidBytes = estimateDepthPyramidMemory({ width: WIDTH, height: HEIGHT });
     for (let frame = 0; frame < frameCount; frame += 1) {
-      if (frame > 0) world.update(1 / 60).unwrap();
+      const phase = frame % (opaque === undefined ? 2 : 3);
+      const doubleSided = phase === 0;
+      if (roughBacks !== undefined) {
+        world
+          .set(meshEntity.value, MeshRenderer, {
+            materials: [
+              doubleSided
+                ? roughBacks
+                : phase === 2 && opaque !== undefined
+                  ? opaque
+                  : materialHandle,
+            ],
+          })
+          .unwrap();
+      }
+      if (testCase.directionalShadow)
+        world.set(meshEntity.value, Transform, { pos: [phase * 0.01, 0, 0] }).unwrap();
+      if (frame > 0 || roughBacks !== undefined) world.update(1 / 60).unwrap();
       const drawn = await completeReadyFrame(() => {
         const submitted = renderer.draw({ source: activeLease });
         if (!submitted.ok) throw submitted.error;
         return submitted.value;
+      }).catch((cause) => {
+        throw new Error(`Transmission frame ${testCase.name}: ${JSON.stringify(cause)}`, { cause });
       });
       lastDraw = drawn;
+      if (roughBacks !== undefined) {
+        const state = renderer.inspect();
+        const names = state.perFramePassNames;
+        expect(
+          names.includes('transmission-backs'),
+          `submitted frame ${frame}: ${names.join(',')}`,
+        ).toBe(doubleSided);
+        expect(names.includes('transmission-backdrop-mip')).toBe(doubleSided);
+        expect(names.includes('transmission-forward')).toBe(phase !== 2);
+        expect(names.includes('transmission-backdrop-copy')).toBe(phase !== 2);
+        if (doubleSided) {
+          expect(names.indexOf('transmission-backs')).toBeLessThan(
+            names.indexOf('transmission-backdrop-copy'),
+          );
+          expect(names).toContain('transmission-backdrop-mip-copy-5');
+          expect(names.indexOf('transmission-backdrop-mip-copy-5')).toBeLessThan(
+            names.indexOf('transmission-forward'),
+          );
+        }
+        const compiles = state.featureGraph?.rebuildAttempts;
+        const allocations = state.viewTargetAllocation?.successfulAllocationCount;
+        expect(compiles).toBeDefined();
+        expect(allocations).toBeGreaterThanOrEqual(2);
+        initialCompiles ??= compiles;
+        initialAllocations ??= allocations;
+        expect(compiles, JSON.stringify(state.featureGraph?.recentCompileChanges?.slice(-2))).toBe(
+          initialCompiles,
+        );
+        if (opaque === undefined) expect(allocations).toBe(initialAllocations);
+        else {
+          if (names.includes('gpu-driven.shadow.view-selection')) shadowSelections++;
+          const gpu = phase === 2;
+          const late = gpu && testCase.renderPath === 'deferred';
+          expect(
+            names.includes('gpu-driven.view-selection'),
+            `frame ${frame} phase ${phase} passes ${names.join(',')} indirect draws ${state.renderScene.gpuDriven.indirectDrawCount}`,
+          ).toBe(gpu);
+          expect(names.includes('gpu-driven.occlusion-cull')).toBe(late);
+          expect(names.includes('occlusion-depth-pyramid-seed')).toBe(late);
+          expect(state.renderScene.gpuDriven.encodedIndirectDraws > 0).toBe(gpu);
+          if (gpu) expect(state.viewTargetAllocation?.liveBytes).toBe(late ? pyramidBytes : 0);
+          else expect(state.viewTargetAllocation?.liveBytes).toBeGreaterThan(0);
+          const pyramidAllocations =
+            testCase.renderPath === 'deferred' ? Math.floor((frame + 1) / 3) : 0;
+          expect(allocations).toBe(
+            (initialAllocations ?? 0) + Math.floor(frame / 3) * 2 + pyramidAllocations,
+          );
+          if (frame < 3 || frame >= frameCount - 3) {
+            const target = fixture.target;
+            if (target === undefined) throw new Error('missing completed material-cycle output');
+            const pixel = await readCenter(fixture.configuredDevice ?? device, target);
+            if (frame < 3) phasePixels[phase] = pixel;
+            else expect(pixel).toEqual(phasePixels[phase]);
+          }
+        }
+      }
     }
+    if (testCase.directionalShadow) expect(shadowSelections).toBeGreaterThan(0);
     if (lastDraw === undefined) throw new Error('transmission smoke did not submit a frame');
     const observation = await renderer.observe(lastDraw, { include: ['draws', 'bindings'] });
     expect(observation.ok).toBe(true);
@@ -458,6 +592,7 @@ async function renderCase(
       errors: errors.map((error) => error.code),
       errorEvents: errors,
       framesObserved: frameCount,
+      opaqueMaterialBindings: fixture.opaqueMaterialBindings.slice(firstOpaqueBinding),
     };
   } finally {
     unsubscribe();
@@ -495,6 +630,57 @@ describe('Standard transmission Dawn ROI', () => {
     );
   }, 120_000);
 
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('records sixty alternating smooth fronts and rough double-sided draws on one %s view', async (renderPath) => {
+    const result = await renderCase(
+      {
+        name: 'changing-transmission',
+        transmission: 1,
+        ior: 1.4,
+        thickness: 0.5,
+        roughness: 0,
+        attenuationColor: [1, 1, 1],
+        renderPath,
+        alternateRoughBacks: true,
+      },
+      60,
+    );
+    expect(result.framesObserved).toBe(60);
+    expect(result.errors).toEqual([]);
+    expect(result.pixel[3]).toBe(255);
+  }, 120_000);
+
+  it.each([
+    ['forward', false],
+    ['deferred', false],
+    ['forward', true],
+    ['deferred', true],
+  ] as const)(
+    'releases inactive glass and records its return without recompiling a %s view (shadow %s)',
+    async (renderPath, directionalShadow) => {
+      const result = await renderCase(
+        {
+          name: 'material-replacement',
+          directionalShadow,
+          transmission: 1,
+          ior: 1.4,
+          thickness: 0.5,
+          roughness: 0,
+          attenuationColor: [1, 1, 1],
+          renderPath,
+          alternateRoughBacks: true,
+          cycleOpaque: true,
+        },
+        60,
+      );
+      expect(result.framesObserved).toBe(60);
+      expect(result.errors).toEqual([]);
+    },
+    120_000,
+  );
+
   it('uses linear HDR observation and responds to F0, Beer, texture, TIR, and fallback inputs', async () => {
     const baseline = await renderCase({
       name: 'baseline',
@@ -503,7 +689,17 @@ describe('Standard transmission Dawn ROI', () => {
       thickness: 0,
       roughness: 0.5,
       attenuationColor: [1, 1, 1],
+      renderPath: 'forward',
     });
+    expect(baseline.errors).toEqual([]);
+    expect(baseline.pixel[0]).toBeGreaterThan(20);
+    expect(baseline.opaqueMaterialBindings.length).toBeGreaterThan(0);
+    const { userRegionBindingEnd } = derive(STANDARD_PIPELINE_PARAM_SCHEMA);
+    for (const bindings of baseline.opaqueMaterialBindings) {
+      expect(bindings).toEqual([0, 46]);
+      expect(bindings.filter((slot) => slot > 0 && slot < userRegionBindingEnd)).toEqual([]);
+      expect(bindings).not.toContain(userRegionBindingEnd + 7);
+    }
     const transmitted = await renderCase({
       name: 'transmitted',
       transmission: 1,

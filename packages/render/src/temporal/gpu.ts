@@ -21,6 +21,7 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import { temporalAnalysisCapacity } from '../pipeline/render-extent';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { CameraSnapshot } from '../render-contract';
+import { ssrColorExtent, ssrColorMipCount } from '../ssr/scene-color-input';
 import { requireTsrCapabilities, usesTsrCompute } from '../tsr/capabilities';
 import { TSR_ANALYSIS_FORMATS } from '../tsr/layout';
 
@@ -114,12 +115,14 @@ function createSurface(
   height: number,
   format: TextureFormat = TEMPORAL_HISTORY_FORMATS.color,
   storage = false,
+  mipLevelCount = 1,
 ): TemporalSurface {
   const texture = device.createTexture({
     label,
     size: { width, height, depthOrArrayLayers: 1 },
     format,
     textureBindingViewDimension: undefined,
+    mipLevelCount,
     usage:
       GPU_TEXTURE_USAGE_COPY_SRC |
       GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
@@ -160,6 +163,20 @@ function createState(
     const storage = isTsr && usesTsrCompute(device.caps);
     const surface = (label: string, format: TextureFormat = TEMPORAL_HISTORY_FORMATS.color) =>
       createSurface(device, childScope, label, width, height, format, storage);
+    const colorSize =
+      algorithm === 'scene-color' ? ssrColorExtent({ width, height }) : { width, height };
+    const colorMipCount = algorithm === 'scene-color' ? ssrColorMipCount(colorSize) : 1;
+    const colorSurface = (slot: string) =>
+      createSurface(
+        device,
+        childScope,
+        `${algorithm}-history-color-${slot}`,
+        colorSize.width,
+        colorSize.height,
+        TEMPORAL_HISTORY_FORMATS.color,
+        storage,
+        colorMipCount,
+      );
     const analysisPair = (kind: 'guide' | 'moire'): [TemporalSurface, TemporalSurface] => [
       createSurface(
         device,
@@ -201,7 +218,7 @@ function createState(
       valid: false,
       readIndex: 0,
       pendingIndex: undefined,
-      color: [surface(`${algorithm}-history-color-a`), surface(`${algorithm}-history-color-b`)],
+      color: [colorSurface('a'), colorSurface('b')],
       ...(algorithm === 'scene-color'
         ? { mode: algorithm }
         : {

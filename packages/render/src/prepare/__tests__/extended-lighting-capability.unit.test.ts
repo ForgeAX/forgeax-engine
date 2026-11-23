@@ -12,7 +12,7 @@ const device = {
     samplerAliasing: true,
   } as RhiCaps,
   limits: {
-    maxSampledTexturesPerShaderStage: 25,
+    maxSampledTexturesPerShaderStage: 27,
     maxTextureDimension2D: 4096,
     maxTextureArrayLayers: 32,
     maxUniformBuffersPerShaderStage: 12,
@@ -44,13 +44,13 @@ describe('extended lighting capability admission', () => {
   it('rejects the topology when the sampled-texture limit is below the shader contract', () => {
     const limited = {
       ...device,
-      limits: { ...device.limits, maxSampledTexturesPerShaderStage: 16 },
+      limits: { ...device.limits, maxSampledTexturesPerShaderStage: 26 },
     } as RhiDevice;
 
     expect(deriveExtendedLightingCapability(limited)).toEqual({
       admitted: false,
       topology: 'extendedLighting',
-      reason: 'maxSampledTexturesPerShaderStage 16 < 25',
+      reason: 'maxSampledTexturesPerShaderStage 26 < 27',
     });
   });
 });

@@ -84,7 +84,9 @@ function fixture(authorDisabled = false, siblings = 0) {
     })
     .unwrap();
   const records = runtimeAssets(assets);
-  const lease = records.captureContent(handle).unwrap();
+  const capture = records.beginContentCapture(handle).unwrap();
+  let lease = capture.step(1).unwrap();
+  while (lease === undefined) lease = capture.step(1).unwrap();
   const members: EntityHandle[] = [];
   const authoredDisabled = new Set<EntityHandle>();
   const heldSources: Array<{ readonly release: () => void; released: boolean }> = [];

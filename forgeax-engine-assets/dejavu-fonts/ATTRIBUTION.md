@@ -31,7 +31,7 @@ without restriction). This is a vendor carve-out from the
 | `DejaVuSansMono.ttf` | Source-of-truth TrueType font, retained so future re-bakes are reproducible. |
 | `DejaVuSansMono.atlas.png` | 512×512 RGBA8 MSDF atlas baked offline via `@zappar/msdf-generator@1.2.4`. ASCII printable charset (0x20–0x7e, 94 codepoints + space). Color space **linear** (the R/G/B channels carry signed-distance fields, never gamma). |
 | `DejaVuSansMono.atlas.png.meta.json` | image-arm sidecar (`importer: 'image'`). |
-| `DejaVuSansMono.font.pack.json` | legacy `internal-text-package` arm; carries the FontAsset payload (`atlasGuid` / `samplerGuid` / `glyphs` / `common`) consumed directly by `loadFontAsset`. |
+| `DejaVuSansMono.font.pack.json` | v3 source Pack containing `font/mono` and `sampler/atlas`. The Font names the atlas and sampler GUIDs alongside its glyph metrics. |
 
 ## Bake reproducibility
 
@@ -56,24 +56,20 @@ To re-bake from scratch (development machine, requires chromium browser):
 2. Add `@zappar/msdf-generator@1.2.4` as a temporary devDependency to whatever
    workspace serves the HTML, run the page in vite dev (or `playwright-cli` /
    any chromium driver) to capture the atlas PNG bytes + glyph metrics JSON.
-3. Open this directory's `DejaVuSansMono.font.pack.json` and `.atlas.png.meta.json`
-   to reuse the existing GUIDs (idempotency: GUIDs in sidecars are the SSOT,
-   re-bakes preserve them so demo / smoke `FONT_GUID` / `ATLAS_GUID` /
-   `SAMPLER_GUID` literals don't need updating).
-4. Overwrite `DejaVuSansMono.atlas.png` with the new PNG bytes; rewrite
-   `glyphs` and `common` blocks inside `DejaVuSansMono.font.pack.json`
-   `assets[0].payload` (preserve `atlasGuid` / `samplerGuid`).
+3. Preserve the Pack `packageId` and output keys `font/mono` and `sampler/atlas`.
+   These derive the existing Font and Sampler GUIDs. Keep the atlas GUID in
+   `DejaVuSansMono.atlas.png.meta.json`.
+4. Replace `DejaVuSansMono.atlas.png` and update `glyphs` and `common` in
+   `assets["font/mono"].payload` in `DejaVuSansMono.font.pack.json`.
 5. Remove the temporary HTML driver and devDependency.
 
 The original one-shot driver pattern is preserved in
 `.forgeax-harness/forgeax-loop/tweak-20260610-hello-text-real-msdf-bake/implement-decisions.md`
 under §Bake driver pattern, for future maintainers who want the literal HTML.
 
-Three GUIDs (`FONT_GUID` / `ATLAS_GUID` / `SAMPLER_GUID`) live in
-`DejaVuSansMono.font.pack.json` + `.atlas.png.meta.json`. They MUST be preserved
-across re-bakes (the demo + smoke hard-code them; rotating GUIDs would be a
-breaking change requiring updates in `apps/hello/text/src/text-scenes.ts` and
-`apps/hello/text/scripts/smoke-dawn.mjs`).
+The atlas GUID stays in the image Meta. The Font and Sampler GUIDs derive from
+one Pack identity and their stable output keys. Changing the atlas pixels or
+metrics does not change those identities.
 
 ## Charset
 

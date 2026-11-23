@@ -43,6 +43,7 @@ import {
   type ManifestEntry,
   projectMaterialParameterSchema,
   TERRAIN_MATERIAL_PARAMETERS,
+  TERRAIN_WEIGHT_DETAIL_PARAMETERS,
 } from '@forgeax/engine-types';
 import { type Plugin, build as viteBuild } from 'vite';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -1503,15 +1504,12 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs-unlit'
       ) {
         expect(parsed).toEqual(particleMeshSurfaceSchema);
-      } else if (
-        ms.identifier === 'forgeax::standard-terrain' ||
-        ms.identifier === 'forgeax::standard-terrain-ids' ||
-        ms.identifier === 'forgeax::standard-terrain-shadow' ||
-        ms.identifier === 'forgeax::standard-terrain-ids-shadow'
-      ) {
+      } else if (ms.identifier.startsWith('forgeax::standard-terrain')) {
         expect(parsed).toEqual(
           projectMaterialParameterSchema(
-            TERRAIN_MATERIAL_PARAMETERS,
+            ms.identifier.startsWith('forgeax::standard-terrain-detail')
+              ? TERRAIN_WEIGHT_DETAIL_PARAMETERS
+              : TERRAIN_MATERIAL_PARAMETERS,
             ms.identifier,
             'runtime',
           ).unwrap(),
@@ -1558,7 +1556,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           for (const variant of portable) {
             expect(variant.composedWgsl).toContain('texture_2d<u32>');
             expect(variant.composedWgsl).not.toContain('texture_depth_cube_array');
-            expect(variant.composedWgsl).not.toContain('ssaoBlurredTexture');
+            expect(variant.composedWgsl).toMatch(/forwardScreenSurface\w*\s*:\s*texture_2d<f32>/);
             expect(variant.composedWgsl).not.toContain('var<storage');
           }
         }
@@ -1627,30 +1625,32 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(11)');
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(15)');
 
-const assertSharedTransmissionVariantBindings = () => {
-      // The low-limit transmission variant reuses the fixed 16-texture layout:
-      // transmission, thickness and the backdrop take the split scalar-map pairs.
-      const sharedTransmissionWgsl =
-        (standardPbr && findVariantByKey(standardPbr, STANDARD_SHARED_TRANSMISSION_VARIANT_KEY)?.composedWgsl) ?? '';
-      const group1 = new Map(
-        [
-          ...sharedTransmissionWgsl.matchAll(
-            /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<[^>]+>)?\s+([A-Za-z_]\w*)/g,
-          ),
-        ].map((match) => [match[2], Number(match[1])]),
-      );
-      expect(group1.get('transmissionSampler')).toBe(17);
-      expect(group1.get('transmissionTexture')).toBe(18);
-      expect(group1.get('thicknessSampler')).toBe(19);
-      expect(group1.get('thicknessTexture')).toBe(20);
-      expect(group1.get('transmissionBackdropTexture')).toBe(22);
-      expect(group1.has('metallicTexture')).toBe(false);
-      expect(group1.has('roughnessTexture')).toBe(false);
-      expect(group1.has('alphaTexture')).toBe(false);
-      expect([...group1.values()].filter((binding) => [12, 14, 32].includes(binding))).toEqual([]);
-
-};
-assertSharedTransmissionVariantBindings();
+      const assertSharedTransmissionVariantBindings = () => {
+        // The scalar maps use Material slots and the camera backdrop uses View.
+        const sharedTransmissionWgsl =
+          (standardPbr && findVariantByKey(standardPbr, STANDARD_SHARED_TRANSMISSION_VARIANT_KEY)?.composedWgsl) ?? '';
+        const group1 = new Map(
+          [
+            ...sharedTransmissionWgsl.matchAll(
+              /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<[^>]+>)?\s+([A-Za-z_]\w*)/g,
+            ),
+          ].map((match) => [match[2], Number(match[1])]),
+        );
+        expect(group1.get('transmissionTexture_sampler')).toBe(17);
+        expect(group1.get('transmissionTexture')).toBe(18);
+        expect(group1.get('thicknessTexture_sampler')).toBe(19);
+        expect(group1.get('thicknessTexture')).toBe(20);
+        expect(group1.get('alphaTexture_sampler')).toBe(21);
+        expect(group1.get('alphaTexture')).toBe(22);
+        expect(sharedTransmissionWgsl).toMatch(
+          /@group\(0\)\s*@binding\(38\)\s*var\s+transmissionBackdropTexture\s*:\s*texture_2d<f32>/,
+        );
+        expect(group1.has('transmissionBackdropTexture')).toBe(false);
+        expect(group1.has('metallicTexture')).toBe(false);
+        expect(group1.has('roughnessTexture')).toBe(false);
+        expect([...group1.values()].filter((binding) => [12, 14, 32].includes(binding))).toEqual([]);
+      };
+      assertSharedTransmissionVariantBindings();
       const pointShadowWgsl = standardPbr &&
         findVariantByKey(standardPbr, STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY)?.composedWgsl;
       expect(pointShadowWgsl).toContain('evalPointShadowed');
@@ -1682,12 +1682,11 @@ assertSharedTransmissionVariantBindings();
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
         'forgeax::engine-forward-contact-shadow',
+        'forgeax::engine-forward-directional-shadow',
         'forgeax::engine-forward-screen-compose',
-        'forgeax::engine-forward-screen-pack',
         'forgeax::engine-light-texture-resample-compute',
         'forgeax::engine-light-texture-resample-fragment',
         'forgeax::engine-ray-path-tracer',
-        'forgeax::engine-shadow-variance',
         'forgeax::engine-standard-deferred-lighting',
         'forgeax::engine-subsurface-diffusion',
         'forgeax::msdf-text',
@@ -1696,10 +1695,11 @@ assertSharedTransmissionVariantBindings();
         'forgeax::sprite',
         'forgeax::sprite-lit',
         'forgeax::ssr-compose-fragment',
-        'forgeax::ssr-temporal-fragment',
         'forgeax::ssr-trace-fragment',
         'forgeax::standard-output-v2',
         'forgeax::standard-terrain',
+        'forgeax::standard-terrain-detail',
+        'forgeax::standard-terrain-detail-shadow',
         'forgeax::standard-terrain-ids',
         'forgeax::standard-terrain-ids-shadow',
         'forgeax::standard-terrain-shadow',
@@ -1800,12 +1800,11 @@ assertSharedTransmissionVariantBindings();
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
           'forgeax::engine-forward-contact-shadow',
+          'forgeax::engine-forward-directional-shadow',
           'forgeax::engine-forward-screen-compose',
-          'forgeax::engine-forward-screen-pack',
           'forgeax::engine-light-texture-resample-compute',
           'forgeax::engine-light-texture-resample-fragment',
           'forgeax::engine-ray-path-tracer',
-          'forgeax::engine-shadow-variance',
           'forgeax::engine-standard-deferred-lighting',
           'forgeax::engine-subsurface-diffusion',
           'forgeax::msdf-text',
@@ -1814,10 +1813,11 @@ assertSharedTransmissionVariantBindings();
           'forgeax::sprite',
           'forgeax::sprite-lit',
           'forgeax::ssr-compose-fragment',
-          'forgeax::ssr-temporal-fragment',
           'forgeax::ssr-trace-fragment',
           'forgeax::standard-output-v2',
           'forgeax::standard-terrain',
+          'forgeax::standard-terrain-detail',
+          'forgeax::standard-terrain-detail-shadow',
           'forgeax::standard-terrain-ids',
           'forgeax::standard-terrain-ids-shadow',
           'forgeax::standard-terrain-shadow',
@@ -2573,12 +2573,12 @@ ${MINIMAL_WGSL.trim()}
   // ============================================================================
 
   describe('feat-20260609 M1 -- CLUSTER_FORWARD_AVAILABLE variant compile', () => {
-    function group2Bindings(
+    function viewBindings(
       bindings: readonly { entries: readonly { binding: number }[] }[],
     ): number[] {
-      const g2 = bindings[2];
-      if (g2 === undefined) return [];
-      return g2.entries.map((e) => e.binding).sort((a, b) => a - b);
+      const view = bindings[0];
+      if (view === undefined) return [];
+      return view.entries.map((e) => e.binding).sort((a, b) => a - b);
     }
 
     it('(a) CLUSTER_FORWARD_AVAILABLE=true compiles without error', async () => {
@@ -2590,7 +2590,7 @@ ${MINIMAL_WGSL.trim()}
       if (!r.ok) return;
       expect(r.value.wgsl.length).toBeGreaterThan(0);
       const lightData = r.value.reflection.boundGlobals.find(
-        (global) => global.group === 2 && global.binding === 3,
+        (global) => global.group === 0 && global.binding === 30,
       );
       expect(lightData).toMatchObject({
         resourceKind: 'storage-buffer',
@@ -2609,7 +2609,7 @@ ${MINIMAL_WGSL.trim()}
         ],
       );
       const clusterUniform = r.value.reflection.boundGlobals.find(
-        (global) => global.group === 2 && global.binding === 6,
+        (global) => global.group === 0 && global.binding === 33,
       );
       expect(clusterUniform).toMatchObject({
         resourceKind: 'buffer',
@@ -2669,11 +2669,11 @@ ${MINIMAL_WGSL.trim()}
       if (!r.ok) return;
       expect(r.value.wgsl).not.toContain('var<storage');
       expect(r.value.wgsl).toContain('texture_2d<u32>');
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).toContain(3);
-      expect(bindings).toContain(6);
-      expect(bindings).not.toContain(4);
-      expect(bindings).not.toContain(5);
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).toContain(30);
+      expect(bindings).toContain(33);
+      expect(bindings).not.toContain(31);
+      expect(bindings).not.toContain(32);
     });
 
     it('(b) CLUSTER_FORWARD_AVAILABLE=false compiles without error', async () => {
@@ -2685,18 +2685,18 @@ ${MINIMAL_WGSL.trim()}
       if (r.ok) expect(r.value.wgsl.length).toBeGreaterThan(0);
     });
 
-    it('(c) true variant compiled bindingLayout has @group(2) @binding(3,4,5,6) cluster entries', async () => {
+    it('(c) true variant compiled bindingLayout has @group(0) @binding(30,31,32,33) cluster entries', async () => {
       const r = await compileEntry('default-standard-pbr.wgsl', 'pbr#cfw-true-binding', {
         STORAGE_BUFFER_AVAILABLE: true,
         CLUSTER_FORWARD_AVAILABLE: true,
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
       if (!r.ok) return;
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).toContain(3);
-      expect(bindings).toContain(4);
-      expect(bindings).toContain(5);
-      expect(bindings).toContain(6);
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).toContain(30);
+      expect(bindings).toContain(31);
+      expect(bindings).toContain(32);
+      expect(bindings).toContain(33);
     });
 
     it('(d) false variant: imported conditional bindings are projected before reflection', async () => {
@@ -2711,8 +2711,8 @@ ${MINIMAL_WGSL.trim()}
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
       if (!r.ok) return;
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).not.toEqual(expect.arrayContaining([3, 4, 5, 6]));
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).not.toEqual(expect.arrayContaining([30, 31, 32, 33]));
     });
   });
 }

@@ -138,7 +138,7 @@ fn materialTextureFilteringWitness() {
 }
 
 #if SKINNING_DISABLED == false
-#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate, skinTaskHistoryValid}
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskPosition, skinTaskDirectCandidate, skinTaskPreviousTranslation, skinTaskHistoryValid}
 #endif
 
 struct VsIn {
@@ -225,7 +225,16 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
 #endif
 #endif
 #endif
+#if SKINNING_DISABLED == false
+#ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+  let translation = sceneIndexDraw(visible.x).world[3].xyz;
+#else
+  let translation = meshes[0u].worldFromLocal[3].xyz;
+#endif
+  let world = skinTaskPosition(descriptor, localToWorld, in.pos, translation);
+#else
   let world = localToWorld * vec4<f32>(in.pos, 1.0);
+#endif
   var out : VsOut;
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   out.materialAddress = visible.yw;
@@ -531,14 +540,23 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #if SKINNING_DISABLED == false
   let descriptor = skinTaskDescriptor(unlitSkinCandidate(idx));
   let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
-  let currentWorld = currentSkin * vec4<f32>(in.pos, 1.0);
+#ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+  let draw = sceneIndexDraw(visibleItems[idx].x);
+  let translation = draw.world[3].xyz;
+  let previousTranslation = draw.previousWorld[3].xyz;
+#else
+  let translation = meshes[0u].worldFromLocal[3].xyz;
+  let previousTranslation = skinTaskPreviousTranslation(meshes[0u]);
+#endif
+  let currentWorld = skinTaskPosition(descriptor, currentSkin, in.pos, translation);
 #else
   let currentWorld = vec4<f32>(current.worldPos, 1.0);
 #endif
   var previousWorld = currentWorld;
 #if SKINNING_DISABLED == false
   let previousSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, true);
-  previousWorld = previousSkin * vec4<f32>(in.pos, 1.0);
+  previousWorld = skinTaskPosition(descriptor, previousSkin, in.pos,
+    select(translation, previousTranslation, skinTaskHistoryValid(descriptor)));
 #else
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   previousWorld = sceneIndexDraw(visibleItems[idx].x).previousWorld * vec4<f32>(in.pos, 1.0);

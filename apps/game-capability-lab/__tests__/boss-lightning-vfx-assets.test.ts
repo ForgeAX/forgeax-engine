@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
+import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import { parseParticleEffectSourceV3 } from '@forgeax/engine-vfx';
 import { describe, expect, it } from 'vitest';
 
@@ -35,9 +36,10 @@ function derivedMaterialGuids(): ReadonlySet<string> {
 }
 
 function effect(file: string) {
-  const pack = JSON.parse(readFileSync(resolve(root, file), 'utf8')) as { assets: Array<{ guid: string; payload: unknown }> };
-  const entry = pack.assets[0];
-  if (entry === undefined) throw new Error(`${file} has no asset`);
+  const pack = parsePackSourceJson(JSON.parse(readFileSync(resolve(root, file), 'utf8'))).unwrap();
+  if (pack.format !== 'direct') throw new Error(`${file} must be a direct Pack`);
+  const entry = projectDirectPackJson(pack).assets.find((asset) => asset.kind === 'particle-effect');
+  if (entry === undefined) throw new Error(`${file} has no particle effect`);
   const parsed = parseParticleEffectSourceV3(entry.payload);
   if (!parsed.ok) throw new Error(parsed.error.hint);
   return { guid: entry.guid, value: parsed.value };

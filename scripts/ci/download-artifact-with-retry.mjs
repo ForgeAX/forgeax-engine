@@ -136,8 +136,8 @@ function headers() {
   };
 }
 
-async function responseFor(url, requestTimeoutMs = REQUEST_TIMEOUT_MS) {
-  const result = await requestWithTimeout(url, requestTimeoutMs);
+async function responseFor(url, requestTimeoutMs = REQUEST_TIMEOUT_MS, signal) {
+  const result = await requestWithTimeout(url, requestTimeoutMs, signal);
   const { response, controller } = result;
   if (!response.ok) {
     discardHttpResponse(response, controller);
@@ -231,10 +231,14 @@ export async function discoverRunArtifacts(repository, runId, pattern, expectedC
   return selectRunArtifacts(listed.value, pattern, expectedCount);
 }
 
-async function requestWithTimeout(url, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function requestWithTimeout(url, timeoutMs = REQUEST_TIMEOUT_MS, signal) {
   const controller = new AbortController();
   const response = await withinArtifactDeadline(
-    () => fetch(url, { headers: headers(), signal: controller.signal }),
+    () =>
+      fetch(url, {
+        headers: headers(),
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+      }),
     controller,
     timeoutMs,
     'request',
@@ -272,10 +276,11 @@ export async function readResponseBody(
   return Buffer.concat(chunks, totalBytes);
 }
 
-async function metadataFor(repository, artifactId, requestTimeoutMs, idleTimeoutMs) {
+async function metadataFor(repository, artifactId, requestTimeoutMs, idleTimeoutMs, signal) {
   const { response, controller } = await responseFor(
     `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}`,
     requestTimeoutMs,
+    signal,
   );
   const metadata = JSON.parse(
     (
@@ -298,20 +303,36 @@ export async function downloadArtifact(
   repository,
   artifactId,
   destination,
-  { idleTimeoutMs = DOWNLOAD_IDLE_TIMEOUT_MS, requestTimeoutMs = REQUEST_TIMEOUT_MS } = {},
+  {
+    idleTimeoutMs = DOWNLOAD_IDLE_TIMEOUT_MS,
+    requestTimeoutMs = REQUEST_TIMEOUT_MS,
+    minimumRangeBytes,
+    signal,
+  } = {},
 ) {
-  const metadata = await metadataFor(repository, artifactId, requestTimeoutMs, idleTimeoutMs);
+  const metadata = await metadataFor(
+    repository,
+    artifactId,
+    requestTimeoutMs,
+    idleTimeoutMs,
+    signal,
+  );
 
   const archiveUrl = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`;
-  let responseResult = await responseFor(archiveUrl, requestTimeoutMs);
+  let responseResult = await responseFor(archiveUrl, requestTimeoutMs, signal);
   try {
-    const bytes = await tryDownloadArtifactRanges({
-      ...responseResult,
-      metadata,
-      destination,
-      requestTimeoutMs,
-      idleTimeoutMs,
-    });
+    // An optional evidence lookup owns an absolute deadline. Its streamed
+    // transfer carries that signal through response headers and body.
+    const bytes = signal
+      ? null
+      : await tryDownloadArtifactRanges({
+          ...responseResult,
+          metadata,
+          destination,
+          requestTimeoutMs,
+          idleTimeoutMs,
+          minimumBytes: minimumRangeBytes,
+        });
     if (bytes !== null) return bytes;
   } catch (error) {
     if (!(error instanceof ArtifactRangesUnavailable)) throw error;
@@ -382,7 +403,10 @@ async function main() {
   const expectedCountArgument = argument('--expected-count');
   const path = resolve(argument('--path') ?? '.');
   const idleTimeout = argument('--idle-timeout-ms');
+  const minimumRange = argument('--range-minimum-bytes');
   const transportOptions = {
+    minimumRangeBytes:
+      minimumRange === null ? undefined : positiveInteger(minimumRange, 'range minimum'),
     idleTimeoutMs: idleTimeout === null ? undefined : positiveInteger(idleTimeout, 'idle timeout'),
   };
   const mergeMultiple = process.argv.includes('--merge-multiple');

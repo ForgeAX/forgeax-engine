@@ -2,10 +2,14 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it, vi } from 'vitest';
 import { pmremExtent } from '../ibl/pmrem';
+import { addCurrentReflectionProbeFilters } from '../record/reflection-probe-pmrem';
 import { addPmremArrayMigrations, PmremArrayPool } from '../reflection/pmrem-array';
 import type { RenderPipelineFrame } from '../render-pipeline';
 
-it('renders directly to PMREM array layers, migrates them on the frame encoder and samples both native views', async () => {
+it.each([
+  'declared',
+  'current',
+] as const)('renders PMREM array layers, migrates using %s work and samples both native views', async (mode) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const errors: unknown[] = [];
   const pool = new PmremArrayPool(device, (error) => errors.push(error));
@@ -75,11 +79,17 @@ it('renders directly to PMREM array layers, migrates them on the frame encoder a
     if (!ticket) throw new Error('actual migration required');
     const previous = pool.snapshot(a);
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    addPmremArrayMigrations(graph, [ticket]).unwrap();
+    if (mode === 'current') addCurrentReflectionProbeFilters(graph).unwrap();
+    else addPmremArrayMigrations(graph, [ticket]).unwrap();
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
     const encoder = device.createCommandEncoder().unwrap();
     const copies = vi.spyOn(encoder, 'copyTextureToTexture');
-    compiled.execute({ encoder } as unknown as RenderPipelineFrame).unwrap();
+    compiled
+      .execute({
+        encoder,
+        probeFilterWork: { work: [], migrations: [ticket] },
+      } as unknown as RenderPipelineFrame)
+      .unwrap();
     expect(copies.mock.calls.map(([from, to, size]) => [from.origin, to.origin, size])).toEqual(
       [0, 1].map((layer) => [
         [0, 0, layer],

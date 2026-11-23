@@ -4,6 +4,7 @@ import { assert, expect, it, vi } from 'vitest';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
+import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
 import { standardPbrInputs } from './gpu-driven-production-fixture';
 import { nativeDeviceFixture } from './native-device-fixture';
 
@@ -25,15 +26,7 @@ it('keeps old raster windows live while publishing actual prepared Inputs to mai
   const oldInput = oldRead.buffer().unwrap();
   oldRead.seal().unwrap();
   const empty = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const windowsLayout = device
-    .createBindGroupLayout({
-      entries: Array.from({ length: 9 }, (_, binding) => ({
-        binding,
-        visibility: 1,
-        buffer: { type: binding === 5 ? ('uniform' as const) : ('read-only-storage' as const) },
-      })),
-    })
-    .unwrap();
+  const windowsLayout = buildGpuDrivenPbrInstancesBindGroupLayout(device, device.caps);
   const layout = device
     .createPipelineLayout({ bindGroupLayouts: [empty, empty, empty, windowsLayout] })
     .unwrap();
@@ -73,6 +66,8 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) color: vec4<f32> }
     .unwrap();
   try {
     raster.ensureSceneTables(
+      scene.transformBuffer,
+      scene.transformByteLength,
       scene.instanceBuffer,
       scene.rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
       scene.primitiveBuffer,

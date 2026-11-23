@@ -1,6 +1,9 @@
 import type { ArrayRangesChange } from '@forgeax/engine-ecs/projection';
 import type { RhiErrorCode } from '@forgeax/engine-rhi';
 import { InstanceTransformsStrideMismatchError } from './errors/component-validation';
+import { issueInstanceGenerations } from './instance-generations';
+
+export { uniqueInstanceIdentities } from './instance-generations';
 
 const MATRIX_STRIDE = 16;
 
@@ -140,22 +143,6 @@ function scanInstanceTransforms(
     }
   }
   return same;
-}
-
-const uniqueIdentities = new WeakMap<Uint32Array, boolean>();
-
-/**
- * Whether a generation column names distinct, non-zero identities. Snapshot
- * generation columns are immutable, so the proof is memoized per column and a
- * stable collection pays O(N) once instead of on every row move.
- */
-export function uniqueInstanceIdentities(generations: Uint32Array): boolean {
-  let unique = uniqueIdentities.get(generations);
-  if (unique === undefined) {
-    unique = !generations.includes(0) && new Set(generations).size === generations.length;
-    uniqueIdentities.set(generations, unique);
-  }
-  return unique;
 }
 
 /**
@@ -534,11 +521,8 @@ export class InstanceProjectionStore {
 
   /** Fresh store-issued identities: distinct and non-zero by construction. */
   private seedGenerations(count: number): Uint32Array {
-    const generations = new Uint32Array(count);
-    for (let ordinal = 0; ordinal < count; ordinal += 1) {
-      generations[ordinal] = this.nextGeneration++;
-    }
-    uniqueIdentities.set(generations, true);
+    const generations = issueInstanceGenerations(this.nextGeneration, count);
+    this.nextGeneration += count;
     return generations;
   }
 

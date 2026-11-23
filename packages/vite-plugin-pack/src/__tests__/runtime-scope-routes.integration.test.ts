@@ -3,30 +3,51 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import {
   type CatalogDelta,
   createStandaloneRuntimeAssetBinding,
   type PackIndexEntry,
   RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
+  type RuntimeAssetBinding,
 } from '@forgeax/engine-types';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
+import {
+  directPackFixture,
+  metaFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import type { DevSession } from '../dev/dev-session.js';
-import type { DispatcherResponse } from '../dev/dispatcher.js';
 import type { PluginServerState } from '../dev/plugin-server.js';
 import { createTransportRouteHandler } from '../dev/transport-routes.js';
+import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
 import {
-  createPluginPackInternal,
-  createPluginPackInternal as pluginPack,
-} from '../plugin-pack.js';
+  capturePackMiddleware,
+  type Middleware,
+  requestText as request,
+} from './middleware-fixture.js';
 
-const GUID = '01900000-0000-7000-8000-aaaaaaaaaaaa';
+const GUID = 'a1521f51-67a3-52f2-9241-5373b3afb6fc';
+const EFFECT_PACKAGE_ID = '01900000-0000-7000-8000-aaaaaaaaaaaa';
 const IMAGE_GUID = '01900000-0000-7000-8000-bbbbbbbbbbbb';
 const UI_GUID = '01900000-0000-7000-8000-cccccccccccc';
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
+
+function activeScope(generation: number, base = ''): RuntimeAssetBinding {
+  const path = `${base}/__pack/scopes/active/${generation}`;
+  return {
+    ...createStandaloneRuntimeAssetBinding('active'),
+    generation,
+    status: 'unbound',
+    catalogUrl: `${path}/catalog.json`,
+    importUrlBase: `${path}/import`,
+    packageUrlBase: `${path}/asset`,
+  };
+}
 
 function projectDdcForTest(root: string) {
   return {
@@ -47,29 +68,23 @@ describe('runtime-scoped pack routes', () => {
 
   it('shares complete publication envelopes in the scoped catalog HTTP response', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-runtime-scope-wire-'));
-    const assets = Array.from({ length: 32 }, (_, index) => ({
-      guid: `01900000-0000-7000-8000-${String(index).padStart(12, '0')}`,
-      kind: 'test-effect',
-      execution: 'direct',
-      payload: { marker: index },
-      refs: [],
-      artifacts: {},
-    }));
+    const packageId = '01900000-0000-7000-8000-000000000050';
+    const namespace = PackageId.parse(packageId);
+    if (!namespace.ok) throw namespace.error;
+    const keys = Array.from({ length: 32 }, (_, index) => `effect/${index}`);
+    const assets = Object.fromEntries(
+      keys.map((key, index) => [
+        key,
+        { kind: 'test-effect', payload: { marker: index }, refs: [] },
+      ]),
+    );
     await writeFile(
       join(root, 'shared.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets,
-      }),
+      JSON.stringify({ schemaVersion: '3.0.0', packageId, assets }),
     );
     const plugin = pluginPack({ roots: [root] });
     close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
     const binding = createStandaloneRuntimeAssetBinding('scoped-wire');
     await plugin.rebind(binding, [root]);
     const stringify = vi.spyOn(JSON, 'stringify');
@@ -88,10 +103,12 @@ describe('runtime-scoped pack routes', () => {
       entries: { schemaVersion: 'pack-index-tables/1' },
     });
     const rows = decodeCatalogWire(wire).unwrap();
-    expect(rows.map((row) => row.guid).sort()).toEqual(assets.map((asset) => asset.guid).sort());
+    expect(rows.map((row) => row.guid).sort()).toEqual(
+      keys.map((key) => AssetGuid.format(AssetGuid.derive(namespace.value, key))).sort(),
+    );
     expect(wire.entries.publications).toHaveLength(1);
     const publication = rows[0]?.publication;
-    expect(publication?.outputs).toHaveLength(assets.length);
+    expect(publication?.outputs).toHaveLength(keys.length);
     expect(publication?.receipt.outputSetDigest).toBe(publication?.outputSetDigest);
     expect(rows.every((row) => row.publication === publication)).toBe(true);
     expect(rows.every((row) => row.packageUrl.startsWith(binding.packageUrlBase))).toBe(true);
@@ -101,19 +118,15 @@ describe('runtime-scoped pack routes', () => {
   });
 
   it('waits for startup when a bound scope is still transitioning before lazy import', async () => {
-    let releaseStartup!: () => void;
-    const startupReady = new Promise<void>((resolve) => {
-      releaseStartup = resolve;
-    });
+    const { promise: startupReady, resolve: releaseStartup } = testGate();
     const binding = createStandaloneRuntimeAssetBinding('startup-race');
     const entry = {
       guid: GUID,
-      packageUrl: `/__forgeax-ddc/${GUID}.pack.json`,
+      packageUrl: `/__forgeax-ddc/${GUID}.runtime-pack.json`,
       sourcePath: 'fixture.pack.json',
     } as PackIndexEntry;
     const state = {
       catalogProjection: { declarations: new Map(), entries: [entry] },
-      importedGuids: new Set<string>(),
       metaPackBodies: new Map(),
       devArtifactBodies: new Map(),
     } as unknown as PluginServerState;
@@ -157,132 +170,73 @@ describe('runtime-scoped pack routes', () => {
         ensureMetaPackBody: async () => undefined,
       },
       devSession: session,
-      scopedPackageUrl: (_scope, packageUrl) => packageUrl,
+      scopedCatalogEntry: (_scope, entry) => entry,
       scopedCatalogBody: () => JSON.stringify({ entries: [entry] }),
     });
-    const response: DispatcherResponse & { body: string } = {
-      statusCode: 0,
-      body: '',
-      setHeader() {},
-      end(chunk) {
-        this.body = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
-      },
-    };
-    const pending = handler(
-      { url: `${binding.importUrlBase}/${GUID}`, method: 'POST' },
-      response,
-      () => {},
-    );
+    const route = `${binding.importUrlBase}/${GUID}`;
+    let finished = false;
+    const pending = request([handler], route, 'POST').finally(() => {
+      finished = true;
+    });
     await Promise.resolve();
-    expect(response.statusCode).toBe(0);
+    expect(finished).toBe(false);
     expect(materializeCalls).toBe(0);
 
     sessionStatus = 'serving';
     runtimeStatus = 'ready';
     releaseStartup();
-    await pending;
-    expect(response.statusCode).toBe(200);
+    expect((await pending).statusCode).toBe(200);
     expect(materializeCalls).toBe(1);
 
-    let failedMaterializeCalls = 0;
     sessionStatus = 'failed';
-    const failedHandler = createTransportRouteHandler({
-      startupReady: Promise.resolve(),
-      state,
-      callbacks: {
-        materializeAsset: async () => {
-          failedMaterializeCalls += 1;
-          return [entry];
-        },
-        rebuildAsset: async () => [entry],
-        ensureMetaPackBody: async () => undefined,
-      },
-      devSession: session,
-      scopedPackageUrl: (_scope, packageUrl) => packageUrl,
-      scopedCatalogBody: () => JSON.stringify({ entries: [entry] }),
-    });
-    const failedResponse: DispatcherResponse = {
-      statusCode: 0,
-      setHeader() {},
-      end() {},
-    };
-    await failedHandler(
-      { url: `${binding.importUrlBase}/${GUID}`, method: 'POST' },
-      failedResponse,
-      () => {},
-    );
-    expect(failedResponse.statusCode).toBe(500);
-    expect(failedMaterializeCalls).toBe(0);
+    expect((await request([handler], route, 'POST')).statusCode).toBe(500);
+    expect(materializeCalls).toBe(1);
   });
 
   it('rejects asset identity routes before any runtime scope is bound', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-runtime-scope-unbound-'));
     const plugin = pluginPack({ roots: [root] });
     close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
     expect(plugin.runtimeBinding()).toBeUndefined();
-
-    expect((await request(middlewares, '/__pack/index')).statusCode).toBe(404);
-    expect((await request(middlewares, '/pack-index.json')).statusCode).toBe(404);
+    for (const path of [
+      '/__pack/index',
+      '/pack-index.json',
+      `/__forgeax-ddc/${GUID}.runtime-pack.json`,
+      '/__pack/scopes/active/1/catalog.json',
+    ])
+      expect((await request(middlewares, path)).statusCode).toBe(404);
     expect((await request(middlewares, `/__import/${GUID}`, 'POST')).statusCode).toBe(404);
-    expect((await request(middlewares, `/__forgeax-ddc/${GUID}.pack.json`)).statusCode).toBe(404);
-    expect((await request(middlewares, '/__pack/scopes/active/1/catalog.json')).statusCode).toBe(
-      404,
-    );
   });
 
-  it('binds one game, ignores a malformed sibling, and disables global routes', async () => {
+  it.each([
+    '',
+    '/preview',
+  ])('binds one game and returns exactly scoped URLs with host base %s', async (base) => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-runtime-scope-'));
     const active = join(root, 'active');
-    const brokenSibling = join(root, 'broken-sibling');
-    await mkdir(active, { recursive: true });
-    await mkdir(brokenSibling, { recursive: true });
+    const broken = join(root, 'broken-sibling');
+    await Promise.all([mkdir(active), mkdir(broken)]);
     await writeFile(
       join(active, 'effect.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: GUID,
-            kind: 'test-effect',
-            execution: 'direct',
-            payload: { schemaVersion: 1 },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture(EFFECT_PACKAGE_ID, {
+          output: { kind: 'test-effect', payload: { schemaVersion: 1 }, refs: [] },
+        }),
+      ),
     );
-    await writeFile(join(brokenSibling, 'broken.pack.json'), '{not-json');
-
-    const plugin = pluginPack({ roots: [active, brokenSibling] });
+    await writeFile(join(broken, 'broken.pack.json'), '{not-json');
+    const plugin = pluginPack({ roots: [active, broken] }, { transportBase: `${base}/` });
     close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
+    const binding = (generation: number) => activeScope(generation, base);
+    const catalog = (generation: number) =>
+      request(middlewares, activeScope(generation).catalogUrl);
+    const expectedUrl = (generation: number) =>
+      `${binding(generation).packageUrlBase}/__forgeax-ddc/${EFFECT_PACKAGE_ID}.runtime-pack.json`;
 
-    const bound = await plugin.rebind(
-      {
-        schemaVersion: 'runtime-asset-binding-v1',
-        gameId: 'active',
-        scopeId: 'active',
-        generation: 7,
-        status: 'unbound',
-        catalogUrl: '/__pack/scopes/active/7/catalog.json',
-        importUrlBase: '/__pack/scopes/active/7/import',
-        packageUrlBase: '/__pack/scopes/active/7/asset',
-      },
-      [active],
-    );
-    expect(bound.status).toBe('ready');
-    expect(bound.authority).toBe('authoritative');
+    const bound = await plugin.rebind(binding(7), [active]);
+    expect(bound).toMatchObject({ status: 'ready', authority: 'authoritative' });
     expect(plugin.runtimeBinding()).toMatchObject({
       scopeId: 'active',
       generation: 7,
@@ -290,124 +244,45 @@ describe('runtime-scoped pack routes', () => {
     });
 
     const stringify = vi.spyOn(JSON, 'stringify');
-    const catalog = await request(middlewares, '/__pack/scopes/active/7/catalog.json');
-    const repeated = await Promise.all([
-      request(middlewares, '/__pack/scopes/active/7/catalog.json'),
-      request(middlewares, '/__pack/scopes/active/7/catalog.json'),
+    const snapshotWrites = () =>
+      stringify.mock.calls.filter(
+        ([value]) => value?.schemaVersion === RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
+      );
+    const first = await catalog(7);
+    expect(first.statusCode).toBe(200);
+    expect(first.headers['cache-control']).toBe('no-store');
+    expect(decodeCatalogWire(JSON.parse(first.body)).unwrap()).toMatchObject([
+      { guid: GUID, packageUrl: expectedUrl(7) },
     ]);
-    expect(repeated.map((response) => response.body)).toEqual([catalog.body, catalog.body]);
-    expect(
-      stringify.mock.calls.filter(
-        ([value]) => value?.schemaVersion === RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
-      ),
-    ).toHaveLength(1);
-    expect(catalog.statusCode).toBe(200);
-    expect(catalog.headers['cache-control']).toBe('no-store');
-    const snapshot = decodeCatalogWire(JSON.parse(catalog.body)).unwrap();
-    expect(snapshot).toHaveLength(1);
-    expect(snapshot[0]).toMatchObject({ guid: GUID });
-    expect(snapshot[0]?.packageUrl).toBe(
-      `/__pack/scopes/active/7/asset/__forgeax-ddc/${GUID}.pack.json`,
-    );
+    for (const response of await Promise.all([catalog(7), catalog(7)]))
+      expect(response.body).toBe(first.body);
+    expect(snapshotWrites()).toHaveLength(1);
+    const pack = await request(middlewares, expectedUrl(7));
+    expect(pack.statusCode).toBe(200);
+    expect(JSON.parse(pack.body).assets[0].guid).toBe(GUID);
+    const prefixed = await request(middlewares, binding(7).catalogUrl);
+    expect(prefixed.statusCode).toBe(200);
+    expect(JSON.parse(prefixed.body).authority).toBe('authoritative');
 
-    const packageResponse = await request(middlewares, snapshot[0]?.packageUrl ?? '');
-    expect(packageResponse.statusCode).toBe(200);
-    expect(JSON.parse(packageResponse.body).assets[0].guid).toBe(GUID);
-
-    expect((await request(middlewares, '/__pack/index')).statusCode).toBe(404);
-    expect((await request(middlewares, '/pack-index.json')).statusCode).toBe(404);
+    for (const path of [
+      '/__pack/index',
+      '/pack-index.json',
+      `/__forgeax-ddc/${EFFECT_PACKAGE_ID}.runtime-pack.json`,
+      '/__pack/scopes/other/7/catalog.json',
+    ])
+      expect((await request(middlewares, path)).statusCode).toBe(404);
     expect((await request(middlewares, `/__import/${GUID}`, 'POST')).statusCode).toBe(404);
-    expect((await request(middlewares, `/__forgeax-ddc/${GUID}.pack.json`)).statusCode).toBe(404);
-    expect((await request(middlewares, '/__pack/scopes/active/6/catalog.json')).statusCode).toBe(
-      410,
-    );
-    expect((await request(middlewares, '/__pack/scopes/other/7/catalog.json')).statusCode).toBe(
-      404,
-    );
+    expect((await catalog(6)).statusCode).toBe(410);
 
-    await plugin.rebind(
-      {
-        ...bound,
-        generation: 8,
-        catalogUrl: '/__pack/scopes/active/8/catalog.json',
-        importUrlBase: '/__pack/scopes/active/8/import',
-        packageUrlBase: '/__pack/scopes/active/8/asset',
-      },
-      [active],
-    );
-    expect((await request(middlewares, '/__pack/scopes/active/7/catalog.json')).statusCode).toBe(
-      410,
-    );
-    const next = await request(middlewares, '/__pack/scopes/active/8/catalog.json');
-    expect(JSON.parse(next.body)).toMatchObject({
-      generation: 8,
-      entries: [{ packageUrl: `/__pack/scopes/active/8/asset/__forgeax-ddc/${GUID}.pack.json` }],
-    });
-    expect((await request(middlewares, '/__pack/scopes/active/8/catalog.json')).body).toBe(
-      next.body,
-    );
-    expect(
-      stringify.mock.calls.filter(
-        ([value]) => value?.schemaVersion === RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
-      ),
-    ).toHaveLength(2);
-  });
-
-  it('does not duplicate the Vite host base in scoped package URLs', async () => {
-    root = await mkdtemp(join(tmpdir(), 'forgeax-runtime-scope-base-'));
-    const active = join(root, 'active');
-    await mkdir(active, { recursive: true });
-    await writeFile(
-      join(active, 'effect.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: GUID,
-            kind: 'test-effect',
-            execution: 'direct',
-            payload: { schemaVersion: 1 },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
-    );
-
-    const plugin = createPluginPackInternal({ roots: [active] }, { transportBase: '/preview/' });
-    close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
-
-    await plugin.rebind(
-      {
-        schemaVersion: 'runtime-asset-binding-v1',
-        gameId: 'active',
-        scopeId: 'active',
-        generation: 7,
-        status: 'unbound',
-        catalogUrl: '/preview/__pack/scopes/active/7/catalog.json',
-        importUrlBase: '/preview/__pack/scopes/active/7/import',
-        packageUrlBase: '/preview/__pack/scopes/active/7/asset',
-      },
-      [active],
-    );
-
-    const catalog = await request(middlewares, '/__pack/scopes/active/7/catalog.json');
-    expect(catalog.statusCode).toBe(200);
-    const snapshot = decodeCatalogWire(JSON.parse(catalog.body)).unwrap();
-    expect(snapshot[0]?.packageUrl).toBe(
-      `/preview/__pack/scopes/active/7/asset/__forgeax-ddc/${GUID}.pack.json`,
-    );
-    expect(snapshot[0]?.packageUrl).not.toContain('/asset/preview/');
-
-    const baseCatalog = await request(middlewares, '/preview/__pack/scopes/active/7/catalog.json');
-    expect(baseCatalog.statusCode).toBe(200);
-    expect(JSON.parse(baseCatalog.body).authority).toBe('authoritative');
+    await plugin.rebind(binding(8), [active]);
+    expect((await catalog(7)).statusCode).toBe(410);
+    const next = await catalog(8);
+    expect(JSON.parse(next.body)).toMatchObject({ generation: 8 });
+    expect(decodeCatalogWire(JSON.parse(next.body)).unwrap()).toMatchObject([
+      { packageUrl: expectedUrl(8) },
+    ]);
+    expect((await catalog(8)).body).toBe(next.body);
+    expect(snapshotWrites()).toHaveLength(2);
   });
 
   it.each([
@@ -420,13 +295,9 @@ describe('runtime-scoped pack routes', () => {
     await writeFile(join(active, 'pixel.png'), ONE_PIXEL_PNG);
     await writeFile(
       join(active, 'pixel.png.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'image',
-        source: 'pixel.png',
-        importSettings: { colorSpace: 'srgb', mipmap: false },
-        subAssets: [{ guid: IMAGE_GUID, sourceIndex: 0, kind: 'texture' }],
+      metaFixture('pixel.png', 'image', [{ guid: IMAGE_GUID, sourceIndex: 0, kind: 'texture' }], {
+        colorSpace: 'srgb',
+        mipmap: false,
       }),
     );
 
@@ -441,7 +312,7 @@ describe('runtime-scoped pack routes', () => {
       }),
     );
 
-    const plugin = createPluginPackInternal(
+    const plugin = pluginPack(
       {
         roots: [active],
         producerReadiness: 'on-demand',
@@ -553,27 +424,18 @@ describe('runtime-scoped pack routes', () => {
       .find((row) => row.guid === IMAGE_GUID);
     expect(changed).toEqual(entry);
     expect((await request(middlewares, changed?.packageUrl ?? '')).statusCode).toBe(200);
-    expect((await request(middlewares, `/__forgeax-ddc/${IMAGE_GUID}.pack.json`)).statusCode).toBe(
-      404,
-    );
+    expect(
+      (await request(middlewares, `/__forgeax-ddc/${IMAGE_GUID}.runtime-pack.json`)).statusCode,
+    ).toBe(404);
 
     const authoredPath = join(active, 'added.pack.json');
     await writeFile(
       authoredPath,
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: GUID,
-            kind: 'test-effect',
-            execution: 'direct',
-            payload: {},
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture(EFFECT_PACKAGE_ID, {
+          output: { kind: 'test-effect', payload: {}, refs: [] },
+        }),
+      ),
     );
     await expect
       .poll(() => deltas.flatMap((delta) => delta.added).find((row) => row.guid === GUID))
@@ -602,14 +464,7 @@ describe('runtime-scoped pack routes', () => {
     await writeFile(join(active, 'hud.ui.css'), ':host { display: block; }\n');
     await writeFile(
       join(active, 'hud.ui.html.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'ui',
-        source: 'hud.ui.html',
-        importSettings: {},
-        subAssets: [{ guid: UI_GUID, sourceIndex: 0, kind: 'ui' }],
-      }),
+      metaFixture('hud.ui.html', 'ui', [{ guid: UI_GUID, sourceIndex: 0, kind: 'ui' }]),
     );
 
     const plugin = pluginPack({
@@ -619,38 +474,29 @@ describe('runtime-scoped pack routes', () => {
       ddc: projectDdcForTest(root),
     });
     close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
 
-    await plugin.rebind(
-      {
-        schemaVersion: 'runtime-asset-binding-v1',
-        gameId: 'active',
-        scopeId: 'active',
-        generation: 11,
-        status: 'unbound',
-        catalogUrl: '/__pack/scopes/active/11/catalog.json',
-        importUrlBase: '/__pack/scopes/active/11/import',
-        packageUrlBase: '/__pack/scopes/active/11/asset',
-      },
-      [active],
-    );
+    await plugin.rebind(activeScope(11), [active]);
 
     const initial = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
     const initialSnapshot = decodeCatalogWire(JSON.parse(initial.body)).unwrap();
     const initialEntry = initialSnapshot.find((entry) => entry.guid === UI_GUID);
     expect(initialEntry).toBeDefined();
+    expect(initialEntry?.publication).toBeUndefined();
 
     const packageResponse = await request(middlewares, initialEntry?.packageUrl ?? '');
     expect(packageResponse.statusCode).toBe(200);
-    expect(JSON.parse(packageResponse.body).assets[0].guid).toBe(UI_GUID);
+    const pack = JSON.parse(packageResponse.body);
+    expect(pack).toMatchObject({ scopeId: 'active', assets: [{ guid: UI_GUID }] });
 
     const afterPackage = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
     const afterPackageSnapshot = decodeCatalogWire(JSON.parse(afterPackage.body)).unwrap();
-    expect(afterPackageSnapshot.some((entry) => entry.guid === UI_GUID)).toBe(true);
+    const published = afterPackageSnapshot.find((entry) => entry.guid === UI_GUID);
+    expect(published?.publication).toMatchObject({
+      generation: pack.generation,
+      digest: pack.digest,
+      outputSetDigest: pack.outputSetDigest,
+    });
 
     const imported = await request(
       middlewares,
@@ -660,7 +506,7 @@ describe('runtime-scoped pack routes', () => {
     expect(imported.statusCode).toBe(200);
     const afterImport = await request(middlewares, '/__pack/scopes/active/11/catalog.json');
     const afterImportSnapshot = decodeCatalogWire(JSON.parse(afterImport.body)).unwrap();
-    expect(afterImportSnapshot.some((entry) => entry.guid === UI_GUID)).toBe(true);
+    expect(afterImportSnapshot.find((entry) => entry.guid === UI_GUID)).toEqual(published);
   });
 
   it('exposes degraded catalog evidence but fails closed for lazy import', async () => {
@@ -674,44 +520,19 @@ describe('runtime-scoped pack routes', () => {
     // fail-closed, so an initial session has no accepted Catalog generation.
     await writeFile(
       join(validRoot, 'valid.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: GUID,
-            kind: 'test-effect',
-            execution: 'direct',
-            payload: { schemaVersion: 1 },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture(EFFECT_PACKAGE_ID, {
+          output: { kind: 'test-effect', payload: { schemaVersion: 1 }, refs: [] },
+        }),
+      ),
     );
     await writeFile(join(brokenRoot, 'broken.pack.json'), '{not-json');
 
     const plugin = pluginPack({ roots: [active] });
     close = () => plugin.closeBundle();
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
 
-    const bound = await plugin.rebind(
-      {
-        schemaVersion: 'runtime-asset-binding-v1',
-        gameId: 'active',
-        scopeId: 'active',
-        generation: 8,
-        status: 'unbound',
-        catalogUrl: '/__pack/scopes/active/8/catalog.json',
-        importUrlBase: '/__pack/scopes/active/8/import',
-        packageUrlBase: '/__pack/scopes/active/8/asset',
-      },
-      [validRoot, brokenRoot],
-    );
+    const bound = await plugin.rebind(activeScope(8), [validRoot, brokenRoot]);
     expect(bound.status).toBe('degraded');
     expect(bound.authority).toBe('degraded');
     expect(bound.diagnostics?.length).toBeGreaterThan(0);
@@ -723,42 +544,3 @@ describe('runtime-scoped pack routes', () => {
     expect(imported.statusCode).toBe(500);
   });
 });
-
-interface MockResponse {
-  statusCode: number;
-  body: string;
-  headers: Record<string, string>;
-  setHeader(name: string, value: string): void;
-  end(chunk: string | Uint8Array): void;
-}
-
-type Middleware = (
-  req: { url?: string; method?: string },
-  res: MockResponse,
-  next: () => void,
-) => unknown;
-
-async function request(
-  middlewares: readonly Middleware[],
-  url: string,
-  method = 'GET',
-): Promise<MockResponse> {
-  const response: MockResponse = {
-    statusCode: 200,
-    body: '',
-    headers: {},
-    setHeader(name, value) {
-      this.headers[name.toLowerCase()] = value;
-    },
-    end(chunk) {
-      this.body = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
-    },
-  };
-  let index = 0;
-  const next = async (): Promise<void> => {
-    const middleware = middlewares[index++];
-    if (middleware !== undefined) await middleware({ url, method }, response, () => void next());
-  };
-  await next();
-  return response;
-}

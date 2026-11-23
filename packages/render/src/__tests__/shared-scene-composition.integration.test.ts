@@ -245,8 +245,7 @@ it.each([
   if (attached !== undefined && !attached.ok) throw attached.error;
   const lease = attached?.value;
   const publisher = published ? createRenderPublisher(world, assets, source) : undefined;
-  const slots = vi.spyOn(SceneComposition.prototype, 'compositionSlot');
-  let composition: SceneComposition | undefined;
+  const sourceEntry = vi.spyOn(SceneComposition.prototype, published ? 'consume' : 'extract');
   const draw = async () => {
     const candidate = publisher?.prepare(0).unwrap();
     const publication =
@@ -270,8 +269,7 @@ it.each([
     if (!completed.ok) throw completed.error;
     if (publication !== undefined)
       publisher?.recycle(publication.revision, renderPublicationTransfers(publication)).unwrap();
-    const heldComposition = slots.mock.contexts[0];
-    if (heldComposition instanceof SceneComposition) composition ??= heldComposition;
+    const composition = sourceEntry.mock.contexts.at(-1);
     if (composition === undefined) throw new Error('Missing retained composition');
     return composition.compositionSlot(entity)?.snapshot;
   };
@@ -292,7 +290,7 @@ it.each([
     expect((await draw())?.waterOwner?.generation).toBe(water.snapshot(guid)?.sceneGeneration);
     expect(held?.waterOwner?.generation).toBe(1);
   } finally {
-    slots.mockRestore();
+    sourceEntry.mockRestore();
     lease?.dispose();
     publisher?.dispose();
     const disposed = await renderer.dispose();

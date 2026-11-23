@@ -56,13 +56,11 @@ describe('user material shader variant manifest', () => {
     await writeFile(
       packPath,
       JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '4846fa5b-8f80-57c0-9cdc-e345102fdb6b',
+        schemaVersion: '3.0.0',
+        packageId: '4846fa5b-8f80-57c0-9cdc-e345102fdb6b',
+        assets: {
+          'low-poly-toon.wgsl': {
             kind: 'material',
-            sourceKey: sourcePath,
             payload: {
               kind: 'material',
               parameters: material.parameters,
@@ -70,7 +68,7 @@ describe('user material shader variant manifest', () => {
             },
             refs: [],
           },
-        ],
+        },
       }),
     );
     const previousSourceBuild = process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD;

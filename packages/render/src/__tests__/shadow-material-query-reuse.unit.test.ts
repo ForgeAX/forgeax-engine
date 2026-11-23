@@ -71,7 +71,6 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
   entries.push(
     { binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize: 256 } },
     { binding: 46, visibility: 4, buffer: { type: 'read-only-storage' } },
-    { binding: 47, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
   );
   if (textured)
     entries.push(
@@ -300,6 +299,7 @@ it.each([
 
 it('rebuilds opaque shadow bundles after scene material table growth and reuses stable frames', async () => {
   const f = await fixture();
+  Object.assign(f.context.runtime, { options: { retainIndirectBundles: true } });
   const replacement = f.device.createBuffer({ size: 8192, usage: 8 | 64 | 128 | 256 }).unwrap();
   try {
     f.batches.length = 2;

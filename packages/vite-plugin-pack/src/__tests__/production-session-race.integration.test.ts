@@ -1,29 +1,29 @@
 import { describe, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createProductionSession } from '../production/session.js';
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
+function fixture(produce: Parameters<typeof createProductionSession>[0]['produce']) {
+  const discarded: number[] = [];
+  const published: number[] = [];
+  const session = createProductionSession({
+    inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
+    produce,
+    publish: async ({ generation }) => {
+      published.push(generation);
+    },
+    discard: async ({ generation }) => {
+      discarded.push(generation);
+    },
   });
-  return { promise, resolve };
+  return { session, discarded, published };
 }
 
 describe('ProductionSession generation fence', () => {
   it('does not let a stale generation discard the successor candidate', async () => {
-    const firstProduction = deferred<void>();
-    const discarded: number[] = [];
-    const published: number[] = [];
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async ({ generation }) => (generation === 1 ? firstProduction.promise : undefined),
-      publish: async ({ generation }) => {
-        published.push(generation);
-      },
-      discard: async ({ generation }) => {
-        discarded.push(generation);
-      },
-    });
+    const firstProduction = testGate();
+    const { session, discarded, published } = fixture(async ({ generation }) =>
+      generation === 1 ? firstProduction.promise : undefined,
+    );
 
     const stale = session.start();
     const current = session.rebuild([{ sourceKey: 'source-a' }]);
@@ -39,21 +39,16 @@ describe('ProductionSession generation fence', () => {
   });
 
   it('aborts materialization when a newer rebuild supersedes the accepted generation', async () => {
-    const materializeStarted = deferred<void>();
-    const releaseMaterialize = deferred<void>();
+    const materializeStarted = testGate();
+    const releaseMaterialize = testGate();
     let materializeAborted = false;
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async ({ intent, signal }) => {
-        if (intent !== 'materialize') return;
-        signal.addEventListener('abort', () => {
-          materializeAborted = true;
-        });
-        materializeStarted.resolve();
-        await releaseMaterialize.promise;
-      },
-      publish: async () => undefined,
-      discard: async () => undefined,
+    const { session } = fixture(async ({ intent, signal }) => {
+      if (intent !== 'materialize') return;
+      signal.addEventListener('abort', () => {
+        materializeAborted = true;
+      });
+      materializeStarted.resolve();
+      await releaseMaterialize.promise;
     });
 
     expect((await session.start()).status).toBe('accepted');
@@ -70,18 +65,10 @@ describe('ProductionSession generation fence', () => {
   });
 
   it('discards a failed candidate without poisoning the next generation', async () => {
-    const discarded: number[] = [];
     let calls = 0;
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async ({ generation }) => {
-        calls += 1;
-        if (generation === 1) throw new Error('source failure');
-      },
-      publish: async () => undefined,
-      discard: async ({ generation }) => {
-        discarded.push(generation);
-      },
+    const { session, discarded } = fixture(async ({ generation }) => {
+      calls += 1;
+      if (generation === 1) throw new Error('source failure');
     });
 
     const failed = await session.start();
@@ -99,15 +86,9 @@ describe('ProductionSession generation fence', () => {
     const firstProduction = new Promise<void>((_resolve, reject) => {
       rejectFirst = reject;
     });
-    const discarded: number[] = [];
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async ({ generation }) => (generation === 1 ? firstProduction : undefined),
-      publish: async () => undefined,
-      discard: async ({ generation }) => {
-        discarded.push(generation);
-      },
-    });
+    const { session, discarded } = fixture(async ({ generation }) =>
+      generation === 1 ? firstProduction : undefined,
+    );
 
     const first = session.start();
     const successor = await session.rebuild([{ sourceKey: 'source-a' }]);
@@ -120,26 +101,15 @@ describe('ProductionSession generation fence', () => {
   });
 
   it('aborts intake, drains late work, and discards instead of publishing on close', async () => {
-    const lateProduction = deferred<void>();
-    const started = deferred<void>();
-    const discarded: number[] = [];
-    const published: number[] = [];
+    const lateProduction = testGate();
+    const started = testGate();
     let aborted = false;
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async ({ signal }) => {
-        signal.addEventListener('abort', () => {
-          aborted = true;
-        });
-        started.resolve();
-        await lateProduction.promise;
-      },
-      publish: async ({ generation }) => {
-        published.push(generation);
-      },
-      discard: async ({ generation }) => {
-        discarded.push(generation);
-      },
+    const { session, discarded, published } = fixture(async ({ signal }) => {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+      });
+      started.resolve();
+      await lateProduction.promise;
     });
 
     const pending = session.start();
@@ -155,16 +125,11 @@ describe('ProductionSession generation fence', () => {
   });
 
   it('does not resolve close until an abort-ignoring producer reaches terminal state', async () => {
-    const lateProduction = deferred<void>();
-    const started = deferred<void>();
-    const session = createProductionSession({
-      inventory: async () => [{ sourceKey: 'source-a', guids: ['guid-a'] }],
-      produce: async () => {
-        started.resolve();
-        await lateProduction.promise;
-      },
-      publish: async () => undefined,
-      discard: async () => undefined,
+    const lateProduction = testGate();
+    const started = testGate();
+    const { session } = fixture(async () => {
+      started.resolve();
+      await lateProduction.promise;
     });
 
     const pending = session.start();

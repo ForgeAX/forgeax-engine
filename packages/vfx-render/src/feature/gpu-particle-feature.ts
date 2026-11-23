@@ -109,7 +109,7 @@ import {
   type VfxIntentReference,
 } from './intent-publication.js';
 
-import { projectParticleMaterial } from './material-source.js';
+import { isHostParticleMaterialSource, projectParticleMaterial } from './material-source.js';
 
 import {
   createTopologyResourcePlan,
@@ -1131,7 +1131,7 @@ export function gpuParticleRenderFeature(
       intent.instanceGeneration,
       immutableEmitters,
     );
-    if (!stagePlan.ok) return planFailure();
+    if (!stagePlan.ok) return planFailure(stagePlan.error);
     const entryPoints =
       emitterPrograms(intent.emitter)?.entryPoints ??
       new Set(intent.emitter.reflection.entryPoints);
@@ -1180,7 +1180,7 @@ export function gpuParticleRenderFeature(
       group.intents[0]?.intent.emitter.wgsl !== intent.emitter.wgsl ||
       group.intents[0]?.intent.emitter.capacity !== intent.emitter.capacity
     ) {
-      return planFailure();
+      return planFailure('emitter-group-program-mismatch');
     }
     group.intents.push(planned);
     return undefined;
@@ -1225,7 +1225,7 @@ export function gpuParticleRenderFeature(
         retained.intent.instanceGeneration,
         immutableEmitters,
       );
-      if (!stagePlan.ok) return planFailure();
+      if (!stagePlan.ok) return planFailure(stagePlan.error);
       const visible =
         retained.visible && (entry.emitterState.get(record.stateKey)?.enabled ?? true);
       let recoveryIntents: readonly VfxGpuTickIntent[] = [];
@@ -1478,7 +1478,7 @@ export function gpuParticleRenderFeature(
     const first = group.intents[0];
     const latest = group.intents.at(-1) ?? first;
     const latestTransform = latest?.localToWorld ?? group.preparation?.localToWorld;
-    if (latestTransform === undefined) return planFailure();
+    if (latestTransform === undefined) return planFailure('emitter-transform-missing');
     const source = group.entry.emitterState.get(group.record.stateKey);
     const names = groupNames(group.program);
     const emitter = firstIntent.emitter;
@@ -1546,7 +1546,8 @@ export function gpuParticleRenderFeature(
   };
   /** Force fields need the emitter's field declaration and a finite invertible transform per row. */
   const fieldOwnerFailure = (group: EmitterGroup, emitter: VfxGpuTickIntent['emitter']) => {
-    if (emitter.forceFields === undefined) return planFailure();
+    if (emitter.forceFields === undefined)
+      return planFailure('emitter-force-field-declaration-missing');
     if (
       !group.intents.every((planned) => isVfxFieldTransform(planned.localToWorld)) ||
       (group.preparation !== undefined && !isVfxFieldTransform(group.preparation.localToWorld))
@@ -1567,7 +1568,7 @@ export function gpuParticleRenderFeature(
     resources: PlanResource[],
   ): string | RenderFeatureStageFailedError => {
     const fields = input.forceFields;
-    if (fields === undefined) return planFailure();
+    if (fields === undefined) return planFailure('force-field-input-missing');
     if (!fields.ok) return planFailure(fields.error);
     const name = fieldBufferName(prefix, fields.value.revision);
     if (plan.fieldNames.has(name)) return name;
@@ -1629,7 +1630,7 @@ export function gpuParticleRenderFeature(
     const name = kind === 'noise' ? 'vfx.di-noise' : `vfx.a-${entry.runtimeId}.di-${kind}`;
     if (plan.sharedDataInterfaces.has(name)) return name;
     const resource = sharedDataInterfaceResource(entry, name, kind);
-    if (resource === undefined) return planFailure();
+    if (resource === undefined) return planFailure('shared-data-interface-input-missing');
     plan.sharedDataInterfaces.set(name, resource);
     return name;
   };
@@ -1706,7 +1707,7 @@ export function gpuParticleRenderFeature(
                   identity.domain.resolution[0] * identity.domain.resolution[1] >
                     waterEmission.scanCellCapacity)
               )
-                return planFailure();
+                return planFailure('water-emission-domain-unavailable');
               return undefined;
             };
             const emissionCapacityFailure = validateWaterSurfaceEmissionCapacity();
@@ -1753,7 +1754,7 @@ export function gpuParticleRenderFeature(
               requirement.domainBinding === requirement.binding ||
               requirement.domainBinding === requirement.solverNormalBinding
             )
-              return planFailure();
+              return planFailure('water-surface-bindings-incompatible');
             resources.push(...pair);
             bindings[requirement.binding] = `${group.key}.di-water-surface.tick-${sequence}.grid`;
             bindings[requirement.solverNormalBinding] =
@@ -1763,7 +1764,7 @@ export function gpuParticleRenderFeature(
             const appendWaterSurfaceEmissionResource = () => {
               if (requirement.waterEmissionBinding !== undefined) {
                 const waterEmission = input.emitter.waterGridEmission;
-                if (waterEmission === undefined) return planFailure();
+                if (waterEmission === undefined) return planFailure('water-emission-input-missing');
                 const emissionName = `${group.key}.di-water-surface.tick-${sequence}.emission`;
                 resources.push({
                   kind: 'buffer',
@@ -1792,7 +1793,7 @@ export function gpuParticleRenderFeature(
         }
         const name = `${group.key}.di-${planName(requirement.kind)}.tick-${sequence}`;
         const resource = preparedDataInterfaceResource(name, prepared);
-        if (resource === undefined) return planFailure();
+        if (resource === undefined) return planFailure('data-interface-resource-unavailable');
         resources.push(resource);
         bindings[requirement.binding] = name;
       }
@@ -2097,7 +2098,7 @@ export function gpuParticleRenderFeature(
     }
     for (let tickIndex = 0; tickIndex < group.intents.length; tickIndex++) {
       const planned = group.intents[tickIndex];
-      if (planned === undefined) return planFailure();
+      if (planned === undefined) return planFailure('compute-tick-plan-unavailable');
       if (planned.retained) continue;
       const runtime = runtimeData(
         plan.runtimeScratch,
@@ -2226,7 +2227,7 @@ export function gpuParticleRenderFeature(
       if (!gp.entryPoints.has('forgeax_vfx_trail_history_main')) continue;
       const history = rendererNames(gp.group.program, rendererIndex).history;
       const historyNames = tick.history[rendererIndex];
-      if (historyNames === undefined) return planFailure();
+      if (historyNames === undefined) return planFailure('recovery-history-bindings-missing');
       const historyRuntime = historyNames.runtime;
       const historyBindings = historyNames.bindings;
       const historyData = enabled
@@ -2437,23 +2438,29 @@ export function gpuParticleRenderFeature(
     const topologyPlan = isParticleTopologyRenderer(renderer)
       ? createTopologyResourcePlan(renderer)
       : undefined;
-    if (topologyPlan !== undefined && !topologyPlan.ok) return planFailure();
+    if (topologyPlan !== undefined && !topologyPlan.ok) return planFailure(topologyPlan.error);
     const publishedMaterial = gp.group.entry.materials.get(renderer.material);
-    const material = publishedMaterial?.asset;
+    const reference = publishedMaterial?.reference;
+    const resolvedMaterial =
+      reference === undefined
+        ? publishedMaterial
+        : context.resolveMaterialTemplate?.(reference.handle, reference.revision);
+    if (reference !== undefined && resolvedMaterial === undefined)
+      return planFailure('particle-material-template-unavailable');
+    const material = resolvedMaterial?.asset;
+    const projection = resolvedMaterial?.projection;
     const preparedInputs = prepareParticleMaterialInputs(
       renderer,
       material,
       gp.firstIntent.emitter.reflection.renderers?.[index]?.materialInputDefinitions,
     );
-    if (!preparedInputs.ok) return planFailure();
+    if (!preparedInputs.ok) return planFailure(preparedInputs.error);
     const hasParticleInputs = preparedInputs.value.lanes > 0;
     const materialPass = particleMaterialPass(
       renderer.kind,
       material,
       hasParticleInputs,
-      publishedMaterial?.projection === undefined
-        ? undefined
-        : { projection: publishedMaterial.projection, context: context.materialContext },
+      projection === undefined ? undefined : { projection, context: context.materialContext },
       renderer.kind === 'mesh' && renderer.lighting === 'unlit',
       renderer.shading,
     );
@@ -2652,7 +2659,7 @@ export function gpuParticleRenderFeature(
   ): RetainedProjection | undefined | RenderFeatureStageFailedError => {
     const admission = plan.resourceAdmission;
     if (rv.projectionProgram !== gp.computeProgramName && admission !== undefined) {
-      if (gp.preparedProgram === undefined) return planFailure();
+      if (gp.preparedProgram === undefined) return planFailure('emitter-program-not-prepared');
       admission.program(
         'frame',
         rv.projectionProgram,
@@ -2846,16 +2853,18 @@ export function gpuParticleRenderFeature(
     rv: RendererView,
   ): SharedMeshGeometry | RenderFeatureStageFailedError => {
     const { mesh, meshKey } = rv;
-    if (mesh === undefined || meshKey === undefined) return planFailure();
+    if (mesh === undefined || meshKey === undefined)
+      return planFailure('renderer-mesh-input-missing');
     const work = rv.view.work;
     const world = gp.group.entry.worldId;
     const layout = vertexLayoutId(rv.vertexLayout);
     const key = `${world}:${typeof meshKey}:${meshKey}:${layout}`;
     const prior = work.meshGeometry.get(key);
     // One frame resolves one mesh object per world and source key.
-    if (prior !== undefined) return prior.mesh === mesh ? prior : planFailure();
+    if (prior !== undefined)
+      return prior.mesh === mesh ? prior : planFailure('renderer-mesh-identity-conflict');
     const geometryData = particleMeshVerticesCached(mesh);
-    if (geometryData.length === 0) return planFailure();
+    if (geometryData.length === 0) return planFailure('renderer-mesh-geometry-empty');
     const source = typeof meshKey === 'number' ? `h${meshKey}` : `s${internedId(meshKey)}`;
     const prefix = `vfx.w-${world}.mesh-${source}.l-${layout}`;
     const geometryBuffer = `${prefix}.geometry-buffer`;
@@ -3089,7 +3098,7 @@ export function gpuParticleRenderFeature(
     const dataInterfaces = planGroupDataInterfaces(plan, facts);
     if (dataInterfaces instanceof RenderFeatureStageFailedError) return dataInterfaces;
     const indirectWords = groupIndirectWords(facts.emitterFacts, facts.renderers, facts.meshes);
-    if (indirectWords === undefined) return planFailure();
+    if (indirectWords === undefined) return planFailure('renderer-indirect-layout-unavailable');
     const programDeclaration = declareComputeProgram(plan, facts);
     const emitter = group.program.resource;
     retainTickCapacity(emitter, group.intents.length, planSerial);
@@ -3567,6 +3576,7 @@ export function gpuParticleRenderFeature(
         };
         const materials = new Map<ParticleRenderer['material'], ExtractedMaterial>();
         const captureMaterials = options.material?.captureFrame?.(world) === true;
+        const stockMaterials = captureMaterials && isHostParticleMaterialSource(options.material);
         const meshes = new Map<string | number, MeshAsset | number>();
         let meshFailure: RenderFeatureStageFailedError | undefined;
         const captureEmitter = (
@@ -3624,16 +3634,25 @@ export function gpuParticleRenderFeature(
                 captureMaterials || (cooked?.enumerable === true && 'value' in cooked)
                   ? context.referenceAsset?.(renderer.material, material)
                   : undefined;
-              // Cooked programs already cross through the exact asset/program closure.
-              // Keep every authored field fresh; custom providers retain their full payload.
-              if (cooked?.enumerable === true && 'value' in cooked && reference !== undefined) {
-                asset = { ...material };
-                delete (asset as MaterialAsset & { cooked?: unknown }).cooked;
+              if (
+                stockMaterials &&
+                reference !== undefined &&
+                projection?.sourceTemplate !== undefined
+              ) {
+                const revision = runtimeAssets(world.assets).version(reference).unwrap();
+                materials.set(renderer.material, { reference: { handle: reference, revision } });
+              } else {
+                // Cooked programs already cross through the exact asset/program closure.
+                // Keep every authored field fresh; custom providers retain their full payload.
+                if (cooked?.enumerable === true && 'value' in cooked && reference !== undefined) {
+                  asset = { ...material };
+                  delete (asset as MaterialAsset & { cooked?: unknown }).cooked;
+                }
+                materials.set(renderer.material, {
+                  asset,
+                  ...(projection === undefined ? {} : { projection }),
+                });
               }
-              materials.set(renderer.material, {
-                asset,
-                ...(projection === undefined ? {} : { projection }),
-              });
             }
             if (renderer.kind === 'mesh') {
               if (typeof renderer.mesh !== 'object') {

@@ -102,6 +102,6 @@ export function artifactManifestError(
   expected: string,
   hint: string,
   detail: { readonly reason: string; readonly runId?: string },
-): ToolRuntimeError {
+): Extract<ToolRuntimeError, { code: 'tool-artifact-manifest-invalid' }> {
   return { code: 'tool-artifact-manifest-invalid', expected, hint, detail };
 }

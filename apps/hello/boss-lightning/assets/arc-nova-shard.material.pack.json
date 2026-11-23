@@ -1,14 +1,14 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "cd16a32c-0fd2-4c02-861d-a5537baaa793",
+  "schemaVersion": "3.0.0",
+  "packageId": "22d58bcf-47ba-52e0-9672-71a2008f1eb5",
+  "assets": {
+    "material/arc-nova-shard": {
       "kind": "material",
-      "execution": "cooked",
       "payload": {
         "kind": "material",
-        "staticSwitches": { "clearcoat": true },
+        "staticSwitches": {
+          "clearcoat": true
+        },
         "passes": [
           {
             "name": "forward",
@@ -47,5 +47,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

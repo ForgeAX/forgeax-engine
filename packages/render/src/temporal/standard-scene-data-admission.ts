@@ -11,7 +11,6 @@ import {
   renderFeaturePlanDeclarations,
 } from '../features/plan';
 import type { MaterialResource } from '../material-resource';
-import { runtimeMaterialShaderIdForMaterial } from '../material-resource';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
@@ -19,7 +18,6 @@ import {
 import { matchesRecordMode } from '../record/material-pass-selection';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
-import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { materialProgramFact } from './material-program-facts';
 import type {
@@ -190,7 +188,7 @@ export interface StandardSceneDataAdmissionInput {
 }
 
 /** Internal view-producer envelope; raw callers retain their ordinary observation route. */
-export class ProducedStandardSceneDataAdmissionInput implements StandardSceneDataAdmissionInput {
+class SceneSurfaceInputHeader implements Omit<StandardSceneDataAdmissionInput, 'contributors'> {
   declare readonly viewIdentity: StandardSceneDataAdmissionInput['viewIdentity'];
   declare readonly generation: StandardSceneDataAdmissionInput['generation'];
   declare readonly deviceGeneration: StandardSceneDataAdmissionInput['deviceGeneration'];
@@ -198,7 +196,6 @@ export class ProducedStandardSceneDataAdmissionInput implements StandardSceneDat
   declare readonly cameraAvailable: StandardSceneDataAdmissionInput['cameraAvailable'];
   declare readonly lane: StandardSceneDataAdmissionInput['lane'];
   declare readonly renderPath: StandardSceneDataAdmissionInput['renderPath'];
-  readonly contributors: StandardSceneDataContributor[] = [];
   #fixedHeader = false;
   #captured = false;
 
@@ -230,6 +227,68 @@ export class ProducedStandardSceneDataAdmissionInput implements StandardSceneDat
   }
 }
 
+export class ProducedStandardSceneDataAdmissionInput extends SceneSurfaceInputHeader {
+  readonly contributors: StandardSceneDataContributor[] = [];
+}
+
+const noSurfaceContributors: readonly StandardSceneDataContributor[] = Object.freeze([]);
+
+/** A view always visits its current material members. The resulting immutable roster shares
+ * the previous ordered prefix until the first changed member needs new storage. */
+export class CurrentSceneSurfaceInput
+  extends SceneSurfaceInputHeader
+  implements StandardSceneDataAdmissionInput
+{
+  #before: readonly StandardSceneDataContributor[];
+  #count = 0;
+  #changed: StandardSceneDataContributor[] | undefined;
+  #published: readonly StandardSceneDataContributor[] | undefined;
+
+  constructor(
+    header: Omit<StandardSceneDataAdmissionInput, 'contributors'>,
+    previous?: StandardSceneSurfaceAdmission,
+  ) {
+    super();
+    this.#before = standardSceneSurfaceContributorBaseline(previous) ?? noSurfaceContributors;
+    this.capture(header);
+  }
+
+  get previousRow(): StandardSceneDataContributor | undefined {
+    return this.#before[this.#count];
+  }
+
+  append(row: StandardSceneDataContributor | undefined): void {
+    if (this.#published !== undefined) throw new Error('SceneData contributors are already sealed');
+    if (row === undefined) return;
+    const index = this.#count++;
+    if (this.#changed === undefined) {
+      if (this.#before[index] === row) return;
+      this.#changed = this.#before.slice(0, index);
+    }
+    this.#changed.push(row);
+  }
+
+  get contributors(): readonly StandardSceneDataContributor[] {
+    if (this.#published !== undefined) return this.#published;
+    if (this.#changed !== undefined) this.#published = Object.freeze(this.#changed);
+    else if (this.#count === this.#before.length) this.#published = this.#before;
+    else
+      this.#published =
+        this.#count === 0
+          ? noSurfaceContributors
+          : Object.freeze(this.#before.slice(0, this.#count));
+    this.#before = noSurfaceContributors;
+    this.#changed = undefined;
+    return this.#published;
+  }
+
+  static published(
+    input: StandardSceneDataAdmissionInput,
+  ): readonly StandardSceneDataContributor[] | undefined {
+    return #published in input ? input.contributors : undefined;
+  }
+}
+
 // Only this producer's frozen primitive observations can reuse a prior proof.
 // Raw/custom contributors keep the complete ordinary getter and diagnostic route.
 const ownedContributors = new WeakSet<StandardSceneDataContributor>();
@@ -237,32 +296,79 @@ const contributorProgram = Symbol('StandardSceneDataContributor.program');
 type ProducedContributor = StandardSceneDataContributor & {
   [contributorProgram]?: StandardSceneDataContributorProgramFact;
 };
+interface GBufferWriters {
+  readonly incompatibleWriter: string | undefined;
+  readonly receiverContext: boolean;
+  readonly lightingChannels: boolean;
+}
 type AdmissionProof = {
   readonly kind: 'available' | 'unavailable';
   readonly header: Omit<StandardSceneDataAdmissionInput, 'contributors'>;
   readonly contributors: readonly StandardSceneDataContributor[];
+  readonly writers: GBufferWriters | undefined;
 };
-const admissionProofs = new GenerationalWeakMap<StandardSceneSurfaceAdmission, AdmissionProof>();
 
-function rememberAvailableProof(
-  admitted: StandardSceneSurfaceAdmission,
+/** The issued admission owns its evidence, including while a different view is recording.
+ * Copies keep their public fields but cannot authorize prior contributors or native graph work. */
+class SurfaceAdmissionReceipt {
+  declare readonly identity: string;
+  readonly #value: SurfaceCoverageIdentity | string;
+  readonly #proof: AdmissionProof | undefined;
+  private static readonly identityField = {
+    enumerable: true,
+    get(this: SurfaceAdmissionReceipt) {
+      return typeof this.#value === 'string' ? this.#value : this.#value.read();
+    },
+  };
+  constructor(value: SurfaceCoverageIdentity | string, proof: AdmissionProof | undefined) {
+    this.#value = value;
+    this.#proof = proof;
+    Object.defineProperty(this, 'identity', SurfaceAdmissionReceipt.identityField);
+  }
+  static proof(issued: StandardSceneSurfaceAdmission | undefined): AdmissionProof | undefined {
+    return issued !== undefined && #proof in issued ? issued.#proof : undefined;
+  }
+  static coverage(
+    issued: StandardSceneSurfaceAdmission | undefined,
+  ): SurfaceCoverageIdentity | undefined {
+    if (issued === undefined || !(#value in issued)) return undefined;
+    return typeof issued.#value === 'string' ? undefined : issued.#value;
+  }
+}
+
+function captureAdmissionProof(
   input: StandardSceneDataAdmissionInput,
-): void {
-  if (!input.contributors.every((row) => ownedContributors.has(row))) return;
+  ownedRows: readonly StandardSceneDataContributor[] | undefined,
+  kind: AdmissionProof['kind'],
+  writers: GBufferWriters | undefined,
+): AdmissionProof | undefined {
+  if (kind === 'unavailable') {
+    if (
+      !SceneSurfaceInputHeader.hasFixedHeader(input) ||
+      !input.contributors.every(completeNegativeContributor)
+    )
+      return undefined;
+  } else if (
+    ownedRows === undefined &&
+    !input.contributors.every((row) => ownedContributors.has(row))
+  ) {
+    return undefined;
+  }
   const { contributors, ...header } = input;
-  // Retain the producer observations themselves, not a second primitive-field roster.
-  admissionProofs.set(admitted, {
-    kind: 'available',
-    header,
-    contributors: Object.freeze(contributors.slice()),
-  });
+  return { kind, header, contributors: ownedRows ?? Object.freeze(contributors.slice()), writers };
+}
+
+export function standardSceneGBufferWriters(
+  admission: StandardSceneSurfaceAdmission | undefined,
+): GBufferWriters | undefined {
+  return SurfaceAdmissionReceipt.proof(admission)?.writers;
 }
 
 /** The prior complete proof's immutable producer observations, in contribution order. */
 export function standardSceneSurfaceContributorBaseline(
   admitted: StandardSceneSurfaceAdmission | undefined,
 ): readonly StandardSceneDataContributor[] | undefined {
-  return admitted === undefined ? undefined : admissionProofs.get(admitted)?.contributors;
+  return SurfaceAdmissionReceipt.proof(admitted)?.contributors;
 }
 
 /** Complete diagnostic authority comes from the retained program producer, not shallow freeze. */
@@ -285,26 +391,6 @@ function completeNegativeContributor(row: StandardSceneDataContributor): boolean
     facts.programCandidates.length === 1 &&
     facts.programCandidates[0] === program
   );
-}
-
-function rememberUnavailableProof(
-  admitted: StandardSceneSurfaceAdmission,
-  input: StandardSceneDataAdmissionInput,
-): void {
-  if (
-    admitted.status !== 'unavailable' ||
-    admitted.reason !== 'coverage-incomplete' ||
-    !ProducedStandardSceneDataAdmissionInput.hasFixedHeader(input) ||
-    !input.contributors.every(completeNegativeContributor)
-  )
-    return;
-  const { contributors, ...header } = input;
-  admissionProofs.set(admitted, {
-    kind: 'unavailable',
-    header: Object.freeze(header),
-    // The live producer can continue filling/replacing its array. The proof cannot.
-    contributors: Object.freeze(contributors.slice()),
-  });
 }
 
 function ownContributor(
@@ -344,18 +430,15 @@ function sameContributorProof(
   );
 }
 
-function reusableAdmission(
+function matchingAdmissionHeader(
   input: StandardSceneDataAdmissionInput,
   previous: StandardSceneSurfaceAdmission | undefined,
-): boolean {
-  if (previous === undefined) return false;
-  const proof = admissionProofs.get(previous);
-  if (proof === undefined) return false;
-  if (
-    proof.kind === 'unavailable' &&
-    !ProducedStandardSceneDataAdmissionInput.hasFixedHeader(input)
-  )
-    return false;
+): AdmissionProof | undefined {
+  if (previous === undefined) return undefined;
+  const proof = SurfaceAdmissionReceipt.proof(previous);
+  if (proof === undefined) return undefined;
+  if (proof.kind === 'unavailable' && !SceneSurfaceInputHeader.hasFixedHeader(input))
+    return undefined;
   const header = proof.header;
   if (
     input.viewIdentity !== header.viewIdentity ||
@@ -367,14 +450,31 @@ function reusableAdmission(
     input.renderPath !== header.renderPath ||
     input.contributors.length !== proof.contributors.length
   )
-    return false;
+    return undefined;
+  return proof;
+}
+
+function matchesProofRow(
+  proof: AdmissionProof,
+  row: StandardSceneDataContributor,
+  index: number,
+): boolean {
+  const prior = proof.contributors[index];
+  return (
+    prior !== undefined &&
+    (proof.kind === 'unavailable' ? row === prior : sameContributorProof(row, prior))
+  );
+}
+
+function reusableAdmission(
+  input: StandardSceneDataAdmissionInput,
+  previous: StandardSceneSurfaceAdmission,
+): boolean {
+  const proof = matchingAdmissionHeader(input, previous);
+  if (proof === undefined) return false;
   for (let index = 0; index < input.contributors.length; index++) {
-    const row = input.contributors[index],
-      prior = proof.contributors[index];
-    if (row === undefined || prior === undefined) return false;
-    if (proof.kind === 'unavailable') {
-      if (row !== prior) return false;
-    } else if (!sameContributorProof(row, prior)) return false;
+    const row = input.contributors[index];
+    if (row === undefined || !matchesProofRow(proof, row, index)) return false;
   }
   return true;
 }
@@ -424,31 +524,10 @@ export function standardAoSceneDataUnavailable(input: {
   });
 }
 
-function sceneDataAdmissionIdentity(
-  input: StandardSceneDataAdmissionInput,
-  producer: string | undefined,
-  decisions: readonly {
-    readonly contributor: StandardSceneDataContributor;
-    readonly rejection: SurfaceContributorRejection | undefined;
-  }[],
-  rejected: readonly Pick<StandardSceneDataMissingContributor, 'id' | 'reason'>[],
-): string {
-  // An empty or singleton roster has no sort key. Serialize the complete identity once.
-  const singletonRows =
-    decisions.length < 2
-      ? decisions.map(({ contributor, rejection }) =>
-          contributorIdentityFields(contributor, rejection?.reason),
-        )
-      : undefined;
-  const orderedIdentityRows =
-    singletonRows === undefined
-      ? decisions
-          .map(({ contributor, rejection }) =>
-            contributorIdentityKey(contributor, rejection?.reason),
-          )
-          .sort((left, right) => left.localeCompare(right))
-      : undefined;
-  const header = [
+type SurfaceView = Omit<StandardSceneDataAdmissionInput, 'contributors'>;
+
+function coverageHeader(input: SurfaceView, producer: string | undefined) {
+  return [
     input.viewIdentity,
     input.generation,
     input.deviceGeneration,
@@ -458,103 +537,311 @@ function sceneDataAdmissionIdentity(
     input.renderPath,
     producer,
   ];
-  const rejectedRows = rejected.map(({ id, reason }) => [id, reason]);
-  // The sorted row keys already are JSON arrays. Emit them directly without
-  // rebuilding and encoding the same contributor fields after the sort.
-  return orderedIdentityRows === undefined
-    ? JSON.stringify([...header, singletonRows, rejectedRows])
-    : `${JSON.stringify(header).slice(0, -1)},[${orderedIdentityRows.join(',')}],${JSON.stringify(rejectedRows)}]`;
+}
+
+/** Detached observation of the exact coverage inputs. No per-draw decision objects survive the frame. */
+class SurfaceCoverageIdentity {
+  private serialized: string | undefined;
+
+  constructor(
+    readonly header: ReturnType<typeof coverageHeader>,
+    readonly rows: readonly StandardSceneDataContributor[],
+    readonly rejections: Uint8Array | undefined,
+    readonly rejectedCount: number,
+  ) {}
+
+  read(): string {
+    if (this.serialized !== undefined) return this.serialized;
+    const ordered: string[] = [],
+      singleton: unknown[][] = [],
+      rejected: [string, string][] = [];
+    for (let i = 0; i < this.rows.length; i++) {
+      const row = this.rows[i] as StandardSceneDataContributor;
+      const reason = rejectionByCode[this.rejections?.[i] ?? 0]?.reason;
+      const fields = contributorIdentityFields(row, reason);
+      if (this.rows.length < 2) singleton.push(fields);
+      else ordered.push(JSON.stringify(fields));
+      if (reason !== undefined) rejected.push([row.id, reason]);
+    }
+    rejected.sort((a, b) => a[0].localeCompare(b[0]));
+    if (this.rows.length < 2)
+      this.serialized = JSON.stringify([...this.header, singleton, rejected]);
+    else {
+      ordered.sort((a, b) => a.localeCompare(b));
+      this.serialized =
+        JSON.stringify(this.header).slice(0, -1) +
+        ',[' +
+        ordered.join(',') +
+        '],' +
+        JSON.stringify(rejected) +
+        ']';
+    }
+    return this.serialized;
+  }
+}
+
+function sameCoverageRow(
+  a: StandardSceneDataContributor,
+  b: StandardSceneDataContributor,
+): boolean {
+  return (
+    a === b ||
+    (a.id === b.id &&
+      a.publication === b.publication &&
+      a.materialShaderId === b.materialShaderId &&
+      a.geometry === b.geometry &&
+      a.deformation === b.deformation &&
+      a.entryPoint === b.entryPoint &&
+      a.selectedProgram === b.selectedProgram &&
+      (a.forwardOnly === true) === (b.forwardOnly === true))
+  );
+}
+
+/** Compare complete native observations directly; canonical ordering also accepts a permuted roster. */
+export function sameSceneSurfaceAdmission(
+  a: StandardSceneSurfaceAdmission | undefined,
+  b: StandardSceneSurfaceAdmission | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  const left = SurfaceAdmissionReceipt.coverage(a),
+    right = SurfaceAdmissionReceipt.coverage(b);
+  if (left === undefined || right === undefined) return a.identity === b.identity;
+  if (
+    left.rows.length !== right.rows.length ||
+    left.rejectedCount !== right.rejectedCount ||
+    !left.header.every((field, index) => field === right.header[index])
+  )
+    return false;
+  for (let i = 0; i < left.rows.length; i++) {
+    const old = left.rows[i] as StandardSceneDataContributor;
+    const reason = left.rejections?.[i] ?? 0;
+    if (
+      reason === (right.rejections?.[i] ?? 0) &&
+      sameCoverageRow(old, right.rows[i] as StandardSceneDataContributor)
+    )
+      continue;
+    if (
+      !right.rows.some(
+        (row, index) => reason === (right.rejections?.[index] ?? 0) && sameCoverageRow(old, row),
+      )
+    )
+      return false;
+    return left.read() === right.read();
+  }
+  return true;
+}
+
+const emptyCoverage = Object.freeze([]) as readonly [];
+
+/** Select the producer before asking the Scene for a single material or geometry row. */
+export function standardSurfaceProducerPath(view: SurfaceView): SurfaceView['renderPath'] {
+  return view.standardPipeline && view.cameraAvailable ? view.renderPath : undefined;
+}
+
+/** A missing producer owns only its view identity. Its recovery cannot depend on mesh membership. */
+export function missingStandardSurfaceProducer(view: SurfaceView): StandardSceneSurfaceAdmission {
+  const identity = new SurfaceCoverageIdentity(
+    coverageHeader(view, undefined),
+    emptyCoverage,
+    undefined,
+    0,
+  );
+  return Object.freeze({
+    viewIdentity: view.viewIdentity,
+    generation: view.generation,
+    deviceGeneration: view.deviceGeneration,
+    lane: view.lane,
+    renderPath: view.renderPath,
+    status: 'unavailable',
+    reason: 'producer-missing',
+    get identity() {
+      return identity.read();
+    },
+    deferredGBufferEmpty: false,
+    deferredAoCompatible: false,
+    missingContributorIds: emptyCoverage,
+    missingContributors: emptyCoverage,
+    omittedMissingContributorCount: 0,
+  });
 }
 
 export function createStandardSceneSurfaceAdmission(
   input: StandardSceneDataAdmissionInput,
   previous?: StandardSceneSurfaceAdmission,
 ): StandardSceneSurfaceAdmission {
-  if (previous !== undefined && reusableAdmission(input, previous)) return previous;
-  const renderPath = input.standardPipeline && input.cameraAvailable ? input.renderPath : undefined;
+  const renderPath = standardSurfaceProducerPath(input);
+  if (renderPath === undefined) return missingStandardSurfaceProducer(input);
   const expectedEntry = renderPath === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
-  const hasProducer = renderPath !== undefined;
-  const decisions = input.contributors.map((contributor) => ({
-    contributor,
-    rejection:
-      renderPath === undefined
-        ? undefined
-        : surfaceContributorRejection(contributor, expectedEntry),
-  }));
+  const previousCoverage = SurfaceAdmissionReceipt.coverage(previous);
+  const previousCodes =
+    previousCoverage?.rows.length === input.contributors.length
+      ? previousCoverage.rejections
+      : undefined;
+  const currentRows = CurrentSceneSurfaceInput.published(input);
+  const fixedProducer = currentRows !== undefined && SceneSurfaceInputHeader.hasFixedHeader(input);
+  let proof = fixedProducer ? matchingAdmissionHeader(input, previous) : undefined;
+  const identicalRows = proof !== undefined && proof.contributors === currentRows;
+  let owned = fixedProducer;
+  let rejections = previousCodes;
+  let rejectedCount = 0;
   let deferredAoCompatible = renderPath === 'deferred';
-  const rejected = decisions.flatMap(({ contributor, rejection }) => {
-    if (rejection === undefined) return [];
-    // These rows are composed after GBuffer lighting/AO, by the existing
-    // Forward-only pass. Do not turn their absent GBuffer into a frame error.
+  let incompatibleWriter: string | undefined;
+  let receiverContext = false;
+  let lightingChannels = false;
+  for (let index = 0; index < (currentRows ?? input.contributors).length; index++) {
+    const contributor = (currentRows ?? input.contributors)[index] as StandardSceneDataContributor;
+    if (owned && !identicalRows && !ownedContributors.has(contributor)) owned = false;
+    if (renderPath === 'deferred' && ownedContributors.has(contributor)) {
+      if (!contributor.forwardOnly && !contributor.compactGbufferWriter)
+        incompatibleWriter ??= contributor.materialShaderId || contributor.id;
+      receiverContext ||= contributor.compactReceiverContext === true;
+      lightingChannels ||= contributor.compactGbufferWriter === 'lighting-channels';
+    }
+    if (proof !== undefined && !identicalRows && !matchesProofRow(proof, contributor, index))
+      proof = undefined;
+    const rejection = surfaceContributorRejection(contributor, expectedEntry);
+    const code = rejection?.code ?? 0;
+    if ((rejections?.[index] ?? 0) !== code) {
+      if (rejections === previousCodes || rejections === undefined)
+        rejections = previousCodes?.slice() ?? new Uint8Array(input.contributors.length);
+      rejections[index] = code;
+    }
+    if (rejection === undefined) continue;
+    rejectedCount++;
     if (
       contributor.forwardOnly !== true ||
       contributor.facts?.selectedPassFound !== true ||
       contributor.facts.materialSnapshotMissing !== false
     )
       deferredAoCompatible = false;
-    return [surfaceContributorDiagnostic(contributor, rejection)];
-  });
-  rejected.sort((left, right) => left.id.localeCompare(right.id));
-  const missingContributorIds = Object.freeze(rejected.slice(0, 32).map(({ id }) => id));
-  const missingContributors = Object.freeze(rejected.slice(0, 32));
-  const omittedMissingContributorCount = Math.max(0, rejected.length - 32);
-  const producer =
-    renderPath === undefined
-      ? undefined
-      : input.contributors.length === 0
-        ? 'clear-background'
-        : renderPath === 'deferred'
-          ? 'standard-deferred-gbuffer'
-          : 'standard-forward-surface-pass';
-  const identity = sceneDataAdmissionIdentity(input, producer, decisions, rejected);
+  }
+  // Retain only the public result after classifying every current row.
+  if (
+    previous !== undefined &&
+    (fixedProducer ? proof !== undefined : reusableAdmission(input, previous))
+  )
+    return previous;
+  const diagnostics: RejectedSurfaceContributor[] = [];
+  if (rejectedCount > 0 && rejections !== undefined) {
+    for (let i = 0; i < rejections.length; i++) {
+      const reason = rejectionByCode[rejections[i] as number];
+      if (reason !== undefined)
+        retainDiagnostic(
+          diagnostics,
+          input.contributors[i] as StandardSceneDataContributor,
+          reason,
+        );
+    }
+  }
+  const missingContributors = Object.freeze(
+    diagnostics.map(({ contributor, rejection }) =>
+      surfaceContributorDiagnostic(contributor, rejection),
+    ),
+  );
+  const missingContributorIds = Object.freeze(missingContributors.map(({ id }) => id));
+  const omittedMissingContributorCount = Math.max(0, rejectedCount - 32);
+  const producer: Extract<StandardSceneSurfaceAdmission, { status: 'available' }>['producer'] =
+    input.contributors.length === 0
+      ? 'clear-background'
+      : renderPath === 'deferred'
+        ? 'standard-deferred-gbuffer'
+        : 'standard-forward-surface-pass';
+  const native = fixedProducer
+    ? owned
+    : SceneSurfaceInputHeader.hasFixedHeader(input) &&
+      input.contributors.every((row) => ownedContributors.has(row));
+  const rows = native
+    ? (currentRows ?? Object.freeze(input.contributors.slice()))
+    : input.contributors;
+  const identity = new SurfaceCoverageIdentity(
+    coverageHeader(input, producer),
+    rows,
+    rejectedCount === 0 ? undefined : rejections,
+    rejectedCount,
+  );
+  // Borrowed rows or getters must finish observing their values during this call.
+  const value = native ? identity : identity.read();
   const base = {
-    identity,
     deferredGBufferEmpty:
       renderPath === 'deferred' &&
       deferredAoCompatible &&
-      rejected.length === input.contributors.length,
+      rejectedCount === input.contributors.length,
     viewIdentity: input.viewIdentity,
     generation: input.generation,
     deviceGeneration: input.deviceGeneration,
     lane: input.lane,
   };
-  if (renderPath !== undefined && producer !== undefined && rejected.length === 0) {
-    const admitted: StandardSceneSurfaceAdmission = Object.freeze({
-      ...base,
-      renderPath,
-      status: 'available',
-      producer,
-      missingContributorIds: Object.freeze([]) as readonly [],
-    });
-    rememberAvailableProof(admitted, input);
-    return admitted;
+  const writers =
+    renderPath === 'deferred'
+      ? { incompatibleWriter, receiverContext, lightingChannels }
+      : undefined;
+  const captured = captureAdmissionProof(
+    input,
+    native ? rows : undefined,
+    rejectedCount === 0 ? 'available' : 'unavailable',
+    writers,
+  );
+  const receipt = new SurfaceAdmissionReceipt(value, captured);
+  if (rejectedCount === 0) {
+    return Object.freeze(
+      Object.assign(receipt, base, {
+        renderPath,
+        status: 'available' as const,
+        producer,
+        missingContributorIds: emptyCoverage,
+      }),
+    );
   }
-  const admitted: StandardSceneSurfaceAdmission = Object.freeze({
-    ...base,
-    renderPath: input.renderPath,
-    status: 'unavailable',
-    reason: hasProducer ? 'coverage-incomplete' : 'producer-missing',
-    deferredAoCompatible,
-    missingContributorIds: hasProducer ? missingContributorIds : Object.freeze([]),
-    missingContributors: hasProducer ? missingContributors : Object.freeze([]),
-    omittedMissingContributorCount: hasProducer ? omittedMissingContributorCount : 0,
-  });
-  rememberUnavailableProof(admitted, input);
-  return admitted;
+  return Object.freeze(
+    Object.assign(receipt, base, {
+      renderPath: input.renderPath,
+      status: 'unavailable' as const,
+      reason: 'coverage-incomplete' as const,
+      deferredAoCompatible,
+      missingContributorIds,
+      missingContributors,
+      omittedMissingContributorCount,
+    }),
+  );
+}
+
+type RejectedSurfaceContributor = {
+  readonly contributor: StandardSceneDataContributor;
+  readonly rejection: SurfaceContributorRejection;
+};
+
+/** Retain only the first 32 diagnostics in stable ID order while judging the full roster. */
+function retainDiagnostic(
+  rows: RejectedSurfaceContributor[],
+  contributor: StandardSceneDataContributor,
+  rejection: SurfaceContributorRejection,
+): void {
+  const limit = 32;
+  if (
+    rows.length === limit &&
+    contributor.id.localeCompare((rows[limit - 1] as RejectedSurfaceContributor).contributor.id) >=
+      0
+  )
+    return;
+  let lo = 0,
+    hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (contributor.id.localeCompare((rows[mid] as RejectedSurfaceContributor).contributor.id) < 0)
+      hi = mid;
+    else lo = mid + 1;
+  }
+  if (rows.length === limit) rows.pop();
+  for (let i = rows.length; i > lo; i--) rows[i] = rows[i - 1] as RejectedSurfaceContributor;
+  rows[lo] = { contributor, rejection };
 }
 
 type SurfaceContributorRejection = {
+  readonly code: number;
   readonly reason: StandardSceneDataContributorRejectionReason;
   readonly rejectedField: StandardSceneDataContributorRejectedField;
 };
-
-const contributorIdentityKeys = new GenerationalWeakMap<
-  StandardSceneDataContributor,
-  {
-    readonly rejection: StandardSceneDataContributorRejectionReason | undefined;
-    readonly key: string;
-  }
->();
 
 function contributorIdentityFields(
   row: StandardSceneDataContributor,
@@ -573,18 +860,46 @@ function contributorIdentityFields(
   ];
 }
 
-/** Retain the canonical tuple only for this owner's frozen observations. */
-function contributorIdentityKey(
-  row: StandardSceneDataContributor,
-  rejection: StandardSceneDataContributorRejectionReason | undefined,
-): string {
-  const owned = ownedContributors.has(row);
-  const previous = owned ? contributorIdentityKeys.get(row) : undefined;
-  if (previous !== undefined && previous.rejection === rejection) return previous.key;
-  const key = JSON.stringify(contributorIdentityFields(row, rejection));
-  if (owned) contributorIdentityKeys.set(row, { rejection, key });
-  return key;
-}
+const MATERIAL_SNAPSHOT_MISSING: SurfaceContributorRejection = Object.freeze({
+  code: 1,
+  reason: 'material-snapshot-missing',
+  rejectedField: 'material-snapshot',
+});
+const SELECTED_PASS_MISSING: SurfaceContributorRejection = Object.freeze({
+  code: 2,
+  reason: 'selected-pass-missing',
+  rejectedField: 'selected-pass',
+});
+const AUTHORED_PROGRAM_NOT_STANDARD_PBR: SurfaceContributorRejection = Object.freeze({
+  code: 3,
+  reason: 'authored-program-not-standard-pbr',
+  rejectedField: 'authored-shader-id',
+});
+const MISSING_FRAGMENT_ENTRY: SurfaceContributorRejection = Object.freeze({
+  code: 4,
+  reason: 'missing-fragment-entry',
+  rejectedField: 'fragment-entry-point',
+});
+const UNSUPPORTED_GEOMETRY: SurfaceContributorRejection = Object.freeze({
+  code: 5,
+  reason: 'unsupported-geometry',
+  rejectedField: 'geometry',
+});
+const UNSUPPORTED_DEFORMATION: SurfaceContributorRejection = Object.freeze({
+  code: 6,
+  reason: 'unsupported-deformation',
+  rejectedField: 'deformation',
+});
+
+const rejectionByCode = [
+  undefined,
+  MATERIAL_SNAPSHOT_MISSING,
+  SELECTED_PASS_MISSING,
+  AUTHORED_PROGRAM_NOT_STANDARD_PBR,
+  MISSING_FRAGMENT_ENTRY,
+  UNSUPPORTED_GEOMETRY,
+  UNSUPPORTED_DEFORMATION,
+] as const;
 
 function surfaceContributorRejection(
   contributor: StandardSceneDataContributor,
@@ -596,23 +911,21 @@ function surfaceContributorRejection(
     expectedEntry === 'fs_ao_input' &&
     (authoredShaderId === 'forgeax::default-unlit' ||
       authoredShaderId === 'forgeax_material::unlit');
-  if (facts?.materialSnapshotMissing === true)
-    return { reason: 'material-snapshot-missing', rejectedField: 'material-snapshot' };
-  if (facts?.selectedPassFound === false)
-    return { reason: 'selected-pass-missing', rejectedField: 'selected-pass' };
+  if (facts?.materialSnapshotMissing === true) return MATERIAL_SNAPSHOT_MISSING;
+  if (facts?.selectedPassFound === false) return SELECTED_PASS_MISSING;
   if (
     !isCanonicalStandardPbrMaterialShader(authoredShaderId) &&
     (authoredShaderId === undefined || !isStandardRootModule(authoredShaderId)) &&
     !unlitForward
   )
-    return { reason: 'authored-program-not-standard-pbr', rejectedField: 'authored-shader-id' };
+    return AUTHORED_PROGRAM_NOT_STANDARD_PBR;
   const geometry = surfaceGeometryRejection(contributor, authoredShaderId);
   if (geometry !== undefined) return geometry;
   if (
     contributor.entryPoint !== expectedEntry ||
     (facts?.expectedFragmentEntry !== undefined && facts.expectedFragmentEntry !== expectedEntry)
   )
-    return { reason: 'missing-fragment-entry', rejectedField: 'fragment-entry-point' };
+    return MISSING_FRAGMENT_ENTRY;
   return undefined;
 }
 
@@ -622,19 +935,19 @@ function surfaceGeometryRejection(
   authoredShaderId: string | undefined,
 ): SurfaceContributorRejection | undefined {
   if (contributor.geometry !== 'mesh' && contributor.geometry !== 'skinned')
-    return { reason: 'unsupported-geometry', rejectedField: 'geometry' };
+    return UNSUPPORTED_GEOMETRY;
   if (
     contributor.geometry === 'mesh' &&
     contributor.deformation !== 'rigid' &&
     contributor.deformation !== 'morph'
   )
-    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
+    return UNSUPPORTED_DEFORMATION;
   if (
     contributor.geometry === 'skinned' &&
     ((contributor.deformation !== 'skin' && contributor.deformation !== 'morph') ||
       !isStandardPbrSkinMaterialShader(authoredShaderId))
   )
-    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
+    return UNSUPPORTED_DEFORMATION;
   return undefined;
 }
 
@@ -728,14 +1041,14 @@ function passForDispatch(
   materialShaderId: string | undefined,
   tags: Record<string, string>,
 ) {
-  if (!matchesRecordMode(material.snapshot, 'opaque')) return undefined;
   return material.snapshot.passes.find((pass) => {
     const passTags = (pass.renderState?.tags as Record<string, string> | undefined) ?? {};
     if (passTags.LightMode !== tags.LightMode) return false;
-    const shaderId = runtimeMaterialShaderIdForMaterial(
-      [pass],
-      material.snapshot.materialProgramKeys,
-    );
+    const programs = material.snapshot.materialProgramKeys;
+    const shaderId =
+      programs === undefined
+        ? runtimeMaterialShaderId(pass.program.module, pass.name)
+        : programs[pass.name];
     return shaderId === materialShaderId;
   });
 }
@@ -785,6 +1098,31 @@ export function standardSceneDataContributorForDispatch(
   return standardSceneDataContributorFromColumns(row, row, entityKey, dispatch, lane, previous);
 }
 
+// One material pass owns this selection for the duration of its member walk.
+export function selectSceneDataDispatchPass(
+  material: MaterialResource,
+  dispatch: StandardSceneDataDispatch,
+  lane: 'forward' | 'deferred',
+): {
+  readonly material: MaterialResource;
+  readonly snapshot: MaterialResource['snapshot'];
+  readonly required: boolean;
+  readonly pass: MaterialResource['snapshot']['passes'][number] | undefined;
+  readonly observation: ReturnType<MaterialResource['programObservation']> | undefined;
+} {
+  const required = isRequiredSurfaceDispatch(material, dispatch.tags, lane);
+  const pass = required
+    ? passForDispatch(material, dispatch.materialShaderId, dispatch.tags)
+    : undefined;
+  return {
+    material,
+    snapshot: material.snapshot,
+    required,
+    pass,
+    observation: pass === undefined ? undefined : material.programObservation(pass),
+  };
+}
+
 /** Native Scene columns share the judgement without assembling a snapshot-shaped wrapper. */
 export function standardSceneDataContributorFromColumns(
   row: ContributorRow | undefined,
@@ -793,16 +1131,21 @@ export function standardSceneDataContributorFromColumns(
   dispatch: StandardSceneDataDispatch,
   lane: 'forward' | 'deferred',
   previous?: StandardSceneDataContributor,
+  group?: ReturnType<typeof selectSceneDataDispatchPass>,
 ): StandardSceneDataContributor | undefined {
   const materialHandle = dispatch.materialHandle;
   const passIndex = dispatch.passIndex;
   const materialShaderId = dispatch.materialShaderId;
   const tags = dispatch.tags;
   const material = materialForDispatch(materials, materialHandle);
+  const selected =
+    group !== undefined && group.material === material && group.snapshot === material.snapshot
+      ? group
+      : undefined;
   if (
     material === undefined
       ? !matchPass(tags, lane === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR)
-      : !isRequiredSurfaceDispatch(material, tags, lane)
+      : !(selected?.required ?? isRequiredSurfaceDispatch(material, tags, lane))
   )
     return undefined;
   const prior = previous !== undefined && ownedContributors.has(previous) ? previous : undefined;
@@ -812,7 +1155,8 @@ export function standardSceneDataContributorFromColumns(
     return ownContributor(
       missingSnapshotContributor(row, sourceTuple, materialShaderId, expectedFragmentEntry),
     );
-  const pass = passForDispatch(material, materialShaderId, tags);
+  const pass =
+    selected === undefined ? passForDispatch(material, materialShaderId, tags) : selected.pass;
   if (pass === undefined)
     return ownContributor(
       selectedPassMissingContributor(
@@ -835,6 +1179,7 @@ export function standardSceneDataContributorFromColumns(
       pass,
       expectedFragmentEntry,
       prior,
+      selected?.observation,
     ),
   );
 }
@@ -946,9 +1291,9 @@ function selectedPassContributor(
   pass: MaterialResource['snapshot']['passes'][number],
   expectedFragmentEntry: string,
   previous: StandardSceneDataContributor | undefined,
+  observation = material.programObservation(pass),
 ): StandardSceneDataContributor {
   const snapshot = material.snapshot;
-  const observation = material.programObservation(pass);
   const retained = observation.identity === undefined ? undefined : observation;
   const selectedProgramFact = observation.fact;
   const forwardOnly = lane === 'deferred' && matchPass(tags, FORWARD_PASS_SELECTOR);

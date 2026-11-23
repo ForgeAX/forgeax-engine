@@ -87,12 +87,12 @@ const materialPackage = JSON.parse(
 const redMaterialPackage = JSON.parse(
   readFileSync(resolve(appRoot, 'src', 'shader-defs-red.pack.json'), 'utf8'),
 );
-const material = materialPackage.assets?.find((asset) => asset?.kind === 'material')?.payload;
+const material = materialPackage.assets?.['shader-defs.wgsl']?.payload;
 if (material === undefined) {
   console.error('[smoke] FAIL - shader-defs.pack.json has no material asset payload');
   process.exit(1);
 }
-const redMaterial = redMaterialPackage.assets?.find((asset) => asset?.kind === 'material')?.payload;
+const redMaterial = redMaterialPackage.assets?.['shader-defs-red.wgsl']?.payload;
 if (redMaterial === undefined) {
   console.error('[smoke] FAIL - shader-defs-red.pack.json has no material asset payload');
   process.exit(1);

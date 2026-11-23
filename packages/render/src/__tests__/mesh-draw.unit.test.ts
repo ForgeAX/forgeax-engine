@@ -1,12 +1,12 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { assert, expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch } from '../scene/material-dispatch';
-import { meshDrawSnapshot, rotateMeshDraws } from '../scene/mesh-draw';
+import { meshDrawSnapshot, SceneDrawSlot, slotDrawSnapshot } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import {
   captureMaterialOverrides,
@@ -15,6 +15,7 @@ import {
   prepareMeshMaterialBindings,
   retainMeshMaterialBindings,
 } from '../scene/mesh-materials';
+import { createTemporalSnapshot } from '../scene/render-scene-snapshots';
 import { SceneSlots } from '../scene/scene-slots';
 
 function fixture() {
@@ -31,6 +32,16 @@ function fixture() {
     gpuDrivenDraws: [],
   };
   return { mesh, material, source, frame: new MeshFrame().with(7, mesh) };
+}
+
+function writeSlot(slots: SceneSlots, at: number, source: RenderableSnapshot) {
+  const slot = setSceneRow(slots, at, {
+    generation: 1,
+    entityKey: source.entityKey,
+    snapshot: source,
+  });
+  assert(slot);
+  return slot;
 }
 
 it('preserves instance fields and projects current shared Mesh facts', () => {
@@ -64,10 +75,10 @@ it('preserves instance fields and projects current shared Mesh facts', () => {
   expect(source.lods).toEqual([]);
   expect(source.lodHysteresis).toBe(0.25);
   expect([...source.localAabb]).toEqual([-9, -9, -9, 9, 9, 9]);
-  const beforeCachedRead = reads;
-  const cached = meshDrawSnapshot(source, f.frame);
-  expect(reads).toBe(beforeCachedRead);
-  expect(cached).toBe(result);
+  const before = reads;
+  const next = meshDrawSnapshot(source, f.frame);
+  expect(reads).toBe(before + projectionReads);
+  expect(next).toEqual(result);
 });
 
 it('omits stale optional metadata when the shared Mesh has none', () => {
@@ -85,6 +96,22 @@ it('omits stale optional metadata when the shared Mesh has none', () => {
     expect(Object.hasOwn(result, key)).toBe(false);
     expect(Object.hasOwn(source, key)).toBe(true);
   }
+});
+
+it('projects current borrowed rows when their producer reuses one object for different draws', () => {
+  const f = fixture();
+  const row = { ...f.source, layer: 0 };
+  const held = meshDrawSnapshot(row, f.frame);
+  for (let frame = 1; frame <= 60; frame++) {
+    row.entityKey = frame + 100;
+    row.layer = frame % 8;
+    const draw = meshDrawSnapshot(row, f.frame);
+    expect(draw.entityKey).toBe(frame + 100);
+    expect(draw.layer).toBe(frame % 8);
+    expect(draw.materials).toBe(held.materials);
+  }
+  expect(held.entityKey).toBe(f.source.entityKey);
+  expect(held.layer).toBe(0);
 });
 
 it('keeps optional fields absent when neither source nor shared Mesh supplies them', () => {
@@ -110,8 +137,8 @@ it('uses the selected Mesh version and preserves old projections after replaceme
   expect(after.lodHysteresis).toBe(0.1);
   expect(Object.hasOwn(before, 'lods')).toBe(false);
   expect(Object.hasOwn(before, 'lodHysteresis')).toBe(false);
-  expect(meshDrawSnapshot(source, f.frame)).toBe(before);
-  expect(meshDrawSnapshot(source, frame.with(8, f.mesh))).toBe(after);
+  expect(meshDrawSnapshot(source, f.frame)).toEqual(before);
+  expect(meshDrawSnapshot(source, frame.with(8, f.mesh))).toEqual(after);
 });
 
 it('keeps instance identity separate while sharing material and geometry projections', () => {
@@ -126,8 +153,8 @@ it('keeps instance identity separate while sharing material and geometry project
   expect(b.transform).toBe(other.transform);
   expect(a.materials).toBe(b.materials);
   expect(a.gpuDrivenDraws).toBe(b.gpuDrivenDraws);
-  expect(meshDrawSnapshot(f.source, f.frame)).toBe(a);
-  expect(meshDrawSnapshot(other, f.frame)).toBe(b);
+  expect(meshDrawSnapshot(f.source, f.frame).materials).toBe(a.materials);
+  expect(meshDrawSnapshot(other, f.frame).materials).toBe(b.materials);
 });
 
 it('keeps distinct instance material overrides separate on the same Mesh', () => {
@@ -144,8 +171,8 @@ it('keeps distinct instance material overrides separate on the same Mesh', () =>
   expect(b.material).toBe(material);
   expect(a.materials).not.toBe(b.materials);
   expect(a.gpuDrivenDraws).not.toBe(b.gpuDrivenDraws);
-  expect(meshDrawSnapshot(f.source, f.frame)).toBe(a);
-  expect(meshDrawSnapshot(other, f.frame)).toBe(b);
+  expect(meshDrawSnapshot(f.source, f.frame).materials).toBe(a.materials);
+  expect(meshDrawSnapshot(other, f.frame).materials).toBe(b.materials);
 });
 
 it('returns the original source when no Mesh or authored override projection is needed', () => {
@@ -191,6 +218,11 @@ function resolvedFixture() {
   query();
   return {
     source,
+    draw() {
+      const slot = slots.get(0);
+      assert(slot);
+      return slotDrawSnapshot(slot, meshes);
+    },
     mesh: f.mesh,
     meshes,
     owner,
@@ -204,9 +236,9 @@ function resolvedFixture() {
   };
 }
 
-it('refreshes a cached draw when Pass admission replaces a material behind the same Mesh handle', () => {
+it('refreshes an issued draw when Pass admission replaces a material behind the same Mesh handle', () => {
   const f = resolvedFixture();
-  const before = meshDrawSnapshot(f.source, f.meshes);
+  const before = f.draw();
   const previousMaterials = f.owner.materials();
   const previousDispatch = f.query();
   const previousEntries = [...previousDispatch];
@@ -216,33 +248,33 @@ it('refreshes a cached draw when Pass admission replaces a material behind the s
   const materials = f.owner.materials();
   expect(materials.get(f.first)).toBeUndefined();
   expect(materials.get(replacement)?.bindings).toBe(2);
-  const after = meshDrawSnapshot(f.source, f.meshes);
+  const after = f.draw();
   expect(materials.get(after.material)).toBeDefined();
   expect(after.material).toBe(replacement);
   expect(after).not.toBe(before);
-  expect(meshDrawSnapshot(f.source, f.meshes)).toBe(after);
+  expect(f.draw()).toBe(after);
   expect(before.material).toBe(f.first);
   expect(previousMaterials.get(before.material)?.snapshot).toBe(f.first.snapshot);
   expect(previousMaterials.get(replacement)).toBeUndefined();
   expect([...previousDispatch]).toEqual(previousEntries);
 });
 
-it('retains a cached draw through quiet and membership-only Pass queries with unchanged materials', () => {
+it('retains an issued draw through quiet and membership-only Pass queries with unchanged materials', () => {
   const f = resolvedFixture();
-  const before = meshDrawSnapshot(f.source, f.meshes);
+  const before = f.draw();
   f.query();
-  expect(meshDrawSnapshot(f.source, f.meshes)).toBe(before);
+  expect(f.draw()).toBe(before);
   f.bind(1);
   f.query();
-  expect(meshDrawSnapshot(f.source, f.meshes)).toBe(before);
+  expect(f.draw()).toBe(before);
   f.owner.remove(1);
   f.query();
-  expect(meshDrawSnapshot(f.source, f.meshes)).toBe(before);
+  expect(f.draw()).toBe(before);
 });
 
-it('keeps rejected material query writes out of the draw cache until a successful retry', () => {
+it('keeps rejected material query writes out of issued draws until a successful retry', () => {
   const f = resolvedFixture();
-  const before = meshDrawSnapshot(f.source, f.meshes);
+  const before = f.draw();
   const previousMaterials = f.owner.materials();
   const replacement = f.replace();
   f.bind(1);
@@ -253,9 +285,9 @@ it('keeps rejected material query writes out of the draw cache until a successfu
     }),
   ).toThrow('fixture source fence changed');
   expect(f.owner.materials()).toBe(previousMaterials);
-  expect(meshDrawSnapshot(f.source, f.meshes)).toBe(before);
+  expect(f.draw()).toBe(before);
   f.query();
-  const after = meshDrawSnapshot(f.source, f.meshes);
+  const after = f.draw();
   expect(after.material).toBe(replacement);
   expect(f.owner.materials().get(after.material)).toBeDefined();
   expect(before.material).toBe(f.first);
@@ -373,12 +405,36 @@ it('keeps a hidden Mesh default accepted after its last unrelated authored overr
   expect(retained.get(f.first)?.bindings).toBe(0);
 });
 
-it('keeps hot draw tables without re-registering unchanged instances each frame', () => {
-  rotateMeshDraws();
+it('keeps a captured scene slot draw valid across unrelated scene publications and geometry replacement', () => {
   const f = fixture();
-  const sources = Array.from({ length: 128 }, (_, entityKey) => ({ ...f.source, entityKey }));
-  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
-  rotateMeshDraws();
+  const slots = new SceneSlots();
+  setSceneRow(slots, 0, { generation: 1, entityKey: 1, snapshot: f.source });
+  const row = slots.get(0);
+  if (row === undefined) throw new Error('Missing admitted row');
+  const first = slotDrawSnapshot(row, f.frame);
+  expect(meshDrawSnapshot(row.snapshot, f.frame, row)).toBe(first);
+  expect(meshDrawSnapshot(first, f.frame, row)).toBe(first);
+  const overlay = meshDrawSnapshot({ ...row.snapshot, layer: 13 }, f.frame, row);
+  expect(overlay.layer).toBe(13);
+  expect(overlay).not.toBe(first);
+  for (let i = 0; i < 4; i++) {
+    meshDrawSnapshot({ ...f.source, entityKey: 2 }, f.frame);
+  }
+  expect(slotDrawSnapshot(row, f.frame)).toBe(first);
+  const replacement = f.frame.with(7, createBoxGeometry(3, 3, 3).unwrap());
+  const changed = slotDrawSnapshot(row, replacement);
+  expect(changed).not.toBe(first);
+  expect(changed.localAabb).not.toEqual(first.localAabb);
+  expect(first.transform).toBe(changed.transform);
+});
+
+it('reads issued draws without re-registering their instances each frame', () => {
+  const f = fixture();
+  const slots = new SceneSlots();
+  const sources = Array.from({ length: 128 }, (_, entityKey) =>
+    writeSlot(slots, entityKey, { ...f.source, entityKey }),
+  );
+  const held = sources.map((source) => slotDrawSnapshot(source, f.frame));
   const set = WeakMap.prototype.set;
   const get = WeakMap.prototype.get;
   let reads = 0;
@@ -393,7 +449,7 @@ it('keeps hot draw tables without re-registering unchanged instances each frame'
   };
   let current: RenderableSnapshot[];
   try {
-    current = sources.map((source) => meshDrawSnapshot(source, f.frame));
+    current = sources.map((source) => slotDrawSnapshot(source, f.frame));
   } finally {
     WeakMap.prototype.set = set;
     WeakMap.prototype.get = get;
@@ -403,31 +459,30 @@ it('keeps hot draw tables without re-registering unchanged instances each frame'
   expect(reads).toBeLessThanOrEqual(sources.length * 2 + 4);
 });
 
-it('drops a cold full-scene draw population while retaining consecutive hot draws', () => {
-  rotateMeshDraws();
+it('releases removed draw rows while retained observations survive and reused addresses issue fresh draws', () => {
   const f = fixture();
-  const sources = Array.from({ length: 128 }, (_, entityKey) => ({ ...f.source, entityKey }));
-  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
-  for (let frame = 0; frame < 4; frame++) {
-    rotateMeshDraws();
-    expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame)).toBe(held[0]);
-  }
-  const cold = meshDrawSnapshot(sources[127] as RenderableSnapshot, f.frame);
-  expect(cold).not.toBe(held[127]);
+  const slots = new SceneSlots();
+  const held = Array.from({ length: 128 }, (_, entityKey) =>
+    slotDrawSnapshot(writeSlot(slots, entityKey, { ...f.source, entityKey }), f.frame),
+  );
+  const first = slots.get(0);
+  assert(first);
+  for (let address = 1; address < 128; address++) slots.remove(address);
+  expect(slots.get(127)).toBeUndefined();
+  expect(slotDrawSnapshot(first, f.frame)).toBe(held[0]);
+  const replacement = writeSlot(slots, 127, { ...f.source, entityKey: 300 });
+  expect(slotDrawSnapshot(replacement, f.frame)).not.toBe(held[127]);
   expect(held[127]?.entityKey).toBe(127);
-  rotateMeshDraws();
-  rotateMeshDraws();
-  expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame)).not.toBe(held[0]);
+  expect(slotDrawSnapshot(replacement, f.frame).entityKey).toBe(300);
 });
 
 it('amortizes sparse source replacement without retaining an ever-growing table', () => {
-  rotateMeshDraws();
   const f = fixture();
-  const sources: RenderableSnapshot[] = Array.from({ length: 64 }, (_, entityKey) => ({
-    ...f.source,
-    entityKey,
-  }));
-  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
+  const slots = new SceneSlots();
+  const sources = Array.from({ length: 64 }, (_, entityKey) =>
+    writeSlot(slots, entityKey, { ...f.source, entityKey }),
+  );
+  const held = sources.map((source) => slotDrawSnapshot(source, f.frame));
   const set = WeakMap.prototype.set;
   let writes = 0;
   const frames = 400;
@@ -437,17 +492,16 @@ it('amortizes sparse source replacement without retaining an ever-growing table'
   };
   try {
     for (let frame = 0; frame < frames; frame++) {
-      rotateMeshDraws();
-      sources[0] = { ...f.source, entityKey: frame + 64 };
-      for (const source of sources) meshDrawSnapshot(source, f.frame);
+      sources[0] = writeSlot(slots, 0, { ...f.source, entityKey: frame + 64 });
+      for (const source of sources) slotDrawSnapshot(source, f.frame);
     }
   } finally {
     WeakMap.prototype.set = set;
   }
   expect(writes).toBeLessThanOrEqual(frames * 4 + sources.length);
-  expect(meshDrawSnapshot(sources[1] as RenderableSnapshot, f.frame)).toBe(held[1]);
+  expect(slotDrawSnapshot(sources[1] as SceneDrawSlot, f.frame)).toBe(held[1]);
   expect(held[0]?.entityKey).toBe(0);
-  expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame).entityKey).toBe(frames + 63);
+  expect(slotDrawSnapshot(sources[0] as SceneDrawSlot, f.frame).entityKey).toBe(frames + 63);
 });
 
 it('updates an already-read Mesh binding address when a bounds-only version adopts its table', () => {
@@ -505,4 +559,41 @@ it('reads live fenced material contexts without caching their values or repeatin
   expect(read(source, 'mesh').material).toBe(replacement);
   expect(read(source, 'skinned').material).toBe(skin);
   expect(reads).toBe(5);
+});
+
+it('reads changed poses and mesh draws without expanding authored fields until a public slot asks', () => {
+  const f = fixture();
+  const slots = new SceneSlots();
+  setSceneRow(slots, 0, { generation: 1, entityKey: 1, snapshot: f.source });
+  const authored = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+  try {
+    const held = slots.capture().slotAt(0);
+    assert(held);
+    const pose = new Float32Array(f.source.transform.world);
+    const first = slotDrawSnapshot(held, f.frame);
+    let previous = held;
+    for (let tick = 1; tick <= 100; tick++) {
+      pose[12] = tick;
+      const current = slots.writePose(0, pose);
+      const draw = slotDrawSnapshot(current, f.frame);
+      expect(draw.transform.world[12]).toBe(tick);
+      const temporal = createTemporalSnapshot(current, previous, true, false);
+      expect(temporal.motionValid).toBe(true);
+      expect(temporal.previousTransform.world[12]).toBe(tick - 1);
+      previous = current;
+      slots.capture();
+    }
+    expect(authored).not.toHaveBeenCalled();
+    expect(first.transform.world[12]).toBe(0);
+    expect(Object.keys(held)).toEqual(
+      expect.arrayContaining(['slot', 'entityKey', 'generation', 'version', 'snapshot']),
+    );
+    const publicRow = { ...held };
+    expect(authored).toHaveBeenCalledTimes(1);
+    expect(publicRow.snapshot).toBe(held.snapshot);
+    expect(publicRow.snapshot.transform).toBe(first.transform);
+    expect(publicRow.snapshot.materialOverrides).toBe(f.source.materialOverrides);
+  } finally {
+    authored.mockRestore();
+  }
 });

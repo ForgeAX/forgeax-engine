@@ -8,6 +8,23 @@ export { createPlatformLifecycle } from './lifecycle.js';
 export { releasePlatformResources } from './release.js';
 export type { SliceModule, SliceRegistry } from './slices.js';
 export type {
+  FileRead,
+  FileRef,
+  FileStorageBackend,
+  FileStore,
+  FileWrite,
+  RecordStorageBackend,
+  RecordStore,
+  StorageErrorCode,
+  StorageResult,
+} from './storage.js';
+export {
+  createFileStore,
+  createRecordStore,
+  requireStorage,
+  StorageError,
+} from './storage.js';
+export type {
   ServeTaskWorkerOptions,
   SliceJob,
   SliceOutcome,

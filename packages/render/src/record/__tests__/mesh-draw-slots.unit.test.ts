@@ -1,5 +1,6 @@
 import { assert, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import type { DispatchEntry } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import { buildDispatchPlan } from '../fold-buckets';
 import type { ValidatedRenderable } from '../frame-snapshot';
@@ -121,6 +122,86 @@ function capacityFixture(capacity = 2) {
   return { rows, scene, internals, metrics };
 }
 
+it('retains the physical addresses of immutable native rows until the allocator changes', () => {
+  const { rows, scene, internals } = capacityFixture(3);
+  const source = rows[0];
+  const peer = rows[1];
+  assert(source && peer);
+  const input = [{ ...source, meshSlot: undefined }];
+  const address = vi.spyOn(scene, 'meshDrawSlot');
+  const plan = () =>
+    buildDispatchPlan(internals, input, [], [], [], undefined, false, undefined, scene, true);
+  const first = plan().validatedOrdered;
+  expect(first.at(0)?.meshSlot).toBe(0);
+  expect(input[0]?.meshSlot).toBeUndefined();
+  expect(plan().validatedOrdered).toBe(first);
+  expect(address).toHaveBeenCalledTimes(1);
+
+  scene.meshDrawSlot(peer.source);
+  const refreshed = plan().validatedOrdered;
+  expect(refreshed).not.toBe(first);
+  expect(refreshed.at(0)?.meshSlot).toBe(0);
+  expect(first.at(0)?.meshSlot).toBe(0);
+  expect(plan().validatedOrdered).toBe(refreshed);
+  expect(address).toHaveBeenCalledTimes(3);
+});
+
+it('publishes a changed physical row while preserving the other addressed rows', () => {
+  const { rows, scene } = capacityFixture(8);
+  const input = rows.map((row) => ({ ...row, meshSlot: -1 }));
+  const first = scene.addressOwnedMeshDrawRows(input);
+  const moved = input.slice();
+  const row = moved[1];
+  assert(row);
+  moved[1] = { ...row, source: { ...row.source } };
+  const next = scene.addressOwnedMeshDrawRows(moved);
+  expect(next.rows.at(0)).toBe(first.rows.at(0));
+  expect(next.rows.at(1)).not.toBe(first.rows.at(1));
+  expect(next.rows.at(1)?.source).toBe(moved[1].source);
+  expect(first.rows.at(1)?.source).toBe(row.source);
+  expect(next.rows.map((entry) => entry.meshSlot)).toEqual(
+    first.rows.map((entry) => entry.meshSlot),
+  );
+});
+
+it('retains addressed native rows when the same dispatch selects multiple passes per row', () => {
+  const { rows, scene, internals } = capacityFixture(3);
+  const dispatchFor = (index: number): DispatchEntry => ({
+    entityIndex: rows[index]?.source.entityKey ?? -1,
+    renderableIndex: index,
+    materialHandle: 1,
+    passIndex: 0,
+    queue: 2000,
+    layer: 0,
+    tags: { LightMode: 'Forward' },
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialShaderId: undefined,
+  });
+  const second = dispatchFor(1);
+  const readTags = vi.fn(() => ({ LightMode: 'Forward' }));
+  Object.defineProperty(second, 'tags', { get: readTags });
+  const dispatch = [second, { ...second, passIndex: 1 }, dispatchFor(0), dispatchFor(2)];
+  const plan = (entries: readonly DispatchEntry[], owned = true) =>
+    buildDispatchPlan(internals, rows, entries, [], [], undefined, false, undefined, scene, owned)
+      .validatedOrdered;
+  const first = plan(dispatch);
+  expect(first.map((row) => row.renderableIndex)).toEqual([1, 0, 2]);
+  readTags.mockClear();
+  const warm = plan(dispatch);
+  expect(readTags).not.toHaveBeenCalled();
+  expect(Object.is(warm, first)).toBe(true);
+  expect(plan([dispatchFor(0), second, dispatchFor(2)]).map((row) => row.renderableIndex)).toEqual([
+    0, 1, 2,
+  ]);
+
+  plan(dispatch, false);
+  dispatch.unshift(dispatchFor(2));
+  expect(plan(dispatch, false).map((row) => row.renderableIndex)).toEqual([2, 1, 0]);
+});
+
 it('recovers below the address budget after an oversized candidate loses its sources', () => {
   const { rows, scene, internals } = capacityFixture();
   const plan = (rows: readonly ValidatedRenderable[]) =>
@@ -132,7 +213,7 @@ it('recovers below the address budget after an oversized candidate loses its sou
       entityKey: source.entityKey,
     })),
   );
-  expect(plan(rows.slice(0, 1)).validatedOrdered[0]?.meshSlot).toBe(0);
+  expect(plan(rows.slice(0, 1)).validatedOrdered.at(0)?.meshSlot).toBe(0);
 });
 
 it.each([
@@ -218,7 +299,7 @@ it('reclaims prior folded work before newly visible ordinary sources need its ca
     scene,
   );
   expect(first.foldDispatchPlan?.foldedBucketCount).toBe(1);
-  expect(first.validatedOrdered[0]?.foldedMeshSlot).toBe(2);
+  expect(first.validatedOrdered.at(0)?.foldedMeshSlot).toBe(2);
   const next = buildDispatchPlan(internals, rows, [], [], [], undefined, false, undefined, scene);
   expect(next.validatedOrdered.map((row) => row.meshSlot)).toEqual([0, 1, 2]);
   expect(next.validatedOrdered.every((row) => row.foldedMeshSlot === undefined)).toBe(true);
@@ -308,8 +389,8 @@ it('assigns the same source address to independently ordered main and shadow ros
   expect(first.validatedOrdered.map((entry) => entry.meshSlot)).toEqual([0, 1]);
   expect(first.shadowValidatedOrdered.map((entry) => entry.meshSlot)).toEqual([1, 0]);
   const next = buildDispatchPlan(internals, [b], [], [], [a], undefined, false, undefined, scene);
-  expect(next.validatedOrdered[0]?.meshSlot).toBe(1);
-  expect(next.shadowValidatedOrdered[0]?.meshSlot).toBe(0);
+  expect(next.validatedOrdered.at(0)?.meshSlot).toBe(1);
+  expect(next.shadowValidatedOrdered.at(0)?.meshSlot).toBe(0);
 });
 
 it('addresses only actual native children and reuses capacity while streaming across a large source', () => {
@@ -504,4 +585,37 @@ it('bounds native ledgers through quiet spikes, shrink, failed candidates and cl
   expect(ledger('entries')).toHaveLength(0);
   expect(ledger('scratch')).toHaveLength(0);
   expect([...held]).toHaveLength(64);
+});
+
+it('visits only submitted keyed-draw bounds and still observes the shadow roster', () => {
+  const { rows, scene } = capacityFixture(4);
+  const [first, last] = rows;
+  assert(first && last);
+  const keyed = { ...first, source: { ...first.source, nativeDraw: { key: 'child' } } };
+  const shadow = { ...last, source: { ...last.source, nativeDraw: { key: 'shadow-child' } } };
+  const skip = vi.fn(() => first.source);
+  const inspectShadow = vi.fn(() => shadow.source);
+  const ordinary = {
+    ...first,
+    get source() {
+      return skip();
+    },
+  };
+  scene.beginOwnedMeshDrawFrame(
+    [ordinary, keyed, ordinary],
+    [
+      {
+        ...shadow,
+        get source() {
+          return inspectShadow();
+        },
+      },
+    ],
+    1,
+    2,
+  );
+  expect(skip).not.toHaveBeenCalled();
+  expect(inspectShadow).toHaveBeenCalledOnce();
+  scene.beginOwnedMeshDrawFrame([ordinary], [], 0, 0);
+  expect(skip).not.toHaveBeenCalled();
 });

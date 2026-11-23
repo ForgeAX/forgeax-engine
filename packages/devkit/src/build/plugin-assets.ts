@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
@@ -34,7 +33,7 @@ import {
   loadScriptablePack,
   type ScriptablePackSourceSnapshot,
 } from '@forgeax/engine-pack/source-node';
-import { err, type PluginAsset, type PluginAssetDefinition } from '@forgeax/engine-types';
+import { err, type PluginAsset, type PluginAssetDefinition, sha256 } from '@forgeax/engine-types';
 import ts from 'typescript';
 import { projectEngineSourceOptions } from '../engine-binding.js';
 import {
@@ -68,21 +67,6 @@ function sourceInputPathCandidates(path: string): readonly string[] {
   return normalized === windows ? [normalized] : [normalized, windows];
 }
 
-export function pluginSourceInputRevision(
-  sourceInputs: ReadonlyMap<string, string>,
-  path: string,
-): string | undefined {
-  let selected: string | undefined;
-  for (const candidate of sourceInputPathCandidates(path)) {
-    const revision = sourceInputs.get(candidate);
-    if (revision === undefined) continue;
-    // Two spellings of one file cannot carry conflicting snapshots; preserve the source fence.
-    if (selected !== undefined && selected !== revision) return undefined;
-    selected = revision;
-  }
-  return selected;
-}
-
 export function hasPluginSourceInput(
   sourceInputs: ReadonlyMap<string, string>,
   path: string,
@@ -97,7 +81,7 @@ export function isPluginAssetSourceIgnoredPath(root: string, path: string): bool
 }
 
 function digest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+  return `sha256:${sha256(JSON.stringify(value))}`;
 }
 
 function failure(path: string, reason: unknown): never {
@@ -491,10 +475,7 @@ export async function discoverPluginAssets(
               declaration.definition.packageId,
               outputs,
             );
-        } else if (
-          declaration.format === 'pack.json' &&
-          declaration.value.schemaVersion === '3.0.0'
-        ) {
+        } else if (declaration.format === 'pack.json') {
           const parsed = declaration.value;
           if (parsed.format !== 'direct') continue;
           const projected = projectDirectPackJson(parsed);
@@ -616,4 +597,16 @@ export async function assertPluginSourceInputs(
       reason: 'source changed during plugin compilation',
       conflict: verified.error.detail.reason,
     });
+}
+
+export function nativeGamePhysicsDimensions(
+  inventory: PluginSourceInventory,
+  engineRoot: string | undefined,
+) {
+  const dimensions = new Set<'2' | '3'>();
+  for (const { module } of pluginAssetClosure(inventory, engineRoot)) {
+    const dimension = /(?:\/|-)rapier([23])d(?:\.[cm]?js)?$/.exec(module)?.[1];
+    if (dimension === '2' || dimension === '3') dimensions.add(dimension);
+  }
+  return [...dimensions];
 }

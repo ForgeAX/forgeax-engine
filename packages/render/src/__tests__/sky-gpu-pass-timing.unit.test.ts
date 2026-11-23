@@ -98,7 +98,7 @@ describe('Standard physical sky GPU coverage', () => {
         timed('atmosphere-distant-sky-light', 2, 4, 'compute'),
         timed('atmosphere-capture-sky-view', 4, 6, 'compute'),
         timed('atmosphere-cube-5', 6, 8),
-        timed('atmosphere-irradiance-5', 8, 10),
+        timed('sky-sh-project', 8, 10, 'compute'),
         timed('atmosphere-prefilter-8', 10, 12),
         timed('atmosphere-prefilter-copy-8', 12, 14, 'copy'),
         timed('cloud-mode0-history-clear', 14, 16),

@@ -7,7 +7,7 @@ export type SsrOwnerRecoveryAction =
   | 'retry';
 
 /** Closed authoring fields accepted by the ScreenSpaceReflection schema. */
-export type SsrConfigField = 'maxDistance' | 'thickness' | 'maxRoughness' | 'waterTemporal';
+export type SsrConfigField = 'maxDistance' | 'thickness' | 'maxRoughness';
 
 /** Dynamic finite range returned by ScreenSpaceReflection validation. */
 export interface SsrConfigRange {

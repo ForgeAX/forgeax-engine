@@ -124,7 +124,7 @@ class RowPreparation implements ResidentRowPreparation {
   }
 
   private currentInput(scope: Scope, context: ResidentBatchReadContext): boolean {
-    const cursor = scope.scene.contentCursor;
+    const revision = scope.scene.syncRevision;
     if (!this.guarded(scope)) return false;
     const same =
       context.scene.scene === scope.scene &&
@@ -133,7 +133,7 @@ class RowPreparation implements ResidentRowPreparation {
         scope.plan,
         context.scene.residentExecution ?? context.scene.plan,
       );
-    return same && this.scoped(scope) && scope.scene.live && scope.scene.contentCursor === cursor;
+    return same && this.scoped(scope) && scope.scene.live && scope.scene.syncRevision === revision;
   }
 
   inspect(): ResidentRowPreparationStatus {
@@ -224,7 +224,7 @@ class RowPreparation implements ResidentRowPreparation {
     }
     const previous = this.held;
     this.held = accepted.value;
-    const cursor = scope.scene.contentCursor;
+    const revision = scope.scene.syncRevision;
     try {
       previous?.release();
     } catch (cause) {
@@ -235,7 +235,7 @@ class RowPreparation implements ResidentRowPreparation {
     if (
       this.held !== accepted.value ||
       !this.currentInput(scope, context) ||
-      scope.scene.contentCursor !== cursor
+      scope.scene.syncRevision !== revision
     )
       return err(stale());
     this.phase = 'held';

@@ -1,9 +1,10 @@
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
 import { GPU_MATERIAL_DESCRIPTOR, GPU_MESH_DESCRIPTOR } from './gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from './gpu-scene-schema';
-import type { MaterialSnapshot, RenderableSnapshot } from './render-system-extract';
+import type { MaterialSnapshot } from './render-system-extract';
 import type { MeshGeometry } from './scene/mesh-frame';
 import type { RenderSceneRecord } from './scene/render-scene-types';
+import type { RowContent } from './scene/row-contents';
 import { materialDisplacementRadius } from './standard-displacement-bounds';
 
 export const GPU_SCENE_PRIMITIVE_FLAGS = Object.freeze({
@@ -16,6 +17,7 @@ export const GPU_SCENE_PRIMITIVE_FLAGS = Object.freeze({
   sharedGeometry: 64,
   capsuleShadow: 128,
   noShadowCast: 256,
+  skipFrustum: 512,
 });
 
 const TRANSFORM = GPU_SCENE_LAYOUTS.transform;
@@ -32,7 +34,7 @@ const FLAGS = gpuSceneFieldOffset(INSTANCE, 'flags');
 export function encodeScenePrimitive(
   target: DataView,
   record: RenderSceneRecord,
-  source: RenderableSnapshot,
+  source: RowContent,
   allocation: {
     readonly transformStart: number;
     readonly instanceStart: number;
@@ -56,6 +58,7 @@ export function encodeScenePrimitive(
       (source.capsuleShadowRequested === true ? flags.capsuleShadow : 0) |
       (source.shadowReceiver === false ? flags.noShadowReceive : 0) |
       (source.shadowCaster === false ? flags.noShadowCast : 0) |
+      (source.frustumCulled === false ? flags.skipFrustum : 0) |
       temporalFlags,
     true,
   );

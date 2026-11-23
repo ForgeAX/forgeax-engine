@@ -1,14 +1,13 @@
 import { World } from '@forgeax/engine-ecs';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderer } from '../assembly/factory';
 import { ANTIALIAS_TAA, Camera, perspective } from '../components/camera';
 import { DynamicResolution } from '../components/dynamic-resolution';
 import { GpuTimingCapture } from '../record/gpu-timing';
+import { rejectMainViewBinding } from './graph-compile.fixture';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it('reports unsupported DRS, allocates no queries, and restores native TAA on removal', async () => {
@@ -74,13 +73,7 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
     expect(draw().ok).toBe(true);
     expect(renderer.inspect().dynamicResolution?.extent?.internalWidth).toBe(64);
 
-    const compile = vi.spyOn(RenderGraphBuilder.prototype, 'compile').mockReturnValue(
-      err(
-        Object.assign(new Error('forced DRS removal compile rejection'), {
-          code: 'graph-compile-failed',
-        }),
-      ) as never,
-    );
+    const fault = rejectMainViewBinding();
     world.removeComponent(camera, DynamicResolution).unwrap();
     try {
       // A retained reduced graph cannot be submitted as a native frame, even
@@ -88,7 +81,7 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
       expect(draw().ok).toBe(false);
       expect(draw().ok).toBe(false);
     } finally {
-      compile.mockRestore();
+      fault.restore();
     }
     expect(draw().ok).toBe(true);
     expect(renderer.inspect().dynamicResolution).toBeUndefined();

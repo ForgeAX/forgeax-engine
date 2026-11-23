@@ -8,10 +8,21 @@ import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/eng
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { build, createServer } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry.js';
 import { createCatalogSource } from '../../../assets-runtime/src/catalog-source.js';
+import {
+  directPackFixture,
+  metaFixture,
+  packAssetFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
-import { installPackAuthorDependencies } from './pack-author-dependencies.js';
+import {
+  installPackAuthorDependencies,
+  writeFilterInstance,
+  writeFilterPack,
+} from './pack-author-dependencies.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
 const ROOT_PACKAGE_ID = '019a0000-0000-7000-8000-000000000001';
 const INSTANCE_PACKAGE_ID = '019a0000-0000-7000-8000-000000000002';
@@ -27,9 +38,16 @@ async function waitFor<T>(read: () => Promise<T>, accept: (value: T) => boolean)
   return value;
 }
 
+async function catalogFrom(url: URL) {
+  const response = await fetch(url);
+  const text = await response.text();
+  expect(response.status, text).toBe(200);
+  return decodeCatalogWire(JSON.parse(text)).unwrap();
+}
+
 describe('ScriptablePack and Pack development publication', () => {
   let root: string | undefined;
-  let server: Awaited<ReturnType<typeof createServer>> | undefined;
+  let server: Awaited<ReturnType<typeof createPackTestServer>> | undefined;
 
   afterEach(async () => {
     await server?.close();
@@ -48,32 +66,20 @@ describe('ScriptablePack and Pack development publication', () => {
     ] as const;
     await writeFile(
       `${sourcePath}.meta.json`,
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'sibling-fixture',
-        source: 'siblings.fixture',
-        importSettings: {},
-        subAssets: guids.map((guid, sourceIndex) => ({
+      metaFixture(
+        'siblings.fixture',
+        'sibling-fixture',
+        guids.map((guid, sourceIndex) => ({
           guid,
           sourceIndex,
           sourceKey: `mesh/${sourceIndex}`,
           kind: 'fixture-mesh',
         })),
-      }),
+      ),
     );
-    let enterImport!: () => void;
-    const importEntered = new Promise<void>((resolve) => {
-      enterImport = resolve;
-    });
-    let releaseImport!: () => void;
-    const importGate = new Promise<void>((resolve) => {
-      releaseImport = resolve;
-    });
-    let observeSiblingRequest!: () => void;
-    const siblingRequest = new Promise<void>((resolve) => {
-      observeSiblingRequest = resolve;
-    });
+    const { promise: importEntered, resolve: enterImport } = testGate();
+    const { promise: importGate, resolve: releaseImport } = testGate();
+    const { promise: siblingRequest, resolve: observeSiblingRequest } = testGate();
     let imports = 0;
     const importer: Importer = {
       key: 'sibling-fixture',
@@ -158,11 +164,11 @@ describe('ScriptablePack and Pack development publication', () => {
         expect.arrayContaining([expect.objectContaining({ guid: guids[index] })]),
       );
     }
-    const assertClosure = async (revision: string) => {
+    const assertClosure = async (revision: string, lifecycle = 'current') => {
       const catalog = await readCatalog();
       expect(catalog.map((row) => row.guid).sort()).toEqual([...guids].sort());
       for (const row of catalog) {
-        expect(row.lifecycle).toBe('current');
+        expect(row.lifecycle).toBe(lifecycle);
         const response = await fetch(new URL(row.packageUrl, base));
         expect(response.status).toBe(200);
         const pack = await response.json();
@@ -183,6 +189,9 @@ describe('ScriptablePack and Pack development publication', () => {
     expect(imports).toBe(1);
     const beforeWatch = imports;
     await writeFile(sourcePath, 'second');
+    await waitFor(readCatalog, (rows) => rows.every((row) => row.lifecycle === 'stale'));
+    await assertClosure('first', 'stale');
+    expect(imports).toBe(beforeWatch);
     await waitFor(
       async () => {
         const response = await post(guids[0]);
@@ -217,14 +226,9 @@ describe('ScriptablePack and Pack development publication', () => {
     await writeFile(join(assets, 'guide.ui.css'), 'div { color: white; }');
     await writeFile(
       join(assets, 'guide.ui.html.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'ui',
-        source: 'guide.ui.html',
-        importSettings: {},
-        subAssets: [{ guid: uiGuid, sourceKey: 'ui/guide', sourceIndex: 0, kind: 'ui' }],
-      }),
+      metaFixture('guide.ui.html', 'ui', [
+        { guid: uiGuid, sourceKey: 'ui/guide', sourceIndex: 0, kind: 'ui' },
+      ]),
     );
     const binding = createStandaloneRuntimeAssetBinding('plugin-demand-reload');
     const plugin = pluginPack({
@@ -235,13 +239,7 @@ describe('ScriptablePack and Pack development publication', () => {
       ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc') },
       watch: false,
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await plugin.ready();
     await server.listen();
     const base = server.resolvedUrls?.local[0];
@@ -315,16 +313,14 @@ describe('ScriptablePack and Pack development publication', () => {
     await writeFile(join(assets, 'plugin.ts'), 'export default { apply() {} };');
     await writeFile(
       join(assets, 'plugin.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: ROOT_PACKAGE_ID,
-        assets: {
+      JSON.stringify(
+        directPackFixture(ROOT_PACKAGE_ID, {
           root: {
             kind: 'plugin',
             payload: { module: { specifier: './plugin.ts' }, config: { speed: 3 } },
           },
-        },
-      }),
+        }),
+      ),
     );
     await writeFile(
       join(assets, 'sampler.pack.ts'),
@@ -344,13 +340,7 @@ describe('ScriptablePack and Pack development publication', () => {
     });
     let definitions: Awaited<ReturnType<typeof plugin.readPluginDefinitions>>;
     if (mode === 'serve') {
-      server = await createServer({
-        root,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [plugin],
-        server: { host: '127.0.0.1', port: 0 },
-      });
+      server = await createPackTestServer(root, plugin);
       await plugin.ready();
       const accepted = plugin.catalogSnapshot().find((row) => row.kind === 'plugin');
       expect(accepted?.publication).toBeDefined();
@@ -385,32 +375,7 @@ describe('ScriptablePack and Pack development publication', () => {
     await installPackAuthorDependencies(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
-    await writeFile(
-      join(assets, 'filter.pack.ts'),
-      `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
-import { ok } from '@forgeax/engine-types';
-
-export default definePack({
-  schemaVersion: '2.0.0',
-  packageId: definePackageId('${ROOT_PACKAGE_ID}'),
-  parameters: [{ name: 'filter', type: 'enum', values: ['linear', 'nearest'], default: 'linear' }],
-  build({ values }) {
-    return ok({
-      'sampler/main': { kind: 'sampler', magFilter: values.filter },
-    });
-  },
-});
-`,
-    );
-    await writeFile(
-      join(assets, 'nearest.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: INSTANCE_PACKAGE_ID,
-        parent: ROOT_PACKAGE_ID,
-        values: { filter: 'nearest' },
-      }),
-    );
+    await writeFilterPack(assets, ROOT_PACKAGE_ID, INSTANCE_PACKAGE_ID);
 
     const binding = createStandaloneRuntimeAssetBinding('scriptable-pack-vite');
     const plugin = pluginPack({
@@ -418,21 +383,12 @@ export default definePack({
       runtimeBinding: binding,
       ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
 
     const baseUrl = server.resolvedUrls?.local[0];
     if (baseUrl === undefined) throw new Error('Vite did not expose a local URL');
-    const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
-    const catalogBody = await catalogResponse.text();
-    expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    const catalog = await catalogFrom(new URL(binding.catalogUrl, baseUrl));
     expect(catalog).toHaveLength(2);
     const rootEntry = catalog.find((entry) => entry.packageId === ROOT_PACKAGE_ID);
     const instanceEntry = catalog.find((entry) => entry.packageId === INSTANCE_PACKAGE_ID);
@@ -453,15 +409,7 @@ export default definePack({
     expect((await rootPackage.json()).assets[0].payload.magFilter).toBe('linear');
     expect(JSON.parse(instanceBody).assets[0].payload.magFilter).toBe('nearest');
 
-    await writeFile(
-      join(assets, 'nearest.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: INSTANCE_PACKAGE_ID,
-        parent: ROOT_PACKAGE_ID,
-        values: { filter: 'linear' },
-      }),
-    );
+    await writeFilterInstance(assets, INSTANCE_PACKAGE_ID, ROOT_PACKAGE_ID, 'linear');
     const refreshed = await waitFor(
       async () => {
         const response = await fetch(new URL(binding.catalogUrl, baseUrl));
@@ -488,10 +436,8 @@ export default definePack({
     const guid = AssetGuid.format(AssetGuid.derive(parsedPackageId.value, 'vfx/main'));
     await writeFile(
       join(assets, 'direct.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId,
-        assets: {
+      JSON.stringify(
+        directPackFixture(packageId, {
           'vfx/main': {
             kind: 'particle-effect',
             payload: {
@@ -500,8 +446,8 @@ export default definePack({
             },
             refs: [],
           },
-        },
-      }),
+        }),
+      ),
     );
     const cooker: NativeCooker = {
       key: 'particle-effect',
@@ -536,21 +482,12 @@ export default definePack({
       cookers: [cooker],
       ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
 
     const baseUrl = server.resolvedUrls?.local[0];
     if (baseUrl === undefined) throw new Error('Vite did not expose a local URL');
-    const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
-    const catalogBody = await catalogResponse.text();
-    expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    const catalog = await catalogFrom(new URL(binding.catalogUrl, baseUrl));
     const entry = catalog.find((candidate) => candidate.guid === guid);
     expect(entry).toMatchObject({ guid, kind: 'particle-effect', execution: 'cooked' });
     if (entry === undefined) throw new Error('expected the direct cooked Catalog row');
@@ -593,20 +530,14 @@ export default definePack({
         ok: true,
         value: {
           assets: [
-            {
-              guid: externalGuid,
+            packAssetFixture(externalGuid, 'equirect', {
               kind: 'equirect',
-              payload: {
-                kind: 'equirect',
-                width: 1,
-                height: 1,
-                format: 'rgba16float',
-                data: new Uint8Array(8),
-                colorSpace: 'linear',
-              },
-              refs: [],
-              artifacts: {},
-            },
+              width: 1,
+              height: 1,
+              format: 'rgba16float',
+              data: new Uint8Array(8),
+              colorSpace: 'linear',
+            }),
           ],
           sourceDependencies: [],
         },
@@ -615,28 +546,19 @@ export default definePack({
     await writeFile(join(assets, 'sky.hdr'), 'fixture');
     await writeFile(
       join(assets, 'sky.hdr.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'image',
-        source: 'sky.hdr',
-        importSettings: {},
-        subAssets: [{ guid: externalGuid, sourceIndex: 0, kind: 'equirect' }],
-      }),
+      metaFixture('sky.hdr', 'image', [{ guid: externalGuid, sourceIndex: 0, kind: 'equirect' }]),
     );
     await writeFile(
       join(assets, 'scene.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId,
-        assets: {
+      JSON.stringify(
+        directPackFixture(packageId, {
           'scene/main': {
             kind: 'scene',
             payload: { kind: 'scene', entities: {} },
             refs: [externalGuid],
           },
-        },
-      }),
+        }),
+      ),
     );
 
     const binding = createStandaloneRuntimeAssetBinding('direct-pack-meta-ref-vite');
@@ -646,21 +568,12 @@ export default definePack({
       importers: [imageImporter],
       ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
 
     const baseUrl = server.resolvedUrls?.local[0];
     if (baseUrl === undefined) throw new Error('Vite did not expose a local URL');
-    const catalogResponse = await fetch(new URL(binding.catalogUrl, baseUrl));
-    const catalogBody = await catalogResponse.text();
-    expect(catalogResponse.status, catalogBody).toBe(200);
-    const catalog = decodeCatalogWire(JSON.parse(catalogBody)).unwrap();
+    const catalog = await catalogFrom(new URL(binding.catalogUrl, baseUrl));
     const scene = catalog.find((entry) => entry.guid === sceneGuid);
     const external = catalog.find((entry) => entry.guid === externalGuid);
     expect(scene).toMatchObject({ guid: sceneGuid, refs: [externalGuid] });

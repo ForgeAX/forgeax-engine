@@ -14,11 +14,7 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
   device.pushErrorScope('validation');
   let validation: GPUError | null | undefined;
   try {
-    const boundsWitness = `
-@fragment fn fs_overflow_bounds_witness(in : ReflectionOverflowVertex) -> @location(0) vec4<f32> {
-  return vec4<f32>(f32(in.sizeClass), 1.0, 1.0, 1.0);
-}`;
-    const compiled = await compileShader(deferredShaderSource + boundsWitness, {
+    const compiled = await compileShader(deferredShaderSource, {
       id: 'forgeax_standard::deferred_lighting',
       imports: deferredShaderImports,
       defines: { PROJECTOR_AVAILABLE: false, EXTENDED_LIGHTING_AVAILABLE: false },
@@ -114,9 +110,6 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
       ]);
       return texture;
     };
-    const irradiance = fillTexture(1, 1, 6, (layer) => [70 + layer * 4, 91, 135, 255]).createView({
-      dimension: 'cube',
-    });
     const brdf = fillTexture(1, 1, 1, () => [196, 22, 0, 255]).createView();
     const sky = fillTexture(1, 1, 1, () => [20, 27, 180, 255]).createView();
     const ao = fillTexture(1, 1, 1, () => [186, 0, 0, 255]).createView();
@@ -147,6 +140,9 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
       device.queue.writeBuffer(buffer, 0, values);
       return { buffer };
     };
+    const coefficients = new Float32Array(28);
+    coefficients.set([0.03, 0, 0, 80 / 255, 0, 0, 0, 91 / 255, 0, 0, 0, 135 / 255]);
+    const skySh = uniform(coefficients);
     const skyData = [0.5, 0.8, 0.8, 0.8, 0, 0, 0, 1];
     const diffuse = [0.4, 0.4, 0.4, 0, 0, 0, 0, 1, 0.05, 0.06, 0.07, 0, 0.1, 0.07, 0.05, 1];
     const skyUniform = uniform(
@@ -177,11 +173,10 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
       return uniform(new Float32Array([intensity, ...center, ...extents, box, ...data]));
     });
     const table = (classes: readonly number[]) => {
-      const data = new Float32Array(576 / 4);
-      data.set(diffuse);
+      const data = new Float32Array(512 / 4);
       probes.forEach(({ env, center, extents, intensity, box, layer }, i) => {
         const address = layer * 32 + (classes[i] ?? 0) * 2 + box;
-        data.set([...center, intensity, ...extents, address], 16 + (env - 1) * 8);
+        data.set([...center, intensity, ...extents, address], (env - 1) * 8);
       });
       return uniform(data);
     };
@@ -222,6 +217,8 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
       [8, shadow],
       [16, ao],
       [17, linear],
+      [34, skySh],
+      [35, skyUniform],
     ]);
     const shared = [
       [],
@@ -234,17 +231,17 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
         ao,
         linear,
         params,
-        irradiance,
+        undefined,
         undefined,
         brdf,
-        sky,
+        undefined,
         undefined,
         storage,
         storage,
         gbuffer[5]?.createView(),
       ],
       [],
-      [storage],
+      [],
     ];
     const sceneColor: GPUColorTargetState = {
       format: 'rgba8unorm',
@@ -334,6 +331,7 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
                 throw new Error(`Missing test resource ${group}:${binding}`);
               return { binding, resource };
             });
+          if (entries.length === 0) continue;
           pass.setBindGroup(
             group,
             device.createBindGroup({ layout: pipeline.getBindGroupLayout(group), entries }),
@@ -351,7 +349,7 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
           pass.draw(3);
         }
       } else {
-        setGroups(entryPoint, pipeline, undefined, skyUniform, arrays.slice(0, budget));
+        setGroups(entryPoint, pipeline, sky, skyUniform, arrays.slice(0, budget));
         pass.draw(3);
       }
       if (overflowPipeline !== undefined) {
@@ -359,7 +357,7 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
         for (const sizeClass of new Set(classes)) {
           if (sizeClass < budget) continue;
           setGroups(overflowEntry, overflowPipeline, undefined, undefined, [arrays[sizeClass]]);
-          pass.draw(6, 1, 0, sizeClass);
+          pass.draw(3, 1, 0, sizeClass);
         }
       }
       pass.end();
@@ -387,66 +385,9 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
     for (const { classes, budget } of cases)
       outputs.push(await record(classes, 0), await record(classes, budget));
     const splitOutput = await record([0, 1, 2], 2, true);
-    const rasterBounds = await device.createRenderPipelineAsync({
-      layout: 'auto',
-      vertex: { module, entryPoint: 'vs_standard_deferred_reflection_overflow' },
-      fragment: {
-        module,
-        entryPoint: 'fs_overflow_bounds_witness',
-        targets: [{ format: 'rgba8unorm' }],
-      },
-    });
-    const boundsViewData = new Float32Array(viewData);
-    boundsViewData[offset('viewportWidth')] = 64;
-    const ordinaryView = uniform(boundsViewData);
-    // clip.w = world.z - 0.4. The class's boxes cross the eye plane.
-    boundsViewData[offset('worldViewProj') + 11] = 1;
-    boundsViewData[offset('worldViewProj') + 15] = -0.4;
-    const eyePlaneView = uniform(boundsViewData);
-    const bounds = device.createTexture({
-      size: [64, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
-    const readBounds = device.createBuffer({
-      size: ROW_STRIDE * 2,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    const boundsTable = device.createBindGroup({
-      layout: rasterBounds.getBindGroupLayout(3),
-      entries: [{ binding: 3, resource: table([0, 1, 1]) }],
-    });
-    for (const [index, view] of [ordinaryView, eyePlaneView].entries()) {
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [colorAttachment(bounds.createView())],
-      });
-      pass.setPipeline(rasterBounds);
-      pass.setBindGroup(
-        0,
-        device.createBindGroup({
-          layout: rasterBounds.getBindGroupLayout(0),
-          entries: [{ binding: 0, resource: view }],
-        }),
-      );
-      pass.setBindGroup(3, boundsTable);
-      pass.draw(6, 1, 0, 1);
-      pass.end();
-      encoder.copyTextureToBuffer(
-        { texture: bounds },
-        { buffer: readBounds, offset: index * ROW_STRIDE, bytesPerRow: ROW_STRIDE },
-        [64, 1],
-      );
-    }
     device.queue.submit([encoder.finish()]);
     validation = await device.popErrorScope();
     expect(validation?.message).toBeUndefined();
-    await readBounds.mapAsync(GPUMapMode.READ);
-    const covered = new Uint8Array(readBounds.getMappedRange());
-    for (let x = 0; x < 64; x++) {
-      expect(covered[x * 4 + 3], `projected span, pixel ${x}`).toBe(x >= 20 && x <= 61 ? 255 : 0);
-      expect(covered[ROW_STRIDE + x * 4 + 3], `eye-plane fallback, pixel ${x}`).toBe(255);
-    }
-    readBounds.unmap();
     const pixels = await Promise.all(
       outputs.map(async (buffer) => {
         await buffer.mapAsync(GPUMapMode.READ);
@@ -485,10 +426,10 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
       expect(fallback(1)[2]).toBeGreaterThan(fallback(1)[0] ?? 0);
       expect(fallback(2)[0]).toBeGreaterThan(fallback(2)[2] ?? 0);
       expect(fallback(3)[1]).toBeGreaterThan(fallback(3)[2] ?? 0);
-      expect(fallback(4)[2]).toBeGreaterThan(fallback(2)[2] ?? 0);
-      expect(fallback(5)[2]).toBeGreaterThan(fallback(5)[0] ?? 0);
+      expect(fallback(4)[0]).toBeGreaterThan(fallback(4)[2] ?? 0);
+      expect(fallback(5)[0]).toBeGreaterThan(fallback(5)[2] ?? 0);
       expect(fallback(6)[0]).toBeGreaterThan(fallback(6)[2] ?? 0);
-      expect(fallback(7)[2]).toBeGreaterThan(fallback(7)[0] ?? 0);
+      expect(fallback(7)[0]).toBeGreaterThan(fallback(7)[2] ?? 0);
     }
   } finally {
     if (validation === undefined) await device.popErrorScope();

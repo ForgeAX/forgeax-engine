@@ -42,13 +42,14 @@ import { collectWeakOwners } from './weak-owner-collection-fixture';
 async function fixture(
   count: number,
   transparent = false,
-  shadows = false,
+  shadowCasters: boolean | 'static' = false,
   splitMaterials = false,
   skinned = false,
   residency = false,
   initialMeshes?: MeshFrame,
   acceptedMaterials = false,
 ) {
+  const shadows = shadowCasters !== false;
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
@@ -76,6 +77,7 @@ async function fixture(
     Object.assign(materialPipelineState, {
       gpuDrivenPbrSkinPipelineLayout: materialPipelineState.gpuDrivenPbrPipelineLayout,
       pbrSkinMeshBindGroupLayout: skinLayout,
+      gpuDrivenSkinPrimitiveBindGroupLayout: skinLayout,
     });
   }
   const opaque: MaterialSnapshot = {
@@ -147,6 +149,7 @@ async function fixture(
     deformation: skinned ? ('skin' as const) : ('rigid' as const),
   };
   const snapshot: RenderableSnapshot = {
+    ...(shadowCasters === 'static' ? { mobility: 'static' as const } : {}),
     ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
     entityKey: 0,
     assetHandle: 3,
@@ -677,7 +680,7 @@ it('invalidates shadow depth when the shared mesh changes in place', async () =>
 });
 
 it('retains shadow candidate ranges across shared material edits through view preparation', async () => {
-  const f = await fixture(10_000, false, true);
+  const f = await fixture(10_000, false, 'static');
   const matrix = mat4.identity(mat4.create());
   const identity = { kind: 'spot' as const, index: 0, layer: 'static' as const };
   const views = [
@@ -692,6 +695,7 @@ it('retains shadow candidate ranges across shared material edits through view pr
     const first = f.prepare();
     first?.updateShadowViews?.(views).unwrap();
     const before = first?.shadowViewPool?.submission(identity)?.plan.batches.at(0)?.candidates;
+    expect(before).toHaveLength(10_000);
     first?._commitResourceReplacement();
     f.work.memberReads = f.work.candidateReads = f.work.sharedMeshReads = f.work.slotReads = 0;
     f.adopt({ ...f.opaque, roughness: 0.7 });
@@ -764,7 +768,7 @@ it('refuses to overwrite a still-unsubmitted frame and accepts a retry after abo
 });
 
 it('invalidates final direct depth on material edits without revisiting geometry membership', async () => {
-  const f = await fixture(10_000, false, true);
+  const f = await fixture(10_000, false, 'static');
   const matrix = mat4.identity(mat4.create());
   const identity = { kind: 'spot' as const, index: 0 };
   const staticIdentity = { ...identity, layer: 'static' as const };
@@ -792,6 +796,7 @@ it('invalidates final direct depth on material edits without revisiting geometry
     first.updateShadowViews?.(views).unwrap();
     first._commitResourceReplacement();
     const initialPlan = first.shadowViewPool?.submission(staticIdentity)?.plan;
+    expect(initialPlan?.candidateCount).toBe(10_000);
     for (const [snapshot, castsShadow, membershipChanged] of [
       [{ ...direct, roughness: 0.75 }, true, false],
       [

@@ -5,8 +5,10 @@ import { deriveAssetName } from './deriveAssetName.js';
 import type { PackError } from './errors.js';
 import { projectDirectPackJson } from './pack-authoring.js';
 import { resolveAssetSource } from './resolve-asset-source.js';
+import { RUNTIME_PACK_SUFFIX } from './runtime-publication.js';
 import {
   type MetaInventoryDocument,
+  type PackInstanceResolution,
   type ScanOptions,
   type ScanSourceDeclaration,
   scanInventory,
@@ -49,12 +51,12 @@ export interface CatalogBuildError {
 export type CatalogAuthority = 'authoritative' | 'degraded';
 
 export interface CatalogBuildResult {
-  readonly schemaVersion: 'catalog-legacy-v1';
   readonly entries: readonly PackIndexEntry[];
   readonly authority: CatalogAuthority;
   readonly diagnostics: readonly CatalogBuildError[];
   readonly declarations: ReadonlyMap<string, CatalogImportMeta>;
   readonly sourceDeclarations: ReadonlyMap<string, ScanSourceDeclaration>;
+  readonly packInstances: ReadonlyMap<string, PackInstanceResolution>;
 }
 
 export type CatalogProducerVisibility = (
@@ -150,7 +152,7 @@ function projectMeta(
   }
   const resolved = resolveAssetSource(rawPath, meta.source);
   const sourcePath = catalogSourcePathFor(cwd, resolved, sourceIdentityFor);
-  const packageUrl = `${base}/__forgeax-ddc/${meta.subAssets[0]?.guid?.toLowerCase() ?? 'pack'}.pack.json`;
+  const packageUrl = `${base}/__forgeax-ddc/${meta.subAssets[0]?.guid?.toLowerCase() ?? 'pack'}${RUNTIME_PACK_SUFFIX}`;
   const declaration: CatalogImportMeta = {
     importer: meta.importer,
     source: resolved,
@@ -212,42 +214,22 @@ async function projectSource(
   }
   const parsed = sourceDeclaration.value;
   const sourcePath = catalogSourcePathFor(cwd, path, sourceIdentityFor);
-  if (parsed.schemaVersion === '3.0.0') {
-    if (parsed.format !== 'direct') return { entries: [] };
-    const projected = projectDirectPackJson(parsed);
-    const provenance = { provider: 'pack', version: '3.0.0' } satisfies ProviderProvenance;
-    return {
-      entries: projectPackageCatalog(
-        projected.assets.map((asset, sourceIndex) => ({
-          guid: asset.guid,
-          kind: asset.kind,
-          sourcePath,
-          sourceIndex,
-          sourceKey: asset.sourceKey,
-          refs: asset.refs,
-          execution: 'direct' as const,
-          packageId: projected.packageId,
-          provenance,
-          name: deriveAssetName(path, projected.assets.length, asset.name),
-        })),
-        `${base}/${sourcePath}`,
-      ),
-    };
-  }
-  const provenance =
-    parsed.provenance ??
-    ({ provider: 'pack', version: parsed.schemaVersion } satisfies ProviderProvenance);
+  if (parsed.format !== 'direct') return { entries: [] };
+  const projected = projectDirectPackJson(parsed);
+  const provenance = { provider: 'pack', version: '3.0.0' } satisfies ProviderProvenance;
   return {
     entries: projectPackageCatalog(
-      parsed.assets.map((asset, sourceIndex) => ({
-        ...asset,
+      projected.assets.map((asset, sourceIndex) => ({
+        guid: asset.guid,
+        kind: asset.kind,
         sourcePath,
-        sourceIndex: asset.sourceIndex ?? sourceIndex,
-        ...(parsed.packageId === undefined ? {} : { packageId: parsed.packageId }),
+        sourceIndex,
+        sourceKey: asset.sourceKey,
+        refs: asset.refs,
+        execution: 'direct' as const,
+        packageId: projected.packageId,
         provenance,
-        ...(parsed.revision === undefined ? {} : { revision: parsed.revision }),
-        ...(parsed.diagnostics === undefined ? {} : { diagnostics: parsed.diagnostics }),
-        name: deriveAssetName(path, parsed.assets.length, asset.name),
+        name: deriveAssetName(path, projected.assets.length, asset.name),
       })),
       `${base}/${sourcePath}`,
     ),
@@ -258,6 +240,19 @@ function warnErrors(errors: readonly CatalogBuildError[]): void {
   for (const error of errors) {
     console.warn(`[forgeax-pack] catalog error ${error.code} @ ${error.path}: ${error.message}`);
   }
+}
+
+export function emptyCatalogProjection(
+  diagnostics: readonly CatalogBuildError[] = [],
+): CatalogBuildResult {
+  return {
+    entries: [],
+    authority: diagnostics.length === 0 ? 'authoritative' : 'degraded',
+    diagnostics,
+    declarations: new Map(),
+    sourceDeclarations: new Map(),
+    packInstances: new Map(),
+  };
 }
 
 export async function buildCatalogProjection(
@@ -272,18 +267,7 @@ export async function buildCatalogProjection(
       JSON.stringify({ stage, totalMs: Math.round(performance.now() - startedAt) }),
     );
   };
-  const empty = (
-    authority: CatalogAuthority,
-    diagnostics: readonly CatalogBuildError[] = [],
-  ): CatalogBuildResult => ({
-    schemaVersion: 'catalog-legacy-v1',
-    entries: [],
-    authority,
-    diagnostics,
-    declarations: new Map(),
-    sourceDeclarations: new Map(),
-  });
-  if (roots.length === 0) return empty('authoritative');
+  if (roots.length === 0) return emptyCatalogProjection();
   const cwd = process.cwd();
   const base = (options.base ?? '/').replace(/\/$/, '');
   const scanned = await scanInventory(roots, options.scanOptions);
@@ -304,7 +288,7 @@ export async function buildCatalogProjection(
       cause: scanned.error,
     };
     warnErrors([error]);
-    return empty('degraded', [error]);
+    return emptyCatalogProjection([error]);
   }
   const { paths, declarations: sourceDeclarations } = scanned.value;
   const entries: PackIndexEntry[] = [];
@@ -337,11 +321,11 @@ export async function buildCatalogProjection(
   timing('project-catalog');
   warnErrors(errors);
   return {
-    schemaVersion: 'catalog-legacy-v1',
     entries,
     authority: errors.length === 0 ? 'authoritative' : 'degraded',
     diagnostics: errors,
     declarations,
     sourceDeclarations,
+    packInstances: scanned.value.instances,
   };
 }

@@ -81,6 +81,7 @@ async function routePlay(url, response) {
   if (path === '/__level/play/fixture') {
     json(response, {
       manifest: basin.manifest,
+      wildlife: basin.wildlife,
       expectedScope: basin.producer.catalog.expectedScope,
       catalogUrl: `${origin}/__level/play/catalog`,
     });

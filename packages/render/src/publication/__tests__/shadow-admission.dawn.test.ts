@@ -147,7 +147,7 @@ it.each([
     const renderer = (
       await createRenderer(
         canvas,
-        { rhi, publicationSource: identity },
+        { rhi, publicationSource: identity, shadowWorkload: true },
         { shaderManifestUrl: manifestUrl },
       )
     ).unwrap();
@@ -209,23 +209,25 @@ it.each([
         // The first population starts in the static layer: the final view has
         // no dynamic batch but inherits that layer's admitted GPU draw keys.
         // Logical claims remain observable even when depth is retained/copied.
+        const requested = Array.from({ length: cascades[frameIndex] ?? 4 }, (_, index) => index);
+        const workload = receipt.shadowWorkload;
+        expect(workload).toMatchObject({ status: 'complete', frameId: receipt.frameId });
+        const physical = new Set<number>();
+        for (const view of workload?.views ?? [])
+          for (const pass of view.passes) {
+            if (pass.identity.kind === 'directional' && pass.passName !== null)
+              physical.add(pass.identity.index);
+          }
+        // The camera and caster move on each of these submissions. Verify the
+        // actual issuing atlas on decreases, increases and direct/GPU transitions.
+        expect([...physical].sort()).toEqual(requested);
         if (gpuShadow) {
           const indices = new Set(channels.map((channel) => channel.viewIndex));
-          if (frameIndex > 0) {
-            // Retain the graph used on the preceding submitted frame until
-            // replacement: decreases must not prematurely drop its demand.
-            const required = Math.max(cascades[frameIndex] ?? 4, cascades[frameIndex - 1] ?? 4);
-            expect([...indices].sort(), JSON.stringify(channels)).toEqual(
-              Array.from({ length: required }, (_, index) => index),
-            );
-          }
-          expect(
-            Array.from({ length: cascades[frameIndex] ?? 4 }, (_, index) => index).every((index) =>
-              indices.has(index),
-            ),
-            JSON.stringify(inspection.renderScene.gpuDriven.channels),
-          ).toBe(true);
           if (frameIndex === 0) {
+            // Before a display graph is installed the GPU may prepare all
+            // four padded slots. Every issued layer must already be covered.
+            expect(requested.every((index) => indices.has(index))).toBe(true);
+            expect([...indices].every((index) => index >= 0 && index < 4)).toBe(true);
             for (const channel of channels.filter((value) => value.viewIndex < 3)) {
               expect(channel).toMatchObject({
                 drawCount: 2,
@@ -234,7 +236,7 @@ it.each([
                 residualDrawCount: 0,
               });
             }
-          }
+          } else expect([...indices].sort(), JSON.stringify(channels)).toEqual(requested);
         }
         if (!cpu && channels.some((channel) => channel.residualDrawCount > 0))
           mixedResidualFrames += 1;

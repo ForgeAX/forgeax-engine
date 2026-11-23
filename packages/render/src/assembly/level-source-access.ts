@@ -1,10 +1,16 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { AssetContentLease } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { SceneRosterObservation } from '@forgeax/engine-scene/internal';
 import { err, type Result } from '@forgeax/engine-types';
 import type { RenderResidencyGroup } from '../gpu-driven/batch-residency';
-import { RenderPublicationError, type RenderPublicationIdentity } from '../publication/contract';
+import {
+  type RenderPublication,
+  RenderPublicationError,
+  type RenderPublicationIdentity,
+} from '../publication/contract';
+import { installPublicationPrograms } from '../publication/programs';
 import type {
   ClosedLevelAssetHold,
   ClosedLevelAssetPublication,
@@ -35,6 +41,7 @@ export interface LevelSourceAccess {
   local(world: World): LevelSourceHost | undefined;
   preparePublished(input: PublishedLevelMeshInput): PublishedLevelPreparation;
   readonly publicationReceiver: LevelPublicationSource | undefined;
+  installPrograms(programs: RenderPublication['programs']): void;
 }
 const assemblies = new WeakMap<Renderer, LevelSourceAccess>();
 export function bindLevelSourceAccess(
@@ -64,6 +71,16 @@ export function retainPublishedLevelAsset(
   );
 }
 
+export function installPublishedLevelPrograms(
+  renderer: Renderer,
+  programs: RenderPublication['programs'],
+): void {
+  const access = assemblies.get(renderer);
+  if (access?.publicationReceiver === undefined)
+    throw new StagedMeshSourceError({ reason: 'native-bridge-unavailable' });
+  access.installPrograms(programs);
+}
+
 export function preparePublishedLevel(
   renderer: Renderer,
   input: PublishedLevelMeshInput,
@@ -75,6 +92,7 @@ export function preparePublishedLevel(
 }
 
 export function createLevelSourceAccess(host: {
+  readonly assets: AssetRegistry;
   composition(): SceneComposition | undefined;
   available(world: World, lease: RenderReadLease): boolean;
   readonly publicationReceiver: LevelPublicationSource | undefined;
@@ -96,6 +114,7 @@ export function createLevelSourceAccess(host: {
   return {
     local,
     publicationReceiver: host.publicationReceiver,
+    installPrograms: (programs) => installPublicationPrograms(host.assets, programs),
     preparePublished(input) {
       const composition = host.composition();
       const receiver = host.publicationReceiver;

@@ -59,12 +59,7 @@ it('Point PCF uses the Three five-sample spherical footprint across cube faces a
         let hard=textureSampleCompareLevel(map,compare,direction,0,0.5);
         result[id.x]=vec4f(actual,reference*0.2,hard,0);
       }`,
-        {
-          'forgeax_view::common': readFileSync(
-            new URL('../../../shader/src/common.wgsl', import.meta.url),
-            'utf8',
-          ),
-        },
+        {},
         { STORAGE_BUFFER_AVAILABLE: true },
       ),
     });

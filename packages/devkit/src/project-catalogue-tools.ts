@@ -5,9 +5,15 @@ import {
   registerKnownProject,
 } from './known-projects.js';
 
+export const projectCatalogueOperations = {
+  list: () => listKnownProjects(),
+  register: (path: unknown) => registerKnownProject(String(path)),
+  browse: (path: unknown) => browseProjectDirectories(typeof path === 'string' ? path : undefined),
+};
+
 /** Metadata belongs to DevKit, independent of workspace/World admission. */
 export function createProjectCatalogueTools(): readonly ToolContribution[] {
-  return (['list', 'register', 'browse'] as const).map((operation) =>
+  return Object.entries(projectCatalogueOperations).map(([operation, run]) =>
     defineTool(
       {
         id: `engine.project.${operation}`,
@@ -27,9 +33,7 @@ export function createProjectCatalogueTools(): readonly ToolContribution[] {
       },
       (value) => {
         const args = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
-        if (operation === 'list') return listKnownProjects();
-        if (operation === 'register') return registerKnownProject(String(args.path));
-        return browseProjectDirectories(typeof args.path === 'string' ? args.path : undefined);
+        return run(args.path);
       },
     ),
   );

@@ -138,13 +138,13 @@ export function validateCameraExposure(exposure: CameraExposure): CameraExposure
     );
   }
   if (exposure.kind === 'manual') {
-    if (!finitePositive(exposure.multiplier)) {
+    if (!Number.isFinite(exposure.multiplier) || exposure.multiplier < 0) {
       throw cameraError(
         'camera-exposure-invalid',
         'multiplier',
         exposure.multiplier,
-        'a finite number greater than zero',
-        'set Camera.exposure to a positive finite manual multiplier',
+        'a finite non-negative number',
+        'set Camera.exposure to a finite non-negative manual multiplier',
       );
     }
     return exposure;
@@ -637,6 +637,8 @@ export function validateCameraBloom(
 export const Camera = defineComponent('Camera', {
   /** Unsigned 32-bit geometry visibility mask; independent of lighting and shadows. */
   cullMask: { type: 'f64', default: 0xffffffff },
+  /** Sort direct opaque draws by their authored render Layer for this view. */
+  orderOpaqueByLayer: { type: 'bool', default: false },
   fov: { type: 'f32' },
   aspect: { type: 'f32' },
   near: { type: 'f32', default: 0.1 },
@@ -729,13 +731,11 @@ export function validateCameraPerspectiveFov(value: number): number {
   return value;
 }
 
-/** Validate and detach the two shared lens offsets before extraction/publication. */
-export function validateCameraProjectionOffset(
-  value: ArrayLike<number>,
-): readonly [number, number] {
+export function assertCameraProjectionOffset(value: ArrayLike<number>): void {
   if (
     value.length !== 2 ||
-    ![value[0], value[1]].every((v) => Number.isFinite(Math.fround(v ?? NaN)))
+    !Number.isFinite(Math.fround(value[0] ?? NaN)) ||
+    !Number.isFinite(Math.fround(value[1] ?? NaN))
   )
     throw cameraError(
       'camera-projection-invalid',
@@ -744,6 +744,13 @@ export function validateCameraProjectionOffset(
       'two finite Float32 NDC offsets',
       'use [0, 0] for a centered lens or finite X/Y offsets for an off-axis lens',
     );
+}
+
+/** A published camera snapshot owns the two validated lens values. */
+export function validateCameraProjectionOffset(
+  value: ArrayLike<number>,
+): readonly [number, number] {
+  assertCameraProjectionOffset(value);
   return [value[0] as number, value[1] as number];
 }
 
@@ -891,19 +898,20 @@ interface CameraOrthographicOpts {
   colorLutStrength?: number;
 }
 
-/**
- * Build a CameraPod base from Camera.fields defaults (per-field SSOT).
- * Fields without a default (fov / aspect) are left
- * unset; caller fills them from opts or sentinel values.
- */
-function cameraPodFromDefaults(): CameraPod {
-  const base: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(Camera.fields)) {
-    if ('default' in field && field.default !== undefined) {
-      base[key] = field.default;
-    }
-  }
-  return base as CameraPod;
+// The component schema supplies the factory defaults. Each product owns its
+// writable vectors; the exposure columns construct their two vectors below.
+const cameraColumnDefaults = Object.freeze(
+  Object.fromEntries(
+    Object.entries(Camera.fields).flatMap(([key, field]) =>
+      'default' in field && field.default !== undefined ? [[key, field.default]] : [],
+    ),
+  ),
+) as Readonly<CameraPod>;
+
+function cameraLensOffset(value: ArrayLike<number> | undefined): Float32Array {
+  const source = value ?? cameraColumnDefaults.projectionOffset;
+  assertCameraProjectionOffset(source);
+  return new Float32Array(source);
 }
 
 /**
@@ -948,10 +956,8 @@ function cameraPodFromDefaults(): CameraPod {
  */
 export function perspective(opts: CameraPerspectiveOpts): CameraPod {
   return {
-    // cameraPodFromDefaults() reads autoAspect's schema default (true), so an
-    // omitted opts.autoAspect lands the default-correct value; an explicit
-    // false overrides it below (D-4: factory one-step opt-out, charter P1).
-    ...cameraPodFromDefaults(),
+    ...cameraColumnDefaults,
+    clearColor: new Float32Array(cameraColumnDefaults.clearColor),
     fov: validateCameraPerspectiveFov(opts.fov),
     aspect: opts.aspect,
     ...(opts.near === undefined ? {} : { near: opts.near }),
@@ -959,11 +965,7 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
     projection: CAMERA_PROJECTION_PERSPECTIVE,
     ...(opts.autoAspect !== undefined ? { autoAspect: opts.autoAspect } : {}),
     ...(opts.postProcessing === undefined ? {} : { postProcessing: opts.postProcessing }),
-    ...(opts.projectionOffset === undefined
-      ? {}
-      : {
-          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
-        }),
+    projectionOffset: cameraLensOffset(opts.projectionOffset),
     ...cameraColorGradingColumns(opts),
   };
 }
@@ -994,7 +996,8 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
  */
 export function orthographic(opts: CameraOrthographicOpts): CameraPod {
   return {
-    ...cameraPodFromDefaults(),
+    ...cameraColumnDefaults,
+    clearColor: new Float32Array(cameraColumnDefaults.clearColor),
     fov: 0,
     aspect: 1,
     ...(opts.near === undefined ? {} : { near: opts.near }),
@@ -1005,11 +1008,7 @@ export function orthographic(opts: CameraOrthographicOpts): CameraPod {
     right: opts.right,
     bottom: opts.bottom,
     top: opts.top,
-    ...(opts.projectionOffset === undefined
-      ? {}
-      : {
-          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
-        }),
+    projectionOffset: cameraLensOffset(opts.projectionOffset),
     ...cameraColorGradingColumns(opts),
   };
 }

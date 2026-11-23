@@ -104,3 +104,72 @@ export async function exerciseOpaqueOrder(
     source.dispose();
   }
 }
+
+export async function exerciseTransparentInstances(
+  renderer: THREE.WebGPURenderer,
+  check?: (
+    capture: THREE.ThreeFrameCapture,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+  ) => Promise<void>,
+): Promise<void> {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+  camera.position.z = 5;
+  const geometry = new THREE.PlaneGeometry(2, 2);
+  const red = new THREE.MeshBasicMaterial({
+    color: 0xff0000,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  });
+  const blue = new THREE.MeshBasicMaterial({
+    color: 0x0000ff,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  });
+  const instances = new THREE.InstancedMesh(geometry, red, 2);
+  instances.frustumCulled = false;
+  instances.setMatrixAt(0, new THREE.Matrix4());
+  instances.setMatrixAt(1, new THREE.Matrix4().makeTranslation(3, 0, 0));
+  instances.instanceMatrix.needsUpdate = true;
+  instances.renderOrder = 2;
+  const front = new THREE.Mesh(geometry, blue);
+  scene.add(instances, front);
+  const hits = () =>
+    renderer.inspect().renderer.renderScene.frameCaches.renderBundles.preparedHits ?? 0;
+  try {
+    const before = hits();
+    await readyFrames(renderer, scene, camera, 60);
+    expect(hits()).toBe(before);
+    const first = await renderer.captureFrame(scene, camera);
+    const tape = decodeTape(compactTape(first.tape).bytes).unwrap();
+    expect(
+      tape.events.filter(
+        (event) => event.kind === 'drawIndexed' || event.kind === 'drawIndexedIndirect',
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+    const pixel = (64 * SIZE + 64) * 4;
+    const firstPixels = displayPixels(first);
+    expect(firstPixels[pixel]).toBeGreaterThan(firstPixels[pixel + 2] ?? 0);
+    const movedInstancePixel = (64 * SIZE + 108) * 4;
+    await check?.(first, scene, camera);
+
+    front.renderOrder = 3;
+    instances.setMatrixAt(1, new THREE.Matrix4().makeTranslation(1.5, 0, 0));
+    instances.instanceMatrix.needsUpdate = true;
+    await readyFrames(renderer, scene, camera, 1);
+    const second = await renderer.captureFrame(scene, camera);
+    const secondPixels = displayPixels(second);
+    expect(secondPixels[pixel + 2]).toBeGreaterThan(secondPixels[pixel] ?? 0);
+    expect(secondPixels[movedInstancePixel]).toBeGreaterThan(firstPixels[movedInstancePixel] ?? 0);
+    await check?.(second, scene, camera);
+    await verifyReplay(second, 'r187-transparent-instances-order');
+  } finally {
+    instances.dispose();
+    geometry.dispose();
+    red.dispose();
+    blue.dispose();
+  }
+}

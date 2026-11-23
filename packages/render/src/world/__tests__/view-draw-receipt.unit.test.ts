@@ -64,6 +64,33 @@ it('retains the source revision consumed by an accepted material draw', () => {
   expect(receipt.materialDraws).toEqual([]);
 });
 
+it('charges each distinct material draw once at the exact UTF-8 array boundary', () => {
+  const receipt = new ViewDrawReceipt();
+  const first = {
+    worldIdentity: 'w',
+    entityKey: 1,
+    submeshIndex: 0,
+    materialSlot: 0,
+    materialHandle: 1,
+    sourceRevision: 3,
+    frameId: 7,
+    deviceGeneration: 0,
+    graphGeneration: 0,
+  };
+  const extra = { ...first, entityKey: 2, worldIdentity: 'a\u00e9\u6c34\u{1f30a}\ud800' };
+  const limit = 16 * 1024;
+  const used = new TextEncoder().encode(JSON.stringify([first, extra])).byteLength;
+  extra.worldIdentity += 'a'.repeat(limit - used);
+  for (const tail of ['', 'x']) {
+    const row = { ...extra, worldIdentity: extra.worldIdentity + tail };
+    receipt.stageMaterialDraw(7, first);
+    receipt.stageMaterialDraw(7, { ...first });
+    receipt.stageMaterialDraw(7, row);
+    receipt.commitMaterialDraws(7);
+    expect(receipt.materialDraws).toEqual(tail === '' ? [first, row] : []);
+  }
+});
+
 it('does not lend a shared material draw receipt to another entity', () => {
   const onlyA = {
     worldIdentity: 'world',

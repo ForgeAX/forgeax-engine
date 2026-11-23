@@ -439,7 +439,7 @@ export class StandardPointsLinesOwner {
             }),
           });
         },
-        upload: (resource, geometry) => {
+        upload: (resource, geometry, residentGeometry) => {
           if (geometry.vertices.byteLength > 0) {
             const vertexWrite = runtime.device.queue.writeBuffer(
               resource.vertexBuffer,
@@ -448,7 +448,8 @@ export class StandardPointsLinesOwner {
             );
             if (!vertexWrite.ok) return err(vertexWrite.error);
           }
-          if (geometry.indices.byteLength > 0) {
+          const writeIndices = geometry.indices !== residentGeometry?.indices;
+          if (writeIndices && geometry.indices.byteLength > 0) {
             const indexWrite = runtime.device.queue.writeBuffer(
               resource.indexBuffer,
               0,
@@ -456,7 +457,9 @@ export class StandardPointsLinesOwner {
             );
             if (!indexWrite.ok) return err(indexWrite.error);
           }
-          return ok(geometry.derivedBytes);
+          return ok(
+            geometry.vertices.byteLength + (writeIndices ? geometry.indices.byteLength : 0),
+          );
         },
         validate: (_resource, geometry) =>
           geometry.expandedVertexCount > 0 && geometry.expandedIndexCount > 0

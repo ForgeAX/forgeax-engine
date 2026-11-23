@@ -6,7 +6,6 @@ import { resolveMaterialShaderVariantSet, type SeedShaderModule } from './materi
 // policy/adapters and returns a fully prepared PipelineState.
 
 import type {
-  BindGroupLayout,
   PipelineLayout,
   PipelineLibraryManifest,
   RenderPipeline,
@@ -258,15 +257,14 @@ type BootModuleLayouts = Pick<
   PipelineState,
   | 'pbrPipelineLayout'
   | 'gpuDrivenInstancesBindGroupLayout'
+  | 'gpuDrivenPrimitiveBindGroupLayout'
+  | 'gpuDrivenSkinPrimitiveBindGroupLayout'
   | 'gpuDrivenPbrPipelineLayout'
   | 'gpuDrivenPbrSkinPipelineLayout'
   | 'surfaceDirectInstancesBindGroupLayout'
   | 'sceneDirectInstancesBindGroupLayout'
   | 'sceneDirectPipelineLayout'
   | 'sceneDirectClusterPipelineLayout'
-  | 'gpuDrivenClusterPbrPipelineLayout'
-  | 'gpuDrivenClusterPbrSkinPipelineLayout'
-  | 'gpuDrivenClusterMeshBindGroupLayout'
   | 'hdrpPbrPipelineLayout'
   | 'hdrpProbePbrPipelineLayout'
   | 'pbrSkinPipelineLayout'
@@ -286,21 +284,20 @@ function selectBootModuleLayouts(
   pbrLayouts: PbrPipelineLayoutBundle,
   hdrp: HdrpPipelineLayouts,
   gpuDriven: GpuDrivenReadyLayouts,
-  gpuDrivenCluster: GpuDrivenClusterLayouts,
+  sceneDirectClusterPipelineLayout: PipelineLayout | null,
 ): BootModuleLayouts {
   if (!bootModulesReady) {
     return {
       pbrPipelineLayout: null,
       gpuDrivenInstancesBindGroupLayout: null,
+      gpuDrivenPrimitiveBindGroupLayout: null,
+      gpuDrivenSkinPrimitiveBindGroupLayout: null,
       gpuDrivenPbrPipelineLayout: null,
       gpuDrivenPbrSkinPipelineLayout: null,
       surfaceDirectInstancesBindGroupLayout: null,
       sceneDirectInstancesBindGroupLayout: null,
       sceneDirectPipelineLayout: null,
       sceneDirectClusterPipelineLayout: null,
-      gpuDrivenClusterPbrPipelineLayout: null,
-      gpuDrivenClusterPbrSkinPipelineLayout: null,
-      gpuDrivenClusterMeshBindGroupLayout: null,
       hdrpPbrPipelineLayout: null,
       hdrpProbePbrPipelineLayout: null,
       pbrSkinPipelineLayout: null,
@@ -313,15 +310,14 @@ function selectBootModuleLayouts(
   return {
     pbrPipelineLayout: pbrLayouts.pipelineLayout,
     gpuDrivenInstancesBindGroupLayout: gpuDriven.gpuDrivenInstancesBindGroupLayout,
+    gpuDrivenPrimitiveBindGroupLayout: gpuDriven.gpuDrivenPrimitiveBindGroupLayout,
+    gpuDrivenSkinPrimitiveBindGroupLayout: gpuDriven.gpuDrivenSkinPrimitiveBindGroupLayout,
     gpuDrivenPbrPipelineLayout: gpuDriven.gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout: gpuDriven.gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout: gpuDriven.surfaceDirectInstancesBindGroupLayout,
     sceneDirectInstancesBindGroupLayout: gpuDriven.sceneDirectInstancesBindGroupLayout,
     sceneDirectPipelineLayout: gpuDriven.sceneDirectPipelineLayout,
-    sceneDirectClusterPipelineLayout: gpuDrivenCluster.sceneDirect,
-    gpuDrivenClusterPbrPipelineLayout: gpuDrivenCluster.rigid,
-    gpuDrivenClusterPbrSkinPipelineLayout: gpuDrivenCluster.skin,
-    gpuDrivenClusterMeshBindGroupLayout: hdrp.unifiedBgl,
+    sceneDirectClusterPipelineLayout,
     hdrpPbrPipelineLayout: hdrp.pbrPipelineLayout,
     hdrpProbePbrPipelineLayout: hdrp.probePbrPipelineLayout,
     pbrSkinPipelineLayout: gpuDriven.pbrSkinPipelineLayout,
@@ -329,51 +325,6 @@ function selectBootModuleLayouts(
     pbrSkinMeshBindGroupLayout: gpuDriven.pbrSkinMeshBindGroupLayout,
     hdrpSkinPipelineLayout: gpuDriven.hdrpSkinPipelineLayout,
     hdrpSkinMeshBindGroupLayout: gpuDriven.hdrpSkinMeshBindGroupLayout,
-  };
-}
-
-interface GpuDrivenClusterLayouts {
-  readonly rigid: PipelineLayout | null;
-  readonly skin: PipelineLayout | null;
-  readonly sceneDirect: PipelineLayout | null;
-}
-
-/** Scene-index cluster layouts need storage; scene-direct cluster is the texture-table form. */
-function buildGpuDrivenClusterLayouts(
-  device: RhiDevice,
-  storageBuffer: boolean,
-  pbrLayouts: PbrPipelineLayoutBundle,
-  hdrpUnifiedBgl: BindGroupLayout | null,
-  gpuDriven: GpuDrivenReadyLayouts,
-): GpuDrivenClusterLayouts {
-  if (!storageBuffer) {
-    // Clustered scene-direct unlit keeps the cluster group(2) and reads the
-    // texture tables at slot 3.
-    const sceneDirect = createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-scene-direct-cluster-pl',
-      pbrLayouts,
-      hdrpUnifiedBgl,
-      gpuDriven.sceneDirectInstancesBindGroupLayout,
-    );
-    return { rigid: null, skin: null, sceneDirect };
-  }
-  return {
-    sceneDirect: null,
-    rigid: createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-gpu-driven-cluster-pl',
-      pbrLayouts,
-      hdrpUnifiedBgl,
-      gpuDriven.gpuDrivenInstancesBindGroupLayout,
-    ),
-    skin: createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-skin-gpu-driven-cluster-pl',
-      pbrLayouts,
-      gpuDriven.hdrpSkinMeshBindGroupLayout,
-      gpuDriven.gpuDrivenInstancesBindGroupLayout,
-    ),
   };
 }
 
@@ -457,7 +408,10 @@ export async function buildReadyWebGPU(
    * Install manifest-owned SSR and depth-pyramid utility sources only after
    * both bundles compile; SSR trace currently reads the pyramid.
    */
-  setSsrShaderSources: (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => void,
+  setSsrShaderSources: (
+    sources: SsrShaderSources | undefined,
+    pyramid: DepthPyramidShaderSources,
+  ) => void,
   /** Install manifest-owned atmosphere utility sources only after all modules compile. */
   setAtmosphereShaderSources: (sources: AtmosphereShaderSources) => void,
   setStandardSceneShaderSources: (
@@ -916,8 +870,7 @@ export async function buildReadyWebGPU(
   const bootModulesReady = modules.unlit !== null && modules.pbr !== null;
 
   // Standard layouts: view + material + mesh-array + instances (no group(4)).
-  // HDRP variants swap the clustered unified group(2); GPU-driven batches keep
-  // that group with the compact scene-index slot(3).
+  // Clustered and baseline GPU-driven passes share their Primitive and Scene layouts.
   const pbrLayouts = buildReadyPbrLayouts(rhiDevice, caps);
   const unlitPipelineLayout = buildUnlitPipelineLayout(
     rhiDevice,
@@ -933,13 +886,15 @@ export async function buildReadyWebGPU(
       asyncCreateShaderModule,
     );
   const gpuDriven = buildGpuDrivenPbrReadyLayouts(rhiDevice, caps.storageBuffer, pbrLayouts);
-  const gpuDrivenCluster = buildGpuDrivenClusterLayouts(
-    rhiDevice,
-    caps.storageBuffer,
-    pbrLayouts,
-    hdrp.unifiedBgl,
-    gpuDriven,
-  );
+  const sceneDirectClusterPipelineLayout = caps.storageBuffer
+    ? null
+    : createGpuDrivenClusterPipelineLayout(
+        rhiDevice,
+        'pbr-scene-direct-cluster-pl',
+        pbrLayouts,
+        hdrp.unifiedBgl,
+        gpuDriven.sceneDirectInstancesBindGroupLayout,
+      );
 
   // Pipeline-scoped shared buffers; per-frame bind groups reference them and
   // queue.writeBuffer updates their contents.
@@ -1084,7 +1039,13 @@ export async function buildReadyWebGPU(
     standardPbrShaderUvSetCount,
     unlitPipelineMsaa: cachedUnlitPipeline(false, 4),
     unlitPipelineHdrMsaa: cachedUnlitPipeline(true, 4),
-    ...selectBootModuleLayouts(bootModulesReady, pbrLayouts, hdrp, gpuDriven, gpuDrivenCluster),
+    ...selectBootModuleLayouts(
+      bootModulesReady,
+      pbrLayouts,
+      hdrp,
+      gpuDriven,
+      sceneDirectClusterPipelineLayout,
+    ),
     gpuDrivenPbrPrograms: modules.gpuDrivenPbrPrograms,
     hdrpMeshBindGroupLayout: hdrp.unifiedBgl,
     hdrpClusterMembershipPipeline,
@@ -1101,6 +1062,7 @@ export async function buildReadyWebGPU(
         label: 'view-linear-clamp',
         magFilter: 'linear',
         minFilter: 'linear',
+        mipmapFilter: 'linear',
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
         addressModeW: 'clamp-to-edge',

@@ -5,7 +5,7 @@ import type {
   RenderGraphError,
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
-import { mipDimension, ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result } from '@forgeax/engine-types';
 import {
   computeBindGroup,
   computePipelineError,
@@ -16,7 +16,7 @@ import { createRasterState, type RasterState } from '../raster-graph-state';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { SsrSpatialGraphInputs } from './graph';
-import { SSR_TEMPORAL_PARAMS_BYTES, type SsrSpatialResources } from './resources';
+import type { SsrSpatialResources } from './resources';
 import { ssrGBufferConstants, ssrShaderGBufferMismatch } from './shader-layout';
 
 type TextureInput = {
@@ -34,18 +34,15 @@ type Inputs = SsrSpatialGraphInputs &
     >
   >;
 
-/** The same trace/temporal math writes an atomic MRT cohort on the raster lane. */
+/** The same trace math writes an atomic MRT cohort on the raster lane. */
 export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   graph: RenderGraphBuilder<Frame>,
   input: Inputs,
   resources: SsrSpatialResources,
-  resolved: SsrSpatialResources['resolved'],
-  reflectionLevels: readonly GraphTextureView[],
 ): Result<readonly string[], RenderGraphError> {
   const names: string[] = [];
   const add = (
     name: string,
-    source: 'traceFragment' | 'temporalFragment',
     entry: string,
     textures: readonly TextureInput[],
     buffers: readonly BufferInput[],
@@ -66,7 +63,7 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
           throw computePipelineError(
             `SSR ${mismatch.expected} source contract; rebuild the Engine shader manifest`,
           );
-        const code = sources?.[source];
+        const code = sources?.traceFragment;
         if (
           code === undefined ||
           (entry !== 'ssr_reflection_mip_fragment' && input.view === undefined)
@@ -75,7 +72,7 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
         state ??= createRasterState(
           frame,
           code,
-          source === 'traceFragment' ? 'ssr_trace_fragment' : 'ssr_temporal_fragment',
+          'ssr_trace_fragment',
           [
             ...textures.map(({ binding, sampleType }) => ({
               binding,
@@ -91,7 +88,12 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
           'ssr_fullscreen',
           entry,
           outputs.map(({ format }) => format),
-          ssrGBufferConstants(input),
+          {
+            ...ssrGBufferConstants(input),
+            ...(input.sceneColorMipCount === undefined || input.sceneColorMipCount <= 1
+              ? {}
+              : { SSR_SCENE_COLOR_MIP_COUNT: input.sceneColorMipCount }),
+          },
         );
         pass.setPipeline(state.pipeline);
         pass.setBindGroup(
@@ -107,7 +109,7 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
                 kind: 'buffer' as const,
                 value: {
                   buffer: resolvedGraphBuffer(resolver, buffer),
-                  size: binding === 6 ? SSR_TEMPORAL_PARAMS_BYTES : VIEW_UNIFORM_BYTES,
+                  size: VIEW_UNIFORM_BYTES,
                 },
               },
             })),
@@ -121,7 +123,6 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   };
   const trace = add(
     'ssr-trace',
-    'traceFragment',
     input.compactMaterial === undefined ? 'ssr_trace_fragment' : 'ssr_trace_fragment_compact',
     [
       ...(input.compactMaterial === undefined
@@ -147,87 +148,5 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
     ],
   );
   if (!trace.ok) return trace;
-  const temporal = input.temporal;
-  if (temporal === undefined || temporal.profile !== 'opaque' || resolved === undefined)
-    return ok(Object.freeze(names));
-  // MRT writes separate history, surface metadata and presented radiance together.
-  const scratchTexture = graph.createTexture('ssr-resolved-fragment.scratch', {
-    format: 'rgba16float',
-    size: { width: input.width, height: input.height },
-    domain: 'linear-hdr',
-  });
-  if (!scratchTexture.ok) return scratchTexture;
-  const scratch = graph.view(scratchTexture.value);
-  if (!scratch.ok) return scratch;
-  const added = add(
-    'ssr-temporal',
-    'temporalFragment',
-    'ssr_temporal_fragment',
-    [
-      { binding: 0, view: resources.trace.view, sampleType: 'unfilterable-float' },
-      { binding: 1, view: input.depth, sampleType: 'depth' },
-      { binding: 2, view: input.normal, sampleType: 'uint' },
-      { binding: 3, view: temporal.previousHistory, sampleType: 'unfilterable-float' },
-      { binding: 4, view: input.currentTemporal, sampleType: 'unfilterable-float' },
-      { binding: 9, view: temporal.previousSurface, sampleType: 'unfilterable-float' },
-      { binding: 11, view: resources.hitReactivity, sampleType: 'unfilterable-float' },
-    ],
-    [
-      { binding: 6, buffer: temporal.params },
-      ...(input.view === undefined ? [] : [{ binding: 8, buffer: input.view }]),
-    ],
-    [
-      { view: temporal.outputHistory, format: 'rgba16float' },
-      { view: temporal.outputSurface, format: 'rgba8unorm' },
-      { view: scratch.value, format: 'rgba16float' },
-    ],
-  );
-  if (!added.ok) return added;
-  let previousTexture = scratchTexture.value;
-  let previousView = scratch.value;
-  for (let level = 0; level < reflectionLevels.length; level++) {
-    const width = mipDimension(input.width, level);
-    const height = mipDimension(input.height, level);
-    if (level > 0) {
-      const texture = graph.createTexture(`ssr-reflection-mip-${level}.scratch`, {
-        format: 'rgba16float',
-        size: { width, height },
-        domain: 'linear-hdr',
-      });
-      if (!texture.ok) return texture;
-      const view = graph.view(texture.value);
-      if (!view.ok) return view;
-      const reduced = add(
-        `ssr-reflection-mip-${level}`,
-        'temporalFragment',
-        'ssr_reflection_mip_fragment',
-        [{ binding: 0, view: previousView, sampleType: 'unfilterable-float' }],
-        [],
-        [{ view: view.value, format: 'rgba16float' }],
-      );
-      if (!reduced.ok) return reduced;
-      previousTexture = texture.value;
-      previousView = view.value;
-    }
-    const sourceTexture = previousTexture;
-    const sourceView = previousView;
-    const destination = reflectionLevels[level];
-    if (destination === undefined) throw computePipelineError('SSR reflection mip descriptor');
-    const name = `ssr-reflection-mip-${level}.publish`;
-    const copied = graph.addCopyPass(name, {
-      accesses: [
-        { resource: sourceView, usage: 'copy-src' },
-        { resource: destination, usage: 'copy-dst' },
-      ],
-      encodeDirect: (encoder, _frame, resolver) =>
-        encoder.copyTextureToTexture(
-          { texture: resolver.texture(sourceTexture).unwrap() },
-          { texture: resolver.texture(resolved.texture).unwrap(), mipLevel: level },
-          { width, height, depthOrArrayLayers: 1 },
-        ),
-    });
-    if (!copied.ok) return copied;
-    names.push(name);
-  }
   return ok(Object.freeze(names));
 }

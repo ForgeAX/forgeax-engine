@@ -9,8 +9,9 @@ const rendererFactorySource = readFileSync(
 );
 const recordSources = [
   readFileSync(new URL('../record/main-pass.ts', import.meta.url), 'utf8'),
-  readFileSync(new URL('../record/main-pass-geometry.ts', import.meta.url), 'utf8'),
-  readFileSync(new URL('../record/main-pass-sprite-draws.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../record/main-pass-material.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../record/material-uniforms.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../record/shadow-pass.ts', import.meta.url), 'utf8'),
   rendererFactorySource,
 ];
 

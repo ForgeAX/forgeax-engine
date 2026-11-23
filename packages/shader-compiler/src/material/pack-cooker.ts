@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import {
   type MaterialTable,
   materialPassLightMode,
   resolveMaterialAsset,
+  selectMaterialStaticContract,
 } from '@forgeax/engine-types';
 import type {
   MaterialCookedPass,
@@ -45,8 +46,12 @@ import {
   MATERIAL_RASTER_SOURCES_PATH,
   publishMaterialRasterSources,
 } from './source-publication.js';
+import { deriveSurfaceShadowPasses } from './surface-shadow.js';
 import { terrainProgramSource } from './terrain-program.js';
-import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from './variant-context.js';
+import {
+  DEFAULT_MATERIAL_VARIANT_CONTEXT,
+  type MaterialVariantContext,
+} from './variant-context.js';
 
 function materialPassLayoutIdentity(passes: readonly MaterialCookedPass[]): string {
   const layoutIdentity = passes[0]?.layoutIdentity;
@@ -311,18 +316,23 @@ function inputDigest(
  * manifest; keep Pack cooking on that one source route instead of requiring a
  * copied WGSL file just to make the alias discoverable.
  */
-function materialModuleAliases(
+async function materialModuleAliases(
   sources: {
     readonly engine: readonly MaterialSourceFile[];
     readonly project: readonly MaterialSourceFile[];
   },
   input: MaterialPackCookInput,
-): readonly MaterialSourceFile[] {
+): Promise<readonly MaterialSourceFile[]> {
   if (input.sourcePath === undefined || input.sourceKey === undefined) return [];
   const sourcePath = resolve(dirname(resolve(input.sourcePath)), input.sourceKey);
-  const source = [...sources.engine, ...sources.project].find(
-    (candidate) => resolve(candidate.path) === sourcePath,
-  );
+  const available = [...sources.engine, ...sources.project];
+  let source = available.find((candidate) => resolve(candidate.path) === sourcePath);
+  if (source === undefined) {
+    const canonical = await realpath(sourcePath).catch(() => undefined);
+    if (canonical !== undefined && canonical !== sourcePath) {
+      source = available.find((candidate) => resolve(candidate.path) === canonical);
+    }
+  }
   if (source === undefined) return [];
   const existing = new Set(
     [...sources.engine, ...sources.project].map((candidate) => candidate.moduleId),
@@ -427,6 +437,93 @@ function createMaterialSourcePreparation(snapshot: MaterialSourceSnapshot | unde
   };
 }
 
+type MaterialRasterRequest = MaterialCookRequest & { readonly context: MaterialVariantContext };
+
+function materialRasterRequests(
+  request: MaterialRasterRequest,
+  resolvedAsset: MaterialAsset,
+  storageOnly: boolean,
+): MaterialRasterRequest[] {
+  const { context } = request;
+  const spriteRoot =
+    resolvedAsset.passes?.some((pass) => SPRITE_ROOT_MODULES.has(pass.program.module)) === true;
+  const storageOnlyMedium =
+    resolvedAsset.surface?.model === 'single-layer-medium' ||
+    resolvedAsset.surface?.model === 'single-layer-water';
+  const gpuParticleRoot =
+    resolvedAsset.passes?.some((pass) =>
+      pass.program.module.startsWith('forgeax::vfx-render.particles.'),
+    ) === true;
+  // The resolved asset determines primary and portable contexts without a
+  // preliminary native compile. Keep publication order while admitting
+  // the independent work to one bounded compiler batch.
+  const ordinaryContexts: MaterialVariantContext[] = [context];
+  if (resolvedAsset.passes?.some((pass) => UNLIT_ROOT_MODULES.has(pass.program.module)))
+    ordinaryContexts.push({ ...context, geometry: 'skinned' });
+  const rasterRequests = ordinaryContexts.map((context) => ({ ...request, context }));
+  if (resolvedAsset.parent !== undefined) throw new Error('material resolution retained a parent');
+  const visiblePasses = resolvedAsset.passes?.filter((pass) =>
+    isStandardRootModule(terrainProgramSource(pass.program.module)?.module ?? pass.program.module),
+  );
+  const visibleContext = { ...context, visibleSurface: true as const };
+  // Depth and shadow lose visibleSurface during pass selection.
+  const publishesVisibleSurface = visiblePasses?.some(
+    (pass) =>
+      materialProgramContextForPass(
+        visibleContext,
+        String(materialPassLightMode(pass) ?? pass.name),
+      ).visibleSurface === true,
+  );
+  if (publishesVisibleSurface) {
+    rasterRequests.push({
+      ...request,
+      table: {
+        [request.material]: {
+          ...resolvedAsset,
+          passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
+        },
+      },
+      context: visibleContext,
+    });
+  }
+  const geometries = new Set(ordinaryContexts.map((context) => context.geometry));
+  // Single-layer media and GPU particles have no uniform counterpart.
+  if (!(storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot)) {
+    for (const geometry of geometries) {
+      for (const backend of ['webgpu', 'webgl2'] as const) {
+        rasterRequests.push({
+          ...request,
+          context: { ...context, geometry, backend, capability: 'uniform-fallback' },
+        });
+      }
+    }
+  }
+  // Storage support alone does not establish the optional texture budget.
+  // Match the ordinary and visible-surface projections in publication order.
+  const textureContexts = [
+    ...Array.from(geometries, (geometry) => ({ ...context, geometry })),
+    ...(publishesVisibleSurface ? [visibleContext] : []),
+  ];
+  if (spriteRoot) {
+    const instances = {
+      ...DEFAULT_MATERIAL_VARIANT_CONTEXT,
+      geometry: 'sprite-instances' as const,
+    };
+    rasterRequests.push({ ...request, context: instances });
+    if (!geometries.has(instances.geometry)) textureContexts.push(instances);
+  }
+  for (const projection of textureContexts) {
+    for (const capability of [
+      'storage-buffer-minimum',
+      'storage-buffer-projector',
+      'storage-buffer-atmosphere',
+    ] as const) {
+      rasterRequests.push({ ...request, context: { ...projection, capability } });
+    }
+  }
+  return rasterRequests;
+}
+
 /** Build a Pack NativeCooker for authored WGSL material rows. */
 export function createMaterialPackCooker(
   roots: readonly string[] = [],
@@ -477,6 +574,7 @@ export function createMaterialPackCooker(
   const prepareSources = createMaterialSourcePreparation(snapshot);
   const cooker: NativeCooker = {
     key: 'material',
+    publicationGeneration: 'metadata-only',
     concurrency: 'parallel',
     async cacheIdentity() {
       const packagedRoots = materialShaderSourceRoots();
@@ -496,7 +594,7 @@ export function createMaterialPackCooker(
           )
           .sort(),
       ];
-      const hash = createHash('sha256').update('material-pack-cooker/7');
+      const hash = createHash('sha256').update('material-pack-cooker/10');
       if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
       if (rasterLibraryIdentity !== undefined)
         hash.update(`\0material-raster-sources/1:${rasterLibraryIdentity}`);
@@ -542,7 +640,7 @@ export function createMaterialPackCooker(
       const packagedRoots = materialShaderSourceRoots();
       const sourceRoots = materialInputRoots(cookRoots, packagedRoots, input);
       const sources = await collectSources(sourceRoots, packagedRoots);
-      const aliases = materialModuleAliases(sources, normalizedInput);
+      const aliases = await materialModuleAliases(sources, normalizedInput);
       // An alias of an Engine-owned template retains that template's identity.
       // Project names and arbitrary Surface slots do not select Standard policy.
       const normalizeMaterialCookTemplateAliases = () => {
@@ -612,6 +710,7 @@ export function createMaterialPackCooker(
               terrainProgramSource(pass.program.module) !== undefined ||
               [
                 'forgeax_material::terrain_surface',
+                'forgeax_material::terrain_detail_surface',
                 'forgeax_material::terrain_id_surface',
               ].includes(pass.program.moduleSlots?.surface ?? ''),
           )
@@ -627,171 +726,28 @@ export function createMaterialPackCooker(
         return context;
       };
       const context = selectMaterialCookRasterContext();
-      const cooked = await cookRaster({
-        material: normalizedInput.guid,
-        table,
-        sources: catalog.value,
-        context,
-      });
-      if (!cooked.ok) {
-        throw cooked.error;
-      }
-      const layoutIdentity = materialPassLayoutIdentity(cooked.value.passes);
-      // A material may be shared by ordinary sprites and SpriteInstances.
-      // Publish both buffer layouts; the component selects the exact program.
-      const passes = [...cooked.value.passes];
-      const resolvedAsset = cooked.value.resolved.asset;
-      const classifyMaterialRasterRoots = () => {
-        const spriteRoot =
-          resolvedAsset.passes?.some((pass) => SPRITE_ROOT_MODULES.has(pass.program.module)) ===
-          true;
-        const storageOnlyMedium =
-          resolvedAsset.surface?.model === 'single-layer-medium' ||
-          resolvedAsset.surface?.model === 'single-layer-water';
-        const gpuParticleRoot =
-          resolvedAsset.passes?.some((pass) =>
-            pass.program.module.startsWith('forgeax::vfx-render.particles.'),
-          ) === true;
-        return { spriteRoot, storageOnlyMedium, gpuParticleRoot };
-      };
-      const { spriteRoot, storageOnlyMedium, gpuParticleRoot } = classifyMaterialRasterRoots();
-
-      if (resolvedAsset.passes?.some((pass) => UNLIT_ROOT_MODULES.has(pass.program.module))) {
-        const skinned = await cookRaster({
-          material: normalizedInput.guid,
-          table,
-          sources: catalog.value,
-          context: { ...context, geometry: 'skinned' },
-        });
-        if (!skinned.ok) throw skinned.error;
-        passes.push(...skinned.value.passes);
-      }
-      const appendVisibleAndPortableVariants = async () => {
-        // Visible-surface capture is another Standard deferred output contract.
-        // Publish it with the same authored Surface and parameter schema so a
-        // renderer never rewrites WGSL or substitutes a diagnostic material.
-
-        if (resolvedAsset.parent !== undefined)
-          throw new Error('material resolution retained a parent');
-        const visiblePasses = resolvedAsset.passes?.filter((pass) =>
-          isStandardRootModule(
-            terrainProgramSource(pass.program.module)?.module ?? pass.program.module,
-          ),
-        );
-        const earlyVariants: MaterialCookRequest[] = [];
-        const visibleContext = { ...context, visibleSurface: true as const };
-        // Depth and shadow strip visibleSurface during pass selection. A
-        // depth-only material would compile this candidate just to discard it.
-        if (
-          visiblePasses?.some(
-            (pass) =>
-              materialProgramContextForPass(
-                visibleContext,
-                String(materialPassLightMode(pass) ?? pass.name),
-              ).visibleSurface === true,
-          )
-        ) {
-          earlyVariants.push({
-            material: normalizedInput.guid,
-            table: {
-              [normalizedInput.guid]: {
-                ...resolvedAsset,
-                passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
-              },
-            },
-            sources: catalog.value,
-            context: visibleContext,
-          });
-        }
-        // Ordinary non-Sprite raster geometry must survive a device without
-        // storage buffers. Single-layer media and GPU particles have no uniform
-        // counterpart; explicit storage profiles skip that portable subset.
-        if (!(storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot)) {
-          const fallbackGeometries = new Set(
-            passes
-              .filter((pass) => pass.context.visibleSurface !== true)
-              .map((pass) => pass.context.geometry),
-          );
-          for (const geometry of fallbackGeometries) {
-            for (const backend of ['webgpu', 'webgl2'] as const) {
-              earlyVariants.push({
-                material: normalizedInput.guid,
-                table,
-                sources: catalog.value,
-                context: { ...context, geometry, backend, capability: 'uniform-fallback' },
-              });
-            }
-          }
-        }
-        // Visible capture and the uniform fallbacks derive from the same base
-        // material independently. Overlap their cold work but publish in order.
-        const early = await mapMaterialVariants(earlyVariants, compiler.concurrency, (request) =>
-          cookRaster(request),
-        );
-        for (const [index, cooked] of early.entries()) {
-          if (!cooked.ok) throw cooked.error;
-          const visible = earlyVariants[index]?.context?.visibleSurface === true;
-          passes.push(
-            ...cooked.value.passes.filter(
-              (pass) => !visible || pass.context.visibleSurface === true,
-            ),
-          );
-        }
-      };
-      await appendVisibleAndPortableVariants();
-      if (spriteRoot) {
-        const instanced = await cookRaster({
-          material: normalizedInput.guid,
-          table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
-          sources: catalog.value,
-          context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, geometry: 'sprite-instances' },
-        });
-        if (!instanced.ok) throw instanced.error;
-        passes.push(...instanced.value.passes);
-      }
-      // Publish each sampled-texture View topology with the same authored material.
-      // Storage support alone does not establish the optional texture budget.
-      const collectMaterialTextureVariantInputs = () => {
-        const textureContexts = new Map(
-          passes.map((pass) => [
-            `${pass.context.geometry}:${pass.context.visibleSurface === true}`,
-            {
-              geometry: pass.context.geometry,
-              ...(pass.context.visibleSurface === true ? { visibleSurface: true as const } : {}),
-            },
-          ]),
-        );
-        const textureVariants = [...textureContexts.values()].flatMap((projection) =>
-          (
-            [
-              'storage-buffer-minimum',
-              'storage-buffer-projector',
-              'storage-buffer-atmosphere',
-            ] as const
-          ).map((capability) => ({ projection, capability })),
-        );
-        return textureVariants;
-      };
-      const textureVariants = collectMaterialTextureVariantInputs();
-      const specializedVariants = await mapMaterialVariants(
-        textureVariants,
-        compiler.concurrency,
-        ({ projection, capability }) =>
-          cookVariant({
-            material: normalizedInput.guid,
-            table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
-            sources: catalog.value,
-            context: { ...context, ...projection, capability },
-          }),
+      const resolvedAsset = deriveSurfaceShadowPasses(
+        selectMaterialStaticContract(resolved.value.asset),
       );
-      for (const [index, specialized] of specializedVariants.entries()) {
-        const projection = textureVariants[index]?.projection;
-        passes.push(
-          ...specialized.passes.filter(
-            (pass) => projection?.visibleSurface !== true || pass.context.visibleSurface === true,
-          ),
-        );
-      }
+      const rasterRequests = materialRasterRequests(
+        { material: normalizedInput.guid, table, sources: catalog.value, context },
+        resolvedAsset,
+        storageOnly,
+      );
+      const rasterVariants = await mapMaterialVariants(
+        rasterRequests,
+        compiler.concurrency,
+        (candidate) => cookVariant(candidate),
+      );
+      const primary = rasterVariants[0];
+      if (primary === undefined) throw new Error('material primary raster context was not cooked');
+      const layoutIdentity = materialPassLayoutIdentity(primary.passes);
+      const passes = rasterVariants.flatMap((variant, index) => {
+        const visible = rasterRequests[index]?.context.visibleSurface === true;
+        return visible
+          ? variant.passes.filter((pass) => pass.context.visibleSurface === true)
+          : variant.passes;
+      });
       // Publish independent receiving-view and scene-index coverage beside the
       // ordinary program, using the existing compiler cache and runtime selector.
       const clippingContexts = new Map(
@@ -821,7 +777,7 @@ export function createMaterialPackCooker(
             pass.context.geometry === plain.geometry &&
             (pass.context.visibleSurface === true) === (plain.visibleSurface === true),
         );
-        return candidates.some(supportsMaterialLodCoverage)
+        return candidates.some((pass) => supportsMaterialLodCoverage(pass))
           ? [
               clipped,
               { ...plain, lodCoverage: true as const },
@@ -986,12 +942,12 @@ export function createMaterialPackCooker(
           storageOnly
             ? { ...normalizedInput, profile: `${options.profile}-validation/v1` }
             : normalizedInput,
-          cooked.value.resolved.asset,
+          primary.resolved.asset,
           sourceClosure,
           layoutIdentity,
           programs,
           fingerprint,
-          cooked.value.layerPlan.identity,
+          primary.layerPlan.identity,
         );
         const rasterSources =
           rasterLibrary === undefined || sourceVertexColorOverrides === undefined

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { cookStaticShadow, OPAQUE_SWITCHES } from './standard-static-shadow.fixture';
+import {
+  cookStaticShadow,
+  cookStaticShadowCoverage,
+  OPAQUE_SWITCHES,
+} from './standard-static-shadow.fixture';
 
 describe('static Standard shadow coverage', () => {
   it('retains authored normal maps in color while removing them from shadow evaluation', async () => {
@@ -45,24 +49,24 @@ describe('static Standard shadow coverage', () => {
   });
 
   it('keeps runtime-zero, displaced and custom coverage on their authored paths', async () => {
-    const runtime = await cookStaticShadow({ staticSwitches: {} });
-    expect(runtime.shadow.compile.wgsl).toContain('displaceVertex');
-    expect(runtime.shadow.compile.wgsl).toContain('surfaceSample');
-    expect(runtime.shadow.abi.alphaMask?.cutoff).toBe('alphaCutoff');
+    const runtime = await cookStaticShadowCoverage({ staticSwitches: {} });
+    expect(runtime.compile.wgsl).toContain('displaceVertex');
+    expect(runtime.compile.wgsl).toContain('surfaceSample');
+    expect(runtime.abi.alphaMask?.cutoff).toBe('alphaCutoff');
     for (const feature of ['alphaClipping', 'alphaHash', 'displacement'] as const) {
-      const dynamic = await cookStaticShadow({
+      const dynamic = await cookStaticShadowCoverage({
         staticSwitches: { ...OPAQUE_SWITCHES, [feature]: true },
       });
-      expect(dynamic.shadow.compile.wgsl).toContain('surfaceSample');
+      expect(dynamic.compile.wgsl).toContain('surfaceSample');
       if (feature === 'alphaHash') {
-        expect(dynamic.shadow.abi.alphaMask).toEqual({ cutoff: '', source: '' });
-        expect(dynamic.shadow.abi.materialRow.fields).toContain('alphaHash');
-        expect(dynamic.shadow.compile.wgsl).toMatch(/\.alphaHash\b/);
+        expect(dynamic.abi.alphaMask).toEqual({ cutoff: '', source: '' });
+        expect(dynamic.abi.materialRow.fields).toContain('alphaHash');
+        expect(dynamic.compile.wgsl).toMatch(/\.alphaHash\b/);
       }
     }
-    const custom = await cookStaticShadow({ custom: true });
-    expect(custom.shadow.compile.wgsl).toContain('surfaceSample');
-    expect(custom.shadow.compile.wgsl).toMatch(/if \([^\n]+ < 0\.5f\) \{\s+discard;/);
+    const custom = await cookStaticShadowCoverage({ custom: true });
+    expect(custom.compile.wgsl).toContain('surfaceSample');
+    expect(custom.compile.wgsl).toMatch(/if \([^\n]+ < 0\.5f\) \{\s+discard;/);
   });
 
   it.each([

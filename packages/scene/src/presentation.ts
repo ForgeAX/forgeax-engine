@@ -243,8 +243,9 @@ export function readPresentationWorldMatrix(
 export function copyPresentationWorldMatrix(
   world: World,
   entity: EntityHandle,
-  target: Float32Array,
+  target: Float32Array | number[],
 ): boolean {
+  if (target.length < 16) return false;
   const state = presentations.get(world);
   let field: 'world' | 'presentation' = 'world';
   if (state !== undefined) {

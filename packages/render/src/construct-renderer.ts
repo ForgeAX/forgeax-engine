@@ -78,6 +78,12 @@ export async function constructRendererHost(
   try {
     if (options?.dynamicGeometryMeshBudgetBytes !== undefined)
       validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+    if (
+      options?.staticShadowBudgetBytes !== undefined &&
+      (!Number.isSafeInteger(options.staticShadowBudgetBytes) ||
+        options.staticShadowBudgetBytes < 0)
+    )
+      throw new RangeError('staticShadowBudgetBytes must be a non-negative safe integer');
     if (options?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
     if (
       options?.featureTextureReadbackBudgetBytes !== undefined &&

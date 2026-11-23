@@ -26,6 +26,7 @@ import { postMergeQualification } from './post-merge-qualification.mjs';
 const snapshot = 'group-baseline.json';
 const receiptVersion = 1;
 const snapshotBudget = 32 * 1024 * 1024;
+const coverageShards = [0, 1, 2, 3];
 const projectionName = 'Vitest coverage (v8) (bounded runtime children)';
 
 function groupKey(group) {
@@ -277,13 +278,14 @@ async function findCoverageArtifact(api, repository, run, shard) {
   return artifact;
 }
 
-async function readCoverageSnapshot(repository, run, artifact) {
+async function readCoverageSnapshot(repository, run, artifact, signal) {
   const directory = mkdtempSync(join(tmpdir(), 'forgeax-coverage-baseline-'));
   try {
     const archive = join(directory, 'coverage.zip');
     await downloadArtifact(repository, artifact.id, archive, {
       requestTimeoutMs: 10_000,
       idleTimeoutMs: 10_000,
+      signal,
     });
     const hash = createHash('sha256');
     for await (const bytes of createReadStream(archive)) hash.update(bytes);
@@ -312,51 +314,106 @@ async function readCoverageSnapshot(repository, run, artifact) {
   }
 }
 
-async function baselineArchive(repository, token, base, shard) {
-  // This is an optional fast path: make one bounded request per lookup and
-  // fall back to fresh execution on absence, throttling, or malformed history.
-  const deadline = AbortSignal.timeout(20_000);
+function coverageHistoryClient(token, deadline) {
   const request = (url, options) =>
     fetch(url, { ...options, signal: AbortSignal.any([options.signal, deadline]) });
-  const api = (endpoint) =>
-    requestGitHub(endpoint, token, request, {
-      sleepFn: () => {
-        throw new Error('coverage baseline lookup deferred');
-      },
-    });
+  const responses = new Map();
+  return (endpoint) => {
+    if (!responses.has(endpoint)) {
+      responses.set(
+        endpoint,
+        requestGitHub(endpoint, token, request, {
+          sleepFn: () => {
+            throw new Error('coverage baseline lookup deferred');
+          },
+        }),
+      );
+    }
+    return responses.get(endpoint);
+  };
+}
+
+async function baselineArchive(repository, api, base, shard, signal) {
   const producer = await findCoverageProducer(api, repository, base, shard);
   if (!producer) return undefined;
   const { run, job } = producer;
   const artifact = await findCoverageArtifact(api, repository, run, shard);
-  if (!artifact) return undefined;
-  const data = await readCoverageSnapshot(repository, run, artifact);
+  if (
+    !artifact ||
+    !Number.isSafeInteger(artifact.size_in_bytes) ||
+    artifact.size_in_bytes <= 0 ||
+    artifact.size_in_bytes > 2 * snapshotBudget
+  )
+    return undefined;
+  const data = await readCoverageSnapshot(repository, run, artifact, signal);
   return { ...data, run: run.id, job: job.id, artifact: artifact.id };
 }
 
-export async function loadCoverageBaseline(root, shard, environment = process.env) {
+// Keep only eligible receipts from the old placements. The total retained
+// payload uses the same byte budget as one baseline artifact.
+export async function collectCoverageBaselines(groups, load, limit = snapshotBudget) {
+  const pending = new Map(groups.map((group) => [groupKey(group), group]));
+  const result = new Map();
+  let remaining = limit;
+  for await (const { baseline, changed, eligible } of load()) {
+    for (const [key, group] of pending) {
+      const entry = baseline.receipts[key];
+      if (!entry || !Array.isArray(entry.report?.testResults) || !eligible(group)) continue;
+      if (
+        Object.keys(entry.coverage ?? {}).some((file) => changed.has(file)) ||
+        entry.report?.testResults?.some(({ name }) => changed.has(name))
+      )
+        continue;
+      const size = Buffer.byteLength(JSON.stringify(entry));
+      if (size > remaining) continue;
+      remaining -= size;
+      result.set(group, { baseline: { ...baseline, receipts: { [key]: entry } }, changed });
+      pending.delete(key);
+    }
+    if (pending.size === 0 || remaining === 0) break;
+  }
+  return result;
+}
+
+export async function loadCoverageBaseline(root, shard, groups, environment = process.env) {
   if (environment.GITHUB_EVENT_NAME !== 'pull_request' || !environment.GITHUB_TOKEN)
     return undefined;
   const comparison = comparedCiInputs(root, environment);
   if (!comparison) return undefined;
-  if (!internalSourceOwners(comparison.files)) return undefined;
-  try {
-    const baseline = await baselineArchive(
-      environment.GITHUB_REPOSITORY,
-      environment.GITHUB_TOKEN,
-      comparison.base,
-      shard,
-    );
-    if (!baseline) return undefined;
-    const files =
-      baseline.source === comparison.base
-        ? comparison.files
-        : changedCiInputs(root, baseline.source, comparison.target);
-    const affected = files && internalSourceOwners(files);
-    if (!affected) return undefined;
-    const changed = new Set(files.map(({ path }) => path));
-    return { baseline, changed, affected, packages: coveragePackageGraph(root) };
-  } catch (error) {
-    console.warn(`[vitest] baseline unavailable; executing fresh: ${error.message}`);
-    return undefined;
-  }
+  const initialOwners = internalSourceOwners(comparison.files);
+  if (!initialOwners) return undefined;
+  const packages = coveragePackageGraph(root);
+  const wanted = groups.filter((group) => reusableCoverageGroup(group, packages, initialOwners));
+  if (wanted.length === 0) return undefined;
+  const deadline = AbortSignal.timeout(20_000);
+  const repository = environment.GITHUB_REPOSITORY;
+  const api = coverageHistoryClient(environment.GITHUB_TOKEN, deadline);
+  return collectCoverageBaselines(wanted, async function* () {
+    for (const candidate of [shard, ...coverageShards.filter((lane) => lane !== shard)]) {
+      if (deadline.aborted) return;
+      try {
+        const baseline = await baselineArchive(
+          repository,
+          api,
+          comparison.base,
+          candidate,
+          deadline,
+        );
+        if (!baseline) continue;
+        const files =
+          baseline.source === comparison.base
+            ? comparison.files
+            : changedCiInputs(root, baseline.source, comparison.target);
+        const affected = files && internalSourceOwners(files);
+        if (!affected) continue;
+        yield {
+          baseline,
+          changed: new Set(files.map(({ path }) => path)),
+          eligible: (group) => reusableCoverageGroup(group, packages, affected),
+        };
+      } catch (error) {
+        console.warn(`[vitest] coverage baseline shard ${candidate} unavailable: ${error.message}`);
+      }
+    }
+  });
 }

@@ -15,6 +15,7 @@ import {
 export interface SkinBindingInput {
   readonly skeleton: number;
   readonly joints: readonly number[];
+  readonly affinePoint?: boolean;
 }
 
 /** Borrowed by one recording until discard or its actual GPU completion.
@@ -22,6 +23,7 @@ export interface SkinBindingInput {
  */
 export interface SkinSceneFrame {
   readonly slots: SceneSlotFrame;
+  readonly previousSlots?: SceneSlotFrame;
   readonly current: SkinInputFrame;
   readonly previous: SkinInputFrame | undefined;
 }
@@ -169,7 +171,7 @@ export class SkinSceneInputs {
       throw invalid('a nonzero u32 Skeleton handle');
     const source = this.source(),
       next = this.skeleton(source, after.skeleton);
-    this.inputs.bind(slot, source.slot, next.slot, after.joints);
+    this.inputs.bind(slot, source.slot, next.slot, after.joints, after.affinePoint);
     next.references++;
     for (const joint of after.joints) {
       const count = source.joints.get(joint) ?? 0;
@@ -342,6 +344,7 @@ export class SkinFrames {
   /** Physical reads transfer before any post-submit observer can retire the Scene. */
   private pendingRelease: Promise<void> | undefined;
   private submitted: SkinInputFrame | undefined;
+  private submittedSlots: SceneSlotFrame | undefined;
   constructor(readonly inputs: SkinSceneInputs) {}
 
   /** Capture once before visibility/recording, independently of TAA demand.
@@ -356,7 +359,12 @@ export class SkinFrames {
     try {
       previous = this.submitted?.retain();
       history = current.jointCapacity === 0 ? undefined : current.retain();
-      const frame = Object.freeze({ slots, current, previous });
+      const frame = Object.freeze({
+        slots,
+        current,
+        previous,
+        ...(this.submittedSlots === undefined ? {} : { previousSlots: this.submittedSlots }),
+      });
       this.pending = frame;
       this.pendingHistory = history;
       return frame;
@@ -412,7 +420,10 @@ export class SkinFrames {
     const released = this.pendingRelease ?? this.trackSubmittedWork(frame, completed);
     this.pendingRelease = undefined;
     const retiredHistory = acceptHistory ? this.submitted : this.pendingHistory;
-    if (acceptHistory) this.submitted = this.pendingHistory;
+    if (acceptHistory) {
+      this.submitted = this.pendingHistory;
+      this.submittedSlots = this.submitted === undefined ? undefined : frame.slots;
+    }
     this.pendingHistory = undefined;
     this.pending = undefined;
     try {
@@ -451,6 +462,7 @@ export class SkinFrames {
     this.pending = undefined;
     this.pendingHistory = undefined;
     this.submitted = undefined;
+    this.submittedSlots = undefined;
     this.pendingRelease = undefined;
     releaseRoots(pending?.current, pending?.previous, history, submitted);
   }

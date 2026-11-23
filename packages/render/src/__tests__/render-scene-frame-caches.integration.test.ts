@@ -5,7 +5,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, MotionBlur } from '../components';
 import { InstanceProjectionStore } from '../instances';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -15,6 +15,8 @@ import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
 } from '../scene/render-scene';
+
+import { RowViews, SlotIdentityKeys } from '../scene/scene-slots';
 
 const material: MaterialAsset = {
   kind: 'material',
@@ -86,15 +88,47 @@ describe('PersistentRenderScene frame caches', () => {
       .unwrap();
     try {
       const first = draw();
+      const inspectKeys = (frame: ExtractedFrame, expected: readonly number[]) => {
+        const views = vi.spyOn(RowViews.prototype, 'read');
+        try {
+          const projection = scene.projectVisibility(undefined, frame.renderables, frame.dispatch);
+          expect(projection.activeEntityKeys).toBeInstanceOf(SlotIdentityKeys);
+          expect([...projection.activeEntityKeys]).toEqual(expected);
+          expect(views).not.toHaveBeenCalled();
+          return projection;
+        } finally {
+          views.mockRestore();
+        }
+      };
+      const firstVisibility = inspectKeys(first, [stableMesh, changingMesh]);
+      const firstDraw = first.renderables.at(0);
+      const secondDraw = first.renderables.at(1);
+      if (firstDraw === undefined || secondDraw === undefined)
+        throw new Error('Missing visible rows');
+      const borrowed = [firstDraw];
+      const raw = scene.projectVisibility(undefined, borrowed, first.dispatch);
+      borrowed[0] = secondDraw;
+      const reread = scene.projectVisibility(undefined, borrowed, first.dispatch);
+      expect([...raw.activeEntityKeys]).toEqual([stableMesh]);
+      expect([...reread.activeEntityKeys]).toEqual([changingMesh]);
+      expect(reread.activeEntityRevision).toBeGreaterThan(raw.activeEntityRevision);
+      const beforeEdit = inspectKeys(first, [stableMesh, changingMesh]);
       const stable = first.dispatch.find((entry) => entry.entityIndex === stableMesh);
       if (stable === undefined) throw new Error('Missing visible dispatch');
       expect(stable.renderableIndex).toBe(0);
       world.set(changingMesh, MeshRenderer, { materials: [replacement] }).unwrap();
       const changed = draw();
+      expect(inspectKeys(changed, [stableMesh, changingMesh]).activeEntityRevision).toBe(
+        beforeEdit.activeEntityRevision,
+      );
       expect(changed.dispatch).not.toBe(first.dispatch);
       expect(changed.dispatch.find((entry) => entry.entityIndex === stableMesh)).toBe(stable);
       world.set(hiddenMesh, Transform, { pos: [-1, 0, 0] }).unwrap();
       const expanded = draw();
+      expect(
+        inspectKeys(expanded, [hiddenMesh, stableMesh, changingMesh]).activeEntityRevision,
+      ).toBeGreaterThan(firstVisibility.activeEntityRevision);
+      expect([...firstVisibility.activeEntityKeys]).toEqual([stableMesh, changingMesh]);
       const shifted = expanded.dispatch.find((entry) => entry.entityIndex === stableMesh);
       if (shifted === undefined) throw new Error('Missing shifted dispatch');
       expect(shifted.renderableIndex).toBe(1);

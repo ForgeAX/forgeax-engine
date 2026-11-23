@@ -382,8 +382,8 @@ const bytes = await readPixels();
 async function renderControl() {
   // Do not advance World time: geometry, camera and light pose are identical.
   for (let frame = 0; frame < 8; frame++) {
-    const result = app.renderer.draw({ source: lease }).unwrap();
-    (await result.completed).unwrap();
+    // Toggling shadows can change the graph and queue new color pipelines.
+    await drawReadyFrame(app.renderer, { source: lease });
     await device.queue.onSubmittedWorkDone();
     await delay(1);
   }

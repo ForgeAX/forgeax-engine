@@ -65,7 +65,12 @@ describe('M4 vertex-color shader contract', () => {
   it('canonical Standard surface applies vertex color to linear RGB and alpha', () => {
     const text = readFileSync(new URL('../default_standard_surface.wgsl', import.meta.url), 'utf8');
     expect(text).toMatch(/baseColor\.rgb\s*\*\s*baseSample\.rgb\s*\*\s*vertexColor\.rgb/);
-    expect(text).toMatch(/baseColor\.a\s*\*\s*baseSample\.a\s*\*\s*vertexColor\.a/);
+    expect(text).toMatch(
+      /sampledStandardOpacity\(materialValue\.baseColor\.a, vertexColor\.a, baseSample\.a, alpha\)/,
+    );
+    expect(source('material/standard-surface-maps.wgsl')).toContain(
+      'return materialAlpha * baseAlpha * vertexAlpha * alpha;',
+    );
   });
 
   it('preserves all eight UV sets in paired varyings while reserving color at 14', () => {

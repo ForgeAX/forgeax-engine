@@ -2,12 +2,19 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { frustum, mat4, vec3 } from '@forgeax/engine-math';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
+import {
+  appendCompiledRenderGraphPassNames,
+  type CompiledRenderGraph,
+  RenderGraphBuilder,
+  renderGraphCompileCount,
+} from '@forgeax/engine-render-graph';
+import type { RhiCommandEncoder, Texture } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { createShadowArrayFallbackView } from '../assembly/shadow-array-fallback';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { renderAblation, setRenderAblation } from '../diagnostics/render-ablation';
 import { batchLevelStride } from '../gpu-driven/batch-layout';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import type { LodViewCamera } from '../gpu-driven/lod-projection.wgsl';
@@ -15,16 +22,24 @@ import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { type ShadowViewIdentity, ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
 import { worldRenderResources } from '../publication/resource-scope';
+import { addCurrentShadowSelection } from '../record/current-shadow-selection';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { addTypedShadowPasses } from '../typed-shadow-passes';
+import { ShadowAtlas } from '../shadow-atlas';
+import { ShadowDepthLayers } from '../shadow-depth-layers';
+import {
+  addTypedShadowPasses,
+  currentShadowViews,
+  shadowPipelinePreparationDemand,
+} from '../typed-shadow-passes';
 import {
   admitGpuFixture,
   preparedPbrSnapshot,
@@ -128,9 +143,13 @@ const identities: readonly ShadowViewIdentity[] = [
 
 describe('GPU-driven shadow views Dawn structural evidence', () => {
   it.each([
-    false,
-    true,
-  ])('shares candidate plans while preserving three independent GPU frusta for 60 submissions (owned %s)', async (ownedRequests) => {
+    { ownedRequests: false, nativeSelection: false },
+    { ownedRequests: true, nativeSelection: false },
+    { ownedRequests: true, nativeSelection: true },
+  ])('shares candidate plans while preserving three independent GPU frusta for 60 submissions (owned $ownedRequests, native $nativeSelection)', async ({
+    ownedRequests,
+    nativeSelection,
+  }) => {
     const { device, native } = await nativeDeviceFixture();
     native.pushErrorScope('validation');
     const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
@@ -224,6 +243,13 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
       })
       .unwrap();
+    let stock: CompiledRenderGraph<RenderPipelineFrame> | undefined;
+    if (nativeSelection) {
+      const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+      addCurrentShadowSelection(graph, 3, false).unwrap();
+      stock = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    }
+    const compiledBeforeFrames = renderGraphCompileCount();
     try {
       for (let frame = 0; frame < 60; frame++) {
         if (frame === 30) {
@@ -274,11 +300,25 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         }
         expect(new Set(current.map((view) => view.plan)).size).toBe(1);
         expect(new Set(current.map((view) => view.view.visibleBuffer)).size).toBe(3);
-        const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
-        for (const view of views) pool.project(graph, view.identity).unwrap();
-        const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
         const encoder = device.createCommandEncoder().unwrap();
-        compiled.execute({ encoder }).unwrap();
+        let borrowed: CompiledRenderGraph<{ readonly encoder: RhiCommandEncoder }> | undefined;
+        if (stock === undefined) {
+          const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+          for (const view of views) pool.project(graph, view.identity).unwrap();
+          borrowed = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+          borrowed.execute({ encoder }).unwrap();
+        } else {
+          const nativePassNames: string[] = [];
+          stock
+            .execute({
+              encoder,
+              gpuDrivenShadowViews: pool,
+              nativePassNames,
+            } as unknown as RenderPipelineFrame)
+            .unwrap();
+          expect(nativePassNames).toContain('gpu-driven.shadow.view-selection');
+          expect(renderGraphCompileCount()).toBe(compiledBeforeFrames);
+        }
         for (const [index, { view }] of current.entries()) {
           const indirect = view.indirectBuffer;
           const visible = view.visibleBuffer;
@@ -312,10 +352,11 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         } finally {
           mapped.unmap();
         }
-        (await compiled.retire()).unwrap();
+        if (borrowed !== undefined) (await borrowed.retire()).unwrap();
       }
       expect(await native.popErrorScope()).toBeNull();
     } finally {
+      if (stock !== undefined) (await stock.retire()).unwrap();
       device.destroyBuffer(readback).unwrap();
       production.dispose();
       scene.dispose();
@@ -430,8 +471,42 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       shadow: { ...base.shadow, directional: 'disabled' as const, pointCount: 0, spotCount },
     };
     const targets = addTypedShadowPasses(graph, input).unwrap();
-    // Keep the original 32x32/60-frame depth readback for real shadow demand,
-    // plus every texel of the one-texel no-shadow target.
+    let fallback: Texture | undefined;
+    const sampled =
+      targets.spot ??
+      (() => {
+        const fallbackView = createShadowArrayFallbackView(device, (descriptor) => {
+          const result = device.createTexture({
+            ...descriptor,
+            usage: (descriptor.usage ?? 0) | GPU_TEXTURE_USAGE_COPY_SRC,
+          });
+          if (result.ok) fallback = result.value;
+          return result;
+        });
+        if (fallback === undefined) throw new Error('Missing layered device fallback');
+        const physical = fallback;
+        const texture = graph
+          .importTexture(
+            'device-shadow-readback',
+            {
+              size: { width: 1, height: 1, depthOrArrayLayers: 2 },
+              format: 'depth32float',
+              usage: GPU_TEXTURE_USAGE_COPY_SRC,
+            },
+            () => physical,
+          )
+          .unwrap();
+        const view = graph
+          .importView(
+            texture,
+            { dimension: '2d-array', aspect: 'depth-only', arrayLayerCount: 2 },
+            () => fallbackView,
+          )
+          .unwrap();
+        return { texture, view };
+      })();
+    expect(targets.spot === undefined).toBe(spotCount === 0);
+    // Read the actual device fallback or every texel of the authored spot depth.
     const spotSize = spotCount === 0 ? 1 : input.shadow.spotMapSize;
     const bytes = spotSize * 256;
     const readback = device
@@ -447,12 +522,12 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     graph
       .addCopyPass('empty-spot-depth-readback', {
         accesses: [
-          { resource: targets.spot.view, usage: 'copy-src' },
+          { resource: sampled.view, usage: 'copy-src' },
           { resource: output, usage: 'copy-dst' },
         ],
         encode: ({ encoder, resources }) =>
           encoder.copyTextureToBuffer(
-            { texture: resources.texture(targets.spot.texture).unwrap() },
+            { texture: resources.texture(sampled.texture).unwrap() },
             {
               buffer: resources.buffer(output).unwrap(),
               bytesPerRow: 256,
@@ -487,7 +562,8 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           true,
         );
     }
-    expect(rasterPasses).toBe(spotCount === 0 ? 1 : 60);
+    expect(rasterPasses).toBe(spotCount === 0 ? 0 : 60);
+    if (fallback !== undefined) device.destroyTexture(fallback).unwrap();
     (await compiled.retire()).unwrap();
     device.destroyBuffer(readback).unwrap();
   });
@@ -947,4 +1023,118 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     pool.dispose();
     sceneAvailability.scene.dispose();
   });
+});
+
+it('writes only the current point faces and spot layers across 60 changing atlas rosters', async () => {
+  const { device, native } = await nativeDeviceFixture();
+  const size = 8;
+  const layers = new ShadowDepthLayers(device);
+  const texture = layers.texture('spot-shadow-depth', size, 4);
+  let atlas = new ShadowAtlas(device, { faceSize: size, layers: 4 });
+  atlas.ensure();
+  const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+  const shadow = {
+    ...topology().shadow,
+    directional: 'disabled' as const,
+    pointCount: 1,
+    spotCount: 1,
+    spotMapSize: size,
+    pointFaceSize: size,
+  };
+  addTypedShadowPasses(
+    graph,
+    { shadow },
+    { depthLayers: layers, currentViews: currentShadowViews(shadow) },
+  ).unwrap();
+  const demand = shadowPipelinePreparationDemand(graph);
+  const compiled = graph.compile({ device, surfaceSize: { width: size, height: size } }).unwrap();
+  const count = renderGraphCompileCount();
+  const readback = device
+    .createBuffer({
+      size: size * 256 * 4,
+      usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+    })
+    .unwrap();
+  const ledger = new ShadowRasterLedger();
+  const prior = renderAblation();
+  setRenderAblation({ shadowRaster: false }).unwrap(); // Isolate the physical clear and its exact layer.
+  native.pushErrorScope('validation');
+  try {
+    for (let tick = 0; tick < 60; tick++) {
+      if (tick === 30) {
+        atlas.dispose();
+        atlas = new ShadowAtlas(device, { faceSize: size, layers: 4 });
+        atlas.ensure();
+      }
+      const occupied = tick % 3 === 0 ? [3] : tick % 3 === 1 ? [0, 2] : [1];
+      const point = (tick + 1) % 4;
+      const encoder = device.createCommandEncoder().unwrap();
+      for (let layer = 0; layer < 4; layer++)
+        encoder
+          .beginRenderPass({
+            colorAttachments: [],
+            depthStencilAttachment: {
+              view: layers.view('spot-shadow-depth', layer),
+              depthLoadOp: 'clear',
+              depthStoreOp: 'store',
+              depthClearValue: 0.625,
+            },
+          })
+          .end();
+      const frame = {
+        encoder,
+        frameState: {
+          pointShadowAtlas: atlas,
+          pointShadowSnapshots: [{ shadowAtlasLayer: point }],
+          spotShadowSnapshots: [
+            ...occupied.map((shadowAtlasTile) => ({
+              shadowAtlasTile,
+              lightViewProj: mat4.create(),
+            })),
+            { shadowAtlasTile: 0 },
+          ],
+          shadowRaster: ledger,
+        },
+      } as unknown as RenderPipelineFrame;
+      const expected = [
+        ...Array.from({ length: 6 }, (_, face) => `point-shadow-${point}-${face}`),
+        ...occupied.map((layer) => `spot-shadow-${layer}`),
+      ];
+      const names: string[] = [];
+      appendCompiledRenderGraphPassNames(compiled, names, frame);
+      expect(names).toEqual(expected);
+      expect(demand?.(frame, { kind: 'spot', index: 3 })).toBe(occupied.includes(3));
+      ledger.begin();
+      const actual: string[] = [];
+      compiled
+        .execute(frame, (pass, encode) => {
+          if (pass.kind === 'raster') actual.push(pass.name);
+          encode();
+        })
+        .unwrap();
+      expect(actual).toEqual(expected);
+      encoder.copyTextureToBuffer(
+        { texture },
+        { buffer: readback, bytesPerRow: 256, rowsPerImage: size },
+        { width: size, height: size, depthOrArrayLayers: 4 },
+      );
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      ledger.commit();
+      layers._commit();
+      await device.queue.onSubmittedWorkDone();
+      const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+      const values = new Float32Array(mapped.getMappedRange().unwrap().slice(0));
+      mapped.unmap();
+      for (let layer = 0; layer < 4; layer++)
+        expect(values[layer * size * 64]).toBe(occupied.includes(layer) ? 0 : 0.625);
+    }
+    expect(renderGraphCompileCount()).toBe(count);
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    setRenderAblation(prior).unwrap();
+    (await compiled.retire()).unwrap();
+    atlas.dispose();
+    layers.dispose();
+    device.destroyBuffer(readback).unwrap();
+  }
 });

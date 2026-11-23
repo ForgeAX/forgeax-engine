@@ -16,7 +16,10 @@ import {
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID,
 } from '../pipeline/single-layer-medium-passes';
 import type { RendererState } from '../render-system';
-import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import {
+  SSR_HIT_COLOR_DOWNSAMPLE_PROGRAM,
+  SSR_SCENE_COLOR_HISTORY_PROGRAM,
+} from '../ssr/scene-color-input';
 import { WATER_SLW_POST_PROCESS_PROGRAMS } from '../water/slw-graph';
 
 const STANDARD_POST_PROCESS_PROGRAMS = [
@@ -26,6 +29,7 @@ const STANDARD_POST_PROCESS_PROGRAMS = [
   ...OUTLINE_PROGRAMS,
   ...SMAA_PROGRAMS,
   SSR_SCENE_COLOR_HISTORY_PROGRAM,
+  SSR_HIT_COLOR_DOWNSAMPLE_PROGRAM,
   ...SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS,
   ...WATER_SLW_POST_PROCESS_PROGRAMS.map((entry) => ({ ...entry, kind: 'fullscreen' as const })),
 ];

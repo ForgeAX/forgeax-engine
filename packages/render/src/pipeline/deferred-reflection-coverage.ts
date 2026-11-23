@@ -23,11 +23,9 @@ export function deferredReflectionArrayEntry(fragmentEntry: string, count: 1 | 2
   return `${fragmentEntry}_array_${count === 1 ? 'single' : 'dual'}`;
 }
 
-const SKY_FLOATS = 16;
 const PROBE_FLOATS = 8;
 export const DEFERRED_REFLECTION_TABLE_BYTES =
-  (SKY_FLOATS + DEFAULT_REFLECTION_PROBE_LIMITS.maxProbes * PROBE_FLOATS) *
-  Float32Array.BYTES_PER_ELEMENT;
+  DEFAULT_REFLECTION_PROBE_LIMITS.maxProbes * PROBE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 
 export interface DeferredReflectionArrays {
   readonly views: readonly [TextureView] | readonly [TextureView, TextureView];
@@ -60,6 +58,7 @@ export function resolveDeferredReflectionArrayBudget(
   usesLut: boolean,
   hasFallback: boolean,
   compact = false,
+  perPixelAtmosphereTransmittance = true,
 ): 0 | 1 | 2 {
   if (
     (limits.maxUniformBufferBindingSize ?? 0) < DEFERRED_REFLECTION_TABLE_BYTES ||
@@ -67,7 +66,7 @@ export function resolveDeferredReflectionArrayBudget(
       DEFERRED_REFLECTION_TABLE_BYTES
   )
     return 0;
-  // The bounded overflow vertex and fragment also identify this address layout.
+  // The overflow fragment identifies the current class-addressed layout.
   // Older cooked modules retain standalone Deferred until they are rebuilt.
   const vertex = reflection.entryPoints?.find(
     ({ name }) => name === DEFERRED_REFLECTION_OVERFLOW_VERTEX,
@@ -77,30 +76,31 @@ export function resolveDeferredReflectionArrayBudget(
   );
   if (
     vertex?.stage !== 'vertex' ||
-    !vertex.bindings.some(({ group, binding }) => group === 3 && binding === 3) ||
     overflow?.stage !== 'fragment' ||
-    !overflow.bindings.some(({ group, binding }) => group === 3 && binding === 1)
+    !overflow.bindings.some(({ group, binding }) => group === 3 && binding === 1) ||
+    !overflow.bindings.some(({ group, binding }) => group === 3 && binding === 3)
   )
     return 0;
   const view = buildPbrViewBglEntries({
     storageBuffer: state.device.caps.storageBuffer,
-    atmosphere: state.atmosphereAvailable === true,
+    atmosphere: state.atmosphereAvailable === true && perPixelAtmosphereTransmittance,
     extendedLighting: state.extendedLightingAvailable ?? true,
     projectorAvailable: state.projectorAvailable !== false,
   });
   const vertexUniforms = view.filter(
     (entry) => (entry.visibility & 1) !== 0 && entry.buffer?.type === 'uniform',
   ).length;
-  const fragmentView = view.filter((entry) => (entry.visibility & 2) !== 0);
-  // GBuffer (4), scene depth, AO, receiver geometry, irradiance, DFG and sky.
-  // This layout leaves the standalone PMREM slot unused for both array entries.
+  const fragmentView = view.filter(
+    (entry) => (entry.visibility & 2) !== 0 && ![19, 20, 21, 23].includes(entry.binding),
+  );
+  // GBuffer (4), scene depth, AO, receiver geometry, default PMREM and BRDF.
   const viewTextures = fragmentView.filter((entry) => entry.texture !== undefined).length;
-  const fixedTextures = viewTextures + 10 + Number(usesLut);
+  const fixedTextures = viewTextures + 9 + Number(usesLut);
   const fixedUniforms =
-    fragmentView.filter((entry) => entry.buffer?.type === 'uniform').length + 2 + Number(clustered);
+    fragmentView.filter((entry) => entry.buffer?.type === 'uniform').length + 3 + Number(clustered);
   // Samplers and storage buffers are exactly the same as the already admitted
   // standalone lighting layout. The table adds a single uniform binding.
-  if (Math.max(vertexUniforms, fixedUniforms) + 1 > (limits.maxUniformBuffersPerShaderStage ?? 0))
+  if (Math.max(vertexUniforms, fixedUniforms + 1) > (limits.maxUniformBuffersPerShaderStage ?? 0))
     return 0;
   for (const count of [2, 1] as const) {
     const entry = reflection.entryPoints?.find(
@@ -137,8 +137,6 @@ export function prepareDeferredReflectionArrays(
   const classes: NonNullable<ReflectionProbeTableRow['pmremArray']>[] = [];
   const first = rows[0]?.pmremArray;
   if (first === undefined) return undefined;
-  const sky = first.diffusePayload;
-  if (sky.length !== SKY_FLOATS) return undefined;
   const addresses: number[] = [];
   for (const row of rows) {
     const pmrem = row.pmremArray;
@@ -147,10 +145,7 @@ export function prepareDeferredReflectionArrays(
       row.index < 0 ||
       row.index >= DEFAULT_REFLECTION_PROBE_LIMITS.maxProbes ||
       pmrem.layer < 0 ||
-      pmrem.layer >= pmrem.capacity ||
-      // The shared lanes must be identical except for the standalone env index.
-      pmrem.diffusePayload.length !== SKY_FLOATS ||
-      pmrem.diffusePayload.some((value, index) => index !== 3 && value !== sky[index])
+      pmrem.layer >= pmrem.capacity
     )
       return undefined;
     let index = classes.findIndex((candidate) => candidate.key === pmrem.key);
@@ -168,9 +163,8 @@ export function prepareDeferredReflectionArrays(
     addresses.push(pmrem.layer * 32 + index * 2 + Number(row.boxProjection === true));
   }
   const data = new Float32Array(DEFERRED_REFLECTION_TABLE_BYTES / Float32Array.BYTES_PER_ELEMENT);
-  data.set(sky);
   for (const [i, row] of rows.entries()) {
-    const offset = SKY_FLOATS + row.index * PROBE_FLOATS;
+    const offset = row.index * PROBE_FLOATS;
     data.set(row.center, offset);
     data[offset + 3] = -(Math.max(0, row.intensity) + 1);
     data.set(row.halfExtents, offset + 4);

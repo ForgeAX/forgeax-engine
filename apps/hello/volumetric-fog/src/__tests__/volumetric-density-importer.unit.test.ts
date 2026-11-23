@@ -1,4 +1,4 @@
-import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { projectImportPack, ImporterRegistry, runImport } from '@forgeax/engine-import';
 import { IMPORT_ERROR_HINTS } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { makeVolumetricDensity, volumetricDensityImporter } from '../volumetric-density-importer';
@@ -55,8 +55,8 @@ describe('volumetric density authoring', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack.assets).toHaveLength(1);
-    expect(result.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(result.value.product).assets).toHaveLength(1);
+    expect(projectImportPack(result.value.product).assets[0]).toMatchObject({
       guid: GUID,
       kind: 'texture',
       payload: {
@@ -64,7 +64,7 @@ describe('volumetric density authoring', () => {
         format: 'r8unorm',
       },
     });
-    expect(result.value.pack.assets[0]?.payload.data).toHaveLength(64 * 64 * 64);
+    expect(projectImportPack(result.value.product).assets[0]?.payload.data).toHaveLength(64 * 64 * 64);
   });
 
   it('keeps authored spatial scales when gradient is positive', () => {
@@ -93,8 +93,8 @@ describe('volumetric density authoring', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack.assets[0]).toMatchObject({ guid: GUID, kind: 'texture' });
-    expect(result.value.pack.assets[0]?.payload.data).toHaveLength(128 * 128 * 128);
+    expect(projectImportPack(result.value.product).assets[0]).toMatchObject({ guid: GUID, kind: 'texture' });
+    expect(projectImportPack(result.value.product).assets[0]?.payload.data).toHaveLength(128 * 128 * 128);
   });
 
   it('returns source-validation-failed for malformed MVD JSON', async () => {

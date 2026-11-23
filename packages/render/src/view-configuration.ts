@@ -1,14 +1,14 @@
 import type { RenderPipelineAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryError } from './dynamic-geometry';
 import { validateClusterGrid } from './pipeline/standard-pipeline';
-import { DEFAULT_CLUSTER_GRID, STANDARD_PIPELINE_ID } from './pipeline/standard-profile';
+import { DEFAULT_CLUSTER_GRID } from './pipeline/standard-profile';
 import {
   type CandidatePipelineDemandReader,
   type CandidatePipelineInput,
   CandidatePipelinePreparationOwner,
   type PreparedCandidatePipelines,
 } from './record/candidate-pipeline-preparation';
-import { resolveSsaoParameters, ssaoStructuralIdentity } from './ssao-config';
+import { resolveSsaoParameters } from './ssao-config';
 import type { ViewSettlementOwner } from './world/view-settlement';
 
 /**
@@ -53,10 +53,7 @@ export function configureViewStandard(
   frameState.cameraStandardProfile = undefined;
   frameState.standardInstall.cameraSignature = JSON.stringify([
     profileConfig?.renderPath,
-    ssaoStructuralIdentity(
-      resolvedConfig?.ambientOcclusion,
-      profileConfig?.pipelineId === STANDARD_PIPELINE_ID,
-    ),
+    resolvedConfig?.ambientOcclusion,
   ]);
 }
 

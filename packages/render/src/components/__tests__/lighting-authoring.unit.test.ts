@@ -29,27 +29,12 @@ describe('lighting authoring contracts', () => {
     expect(SpotLight.fields.rollDeg.default).toBe(0);
   });
 
-  it('admits bounded variance filtering through the native SpotLight validator', () => {
-    expect(
-      validateSpotLightData({
-        direction: [0, -1, 0],
-        castShadow: true,
-        shadowFilter: 8,
-        shadowBlurSamples: 16,
-      }).ok,
-    ).toBe(true);
-    expect(
-      validateSpotLightData({ direction: [0, -1, 0], castShadow: true, shadowFilter: 9 }).ok,
-    ).toBe(false);
-    for (const shadowBlurSamples of [0, 1.5, 65, NaN])
-      expect(
-        validateSpotLightData({
-          direction: [0, -1, 0],
-          castShadow: true,
-          shadowFilter: 8,
-          shadowBlurSamples,
-        }).ok,
-      ).toBe(false);
+  it('accepts supported SpotLight filters and rejects retired enum values', () => {
+    const light = { direction: [0, -1, 0] as const, castShadow: true };
+    for (const shadowFilter of [1, 6, 7])
+      expect(validateSpotLightData({ ...light, shadowFilter }).ok).toBe(true);
+    for (const shadowFilter of [8, 9])
+      expect(validateSpotLightData({ ...light, shadowFilter }).ok).toBe(false);
   });
 
   it('keeps defaults and rejects invalid Rect/Probe facts before rendering', () => {

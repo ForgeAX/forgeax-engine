@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "0f1a6e10-0000-4000-8000-000000000001",
+  "schemaVersion": "3.0.0",
+  "packageId": "6cf488bf-a69b-5a03-8b9c-77437fd06fb8",
+  "assets": {
+    "default-standard-pbr.wgsl": {
       "kind": "material",
-      "execution": "cooked",
-      "sourceKey": "../../../../packages/shader/src/default-standard-pbr.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -198,5 +195,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

@@ -10,6 +10,7 @@ import {
 } from './material-source';
 import type { FrameList } from './scene/frame-list';
 import type { AcceptedMaterial, DispatchList } from './scene/material-dispatch';
+import { MaterialSourceEntries } from './scene/material-source-entries';
 import { spriteUvRegion } from './sprite-region';
 import {
   requireWaterMaterialConsumers,
@@ -24,13 +25,13 @@ import {
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
 import type { AssetHandle, MeshAsset, SampledTextureAsset } from '@forgeax/engine-types';
-import { freezeJson, isDeepFrozenJson } from '@forgeax/engine-types';
 import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import {
   captureMaterialSnapshot,
   MaterialResource,
   materialResource,
+  prepareMaterialProgramSnapshot,
   runtimeMaterialShaderIdForMaterial,
 } from './material-resource';
 import type { LightTextureSource } from './prepare/extended-lighting/spot-modifiers';
@@ -240,7 +241,7 @@ import type {
   PhysicalViewExtent,
   ResolvedViewCamera,
 } from './render-contract';
-import { getActiveCamera, selectActiveCameraIndex } from './systems/active-camera';
+import { getActiveCamera } from './systems/active-camera';
 import { selectPasses } from './systems/pass-selector';
 import type { RenderTarget } from './targets/contracts';
 import type { MaterialTextureSource } from './textures/canvas-texture';
@@ -284,6 +285,7 @@ export interface DirectionalLightSnapshot {
   readonly direction: Vec3;
   readonly color: Vec3;
   readonly intensity: number;
+  readonly perPixelAtmosphereTransmittance?: boolean;
   /** Screen-space contact shadow ray length in meters; 0 disables it. */
   readonly contactShadowLength: number;
   /** Apparent light-disc diameter in degrees; 0 is a point light. */
@@ -340,6 +342,7 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
    * shadow-parameter buffer; DirectLightSlot carries only the layer identity.
    */
   readonly shadowFar?: number;
+  readonly shadowIntensity?: number;
   /** Vogel footprint diameter; 1 selects hardware PCF, 3 defaults to radius 1. */
   readonly pcfKernelSize?: number;
 }
@@ -366,6 +369,7 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
  * downstream DirectLightSlot packing carries no invalid layer identity.
  */
 export interface PointShadowSnapshot {
+  readonly staticShadowCache?: true;
   readonly shadowCasterChannels?: number;
   readonly shadowAutoUpdate?: boolean;
   readonly shadowRevision?: number;
@@ -383,7 +387,6 @@ export interface PointShadowSnapshot {
   readonly shadowFilter?: number;
   readonly shadowBiasMode?: number;
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   /**
    * Atlas layer assigned by extract in spawn order while capacity remains.
    * Sentinel -1 is used for a request that cannot be admitted and is
@@ -417,6 +420,7 @@ export interface PointShadowSnapshot {
  */
 export interface SpotLightSnapshot extends IesProfileSnapshot {
   readonly shadowMapAspect?: number;
+  readonly staticShadowCache?: true;
   readonly shadowCasterChannels?: number;
   readonly shadowAutoUpdate?: boolean;
   readonly shadowRevision?: number;
@@ -454,13 +458,13 @@ export interface SpotLightSnapshot extends IesProfileSnapshot {
   // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
   readonly castShadow: boolean;
   readonly lightViewProj: Float32Array | undefined;
+  readonly authoredShadowMatrix?: true;
   readonly mapSize: number;
   readonly nearPlane: number;
   readonly farPlane: number;
   readonly shadowAtlasTile: number;
   /** Fraction of sampled shadow visibility to retain; 1 = fully opaque shadow. */
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   readonly depthBias?: number;
   readonly normalBias?: number;
   readonly pcfKernelSize?: number;
@@ -735,6 +739,8 @@ export interface ExtractedVolumetricFog {
 
 export interface RenderableSnapshot {
   readonly renderLayers?: number;
+  /** Omitted for the usual bounds-tested draw. */
+  readonly frustumCulled?: false;
   /** Generation-bound WaterBody identity used by per-view water material bindings. */
   readonly waterOwner?: Readonly<{
     readonly guid: string;
@@ -1244,7 +1250,7 @@ export type MaterialSnapshotCache = Map<number, MaterialSnapshotCacheEntry>;
 export interface MaterialSnapshotContext {
   readonly geometry: MaterialCookRasterContext['geometry'];
   readonly vertexColor: boolean;
-  readonly cache: MaterialSnapshotCache;
+  readonly cache: MaterialSourceEntries;
 }
 
 export type MaterialSnapshotContexts = Map<string, MaterialSnapshotContext>;
@@ -1257,7 +1263,7 @@ export function materialSnapshotContext(
   const key = `${geometry}:${vertexColor}`;
   let context = contexts.get(key);
   if (context === undefined) {
-    context = { geometry, vertexColor, cache: new Map() };
+    context = { geometry, vertexColor, cache: new MaterialSourceEntries() };
     contexts.set(key, context);
   }
   return context.cache;
@@ -2513,9 +2519,7 @@ export function storeMaterialSnapshot(
       (waterMaterialNeedsSourceSnapshot(snapshot) || previous?.snapshot.sourceAssets !== undefined
         ? captureMaterialSource(world, handleRaw)
         : undefined);
-    const accepted = captureMaterialSnapshot(
-      source === undefined ? snapshot : { ...snapshot, sourceAssets: source },
-    );
+    const accepted = captureMaterialSnapshot(snapshot, source);
     // A retained owner must keep its complete previous material closure on candidate failure.
     const resource =
       source === undefined && previous !== undefined
@@ -2542,15 +2546,6 @@ export function storeMaterialSnapshot(
   }
 }
 
-// Program facts are memoized per snapshot only when these fields are deep-frozen JSON.
-function fixedJson<T>(value: T): T {
-  return value !== null && typeof value === 'object' ? freezeJson(value) : value;
-}
-
-function ownMaterialSnapshotPasses(passes: MaterialSnapshot['passes']): MaterialSnapshot['passes'] {
-  return isDeepFrozenJson(passes) ? passes : fixedJson(structuredClone(passes));
-}
-
 /** Shared preparation for first use, submesh bindings and asset-only adoption. */
 export function prepareMaterialSnapshot({
   handle: handleRaw,
@@ -2563,6 +2558,7 @@ export function prepareMaterialSnapshot({
   textureSourceStats: materialTextureSourceStats,
   vertexColorAvailable = false,
   geometry = materialContext?.geometry ?? 'mesh',
+  previousProgramSnapshot,
 }: {
   readonly handle: number;
   readonly world: RenderResourceScope;
@@ -2574,6 +2570,7 @@ export function prepareMaterialSnapshot({
   readonly textureSourceStats?: MaterialTextureSourceStats | undefined;
   readonly vertexColorAvailable?: boolean;
   readonly geometry?: MaterialCookRasterContext['geometry'];
+  readonly previousProgramSnapshot?: MaterialSnapshot | undefined;
 }): MaterialSnapshot {
   const resolved = {
     passes: programOwner.passes ?? [],
@@ -2727,8 +2724,8 @@ export function prepareMaterialSnapshot({
       ? {}
       : { staticSwitches: Object.freeze({ ...programOwner.staticSwitches }) }),
     ...(positionBounds === undefined ? {} : { positionBounds }),
-    materialContext: fixedJson({ geometry, vertexColor: vertexColorAvailable }),
-    passes: ownMaterialSnapshotPasses(allPasses),
+    materialContext: { geometry, vertexColor: vertexColorAvailable },
+    passes: allPasses,
     ...valueSnapshot,
     ...(surfaceModel === undefined ? {} : { surfaceModel }),
     ...(resolved.surface?.deformation === undefined
@@ -2741,8 +2738,8 @@ export function prepareMaterialSnapshot({
         ) === 'Deferred',
     ),
     materialShaderId: firstPassShader,
-    materialProgramKeys: fixedJson(materialProgramKeys),
-    materialProgramInputs: Object.freeze(programInputs),
+    materialProgramKeys,
+    materialProgramInputs: programInputs,
     materialPublication: materialPublicationForMaterial(
       programOwner,
       assetsRef,
@@ -2782,8 +2779,9 @@ export function prepareMaterialSnapshot({
     // their alpha=0 texels composite as black.
     transparent: allPasses[0]?.renderState?.blend !== undefined,
   };
-  recordPlanarRouting(snapshot, planarRouting.routed);
-  return snapshot;
+  const prepared = prepareMaterialProgramSnapshot(snapshot, previousProgramSnapshot);
+  recordPlanarRouting(prepared, planarRouting.routed);
+  return prepared;
 }
 
 /** Resolve one accepted material through the renderer's context-local cache. */
@@ -2836,6 +2834,7 @@ export function resolveMaterialSnapshot(
     textureSourceStats: materialTextureSourceStats,
     vertexColorAvailable,
     geometry,
+    previousProgramSnapshot: persistentMaterialSnapshotCache?.get(handleRaw)?.snapshot,
   });
   const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
   const cacheEntry =
@@ -2962,7 +2961,6 @@ export interface DirectionalCsmConfig {
   readonly shadowBiasMode?: number;
   readonly shadowRadius?: number;
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   /** Authored CPU cascade cadence; absent means disabled. */
   readonly staggerCascades?: boolean;
   /** `true` adds the GPU-driven static cascade layer; absent means one layer per cascade. */
@@ -3384,6 +3382,8 @@ export interface PreparedExtractContext {
   readonly instanceCollections: InstanceProjectionStore | undefined;
   /** Retains this World's environment entries until one of their inputs changes. */
   readonly environmentGate?: EnvironmentFrameGate;
+  readonly environmentLightingOnly?: boolean;
+  readonly cameraSource?: EnvironmentCameraReader;
 }
 
 /** The change-driven environment owner of a source's extraction. */
@@ -3564,6 +3564,8 @@ export function projectAuxiliaryCamerasForView(
   });
 }
 
+const NO_ROLE_CAMERAS: readonly CameraSnapshot[] = Object.freeze([]);
+
 export function selectCameraRoles(
   world: World,
   requestedEntityKey?: number,
@@ -3571,53 +3573,58 @@ export function selectCameraRoles(
   cameraReader?: EnvironmentCameraReader,
 ): CameraRoleSelection {
   const snapshots = collectCameraSnapshots(world, cameraReader);
-  const cameras = snapshots.filter((camera) => camera.planarReflection === undefined);
-  const planar = snapshots.filter((camera) => camera.planarReflection !== undefined);
-  const views = cameras.filter((camera) => camera.view !== undefined);
-  const displayEntities = cameras
-    .filter((camera) => camera.target === undefined && camera.view === undefined)
-    .map((camera) => camera.entityKey ?? 0);
-  const hasExplicitSelection = requestedEntityKey !== undefined;
-  const activeCameraIndex = selectActiveCameraIndex(
-    displayEntities,
-    hasExplicitSelection ? requestedEntityKey : getActiveCamera(world)?.entity,
-  );
-  // An explicit FrameCamera selection is authoritative. If it does not name a
-  // display camera, retain the existing no-camera error path instead of
-  // silently selecting the first camera. ActiveCamera keeps its established
-  // first-hit fallback when no explicit frame selection is supplied.
-  const displayEntityKey = hasExplicitSelection
-    ? displayEntities[activeCameraIndex]
-    : (displayEntities[activeCameraIndex] ?? displayEntities[0]);
-  const display =
-    view !== undefined
-      ? view.camera === undefined
-        ? []
-        : [view.camera]
-      : views.length > 0
-        ? views
-        : displayEntityKey === undefined
-          ? []
-          : cameras.filter((camera) => camera.entityKey === displayEntityKey);
-  const candidates: CameraTargetCandidate[] = cameras
-    .filter((camera) => camera.view === undefined)
-    .map((camera) => ({
-      entityKey: camera.entityKey ?? 0,
-      ...(camera.target === undefined ? {} : { target: camera.target }),
-      ...(camera.targetLayer === undefined ? {} : { targetLayer: camera.targetLayer }),
-      requestVersion: 0,
-      update: 'continuous',
-    }));
-  const selected = selectCameraTargetViews(candidates, {
-    ...(displayEntityKey === undefined ? {} : { displayEntityKey }),
-    budget: 1,
-  });
-  const auxiliary = selected.auxiliary.flatMap((candidate) =>
-    cameras.filter((camera) => camera.entityKey === candidate.entityKey),
-  );
-  // Retain every camera's authored reflection across publication. Each RenderSystem
-  // projects only its own view before recording; source extraction never picks a winner.
-  return { display, auxiliary: [...auxiliary, ...planar] };
+  const requested = requestedEntityKey ?? getActiveCamera(world)?.entity;
+  let firstDisplay: number | undefined;
+  let selectedDisplay: number | undefined;
+  let views: CameraSnapshot[] | undefined;
+  let reflections: CameraSnapshot[] | undefined;
+  let targets: CameraTargetCandidate[] | undefined;
+  for (const camera of snapshots) {
+    if (camera.planarReflection !== undefined) {
+      reflections ??= [];
+      reflections.push(camera);
+    } else if (camera.view !== undefined) {
+      views ??= [];
+      views.push(camera);
+    } else if (camera.target !== undefined) {
+      targets ??= [];
+      targets.push({
+        entityKey: camera.entityKey ?? 0,
+        target: camera.target,
+        ...(camera.targetLayer === undefined ? {} : { targetLayer: camera.targetLayer }),
+        requestVersion: 0,
+        update: 'continuous',
+      });
+    } else {
+      const key = camera.entityKey ?? 0;
+      firstDisplay ??= key;
+      if (key === requested) selectedDisplay = key;
+    }
+  }
+  // An explicitly requested missing entity must remain unresolved. ActiveCamera may fall back.
+  const displayKey =
+    selectedDisplay ?? (requestedEntityKey === undefined ? firstDisplay : undefined);
+  let display: readonly CameraSnapshot[] = views ?? NO_ROLE_CAMERAS;
+  if (view !== undefined) display = view.camera === undefined ? NO_ROLE_CAMERAS : [view.camera];
+  else if (views === undefined && displayKey !== undefined)
+    display = snapshots.filter(
+      (camera) => camera.planarReflection === undefined && camera.entityKey === displayKey,
+    );
+  let auxiliary: readonly CameraSnapshot[] = reflections ?? NO_ROLE_CAMERAS;
+  if (targets !== undefined) {
+    const selected = selectCameraTargetViews(targets, {
+      ...(displayKey === undefined ? {} : { displayEntityKey: displayKey }),
+      budget: 1,
+    });
+    const writers: CameraSnapshot[] = [];
+    for (const candidate of selected.auxiliary)
+      for (const camera of snapshots)
+        if (camera.planarReflection === undefined && camera.entityKey === candidate.entityKey)
+          writers.push(camera);
+    if (reflections !== undefined) for (const camera of reflections) writers.push(camera);
+    auxiliary = writers;
+  }
+  return { display, auxiliary };
 }
 
 export function extractCameraSnapshots(world: World): CameraSnapshot[] {
@@ -3666,6 +3673,8 @@ export function prepareExtractContext(
     ) => MaterialShaderArtifact | undefined;
     readonly instanceCollections?: InstanceProjectionStore;
     readonly environmentGate?: EnvironmentFrameGate;
+    readonly environmentLightingOnly?: boolean;
+    readonly cameraSource?: EnvironmentCameraReader;
   } = {},
 ): PreparedExtractContext {
   const renderables = options.renderables ?? 'full';
@@ -3694,6 +3703,8 @@ export function prepareExtractContext(
     getMaterialShaderArtifact: options.getMaterialShaderArtifact,
     instanceCollections: options.instanceCollections,
     ...(options.environmentGate === undefined ? {} : { environmentGate: options.environmentGate }),
+    ...(options.environmentLightingOnly ? { environmentLightingOnly: true } : {}),
+    ...(options.cameraSource === undefined ? {} : { cameraSource: options.cameraSource }),
   };
 }
 

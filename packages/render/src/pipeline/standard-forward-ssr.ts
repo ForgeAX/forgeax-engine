@@ -2,6 +2,7 @@ import type { RenderGraphError } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import { addDepthPyramidPasses } from '../depth-pyramid/graph';
 import type { RenderPipelineTarget, RenderPipelineTopology } from '../render-pipeline';
+import { addSsrHitColor } from '../ssr/color-mips';
 import { addSsrCompositionPass } from '../ssr/compose';
 import { addSsrSpatialPasses } from '../ssr/graph';
 import type { StandardSceneSurfaceDataTargets } from '../temporal/standard-scene-data';
@@ -50,7 +51,8 @@ export function addForwardSsr(
     execution,
   });
   if (!pyramid.ok) return pyramid;
-  const history = context.ssrHistory;
+  const hitColor = addSsrHitColor(context, topology, input.scene, size, 'ssr-scene-color');
+  if (!hitColor.ok) return hitColor;
   const spatial = addSsrSpatialPasses(graph, {
     quality: topology.standardProfile?.quality?.ssr,
     admission: topology.ssr,
@@ -58,32 +60,20 @@ export function addForwardSsr(
     ...size,
     depth: depth.value,
     normal: surface.normal.view,
-    scene: input.scene.view,
+    scene: hitColor.value.view,
+    sceneColorMipCount: hitColor.value.mipCount,
     fallback: fallback.view,
     currentTemporal: temporal.view,
     view: view.value,
     depthPyramid: pyramid.value.pyramid,
-    ...(history === undefined
-      ? {}
-      : {
-          temporal: {
-            profile: 'opaque' as const,
-            previousHistory: history.previous.view,
-            outputHistory: history.output.view,
-            previousSurface: history.previousSurface.view,
-            outputSurface: history.outputSurface.view,
-            params: history.params,
-          },
-        }),
   });
   if (!spatial.ok) return spatial;
   const resources = spatial.value.resources;
   if (resources === undefined) return ok(undefined);
   const composed = addSsrCompositionPass(graph, {
     execution,
-    mipLevelCount: resources.mipLevelCount ?? 1,
     scene: input.scene,
-    radiance: resources.radiancePyramid ?? resources.trace.view,
+    radiance: resources.trace.view,
     fallback: fallback.view,
     response: response.view,
     normal: surface.normal.view,

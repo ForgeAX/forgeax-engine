@@ -17,7 +17,7 @@ import {
   stepText2d,
 } from './text2d';
 
-const FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
+const FONT_GUID = '0172daac-227f-5a3b-b6ae-313f9fd52081';
 const m34RecoveryMode = new URLSearchParams(globalThis.location.search).has('m34-font-recovery');
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');

@@ -24,10 +24,17 @@ const FIXTURE_STARTUP_TIMEOUT_MS = 90_000;
 
 async function waitForEnteredFixture(page: Page): Promise<void> {
   try {
-    await page.locator('#forgeax-loading').waitFor({
-      state: 'hidden',
-      timeout: FIXTURE_STARTUP_TIMEOUT_MS,
-    });
+    await Promise.all([
+      page.locator('#forgeax-loading').waitFor({
+        state: 'hidden',
+        timeout: FIXTURE_STARTUP_TIMEOUT_MS,
+      }),
+      expect
+        .poll(async () => (await snapshot(page)).execution.render?.completedFrame, {
+          timeout: FIXTURE_STARTUP_TIMEOUT_MS,
+        })
+        .toBeGreaterThanOrEqual(2),
+    ]);
   } catch (cause) {
     const progress = await page.locator('#app').evaluate((node: HTMLCanvasElement) => ({
       submitted: node.forgeaxFrameProgress?.submitted?.frameId,
@@ -155,14 +162,7 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     });
     await page.goto(url);
     await page.waitForFunction(() => 'fixture' in globalThis);
-    await Promise.all([
-      waitForEnteredFixture(page),
-      expect
-        .poll(async () => (await snapshot(page)).execution.render?.completedFrame, {
-          timeout: FIXTURE_STARTUP_TIMEOUT_MS,
-        })
-        .toBeGreaterThanOrEqual(2),
-    ]);
+    await waitForEnteredFixture(page);
     expect(
       await page.locator('#app').evaluate((canvas) => [
         Number(canvas.getAttribute('width')), Number(canvas.getAttribute('height')),
@@ -232,6 +232,9 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
       const f = (globalThis as unknown as { fixture?: { snapshot(): Snapshot } }).fixture;
       return f !== undefined && f.snapshot().owner !== previous;
     }, owner);
+    // Fixture publication precedes App startup. Prove the replacement has
+    // entered and presented frames before exercising its normal shutdown.
+    await waitForEnteredFixture(page);
     expect((await snapshot(page)).execution.fault).toBeNull();
     await page.evaluate(() =>
       (globalThis as unknown as { fixture: { dispose(): Promise<void> } }).fixture.dispose(),

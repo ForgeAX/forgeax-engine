@@ -14,7 +14,7 @@ describe('shared native frame commands', () => {
       f.state.fullscreen = true;
       const before = renderGraphCompileCount();
       const first = f.prepare(2);
-      if (first.receipt.kind !== 'compiled') throw new Error('Missing active graph');
+      if (first.receipt.kind !== 'commands') throw new Error('Missing native commands');
       const registration = first.receipt.plans.find(
         (plan) => plan.featureIdentity === 'shared-test-outline',
       );
@@ -30,7 +30,7 @@ describe('shared native frame commands', () => {
           .get('main')
           ?.fullscreenEffects.has('fullscreen.shared-test-outline'),
       ).toBe(true);
-      expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)?.last.route).toBe('native-shell');
+      expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)?.last.route).toBe('native-commands');
       const calls = recordDispatches(first.encoder);
       expect(f.encode(first.encoder).ok).toBe(true);
       expect(calls.groups).toEqual([
@@ -52,8 +52,8 @@ describe('shared native frame commands', () => {
 
       f.state.groups = 5;
       const next = f.prepare(1);
-      if (next.receipt.kind !== 'compiled') throw new Error('Missing current graph');
-      expect(next.receipt.graph).toBe(first.receipt.graph);
+      if (next.receipt.kind !== 'commands') throw new Error('Missing native commands');
+      expect(next.receipt.executions).not.toBe(first.receipt.executions);
       const current = recordDispatches(next.encoder);
       expect(f.encode(next.encoder).ok).toBe(true);
       expect(current.groups).toEqual([
@@ -61,20 +61,20 @@ describe('shared native frame commands', () => {
         [6, 1, 1],
       ]);
       f.finish();
-      expect(renderGraphCompileCount() - before).toBe(1);
+      expect(renderGraphCompileCount() - before).toBe(0);
       expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)).toMatchObject({
         nativeFrames: 2,
         emptyFrames: 1,
         fallbackFrames: 0,
-        shellBuilds: 1,
-        shellReuses: 1,
+        shellBuilds: 0,
+        shellReuses: 0,
       });
     } finally {
       await f.dispose();
     }
   });
 
-  it('reuses one shell across empty, many, few and empty current submissions', async () => {
+  it('issues commands directly across empty, many, few and empty current submissions', async () => {
     const f = await sharedNativeFixture();
     try {
       const before = renderGraphCompileCount();
@@ -84,7 +84,7 @@ describe('shared native frame commands', () => {
       f.finish();
 
       const many = f.prepare(3);
-      if (many.receipt.kind !== 'compiled') throw new Error('Missing active graph');
+      if (many.receipt.kind !== 'commands') throw new Error('Missing native commands');
       const acknowledged = f.submitted.mock.calls.length;
       const recorded = recordDispatches(many.encoder);
       expect(f.encode(many.encoder).ok).toBe(true);
@@ -104,8 +104,8 @@ describe('shared native frame commands', () => {
 
       f.state.groups = 7;
       const few = f.prepare(1);
-      if (few.receipt.kind !== 'compiled') throw new Error('Missing current graph');
-      expect(few.receipt.graph).toBe(many.receipt.graph);
+      if (few.receipt.kind !== 'commands') throw new Error('Missing native commands');
+      expect(few.receipt.executions).not.toBe(many.receipt.executions);
       const current = recordDispatches(few.encoder);
       expect(f.encode(few.encoder).ok).toBe(true);
       expect(current.groups).toEqual([
@@ -122,12 +122,12 @@ describe('shared native frame commands', () => {
       expect(last.receipt.kind).toBe('empty');
       expect(f.encode(last.encoder).ok).toBe(true);
       f.finish();
-      expect(renderGraphCompileCount() - before).toBe(1);
+      expect(renderGraphCompileCount() - before).toBe(0);
       expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)).toMatchObject({
         nativeFrames: 2,
         emptyFrames: 2,
-        shellBuilds: 1,
-        shellReuses: 1,
+        shellBuilds: 0,
+        shellReuses: 0,
         last: { route: 'empty', encoded: true },
       });
     } finally {
@@ -139,7 +139,7 @@ describe('shared native frame commands', () => {
     const f = await sharedNativeFixture();
     try {
       const first = f.prepare();
-      if (first.receipt.kind !== 'compiled') throw new Error('Missing first graph');
+      if (first.receipt.kind !== 'commands') throw new Error('Missing native commands');
       const firstCopies = vi.spyOn(first.encoder, 'copyBufferToBuffer');
       const oldSource = f.source();
       expect(f.encode(first.encoder).ok).toBe(true);
@@ -149,8 +149,8 @@ describe('shared native frame commands', () => {
       f.replaceBuffer();
       f.state.offset = 12;
       const next = f.prepare();
-      if (next.receipt.kind !== 'compiled') throw new Error('Missing replacement graph');
-      expect(next.receipt.graph).toBe(first.receipt.graph);
+      if (next.receipt.kind !== 'commands') throw new Error('Missing native commands');
+      expect(next.receipt.executions).not.toBe(first.receipt.executions);
       const nextCopies = vi.spyOn(next.encoder, 'copyBufferToBuffer');
       expect(f.encode(next.encoder).ok).toBe(true);
       expect(f.source()).not.toBe(oldSource);
@@ -199,7 +199,7 @@ describe('shared native frame commands', () => {
     const f = await sharedNativeFixture();
     try {
       const failed = f.prepare();
-      if (failed.receipt.kind !== 'compiled') throw new Error('Missing graph');
+      if (failed.receipt.kind !== 'commands') throw new Error('Missing native commands');
       vi.spyOn(failed.encoder, 'copyBufferToBuffer').mockImplementation(() => {
         throw new Error('copy rejected');
       });
@@ -215,8 +215,8 @@ describe('shared native frame commands', () => {
       expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)).toMatchObject({ encodeFailures: 1 });
 
       const next = f.prepare(2);
-      if (next.receipt.kind !== 'compiled') throw new Error('Missing retry graph');
-      expect(next.receipt.graph).toBe(failed.receipt.graph);
+      if (next.receipt.kind !== 'commands') throw new Error('Missing native commands');
+      expect(next.receipt.executions).not.toBe(failed.receipt.executions);
       const calls = recordDispatches(next.encoder);
       expect(f.encode(next.encoder).ok).toBe(true);
       expect(calls.copies).toHaveBeenCalledTimes(2);
@@ -336,19 +336,16 @@ describe('shared native frame commands', () => {
     }
   });
 
-  it('does not retire the shell on held or failed frames, but retires it with the device scope', async () => {
+  it('keeps Host releases behind submission and rejects commands staged on a retired device', async () => {
     const f = await sharedNativeFixture();
     try {
+      const before = renderGraphCompileCount();
       const held = f.prepare();
-      if (held.receipt.kind !== 'compiled') throw new Error('Missing held graph');
-      const retired = vi.spyOn(held.receipt.graph, 'retire');
+      expect(held.receipt.kind).toBe('commands');
       f.finish(false);
       expect(f.submitted).not.toHaveBeenCalled();
-      expect(retired).not.toHaveBeenCalled();
 
       const active = f.prepare();
-      if (active.receipt.kind !== 'compiled') throw new Error('Missing active graph');
-      expect(active.receipt.graph).toBe(held.receipt.graph);
       expect(f.encode(active.encoder).ok).toBe(true);
       const release = vi.spyOn(f.host, 'retirePreparedGraphics');
       let complete!: () => void;
@@ -357,24 +354,51 @@ describe('shared native frame commands', () => {
       });
       f.finish(true, completion);
       expect(release).not.toHaveBeenCalled();
-      expect(retired).not.toHaveBeenCalled();
       complete();
       await completion;
       await Promise.resolve();
       expect(release).toHaveBeenCalledTimes(1);
-      expect(retired).not.toHaveBeenCalled();
 
+      const stale = f.prepare();
+      const calls = recordDispatches(stale.encoder);
       await f.replaceDevice();
-      expect(retired).toHaveBeenCalledTimes(1);
+      expect(f.encode(stale.encoder).ok).toBe(false);
+      expect(calls.compute).not.toHaveBeenCalled();
+      expect(calls.copies).not.toHaveBeenCalled();
+      f.finish(false);
+
       const replacement = f.prepare();
-      if (replacement.receipt.kind !== 'compiled') throw new Error('Missing new generation graph');
-      expect(replacement.receipt.graph).not.toBe(active.receipt.graph);
-      const newRetire = vi.spyOn(replacement.receipt.graph, 'retire');
+      expect(replacement.receipt.kind).toBe('commands');
+      expect(replacement.receipt.generation).toBeGreaterThan(stale.receipt.generation);
       expect(f.encode(replacement.encoder).ok).toBe(true);
       f.finish();
-      f.scope().dispose();
-      expect(newRetire).toHaveBeenCalledTimes(1);
-      expect(sharedGraphs.inspectSharedFeatureGraphs(f.world)).toMatchObject({ shellBuilds: 2 });
+      expect(renderGraphCompileCount()).toBe(before);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('retires the prior graph after an accepted direct submission replaces it', async () => {
+    const f = await sharedNativeFixture();
+    try {
+      f.state.mixed = true;
+      const prior = f.prepare();
+      if (prior.receipt.kind !== 'compiled') throw new Error('Missing fallback graph');
+      expect(f.encode(prior.encoder).ok).toBe(true);
+      f.finish();
+      const retire = vi.spyOn(prior.receipt.graph, 'retire');
+      f.state.mixed = false;
+      const held = f.prepare();
+      expect(held.receipt.kind).toBe('commands');
+      f.finish(false);
+      expect(retire).not.toHaveBeenCalled();
+
+      const direct = f.prepare();
+      expect(direct.receipt.kind).toBe('commands');
+      expect(f.encode(direct.encoder).ok).toBe(true);
+      f.finish();
+      await Promise.resolve();
+      expect(retire).toHaveBeenCalledTimes(1);
     } finally {
       await f.dispose();
     }

@@ -33,6 +33,32 @@ function terrainReferenceValid(value: unknown): boolean {
   );
 }
 
+function terrainWeightDetailValid(source: TerrainSource): boolean {
+  const detail = source.weightDetail;
+  if (detail === undefined) return true;
+  if (!detail) return false;
+  const inversePeriod = Math.fround(1 / detail.period);
+  return (
+    terrainReferenceValid(detail.texture) &&
+    Number.isFinite(detail.period) &&
+    Number.isFinite(inversePeriod) &&
+    inversePeriod > 0 &&
+    Number.isFinite(detail.strength) &&
+    detail.strength >= 0 &&
+    detail.strength <= 4 &&
+    source.layers.length <= 4 &&
+    source.layers.every((layer) => layer.blend === 'weight')
+  );
+}
+
+function terrainWeightsValid(source: TerrainSource): boolean {
+  return (
+    source.weights instanceof Float32Array &&
+    source.weights.length === source.heights.length * source.layers.length &&
+    source.weights.every((weight) => Number.isFinite(weight) && weight >= 0 && weight <= 1)
+  );
+}
+
 /** Validate bounded, finite, hole-free author input before allocating derived data. */
 export function validateTerrain(source: TerrainSource): Result<TerrainSource, TerrainError> {
   if (source && 'holes' in source)
@@ -129,11 +155,13 @@ export function validateTerrain(source: TerrainSource): Result<TerrainSource, Te
         'height texture GUID and ordered finite linear range',
       );
   }
-  if (
-    !(source.weights instanceof Float32Array) ||
-    source.weights.length !== source.heights.length * source.layers.length ||
-    source.weights.some((w) => !Number.isFinite(w) || w < 0 || w > 1)
-  )
+  if (!terrainWeightDetailValid(source))
+    return terrainFailure(
+      'terrain-layer-invalid',
+      'weightDetail',
+      'a texture reference, positive repeat period, 0..4 bias strength and up to four weight layers',
+    );
+  if (!terrainWeightsValid(source))
     return terrainFailure(
       'terrain-layer-invalid',
       'weights',
@@ -165,6 +193,7 @@ export function terrainDerivedLayoutValid(terrain: TerrainAsset): boolean {
       (!Number.isFinite(terrain.materialEncoding.maxWeightError) ||
         terrain.materialEncoding.maxWeightError < 0 ||
         terrain.materialEncoding.maxWeightError > 1 ||
+        terrain.weightDetail !== undefined ||
         terrain.layers.some((layer) => layer.blend !== 'weight'))) ||
     !Array.isArray(terrain.heightRange) ||
     terrain.heightRange.length !== 2 ||

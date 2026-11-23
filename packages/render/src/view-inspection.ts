@@ -1,10 +1,17 @@
+import {
+  appendCompiledRenderGraphPassNames,
+  compiledRenderGraphGeneration,
+} from '@forgeax/engine-render-graph';
 import type { Result } from '@forgeax/engine-rhi';
 import {
   directionalShadowProfileFromQuality,
   projectDirectionalShadowInspectionSource,
 } from './assembly/directional-shadow-inspection';
 import type { ObservationUnavailableError } from './errors/render';
-import { projectDepthOfFieldInspection } from './features/depth-of-field/depth-of-field-inspection';
+import {
+  depthOfFieldGraphForParams,
+  projectDepthOfFieldInspection,
+} from './features/depth-of-field/depth-of-field-inspection';
 import { projectMotionBlurInspection } from './features/motion-blur/motion-blur-runtime';
 import type {
   BarrelDistortionInspection,
@@ -108,9 +115,18 @@ export function viewGraphInfo(owner: ViewSettlementOwner) {
   return owner.frameState.compiledFrameGraph?.graph.inspect();
 }
 
+/** The generation written to timings and receipts belongs to the installed procedure. */
+export function viewGraphGeneration(owner: ViewSettlementOwner): number {
+  const graph = owner.frameState.compiledFrameGraph?.graph;
+  return graph === undefined ? 0 : compiledRenderGraphGeneration(graph);
+}
+
 /** The view's compiled pass names in declaration order; empty before its first compile. */
 export function viewPassNames(owner: ViewSettlementOwner): readonly string[] {
-  return viewGraphInfo(owner)?.passes.map((pass) => pass.name) ?? [];
+  const graph = owner.frameState.compiledFrameGraph?.graph;
+  const names: string[] = [];
+  if (graph !== undefined) appendCompiledRenderGraphPassNames(graph, names);
+  return names;
 }
 
 /** Persistent scene maintenance evidence of the view's scene. */
@@ -141,7 +157,12 @@ export function viewRenderScene(owner: ViewSettlementOwner): RenderSceneInspecti
         hits: 0,
         misses: 0,
       },
-      renderBundles: { ...(frameState.renderBundleCounters ?? { hits: 0, misses: 0 }) },
+      renderBundles: {
+        ...(frameState.renderBundleCounters ?? { hits: 0, misses: 0 }),
+        ...(frameState.renderBundleCounters?.geometry === undefined
+          ? {}
+          : { geometry: structuredClone(frameState.renderBundleCounters.geometry) }),
+      },
     },
     ...(submission === undefined ? {} : { submission }),
   };
@@ -183,20 +204,10 @@ export function viewSsr(owner: ViewSettlementOwner): SsrSpatialInspection {
           .filter((pass) => pass.name.startsWith('ssr-') || pass.name.startsWith('depth-pyramid-'))
           .map((pass) => pass.name)
       : [];
-  const history = frameState.ssrHistoryOwner?.inspect();
   const dependencies = resolveViewSsrDependencies(owner, frameState.ssrRequested === true);
   const fallbackSource = dependencies.reflectionFallback?.source;
   return projectSsrSpatialInspection(admission, {
     status,
-    ...(history === undefined
-      ? {}
-      : {
-          history: {
-            state: history.state,
-            bytes: history.activeBytes + history.candidateBytes + history.retiringBytes,
-            resetCount: history.resetCount,
-          },
-        }),
     passRoster,
     ...(fallbackSource === undefined ? {} : { fallbackSource }),
   });
@@ -300,11 +311,10 @@ export function viewDepthOfField(owner: ViewSettlementOwner): DepthOfFieldInspec
   const { frameState } = owner;
   const camera = owner.recorded.camera;
   if (camera === undefined) return undefined;
-  const graph = viewGraphInfo(owner);
   return projectDepthOfFieldInspection({
     ...(camera.depthOfField === undefined ? {} : { params: camera.depthOfField }),
     ...(camera.depthOfFieldError === undefined ? {} : { error: camera.depthOfFieldError }),
-    ...(graph === undefined ? {} : { graph }),
+    graph: depthOfFieldGraphForParams(frameState.compiledFrameGraph, camera.depthOfField),
     // The explicit property keeps the inspector on the submit-bound
     // transaction path even before the first accepted frame.
     accepted: frameState.depthOfFieldAccepted,
@@ -378,7 +388,10 @@ export function viewDirectionalShadow(owner: ViewSettlementOwner): DirectionalSh
     shadowMapBytes: shadowReady
       ? (frameState.shadowDepthLayers?.byteSize('directional-shadow-depth') ?? 0)
       : 0,
-    writerPasses: graph?.passes.filter((pass) => pass.name.startsWith('shadowCascade')).length ?? 0,
+    writerPasses:
+      frameState.compiledFrameGraph?.directionalShadowViewCount === 'current'
+        ? Math.max(1, lights?.cascades?.cascadeCount ?? 0)
+        : (graph?.passes.filter((pass) => pass.name.startsWith('shadowCascade')).length ?? 0),
     shadowAngularRadius: lights?.directionalCsmConfig?.shadowAngularRadius,
     maxPenumbraTexels: lights?.directionalCsmConfig?.maxPenumbraTexels,
     deviceGeneration: recordContext(internals).deviceScope.generation,

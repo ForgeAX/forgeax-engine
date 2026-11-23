@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-pack/source';
 import { err, type MaterialRootAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import type { ScriptablePackAssetSnapshotSource } from '../scriptable-pack.js';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
 import { buildScriptablePack, buildScriptablePackWorklist } from '../scriptable-pack-build.js';
@@ -15,6 +16,7 @@ import {
   materialAssetOutputProducer,
   textureAssetOutputProducer,
 } from '../scriptable-pack-output-producers.js';
+import { packDefinition } from './fixtures/pack-definition.js';
 
 function id(value: string) {
   const result = PackageId.parse(value);
@@ -37,39 +39,29 @@ function producers() {
 }
 
 describe('ScriptablePack import bridge with optional parameters', () => {
+  const unmarkedDefinition = (packageId: string) =>
+    packDefinition(packageId, () =>
+      ok({
+        'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } },
+        'scene/main': scene(),
+      }),
+    );
+  const unmarkedProduct = {
+    product: { assets: [{ kind: 'scene' }] },
+    stagedOutputs: [{ sourceKey: 'scene/main' }],
+  };
+
   it('omits plugin output without its explicit capability before producer dispatch', async () => {
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId: id('01900000-0000-7000-8000-000000000077'),
-      build: () =>
-        ok({
-          'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } },
-          'scene/main': scene(),
-        }),
-    });
     const result = await buildScriptablePack({
-      definition,
+      definition: unmarkedDefinition('01900000-0000-7000-8000-000000000077'),
       sourcePath: 'unmarked.pack.ts',
       outputs: producers(),
     });
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        product: { assets: [{ kind: 'scene' }] },
-        stagedOutputs: [{ sourceKey: 'scene/main' }],
-      },
-    });
+    expect(result).toMatchObject({ ok: true, value: unmarkedProduct });
   });
+
   it('rebuilds cached plugin output without its explicit capability', async () => {
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId: id('01900000-0000-7000-8000-000000000078'),
-      build: () =>
-        ok({
-          'plugin/main': { kind: 'plugin', module: { specifier: './runtime.ts' } },
-          'scene/main': scene(),
-        }),
-    });
+    const definition = unmarkedDefinition('01900000-0000-7000-8000-000000000078');
     let written: unknown;
     const result = await buildScriptablePackWorklist({
       subjects: [{ definition, sourcePath: 'cached.pack.ts' }],
@@ -88,28 +80,21 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       },
     });
     expect(result).toMatchObject({ ok: true });
-    expect(written).toMatchObject({
-      product: { assets: [{ kind: 'scene' }] },
-      stagedOutputs: [{ sourceKey: 'scene/main' }],
-    });
+    expect(written).toMatchObject(unmarkedProduct);
   });
   it('refills an idle lane before a slow earlier subject completes, with bounded lookahead', async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: gate, resolve: release } = testGate();
     const entered: string[] = [];
     const subjects = ['a', 'b', 'c', 'd', 'e'].map((name, index) => ({
       sourcePath: `assets/${name}.pack.ts`,
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: definePackageId(`01900000-0000-7000-8000-00000000012${index}`),
-        async build() {
+      definition: packDefinition(
+        definePackageId(`01900000-0000-7000-8000-00000000012${index}`),
+        async () => {
           entered.push(name);
           if (name === 'a') await gate;
           return ok({ [`scene/${name}`]: scene() });
         },
-      }),
+      ),
     }));
     const pending = buildScriptablePackWorklist({
       subjects,
@@ -142,10 +127,9 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     });
     const subjects = ['a', 'b', 'c'].map((name, index) => ({
       sourcePath: `assets/${name}.pack.ts`,
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: definePackageId(`01900000-0000-7000-8000-00000000010${index}`),
-        async build() {
+      definition: packDefinition(
+        definePackageId(`01900000-0000-7000-8000-00000000010${index}`),
+        async () => {
           entered.push(name);
           active++;
           peak = Math.max(peak, active);
@@ -157,7 +141,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
             active--;
           }
         },
-      }),
+      ),
     }));
     const pending = buildScriptablePackWorklist({
       subjects,
@@ -189,11 +173,9 @@ describe('ScriptablePack import bridge with optional parameters', () => {
   });
 
   it('reports real per-source cache/cook progress without counting a lookup as completed work', async () => {
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId: definePackageId('01900000-0000-7000-8000-000000000099'),
-      build: () => ok({ 'scene/main': scene() }),
-    });
+    const definition = packDefinition('01900000-0000-7000-8000-000000000099', () =>
+      ok({ 'scene/main': scene() }),
+    );
     const options = { definition, sourcePath: 'progress.pack.ts', outputs: producers() };
     const built = await buildScriptablePack(options);
     if (!built.ok) throw built.error;
@@ -225,15 +207,12 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     const packageId = definePackageId('01900000-0000-7000-8000-00000000004a');
     const textureGuid = AssetGuid.format(AssetGuid.derive(packageId, 'texture/baked'));
     const sceneGuid = AssetGuid.format(AssetGuid.derive(packageId, 'scene/main'));
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: () =>
-        ok({
-          'scene/main': scene(),
-          'texture/baked': { kind: 'test-bake', execution: 'cooked', source: { level: 7 } },
-        }),
-    });
+    const definition = packDefinition(packageId, () =>
+      ok({
+        'scene/main': scene(),
+        'texture/baked': { kind: 'test-bake', execution: 'cooked', source: { level: 7 } },
+      }),
+    );
     const outputs = producers();
     outputs.register(textureAssetOutputProducer);
     const cooker = {
@@ -303,16 +282,13 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       values: { baseColor: [0.6, 0.05, 0.04, 1] },
     };
     const sceneGuid = AssetGuid.format(AssetGuid.derive(packageId, 'scene/main'));
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: () =>
-        ok({
-          'scene/main': scene(),
-          'material/declared': paint,
-          'material/baked': { kind: 'test-paint', execution: 'cooked', source: { tone: 1 } },
-        }),
-    });
+    const definition = packDefinition(packageId, () =>
+      ok({
+        'scene/main': scene(),
+        'material/declared': paint,
+        'material/baked': { kind: 'test-paint', execution: 'cooked', source: { tone: 1 } },
+      }),
+    );
     const outputs = producers();
     outputs.register(materialAssetOutputProducer);
     const materialCooks: string[] = [];
@@ -489,7 +465,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     if (!published.ok) throw published.error;
     const prepared = published.value.get(options.sourcePath);
     if (prepared === undefined) throw new Error('custom source was not published');
-    expect(prepared.facts.outputs).toContainEqual(
+    expect(prepared.publication.outputs).toContainEqual(
       expect.objectContaining({ guid: shapeGuid, sourceKey: 'shape/custom', kind: 'test-volume' }),
     );
     expect(
@@ -533,20 +509,12 @@ describe('ScriptablePack import bridge with optional parameters', () => {
   ])('retries forward content reads with %s admitted subjects', async (maxConcurrency) => {
     const firstId = id('01900000-0000-7000-8000-000000000050');
     const secondId = id('01900000-0000-7000-8000-000000000051');
-    const first = definePack({
-      schemaVersion: '2.0.0',
-      packageId: firstId,
-      build: () => ok({ 'scene/first': scene() }),
-    });
+    const first = packDefinition(firstId, () => ok({ 'scene/first': scene() }));
     const dependencyGuid = AssetGuid.derive(firstId, 'scene/first');
-    const second = definePack({
-      schemaVersion: '2.0.0',
-      packageId: secondId,
-      build: async ({ readByGuid }) => {
-        const dependency = await readByGuid(dependencyGuid);
-        if (!dependency.ok) return err(dependency.error);
-        return ok({ 'scene/second': scene() });
-      },
+    const second = packDefinition(secondId, async ({ readByGuid }) => {
+      const dependency = await readByGuid(dependencyGuid);
+      if (!dependency.ok) return err(dependency.error);
+      return ok({ 'scene/second': scene() });
     });
     const result = await buildScriptablePackWorklist({
       subjects: [
@@ -576,16 +544,15 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       writes = 0;
     const subjects = ['a', 'b'].map((name, index) => ({
       sourcePath: `assets/${name}.pack.ts`,
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: definePackageId(`01900000-0000-7000-8000-00000000011${index}`),
-        async build() {
+      definition: packDefinition(
+        definePackageId(`01900000-0000-7000-8000-00000000011${index}`),
+        async () => {
           started();
           await gate;
           finished = true;
           return ok({ [`scene/${name}`]: scene() });
         },
-      }),
+      ),
     }));
     const pending = buildScriptablePackWorklist({
       subjects,
@@ -623,15 +590,14 @@ describe('ScriptablePack import bridge with optional parameters', () => {
 
   it('returns a structured stall when no subject can satisfy a content read', async () => {
     const missing = AssetGuid.derive(id('01900000-0000-7000-8000-000000000060'), 'scene/missing');
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId: id('01900000-0000-7000-8000-000000000061'),
-      build: async ({ readByGuid }) => {
+    const definition = packDefinition(
+      '01900000-0000-7000-8000-000000000061',
+      async ({ readByGuid }) => {
         const dependency = await readByGuid(missing);
         if (!dependency.ok) return err(dependency.error);
         return ok({ 'scene/main': scene() });
       },
-    });
+    );
     const result = await buildScriptablePackWorklist({
       subjects: [{ definition, sourcePath: 'assets/missing.pack.ts' }],
       outputs: producers(),
@@ -656,11 +622,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       subjects: [
         {
           sourcePath: 'assets/reference.pack.ts',
-          definition: definePack({
-            schemaVersion: '2.0.0',
-            packageId,
-            build: () => ok({ 'scene/main': scene() }),
-          }),
+          definition: packDefinition(packageId, () => ok({ 'scene/main': scene() })),
         },
       ],
       outputs,
@@ -720,19 +682,14 @@ describe('ScriptablePack import bridge with optional parameters', () => {
   it('publishes serial dependencies before admitting the next subject', async () => {
     const producerId = id('01900000-0000-7000-8000-000000000132');
     const dependency = AssetGuid.derive(producerId, 'scene/main');
-    const producer = definePack({
-      schemaVersion: '2.0.0',
-      packageId: producerId,
-      build: () => ok({ 'scene/main': scene() }),
-    });
-    const consumer = definePack({
-      schemaVersion: '2.0.0',
-      packageId: id('01900000-0000-7000-8000-000000000133'),
-      async build({ readByGuid }) {
+    const producer = packDefinition(producerId, () => ok({ 'scene/main': scene() }));
+    const consumer = packDefinition(
+      '01900000-0000-7000-8000-000000000133',
+      async ({ readByGuid }) => {
         const result = await readByGuid(dependency);
         return result.ok ? ok({ 'scene/copy': scene() }) : err(result.error);
       },
-    });
+    );
     const result = await buildScriptablePackWorklist({
       subjects: [
         { sourcePath: 'a-producer.pack.ts', definition: producer },
@@ -749,29 +706,21 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     const producerId = id('01900000-0000-7000-8000-000000000130');
     const dependency = AssetGuid.derive(producerId, 'scene/main');
     let reads = 0;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+    const { promise: gate, resolve: release } = testGate();
+    const producer = packDefinition(producerId, async () => {
+      await gate;
+      return ok({ 'scene/main': scene() });
     });
-    const producer = definePack({
-      schemaVersion: '2.0.0',
-      packageId: producerId,
-      async build() {
-        await gate;
-        return ok({ 'scene/main': scene() });
-      },
-    });
-    const consumer = definePack({
-      schemaVersion: '2.0.0',
-      packageId: id('01900000-0000-7000-8000-000000000131'),
-      async build({ readByGuid }) {
+    const consumer = packDefinition(
+      '01900000-0000-7000-8000-000000000131',
+      async ({ readByGuid }) => {
         const result = await readByGuid(dependency);
         if (!result.ok) return err(result.error);
         reads++;
         release();
         return ok({ 'scene/copy': scene() });
       },
-    });
+    );
     const writes: string[] = [];
     const result = await buildScriptablePackWorklist({
       subjects: [
@@ -828,14 +777,10 @@ describe('ScriptablePack import bridge with optional parameters', () => {
             });
       },
     };
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: async ({ readByGuid }) => {
-        const read = await readByGuid(dependencyGuid);
-        if (!read.ok) return err(read.error);
-        return ok({ 'scene/main': scene() });
-      },
+    const definition = packDefinition(packageId, async ({ readByGuid }) => {
+      const read = await readByGuid(dependencyGuid);
+      if (!read.ok) return err(read.error);
+      return ok({ 'scene/main': scene() });
     });
     const result = await produceScriptablePackProducts({
       sources: [
@@ -886,11 +831,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     outputs.register(materialAssetOutputProducer);
     let cookCount = 0;
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId,
-        build: () => ok({ 'material/main': material }),
-      }),
+      definition: packDefinition(packageId, () => ok({ 'material/main': material })),
       sourcePath: 'assets/dynamic-material.pack.ts',
       outputs,
       availableGuids: new Set([textureGuid, cookerOnlyGuid]),
@@ -945,11 +886,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     outputs.register(materialAssetOutputProducer);
     let observedGeneration: number | undefined;
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId,
-        build: () => ok({ 'material/water': material }),
-      }),
+      definition: packDefinition(packageId, () => ok({ 'material/water': material })),
       sourcePath: 'assets/surface.pack.ts',
       publicationGeneration: 7,
       outputs,
@@ -989,14 +926,10 @@ describe('ScriptablePack import bridge with optional parameters', () => {
         });
       },
     };
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: async ({ readByGuid }) => {
-        const read = await readByGuid(dependencyGuid);
-        if (!read.ok) return err(read.error);
-        return ok({ 'scene/main': scene() });
-      },
+    const definition = packDefinition(packageId, async ({ readByGuid }) => {
+      const read = await readByGuid(dependencyGuid);
+      if (!read.ok) return err(read.error);
+      return ok({ 'scene/main': scene() });
     });
     const result = await produceScriptablePackProducts({
       sources: [
@@ -1027,12 +960,8 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     expect(validated.ok).toBe(false);
     if (validated.ok) throw new Error('expected an invalid Plugin config');
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000068'),
-        build: () => {
-          throw validated.error;
-        },
+      definition: packDefinition('01900000-0000-7000-8000-000000000068', () => {
+        throw validated.error;
       }),
       sourcePath: 'assets/invalid-plugin.pack.ts',
       outputs: producers(),
@@ -1060,11 +989,7 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     ['output key', () => ok({ 'material/rockLight': scene() })],
   ] as const)('reports an invalid sourceKey from a %s with its Pack and kebab-case fix', async (_, build) => {
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000071'),
-        build: build as never,
-      }),
+      definition: packDefinition('01900000-0000-7000-8000-000000000071', build as never),
       sourcePath: 'assets/rocks.pack.ts',
       outputs: producers(),
     });
@@ -1097,12 +1022,8 @@ describe('ScriptablePack import bridge with optional parameters', () => {
         })
       : new Error('author build exploded');
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000069'),
-        build: () => {
-          throw cause;
-        },
+      definition: packDefinition('01900000-0000-7000-8000-000000000069', () => {
+        throw cause;
       }),
       sourcePath: 'assets/throwing-build.pack.ts',
       outputs: producers(),
@@ -1129,12 +1050,8 @@ describe('ScriptablePack import bridge with optional parameters', () => {
       },
     );
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000070'),
-        build: () => {
-          throw cause;
-        },
+      definition: packDefinition('01900000-0000-7000-8000-000000000070', () => {
+        throw cause;
       }),
       sourcePath: 'assets/opaque-build.pack.ts',
       outputs: producers(),
@@ -1148,53 +1065,30 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     });
   });
 
-  it('converts a throwing output producer into a structured import failure', async () => {
+  it.each([
+    ['throwing-producer', '01900000-0000-7000-8000-000000000065', 'import-internal-error'],
+    ['malformed-producer', '01900000-0000-7000-8000-000000000066', 'pack-parameter-invalid'],
+  ] as const)('keeps %s failures structured at the import boundary', async (producer, packageId, code) => {
     const outputs = new AssetOutputProducerRegistry();
     outputs.register({
       kind: 'scene',
       version: 'test',
       produce: () => {
-        throw new Error('producer exploded');
+        if (producer === 'throwing-producer') throw new Error('producer exploded');
+        return { ok: true, value: null } as never;
       },
     });
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000065'),
-        build: () => ok({ 'scene/main': scene() }),
-      }),
-      sourcePath: 'assets/throwing-producer.pack.ts',
+      definition: packDefinition(packageId, () => ok({ 'scene/main': scene() })),
+      sourcePath: `assets/${producer}.pack.ts`,
       outputs,
     });
-    expect(result).toMatchObject({ ok: false, error: { code: 'import-internal-error' } });
-  });
-
-  it('rejects malformed output producer products at the import boundary', async () => {
-    const outputs = new AssetOutputProducerRegistry();
-    outputs.register({
-      kind: 'scene',
-      version: 'test',
-      produce: () => ({ ok: true, value: null }) as never,
-    });
-    const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000066'),
-        build: () => ok({ 'scene/main': scene() }),
-      }),
-      sourcePath: 'assets/malformed-producer.pack.ts',
-      outputs,
-    });
-    expect(result).toMatchObject({ ok: false, error: { code: 'pack-parameter-invalid' } });
+    expect(result).toMatchObject({ ok: false, error: { code } });
   });
 
   it('converts a malformed Pack build result into a structured import failure', async () => {
     const result = await buildScriptablePack({
-      definition: definePack({
-        schemaVersion: '2.0.0',
-        packageId: id('01900000-0000-7000-8000-000000000067'),
-        build: () => null as never,
-      }),
+      definition: packDefinition('01900000-0000-7000-8000-000000000067', () => null as never),
       sourcePath: 'assets/malformed-build.pack.ts',
       outputs: producers(),
     });

@@ -152,7 +152,7 @@ process.stdout.write(JSON.stringify({ args: process.argv.slice(2), cwd: process.
   assert.equal(value.env, 'pinned');
 });
 
-test('candidate document reads share the public Codec for plain and compressed builds', async (t) => {
+test('candidate document reads share the public Codec and project authored Pack v3 assets', async (t) => {
   const { compressZstd } = await import('../../../packages/codec/dist/encode/index.mjs');
   const project = await realpath(await mkdtemp(resolve(tmpdir(), 'sdk catalog ')));
   t.after(() => rm(project, { force: true, recursive: true }));
@@ -169,10 +169,27 @@ test('candidate document reads share the public Codec for plain and compressed b
     kind: 'internal-text-package',
     assets: [{ guid: rows[0].guid, kind: 'scene', payload: { entities: [] } }],
   };
+  const authored = JSON.parse(
+    await readFile(
+      new URL('../../../templates/empty/assets/world/world.scene.pack.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  const projected = {
+    packageId: authored.packageId,
+    assets: [
+      {
+        ...authored.assets['world/empty'],
+        sourceKey: 'world/empty',
+        guid: 'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125',
+      },
+    ],
+  };
   const runner = createSdkVerifierProcess(packageManager);
-  for (const [kind, value] of [
+  for (const [kind, value, expected = value] of [
     ['catalog', rows],
     ['json', scene],
+    ['direct-pack', authored, projected],
   ]) {
     const plain = Buffer.from(JSON.stringify(value));
     const compressed = await compressZstd(plain);
@@ -183,7 +200,7 @@ test('candidate document reads share the public Codec for plain and compressed b
       await writeFile(file, bytes);
       assert.deepEqual(
         await readSdkProjectDocument(runner.execFileAsync, project, file, kind),
-        value,
+        expected,
       );
     }
   }

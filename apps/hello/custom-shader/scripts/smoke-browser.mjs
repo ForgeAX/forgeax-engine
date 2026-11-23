@@ -104,45 +104,24 @@ function stableJson(value) {
 }
 
 async function readActiveLayoutIdentity(page) {
-  const semanticPack = process.env.FORGEAX_CUSTOM_SHADER_SEMANTIC === '1';
-  const packUrl = await page.evaluate(() => {
-    const resources = performance
-      .getEntriesByType('resource')
-      .map((entry) => entry.name)
-      .filter((name) =>
-        globalThis.location.search.includes('semantic=1') || globalThis.location.search.includes('materialPack=')
-          ? name.includes('pack.json')
-          : name.includes('pulse-material.pack'),
-      );
-    return resources.at(-1) ?? null;
-  });
-  assert(packUrl !== null, `browser pack transport did not expose ${semanticPack ? 'semantic material pack' : 'pulse-material.pack.json'}`);
-  const pack = await page.evaluate(async (url) => {
-    const requested = new URLSearchParams(globalThis.location.search).get('materialPack');
-    const candidates = [
-      url,
-      ...performance
-        .getEntriesByType('resource')
-        .map((entry) => entry.name)
-        .filter((name) =>
-          requested === null && !globalThis.location.search.includes('semantic=1')
-            ? name.includes('pulse-material.pack')
-            : name.includes('pack.json'),
-        ),
-    ];
-    for (const candidate of [...new Set(candidates)].reverse()) {
-      const response = await fetch(candidate, { cache: 'no-store' });
+  const { pack, packUrl } = await page.evaluate(async () => {
+    const evidence = globalThis.__forgeaxMaterialEvidence;
+    const requestedGuids = [evidence?.rootGuid, evidence?.derivedGuid];
+    const candidates = performance.getEntriesByType('resource')
+      .map(({ name }) => name)
+      .filter((name) => new URL(name).pathname.endsWith('.runtime-pack.json'));
+    for (const url of [...new Set(candidates)].reverse()) {
+      const response = await fetch(url, { cache: 'no-store' });
       if (!response.ok) continue;
-      const text = await response.text();
-      try {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed.assets)) return parsed;
-      } catch {
-        // Vite's JSON module transport is JavaScript; skip it and keep the pack URL.
+      const wire = await response.json();
+      const pack = wire.pack ?? wire;
+      const active = requestedGuids.map((guid) => pack.assets?.find((asset) => asset.guid === guid));
+      if (active.every((asset) => asset !== undefined)) {
+        return { pack: { assets: active }, packUrl: url };
       }
     }
-    throw new Error('browser pack transport returned no JSON MaterialAsset pack');
-  }, packUrl);
+    throw new Error('browser did not fetch the Runtime Pack for the active material pair');
+  });
   const identities = pack.assets
     .map((asset) => asset.payload?.cooked?.receipt?.identity)
     .filter((identity) => identity !== null && typeof identity === 'object');

@@ -14,7 +14,7 @@ const systemImports = new Set([
   'dxcore.dll', 'dxgi.dll', 'gdi32.dll', 'imm32.dll', 'kernel32.dll', 'kernelbase.dll',
   'msvcrt.dll', 'ntdll.dll', 'ole32.dll', 'oleaut32.dll', 'opengl32.dll', 'rpcrt4.dll', 'secur32.dll', 'setupapi.dll',
   'shell32.dll', 'shlwapi.dll', 'user32.dll', 'userenv.dll', 'version.dll',
-  'ucrtbase.dll', 'winhttp.dll', 'winmm.dll', 'wintrust.dll', 'ws2_32.dll', 'node.exe',
+  'ucrtbase.dll', 'uxtheme.dll', 'winhttp.dll', 'winmm.dll', 'wintrust.dll', 'ws2_32.dll', 'xinput1_4.dll', 'node.exe',
 ]);
 
 // Inspect normal and delay-load PE imports. A static DXC/CRT release must have

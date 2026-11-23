@@ -14,19 +14,19 @@ import { createMaterialPackCooker } from '../pack-cooker.js';
 const source = `#define_import_path game::lit_smoke
 #import forgeax_view::common::{view}
 #import forgeax_material::parameters::{material, flipbook, flipbook_sampler}
-#import forgeax_material::lighting_inputs::{irradianceMap, irradianceSampler, prefilterMap, prefilterSampler, brdfLut, skylight, skylightPrefilterMap}
+#import forgeax_pbr::sky_sh_polynomial::{evaluateSkyPolynomial}
+#import forgeax_material::lighting_inputs::{skySh, irradianceSampler, prefilterMap, prefilterSampler, brdfLut, skylight}
 @group(0) @binding(1) var sceneDepth: texture_depth_2d;
 @vertex fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
   return view.worldViewProj * vec4<f32>(position, 1.0);
 }
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-  let diffuse = textureSampleLevel(irradianceMap, irradianceSampler, vec3<f32>(0,1,0), 0).rgb;
+  let diffuse = evaluateSkyPolynomial(skySh, vec3<f32>(0,1,0));
   let local = textureSampleLevel(prefilterMap, prefilterSampler, vec2<f32>(.5), 0).rgb;
-  let global = textureSampleLevel(skylightPrefilterMap, prefilterSampler, vec2<f32>(.5), 0).rgb;
   let brdf = textureLoad(brdfLut, vec2<i32>(0), 0).rgb;
   let sprite = textureSample(flipbook, flipbook_sampler, vec2<f32>(.5));
   let depth = textureLoad(sceneDepth, vec2<i32>(position.xy), 0);
-  return vec4<f32>((diffuse + local + global + brdf + skylight.ambientIrradiance.xyz) * material.tint.rgb * sprite.rgb + vec3<f32>(depth), sprite.a);
+  return vec4<f32>((diffuse + local + brdf + skylight.ambientIrradiance.xyz) * material.tint.rgb * sprite.rgb + vec3<f32>(depth), sprite.a);
 }
 `;
 const parameters = [
@@ -82,7 +82,7 @@ it('cooks custom smoke with its own schema, real Engine IBL and depth into a val
       { name: 'flipbook', type: 'texture2d' },
     ]).userRegionBindingEnd,
   );
-  expect(bindings.irradianceMap).not.toBe(17);
+  expect(bindings.skySh).not.toBe(17);
   const selections = record.programs.flatMap((program) => program.selections);
   expect(selections.length).toBeGreaterThan(0);
   expect(new Set(selections.map((selection) => selection.context.backend))).toEqual(
@@ -94,11 +94,17 @@ it('cooks custom smoke with its own schema, real Engine IBL and depth into a val
     const reads = selection.abi?.entryPoints?.flatMap((entry) =>
       entry.bindings.filter((binding) => binding.group === 1).map((binding) => binding.binding),
     );
-    expect(reads).toEqual(expect.arrayContaining(Object.values(bindings)));
+    expect(reads).toEqual(
+      expect.arrayContaining(
+        Object.entries(bindings)
+          .filter(([name]) => name !== 'irradianceSampler')
+          .map(([, binding]) => binding),
+      ),
+    );
   }
   expect(
     Object.values(product.artifacts).some((artifact) =>
-      new TextDecoder().decode(artifact.bytes).includes('irradianceMap'),
+      new TextDecoder().decode(artifact.bytes).includes('skySh'),
     ),
   ).toBe(true);
 }, 120_000);
@@ -110,7 +116,7 @@ it('rejects an unrelated project binding rather than granting a broad Engine-res
       'let depth =',
       'let arbitrary = textureLoad(unexpected, vec2<i32>(0), 0).rgb;\n  let depth =',
     )
-    .replace('diffuse + local + global + brdf', 'arbitrary + diffuse + local + global + brdf');
+    .replace('diffuse + local + brdf', 'arbitrary + diffuse + local + brdf');
   await expect(
     withSource(invalid, (root) =>
       createMaterialPackCooker([root], { profile: 'webgpu-storage' }).cook({
@@ -127,12 +133,12 @@ it('rejects a project declaration that impersonates an unused reserved Engine in
       { name: 'tint', type: 'color' },
       { name: 'flipbook', type: 'texture2d' },
     ]).userRegionBindingEnd,
-  ).skylightPrefilterMap;
+  ).prefilterMap;
   const invalid = source
-    .replace(', skylightPrefilterMap}', '}')
+    .replace(', prefilterMap,', ',')
     .replace(
       '@vertex fn',
-      `@group(1) @binding(${binding}) var skylightPrefilterMap: texture_2d<f32>;\n@vertex fn`,
+      `@group(1) @binding(${binding}) var prefilterMap: texture_2d<f32>;\n@vertex fn`,
     );
   await expect(
     withSource(invalid, (root) =>
@@ -147,13 +153,13 @@ it('rejects a project declaration that impersonates an unused reserved Engine in
 function lightingOnlySource(vertex: boolean): string {
   return `#define_import_path game::lit_smoke
 #import forgeax_view::common::{view}
-#import forgeax_material::lighting_inputs::{irradianceMap, irradianceSampler, prefilterMap, prefilterSampler, brdfLut, skylight, skylightPrefilterMap}
+#import forgeax_pbr::sky_sh_polynomial::{evaluateSkyPolynomial}
+#import forgeax_material::lighting_inputs::{skySh, irradianceSampler, prefilterMap, prefilterSampler, brdfLut, skylight}
 @group(0) @binding(1) var sceneDepth: texture_depth_2d;
 fn environment() -> vec3<f32> {
-  let diffuse = textureSampleLevel(irradianceMap, irradianceSampler, vec3<f32>(0,1,0), 0).rgb;
+  let diffuse = evaluateSkyPolynomial(skySh, vec3<f32>(0,1,0));
   let local = textureSampleLevel(prefilterMap, prefilterSampler, vec2<f32>(.5), 0).rgb;
-  let global = textureSampleLevel(skylightPrefilterMap, prefilterSampler, vec2<f32>(.5), 0).rgb;
-  return diffuse + local + global + textureLoad(brdfLut, vec2<i32>(0), 0).rgb + skylight.ambientIrradiance.xyz;
+  return diffuse + local + textureLoad(brdfLut, vec2<i32>(0), 0).rgb + skylight.ambientIrradiance.xyz;
 }
 @vertex fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
   return view.worldViewProj * vec4<f32>(position ${vertex ? '+ environment() * 0.001' : ''}, 1.0);
@@ -183,18 +189,24 @@ it.each([
   expect(record.resolved.parameters).toEqual([]);
   expect(derive([]).userRegionBindingEnd).toBe(0);
   const bindings = materialLightingInputBindings(0);
-  expect(bindings.irradianceMap).toBe(0);
+  expect(bindings.skySh).toBe(0);
   for (const program of record.programs) {
     const text = new TextDecoder().decode(product.artifacts[program.artifact.path]?.bytes);
-    expect(text).toMatch(/@group\(1\)\s*@binding\(0\)\s*var\s+irradianceMap/);
-    expect(text).not.toMatch(/@group\(1\)\s*@binding\(0\)\s*var<uniform>/);
+    expect(text).toMatch(/@group\(1\)\s*@binding\(0\)\s*var<uniform>\s+skySh/);
+    expect(text).not.toMatch(/@group\(1\)\s*@binding\(0\)\s*var<uniform>\s+material\b/);
     for (const selection of program.selections) {
       expect(selection.abi?.materialRow.byteLength).toBe(0);
       expect(selection.abi?.resourceSlots).toEqual([]);
       const reads = selection.abi?.entryPoints?.flatMap((entry) =>
         entry.bindings.filter((binding) => binding.group === 1).map((binding) => binding.binding),
       );
-      expect(reads).toEqual(expect.arrayContaining(Object.values(bindings)));
+      expect(reads).toEqual(
+        expect.arrayContaining(
+          Object.entries(bindings)
+            .filter(([name]) => name !== 'irradianceSampler')
+            .map(([, binding]) => binding),
+        ),
+      );
       const vertexReads =
         selection.abi?.entryPoints
           ?.filter((entry) => entry.stage === 'vertex')
@@ -203,7 +215,14 @@ it.each([
               .filter((binding) => binding.group === 1)
               .map((binding) => binding.binding),
           ) ?? [];
-      if (vertex) expect(vertexReads).toEqual(expect.arrayContaining(Object.values(bindings)));
+      if (vertex)
+        expect(vertexReads).toEqual(
+          expect.arrayContaining(
+            Object.entries(bindings)
+              .filter(([name]) => name !== 'irradianceSampler')
+              .map(([, binding]) => binding),
+          ),
+        );
       else expect(vertexReads).toEqual([]);
     }
   }

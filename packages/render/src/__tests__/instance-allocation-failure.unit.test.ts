@@ -3,7 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import { GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
-import { resolveGeometryInstanceBuffer } from '../record/main-pass-geometry';
+import { PassGeometryInstances, resolveGeometryInstanceBuffer } from '../record/main-pass-geometry';
 
 it('refuses an instance draw when allocation fails instead of drawing the identity fallback', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -85,5 +85,65 @@ it('retains the prepared identity draw when a rigid row has no probe binding', a
     expect(resolveGeometryInstanceBuffer(context, row, identity, false)).toBe(identity);
   } finally {
     device.destroyBuffer(buffer).unwrap();
+  }
+});
+
+it('binds the live sentinel once per pass across changing rigid entities and buffer replacement', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const instance = device.createBuffer({ size: 128, usage: GPU_BUFFER_USAGE_STORAGE }).unwrap();
+  const instanceEntry = {
+    binding: 0,
+    visibility: GPU_SHADER_STAGE_VERTEX,
+    buffer: { type: 'read-only-storage' as const },
+  };
+  const plain = device.createBindGroupLayout({ entries: [instanceEntry] }).unwrap();
+  const withProbe = device
+    .createBindGroupLayout({
+      entries: [
+        instanceEntry,
+        {
+          ...instanceEntry,
+          binding: 1,
+          buffer: { type: 'read-only-storage', hasDynamicOffset: true },
+        },
+      ],
+    })
+    .unwrap();
+  const state: Parameters<
+    typeof import('../record/probe-blend-buffer').ensureProbeBlendRecordBuffer
+  >[1] = {
+    probeBlendRecordBufferCapacity: 0,
+    probeBlendBuffers: new Map(),
+  };
+  const groups = vi.spyOn(device, 'createBindGroup');
+  const pass = new PassGeometryInstances({
+    runtime: { device },
+    frameState: state,
+    pipelineState: {
+      identityInstanceBuffer: instance,
+      instancesBindGroupLayout: plain,
+      probeInstancesBindGroupLayout: withProbe,
+    },
+    bindGroupCounts: { createBindGroup: 0, keys: [] },
+  } as unknown as ConstructorParameters<typeof PassGeometryInstances>[0]);
+  const entry = (entityKey: number) =>
+    ({ source: { entityKey } }) as Parameters<typeof pass.resolve>[0];
+  try {
+    const first = pass.resolve(entry(1), true);
+    expect(first?.[0]?.probeOffset).toBe(0);
+    for (let i = 0; i < 256; i++) {
+      expect(pass.resolve(entry(i), true)).toBe(first);
+      expect(pass.resolve(entry(i), false)).toBe(pass.identity());
+    }
+    expect(groups).toHaveBeenCalledTimes(2);
+    state.probeBlendRecordBuffer?.destroy().unwrap();
+    const replacement = pass.resolve(entry(257), true);
+    expect(replacement?.[0]?.probeBuffer).not.toBe(first?.[0]?.probeBuffer);
+    expect(replacement?.[0]?.probeOffset).toBe(0);
+    expect(groups).toHaveBeenCalledTimes(3);
+  } finally {
+    groups.mockRestore();
+    state.probeBlendRecordBuffer?.destroy().unwrap();
+    device.destroyBuffer(instance).unwrap();
   }
 });

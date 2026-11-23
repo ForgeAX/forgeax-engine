@@ -2276,6 +2276,7 @@ const CANVAS_CONFIG_KEYS = [
  *  implements what is needed (charter proposition 1: progressive disclosure). */
 export interface GpuCanvasContextLike {
   readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
+  readonly supportedTextureUsages?: number | undefined;
   configure(configuration: GPUCanvasConfiguration): void;
   unconfigure(): void;
   getConfiguration(): GPUCanvasConfiguration | null;
@@ -2303,6 +2304,9 @@ export function makeCanvasContext(rawContext: GpuCanvasContextLike): RhiCanvasCo
   return {
     get supportedAlphaModes() {
       return rawContext.supportedAlphaModes;
+    },
+    get supportedTextureUsages() {
+      return rawContext.supportedTextureUsages;
     },
     configure(desc: CanvasConfiguration): Result<void, RhiError> {
       const fmt = desc.format as GPUTextureFormat | undefined;

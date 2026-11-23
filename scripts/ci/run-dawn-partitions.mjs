@@ -23,6 +23,7 @@ export const DAWN_TEST_PARTITIONS = {
       count: 3,
     },
     { pattern: 'keeps IOR, thickness, and roughness', count: 1 },
+    { pattern: 'records sixty alternating smooth fronts', count: 2 },
     { pattern: 'exercises both Standard render paths', count: 1 },
     {
       // Each process pays the full shader-manifest import; the budget cases
@@ -31,6 +32,7 @@ export const DAWN_TEST_PARTITIONS = {
         'submits a real clustered local-light frame|refracts through the shared-slot variant|reports and falls back when a split scalar map',
       count: 3,
     },
+    { pattern: 'releases inactive glass and records its return', count: 4 },
   ],
   'feature-depth': [
     { pattern: 'samples depth written by a vertex-only prepared graphics pass', count: 1 },

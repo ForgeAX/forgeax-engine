@@ -28,6 +28,7 @@ import {
 import {
   PLAYER_STATE_CHANNEL, type Game3dPlayerService, type PlayerHudState, type PlayerInput,
 } from '../shared/player-protocol.ts';
+import { installCheckpoint } from './checkpoint.ts';
 import { createPlayerInput } from './player-input.ts';
 
 export const ThirdPersonRig = defineComponent(
@@ -49,6 +50,8 @@ interface PlayerConfig {
   readonly speed: number;
   readonly jumpSpeed: number;
   readonly gravity: number;
+  readonly music: string;
+  readonly chime: string;
   readonly walk: string;
   readonly transform: string;
   readonly wheels: string;
@@ -111,14 +114,14 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
         queries: [],
         fn: () => {
           const size = readDrawingBufferSize?.();
+          const dt = world.getResource(Time).delta;
           frameInput = sampleInput.sample(
             world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY),
-            size?.width ?? 0, size?.height ?? 0,
+            size?.width ?? 0, size?.height ?? 0, dt,
           );
           // Visual playback consumes this frame's input even when no fixed
           // step runs. Physics alone consumes the fixed-step movement delta.
           if (sampleInput.takeTransform()) vehicle = !vehicle;
-          const dt = world.getResource(Time).delta;
           const previousProgress = transformProgress;
           transformProgress = Math.max(0, Math.min(1, transformProgress + (vehicle ? 1 : -1) * dt / PLAYER_TRANSFORM_SECONDS));
           const moving = Math.hypot(frameInput.horizontal, frameInput.vertical) > 0.001;
@@ -137,6 +140,7 @@ world.addSystem(Update, systemToken1).unwrap();
       // Engine -> UI: the HUD only receives a small rounded snapshot, and only when it changes.
       // Speed comes from the displacement physics actually applied in the last fixed step,
       // so it is stable regardless of render frame rate and fixed-step count per frame.
+      const resumeCheckpoint = yield* installCheckpoint(world, host, playerService, config.music, config.chime);
       const motion = { planarSpeed: 0 };
       let lastHud = '';
       const systemToken2 = defineSystem({
@@ -144,6 +148,7 @@ world.addSystem(Update, systemToken1).unwrap();
         after: [FixedUpdate, systemToken1],
         queries: [],
         fn: () => {
+          resumeCheckpoint();
           const pos = world.get(player, Transform).unwrap().pos;
           const controller = world.get(player, CharacterController);
           const state: PlayerHudState = {

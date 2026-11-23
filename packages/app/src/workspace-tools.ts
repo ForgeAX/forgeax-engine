@@ -166,15 +166,14 @@ export function createEngineWorkspaceTools(
     }
   > = {
     'target.pick': {
-      summary:
-        'Pick against the actual submitted display mapping using bounds or exact triangle geometry.',
+      summary: 'Pick by bounds, CPU triangles or a GPU sample of the next eligible view frame.',
       properties: {
-        granularity: { type: 'string', enum: ['bounds', 'triangle'] },
+        granularity: { type: 'string', enum: ['bounds', 'triangle', 'visible-entity'] },
         frameId: { type: 'integer', minimum: 0 },
         deviceGeneration: { type: 'integer', minimum: 0 },
         viewIdentity: { type: 'string' },
       },
-      async run(args) {
+      async run(args, context) {
         const owner = preview(args);
         if (!owner.tools?.pick)
           throw new EngineWorkspaceError(
@@ -191,6 +190,7 @@ export function createEngineWorkspaceTools(
             ? { deviceGeneration: args.deviceGeneration }
             : {}),
           ...(typeof args.viewIdentity === 'string' ? { viewIdentity: args.viewIdentity } : {}),
+          ...(args.granularity === 'visible-entity' ? { signal: context.signal } : {}),
           ...(args.granularity === undefined
             ? {}
             : { granularity: args.granularity as EngineWorkspacePickGranularity }),

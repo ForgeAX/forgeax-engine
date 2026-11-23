@@ -373,18 +373,11 @@ async function build(
 it.each([
   'forward',
   'deferred',
-] as const)('uses three single-sample scalar spiral AO stages on %s', async (renderPath) => {
+] as const)('publishes full-size SSAO from the expected level plan on %s', async (renderPath) => {
   const profile: StandardProfile = {
     ...DEFAULT_STANDARD_PROFILE,
     renderPath,
-    ambientOcclusion: {
-      enabled: true,
-      method: 'spiral-ssao',
-      quality: 'high',
-      resolutionScale: 0.5,
-      radius: 0.9,
-      intensity: 1.6,
-    },
+    ambientOcclusion: { enabled: true, method: 'ssao', levels: 3 },
   };
   const base = topology(profile);
   const result = await build(profile, {
@@ -392,34 +385,23 @@ it.each([
     lane: { ...base.lane, multisample: true },
     camera: { antialias: renderPath === 'forward' ? 'msaa-fxaa' : 'fxaa' },
   });
-  expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);
-  const info = result.unwrap().inspect();
-  expect(
-    info.passes.filter((pass) => pass.name.startsWith('ssao-')).map((pass) => pass.name),
-  ).toEqual([
-    'ssao-parameters',
-    'ssao-linear-depth',
-    'ssao-calc',
-    'ssao-blur-horizontal',
-    'ssao-blur',
-  ]);
-  for (const label of ['ssao-raw', 'ssao-horizontal', 'ssao-blurred']) {
-    expect(info.resources.find((resource) => resource.label === label)).toMatchObject({
-      descriptor: { format: 'r8unorm', size: { width: 641, height: 361 } },
+  const graph = result.unwrap();
+  const info = graph.inspect();
+  const names = info.passes.map((pass) => pass.name);
+  expect(names).toContain('ssao-furthest-hzb-seed');
+  expect(names).not.toContain('ssao-furthest-hzb-reduce-chain');
+  expect(names).not.toContain('ssao-blur');
+  expect(info.resources.find((resource) => resource.label === 'ssao-calc')).toMatchObject({
+    descriptor: { format: 'r8unorm', size: { width: 1281, height: 721 } },
+  });
+  expect(names.includes('ssao-half')).toBe(renderPath === 'deferred');
+  expect(names.includes('ssao-quarter')).toBe(renderPath === 'deferred');
+  if (renderPath === 'deferred') {
+    expect(info.resources.find((resource) => resource.label === 'ssao-setup-half')).toMatchObject({
+      descriptor: { format: 'rgba16float', size: { width: 641, height: 361 } },
     });
   }
-  expect(info.resources.find((resource) => resource.label === 'ssao-linear-depth')).toMatchObject({
-    descriptor: { format: 'r16float', size: { width: 641, height: 361 } },
-  });
-  const calc = info.passes.find((pass) => pass.name === 'ssao-calc');
-  expect(calc?.accesses.filter((access) => access.usage === 'sampled-read')).toHaveLength(1);
-  expect(info.passes.find((pass) => pass.name === 'ssao-blur-horizontal')?.dependencies).toContain(
-    'ssao-calc',
-  );
-  expect(info.passes.find((pass) => pass.name === 'ssao-blur')?.dependencies).toContain(
-    'ssao-blur-horizontal',
-  );
-  expect((await result.unwrap().retire()).ok).toBe(true);
+  (await graph.retire()).unwrap();
 });
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
@@ -1236,7 +1218,6 @@ describe('forgeax::standard graph', () => {
             near: 0.1,
             far: 100,
             screenSpaceReflection: {
-              waterTemporal: 0,
               maxDistance: 40,
               thickness: 0.2,
               maxRoughness: 0.6,
@@ -1289,7 +1270,7 @@ describe('forgeax::standard graph', () => {
         ssr: {
           status: 'admitted',
           lane: 'forward',
-          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1, waterTemporal: 0 },
+          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1 },
           viewRange: 100,
           work: {
             attachmentCount: 3,
@@ -1696,7 +1677,7 @@ describe('forgeax::standard graph', () => {
       DEFAULT_STANDARD_PROFILE,
       {
         camera: { tonemap: 'none', antialias, bloom: 'off' },
-        config: { postEffects: ['test-effect'] },
+        config: { postEffects: ['test-effect'], ambientOcclusion: { enabled: false } },
         lane: { compute: storageBuffer, storageBuffer, multisample: false, maxColorAttachments: 8 },
         surface: {
           width: 1,
@@ -1919,10 +1900,7 @@ describe('forgeax::standard graph', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('keeps vertex fog and MSAA scene batching with native scene-color AO=%s', async (ao) => {
+  it.each([false, true])('keeps vertex fog and MSAA scene batching with SSAO=%s', async (ao) => {
     const compiled = (
       await build(
         {
@@ -1936,7 +1914,7 @@ describe('forgeax::standard graph', () => {
           unfoggedOpaque: true,
           config: {
             outputContract: 'standard-output-v2',
-            ambientOcclusion: { enabled: ao, method: 'spiral-ssao', application: 'scene-color' },
+            ambientOcclusion: { enabled: ao, method: 'ssao' },
           },
           camera: { antialias: 'msaa-fxaa', bloom: 'off' },
           lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -1955,24 +1933,12 @@ describe('forgeax::standard graph', () => {
           'transparent',
         ]);
       expect(names).not.toContain('atmosphere-opaque-composition');
-      expect(names).not.toContain('forward-ao-depth-resolve');
-      expect(
-        compiled
-          .inspect()
-          .resources.some((resource) => resource.label === 'forward-ao-depth-resolve-depth'),
-      ).toBe(false);
-      for (const stage of [
-        'ssao-linear-depth',
-        'ssao-calc',
-        'ssao-blur-horizontal',
-        'ssao-blur',
-        'ssao-scene-color',
-      ])
-        expect(names.filter((name) => name === stage)).toHaveLength(ao ? 1 : 0);
+      expect(names.includes('forward-ao-depth-resolve')).toBe(ao);
+      expect(names.includes('ssao-calc')).toBe(ao);
+      expect(names).not.toContain('ssao-scene-color');
       if (ao) {
-        expect(names.indexOf('ssao-linear-depth')).toBeGreaterThan(names.indexOf('transparent'));
-        expect(names.indexOf('ssao-scene-color')).toBeGreaterThan(names.indexOf('transparent'));
-        expect(names.indexOf('ssao-scene-color')).toBeLessThan(names.indexOf('standard-grade'));
+        expect(names.indexOf('forward-ao-depth-resolve')).toBeLessThan(names.indexOf('ssao-calc'));
+        expect(names.indexOf('ssao-calc')).toBeLessThan(names.indexOf('main'));
       }
     } finally {
       (await compiled.retire()).unwrap();
@@ -2374,7 +2340,7 @@ it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%
     expect(
       info.resources.some((resource) => resource.label === 'standard-scene-surface-normal'),
     ).toBe(false);
-    expect(info.resources.some((resource) => resource.label === 'ssao-raw')).toBe(ao);
+    expect(info.resources.some((resource) => resource.label === 'ssao-calc')).toBe(ao);
     expect(info.resources.some((resource) => resource.label.startsWith('taa-history'))).toBe(false);
   } finally {
     (await result.value.retire()).unwrap();
@@ -2384,33 +2350,22 @@ it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%
 it.each([
   'forward',
   'deferred',
-] as const)('applies scene-color AO once before temporal/output on %s', async (renderPath) => {
-  const profile: StandardProfile = {
-    ...DEFAULT_STANDARD_PROFILE,
-    renderPath,
-    ambientOcclusion: {
-      enabled: true,
-      method: 'spiral-ssao',
-      application: 'scene-color',
-      resolutionScale: 0.5,
-    },
-  };
-  const result = await build(profile);
-  expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);
-  const info = result.unwrap().inspect();
-  const composite = info.passes.find((p) => p.name === 'ssao-scene-color');
-  expect(composite).toBeDefined();
-  const aoResource = info.resources.find((r) => r.label === 'ssao-blurred');
-  expect(aoResource).toBeDefined();
-  expect(
-    info.passes
-      .filter((p) => p.accesses.some((a) => a.resource === 'ssao-blurred'))
-      .map((p) => p.name),
-  ).toEqual(['ssao-blur', 'ssao-scene-color']);
-  expect(info.passes.findIndex((p) => p.name === 'ssao-scene-color')).toBeLessThan(
-    info.passes.findIndex((p) => p.name === 'bloom-horizontal-0'),
+] as const)('routes screen visibility directly to lighting on %s', async (renderPath) => {
+  const graph = (
+    await build({
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath,
+      ambientOcclusion: { enabled: true, method: 'ssao' },
+    })
+  ).unwrap();
+  const { passes } = graph.inspect();
+  const receiver = renderPath === 'forward' ? 'main' : 'lighting';
+  const consumers = passes.filter(({ accesses }) =>
+    accesses.some(({ resource, usage }) => resource === 'ssao-calc' && usage === 'sampled-read'),
   );
-  expect((await result.unwrap().retire()).ok).toBe(true);
+  expect(consumers.some(({ name }) => name === receiver)).toBe(true);
+  expect(passes.some(({ name }) => name === 'ssao-scene-color')).toBe(false);
+  (await graph.retire()).unwrap();
 });
 
 it.each([

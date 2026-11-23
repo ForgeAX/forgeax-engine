@@ -54,7 +54,7 @@ export function warningKind(finding: string): string {
 }
 
 /** Clips to at most `max` UTF-8 bytes. */
-function clip(text: string, max: number): string {
+export function clipUtf8(text: string, max: number): string {
   if (Buffer.byteLength(text) <= max) return text;
   let output = '';
   let bytes = 0;
@@ -131,7 +131,7 @@ function compactWarning(warning: PlayWarning): PlayWarning {
     kind: warning.kind,
     count: warning.count,
     screenshots: listed,
-    message: clip(warning.message, PLAY_WARNING_MAX),
+    message: clipUtf8(warning.message, PLAY_WARNING_MAX),
   };
 }
 

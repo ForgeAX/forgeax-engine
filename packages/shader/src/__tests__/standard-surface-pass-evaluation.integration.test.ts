@@ -76,7 +76,7 @@ describe('Standard Surface pass evaluation', () => {
           expect(body).toContain('encodeStandardGBuffer(');
           expect(body).toContain('encodeCompactStandardGBuffer(');
           expect(entryBody(shader, 'fs_gbuffer_compact(')).toContain(`${owner}(`);
-          expect(body).toContain('standardSurfaceSpecular(in, surface,');
+          expect(body).toContain('evaluateStandardSpecular(physicalMaterialUvs(in),');
           expect(body).not.toContain('evaluateStandardEnvironment(');
           expect(body).not.toContain('evaluateStandardDirect(');
         }

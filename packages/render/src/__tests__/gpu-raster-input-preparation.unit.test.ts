@@ -2,7 +2,15 @@ import type { BindGroupDescriptor } from '@forgeax/engine-rhi';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { assert, describe, expect, it, onTestFinished, vi } from 'vitest';
+import type { LiveRasterBatch, LiveRasterCache } from '../gpu-driven/live-raster';
+import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
+import {
+  type ProductionRasterInputs,
+  prepareProductionRasterInputs,
+} from '../gpu-driven/production-raster-inputs';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
+import { RetainedRasterEncodes } from '../gpu-driven/retained-raster-encode';
+import type { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import { standardPbrInputs } from './gpu-driven-production-fixture';
@@ -33,12 +41,15 @@ async function fixture(whole = true, manualCleanup = false) {
   const previous = read.buffer().unwrap();
   read.seal().unwrap();
   raster.ensureSceneTables(
+    scene.transformBuffer,
+    scene.transformByteLength,
     scene.instanceBuffer,
     scene.rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
     scene.primitiveBuffer,
     scene.rowCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
     undefined,
     previous.buffer,
+    scene.inputs,
   );
   const mainA = raster.visibleWindowBindGroupForBuffer(visible, 0, 64).unwrap();
   const mainB = raster.visibleWindowBindGroupForBuffer(visible, 64, 64).unwrap();
@@ -81,6 +92,73 @@ function inputBuffer(descriptor: BindGroupDescriptor) {
   assert(resource?.kind === 'buffer');
   return resource.value.buffer;
 }
+
+describe('Production raster Inputs publication', () => {
+  function prepareProduction(
+    f: Awaited<ReturnType<typeof fixture>>,
+    count: number,
+    capture = (_row: LiveRasterBatch) => {},
+  ) {
+    const rows = Array.from({ length: count }, () => ({
+      batch: {},
+      visibleBindGroups: { early: [f.mainA] },
+      bundles: new PreparedRasterBundleCache(),
+    })) as unknown as readonly LiveRasterBatch[];
+    const main = {
+      visibleBuffer: f.visible,
+      rigidBindings: f.raster.visibleBindingIdentity,
+      value: rows,
+    } as unknown as LiveRasterCache;
+    const state: ProductionRasterInputs = {
+      rigid: f.raster,
+      skin: undefined,
+      main,
+      shadows: new Map(),
+      shadowSources: new WeakMap(),
+      unchanged: new Map(),
+      retained: new RetainedRasterEncodes(),
+    };
+    const first = rows[0];
+    assert(first !== undefined);
+    capture(first);
+    const view = { visibleBuffer: f.visible, skinTaskBinding: () => undefined } as GpuDrivenView;
+    const read = vi.fn(() => state);
+    const accept = vi.fn();
+    const result = prepareProductionRasterInputs(
+      f.scene,
+      { kind: 'successor', preparation: f.preparation },
+      [view],
+      read,
+      accept,
+      () => true,
+    );
+    return { read, accept, result };
+  }
+
+  it('qualifies the Production root independently of the number of private bundle variants', async () => {
+    const f = await fixture();
+    const one = prepareProduction(f, 1);
+    one.result.unwrap().release();
+    const many = prepareProduction(f, 128);
+    many.result.unwrap().release();
+    expect(many.read.mock.calls.length).toBe(one.read.mock.calls.length);
+  });
+
+  it('rejects a live window edited by a native callback before private preparation returns', async () => {
+    const f = await fixture();
+    const { accept, result } = prepareProduction(f, 1, (row) => {
+      f.create.mockImplementationOnce((descriptor) => {
+        row.visibleBindGroups = { early: [f.mainB] };
+        return f.createNative(descriptor);
+      });
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: 'rhi-descriptor-invalid' } });
+    expect(accept).not.toHaveBeenCalled();
+    const retried = prepareProduction(f, 1).result.unwrap();
+    expect(retried.isCurrent()).toBe(true);
+    retried.release();
+  });
+});
 
 describe('private raster Inputs window preparation', () => {
   it.each([

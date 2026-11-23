@@ -10,7 +10,11 @@ import {
   RhiError,
   type ShaderModule,
 } from '@forgeax/engine-rhi';
-import type { MaterialShaderEntry } from '@forgeax/engine-shader';
+import {
+  type MaterialShaderEntry,
+  STANDARD_PBR_ARTIFACT_RECEIPT,
+  STANDARD_TEXTURE_MASK_OVERRIDE,
+} from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -61,7 +65,9 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
 
   interface MockSet {
     factory: PipelineBuilderShaderModuleFactory;
-    device: Pick<RhiDevice, 'createRenderPipeline'>;
+    device: Pick<RhiDevice, 'createRenderPipeline'> & {
+      caps: Pick<RhiDevice['caps'], 'backendKind'>;
+    };
     createShaderModule: ReturnType<typeof vi.fn>;
     createRenderPipeline: ReturnType<typeof vi.fn>;
   }
@@ -81,7 +87,7 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
     );
     return {
       factory: { createShaderModule } as PipelineBuilderShaderModuleFactory,
-      device: { createRenderPipeline } as unknown as Pick<RhiDevice, 'createRenderPipeline'>,
+      device: { createRenderPipeline, caps: { backendKind: 'webgpu' } },
       createShaderModule,
       createRenderPipeline,
     };
@@ -111,6 +117,51 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
   // ─── Tests ────────────────────────────────────────────────────────────────
 
   describe('buildPipelineForMaterialShader (M9-T01)', () => {
+    it('selects position-only PreDepth from iterable vertex attributes', () => {
+      const mocks = makeMocks();
+      const position = { shaderLocation: 0, offset: 12, format: 'float32x3' } as const;
+      const ctx = {
+        ...makeMockContext(mocks),
+        colorFormats: [],
+        stockStandardVertexProgram: true,
+        constants: { [STANDARD_TEXTURE_MASK_OVERRIDE]: 0 },
+        vertexBuffers: [
+          {
+            arrayStride: 24,
+            attributes: new Set<GPUVertexAttribute>([
+              { shaderLocation: 1, offset: 0, format: 'float32x3' },
+              position,
+            ]),
+          },
+        ],
+      } satisfies PipelineBuilderContext;
+      const entry: MaterialShaderEntry = {
+        source:
+          '@vertex fn vs_position_only(@location(0) p: vec3f) -> @builtin(position) vec4f { return vec4f(p, 1.0); }',
+        paramSchema: [],
+        receipt: STANDARD_PBR_ARTIFACT_RECEIPT,
+        entryPoints: [{ stage: 'vertex', name: 'vs_position_only' }],
+      };
+
+      const result = buildPipelineForMaterialShader(
+        'test::position-only',
+        entry,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        null,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(mocks.createRenderPipeline.mock.calls[0]?.[0]).toMatchObject({
+        vertex: {
+          entryPoint: 'vs_position_only',
+          buffers: [{ arrayStride: 24, attributes: [position] }],
+        },
+      });
+    });
+
     it('(a) valid call returns Ok(RenderPipeline) and invokes createShaderModule + createRenderPipeline once', () => {
       const mocks = makeMocks();
       const ctx = makeMockContext(mocks);

@@ -16,40 +16,27 @@ import {
   attachRecorder,
   buildFrameModel,
   decodeTape,
+  type FrameModel,
   type RecorderAttachment,
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { materialShaderPreparedSourceRows, type ShaderRegistry } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
-import {
-  composeLinearLightingReference,
-  computeGtaoRawReference,
-  depthReconstructedNormalField,
-  filterGtaoDepthPlaneReference,
-  GTAO_COMPARISON_BUDGET,
-  sampleGtaoBilinearLinearClamp,
-} from '../../../render/src/__tests__/gtao-reference';
-import { deriveStandardClusterReflectedAbi } from '../../../render/src/light-buffer-layout';
-import { SSAO_UNIFORM_INTENSITY_OFFSET } from '../../../render/src/ssao-uniform';
+import { GTAO_COMPARISON_BUDGET } from '../../../render/src/__tests__/gtao-reference';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
   assertForwardGtaoLinearCaptureJoin,
   base64Bytes,
-  byteChannel,
-  byteErrorMetrics,
   captureForwardGtaoLinearHdr,
   captureForwardGtaoTarget,
   ForwardGtaoCaptureNotReadyError,
   type ForwardGtaoLinearCapture,
   ForwardGtaoLinearCaptureNotReadyError,
-  type ForwardGtaoTargetCapture,
   linearErrorMetrics,
   recordedClusterOwnerWrite,
-  rgba16FloatPixel,
   rgba16FloatRgb,
   sha256Hex,
   validateForwardGtaoTargetAttempt,
@@ -58,18 +45,7 @@ import {
   describeForwardGtaoFailure,
   writeForwardGtaoFailureReport,
 } from './helpers/forward-gtao-failure';
-import {
-  comparePackedAo,
-  decodePackedAoRegion,
-  recordedBufferResourceId,
-  recordedShaderWorkEventIndex,
-  recordedUniformPayload,
-} from './helpers/forward-gtao-packed-ao';
-import {
-  createForwardGtaoReferenceField,
-  createForwardGtaoScene,
-  FORWARD_GTAO_FIXTURE,
-} from './helpers/forward-gtao-scene';
+import { createForwardGtaoScene, FORWARD_GTAO_FIXTURE } from './helpers/forward-gtao-scene';
 
 const GPU_TEXTURE_USAGE_COPY_SRC = 0x01;
 const GPU_BUFFER_USAGE_MAP_READ = 0x01;
@@ -194,27 +170,6 @@ function expectNoClusterWritesDuringCaptures(rows: readonly ClusterWorkObservati
   }
 }
 
-async function captureStableWebgl2AoInputs(input: {
-  readonly captureTarget: (name: 'ssao-raw' | 'ssao-blurred') => Promise<ForwardGtaoTargetCapture>;
-  readonly observations: readonly ClusterWorkObservationRow[];
-}) {
-  const rawStart = input.observations.length;
-  const rawTarget = await input.captureTarget('ssao-raw');
-  expectNoClusterWritesDuringCaptures(input.observations.slice(rawStart));
-  const blurredStart = input.observations.length;
-  const blurredTarget = await input.captureTarget('ssao-blurred');
-  expectNoClusterWritesDuringCaptures(input.observations.slice(blurredStart));
-  return {
-    rawTarget,
-    rawReceipt: { frameId: rawTarget.publicReceiptFrameId, presentation: 'ready' as const },
-    blurredTarget,
-    blurredReceipt: {
-      frameId: blurredTarget.publicReceiptFrameId,
-      presentation: 'ready' as const,
-    },
-  };
-}
-
 function requirePresent<T>(value: T | undefined, message: string): T {
   if (value === undefined) throw new Error(message);
   return value;
@@ -300,75 +255,40 @@ function assertClusterFrameConformance(input: {
   }
 }
 
-function expectClusterTransportReplacement(
+function expectStableClusterTransport(
   rows: readonly ClusterWorkObservationRow[],
   phase: string,
   previous: CapturedClusterWork,
 ): number {
-  const phaseRows = rows.filter((row) => row.phase === phase);
-  const capturedRows = phaseRows.filter(
-    (row): row is ClusterWorkObservationRow & { readonly observation: CapturedClusterWork } =>
-      row.observation.status === 'captured',
-  );
-  expect(capturedRows.some((row) => row.receiptPresentation === 'ready')).toBe(true);
-  const replacementRows = capturedRows.filter(
-    (row) => row.observation.clusterTransportGeneration !== previous.clusterTransportGeneration,
-  );
-  expect(replacementRows.length).toBeGreaterThan(0);
-  const generations = new Set(
-    replacementRows.map((row) => row.observation.clusterTransportGeneration),
-  );
-  expect(generations.size).toBe(1);
-  const generation = replacementRows[0]?.observation.clusterTransportGeneration;
-  if (generation === undefined) throw new Error(`missing ${phase} transport generation`);
-  expect(generation).toBeGreaterThan(previous.clusterTransportGeneration);
-  const initializations = replacementRows.filter((row) => row.observation.acceptedWriteBytes > 0);
-  if (initializations.length !== 1) {
-    throw new Error(
-      `expected one ${phase} Cluster initialization; phase rows=${JSON.stringify(phaseRows)}`,
-    );
+  const ready = rows.filter((row) => row.phase === phase && row.receiptPresentation === 'ready');
+  expect(ready.length).toBeGreaterThan(0);
+  for (const row of ready) {
+    expect(row.observation).toMatchObject({
+      status: 'captured',
+      invocations: 1,
+      packedLightSlots: 0,
+      acceptedWriteBytes: 0,
+      writeSucceeded: true,
+      clusterTransportGeneration: previous.clusterTransportGeneration,
+      clusterUsedRows: previous.clusterUsedRows,
+      clusterRowBytes: previous.clusterRowBytes,
+    });
   }
-  const initialization = initializations[0];
-  const expectedUsedRows = previous.clusterUsedRows ?? 0;
-  const expectedRowBytes = previous.clusterRowBytes ?? 0;
-  const expectedUsedRegionBytes = expectedUsedRows * expectedRowBytes;
-  expect(expectedUsedRegionBytes).toBeGreaterThan(0);
-  expect(initialization?.observation).toMatchObject({
-    invocations: 1,
-    packedLightSlots: 1,
-    acceptedWriteBytes: expectedUsedRegionBytes,
-    writeSucceeded: true,
-    clusterTransportGeneration: generation,
-    clusterUsedRows: expectedUsedRows,
-    clusterRowBytes: expectedRowBytes,
-  });
-  expect(initialization?.frameTrace.clusterTransportGeneration).toBe(generation);
-  const steadyReadyRows = replacementRows.filter(
-    (row) =>
-      row.receiptPresentation === 'ready' &&
-      row.receiptFrameId > (initialization?.receiptFrameId ?? Number.POSITIVE_INFINITY),
+  return previous.clusterTransportGeneration;
+}
+
+function mainOpaqueWorks(model: FrameModel) {
+  return model.works.filter(({ pipeline }) =>
+    pipeline.shaders.some(({ entryPoint }) => entryPoint === 'fs_opaque'),
   );
-  if (steadyReadyRows.length === 0) {
-    throw new Error(
-      `no completed ready steady Cluster row after ${phase} initialization; phase rows=${JSON.stringify(phaseRows)}`,
-    );
-  }
-  for (const row of steadyReadyRows) {
-    if (
-      row.observation.invocations !== 1 ||
-      row.observation.packedLightSlots !== 0 ||
-      row.observation.acceptedWriteBytes !== 0 ||
-      !row.observation.writeSucceeded ||
-      row.observation.clusterTransportGeneration !== generation ||
-      row.observation.clusterUsedRows !== expectedUsedRows ||
-      row.observation.clusterRowBytes !== expectedRowBytes
-    ) {
-      throw new Error(
-        `unexpected ${phase} steady Cluster work; phase rows=${JSON.stringify(phaseRows)}`,
-      );
-    }
-  }
-  return generation;
+}
+
+function mainOpaquePipelines(model: FrameModel) {
+  const pipelines = new Set(
+    mainOpaqueWorks(model).map(({ pipeline }) => pipeline.pipelineHandleId),
+  );
+  expect(pipelines.size).toBeGreaterThan(0);
+  return pipelines;
 }
 
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -448,53 +368,24 @@ function prepareClusterCapture(host: DebugDrawHost) {
   return { buffer, bytesPerRow, width, height, target, expectedRecordFrameNumber, request };
 }
 
-function derivePublishedStandardClusterAbi(registry: ShaderRegistry) {
-  const standardPbr = [...registry.materialShaderManifestEntries()].find(
-    (entry) => entry.identifier === 'forgeax::default-standard-pbr',
-  );
-  if (standardPbr === undefined) throw new Error('published Standard PBR material is missing');
-  const reflectedAbi = deriveStandardClusterReflectedAbi(
-    materialShaderPreparedSourceRows(standardPbr)
-      .filter(
-        (variant) =>
-          'defines' in variant &&
-          variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
-          variant.defines.STORAGE_BUFFER_AVAILABLE === true,
-      )
-      .map((variant) => variant.reflection),
-  );
-  if (reflectedAbi === undefined) {
-    throw new Error('published Standard PBR variants do not resolve one reflected Cluster ABI');
-  }
-  return reflectedAbi;
-}
-
 async function captureControlledWebgl2Lighting(input: {
-  readonly algorithm: 'gtao' | 'ssao';
   readonly world: World;
   readonly skylight: ReturnType<typeof createForwardGtaoScene>['skylight'];
   readonly pointLight: ReturnType<typeof createForwardGtaoScene>['pointLight'];
   readonly beforeLinear: ForwardGtaoLinearCapture;
+  readonly noLocalLightTransport: 'required' | 'not-required';
   readonly captureLinear: (
     clusterTransport?: 'required' | 'not-required',
   ) => Promise<ForwardGtaoLinearCapture>;
   readonly setPhase: (phase: string) => void;
-}): Promise<
-  | {
-      readonly emissiveOnlyLinear: ForwardGtaoLinearCapture;
-      readonly indirectOnlyLinear: ForwardGtaoLinearCapture;
-      readonly directOnlyLinear: ForwardGtaoLinearCapture;
-    }
-  | undefined
-> {
-  if (input.algorithm !== 'gtao') return undefined;
+}) {
   input.world.removeComponent(input.skylight, Skylight).unwrap();
   input.world.removeComponent(input.pointLight, PointLight).unwrap();
   input.setPhase('emissive-only-no-lights');
-  const emissiveOnlyLinear = await input.captureLinear('not-required');
+  const emissiveOnlyLinear = await input.captureLinear(input.noLocalLightTransport);
   input.world.addComponent(input.skylight, { component: Skylight, data: {} }).unwrap();
   input.setPhase('indirect-only-no-local-lights');
-  const indirectOnlyLinear = await input.captureLinear('not-required');
+  const indirectOnlyLinear = await input.captureLinear(input.noLocalLightTransport);
   input.world.removeComponent(input.skylight, Skylight).unwrap();
   input.world
     .addComponent(input.pointLight, {
@@ -571,7 +462,7 @@ async function readClusterCapture(
   }
 }
 
-async function captureWebgl2PackedAoTapeFrame(input: {
+async function captureWebgl2AoTapeFrame(input: {
   readonly host: DebugDrawHost;
   readonly recorder: RecorderAttachment;
   readonly clusterCapture: ReturnType<typeof prepareClusterCapture>;
@@ -648,7 +539,7 @@ it.each([
   ['SSAO', 'ssao'],
   ['GTAO', 'gtao'],
 ])(
-  'runs production Forward %s inputs, filtering, Cluster packing and lighting on WebGL2',
+  'runs Forward %s requests through SSAO, Cluster packing and lighting on WebGL2',
   {
     timeout: 180_000,
   },
@@ -705,7 +596,9 @@ it.each([
     const completedFrameWallMs: number[] = [];
     const clusterWorkObservations: ClusterWorkObservationRow[] = [];
     const linearCaptureEvidence = new Map<ForwardGtaoLinearCapture, LinearCaptureEvidence>();
-    const evidenceForLinearCapture = (capture: ForwardGtaoLinearCapture): LinearCaptureEvidence => {
+    const _evidenceForLinearCapture = (
+      capture: ForwardGtaoLinearCapture,
+    ): LinearCaptureEvidence => {
       const evidence = linearCaptureEvidence.get(capture);
       if (evidence === undefined) {
         throw new Error(`linear HDR capture ${capture.frameId} has no same-frame evidence`);
@@ -815,7 +708,7 @@ it.each([
       }
       return receipt;
     };
-    const captureTarget = async (name: 'ssao-raw' | 'ssao-blurred') => {
+    const captureTarget = async (name: 'ssao-calc') => {
       failureOperation = `capture-target:${name}`;
       for (let attempt = 0; attempt < 120; attempt += 1) {
         try {
@@ -974,19 +867,16 @@ it.each([
       expect(acceptedClusterWriteBytes(coldWork?.observation)).toBeGreaterThan(0);
       expectStableClusterRows(coldRows.slice(1));
       const controlledLighting = await captureControlledWebgl2Lighting({
-        algorithm,
         world,
         skylight,
         pointLight,
         beforeLinear,
+        noLocalLightTransport: 'required',
         captureLinear,
         setPhase: (phase) => {
           clusterWorkPhase = phase;
         },
       });
-      const emissiveOnlyLinear = controlledLighting?.emissiveOnlyLinear;
-      const indirectOnlyLinear = controlledLighting?.indirectOnlyLinear;
-      const directOnlyLinear = controlledLighting?.directOnlyLinear;
       clusterWorkPhase = 'cluster-unchanged';
       await draw();
       expect(clusterWorkObservations.at(-1)?.observation).toMatchObject({
@@ -1027,18 +917,18 @@ it.each([
         preAoClusterWork?.observation,
         'missing pre-AO Cluster transport observation',
       );
+      const offRecording = recorder.captureFrame();
+      value(await recorder.frameBoundary());
+      await drawWithFinalDisplayDemand();
+      value(await recorder.frameBoundary());
+      const offModel = buildFrameModel(value(decodeTape(value(await offRecording).bytes)));
       world
         .addComponent(camera, {
           component: AmbientOcclusion,
           data: {
-            directLightingStrength: 0,
             radius: FORWARD_GTAO_FIXTURE.radius,
             bias: FORWARD_GTAO_FIXTURE.bias,
             intensity: FORWARD_GTAO_FIXTURE.intensity,
-            thickness: FORWARD_GTAO_FIXTURE.thickness,
-            distanceExponent: FORWARD_GTAO_FIXTURE.distanceExponent,
-            distanceFallOff: FORWARD_GTAO_FIXTURE.distanceFallOff,
-            resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
             quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
           },
         })
@@ -1047,7 +937,7 @@ it.each([
       const after = await capture();
       const afterLinear = await captureLinear();
       await capture();
-      const aoClusterTransportGeneration = expectClusterTransportReplacement(
+      const aoClusterTransportGeneration = expectStableClusterTransport(
         clusterWorkObservations,
         'ao-enabled-cold',
         preAoObservation,
@@ -1056,14 +946,19 @@ it.each([
         renderer.inspect().standardLighting?.ambientOcclusion,
         'WebGL2 AO inspection is missing',
       );
-      const stableAoInputs = await captureStableWebgl2AoInputs({
-        captureTarget,
-        observations: clusterWorkObservations,
+      expect(aoInspection).toMatchObject({
+        algorithm: 'ssao',
+        requestedMethod: algorithm,
+        execution: 'fragment',
+        input: { normalSchema: 'depth-reconstruction' },
+        output: { extent: { width, height }, filteredFormat: 'r8unorm' },
       });
-      const { rawTarget, rawReceipt, blurredTarget, blurredReceipt } = stableAoInputs;
+      const captureStart = clusterWorkObservations.length;
+      const visibility = await captureTarget('ssao-calc');
+      expectNoClusterWritesDuringCaptures(clusterWorkObservations.slice(captureStart));
       const evidenceRoot = 'packages/runtime/reports/portable-gpu-data-kernels-and-ao';
       const clusterCapture = prepareClusterCapture(debugHost);
-      const tapeTransaction = await captureWebgl2PackedAoTapeFrame({
+      const tapeTransaction = await captureWebgl2AoTapeFrame({
         host: debugHost,
         recorder,
         clusterCapture,
@@ -1077,7 +972,6 @@ it.each([
       const {
         receipt: capturedReceipt,
         encoded,
-        tape: decoded,
         frameModel,
         ownerWrite: recordedOwnerWrite,
         workRow: tapeWorkRow,
@@ -1233,49 +1127,21 @@ it.each([
       });
       expect(stableOwnerWrite.calls).toBe(0);
       expect(stableOwnerWrite.bytes).toBe(0);
-      const reflectedAbi = derivePublishedStandardClusterAbi(hostAssembly.assets.shaderRegistry);
-      const clusterUniformResourceId = recordedBufferResourceId(frameModel, 'hdrp-cluster-uniform');
-      const standardMainEventIndex = recordedShaderWorkEventIndex(
-        frameModel,
-        'fs_opaque',
-        clusterUniformResourceId,
-        'sampleStandardAmbientOcclusion',
-      );
-      const ssaoUniformResourceId = recordedBufferResourceId(frameModel, 'hdrp-ssao-uniform');
-      const clusterPackEventIndex = recordedShaderWorkEventIndex(
-        frameModel,
-        'fs_ssao_cluster_pack',
-        ssaoUniformResourceId,
-      );
-      const clusterUniformPayload = recordedUniformPayload(
-        decoded,
-        frameModel,
-        'hdrp-cluster-uniform',
-        standardMainEventIndex,
-      );
-      const ssaoUniformPayload = recordedUniformPayload(
-        decoded,
-        frameModel,
-        'hdrp-ssao-uniform',
-        clusterPackEventIndex,
-      );
-      const packedAoRegion = decodePackedAoRegion({
-        clusterUniformBytes: clusterUniformPayload.bytes,
-        clusterAoByteOffset: reflectedAbi.clusterUniformOffsets.ao,
-        ssaoUniformBytes: ssaoUniformPayload.bytes,
-        ssaoClusterPackByteOffset: SSAO_UNIFORM_INTENSITY_OFFSET + 32,
-      });
-      const packedComparison = comparePackedAo(clusterReadback, blurredTarget, packedAoRegion);
+      const aoOutput = frameModel.works.find(({ pipeline }) =>
+        pipeline.shaders.some(({ entryPoint }) => entryPoint === 'fs_ssao_full_depth'),
+      )?.attachments?.colorViewHandleIds[0];
+      expect(aoOutput).toBeDefined();
+      expect(mainOpaquePipelines(frameModel)).toEqual(mainOpaquePipelines(offModel));
+      for (const work of mainOpaqueWorks(frameModel)) {
+        expect(work.bindings).toContainEqual(
+          expect.objectContaining({ groupIndex: 0, binding: 29, resourceId: aoOutput }),
+        );
+      }
       expect(renderer.inspect().standardLighting).toMatchObject({ transport: 'cpu-texture' });
       expect(renderer.inspect().output.graphPassNames).toEqual(
-        expect.arrayContaining([
-          'standard-scene-surface-data',
-          'ssao-calc',
-          'ssao-blur',
-          'ssao-cluster-pack',
-          'main',
-        ]),
+        expect.arrayContaining(['ssao-calc', 'main']),
       );
+      expect(renderer.inspect().output.graphPassNames).not.toContain('ssao-cluster-pack');
       const displayDelta = maxDisplayDelta(
         before.bytes,
         after.bytes,
@@ -1283,334 +1149,38 @@ it.each([
         width,
         height,
       );
-      expect(rawReceipt.presentation).toBe('ready');
-      expect(blurredReceipt.presentation).toBe('ready');
       expect(capturedReceipt.presentation).toBe('ready');
-      expect(
-        packedComparison.mismatches,
-        `AO Cluster words match blurred values: ${JSON.stringify(packedComparison)}`,
-      ).toBe(0);
-      expect(
-        Array.from(byteChannel(rawTarget.bytes, rawTarget.bytesPerTexel, 0)).some((v) => v < 253),
-      ).toBe(true);
-      expect(Array.from(blurredTarget.bytes).some((v) => v < 253)).toBe(true);
-      const centerPixel = (observation: typeof before) =>
-        Array.from(
-          observation.bytes.subarray(
-            Math.floor(height / 2) * observation.metadata.bytesPerRow + Math.floor(width / 2) * 4,
-            Math.floor(height / 2) * observation.metadata.bytesPerRow +
-              Math.floor(width / 2) * 4 +
-              4,
-          ),
-        );
-      const centerAo = {
-        raw:
-          rawTarget.bytes[(Math.floor(height / 2) * rawTarget.width + Math.floor(width / 2)) * 4] ??
-          0,
-        blurred:
-          blurredTarget.bytes[
-            Math.floor((height / 2) * FORWARD_GTAO_FIXTURE.resolutionScale) * blurredTarget.width +
-              Math.floor((width / 2) * FORWARD_GTAO_FIXTURE.resolutionScale)
-          ] ?? 0,
-      };
-      let rawReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
-      let filteredReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
-      let rawNormalMetrics: ReturnType<typeof byteErrorMetrics>[] = [];
-      if (algorithm === 'gtao') {
-        expect(aoInspection.execution).toBe('fragment');
-        expect(aoInspection.input.extent).toEqual({ width, height });
-        expect(aoInspection.output.extent).toEqual({
-          width: Math.round(width * FORWARD_GTAO_FIXTURE.resolutionScale),
-          height: Math.round(height * FORWARD_GTAO_FIXTURE.resolutionScale),
-        });
-        // The depth-only prepass leaves AO with normals reconstructed from depth.
-        const field = depthReconstructedNormalField(createForwardGtaoReferenceField(width, height));
-        const rawReference = computeGtaoRawReference(field, {
-          outputWidth: rawTarget.width,
-          outputHeight: rawTarget.height,
-          radius: aoInspection.numerical.radius,
-          bias: aoInspection.numerical.bias,
-          intensity: aoInspection.numerical.intensity,
-          thickness: aoInspection.numerical.thickness,
-          distanceExponent: aoInspection.numerical.distanceExponent,
-          distanceFallOff: aoInspection.numerical.distanceFallOff,
-          sampleBudget: aoInspection.numerical.sampleBudget,
-        });
-        const filteredReference = filterGtaoDepthPlaneReference(field, rawReference);
-        rawReferenceMetrics = byteErrorMetrics(
-          byteChannel(rawTarget.bytes, rawTarget.bytesPerTexel, 0),
-          byteChannel(rawReference.rgba, 4, 0),
-        );
-        expect(rawReferenceMetrics.maxAbsolute).toBeLessThanOrEqual(
-          GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-        );
-        expect(rawReferenceMetrics.rms).toBeLessThanOrEqual(
-          GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
-        );
-        rawNormalMetrics = [1, 2].map((channel) =>
-          byteErrorMetrics(
-            byteChannel(rawTarget.bytes, rawTarget.bytesPerTexel, channel),
-            byteChannel(rawReference.rgba, 4, channel),
-          ),
-        );
-        expect(
-          rawNormalMetrics.every(
-            (metrics) =>
-              metrics.maxAbsolute <= GTAO_COMPARISON_BUDGET.rawNormalMaxByteError &&
-              metrics.rms <= GTAO_COMPARISON_BUDGET.rawNormalRmsByteError,
-          ),
-        ).toBe(true);
-        filteredReferenceMetrics = byteErrorMetrics(blurredTarget.bytes, filteredReference);
-        expect(filteredReferenceMetrics.maxAbsolute).toBeLessThanOrEqual(
-          GTAO_COMPARISON_BUDGET.filteredVisibilityMaxByteError,
-        );
-        expect(filteredReferenceMetrics.rms).toBeLessThanOrEqual(
-          GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError,
-        );
-      }
-      world.set(camera, AmbientOcclusion, { directLightingStrength: 1 }).unwrap();
-      await capture();
-      const directAoLinear = await captureLinear();
-      const directAo = await capture();
-      const directAoDelta = maxDisplayDelta(
-        after.bytes,
-        directAo.bytes,
-        after.metadata.bytesPerRow,
-        width,
-        height,
-      );
-      let ao0LightingMetrics: ReturnType<typeof linearErrorMetrics> | undefined;
-      let ao1LightingMetrics: ReturnType<typeof linearErrorMetrics> | undefined;
-      let contactPixel:
-        | {
-            readonly x: number;
-            readonly y: number;
-            readonly u: number;
-            readonly v: number;
-            readonly visibility: number;
-          }
-        | undefined;
-      if (algorithm === 'gtao') {
-        if (
-          emissiveOnlyLinear === undefined ||
-          indirectOnlyLinear === undefined ||
-          directOnlyLinear === undefined
-        ) {
-          throw new Error('GTAO controlled lighting captures are incomplete');
-        }
-        // The depth-only prepass leaves AO with normals reconstructed from depth.
-        const field = depthReconstructedNormalField(createForwardGtaoReferenceField(width, height));
-        const rawReference = computeGtaoRawReference(field, {
-          outputWidth: rawTarget.width,
-          outputHeight: rawTarget.height,
-          radius: aoInspection.numerical.radius,
-          bias: aoInspection.numerical.bias,
-          intensity: aoInspection.numerical.intensity,
-          thickness: aoInspection.numerical.thickness,
-          distanceExponent: aoInspection.numerical.distanceExponent,
-          distanceFallOff: aoInspection.numerical.distanceFallOff,
-          sampleBudget: aoInspection.numerical.sampleBudget,
-        });
-        const filteredReference = filterGtaoDepthPlaneReference(field, rawReference);
-        const index = field.positions.findIndex((position, pixelIndex) => {
-          if (position === undefined || Math.abs(position[2] + 4) > 0.02) return false;
-          const x = pixelIndex % width;
-          const y = Math.floor(pixelIndex / width);
-          const u = (x + 0.5) / width;
-          const v = (y + 0.5) / height;
-          return (
-            sampleGtaoBilinearLinearClamp(
-              filteredReference,
-              rawTarget.width,
-              rawTarget.height,
-              u,
-              v,
-            ).value < 200
-          );
-        });
-        if (index < 0) throw new Error('CPU GTAO oracle found no occluded receiver pixel');
-        const x = index % width;
-        const y = Math.floor(index / width);
-        const u = (x + 0.5) / width;
-        const v = (y + 0.5) / height;
-        const referenceFilteredSample = sampleGtaoBilinearLinearClamp(
-          filteredReference,
-          rawTarget.width,
-          rawTarget.height,
-          u,
-          v,
-        );
-        const actualFilteredSample = sampleGtaoBilinearLinearClamp(
-          blurredTarget.bytes,
-          blurredTarget.width,
-          blurredTarget.height,
-          u,
-          v,
-        );
-        const tapCoordinates = [
-          [referenceFilteredSample.x0, referenceFilteredSample.y0],
-          [referenceFilteredSample.x1, referenceFilteredSample.y0],
-          [referenceFilteredSample.x0, referenceFilteredSample.y1],
-          [referenceFilteredSample.x1, referenceFilteredSample.y1],
-        ] as const;
-        const actualTapCoordinates = [
-          [actualFilteredSample.x0, actualFilteredSample.y0],
-          [actualFilteredSample.x1, actualFilteredSample.y0],
-          [actualFilteredSample.x0, actualFilteredSample.y1],
-          [actualFilteredSample.x1, actualFilteredSample.y1],
-        ] as const;
-        const nearestAoX = Math.min(rawTarget.width - 1, Math.floor(u * rawTarget.width));
-        const nearestAoY = Math.min(rawTarget.height - 1, Math.floor(v * rawTarget.height));
-        const nearestDiagnostic =
-          filteredReference[nearestAoY * rawTarget.width + nearestAoX] ?? 255;
-        const screenVisibility = referenceFilteredSample.value / 255;
-        const emissive = rgba16FloatPixel(emissiveOnlyLinear, x, y);
-        const indirect = rgba16FloatPixel(indirectOnlyLinear, x, y).map(
-          (value, channel) => value - (emissive[channel] ?? 0),
-        );
-        const direct = rgba16FloatPixel(directOnlyLinear, x, y).map(
-          (value, channel) => value - (emissive[channel] ?? 0),
-        );
-        const expectedAo0 = composeLinearLightingReference({
-          indirect: indirect as [number, number, number],
-          direct: direct as [number, number, number],
-          emissive: emissive as [number, number, number],
-          screenVisibility,
-          materialOcclusion: 1,
-          directLightingStrength: 0,
-        });
-        const expectedAo1 = composeLinearLightingReference({
-          indirect: indirect as [number, number, number],
-          direct: direct as [number, number, number],
-          emissive: emissive as [number, number, number],
-          screenVisibility,
-          materialOcclusion: 1,
-          directLightingStrength: 1,
-        });
-        const actualAo0 = rgba16FloatPixel(afterLinear, x, y);
-        const actualAo1 = rgba16FloatPixel(directAoLinear, x, y);
-        const ao0ChannelErrors = actualAo0.map(
-          (value, channel) => value - (expectedAo0[channel] ?? 0),
-        );
-        const ao1ChannelErrors = actualAo1.map(
-          (value, channel) => value - (expectedAo1[channel] ?? 0),
-        );
-        ao0LightingMetrics = linearErrorMetrics(
-          Float32Array.from(actualAo0),
-          Float32Array.from(expectedAo0),
-        );
-        ao1LightingMetrics = linearErrorMetrics(
-          Float32Array.from(actualAo1),
-          Float32Array.from(expectedAo1),
-        );
-        failureComparisonEvidence = {
-          contactPixel: { x, y, u, v },
-          displayDelta,
-          directAoDelta,
-          referenceFiltered: {
-            filter: 'bilinear-linear-clamp',
-            tapCoordinates,
-            tapValues: referenceFilteredSample.texels,
-            weights: referenceFilteredSample.weights,
-            interpolation: {
-              tx: referenceFilteredSample.tx,
-              ty: referenceFilteredSample.ty,
-            },
-            value: referenceFilteredSample.value,
-            visibility: screenVisibility,
-          },
-          actualFiltered: {
-            filter: 'bilinear-linear-clamp',
-            tapCoordinates: actualTapCoordinates,
-            tapValues: actualFilteredSample.texels,
-            weights: actualFilteredSample.weights,
-            interpolation: {
-              tx: actualFilteredSample.tx,
-              ty: actualFilteredSample.ty,
-            },
-            value: actualFilteredSample.value,
-            visibility: actualFilteredSample.value / 255,
-          },
-          nearestDiagnostic: {
-            x: nearestAoX,
-            y: nearestAoY,
-            value: nearestDiagnostic,
-            visibility: nearestDiagnostic / 255,
-          },
-          rawTarget: {
-            receipt: rawTarget.frameTrace.receipt,
-            frameTrace: rawTarget.frameTrace,
-            target: rawTarget.preparation,
-            readback: {
-              byteLength: rawTarget.bytes.byteLength,
-              sha256: await sha256Hex(rawTarget.bytes),
-            },
-          },
-          filteredTarget: {
-            receipt: blurredTarget.frameTrace.receipt,
-            frameTrace: blurredTarget.frameTrace,
-            target: blurredTarget.preparation,
-            readback: {
-              byteLength: blurredTarget.bytes.byteLength,
-              sha256: await sha256Hex(blurredTarget.bytes),
-            },
-          },
-          captures: {
-            emissiveOnly: evidenceForLinearCapture(emissiveOnlyLinear),
-            indirectOnly: evidenceForLinearCapture(indirectOnlyLinear),
-            directOnly: evidenceForLinearCapture(directOnlyLinear),
-            ao0: evidenceForLinearCapture(afterLinear),
-            ao1: evidenceForLinearCapture(directAoLinear),
-          },
-          lighting: {
-            emissive,
-            indirect,
-            direct,
-            materialOcclusion: 1,
-            ao0: {
-              directLightingStrength: 0,
-              expected: expectedAo0,
-              actual: actualAo0,
-              signedChannelErrors: ao0ChannelErrors,
-              absoluteChannelErrors: ao0ChannelErrors.map((error) => Math.abs(error)),
-              metrics: ao0LightingMetrics,
-            },
-            ao1: {
-              directLightingStrength: 1,
-              expected: expectedAo1,
-              actual: actualAo1,
-              signedChannelErrors: ao1ChannelErrors,
-              absoluteChannelErrors: ao1ChannelErrors.map((error) => Math.abs(error)),
-              metrics: ao1LightingMetrics,
-            },
-          },
-        };
-        expect(Math.max(...indirect)).toBeGreaterThan(0.01);
-        expect(Math.max(...direct)).toBeGreaterThan(0.01);
-        expect(Math.max(...emissive)).toBeGreaterThan(0.01);
-        for (const metrics of [ao0LightingMetrics, ao1LightingMetrics]) {
-          expect(metrics.maxAbsolute).toBeLessThanOrEqual(
-            GTAO_COMPARISON_BUDGET.linearLightingMaxAbsoluteError,
-          );
-          expect(metrics.maxRelative).toBeLessThanOrEqual(
-            GTAO_COMPARISON_BUDGET.linearLightingMaxRelativeError,
-          );
-          expect(metrics.rmsAbsolute).toBeLessThanOrEqual(
-            GTAO_COMPARISON_BUDGET.linearLightingRmsAbsoluteError,
-          );
-        }
-        contactPixel = { x, y, u, v, visibility: screenVisibility };
-      }
-      expect(
-        displayDelta.maximum,
-        `AO changes controlled final lighting pixels; before=${JSON.stringify(centerPixel(before))}; after=${JSON.stringify(centerPixel(after))}; ao=${JSON.stringify(centerAo)}; packed=${JSON.stringify(packedComparison)}; comparison=${JSON.stringify(failureComparisonEvidence)}`,
-      ).toBeGreaterThan(2);
+      expect(visibility.bytes.some((v) => v < 253)).toBe(true);
+      expect(displayDelta.maximum).toBeGreaterThan(2);
       expect(displayDelta.changed).toBeGreaterThan(8);
+
+      const activeLighting = await captureControlledWebgl2Lighting({
+        world,
+        skylight,
+        pointLight,
+        beforeLinear: afterLinear,
+        noLocalLightTransport: 'required',
+        captureLinear,
+        setPhase: (phase) => {
+          clusterWorkPhase = phase;
+        },
+      });
+      const directError = linearErrorMetrics(
+        rgba16FloatRgb(controlledLighting.directOnlyLinear),
+        rgba16FloatRgb(activeLighting.directOnlyLinear),
+      );
+      const emissionError = linearErrorMetrics(
+        rgba16FloatRgb(controlledLighting.emissiveOnlyLinear),
+        rgba16FloatRgb(activeLighting.emissiveOnlyLinear),
+      );
+      expect(directError.maxAbsolute).toBe(0);
+      expect(emissionError.maxAbsolute).toBe(0);
+      const indirectBefore = rgba16FloatRgb(controlledLighting.indirectOnlyLinear);
+      const indirectAfter = rgba16FloatRgb(activeLighting.indirectOnlyLinear);
       expect(
-        directAoDelta.maximum,
-        `directLightingStrength independently attenuates direct light; ambient-only=${JSON.stringify(centerPixel(after))}; direct-AO=${JSON.stringify(centerPixel(directAo))}; comparison=${JSON.stringify(failureComparisonEvidence)}`,
-      ).toBeGreaterThan(2);
-      expect(directAoDelta.changed).toBeGreaterThan(8);
+        indirectBefore.some((value, index) => value - (indirectAfter[index] ?? NaN) > 0.002),
+      ).toBe(true);
+      failureComparisonEvidence = { directError, emissionError, displayDelta };
       const activeAoGraphPassNames = [...renderer.inspect().output.graphPassNames];
       const activeAoClusterWork = requireCapturedClusterWorkRow(
         [...clusterWorkObservations]
@@ -1625,7 +1195,11 @@ it.each([
       clusterWorkPhase = 'ao-disabled';
       world.removeComponent(camera, AmbientOcclusion).unwrap();
       await capture();
-      await capture();
+      const recoveredLinear = await captureLinear();
+      expect(
+        linearErrorMetrics(rgba16FloatRgb(beforeLinear), rgba16FloatRgb(recoveredLinear))
+          .maxAbsolute,
+      ).toBe(0);
       const disabledAoInspection = renderer.inspect().standardLighting?.ambientOcclusion;
       expect(disabledAoInspection?.status).toBe('off');
       const disabledAoGraphPassNames = [...renderer.inspect().output.graphPassNames];
@@ -1638,9 +1212,9 @@ it.each([
       ]) {
         expect(disabledAoGraphPassNames).not.toContain(passName);
       }
-      expect(debugHost.getCurrentGraphTarget('ssao-raw')).toBeUndefined();
+      expect(debugHost.getCurrentGraphTarget('ssao-calc')).toBeUndefined();
       expect(debugHost.getCurrentGraphTarget('ssao-blurred')).toBeUndefined();
-      expectClusterTransportReplacement(
+      expectStableClusterTransport(
         clusterWorkObservations,
         'ao-disabled',
         activeAoClusterWork.observation,
@@ -1676,7 +1250,7 @@ it.each([
         sha256: await sha256Hex(capture.bytes),
         base64: base64Bytes(capture.bytes),
       });
-      if (algorithm === 'gtao') {
+      {
         const report = {
           schema: 'forgeax::forward-gtao-conformance::1',
           backend: 'wgpu-webgl2',
@@ -1693,21 +1267,15 @@ it.each([
           },
           metrics: {
             lightingComparison: failureComparisonEvidence,
-            rawReferenceMetrics,
-            rawNormalMetrics,
-            filteredReferenceMetrics,
-            packedComparison,
-            directAoDelta,
+            receiver: { aoOutput, pipelineIds: [...mainOpaquePipelines(frameModel)] },
             maximumDelta: displayDelta.maximum,
             changedPixels: displayDelta.changed,
-            ao0LightingMetrics,
-            ao1LightingMetrics,
           },
           cost: {
             completedFrameWallMs,
             completedFrameMeasurement: 'world-update+renderer.draw+receipt.completed',
             completedWorkWallMs: performance.now() - workloadStartedAt,
-            gpuTiming: directAoLinear.gpuTimings,
+            gpuTiming: afterLinear.gpuTimings,
             profiler: { completeness: profile.completeness, records: profile.records },
             clusterWorkObservations,
             recordedClusterWrite: {
@@ -1720,19 +1288,13 @@ it.each([
           captures: {
             beforeLinear: await outputArtifact(beforeLinear),
             ao0Linear: await outputArtifact(afterLinear),
-            ...(emissiveOnlyLinear === undefined
-              ? {}
-              : { emissiveOnly: await outputArtifact(emissiveOnlyLinear) }),
-            ...(indirectOnlyLinear === undefined
-              ? {}
-              : { indirectOnly: await outputArtifact(indirectOnlyLinear) }),
-            ...(directOnlyLinear === undefined
-              ? {}
-              : { directOnly: await outputArtifact(directOnlyLinear) }),
-            raw: await outputArtifact(rawTarget),
-            filtered: await outputArtifact(blurredTarget),
-            ao1Linear: await outputArtifact(directAoLinear),
-            contactPixel,
+            visibility: await outputArtifact(visibility),
+            directOnlyOff: await outputArtifact(controlledLighting.directOnlyLinear),
+            directOnlyOn: await outputArtifact(activeLighting.directOnlyLinear),
+            emissiveOnlyOff: await outputArtifact(controlledLighting.emissiveOnlyLinear),
+            emissiveOnlyOn: await outputArtifact(activeLighting.emissiveOnlyLinear),
+            indirectOnlyOff: await outputArtifact(controlledLighting.indirectOnlyLinear),
+            indirectOnlyOn: await outputArtifact(activeLighting.indirectOnlyLinear),
             cluster: await outputArtifact({
               bytes: clusterReadback.bytes,
               width: clusterReadback.width,
@@ -1761,7 +1323,7 @@ it.each([
           errors: errors.map(describeFailure),
         };
         await commands.writeFile(
-          'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-webgl2-conformance.json',
+          `packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-ssao-webgl2-${algorithm}-conformance.json`,
           JSON.stringify(report, null, 2),
         );
       }
@@ -1779,7 +1341,6 @@ it.each([
             height,
             algorithm: algorithm === 'gtao' ? 'gtao' : 'ssao',
             quality: FORWARD_GTAO_FIXTURE.quality,
-            resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
           },
           operation: failureOperation,
           receipt: failureReceipt,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkSdkUpdate, newerSdkVersion } from '../sdk-update.js';
+import { checkSdkUpdate, newerSdkVersion } from '../sdk.js';
 
 const originalOffline = process.env.npm_config_offline;
 const originalDisabled = process.env.FORGEAX_DISABLE_UPDATE_CHECK;

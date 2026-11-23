@@ -7,10 +7,12 @@ import {
   type MaterialShaderProgram,
   materialShaderAxes,
   materialShaderSource,
+  projectStandardCoverageDefines,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type { MaterialProgramAbi, MaterialProgramAddress } from '@forgeax/engine-types';
 import type { BatchArtifactFacts } from '../../gpu-driven/batch-execution';
+import { variantSetForSurfaceDiscards } from '../../material-stage-constants';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
@@ -119,6 +121,7 @@ export interface MaterialShaderArtifactRequest {
   readonly alphaMask?: boolean;
   /** GPU-driven batch admission for the compile-time STANDARD_LEAN_INPUTS axis. */
   readonly leanInputs?: boolean;
+  readonly surfaceDiscards?: number;
   readonly variantSet?: string;
   /** Submission address requested by the consumer; GPU-driven uses scene-index. */
   readonly address?: MaterialProgramAddress;
@@ -285,6 +288,7 @@ export function materialRasterSourceFacts(
   materialShaderId: string,
   options: MaterialShaderArtifactRequest,
 ): BatchArtifactFacts | undefined {
+  options = resolvedRasterArtifactRequest(options);
   const selected = sourceArtifactIdentifier(
     materialShaderId,
     shader.materialShaderManifestEntry(materialShaderId),
@@ -325,6 +329,7 @@ export function resolveMaterialShaderArtifact(
   options: MaterialShaderArtifactRequest = {},
   prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {
+  options = resolvedRasterArtifactRequest(options);
   const shadowLookup =
     options.pass === 'shadow' && isCanonicalStandardPbrMaterialShader(materialShaderId);
   const firstLookupId = shadowLookup ? SHADOW_CASTER_SHADER_ID : materialShaderId;
@@ -388,12 +393,41 @@ export function resolveMaterialShaderArtifact(
   return undefined;
 }
 
+function resolvedRasterArtifactRequest(
+  options: MaterialShaderArtifactRequest,
+): MaterialShaderArtifactRequest {
+  if (options.surfaceDiscards === undefined) return options;
+  return {
+    ...options,
+    variantSet: variantSetForSurfaceDiscards(options.variantSet, options.surfaceDiscards),
+  };
+}
+
 /** Source lookup and PSO construction consume the same declared-axis key. */
 function materialVariantRequest(
   manifest: MaterialShaderManifestEntry,
   options: MaterialShaderArtifactRequest,
 ): MaterialShaderArtifactRequest {
   if (options.variantSet === undefined) return options;
+  if (
+    options.variantSet.includes('COVERAGE_ONLY=true') &&
+    isCanonicalStandardPbrMaterialShader(manifest.identifier)
+  ) {
+    const defines = Object.fromEntries(
+      options.variantSet.split('+').map((part) => {
+        const [axis, value] = part.split('=');
+        return [axis, value === 'true'];
+      }),
+    );
+    projectStandardCoverageDefines(defines);
+    options = {
+      ...options,
+      variantSet: Object.entries(defines)
+        .map(([axis, value]) => `${axis}=${value}`)
+        .join('+'),
+      visibleSurface: false,
+    };
+  }
   const variantSet = declaredMaterialVariantKey(options.variantSet, manifest);
   if (variantSet === options.variantSet) return options;
   const { variantSet: _requested, ...rest } = options;

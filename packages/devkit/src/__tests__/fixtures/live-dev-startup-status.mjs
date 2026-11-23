@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'forgeax-live-startup-status-')));
-const originalWrite = fs.writeFile;
+const originalRename = fs.rename;
 let release, entered;
 const publication = new Promise((resolve) => {
   entered = resolve;
@@ -15,15 +15,14 @@ const waiting = new Promise((resolve) => {
 });
 const sessionPath = join(root, '.forgeax/dev-session.json');
 let delayed = false;
-fs.writeFile = async (...args) => {
-  // Session publication is atomic (temporary file, then rename), so hold the
-  // first write that targets the session record or its temporary sibling.
-  if (!delayed && String(args[0]).startsWith(sessionPath)) {
+fs.rename = async (from, to) => {
+  // Hold the atomic rename that first publishes the session record.
+  if (!delayed && to === sessionPath) {
     delayed = true;
     entered();
     await waiting;
   }
-  return originalWrite(...args);
+  return originalRename(from, to);
 };
 syncBuiltinESMExports();
 const { runLiveDevDaemon } = await import(new URL('../../../dist/index.mjs', import.meta.url));
@@ -36,7 +35,7 @@ await new Promise((ok, fail) => {
 const port = portServer.address().port;
 await new Promise((ok) => portServer.close(ok));
 const lifetime = new AbortController();
-const closed = runLiveDevDaemon(root, port, undefined, { signal: lifetime.signal });
+const closed = runLiveDevDaemon(root, port, sessionPath, { signal: lifetime.signal });
 const report = { status: 'RUNNING', root, port, observations: [] };
 try {
   await Promise.race([
@@ -70,7 +69,7 @@ try {
   report.status = 'PASS';
 } finally {
   release();
-  fs.writeFile = originalWrite;
+  fs.rename = originalRename;
   syncBuiltinESMExports();
   lifetime.abort();
   await closed;

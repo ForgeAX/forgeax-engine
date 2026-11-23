@@ -105,6 +105,23 @@ describe('configureSurface', () => {
     expect(configure).not.toHaveBeenCalled();
   });
 
+  it('uses only texture usages advertised by a native window surface', () => {
+    const configure = vi.fn(() => ok(undefined));
+    const context = {
+      configure,
+      supportedAlphaModes: ['opaque'],
+      supportedTextureUsages: 0x10,
+    } as unknown as RhiCanvasContext;
+    const result = configureSurface(
+      context,
+      device('webgpu', true),
+      'bgra8unorm',
+      'bgra8unorm-srgb',
+    );
+    expect(result.ok).toBe(true);
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ usage: 0x10 }));
+  });
+
   it('keeps COPY_SRC on a low-capability WebGPU surface', () => {
     const configure = vi.fn(() => ok(undefined));
     const context = {

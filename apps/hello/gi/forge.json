@@ -1,0 +1,13 @@
+{
+  "id": "hello-gi-sponza",
+  "name": "Sponza GI",
+  "schemaVersion": "3.0.0",
+  "assetRoots": [
+    "assets",
+    "sponza-assets"
+  ],
+  "roots": {
+    "engine": "7a7b63e3-5bcc-5bdc-a685-c6583436ffb6",
+    "build": "7e9442cf-5b6b-5819-9e44-db3d3ff15f87"
+  }
+}

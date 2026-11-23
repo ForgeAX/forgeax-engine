@@ -36,7 +36,7 @@ it(
       'publishes the storage-backed Standard Cluster material variant',
     ).toBeDefined();
     const clusterGlobals = clusterVariant?.reflection?.boundGlobals ?? [];
-    const lightData = clusterGlobals.find((global) => global.group === 2 && global.binding === 3);
+    const lightData = clusterGlobals.find((global) => global.group === 0 && global.binding === 30);
     expect(lightData).toMatchObject({
       resourceKind: 'storage-buffer',
       addressSpace: 'storage',
@@ -52,10 +52,10 @@ it(
       { name: 'channels', offset: 80, type: 'vec4<u32>' },
     ]);
     const clusterUniform = clusterGlobals.find(
-      (global) => global.group === 2 && global.binding === 6,
+      (global) => global.group === 0 && global.binding === 33,
     );
-    expect(clusterUniform?.group).toBe(2);
-    expect(clusterUniform?.binding).toBe(6);
+    expect(clusterUniform?.group).toBe(0);
+    expect(clusterUniform?.binding).toBe(33);
     expect(clusterUniform?.span).toBe(96);
     expect(
       clusterUniform?.members?.map(({ name, offset, type }) => ({ name, offset, type })),

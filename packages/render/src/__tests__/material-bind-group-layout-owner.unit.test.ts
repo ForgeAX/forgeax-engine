@@ -4,6 +4,7 @@ import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type { IblBindingInspection } from '../mesh-material-bindings';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import { recordIblPipelineBinding } from '../record/main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
@@ -43,10 +44,9 @@ function fixture() {
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: {
-      irradianceView: resource(),
+      skySh: resource(),
       irradianceSampler: resource(),
       prefilterView: resource(),
-      skylightPrefilterView: resource(),
       prefilterSampler: resource(),
       brdfLutView: resource(),
       intensityBuffer: resource(),
@@ -220,7 +220,7 @@ function iblReceipt(deps: PerSubmeshMaterialBgDeps, frameId: number): IblBinding
       identities: [id(r.irradianceSampler), id(r.prefilterSampler)],
     },
     resources: {
-      irradiance: resource(r.irradianceView, r.irradianceSampler),
+      irradiance: resource(r.skySh, r.irradianceSampler),
       prefilter: resource(r.prefilterView, r.prefilterSampler),
       brdfLut: resource(r.brdfLutView, r.irradianceSampler),
       intensityBufferIdentity: id(r.intensityBuffer),
@@ -257,6 +257,34 @@ it('retains actual IBL binding facts across hits and detached frame receipts', (
   expect(Object.isFrozen(second.material?.entries[0])).toBe(true);
   expect(f.draw()).toBe(group);
   expect(f.deps.frameState.iblBindingInspection).toBe(second);
+});
+
+it('records the physical draw without a legacy Standard material IBL receipt', () => {
+  const f = fixture();
+  Object.assign(f.deps.pipelineState, { defaultNormalTextureView: {}, fallbackTextureView: {} });
+  f.material.materialShaderId = 'forgeax::default-standard-pbr';
+  const frame = f.deps.frameState;
+  frame.iblBindingInspection = iblReceipt(f.deps, 7);
+  const group = f.draw();
+  const pipeline = {};
+  const draw = () =>
+    recordIblPipelineBinding(
+      f.deps as unknown as Parameters<typeof recordIblPipelineBinding>[0],
+      f.material,
+      pipeline as Parameters<typeof recordIblPipelineBinding>[2],
+      group,
+    );
+  expect(frame.iblBindingInspection?.material).toBeUndefined();
+  draw();
+  const valid = frame.iblBindingInspection;
+  expect(valid.errors).toEqual([]);
+  expect(valid.pipeline).toMatchObject({
+    pipelineIdentity: getOpaqueResourceIdentity(pipeline),
+    materialBglIdentity: getOpaqueResourceIdentity(f.layout),
+    bindGroupIdentity: getOpaqueResourceIdentity(group),
+  });
+  draw();
+  expect(frame.iblBindingInspection).toBe(valid);
 });
 
 it('keeps current IBL errors observable and replaces proofs with changed bindings', () => {

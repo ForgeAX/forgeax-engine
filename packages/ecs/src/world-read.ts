@@ -4,7 +4,13 @@
 // scene projections. It exposes semantic scalar/array reads, never the table,
 // archetype, backing allocator, or mutation stores behind those reads.
 
-import type { Component, ScalarFieldType, TypedArrayFor } from './component';
+import type {
+  Component,
+  ComponentSchema,
+  InputShapeOf,
+  ScalarFieldType,
+  TypedArrayFor,
+} from './component';
 import type { EntityHandle } from './entity-handle';
 import type { RemovedComponentsCursor } from './removed-components';
 
@@ -46,6 +52,14 @@ export interface WorldRead {
     cursor: RemovedComponentsCursor,
     visit: (entity: EntityHandle) => void,
   ) => void;
+  /** Compare the supplied fields at their stored precision. Only differing fields
+   * are returned for one ordinary World.set. Missing storage returns the original
+   * input so the write owner can report its normal error. */
+  readonly changedFields: <S extends ComponentSchema>(
+    entity: EntityHandle,
+    component: Component<string, S>,
+    input: Partial<InputShapeOf<S>>,
+  ) => Partial<InputShapeOf<S>> | undefined;
   readonly getFieldValue: (
     entity: EntityHandle,
     component: Component,
@@ -62,6 +76,13 @@ export interface WorldRead {
     fieldName: string,
     index: number,
   ) => number | undefined;
+  /** Compare a numeric input with the stored row at its declared precision, without borrowing a view. */
+  readonly arrayEquals: (
+    entity: EntityHandle,
+    component: Component,
+    fieldName: string,
+    values: ArrayLike<number>,
+  ) => boolean;
   /** Copy a whole numeric array into caller-owned output, preserving its remaining tail.
    * Returns its logical count, or undefined without writing for absence / insufficient capacity.
    * Inline columns need no transient view; overlapping typed output retains native copy semantics.
@@ -70,6 +91,6 @@ export interface WorldRead {
     entity: EntityHandle,
     component: Component,
     fieldName: string,
-    target: TypedArrayFor<ScalarFieldType>,
+    target: TypedArrayFor<ScalarFieldType> | number[],
   ) => number | undefined;
 }

@@ -10,7 +10,7 @@
 // project the failure to ImageError code='atlas-region-mismatch' with
 // detail.{name, regionsTotalPixels, atlasPixels}.
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,54 +32,9 @@ vi.mock('../atlas/shelf-pack.js', async () => {
   };
 });
 
-import { runCliAsset } from '../cli-asset.js';
+import { runAtlas } from '../cli-asset.js';
 
-interface CapturedIO {
-  stdout: string[];
-  stderr: string[];
-}
-
-function makeIO(): CapturedIO {
-  return { stdout: [], stderr: [] };
-}
-
-function ctxFor(io: CapturedIO) {
-  return {
-    stdoutWrite: (line: string): void => {
-      io.stdout.push(line);
-    },
-    stderrWrite: (line: string): void => {
-      io.stderr.push(line);
-    },
-  };
-}
-
-interface UpngEncode {
-  encode: (imgs: ArrayBuffer[], w: number, h: number, cnum: number) => ArrayBuffer;
-}
-
-async function loadUpng(): Promise<UpngEncode> {
-  const mod = (await import('upng-js')) as { default?: UpngEncode } & UpngEncode;
-  return (mod.default ?? mod) as UpngEncode;
-}
-
-async function writeSolidPng(
-  path: string,
-  width: number,
-  height: number,
-  rgba: [number, number, number, number],
-): Promise<void> {
-  const upng = await loadUpng();
-  const pixels = new Uint8Array(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    pixels[i * 4 + 0] = rgba[0];
-    pixels[i * 4 + 1] = rgba[1];
-    pixels[i * 4 + 2] = rgba[2];
-    pixels[i * 4 + 3] = rgba[3];
-  }
-  const buf = upng.encode([pixels.buffer as ArrayBuffer], width, height, 0);
-  await writeFile(path, Buffer.from(buf));
-}
+import { ctxFor, makeIO, writeSolidPng } from './support/atlas-cli-fixture.js';
 
 describe('atlas CLI region-mismatch safety net (T-29 / AC-10 c)', () => {
   let tmp: string;
@@ -98,18 +53,8 @@ describe('atlas CLI region-mismatch safety net (T-29 / AC-10 c)', () => {
     await writeSolidPng(join(tmp, 'walk-2.png'), 32, 32, [0, 0, 255, 255]);
 
     const io = makeIO();
-    const code = await runCliAsset(
-      [
-        'atlas',
-        '--input',
-        `${tmp}/*.png`,
-        '--name',
-        'walk',
-        '--output',
-        tmp,
-        '--max-atlas-size',
-        '4096',
-      ],
+    const code = await runAtlas(
+      ['--input', `${tmp}/*.png`, '--name', 'walk', '--output', tmp, '--max-atlas-size', '4096'],
       ctxFor(io),
     );
 

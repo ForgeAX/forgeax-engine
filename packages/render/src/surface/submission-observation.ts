@@ -10,6 +10,7 @@ type SurfaceDirectCommandObservation = {
   readonly surfaceFrameBase: number;
   readonly memberIds: readonly string[];
   readonly pipelineIdentity: number;
+  readonly materialProgramKey?: string;
   readonly receiptIdentity?: string;
   readonly receiptGeneration?: number;
 };

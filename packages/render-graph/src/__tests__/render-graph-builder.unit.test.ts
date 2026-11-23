@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
 import { ok } from '../errors.js';
 import type { ResolvedColorTargetDescriptor } from '../graph.js';
-import type { RenderGraphFrame, RenderGraphPassInstrumentation } from '../types.js';
+import { sameGraphTexture } from '../kernel-internal.js';
+import type { GraphAccess, RenderGraphFrame, RenderGraphPassInstrumentation } from '../types.js';
 
 interface Frame extends RenderGraphFrame {
   readonly imported: Buffer;
@@ -102,6 +103,89 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
       size: 'surface',
     });
     expect(texture.ok).toBe(true);
+  });
+
+  it('identifies one attachment behind distinct typed views without crossing graph owners', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const other = new RenderGraphBuilder<Frame>();
+    const descriptor = { format: 'rgba8unorm', size: 'surface' } as const;
+    const texture = graph.createTexture('image', descriptor).unwrap();
+    const view = graph.view(texture).unwrap();
+    expect(sameGraphTexture(view, graph.view(texture, { label: 'alias' }).unwrap())).toBe(true);
+    expect(sameGraphTexture(view, graph.createBuffer('buffer', { size: 4 }).unwrap())).toBe(false);
+    const foreign = other.createTexture('image', descriptor).unwrap();
+    expect(sameGraphTexture(view, other.view(foreign).unwrap())).toBe(false);
+  });
+
+  it('publishes stable read groups while a newly declared consumer gets its own snapshot', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const a = graph.createTexture('a', { format: 'rgba8unorm', size: 'surface' }).unwrap();
+    const b = graph.createTexture('b', { format: 'rgba8unorm', size: 'surface' }).unwrap();
+    const av = graph.view(a).unwrap();
+    const bv = graph.view(b).unwrap();
+    const empty = graph.consumerReads('scene');
+    graph.publishConsumerRead('scene', av, 'sampled-read').unwrap();
+    const before = graph.consumerReads('scene');
+    graph.publishConsumerRead('scene', av, 'sampled-read').unwrap();
+    expect(graph.consumerReads('scene')).toBe(before);
+    graph.publishConsumerRead('scene', bv, 'sampled-read').unwrap();
+    expect(before.map((read) => read.resource)).toEqual([av]);
+    expect(graph.consumerReads('scene').map((read) => read.resource)).toEqual([av, bv]);
+    expect(empty).toHaveLength(0);
+    expect(Object.isFrozen(before[0])).toBe(true);
+  });
+
+  it.each([
+    { ordered: true, initialized: true },
+    { ordered: true, initialized: false },
+    { ordered: false, initialized: true },
+    { ordered: false, initialized: false },
+  ])('releases declaration scratch after binding (ordered=$ordered, initialized=$initialized)', async ({
+    ordered,
+    initialized,
+  }) => {
+    const options = { device: mockDevice(), surfaceSize: { width: 8, height: 8 } };
+    const procedure = ordered ? RenderGraphBuilder.procedure<Frame>(options) : undefined;
+    const graph = procedure?.passes ?? new RenderGraphBuilder<Frame>();
+    const texture = graph
+      .createTexture('scratch', { format: 'rgba8unorm', size: 'surface' })
+      .unwrap();
+    const view = graph.view(texture).unwrap();
+    graph.publishConsumerRead('inspect', view, 'sampled-read').unwrap();
+    graph
+      .addRasterPass('write', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: initialized ? 'clear' : 'load', storeOp: 'auto' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const scratch = graph as unknown as {
+      declarations: readonly unknown[];
+      deferredPasses: readonly unknown[];
+      placements?: ReadonlyMap<number, unknown>;
+      physicalUsage: readonly unknown[];
+      passNames: ReadonlySet<string>;
+    };
+    expect(scratch.deferredPasses).toHaveLength(ordered ? 0 : 1);
+    expect(scratch.placements?.size).toBe(1);
+    const result = procedure === undefined ? graph.compile(options) : procedure.bindResources();
+    expect(result.ok).toBe(initialized);
+    expect([
+      scratch.declarations.length,
+      scratch.deferredPasses.length,
+      scratch.placements?.size,
+      scratch.physicalUsage.length,
+      scratch.passNames.size,
+    ]).toEqual([0, 0, 0, 0, 0]);
+    expect(graph.consumerReads('inspect')).toEqual([{ resource: view, usage: 'sampled-read' }]);
+    expect(graph.createTextureLike('later', texture).ok).toBe(false);
+    if (result.ok) {
+      expect(result.value.execute({ imported: {} as Buffer, encoder: mockEncoder() }).ok).toBe(
+        true,
+      );
+      expect(result.value.inspect().passes.map((pass) => pass.name)).toEqual(['write']);
+      await result.value.retire();
+    } else expect(result.error.code).toBe('uninitialized-read');
   });
 
   it('rejects duplicate resource labels and duplicate pass names at declaration time', () => {
@@ -459,6 +543,37 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     const result = graph.compile({ device: mockDevice(), surfaceSize: { width: 1, height: 1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('access-conflict');
+  });
+
+  it('publishes fragment storage writes independently of the raster color store', async () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const color = graph
+      .view(graph.createTexture('color', { format: 'rgba8unorm', size: 'surface' }).unwrap())
+      .unwrap();
+    const storage = graph
+      .view(graph.createTexture('field', { format: 'r32float', size: 'surface' }).unwrap())
+      .unwrap();
+    graph
+      .addRasterPass('produce', {
+        accesses: [
+          { resource: color, usage: 'color-attachment' },
+          { resource: storage, usage: 'storage-write' },
+        ],
+        colorAttachments: [{ view: color, loadOp: 'clear', storeOp: 'discard' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    graph
+      .addComputePass('read-field', {
+        accesses: [{ resource: storage, usage: 'sampled-read' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const compiled = graph
+      .compile({ device: mockDevice(), surfaceSize: { width: 4, height: 4 } })
+      .unwrap();
+    expect(compiled.execute({ imported: {} as Buffer, encoder: mockEncoder() }).ok).toBe(true);
+    await compiled.retire();
   });
 
   it('requires initialization before a dynamic attachment can choose to load', () => {
@@ -1151,4 +1266,47 @@ it('refuses MRT beyond the device attachment limit before allocation', () => {
       detail: { passName: 'mrt', capability: 'color-attachments' },
     },
   });
+});
+
+it('binds changing multi-target passes without searching unrelated inputs for each output', async () => {
+  const device = mockDevice();
+  for (let turn = 0; turn < 24; turn++) {
+    const graph = new RenderGraphBuilder<Frame>();
+    let inputReads = 0;
+    const accesses: GraphAccess[] = [];
+    for (let i = 0; i < 32 + turn; i++) {
+      const buffer = graph
+        .importBuffer(`external-${i}`, { size: 16, usage: 0x40 }, (frame) => frame.imported)
+        .unwrap();
+      accesses.push({
+        usage: 'uniform-read',
+        get resource() {
+          inputReads++;
+          return buffer;
+        },
+      });
+    }
+    const outputs = Array.from({ length: 1 + (turn % 8) }, (_, i) => {
+      const texture = graph
+        .createTexture(`output-${i}`, { format: 'rgba8unorm', size: 'surface' })
+        .unwrap();
+      const view = graph.view(texture).unwrap();
+      accesses.push({ resource: view, usage: 'color-attachment' });
+      return { view, loadOp: 'clear', storeOp: 'store' } as const;
+    });
+    graph
+      .addRasterPass(
+        'deferred',
+        { accesses, colorAttachments: outputs, encodeDirect() {} },
+        'transfer',
+      )
+      .unwrap();
+    inputReads = 0;
+    const compiled = graph.compile({ device, surfaceSize: { width: 16, height: 16 } }).unwrap();
+    expect(inputReads).toBe(0);
+    const events: string[] = [];
+    compiled.execute({ encoder: mockEncoder(events), imported: {} as Buffer }).unwrap();
+    expect(events).toEqual(['begin-raster', 'end-raster']);
+    (await compiled.retire()).unwrap();
+  }
 });

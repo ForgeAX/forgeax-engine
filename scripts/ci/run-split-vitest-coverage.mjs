@@ -23,11 +23,10 @@ import {
   shaderProducerHeapSize,
   shaderSourceCompileWorkers,
 } from '../lib/runner-resources.mjs';
-import { coreDeferredCoverageFiles } from './core-validation.mjs';
+import { coreDeferredCoverageFiles, localModelingShowcases } from './core-validation.mjs';
 import {
   baselineGroupResult,
   loadCoverageBaseline,
-  reusableCoverageGroup,
   writeCoverageBaseline,
 } from './coverage-baseline.mjs';
 import completedCoverage from './coverage-completed-child-seconds.json' with { type: 'json' };
@@ -47,6 +46,16 @@ const materialCompilerFiles = [
   'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
 ];
 const materialCompilerLabel = `@forgeax/engine-shader-compiler:${materialCompilerFiles.join(',')}`;
+const materialStandardAliasFile =
+  'packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts';
+const materialSchemaReuseFile =
+  'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts';
+const serialMaterialCoverageWorkerLimits = new Map([
+  [scriptablePublicationLabel, 7],
+  [materialCompilerLabel, 7],
+  [`@forgeax/engine-shader-compiler:${materialStandardAliasFile}`, 7],
+  [`@forgeax/engine-vite-plugin-pack:${materialSchemaReuseFile}`, 6],
+]);
 const maxGroupConcurrency = 3;
 const maxChildOutputBytes = 64 * 1024 * 1024;
 const completedCoverageAssignmentCache = new Map();
@@ -62,11 +71,11 @@ const standardOutputReceiptFiles = [
   'packages/shader/src/__tests__/material-program.test.ts',
 ];
 const standardOutputReceipt = `@forgeax/engine-shader:${standardOutputReceiptFiles.join(',')}`;
-// coverage-perf and primary-pnpm own these workloads without V8. The
-// browser journey times a separate real process that V8 does not instrument.
+const primaryLiveJourney = 'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts';
+// coverage-perf and primary-pnpm already execute these real workloads.
 const uninstrumentedFiles = [
   'packages/modeling/src/__tests__/perf-tiers.unit.test.ts',
-  'packages/devkit/src/__tests__/project-play-session.e2e.test.ts',
+  primaryLiveJourney,
 ];
 const serialCoveragePreflights = [
   {
@@ -123,29 +132,27 @@ const projectPartitions = new Map([
   ['@forgeax/engine-devkit', { count: 2, weight: 685, coverageOnly: true }],
   ['@forgeax/engine-render', { count: 2, weight: 755, coverageOnly: true }],
 ]);
+const devkitNativeWorkers = {
+  project: '@forgeax/engine-devkit',
+  // CPU preparation precedes the fixture's native-unit-owner GPU admission.
+  files: ['packages/devkit/src/__tests__/new-project-workers.e2e.test.ts'],
+  weight: 135,
+  gpuLease: false,
+};
+const devkitNativeScene = {
+  project: '@forgeax/engine-devkit',
+  files: ['packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts'],
+  weight: 75,
+  gpuLease: true,
+};
 const devkitNativeUnitFileSets = [
+  devkitNativeWorkers,
   {
-    project: '@forgeax/engine-devkit',
-    // CPU preparation precedes the fixture's native-unit-owner GPU admission.
-    files: ['packages/devkit/src/__tests__/new-project-workers.e2e.test.ts'],
-    weight: 135,
-    gpuLease: false,
-  },
-  {
-    project: '@forgeax/engine-devkit',
-    // Both fixtures own a real Browser and backend graph. Run 43863763618
-    // OOM-killed the live-look producer beside ordinary Modeling coverage.
-    // Reuse this exclusive child instead of adding a process. Its successful
-    // look file took 196 s in run 43847849110; reserve 300 s for added startup
-    // and instrumentation without calling the expanded child a measured sample.
-    files: [
-      'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
-      'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts',
-    ],
-    receiptLabel: 'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
-    weight: 75,
+    ...devkitNativeScene,
+    // Local full unit runs keep both real browser owners behind one GPU lease.
+    files: [...devkitNativeScene.files, primaryLiveJourney],
+    receiptLabel: devkitNativeScene.files[0],
     reservationWeight: 375,
-    gpuLease: true,
   },
 ];
 // Complete native child costs use the same two completed runs as ordinary projects.
@@ -342,13 +349,23 @@ const isolatedCoverageFileSets = [
     weight: 25,
   },
   {
-    // Cold Standard/ray compilation crossed30s in a shared child. Run
-    // 40383076780 also exhausted worker parity's 45s subprocess budget beside
-    // Render coverage. Keep both complete files and their original deadlines.
+    // Keep the cold compiler and Worker parity cases exclusive, with their
+    // original deadlines. The grouped child took 601s in run 44943853631.
     project: '@forgeax/engine-shader-compiler',
     files: [
       ...materialCompilerFiles,
       'packages/shader-compiler/src/material/__tests__/standard-material-cook.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/node-material-pool.integration.test.ts',
+    ],
+    receiptLabel: materialCompilerFiles.join(','),
+    weight: 305,
+    reservationWeight: 500,
+    sourceCompilation: true,
+    packagesOnly: true,
+  },
+  {
+    project: '@forgeax/engine-shader-compiler',
+    files: [
       'packages/shader-compiler/src/material/__tests__/vertex-color-publication.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/visible-surface-cook.integration.test.ts',
       // Run 44046829101 crossed their original cold-source budgets beside
@@ -356,7 +373,6 @@ const isolatedCoverageFileSets = [
       'packages/shader-compiler/src/__tests__/material-cook.unit.test.ts',
       'packages/shader-compiler/src/material/__tests__/gbuffer-publication.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/material-static-switches.integration.test.ts',
-      'packages/shader-compiler/src/material/__tests__/node-material-pool.integration.test.ts',
       // Run 44117571697 crossed these original cold-source deadlines in the
       // broad instrumented child. Admit complete files with compiler Workers.
       'packages/shader-compiler/src/__tests__/material-surface-import.integration.test.ts',
@@ -369,11 +385,21 @@ const isolatedCoverageFileSets = [
       // Run 44509497362 crossed the frozen Toon cook's 5 s limit in the shared lane.
       'packages/shader-compiler/src/material/__tests__/weapon-spirit-material.integration.test.ts',
     ],
-    receiptLabel: materialCompilerFiles.join(','),
-    weight: 40,
-    // Run 44024988647 crossed the added files' unchanged 30-second cold
-    // cooking bounds. Keep the original receipt and reserve the full owner.
-    reservationWeight: 975,
+    receiptLabel:
+      'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts',
+    splitFromReceipt: materialCompilerLabel,
+    weight: 310,
+    // The two children keep the former 975s combined admission reserve.
+    reservationWeight: 475,
+    sourceCompilation: true,
+    packagesOnly: true,
+  },
+  {
+    // The 5 s cold alias case crossed its deadline on two Linux runners late
+    // in the material compiler child. Give it an independent process lifetime.
+    project: '@forgeax/engine-shader-compiler',
+    files: [materialStandardAliasFile],
+    weight: 10,
     sourceCompilation: true,
     packagesOnly: true,
   },
@@ -424,9 +450,7 @@ const isolatedCoverageFileSets = [
     // observing realm preserves the portable matrix without an upward compiler
     // dependency or unrelated publication state. Its real compiler needs the
     // same inherited heap and worker budget as the other cold Pack owners.
-    files: [
-      'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
-    ],
+    files: [materialSchemaReuseFile],
     weight: 40,
     sourceCompilation: true,
     packagesOnly: true,
@@ -443,7 +467,8 @@ const isolatedCoverageFileSets = [
     ],
     weight: 10,
   },
-  ...devkitNativeUnitFileSets,
+  devkitNativeWorkers,
+  devkitNativeScene,
   {
     project: '@forgeax/engine-devkit',
     // Keep the Vite process-owner fixture exclusive without GPU admission.
@@ -888,7 +913,12 @@ function currentCoverageReplays(applicableRuns, currentCohort) {
 export function coverageGroups(
   projects,
   size,
-  { isolateFiles = true, completed = completedCoverage, environment = process.env } = {},
+  {
+    isolateFiles = true,
+    completed = completedCoverage,
+    environment = process.env,
+    includeLocalShowcases = false,
+  } = {},
 ) {
   // New project workloads must not rewrite a historical replay's file roster
   // or cold-source forecast. Their own qualified partial cohort applies only
@@ -906,7 +936,16 @@ export function coverageGroups(
   const currentCohort = applicableRuns?.findLast((run) => run.requiredProjects?.length);
   const replayRuns = currentCoverageReplays(applicableRuns, currentCohort);
   const unitNativeFileSets = isolateFiles ? [] : devkitNativeUnitFileSets;
-  const deferredCoverage = new Set(isolateFiles ? coreDeferredCoverageFiles(environment) : []);
+  const deferredCoverage = new Set(
+    isolateFiles
+      ? [
+          ...coreDeferredCoverageFiles(environment),
+          ...(!includeLocalShowcases && projects.includes('@forgeax/engine-modeling')
+            ? localModelingShowcases
+            : []),
+        ]
+      : [],
+  );
   const fileSets = (isolateFiles ? isolatedCoverageFileSets : unitNativeFileSets)
     .filter(({ project }) => projects.includes(project))
     .filter(({ files }) => !files.every((file) => deferredCoverage.has(file)))
@@ -1107,15 +1146,17 @@ export function scheduledGroupOrder(
   const isNative = (index) =>
     groups[index].gpuLease === true ||
     groups[index].files?.some((file) => devkitNativeUnitFiles.includes(file));
-  // Keep one uninterrupted parallel batch, then drain once for exclusive work.
-  // Interleaving exclusive groups strands a slot behind each preceding tail.
+  // Start the two cold Standard checks before other children acquire resources.
+  // Keep one uninterrupted parallel batch, then drain once for remaining exclusive work.
   // Local native admission remains last so queued GPU work cannot hold up CPU work.
-  const phase = (index) =>
-    localGpuLease && isNative(index)
-      ? 2
-      : coverage && isExclusiveCoverageGroup(groups[index])
-        ? 1
-        : 0;
+  const phase = (index) => {
+    if (localGpuLease && isNative(index)) return 2;
+    if (!coverage) return 0;
+    const group = groups[index];
+    const file = group.files?.[0];
+    if (file === materialStandardAliasFile || file === materialSchemaReuseFile) return -1;
+    return isExclusiveCoverageGroup(group) ? 1 : 0;
+  };
   return order.sort((left, right) => phase(left) - phase(right));
 }
 
@@ -1302,8 +1343,17 @@ function prepareCoveragePlacement(groups, shardCount) {
     siblings.set(project, cohort);
     return { count, project, wave: Math.floor((part - 1) / shardCount) };
   });
+  const compilerPrimary = groups.findIndex((group) => group.label === materialCompilerLabel);
+  const compilerSplit = groups.findIndex(
+    (group) => group.splitFromReceipt === materialCompilerLabel,
+  );
+  const compilerPeers = new Map([
+    [compilerPrimary, compilerSplit],
+    [compilerSplit, compilerPrimary],
+  ]);
   const evenShare = Math.ceil(groups.length / shardCount);
   return {
+    compilerPeers,
     critical,
     exclusive,
     measured,
@@ -1340,6 +1390,9 @@ function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
     coveragePlacementInputs.get(groups) ?? prepareCoveragePlacement(groups, shardCount);
   if (!retainsExclusiveCoverageHeadroom(inputs, assignment, index, shard)) return false;
   if (!retainsSparseCoverageSpread(inputs, assignment, index, shard)) return false;
+  // Both Standard compiler batches are serial within a lane. Keep their
+  // measured split useful even when a new receipt changes the best layout.
+  if (assignment[inputs.compilerPeers.get(index)] === shard) return false;
   // Timings do not bound startup and serial tails when a few cold children
   // overrun. Keep at most one child above the even share on every physical job.
   let childNeighbors = 0;
@@ -1562,6 +1615,7 @@ function completedCoverageCacheKey(groups, shardCount, typecheck) {
       group.replayBudgetSeconds ?? null,
       group.replayTypechecks ?? null,
       group.shard ?? null,
+      group.splitFromReceipt ?? null,
       group.startEarly === true,
       group.requiresTwoWorkerJob === true,
       group.gpuLease === true,
@@ -2253,15 +2307,18 @@ export function coverageGroupMaxWorkers(group, options, resources, groupConcurre
 }
 
 function coverageSourceCompilerBudget(group, resources, requested) {
-  if (group.label === scriptablePublicationLabel || group.label === materialCompilerLabel) {
+  const workerLimit =
+    serialMaterialCoverageWorkerLimits.get(group.label) ??
+    serialMaterialCoverageWorkerLimits.get(group.splitFromReceipt);
+  if (workerLimit !== undefined) {
     // Serial material owners can spend the ordinary test heap's spare capacity
-    // on program workers. Four slots inside the first material need seven total.
+    // on program workers while retaining CPU and memory admission.
     const heapMiB = 4096;
     const remaining = {
       ...resources,
       memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2),
     };
-    return { heapMiB, workers: Math.min(7, shaderCompileWorkers(remaining, requested)) };
+    return { heapMiB, workers: Math.min(workerLimit, shaderCompileWorkers(remaining, requested)) };
   }
   const heapMiB = shaderProducerHeapSize(resources);
   return { heapMiB, workers: shaderSourceCompileWorkers(resources, requested, heapMiB) };
@@ -2640,7 +2697,7 @@ function groupExecutionConcurrency(options, resources) {
   return concurrency;
 }
 
-async function coverageShardBaseline(options) {
+async function coverageShardBaseline(options, groups) {
   const baselineSource = process.env.FORGEAX_COVERAGE_BASELINE_SOURCE;
   if (
     options.shardOutputDir === null ||
@@ -2648,7 +2705,7 @@ async function coverageShardBaseline(options) {
     !/^[0-9a-f]{40}$/.test(baselineSource ?? '')
   )
     return {};
-  return { baselineSource, reuse: await loadCoverageBaseline(rootDir, options.shardIndex) };
+  return { baselineSource, reuse: await loadCoverageBaseline(rootDir, options.shardIndex, groups) };
 }
 
 async function main(options) {
@@ -2697,7 +2754,7 @@ async function main(options) {
   }
 
   const cliPath = path.join(scriptDir, 'run-vitest-projects.mjs');
-  const { baselineSource, reuse } = await coverageShardBaseline(options);
+  const { baselineSource, reuse } = await coverageShardBaseline(options, selectedGroups);
   let groupResults = [];
   try {
     process.stderr.write(plan);
@@ -2730,16 +2787,17 @@ async function main(options) {
       runGroupImpl: async (group, index) => {
         const startedAt = Date.now();
         const label = `Vitest group ${group.label}`;
-        if (reuse && reusableCoverageGroup(group, reuse.packages, reuse.affected)) {
+        const prior = reuse?.get(group);
+        if (prior) {
           const cached = baselineGroupResult(
             rootDir,
             group,
-            reuse.baseline,
-            reuse.changed,
+            prior.baseline,
+            prior.changed,
             greenReport,
           );
           if (cached) {
-            const { source, run, job, artifact } = cached.origin ?? reuse.baseline;
+            const { source, run, job, artifact } = cached.origin ?? prior.baseline;
             console.log(
               `[vitest] ${group.label} reused coverage from run ${run} job ${job} (${source})`,
             );

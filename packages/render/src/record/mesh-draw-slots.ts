@@ -8,13 +8,13 @@ interface DrawRanges {
   folded?: number;
   liveEpoch: number;
   sourceQueued?: boolean;
-  readonly native: Map<string, number>;
 }
 
 /** Physical draw addresses follow Scene lifetime, independently of any pass roster. */
 export class MeshDrawSlots {
   private allocator = new StableRangeAllocator();
-  private readonly nativeRows = new Set<DrawRanges>();
+  private addressRevision = 0;
+  private readonly nativeRows = new Map<DrawRanges, Map<string, number>>();
   private readonly rows: (DrawRanges | undefined)[] = [];
   private readonly foldedDraws: Pick<RenderSceneRecord, 'slot' | 'generation'>[] = [];
   /** Scratch capacity is retained; no row reference survives a frame or failed traversal. */
@@ -41,14 +41,7 @@ export class MeshDrawSlots {
           const row = this.rows[change.record.slot];
           if (row?.generation !== change.record.generation) return;
           if (change.present) this.retireSource(row);
-          else {
-            const address = row.native.get(change.key);
-            if (address === undefined) return;
-            this.allocator.release(address, 1);
-            this.nativeEpochs[address] = undefined;
-            row.native.delete(change.key);
-            if (row.native.size === 0) this.nativeRows.delete(row);
-          }
+          else this.releaseNative(row, change.key);
         });
       this.owned = draws;
     } else if (draws !== undefined) {
@@ -60,12 +53,7 @@ export class MeshDrawSlots {
         const row = this.rows[entry.record.slot];
         if (row?.generation !== entry.record.generation || this.owned?.has(entry) === true)
           continue;
-        const address = row.native.get(entry.key);
-        if (address === undefined) continue;
-        this.allocator.release(address, 1);
-        this.nativeEpochs[address] = undefined;
-        row.native.delete(entry.key);
-        if (row.native.size === 0) this.nativeRows.delete(row);
+        this.releaseNative(row, entry.key);
       }
     }
     if (draws !== undefined) this.unlisted.length = 0;
@@ -74,7 +62,7 @@ export class MeshDrawSlots {
     for (const record of this.foldedDraws) {
       const row = this.rows[record.slot];
       if (row?.generation !== record.generation || row.folded === undefined) continue;
-      this.allocator.release(row.folded, 1);
+      this.releaseAddress(row.folded);
       delete row.folded;
     }
     this.foldedDraws.length = 0;
@@ -95,7 +83,7 @@ export class MeshDrawSlots {
           row.liveEpoch = epoch;
           this.liveRows[liveCount++] = row;
         }
-        const native = row.native.get(key);
+        const native = this.nativeRows.get(row)?.get(key);
         if (native !== undefined) this.nativeEpochs[native] = epoch;
       }
       // Preserve first-seen source retirement order, after traversal has completed.
@@ -103,11 +91,7 @@ export class MeshDrawSlots {
         const row = this.liveRows[index];
         if (row !== undefined) this.retireSource(row);
       }
-      for (const row of this.nativeRows) {
-        // One stable callback avoids allocating a Map iterator/entry pair per row.
-        row.native.forEach(this.retireNativeRange, this);
-        if (row.native.size === 0) this.nativeRows.delete(row);
-      }
+      this.nativeRows.forEach(this.sweepNativeRow, this);
     } finally {
       for (let index = 0; index < liveCount; index++) this.liveRows[index] = undefined;
     }
@@ -122,15 +106,37 @@ export class MeshDrawSlots {
   private retireSource(row: DrawRanges): void {
     row.sourceQueued = false;
     if (row.source === undefined) return;
-    this.allocator.release(row.source, 1);
+    this.releaseAddress(row.source);
     delete row.source;
+  }
+
+  private releaseNative(row: DrawRanges, key: string): void {
+    const draws = this.nativeRows.get(row);
+    if (draws === undefined) return;
+    const address = draws.get(key);
+    if (address === undefined) return;
+    this.releaseAddress(address);
+    this.nativeEpochs[address] = undefined;
+    draws.delete(key);
+    if (draws.size === 0) this.nativeRows.delete(row);
+  }
+
+  private sweepNativeRow(draws: Map<string, number>, row: DrawRanges): void {
+    draws.forEach(this.retireNativeRange, this);
+    if (draws.size === 0) this.nativeRows.delete(row);
   }
 
   private retireNativeRange(index: number, key: string, native: Map<string, number>): void {
     if (this.nativeEpochs[index] === this.epoch) return;
-    this.allocator.release(index, 1);
+    this.releaseAddress(index);
     this.nativeEpochs[index] = undefined;
     native.delete(key);
+  }
+
+  /** Read an existing ordinary address without allocating or reviving a retired generation. */
+  sourceAddress(record: RenderSceneRecord): number | undefined {
+    const row = this.rows[record.slot];
+    return row?.generation === record.generation ? row.source : undefined;
   }
 
   index(record: RenderSceneRecord, kind: 'source' | 'folded' | { readonly key: string }): number {
@@ -138,25 +144,29 @@ export class MeshDrawSlots {
     if (row !== undefined && row.generation !== record.generation)
       throw new Error('Scene must release the prior generation before allocating draw slots');
     if (row === undefined) {
-      row = { generation: record.generation, liveEpoch: 0, native: new Map() };
+      row = { generation: record.generation, liveEpoch: 0 };
       this.rows[record.slot] = row;
     }
     if (kind === 'source' || kind === 'folded') {
       if (row[kind] === undefined) {
-        row[kind] = this.allocator.allocate(1);
-        if (kind === 'source' && this.owned !== undefined && row.native.size > 0)
+        row[kind] = this.allocateAddress();
+        if (kind === 'source' && this.owned !== undefined && this.nativeRows.has(row))
           this.queueSource(row);
         if (kind === 'folded')
           this.foldedDraws.push({ slot: record.slot, generation: record.generation });
       }
       return row[kind];
     }
-    let index = row.native.get(kind.key);
+    let draws = this.nativeRows.get(row);
+    if (draws === undefined) {
+      draws = new Map();
+      this.nativeRows.set(row, draws);
+    }
+    let index = draws.get(kind.key);
     if (index === undefined) {
-      index = this.allocator.allocate(1);
+      index = this.allocateAddress();
       this.nativeEpochs[index] = this.epoch;
-      row.native.set(kind.key, index);
-      this.nativeRows.add(row);
+      draws.set(kind.key, index);
       if (this.owned !== undefined) {
         const entry = { record, key: kind.key };
         if (!this.owned.has(entry)) this.unlisted.push(entry);
@@ -170,17 +180,21 @@ export class MeshDrawSlots {
     const row = this.rows[record.slot];
     if (row === undefined || row.generation !== record.generation) return;
     this.retireSource(row);
-    if (row.folded !== undefined) this.allocator.release(row.folded, 1);
-    for (const index of row.native.values()) {
-      this.allocator.release(index, 1);
-      this.nativeEpochs[index] = undefined;
+    if (row.folded !== undefined) this.releaseAddress(row.folded);
+    const draws = this.nativeRows.get(row);
+    if (draws !== undefined) {
+      for (const index of draws.values()) {
+        this.releaseAddress(index);
+        this.nativeEpochs[index] = undefined;
+      }
+      this.nativeRows.delete(row);
     }
-    this.nativeRows.delete(row);
     this.rows[record.slot] = undefined;
   }
 
   clear(): void {
     this.allocator = new StableRangeAllocator();
+    this.addressRevision += 1;
     this.nativeRows.clear();
     this.rows.length = 0;
     this.foldedDraws.length = 0;
@@ -200,5 +214,21 @@ export class MeshDrawSlots {
 
   get capacity(): number {
     return this.allocator.requiredCapacity();
+  }
+
+  /** Changes only when an address can be published, retired or reassigned. */
+  get revision(): number {
+    return this.addressRevision;
+  }
+
+  private allocateAddress(): number {
+    const address = this.allocator.allocate(1);
+    this.addressRevision += 1;
+    return address;
+  }
+
+  private releaseAddress(address: number): void {
+    this.allocator.release(address, 1);
+    this.addressRevision += 1;
   }
 }

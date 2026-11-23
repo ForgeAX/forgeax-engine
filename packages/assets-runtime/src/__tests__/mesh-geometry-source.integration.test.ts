@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
+import { type Component, defineComponent, World } from '@forgeax/engine-ecs';
 import {
   copyMeshAttribute,
   createBoxGeometry,
+  interleavedMesh,
   meshAssetContribution,
 } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { sceneAssetContribution } from '@forgeax/engine-scene';
 import {
   type AssetDecoder,
   type AssetHandle,
@@ -14,7 +16,7 @@ import {
   type MeshAsset,
   ok,
 } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { meshAssetOutputProducer } from '../../../import/src/scriptable-pack-output-producers.js';
 import { defineAssetKind } from '../asset-kind.js';
 import { AssetRegistry } from '../asset-registry.js';
@@ -22,9 +24,18 @@ import type { CatalogListener, CatalogSource } from '../catalog-source.js';
 import { runtimeAssets, runtimeSourceReader } from '../internal/runtime-assets';
 import { retainAssetPublications } from '../retain-publication.js';
 import { defined } from './assert-defined.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const guid = '01900000-0000-7000-8000-000000000061';
 const materialGuid = '01900000-0000-7000-8000-000000000062';
+const sceneGuid = '01900000-0000-7000-8000-000000000063';
+const MeshFilter = defineComponent('MeshFilter', { assetHandle: 'asset<mesh>' });
+const SceneInstance = defineComponent('SceneInstance', {
+  source: 'asset<scene>',
+  mapping: 'array<entity>',
+  state: 'unique<SceneInstanceState>',
+});
+const CpuMesh = defineComponent('CpuMesh', { mesh: 'asset<mesh>' });
 const packageUrl = 'https://geometry.invalid/mesh.pack.json';
 const gate = () => {
   let release = () => {};
@@ -37,6 +48,7 @@ const gate = () => {
 async function fixture(
   options: {
     material?: boolean;
+    scene?: 'draw' | 'mixed';
     materialReady?: boolean;
     corrupt?: boolean;
     demand?: boolean;
@@ -72,40 +84,56 @@ async function fixture(
       digest: `sha256:${createHash('sha256').update(body.bytes).digest('hex')}`,
     },
   };
-  const { pack, publication } = createRuntimePackPublication({
-    scopeId: 'geometry-read',
-    sourcePath: 'mesh',
-    sourceRevision: 'original',
-    packageUrl,
-    pack: {
-      assets: [
-        {
-          guid,
-          kind: 'mesh',
-          payload: product.payload,
-          refs: options.material ? [materialGuid] : [],
-          artifacts: { body: descriptor },
-        },
-        ...(options.material || options.waitForMaterial
-          ? [
-              {
-                guid: materialGuid,
-                kind: 'material',
-                payload: {
-                  kind: 'material',
-                  values: {},
-                  passes: [{ name: 'main', program: { module: 'forgeax::default-unlit' } }],
+  const { pack, publication } = catalogPack(
+    [
+      {
+        guid,
+        kind: 'mesh',
+        payload: product.payload,
+        refs: options.material ? [materialGuid] : [],
+        artifacts: { body: descriptor },
+      },
+      ...(options.scene === undefined
+        ? []
+        : [
+            {
+              guid: sceneGuid,
+              kind: 'scene',
+              payload: {
+                kind: 'scene',
+                entities: {
+                  box: {
+                    components: {
+                      MeshFilter: { assetHandle: 0 },
+                      ...(options.scene === 'mixed' ? { CpuMesh: { mesh: 0 } } : {}),
+                    },
+                  },
                 },
-                refs: [],
-                artifacts: options.materialReady
-                  ? {}
-                  : { body: { ...descriptor, path: 'unavailable-material.bin' } },
               },
-            ]
-          : []),
-      ],
-    },
-  });
+              refs: [guid],
+              artifacts: {},
+            },
+          ]),
+      ...(options.material || options.waitForMaterial
+        ? [
+            {
+              guid: materialGuid,
+              kind: 'material',
+              payload: {
+                kind: 'material',
+                values: {},
+                passes: [{ name: 'main', program: { module: 'forgeax::default-unlit' } }],
+              },
+              refs: [],
+              artifacts: options.materialReady
+                ? {}
+                : { body: { ...descriptor, path: 'unavailable-material.bin' } },
+            },
+          ]
+        : []),
+    ],
+    { scopeId: 'geometry-read', sourcePath: 'mesh', sourceRevision: 'original', packageUrl },
+  );
   const rows: CatalogEntry[] = pack.assets.map((asset) => ({
     guid: asset.guid,
     kind: asset.kind,
@@ -124,7 +152,15 @@ async function fixture(
     return new Response('', { status: 404 });
   });
   let listener: CatalogListener = () => {};
-  const assets = new AssetRegistry({ scopeId: 'geometry-read' });
+  const assets = new AssetRegistry({
+    scopeId: 'geometry-read',
+    postSpawnHook: () => ({ ok: true }),
+    components: new Map<string, Component>([
+      [MeshFilter.name, MeshFilter],
+      [CpuMesh.name, CpuMesh],
+    ]),
+  });
+  assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
   const lease = assets.installDecoder(
     meshAssetContribution.kind,
     options.decoder ?? meshAssetContribution.decoder,
@@ -168,72 +204,60 @@ async function fixture(
 
 it('returns exact independently owned base geometry without a render Asset kind or runtime identity', async () => {
   const f = await fixture();
-  try {
-    const geometry = (await f.assets.readMeshGeometry(guid)).unwrap();
-    expect(f.assets.inspect().assets).toEqual([]);
-    expect(geometry).not.toHaveProperty('kind');
-    expect(geometry).not.toHaveProperty('materialSlots');
-    const handle = (await f.assets.load(guid, 'mesh')).unwrap(),
-      ordinary = f.assets.read(handle).unwrap();
-    for (const field of ['vertices', 'attributes', 'indices', 'submeshes', 'aabb'] as const)
-      expect(geometry[field]).toEqual(ordinary[field]);
-    geometry.vertices[0] += 17;
-    expect(f.assets.read(handle).unwrap().vertices).toEqual(ordinary.vertices);
-    const again = (await f.assets.readMeshGeometry(guid)).unwrap();
-    expect(again.vertices).toEqual(ordinary.vertices);
-    expect(again.vertices.buffer).not.toBe(geometry.vertices.buffer);
-    f.assets.release(handle).unwrap();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const geometry = (await f.assets.readMeshGeometry(guid)).unwrap();
+  expect(f.assets.inspect().assets).toEqual([]);
+  expect(geometry).not.toHaveProperty('kind');
+  expect(geometry).not.toHaveProperty('materialSlots');
+  const handle = (await f.assets.load(guid, 'mesh')).unwrap(),
+    ordinary = f.assets.read(handle).unwrap();
+  for (const field of ['vertices', 'attributes', 'indices', 'submeshes', 'aabb'] as const)
+    expect(geometry[field]).toEqual(ordinary[field]);
+  geometry.vertices[0] += 17;
+  expect(f.assets.read(handle).unwrap().vertices).toEqual(ordinary.vertices);
+  const again = (await f.assets.readMeshGeometry(guid)).unwrap();
+  expect(again.vertices).toEqual(ordinary.vertices);
+  expect(again.vertices.buffer).not.toBe(geometry.vertices.buffer);
+  f.assets.release(handle).unwrap();
 });
 
 it('reads a first publication materialized on demand without mistaking its admission for invalidation', async () => {
   const f = await fixture({ demand: true });
-  try {
-    expect((await f.assets.readMeshGeometry(guid)).unwrap().vertices).toEqual(f.mesh.vertices);
-    expect(f.assets.inspect().assets).toEqual([]);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  expect((await f.assets.readMeshGeometry(guid)).unwrap().vertices).toEqual(f.mesh.vertices);
+  expect(f.assets.inspect().assets).toEqual([]);
 });
 
 it('does not consume unavailable default materials, while ordinary complete Mesh loading still rejects them', async () => {
   const f = await fixture({ material: true });
-  try {
-    expect((await f.assets.readMeshGeometry(guid)).ok).toBe(true);
-    expect(f.fetcher.mock.calls.map(([url]) => String(url))).toEqual([
-      packageUrl,
-      'https://geometry.invalid/mesh.bin',
-    ]);
-    expect(f.assets.inspect().assets).toEqual([]);
-    expect((await f.assets.load(guid, 'mesh')).ok).toBe(false);
-    expect(f.fetcher.mock.calls.map(([url]) => String(url))).toContain(
-      'https://geometry.invalid/unavailable-material.bin',
-    );
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  expect((await f.assets.readMeshGeometry(guid)).ok).toBe(true);
+  expect(f.fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+    packageUrl,
+    'https://geometry.invalid/mesh.bin',
+  ]);
+  expect(f.assets.inspect().assets).toEqual([]);
+  expect((await f.assets.load(guid, 'mesh')).ok).toBe(false);
+  expect(f.fetcher.mock.calls.map(([url]) => String(url))).toContain(
+    'https://geometry.invalid/unavailable-material.bin',
+  );
 });
 
 it('keeps concurrent results independent while sharing verified transport reads', async () => {
   const f = await fixture();
-  try {
-    const [a, b] = await Promise.all([
-      f.assets.readMeshGeometry(guid),
-      f.assets.readMeshGeometry(guid),
-    ]);
-    const first = a.unwrap(),
-      second = b.unwrap();
-    expect(first).toEqual(second);
-    expect(first.vertices.buffer).not.toBe(second.vertices.buffer);
-    first.vertices[0] += 1;
-    expect(first.vertices).not.toEqual(second.vertices);
-    expect(f.fetcher).toHaveBeenCalledTimes(2);
-    expect(f.assets.inspect().assets).toEqual([]);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const [a, b] = await Promise.all([
+    f.assets.readMeshGeometry(guid),
+    f.assets.readMeshGeometry(guid),
+  ]);
+  const first = a.unwrap(),
+    second = b.unwrap();
+  expect(first).toEqual(second);
+  expect(first.vertices.buffer).not.toBe(second.vertices.buffer);
+  first.vertices[0] += 1;
+  expect(first.vertices).not.toEqual(second.vertices);
+  expect(f.fetcher).toHaveBeenCalledTimes(2);
+  expect(f.assets.inspect().assets).toEqual([]);
 });
 
 it('shares one decode between a source geometry read and first Mesh load', async () => {
@@ -301,55 +325,46 @@ it('cancels one caller while shared Catalog enumeration is pending without cance
 
 it('preserves runtime edits without letting a source geometry read adopt or overwrite them', async () => {
   const f = await fixture();
-  try {
-    const original = (await f.assets.readMeshGeometry(guid)).unwrap();
-    const handle = (await f.assets.load(guid, 'mesh')).unwrap(),
-      edited = createBoxGeometry(4, 6, 8).unwrap();
-    f.assets.replace(handle, edited).unwrap();
-    f.fetcher.mockClear();
-    const geometry = (await f.assets.readMeshGeometry(guid)).unwrap();
-    expect(f.fetcher).not.toHaveBeenCalled();
-    expect(geometry.vertices).toEqual(original.vertices);
-    expect(geometry.vertices.buffer).not.toBe(original.vertices.buffer);
-    expect(f.assets.read(handle).unwrap().vertices).toEqual(edited.vertices);
-    expect(f.assets.sourceOf(handle)?.modified).toBe(true);
-    f.assets.release(handle).unwrap();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const original = (await f.assets.readMeshGeometry(guid)).unwrap();
+  const handle = (await f.assets.load(guid, 'mesh')).unwrap(),
+    edited = createBoxGeometry(4, 6, 8).unwrap();
+  f.assets.replace(handle, edited).unwrap();
+  f.fetcher.mockClear();
+  const geometry = (await f.assets.readMeshGeometry(guid)).unwrap();
+  expect(f.fetcher).not.toHaveBeenCalled();
+  expect(geometry.vertices).toEqual(original.vertices);
+  expect(geometry.vertices.buffer).not.toBe(original.vertices.buffer);
+  expect(f.assets.read(handle).unwrap().vertices).toEqual(edited.vertices);
+  expect(f.assets.sourceOf(handle)?.modified).toBe(true);
+  f.assets.release(handle).unwrap();
 });
 
 it('reads through the current Mesh decoder after a cached output decoder retires', async () => {
   const f = await fixture();
-  try {
-    const handle = (await f.assets.load(guid, 'mesh')).unwrap();
-    f.lease.dispose();
-    expect(await f.assets.readMeshGeometry(guid)).toMatchObject({
-      ok: false,
-      error: { code: 'asset-decoder-missing' },
-    });
-    const otherMesh = createBoxGeometry(3, 4, 5).unwrap();
-    const decode = vi.fn(async () => ok(otherMesh));
-    f.assets.installDecoder(meshAssetContribution.kind, { decode });
-    expect((await f.assets.readMeshGeometry(guid)).unwrap().vertices).toEqual(otherMesh.vertices);
-    expect(decode).toHaveBeenCalledTimes(1);
-    expect(f.assets.read(handle).unwrap().vertices).toEqual(f.mesh.vertices);
-    f.assets.release(handle).unwrap();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const handle = (await f.assets.load(guid, 'mesh')).unwrap();
+  f.lease.dispose();
+  expect(await f.assets.readMeshGeometry(guid)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-decoder-missing' },
+  });
+  const otherMesh = createBoxGeometry(3, 4, 5).unwrap();
+  const decode = vi.fn(async () => ok(otherMesh));
+  f.assets.installDecoder(meshAssetContribution.kind, { decode });
+  expect((await f.assets.readMeshGeometry(guid)).unwrap().vertices).toEqual(otherMesh.vertices);
+  expect(decode).toHaveBeenCalledTimes(1);
+  expect(f.assets.read(handle).unwrap().vertices).toEqual(f.mesh.vertices);
+  f.assets.release(handle).unwrap();
 });
 
 it('rejects corrupt artifact bytes before returning any geometry', async () => {
   const f = await fixture({ corrupt: true });
-  try {
-    expect(await f.assets.readMeshGeometry(guid)).toMatchObject({
-      ok: false,
-      error: { code: 'asset-integrity-failed' },
-    });
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  expect(await f.assets.readMeshGeometry(guid)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-integrity-failed' },
+  });
 });
 
 it.each([
@@ -627,98 +642,253 @@ it.each([
   }
 });
 
-it('keeps CPU access when an ordinary load finishes before the Render acknowledgement', async () => {
+it.each([
+  'render-only',
+  'ordinary-before-send',
+  'ordinary-after-send',
+  'receiver-fails',
+  'send-fails',
+] as const)('hands off the original decoded storage and preserves the load contract for %s', async (mode) => {
   const f = await fixture();
-  const entered = gate();
-  const acknowledge = gate();
+  const source = defined(runtimeSourceReader(f.assets, f.source));
+  const records = runtimeAssets(f.assets);
+  const reserved = gate();
+  const permitSend = gate();
+  const sent = gate();
+  const ready = gate();
   const release = vi.fn();
-  const unbind = runtimeAssets(f.assets).bindMeshPresenter(async () => {
-    entered.release();
-    await acknowledge.promise;
-    return ok({ isCurrent: () => true, release });
+  let decoded: MeshAsset | undefined;
+  let received: MeshAsset | undefined;
+  let candidateHandle: AssetHandle<'mesh'> | undefined;
+  const take = source.takeMesh.bind(source);
+  vi.spyOn(source, 'takeMesh').mockImplementation((key) => {
+    decoded = source.entry(key)?.value as MeshAsset | undefined;
+    take(key);
   });
+  const present = records.bindMeshPresenter(
+    async (handle, revision, input) => {
+      expect(records.version(handle).unwrap()).toBe(revision);
+      candidateHandle = handle;
+      reserved.release();
+      await permitSend.promise;
+      const candidate = input.capture();
+      expect(candidate.vertices.buffer).toBe(defined(decoded).vertices.buffer);
+      expect(candidate.indices?.buffer).toBe(defined(decoded).indices?.buffer);
+      if (mode === 'send-fails') throw new Error('transport rejected the send');
+      received = structuredClone(candidate, {
+        transfer: [candidate.vertices.buffer, defined(candidate.indices).buffer] as ArrayBuffer[],
+      });
+      input.sent?.();
+      sent.release();
+      await ready.promise;
+      return mode === 'receiver-fails'
+        ? err('render-preparation-failed')
+        : ok({ isCurrent: () => true, release });
+    },
+    { confirmsTransfer: true },
+  );
+  const visual = f.assets.load(guid, 'mesh', { usage: 'render' });
   try {
-    const loading = f.assets.load(guid, 'mesh', { usage: 'render' });
-    await entered.promise;
-    const full = (await f.assets.load(guid, 'mesh')).unwrap();
-    const revision = f.assets.revision(full).unwrap();
-    acknowledge.release();
-    expect((await loading).unwrap()).toBe(full);
-    expect(f.assets.meshCpuResidency(full).unwrap()).toMatchObject({
-      mode: 'cpu',
-      revision,
-      cpuRetentionReason: 'cpu-required',
-    });
-    expect(f.assets.read(full).unwrap().vertices).toEqual(f.mesh.vertices);
-    expect(release).toHaveBeenCalledTimes(1);
+    await reserved.promise;
+    expect(source.entry(guid)).toBeUndefined();
+    if (mode === 'ordinary-before-send') {
+      const handle = defined(candidateHandle);
+      const snapshot = f.assets.snapshot(handle).unwrap();
+      try {
+        expect(snapshot.read<MeshAsset>(handle).unwrap().vertices).toEqual(f.mesh.vertices);
+      } finally {
+        snapshot.dispose();
+      }
+    }
+    const early =
+      mode === 'ordinary-before-send' ? (await f.assets.load(guid, 'mesh')).unwrap() : undefined;
+    permitSend.release();
+    if (early === undefined && mode !== 'send-fails') {
+      await sent.promise;
+      expect(defined(decoded).vertices.byteLength).toBe(0);
+      expect(defined(received).attributeStorage).toBe('static-streams');
+      expect(interleavedMesh(defined(received)).vertices).toEqual(f.mesh.vertices);
+      expect(defined(received).indices).toEqual(f.mesh.indices);
+    }
+    const cpu =
+      mode === 'ordinary-after-send' ? (await f.assets.load(guid, 'mesh')).unwrap() : early;
+    const cpuRevision = cpu === undefined ? undefined : f.assets.revision(cpu).unwrap();
+    ready.release();
+    const handle = (await visual).unwrap();
+    if (cpu !== undefined) {
+      expect(handle).toBe(cpu);
+      expect(f.assets.revision(handle).unwrap()).toBe(cpuRevision);
+      expect(f.assets.read(cpu).unwrap().vertices).toEqual(f.mesh.vertices);
+      f.assets.release(cpu).unwrap();
+    }
+    expect(f.assets.meshCpuResidency(handle).unwrap().mode).toBe(
+      mode === 'render-only' ? 'render' : 'cpu',
+    );
+    if (mode === 'receiver-fails' || mode === 'send-fails')
+      expect(f.assets.read(handle).unwrap().vertices).toEqual(f.mesh.vertices);
+    f.assets.release(handle).unwrap();
   } finally {
-    acknowledge.release();
-    unbind();
+    permitSend.release();
+    ready.release();
+    await visual;
+    present();
+    f.assets.dispose();
+  }
+}, 10_000);
+
+it('keeps a shared first handoff when one visual waiter cancels after transfer', async () => {
+  const f = await fixture();
+  const sent = gate();
+  const ready = gate();
+  const controller = new AbortController();
+  const release = vi.fn();
+  const presenter = vi.fn<Parameters<ReturnType<typeof runtimeAssets>['bindMeshPresenter']>[0]>(
+    async (_handle, _revision, input, signal) => {
+      const mesh = input.capture();
+      structuredClone(mesh, { transfer: [mesh.vertices.buffer as ArrayBuffer] });
+      input.sent?.();
+      sent.release();
+      await ready.promise;
+      expect(signal?.aborted).toBe(false);
+      return ok({ isCurrent: () => true, release });
+    },
+  );
+  runtimeAssets(f.assets).bindMeshPresenter(presenter, { confirmsTransfer: true });
+  const first = f.assets.load(guid, 'mesh', { usage: 'render', signal: controller.signal });
+  try {
+    await sent.promise;
+    const second = f.assets.load(guid, 'mesh', { usage: 'render' });
+    controller.abort();
+    expect(await first).toMatchObject({ ok: false, error: { code: 'asset-load-cancelled' } });
+    ready.release();
+    const handle = (await second).unwrap();
+    expect(presenter).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    expect(f.assets.meshCpuResidency(handle).unwrap()).toMatchObject({
+      mode: 'render',
+      handoff: 'transfer',
+    });
+    f.assets.release(handle).unwrap();
+  } finally {
+    ready.release();
+    await first;
     f.assets.dispose();
   }
 });
 
-it('restores the same Mesh for an additional receiver before it builds a baseline', async () => {
+it.each([
+  'draw',
+  'mixed',
+  'draw-before-render-ready',
+] as const)('honors reflected %s scene Mesh usage and restores CPU via ordinary Scene loading', async (usage) => {
+  const f = await fixture({ scene: usage === 'mixed' ? 'mixed' : 'draw' });
+  const present = vi.fn<Parameters<ReturnType<typeof runtimeAssets>['bindMeshPresenter']>[0]>(
+    async (_handle, _revision, input) => {
+      const mesh = input.capture();
+      structuredClone(mesh, { transfer: [mesh.vertices.buffer as ArrayBuffer] });
+      input.sent?.();
+      return ok({ isCurrent: () => true, release() {} });
+    },
+  );
+  const world = new World({ assets: f.assets });
+  world.components.register(MeshFilter).unwrap();
+  world.components.register(CpuMesh).unwrap();
+  world.components.register(SceneInstance).unwrap();
+  const records = runtimeAssets(f.assets);
+  let rendererReady = usage !== 'draw-before-render-ready';
+  records.bindMeshPresenter(present, {
+    confirmsTransfer: true,
+    isReady: () => rendererReady,
+  });
+  onTestFinished(() => f.assets.dispose());
+  const scene = (await f.assets.load(sceneGuid, 'scene', { usage: 'render' })).unwrap();
+  const mesh = defined(records.dependencies(scene).unwrap()[0]) as AssetHandle<'mesh'>;
+  if (usage === 'draw-before-render-ready') {
+    expect(present).not.toHaveBeenCalled();
+    expect(f.assets.meshCpuResidency(mesh).unwrap()).toMatchObject({
+      mode: 'cpu',
+      cpuRetentionReason: 'render-not-ready',
+    });
+    rendererReady = true;
+    await f.assets.recoverMeshPresentations();
+  }
+  if (usage !== 'mixed') {
+    expect(f.assets.meshCpuResidency(mesh).unwrap()).toMatchObject({
+      mode: 'render',
+      handoff: 'transfer',
+    });
+    expect(present).toHaveBeenCalledTimes(1);
+  } else {
+    expect(f.assets.meshCpuResidency(mesh).unwrap().mode).toBe('cpu');
+    expect(present).not.toHaveBeenCalled();
+  }
+  const spawned = f.assets.instantiate(scene, world).unwrap();
+  const box = [...world.iterDescendants(spawned)][0];
+  expect(world.get(defined(box), MeshFilter).unwrap().assetHandle).toBe(mesh);
+  const revision = f.assets.revision(mesh).unwrap();
+  const ordinary = (await f.assets.load(sceneGuid, 'scene')).unwrap();
+  expect(ordinary).toBe(scene);
+  expect(f.assets.revision(mesh).unwrap()).toBe(revision);
+  expect(f.assets.read(mesh).unwrap().vertices).toEqual(f.mesh.vertices);
+  f.assets.release(ordinary).unwrap();
+  f.assets.release(scene).unwrap();
+});
+
+it.each([
+  ['ordinary load before acknowledgement', 'cpu-required'],
+  ['receiver before acknowledgement', 'multiple-render-receivers'],
+  ['receiver after handoff', 'multiple-render-receivers'],
+] as const)('preserves the same full Mesh for %s', async (event, cpuRetentionReason) => {
   const f = await fixture();
   const records = runtimeAssets(f.assets);
-  const release = vi.fn();
-  const closeFirst = records.bindMeshPresenter(async () => ok({ isCurrent: () => true, release }));
-  try {
-    const visual = (await f.assets.load(guid, 'mesh', { usage: 'render' })).unwrap();
-    const revision = f.assets.revision(visual).unwrap();
-    expect(f.assets.meshCpuResidency(visual).unwrap().mode).toBe('render');
-    f.assets.clearCatalogSource();
-    const second = vi.fn();
-    const closeSecond = records.bindMeshPresenter(second);
-    try {
-      await f.assets.recoverMeshPresentations();
-      expect(f.assets.meshCpuResidency(visual).unwrap()).toMatchObject({
-        mode: 'cpu',
-        revision,
-        cpuRetentionReason: 'multiple-render-receivers',
-      });
-      expect(f.assets.read(visual).unwrap().vertices).toEqual(f.mesh.vertices);
-      expect(second).not.toHaveBeenCalled();
-      expect(release).toHaveBeenCalledTimes(1);
-    } finally {
-      closeSecond();
-    }
-  } finally {
-    closeFirst();
-    f.assets.dispose();
-  }
-});
-
-it('keeps the full Mesh when another receiver joins during visual preparation', async () => {
-  const f = await fixture();
   const entered = gate();
   const acknowledge = gate();
   const release = vi.fn();
-  const records = runtimeAssets(f.assets);
   const closeFirst = records.bindMeshPresenter(async () => {
     entered.release();
     await acknowledge.promise;
     return ok({ isCurrent: () => true, release });
   });
+  const second = vi.fn(async () => err('render-preparation-failed'));
+  let closeSecond: (() => void) | undefined;
   try {
     const loading = f.assets.load(guid, 'mesh', { usage: 'render' });
     await entered.promise;
-    const closeSecond = records.bindMeshPresenter(async () => err('render-preparation-failed'));
-    try {
-      await f.assets.recoverMeshPresentations();
+    if (event === 'ordinary load before acknowledgement') {
+      const full = (await f.assets.load(guid, 'mesh')).unwrap();
+      const revision = f.assets.revision(full).unwrap();
       acknowledge.release();
-      const handle = (await loading).unwrap();
-      expect(f.assets.meshCpuResidency(handle).unwrap()).toMatchObject({
-        mode: 'cpu',
-        cpuRetentionReason: 'multiple-render-receivers',
-      });
-      expect(f.assets.read(handle).unwrap().vertices).toEqual(f.mesh.vertices);
-      expect(release).toHaveBeenCalledTimes(1);
-    } finally {
-      closeSecond();
+      expect((await loading).unwrap()).toBe(full);
+      expect(f.assets.meshCpuResidency(full).unwrap().revision).toBe(revision);
+    } else {
+      let original: { handle: AssetHandle<'mesh'>; revision: number } | undefined;
+      if (event === 'receiver after handoff') {
+        acknowledge.release();
+        const handle = (await loading).unwrap();
+        original = { handle, revision: f.assets.revision(handle).unwrap() };
+        expect(f.assets.meshCpuResidency(handle).unwrap().mode).toBe('render');
+        f.assets.clearCatalogSource();
+      }
+      closeSecond = records.bindMeshPresenter(second);
+      await f.assets.recoverMeshPresentations();
+      if (original !== undefined) {
+        expect(second).not.toHaveBeenCalled();
+        expect(f.assets.meshCpuResidency(original.handle).unwrap().revision).toBe(
+          original.revision,
+        );
+      }
+      acknowledge.release();
     }
+    const mesh = (await loading).unwrap();
+    expect(f.assets.meshCpuResidency(mesh).unwrap()).toMatchObject({
+      mode: 'cpu',
+      cpuRetentionReason,
+    });
+    expect(f.assets.read(mesh).unwrap().vertices).toEqual(f.mesh.vertices);
+    expect(release).toHaveBeenCalledTimes(1);
   } finally {
     acknowledge.release();
+    closeSecond?.();
     closeFirst();
     f.assets.dispose();
   }
@@ -727,19 +897,16 @@ it('keeps the full Mesh when another receiver joins during visual preparation', 
 it('reports a Render budget rejection while keeping the same CPU Mesh readable', async () => {
   const f = await fixture();
   runtimeAssets(f.assets).bindMeshPresenter(async () => err('render-budget-exceeded'));
-  try {
-    const visual = (await f.assets.load(guid, 'mesh', { usage: 'render' })).unwrap();
-    expect(f.assets.meshCpuResidency(visual).unwrap()).toMatchObject({
-      mode: 'cpu',
-      cpuRetentionReason: 'render-budget-exceeded',
-      recoveryArtifactBytes: 0,
-    });
-    expect(f.assets.read(visual).unwrap().vertices).toEqual(f.mesh.vertices);
-    expect((await f.assets.load(guid, 'mesh')).unwrap()).toBe(visual);
-    expect(f.assets.meshCpuResidency(visual).unwrap().cpuRetentionReason).toBe('cpu-required');
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const visual = (await f.assets.load(guid, 'mesh', { usage: 'render' })).unwrap();
+  expect(f.assets.meshCpuResidency(visual).unwrap()).toMatchObject({
+    mode: 'cpu',
+    cpuRetentionReason: 'render-budget-exceeded',
+    recoveryArtifactBytes: 0,
+  });
+  expect(f.assets.read(visual).unwrap().vertices).toEqual(f.mesh.vertices);
+  expect((await f.assets.load(guid, 'mesh')).unwrap()).toBe(visual);
+  expect(f.assets.meshCpuResidency(visual).unwrap().cpuRetentionReason).toBe('cpu-required');
 });
 
 it('does not record a late Render rejection against a replacement Mesh revision', async () => {
@@ -777,75 +944,63 @@ it('does not record a late Render rejection against a replacement Mesh revision'
 it('retains the exact mesh bytes and only shares overlapping decodes', async () => {
   const decode = vi.fn(meshAssetContribution.decoder.decode);
   const f = await fixture({ decoder: { ...meshAssetContribution.decoder, decode } });
-  try {
-    const row = defined(f.rows[0]);
-    const output = defined(row.publication?.outputs[0]);
-    const pins = await retainAssetPublications(
-      f.assets,
-      new Map([[guid, output.digest]]),
-      f.rows,
-      { enumerate: async () => ok(f.rows), subscribe: () => () => {} },
-      f.fetcher,
-    );
-    const pin = defined(pins.get(guid));
-    const read = pin.asset;
-    if (typeof read !== 'function') throw new Error('Expected a retained byte source');
-    expect(decode).not.toHaveBeenCalled();
-    f.fetcher.mockClear();
-    f.assets.clearCatalogSource();
-    const [first, concurrent] = await Promise.all([read(), read()]);
-    expect(first).toBe(concurrent);
-    expect(decode).toHaveBeenCalledTimes(1);
-    const recovered = await read();
-    expect(recovered).toEqual(first);
-    expect(recovered).not.toBe(first);
-    if (first.kind !== 'mesh' || recovered.kind !== 'mesh') throw new Error('Expected a Mesh');
-    expect(recovered.vertices.buffer).not.toBe(first.vertices.buffer);
-    expect(decode).toHaveBeenCalledTimes(2);
-    expect(f.fetcher).not.toHaveBeenCalled();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const row = defined(f.rows[0]);
+  const output = defined(row.publication?.outputs[0]);
+  const pins = await retainAssetPublications(
+    f.assets,
+    new Map([[guid, output.digest]]),
+    f.rows,
+    { enumerate: async () => ok(f.rows), subscribe: () => () => {} },
+    f.fetcher,
+  );
+  const pin = defined(pins.get(guid));
+  const read = pin.asset;
+  if (typeof read !== 'function') throw new Error('Expected a retained byte source');
+  expect(decode).not.toHaveBeenCalled();
+  f.fetcher.mockClear();
+  f.assets.clearCatalogSource();
+  const [first, concurrent] = await Promise.all([read(), read()]);
+  expect(first).toBe(concurrent);
+  expect(decode).toHaveBeenCalledTimes(1);
+  const recovered = await read();
+  expect(recovered).toEqual(first);
+  expect(recovered).not.toBe(first);
+  if (first.kind !== 'mesh' || recovered.kind !== 'mesh') throw new Error('Expected a Mesh');
+  expect(recovered.vertices.buffer).not.toBe(first.vertices.buffer);
+  expect(decode).toHaveBeenCalledTimes(2);
+  expect(f.fetcher).not.toHaveBeenCalled();
 });
 
 it('does not expose buffers retained by a custom Mesh decoder', async () => {
   const shared = createBoxGeometry(2, 3, 4).unwrap(),
     f = await fixture({ decoder: { decode: async () => ok(shared) } });
-  try {
-    const geometry = (await f.assets.readMeshGeometry(guid)).unwrap(),
-      before = shared.vertices.slice();
-    geometry.vertices[0] += 1;
-    expect(shared.vertices).toEqual(before);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const geometry = (await f.assets.readMeshGeometry(guid)).unwrap(),
+    before = shared.vertices.slice();
+  geometry.vertices[0] += 1;
+  expect(shared.vertices).toEqual(before);
 });
 
 it('rejects another Catalog kind and an already aborted read before fetching body bytes', async () => {
   const f = await fixture({ material: true }),
     controller = new AbortController();
   controller.abort();
-  try {
-    expect((await f.assets.readMeshGeometry(guid, { signal: controller.signal })).ok).toBe(false);
-    expect(f.fetcher).not.toHaveBeenCalled();
-    expect(await f.assets.readMeshGeometry(materialGuid)).toMatchObject({
-      ok: false,
-      error: { code: 'asset-kind-mismatch' },
-    });
-    expect(f.fetcher).not.toHaveBeenCalled();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  expect((await f.assets.readMeshGeometry(guid, { signal: controller.signal })).ok).toBe(false);
+  expect(f.fetcher).not.toHaveBeenCalled();
+  expect(await f.assets.readMeshGeometry(materialGuid)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-kind-mismatch' },
+  });
+  expect(f.fetcher).not.toHaveBeenCalled();
 });
 
 it('rejects an invalid custom decoder geometry instead of returning a partial invalid Mesh', async () => {
   const invalid = { ...createBoxGeometry(2, 3, 4).unwrap(), vertices: new Float32Array(1) };
   const f = await fixture({ decoder: { decode: async () => ok(invalid) } });
-  try {
-    expect((await f.assets.readMeshGeometry(guid)).ok).toBe(false);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  expect((await f.assets.readMeshGeometry(guid)).ok).toBe(false);
 });
 
 it('rejects a changed Catalog publication while decoding its former body', async () => {

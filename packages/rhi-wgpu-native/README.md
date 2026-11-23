@@ -171,7 +171,12 @@ pnpm --filter @forgeax/engine-rhi-wgpu-native native:artifact install <artifact-
 ```
 
 Admission checks the current Node/Rust source closure and pinned clean wgpu
-source before replacing the local addon. Neither install nor source setup compiles
+source before replacing the local addon. The SDK builder accepts
+`--native-player-artifact <artifact-directory>` and verifies the source closure,
+exact Engine commit, PE imports and binary hash before including a Windows x64
+player. Set `FORGEAX_SDK_ROOT` to the installed SDK root when invoking the CLI
+outside that SDK. The CLI verifies the SDK artifact hash before copying the
+addon to the game output. Neither install nor source setup compiles
 it automatically.
 
 | Environment variable | Effect |

@@ -17,6 +17,7 @@ import {
   createStandardSceneSurfaceAdmission,
   ProducedStandardSceneDataAdmissionInput,
   type StandardSceneDataContributor,
+  sameSceneSurfaceAdmission,
   sceneDataSurfaceBindings,
   standardAoSceneDataUnavailable,
   standardSceneDataContributorForDispatch,
@@ -1386,4 +1387,28 @@ it('invalidates an unavailable proof when material, visible set or view header c
     ['no render path', { ...unavailableHeader, renderPath: undefined }],
   ] as const)
     changed(name, admitVisible(rows, previous, header));
+});
+
+it('compares changing native surface coverage before materializing diagnostic identities', () => {
+  const material = frozenSurfaceMaterial(41, 'forgeax_material::standard');
+  const rows = [visibleRow(1, material), visibleRow(2, material)];
+  const first = admitVisible(rows, undefined).admission;
+  const equal = admitVisible(rows, undefined).admission;
+  const changed = admitVisible(
+    [visibleRow(3, material), rows[1] as VisibleRow],
+    undefined,
+  ).admission;
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    expect(sameSceneSurfaceAdmission(first, equal)).toBe(true);
+    expect(sameSceneSurfaceAdmission(first, changed)).toBe(false);
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+  }
+  expect(first.identity).toBe(equal.identity);
+  expect(first.identity).not.toBe(changed.identity);
+  expect(
+    sameSceneSurfaceAdmission(first, admitVisible([...rows].reverse(), undefined).admission),
+  ).toBe(true);
 });

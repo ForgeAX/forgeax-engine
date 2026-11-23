@@ -24,6 +24,7 @@ import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring'
 import {
   adoptWorkerPublicationMaterials,
   fullscreenRenderFeatureDeclaration,
+  installPublishedLevelPrograms,
   renderGraphCompileCount,
   retainPublishedLevelAsset,
 } from '@forgeax/engine-render/internal';
@@ -74,6 +75,7 @@ import { RenderLevelDeviceWork } from './render-level-device-work';
 import { RenderLevelFrameSelection } from './render-level-frame-selection';
 import { RenderMeshResidency } from './render-mesh-residency';
 import { RenderWorkerControlBoundary } from './render-worker-control-boundary';
+import { postRenderWorkerMessage, renderPresentation } from './render-worker-presentation';
 import type {
   CompletedMeshConsumption,
   RenderWorkerInput,
@@ -94,9 +96,11 @@ import type {
 } from './types';
 import { serializableDetail, workerError } from './worker-error';
 
-const scope = globalThis as unknown as {
-  postMessage(message: RenderWorkerOutput, transfer?: Transferable[]): void;
-  close(): void;
+const nativeScope = globalThis as unknown as { close(): void };
+const scope = {
+  postMessage: (message: RenderWorkerOutput, transfer?: Transferable[]) =>
+    postRenderWorkerMessage(message, transfer),
+  close: () => nativeScope.close(),
 };
 let renderer: Renderer | undefined;
 let meshResidency: RenderMeshResidency | undefined;
@@ -179,6 +183,7 @@ let geometryRequest:
       started: boolean;
     })
   | undefined;
+let viewportHit: { id: number; controller: AbortController } | undefined;
 let hdrRequest:
   | (Extract<RenderWorkerInput, { kind: 'hdr-observe-next' }> & {
       cancelled: boolean;
@@ -337,6 +342,8 @@ type FailureMessage = RenderWorkerInput | InitFailureContext;
 function fail(message: FailureMessage, cause: unknown): void {
   if (failed) return;
   failed = true;
+  viewportHit?.controller.abort();
+  renderPresentation()?.stop();
   activePreparationAbort?.abort();
   invalidateCaptureRequests();
   terrainReceipts.clear();
@@ -554,6 +561,16 @@ async function completeFrame(
     };
     const frame = completedFrame();
     const publishCompletion = () => {
+      let transfers = buffers;
+      if (featureTextureReadbacks !== undefined || meshConsumption !== undefined) {
+        const owned = new Set(buffers);
+        for (const row of featureTextureReadbacks ?? []) {
+          if (row.bytes.buffer instanceof ArrayBuffer) owned.add(row.bytes.buffer);
+        }
+        if (meshConsumption?.bindings.buffer instanceof ArrayBuffer)
+          owned.add(meshConsumption.bindings.buffer);
+        transfers = Array.from(owned);
+      }
       scope.postMessage(
         {
           kind: 'completed',
@@ -575,17 +592,7 @@ async function completeFrame(
           ...(meshConsumption === undefined ? {} : { meshConsumption }),
           frame,
         },
-        [
-          ...new Set<Transferable>([
-            ...buffers,
-            ...(featureTextureReadbacks?.flatMap((row) =>
-              row.bytes.buffer instanceof ArrayBuffer ? [row.bytes.buffer] : [],
-            ) ?? []),
-            ...(meshConsumption?.bindings.buffer instanceof ArrayBuffer
-              ? [meshConsumption.bindings.buffer]
-              : []),
-          ]),
-        ],
+        transfers,
       );
       hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
     };
@@ -753,6 +760,8 @@ async function disposeRenderResources(): Promise<unknown> {
 async function receiveDispose(): Promise<void> {
   terrainReceipts.clear();
   shuttingDown = true;
+  viewportHit?.controller.abort();
+  renderPresentation()?.stop();
   pendingClosedLevelRows.length = 0;
   closedLevelTurns.dispose();
   activePreparationAbort?.abort();
@@ -811,7 +820,46 @@ function inspectionResult(message: InspectMessage): ReturnType<typeof readRender
     : readRendererInspection(renderer, undefined, message);
 }
 
+function receiveViewportHit(message: Extract<RenderWorkerInput, { kind: 'viewport-hit' }>): void {
+  const current = publicationIdentity;
+  const send = (result: import('@forgeax/engine-render').ViewportHitResult) =>
+    scope.postMessage({
+      kind: 'viewport-hit-result',
+      requestId: message.requestId,
+      identity: message.identity,
+      result,
+    } satisfies RenderWorkerOutput);
+  if (
+    current?.source !== message.identity.source ||
+    current.epoch !== message.identity.epoch ||
+    inspectionWorldIdentity !== message.request.worldIdentity ||
+    failed ||
+    shuttingDown
+  ) {
+    send({ kind: 'stale', reason: 'render-session' });
+    return;
+  }
+  const pick = renderer?.requestViewportHit;
+  if (!pick) {
+    send({ kind: 'unavailable', reason: 'backend' });
+    return;
+  }
+  viewportHit?.controller.abort();
+  const work = { id: message.requestId, controller: new AbortController() };
+  viewportHit = work;
+  void pick(message.request, work.controller.signal)
+    .then(send, () => send({ kind: 'unavailable', reason: 'hit-pass' }))
+    .finally(() => {
+      if (viewportHit === work) viewportHit = undefined;
+    });
+}
+
 async function receive(message: RenderWorkerInput): Promise<void> {
+  if (message.kind === 'viewport-hit-cancel') {
+    if (viewportHit?.id === message.requestId) viewportHit.controller.abort();
+    return;
+  }
+  if (message.kind === 'viewport-hit') return receiveViewportHit(message);
   if (message.kind === 'geometry-observe-cancel') {
     receiveGeometryObserveCancel(message.requestId);
     return;
@@ -1045,6 +1093,7 @@ function initRendererOptions(
     ...(message.backgroundPipelineLibrary === undefined
       ? {}
       : { backgroundPipelineLibrary: message.backgroundPipelineLibrary }),
+    ...(message.viewportHitWarmup === true ? { viewportHitWarmup: true } : {}),
     ...(message.backgroundPipelineLibraryConcurrency === undefined
       ? {}
       : { backgroundPipelineLibraryConcurrency: message.backgroundPipelineLibraryConcurrency }),
@@ -1052,6 +1101,9 @@ function initRendererOptions(
       ? {}
       : { outputColorSpace: message.outputColorSpace }),
     ...(message.renderBackend === undefined ? {} : { renderBackend: message.renderBackend }),
+    ...(message.staticShadowBudgetBytes === undefined
+      ? {}
+      : { staticShadowBudgetBytes: message.staticShadowBudgetBytes }),
     ...(message.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
@@ -1259,10 +1311,15 @@ async function receiveInit(message: InitMessage): Promise<void> {
     scope.postMessage(message),
   );
   inspectionWorldIdentity = message.worldIdentity;
-  closedLevelRows = new RenderClosedLevelRows(message.identity, message.worldIdentity, (asset) => {
-    const retained = retainPublishedLevelAsset(activeRenderer, message.identity, asset);
-    return retained.ok ? retained.value : undefined;
-  });
+  closedLevelRows = new RenderClosedLevelRows(
+    message.identity,
+    message.worldIdentity,
+    (asset) => {
+      const retained = retainPublishedLevelAsset(activeRenderer, message.identity, asset);
+      return retained.ok ? retained.value : undefined;
+    },
+    (programs) => installPublishedLevelPrograms(activeRenderer, programs),
+  );
   levelDeviceWork = new RenderLevelDeviceWork(
     activeRenderer,
     closedLevelRows,
@@ -1382,6 +1439,7 @@ function publishedFrameInput(
 ): PublishedRenderFrameInput {
   return {
     publication: adoptWorkerPublicationMaterials(message.publication),
+    displayFrameId: message.frameId,
     ...(observeGeometry
       ? {
           geometryObservation: true as const,
@@ -1536,6 +1594,34 @@ async function deliverGeometryObservation(
   if (geometryRequest === geometry) geometryRequest = undefined;
 }
 
+function drawOnBrowserTurn(
+  presentation: NonNullable<ReturnType<typeof renderPresentation>>,
+  frameRenderer: Renderer,
+  input: Parameters<Renderer['draw']>[0],
+  captureDraw: CaptureDrawTransaction | undefined,
+): ReturnType<Renderer['draw']> | undefined | Promise<ReturnType<Renderer['draw']> | undefined> {
+  const waitBeganAt = performance.now();
+  const scheduled = presentation.run(() => {
+    drawTiming.resumedPresentation(waitBeganAt);
+    if (failed || shuttingDown) return undefined;
+    const previousCaptureDraw = activeCaptureDraw;
+    activeCaptureDraw = captureDraw;
+    try {
+      return frameRenderer.draw(input);
+    } finally {
+      if (activeCaptureDraw === captureDraw) activeCaptureDraw = previousCaptureDraw;
+    }
+  });
+  scheduleClosedLevelRows();
+  return scheduled;
+}
+
+function failDrawRecording(captureDraw: CaptureDrawTransaction | undefined, cause: unknown): void {
+  if (failed || shuttingDown) return;
+  failCaptureDraw(captureDraw);
+  throw cause;
+}
+
 async function receiveDraw(message: DrawMessage): Promise<void> {
   let completionOwnsFrame = false;
   let selectionReceipt: FrameReceipt | undefined;
@@ -1577,22 +1663,26 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       levelSelection?.apply,
     );
     const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
-    let draw: ReturnType<Renderer['draw']>;
-    const previousCaptureDraw = activeCaptureDraw;
-    activeCaptureDraw = captureDraw;
-    try {
-      // Only cooperative preparation awaits; the ordinary draw stays synchronous.
-      draw =
-        renderTaskYield === 'features'
-          ? await drawScheduledPublication(frameRenderer, input)
-          : frameRenderer.draw(input);
-    } finally {
-      if (activeCaptureDraw === captureDraw) activeCaptureDraw = previousCaptureDraw;
+    let draw: ReturnType<Renderer['draw']> | undefined;
+    const presentation = renderPresentation();
+    if (presentation !== undefined) {
+      draw = await drawOnBrowserTurn(presentation, frameRenderer, input, captureDraw);
+    } else {
+      const previousCaptureDraw = activeCaptureDraw;
+      activeCaptureDraw = captureDraw;
+      try {
+        draw =
+          renderTaskYield === 'features'
+            ? await drawScheduledPublication(frameRenderer, input)
+            : frameRenderer.draw(input);
+      } finally {
+        if (activeCaptureDraw === captureDraw) activeCaptureDraw = previousCaptureDraw;
+      }
     }
+    if (draw === undefined) return;
     if (!draw.ok) {
-      if (failed || shuttingDown) return;
-      failCaptureDraw(captureDraw);
-      throw draw.error;
+      failDrawRecording(captureDraw, draw.error);
+      return;
     }
     const receipt = draw.value;
     selectionReceipt = receipt;
@@ -1647,9 +1737,11 @@ const closedLevelTurns = createRenderWorkerTaskTurns();
 let closedLevelScheduled = false;
 
 function closedLevelTurnAvailable(): boolean {
-  return (
-    !shuttingDown && !failed && drawing === undefined && framesInFlight < renderPipelineCapacity
-  );
+  if (shuttingDown || failed) return false;
+  // A presentation waiting on a native turn has not started recording. A
+  // queued publication fills transport credit but does not occupy the device.
+  if (renderPresentation()?.waiting === true) return unretiredReceipts < renderPipelineCapacity;
+  return drawing === undefined && framesInFlight < renderPipelineCapacity;
 }
 
 function scheduleClosedLevelRows(): void {

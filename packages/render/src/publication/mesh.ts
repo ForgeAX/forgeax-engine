@@ -1,3 +1,4 @@
+import { interleavedMesh } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ownPublishedMeshBuffers } from './mesh-buffer-ownership';
 import {
@@ -82,6 +83,11 @@ export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
  * A packed-rows mesh is compared with a full mesh by `samePackedAndFullMesh`.
  */
 export function samePublishedMesh(left: MeshAsset, right: MeshAsset): boolean {
+  if (
+    left.attributeStorage !== right.attributeStorage &&
+    (left.attributeStorage === 'static-streams' || right.attributeStorage === 'static-streams')
+  )
+    return samePublishedMesh(interleavedMesh(left), interleavedMesh(right));
   if (isPackedRowsMesh(left) !== isPackedRowsMesh(right)) return samePackedAndFullMesh(left, right);
   const same = (a: unknown, b: unknown): boolean => {
     if (Object.is(a, b)) return true;

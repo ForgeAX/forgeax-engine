@@ -10,6 +10,7 @@ import { gltfImporter } from '../../../packages/gltf/dist/importer-entry.mjs';
 import { decodeImageForImport } from '../../../packages/image/dist/image-importer.mjs';
 import {
   ImporterRegistry,
+  projectImportPack,
   projectImportProductForBuild,
   projectMaterialPackTransport,
   runImport,
@@ -43,7 +44,7 @@ const start = performance.now();
 const imported = await runImport(
   {
     ...meta,
-    buildPack: false,
+
     source,
     importSettings: { ...meta.importSettings, meshCards: settings },
   },
@@ -112,12 +113,12 @@ try {
     sourcePath: source,
     sourceRevision: product.sourceRevision,
     packageUrl: `${base}/scene.pack.json`,
-    pack: finalized.value.pack,
+    pack: projectImportPack(finalized.value.product),
   });
   const packBytes = Buffer.from(JSON.stringify(projectMaterialPackTransport(publication.pack)));
   served.set('/scene.pack.json', packBytes);
   await writeFile(resolve(output, 'scene.pack.json'), packBytes);
-  const catalog = finalized.value.pack.assets.map((row) => ({
+  const catalog = projectImportPack(finalized.value.product).assets.map((row) => ({
     guid: row.guid,
     kind: row.kind,
     packageUrl: `${base}/scene.pack.json`,

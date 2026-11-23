@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { writePackageArchive } from './sdk-lib.mjs';
 
@@ -87,7 +87,7 @@ export async function bundleEngineArchive({ engineArchive, members, version, vie
       ['preinstall', 'install', 'postinstall'].some((name) => scripts[name] !== undefined);
     const fetchable = (node) =>
       !internal.has(node.manifest.name) &&
-      node.source.includes('/node_modules/.pnpm/') &&
+      node.source.includes(`${sep}node_modules${sep}.pnpm${sep}`) &&
       !node.source.includes('patch_hash=') &&
       !installScript(node.manifest);
     const bundled = new Set(ordered.filter((node) => !fetchable(node)));

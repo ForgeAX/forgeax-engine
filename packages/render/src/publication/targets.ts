@@ -1,7 +1,5 @@
 import { createRenderTargetHost, type RenderTargetHost } from '../assembly/render-target-host';
-import { MaterialResource } from '../material-resource';
-import type { RenderableSnapshot } from '../render-system-extract';
-import { captureMaterialOverrides } from '../scene/mesh-materials';
+import type { MaterialResource } from '../material-resource';
 import type {
   RenderTarget,
   RenderTargetDescriptor,
@@ -14,7 +12,6 @@ import { isExternalTextureSource } from '../textures/external-texture';
 import { renderTextureSourceKey } from '../textures/source-token';
 import type { RenderPublication } from './contract';
 import { RenderPublicationError } from './contract';
-import type { PreparedRenderPublication } from './receiver';
 
 /** Author descriptions synchronously; the consuming Renderer owns physical resources. */
 export type RenderTargetAuthoring = Pick<
@@ -103,10 +100,15 @@ export class RenderPublicationTargetReceiver {
   originKey(key: string): string | undefined {
     return this.origins.get(key)?.key;
   }
-  apply(input: PreparedRenderPublication): PreparedRenderPublication {
-    const packet = input.packet;
+  /** Bind receiver-private staged material values before their shared draw templates commit. */
+  bind(
+    packet: RenderPublication,
+    materials: readonly MaterialResource[],
+  ):
+    | Pick<RenderPublication['metadata'], 'cameras' | 'auxiliaryCameras' | 'cubeCameras'>
+    | undefined {
     if (packet.targets.length === 0 && packet.targetSources.length === 0 && this.targets.size === 0)
-      return input;
+      return undefined;
     const tokens = new Map<RenderTarget, RenderTarget>();
     const records = new Map<RenderTarget, ReceivedTarget>();
     const ids = new Map<RenderTarget, number>();
@@ -163,11 +165,8 @@ export class RenderPublicationTargetReceiver {
     }
     const camera = <T extends { readonly target?: RenderTarget }>(row: T): T =>
       row.target === undefined ? row : { ...row, target: resolve(row.target) };
-    const rebound = new Map<MaterialResource, MaterialResource>();
-    const rebind = (material: MaterialResource): MaterialResource => {
-      const existing = rebound.get(material);
-      if (existing !== undefined) return existing;
-      if (material.snapshot.textureSources === undefined) return material;
+    for (const material of materials) {
+      if (material.snapshot.textureSources === undefined) continue;
       const textureSources = new Map<string, MaterialTextureSource>(
         [...material.snapshot.textureSources].map(([name, token]) => {
           if (
@@ -186,53 +185,13 @@ export class RenderPublicationTargetReceiver {
           return [name, source] as const;
         }),
       );
-      const resource = MaterialResource.from({ ...material.snapshot, textureSources });
-      rebound.set(material, resource);
-      return resource;
-    };
-    const materialUpdates = input.materialUpdates.map(rebind);
-    // Rows without a rebound material stay the same object; only rebound rows are copied.
-    const snapshots = new Map<number, RenderableSnapshot>();
-    const renderables = input.frame.renderables.map((row) => {
-      const materials = row.materials.map(rebind);
-      // Slot overrides (MeshRenderer.materials) reference the same staged
-      // resources; they must resolve to the same rebound copy, or adoption
-      // cannot map them to the accepted material.
-      const overrides = row.materialOverrides?.map((material) =>
-        material === undefined ? undefined : rebind(material),
-      );
-      if (
-        materials.every((material, index) => material === row.materials[index]) &&
-        (overrides?.every((material, index) => material === row.materialOverrides?.[index]) ?? true)
-      )
-        return row;
-      const first = row.materials.indexOf(row.material);
-      const rebound = {
-        ...row,
-        materials,
-        material: materials[Math.max(0, first)] ?? row.material,
-        ...(overrides === undefined
-          ? {}
-          : { materialOverrides: captureMaterialOverrides(overrides) }),
-      };
-      snapshots.set(row.entityKey, rebound);
-      return rebound;
-    });
+      material.adopt({ ...material.snapshot, textureSources });
+    }
+    const metadata = packet.metadata;
     return {
-      ...input,
-      materialUpdates,
-      frame: {
-        ...input.frame,
-        renderables,
-        cameras: input.frame.cameras.map(camera),
-        auxiliaryCameras: input.frame.auxiliaryCameras.map(camera),
-        cubeCameras: input.frame.cubeCameras.map(camera),
-      },
-      operations: input.operations.map((operation) => {
-        if (operation.kind === 'remove' || operation.snapshot === undefined) return operation;
-        const snapshot = snapshots.get(operation.entityKey);
-        return snapshot === undefined ? operation : { ...operation, snapshot };
-      }),
+      cameras: metadata.cameras.map(camera),
+      auxiliaryCameras: metadata.auxiliaryCameras.map(camera),
+      cubeCameras: metadata.cubeCameras.map(camera),
     };
   }
 }

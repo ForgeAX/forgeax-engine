@@ -145,6 +145,9 @@ function addProbePasses(
     normal: target.normal.view,
     depthPyramid,
     scene: target.scene.view,
+    ...(target.reflection === undefined
+      ? {}
+      : { directionalReflection: target.reflection.fallback.view }),
     probes,
     probesIn: probes,
     adaptiveCount,
@@ -308,21 +311,17 @@ function addProbePasses(
     const added = step();
     if (!added.ok) return added;
   }
-  const reflectionResponse =
-    prepared.profile.reflections === undefined ? undefined : target.reflection?.response.view;
   const composited = addRayDiffuseCompositePass(
     graph,
     'screen-probe.composite',
     () => current().field.composite,
     target,
     historyOut,
-    view,
     pixelCount,
-    reflectionResponse,
   );
   if (!composited.ok) return composited;
-  // The lit HDR scene (direct + this frame's GI) is the next frame's screen
-  // trace radiance, matching UE's previous-frame scene color feedback.
+  // Capture the lit HDR scene before world reflections, subtracting the
+  // directional environment so screen trace feedback stays diffuse.
   const copied = stagePass('scene-history', 'copySceneHistory', pixels);
   if (!copied.ok) return copied;
   return ok(undefined);

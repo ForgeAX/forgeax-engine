@@ -13,28 +13,31 @@ const skinSource = readFileSync(
 );
 
 describe('Standard reflection probe sampling contract', () => {
-  it('keeps global IBL helpers and adds a bounded local probe sampling helper', () => {
-    expect(samplingSource).toMatch(/fn\s+sampleIblDiffuse\s*\(/);
-    expect(samplingSource).toMatch(/fn\s+sampleIblSpecular\s*\(/);
-    expect(samplingSource).toMatch(/fn\s+sampleReflectionProbeSpecular\s*\(/);
-  });
-
-  it('uses box projection and explicit Skylight fallback in the Standard shader', () => {
-    expect(samplingSource).toMatch(/box_project/);
-    expect(standardSource).toMatch(/sampleReflectionProbeSpecular/);
-    expect(standardSource).toContain('skylight.intensity < 0.0');
-    expect(standardSource).toMatch(/sampleIblSpecular/);
-    expect(standardSource).toMatch(/skylight/);
+  it('uses one selected reflection slot for fallback environments and local box projection', () => {
+    expect(samplingSource).toContain('fn box_project(');
+    expect(lightingSource).toContain('fn sampleStandardReflectionRadiance(');
+    expect(lightingSource).toContain(
+      'direction = box_project(worldPosition, direction, tint, sky.rotation.xyz)',
+    );
+    expect(lightingSource).toContain(
+      'samplePmrem(prefilterMap, prefilterSampler, direction, roughness)',
+    );
+    expect(lightingSource).toContain(
+      'sampleIblRadiance(reflectionDirection, roughness, sky.rotation, prefilterMap, prefilterSampler)',
+    );
+    for (const root of [standardSource, skinSource]) {
+      expect(root).toContain('evaluateStandardEnvironment(');
+      expect(root).toContain('evaluateStandardClearcoatReflection(');
+      expect(root).not.toContain('@binding(47) var');
+    }
   });
 
   it('projects only the environment specular lobe for c=1 without removing diffuse light', () => {
     expect(standardSource).toContain(
       'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;',
     );
-    expect(lightingSource).toContain('kD * irradiance * albedo');
-    expect(lightingSource).toContain(
-      'let irradiance = sampleSkylightDiffuse(sky, normal, irradianceMap, irradianceSampler);',
-    );
+    expect(lightingSource).toContain('lowFrequency = diffuseWeight * irradiance.front');
+    expect(lightingSource).toContain('let front = sampleSkylightDiffuse(sky, normal, skySh);');
     expect(lightingSource).toContain('* skylightHemisphereScale(sky, scale, normal);');
     // The lit tail carries the fallback; every forward entry copies it out.
     expect(standardSource).toContain(
@@ -44,43 +47,10 @@ describe('Standard reflection probe sampling contract', () => {
     expect(standardSource).not.toContain('output.reflectionFallback = vec4<f32>(ambient, 1.0);');
   });
 
-  it('keeps probe clearcoat on the selected probe source', () => {
-    expect(standardSource).toMatch(
-      /if \(skylight\.intensity < 0\.0\) \{[\s\S]*?clearcoatIbl = sampleReflectionProbeSpecular\(/,
-    );
-  });
-
-  it('keeps zero-intensity probes distinguishable from an absent Skylight', () => {
-    expect(standardSource).toContain('decodeSpecularEnvironmentScale(');
-    expect(samplingSource).toContain('* probeIntensity');
-    expect(standardSource).toContain('max(-skylight.intensity - 1.0, 0.0)');
-  });
-
-  it('keeps probe-blend and SSR on one sentinel-safe specular environment scale', () => {
-    // ReflectionProbe resources encode their intensity as a negative sentinel
-    // and use the Skylight color lanes for box metadata. Never multiply that
-    // metadata by the specular lobe. The same decoded scale must drive the
-    // PROBE_BLEND specular ambient term and detached SSR fallback.
+  it('keeps zero-intensity local captures and fallback tint separate from box metadata', () => {
+    expect(lightingSource).toContain('if (sky.intensity < 0.0)');
+    expect(lightingSource).toContain('* (-sky.intensity - 1.0)');
+    expect(lightingSource).toContain('* tint * sky.intensity');
     expect(lightingSource).toContain('return StandardEnvironment(diffuse, specular * single,');
-    const radianceOwner = lightingSource.slice(
-      lightingSource.indexOf('fn sampleSkylightRadiance('),
-      lightingSource.indexOf('fn evaluateStandardEnvironment('),
-    );
-    expect(radianceOwner).toContain('if (sky.intensity < 0.0)');
-    expect(radianceOwner).toContain('return sampleReflectionProbeRadiance(');
-    expect(radianceOwner).toContain('max(-sky.intensity - 1.0, 0.0)');
-    expect(radianceOwner).toContain(
-      'return sampleIblRadiance(reflectionDirection, roughness, sky.rotation, prefilterMap, prefilterSampler)',
-    );
-    expect(radianceOwner).toContain('* decodeSpecularEnvironmentScale(tint, sky.intensity);');
-    for (const root of [standardSource, skinSource]) {
-      expect(root).toContain('evaluateStandardEnvironment(');
-      expect(root).toContain(
-        'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;',
-      );
-      expect(root).toContain(
-        'standardSpecularOcclusion(max(dot(physicalNormal, v), 0.0), ao * screenAo, iblRoughness)',
-      );
-    }
   });
 });

@@ -13,7 +13,7 @@ import {
   predepthFragmentEntry,
 } from '../predepth-coverage';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from '../record/frame-snapshot';
 import {
   geometryRenderStateForPass,
   variantSetForCoveragePass,
@@ -69,6 +69,21 @@ interface MaterialProgramSelection {
   materialShaderId: string;
 }
 
+/** The two addresses belong to one authored Pass. A specialization ID already selects its ABI. */
+export function sceneIndexKeyForPass(
+  material: MaterialSnapshot,
+  pass: 'forward' | 'shadow',
+  directId: string | undefined,
+): string | undefined {
+  if (directId === undefined) return undefined;
+  for (const name in material.materialSceneIndexProgramKeys) {
+    const program = material.materialSceneIndexProgramKeys[name];
+    if (program?.pass === pass && material.materialProgramKeys?.[name] === directId)
+      return program.specializationKey;
+  }
+  return undefined;
+}
+
 /** Select the direct/scene program pair published for this concrete pass. */
 export function gpuDrivenMaterialProgramSelection(
   material: MaterialSnapshot,
@@ -82,18 +97,7 @@ export function gpuDrivenMaterialProgramSelection(
   const shadowMaterialShaderId = pass === 'shadow' ? shadowEntry?.materialShaderId : undefined;
   const directMaterialShaderId =
     pass === 'shadow' ? shadowMaterialShaderId : logicalMaterialShaderId;
-  let sceneIndexProgramKey: string | undefined;
-  for (const passName in sceneIndexProgramKeys) {
-    const program = sceneIndexProgramKeys[passName];
-    if (
-      program?.pass === pass &&
-      directMaterialShaderId !== undefined &&
-      material.materialProgramKeys?.[passName] === directMaterialShaderId
-    ) {
-      sceneIndexProgramKey = program.specializationKey;
-      break;
-    }
-  }
+  const sceneIndexProgramKey = sceneIndexKeyForPass(material, pass, directMaterialShaderId);
   if (sceneIndexProgramKeys !== undefined && sceneIndexProgramKey === undefined) return undefined;
   const materialShaderId =
     pass === 'shadow'
@@ -406,14 +410,7 @@ export function collectGpuDrivenMaterialArtifacts({
   ): BatchPass | undefined => {
     if (entry?.materialShaderId === undefined) return undefined;
     const shaderId = entry.materialShaderId;
-    let sceneIndexProgramKey: string | undefined;
-    for (const name in material.materialSceneIndexProgramKeys) {
-      const program = material.materialSceneIndexProgramKeys[name];
-      if (program?.pass === kind && material.materialProgramKeys?.[name] === shaderId) {
-        sceneIndexProgramKey = program.specializationKey;
-        break;
-      }
-    }
+    const sceneIndexProgramKey = sceneIndexKeyForPass(material, kind, shaderId);
     return {
       kind,
       shaderId,
@@ -694,7 +691,7 @@ function hiddenMaterialMatchesFilter(
 }
 
 export function prepareHiddenGpuDrivenPipelines(input: {
-  readonly entries: readonly ValidatedRenderable[];
+  readonly entries: DrawRows;
   readonly materials?: MaterialFrame | undefined;
   readonly resolve?: RenderSystemInternals['getMaterialShaderArtifact'];
   readonly shaders: RenderSystemInternals['shaderRegistry'];

@@ -28,10 +28,6 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.mjs"
     },
-    "./bridge": {
-      "types": "./dist/bridge.d.ts",
-      "import": "./dist/bridge.mjs"
-    },
     "./scanner": {
       "types": "./dist/scanner.d.ts",
       "import": "./dist/scanner.mjs"

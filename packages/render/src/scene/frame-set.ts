@@ -1,4 +1,4 @@
-import { changes, type Node, put, remove } from './frame-tree';
+import { changes, type Node, nodes, put, remove } from './frame-tree';
 
 const PAGE_BITS = 1024;
 const PAGE_WORDS = PAGE_BITS / 32;
@@ -10,7 +10,7 @@ const EMPTY_KEYS: IterableIterator<number> = Object.freeze({
   [Symbol.iterator]: () => EMPTY_KEYS,
 });
 
-function popcount(word: number): number {
+export function popcount(word: number): number {
   word -= (word >>> 1) & 0x55555555;
   word = (word & 0x33333333) + ((word >>> 2) & 0x33333333);
   return (Math.imul((word + (word >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24) as number;
@@ -51,18 +51,31 @@ export class FrameSet implements ReadonlySet<number> {
   }
   /** One fixed set over ascending or unordered keys, built page by page. */
   static from(keys: Iterable<number>): FrameSet {
+    return FrameSet.collect((add) => {
+      for (const key of keys) add(key);
+    });
+  }
+
+  /** Build from a synchronous producer without constructing a second array of keys. */
+  static collect(visit: (add: (key: number) => void) => void): FrameSet {
     const pages = new Map<number, Uint32Array>();
-    for (const key of keys) {
-      if (!Number.isSafeInteger(key) || key < 0)
-        throw new RangeError('FrameSet keys are non-negative safe integers');
-      const page = Math.floor(key / PAGE_BITS);
-      let bits = pages.get(page);
-      if (bits === undefined) {
-        bits = new Uint32Array(PAGE_WORDS);
-        pages.set(page, bits);
-      }
-      const lane = key - page * PAGE_BITS;
-      bits[lane >>> 5] = ((bits[lane >>> 5] as number) | (1 << (lane & 31))) >>> 0;
+    let writable: Map<number, Uint32Array> | undefined = pages;
+    try {
+      visit((key) => {
+        if (writable === undefined) throw new TypeError('FrameSet collection has ended');
+        if (!Number.isSafeInteger(key) || key < 0)
+          throw new RangeError('FrameSet keys are non-negative safe integers');
+        const page = Math.floor(key / PAGE_BITS);
+        let bits = writable.get(page);
+        if (bits === undefined) {
+          bits = new Uint32Array(PAGE_WORDS);
+          writable.set(page, bits);
+        }
+        const lane = key - page * PAGE_BITS;
+        bits[lane >>> 5] = ((bits[lane >>> 5] as number) | (1 << (lane & 31))) >>> 0;
+      });
+    } finally {
+      writable = undefined;
     }
     let root: Node<Uint32Array> | undefined;
     for (const [page, bits] of pages) {
@@ -181,6 +194,33 @@ export class FrameSet implements ReadonlySet<number> {
       if (node === undefined && weight === 0) return;
       root = weight === 0 ? remove(root, 0, page) : put(root, bits, 0, page, weight);
     });
+    return root === this.#root ? this : FrameSet.#from(root);
+  }
+  /** Visit admitted slots in order. Filtering a captured roster copies only
+   * bitmap pages that lost members and preserves the other physical addresses. */
+  filter(keep: (slot: number) => boolean): FrameSet {
+    let root = this.#root;
+    for (const page of nodes(this.#root)) {
+      let changed: Uint32Array | undefined;
+      let weight = page.weight;
+      for (let word = 0; word < PAGE_WORDS; word++) {
+        const original = page.value[word] as number;
+        let kept = original;
+        for (let bits = original; bits !== 0; bits &= bits - 1) {
+          const bit = bits & -bits;
+          if (!keep(page.key * PAGE_BITS + word * 32 + 31 - Math.clz32(bit))) {
+            kept ^= bit;
+            weight--;
+          }
+        }
+        if (kept >>> 0 !== original) {
+          changed ??= page.value.slice();
+          changed[word] = kept >>> 0;
+        }
+      }
+      if (changed !== undefined)
+        root = weight === 0 ? remove(root, 0, page.key) : put(root, changed, 0, page.key, weight);
+    }
     return root === this.#root ? this : FrameSet.#from(root);
   }
   /** Visit each key present in exactly one of `before` and this set; shared pages are skipped. */

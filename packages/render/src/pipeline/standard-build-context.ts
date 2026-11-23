@@ -12,6 +12,14 @@ import type { TargetCoverageAttachment } from '../temporal/target-coverage-attac
 /** Standard-only graph input; custom pipeline consumers never see coverage. */
 export type StandardPipelineBuildContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
   readonly targetCoverage?: TargetCoverageAttachment;
+  /** Presence selects the stock shadow kernels; true admits the current camera's receiver depth. */
+  readonly currentShadowReceiverDepth?: boolean;
+  readonly currentMaterialDepth?: true;
+  readonly currentTransparency?: true;
+  readonly currentTransmission?: true;
+  /** The surface itself may be the only encoded output when no debug target is declared. */
+  readonly directFinalColor?: true;
+  readonly currentShadowViews?: import('../typed-shadow-passes').CurrentShadowViews | undefined;
   readonly forwardOutput?: import('./standard-forward-output').StandardForwardOutput;
   /** Internal conformance override; never populated from game-authored pipeline assets. */
   readonly gtaoExecutionOverride?: 'fragment' | 'compute';
@@ -54,17 +62,19 @@ export function contributeStandardAfterDepthFeatures(
 
 /** Internal acceptance selection; only GTAO on a compute-capable lane may select this entry. */
 export function resolveStandardGtaoExecution(
-  algorithm: 'ssao' | 'gtao' | 'spiral-ssao',
+  algorithm: 'ssao' | 'gtao',
   computeAvailable: boolean,
   override: StandardPipelineBuildContext['gtaoExecutionOverride'],
 ): Result<'fragment' | 'compute', RenderGraphError> {
-  if (override !== 'compute') return ok('fragment');
+  if (override === 'fragment') return ok('fragment');
+  if (override === undefined)
+    return ok(algorithm === 'gtao' && computeAvailable ? 'compute' : 'fragment');
   if (algorithm !== 'gtao') {
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
         expected: 'the compute acceptance override selects only GTAO raw evaluation',
-        hint: 'retain the SSAO fragment path for the hemisphere algorithm',
+        hint: 'retain the SSAO raster path',
         detail: {
           resourceLabel: 'standard-gtao',
           field: 'algorithm',

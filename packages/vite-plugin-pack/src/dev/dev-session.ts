@@ -1,6 +1,5 @@
 import type {
   CatalogDiagnostic,
-  CatalogEntry,
   RuntimeAssetBinding,
   RuntimeScopeStatus,
 } from '@forgeax/engine-types';
@@ -11,15 +10,10 @@ import {
   type PluginPackFailureStage,
   projectFailureCause,
 } from '../errors.js';
-import type {
-  ProductionRunResult,
-  ProductionSession,
-  ProductionSourceChange,
-} from '../production/session.js';
+import type { ProductionSession } from '../production/session.js';
 
 export interface DevSessionSnapshot {
   readonly generation: number;
-  readonly catalog: readonly CatalogEntry[];
   readonly authority: 'authoritative' | 'degraded';
   readonly diagnostics: readonly CatalogDiagnostic[];
 }
@@ -51,7 +45,6 @@ interface DevSessionOptions<TState = undefined> {
   readonly generation: number;
   readonly startup: (context: DevSessionContext) => Promise<DevSessionSnapshot>;
   readonly productionSession: ProductionSession<TState>;
-  readonly onStateChange?: (state: DevSessionState) => void;
 }
 
 export interface DevSession {
@@ -68,8 +61,7 @@ export interface DevSession {
   rebuild(
     operation: (context: DevSessionContext) => Promise<DevSessionSnapshot>,
   ): Promise<DevSessionState>;
-  materializeProduction(guid: string): Promise<ProductionRunResult>;
-  rebuildProduction(changes: readonly ProductionSourceChange[]): Promise<ProductionRunResult>;
+  readonly production: Pick<ProductionSession, 'materialize' | 'rebuild'>;
   /** Wait until the latest watcher-owned rebuild has settled. */
   waitForRebuild(): Promise<void>;
   track<T>(task: Promise<T>): Promise<T>;
@@ -130,28 +122,6 @@ function currentSnapshot(state: DevSessionState): DevSessionSnapshot | undefined
 }
 
 /**
- * Startup/rebuild callbacks are caller-owned and may ignore abort.  Their
- * settled promises are tracked separately so close drains the callback before
- * the session becomes terminal; the post-await fence prevents a late result
- * from mutating this session.
- */
-async function settleGenerationOrAbort<T>(
-  task: Promise<T>,
-  signal: AbortSignal,
-  drain: (task: Promise<unknown>) => void,
-): Promise<T | undefined> {
-  const settled = task.then(
-    (value) => ({ status: 'fulfilled' as const, value }),
-    (error: unknown) => ({ status: 'rejected' as const, error }),
-  );
-  drain(settled);
-  const result = await settled;
-  if (signal.aborted) return undefined;
-  if (result.status === 'rejected') throw result.error;
-  return result.value;
-}
-
-/**
  * Own one generation-scoped dev lifecycle. Accepted snapshots are immutable
  * from the session's point of view; rebuild work can only replace them after
  * its promise settles successfully and its generation token still matches.
@@ -162,12 +132,12 @@ export function createDevSession<TState = undefined>(
   if (!Number.isSafeInteger(options.generation) || options.generation < 1) {
     throw new TypeError('DevSession generation must be a positive safe integer');
   }
-  const controller = new AbortController();
-  const pending = new Set<Promise<unknown>>();
+  const production = options.productionSession;
+  const { signal, track } = production;
   let state: DevSessionState = { status: 'starting' };
-  let intakeOpen = true;
   let started: Promise<DevSessionState> | undefined;
   let operationToken = 0;
+  let closing: Promise<void> | undefined;
   let runtimeScope: RuntimeAssetBinding | undefined;
   let activeRebuild: Promise<unknown> | undefined;
 
@@ -212,7 +182,6 @@ export function createDevSession<TState = undefined>(
       );
     }
     state = next;
-    options.onStateChange?.(next);
   };
 
   const publishSnapshot = (snapshot: DevSessionSnapshot): void => {
@@ -223,59 +192,45 @@ export function createDevSession<TState = undefined>(
     );
   };
 
-  const drain = (task: Promise<unknown>): void => {
-    pending.add(task);
-    task.then(
-      () => pending.delete(task),
-      () => pending.delete(task),
+  const runCandidate = (
+    generation: number,
+    operation: (context: DevSessionContext) => Promise<DevSessionSnapshot>,
+    previous?: DevSessionSnapshot,
+  ): Promise<DevSessionState> => {
+    const token = ++operationToken;
+    const current = () => !signal.aborted && token === operationToken;
+    // Track the whole attempt before calling the producer, including cleanup
+    // for producers that settle after they receive the abort signal.
+    return track(
+      Promise.resolve().then(async () => {
+        try {
+          const snapshot = await operation({
+            generation,
+            signal,
+            ...(previous === undefined ? {} : { previous }),
+          });
+          if (current()) publishSnapshot(snapshot);
+        } catch (error) {
+          if (current()) {
+            const failure = asFailure(error, `generation:${generation}`);
+            publish(
+              previous === undefined
+                ? { status: 'failed', error: failure }
+                : {
+                    status: 'degraded',
+                    snapshot: previous,
+                    diagnostics: [...previous.diagnostics, diagnosticForFailure(failure)],
+                  },
+            );
+          }
+        }
+        return state;
+      }),
     );
   };
 
-  const track = <T>(task: Promise<T>): Promise<T> => {
-    if (!intakeOpen || controller.signal.aborted) {
-      void task.catch(() => undefined);
-      const rejected = Promise.reject(
-        createPluginPackFailure({
-          code: 'cleanup-failed',
-          expected: 'the DevSession to accept work before terminal close',
-          hint: 'discard the late task and retry against the active session generation',
-          detail: { stage: 'cleanup', subject: 'dev-session' },
-        }),
-      );
-      void rejected.catch(() => undefined);
-      return rejected;
-    }
-    drain(task);
-    return task;
-  };
-
   const start = (): Promise<DevSessionState> => {
-    if (started !== undefined) return started;
-    const task = (async (): Promise<DevSessionState> => {
-      try {
-        const snapshot = await settleGenerationOrAbort(
-          options.startup({
-            generation: options.generation,
-            signal: controller.signal,
-          }),
-          controller.signal,
-          drain,
-        );
-        if (snapshot === undefined) {
-          publish({ status: 'closing' });
-          return state;
-        }
-        if (!intakeOpen || controller.signal.aborted) {
-          publish({ status: 'closing' });
-          return state;
-        }
-        publishSnapshot(snapshot);
-      } catch (error) {
-        publish({ status: 'failed', error: asFailure(error, `generation:${options.generation}`) });
-      }
-      return state;
-    })();
-    started = track(task);
+    started ??= runCandidate(options.generation, options.startup);
     return started;
   };
 
@@ -283,51 +238,12 @@ export function createDevSession<TState = undefined>(
     operation: (context: DevSessionContext) => Promise<DevSessionSnapshot>,
   ): Promise<DevSessionState> => {
     const previous = currentSnapshot(state);
-    if (!intakeOpen || (previous === undefined && state.status !== 'failed'))
+    if (signal.aborted || (previous === undefined && state.status !== 'failed'))
       return Promise.resolve(state);
     const candidateGeneration = (previous?.generation ?? options.generation) + 1;
-    const token = ++operationToken;
     if (previous !== undefined)
       publish({ status: 'rebuilding', snapshot: previous, candidateGeneration });
-    const task = (async (): Promise<DevSessionState> => {
-      try {
-        const snapshot = await settleGenerationOrAbort(
-          operation({
-            generation: candidateGeneration,
-            signal: controller.signal,
-            ...(previous === undefined ? {} : { previous }),
-          }),
-          controller.signal,
-          drain,
-        );
-        if (snapshot === undefined) return state;
-        if (
-          !intakeOpen ||
-          controller.signal.aborted ||
-          token !== operationToken ||
-          state.status === 'closing' ||
-          state.status === 'closed'
-        ) {
-          return state;
-        }
-        publishSnapshot(snapshot);
-      } catch (error) {
-        if (!intakeOpen || controller.signal.aborted || token !== operationToken) return state;
-        const failure = asFailure(error, `generation:${candidateGeneration}`);
-        if (previous === undefined) {
-          publish({ status: 'failed', error: failure });
-          return state;
-        }
-        const diagnostics = [...previous.diagnostics, diagnosticForFailure(failure)];
-        publish({
-          status: 'degraded',
-          snapshot: previous,
-          diagnostics,
-        });
-      }
-      return state;
-    })();
-    const tracked = track(task);
+    const tracked = runCandidate(candidateGeneration, operation, previous);
     activeRebuild = tracked;
     void tracked.then(
       () => {
@@ -349,32 +265,26 @@ export function createDevSession<TState = undefined>(
   };
 
   return {
-    signal: controller.signal,
+    signal,
     state: () => state,
     runtimeScope: () => runtimeScope,
     bindRuntime,
     publishRuntime,
     start,
     rebuild,
-    async materializeProduction(guid): Promise<ProductionRunResult> {
-      await waitForRebuild();
-      return track(options.productionSession.materialize(guid));
-    },
-    rebuildProduction(changes): Promise<ProductionRunResult> {
-      return track(options.productionSession.rebuild(changes));
-    },
+    production,
     waitForRebuild,
     track,
-    async close(): Promise<void> {
-      if (state.status === 'closed') return;
-      intakeOpen = false;
-      operationToken += 1;
-      publish({ status: 'closing' });
-      controller.abort();
+    close(): Promise<void> {
+      if (closing !== undefined) return closing;
+      closing = Promise.resolve().then(async () => {
+        await productionClose;
+        publish({ status: 'closed' });
+      });
+      const productionClose = production.close();
       runtimeScope = undefined;
-      const productionClose = options.productionSession.close();
-      await Promise.allSettled([productionClose, ...pending]);
-      publish({ status: 'closed' });
+      publish({ status: 'closing' });
+      return closing;
     },
   };
 }

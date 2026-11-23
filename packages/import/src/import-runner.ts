@@ -50,7 +50,6 @@ import {
 import { cookImportedMaterials } from './imported-material-cook.js';
 import type { ImporterRegistry } from './importer-registry.js';
 import { validateMeshLodContract } from './mesh-lod.js';
-import { normaliseForPack } from './pack-value.js';
 
 export { normaliseForPack } from './pack-value.js';
 
@@ -98,30 +97,10 @@ export type RunImportResult =
   | { readonly ok: true; readonly value: RunImportOk }
   | { readonly ok: false; readonly error: ImportErrorType };
 
-export type RunImportProductResult =
-  | {
-      readonly ok: true;
-      readonly value:
-        | { readonly skipped: 'shader' }
-        | {
-            readonly product: TerminalImportProduct;
-            readonly cookProducts: readonly CookProduct[];
-          };
-    }
-  | { readonly ok: false; readonly error: ImportErrorType };
-
-/**
- * Success payload. `skipped: 'shader'` marks a reserved shader sidecar the
- * runner intentionally did not import (no DDC written); otherwise `pack` is the
- * logical Pack v2 document. Artifact bytes remain owned by each asset.
- */
+/** Terminal producer data for explicit Pack projection, or a reserved shader declaration. */
 export type RunImportOk =
   | { readonly skipped: 'shader' }
-  | {
-      readonly product: TerminalImportProduct;
-      readonly cookProducts: readonly CookProduct[];
-      readonly pack: DdcPack;
-    };
+  | { readonly product: TerminalImportProduct; readonly cookProducts: readonly CookProduct[] };
 
 /** The logical Pack v2 document consumed by the shared finalizer. */
 export interface DdcPack {
@@ -156,24 +135,11 @@ export interface RunImportMeta {
   readonly diagnostics?: readonly CatalogDiagnostic[];
   readonly importSettings?: Readonly<Record<string, unknown>>;
   readonly sourceOverrides?: SourceOverrideMap;
-  /** Skip the normalized DDC pack when a downstream finalizer owns publication. */
-  readonly buildPack?: boolean;
   readonly subAssets: ReadonlyArray<
     ImportSubAsset & {
       readonly relations?: readonly AssetRelation[];
     }
   >;
-}
-
-function declarationFields(
-  declaration: RunImportMeta['subAssets'][number] | undefined,
-): Pick<DdcPack['assets'][number], 'sourceKey' | 'sourceIndex' | 'relations'> {
-  if (declaration === undefined) return {};
-  return {
-    sourceIndex: declaration.sourceIndex,
-    ...(declaration.sourceKey !== undefined ? { sourceKey: declaration.sourceKey } : {}),
-    ...(declaration.relations !== undefined ? { relations: declaration.relations } : {}),
-  };
 }
 
 /** Filesystem + decode capabilities the runner needs to drive an importer.
@@ -598,37 +564,6 @@ function materialCookFailure(error: unknown): ImportErrorType {
   });
 }
 
-function ddcPackFor(meta: RunImportMeta, assets: readonly ProducedAsset[]): DdcPack {
-  const declarations = new Map(
-    meta.subAssets.map((declaration) => [declaration.guid, declaration]),
-  );
-  return {
-    schemaVersion: '2.0.0',
-    kind: 'internal-text-package',
-    ...(meta.packageId !== undefined ? { packageId: meta.packageId } : {}),
-    ...(meta.provenance !== undefined ? { provenance: meta.provenance } : {}),
-    ...(meta.revision !== undefined ? { revision: meta.revision } : {}),
-    ...(meta.diagnostics !== undefined ? { diagnostics: meta.diagnostics } : {}),
-    assets: assets.map((a) => ({
-      guid: a.guid,
-      kind: a.kind,
-      ...declarationFields(declarations.get(a.guid)),
-      ...(a.name !== undefined ? { name: a.name } : {}),
-      // bug-20260610: mesh / scene / animation-clip payloads carry Float32Array
-      // / Uint16Array / Uint32Array fields. JSON.stringify on a typed array
-      // serialises to `{ "0": v0, "1": v1, ... }` (a plain object), which the
-      // runtime mesh / animation loaders reject (`vertexData instanceof
-      // Float32Array` and `Array.isArray(vertexData)` both fail). Convert
-      // every typed-array field to a plain Array here so the pack is JSON-
-      // roundtrip safe end-to-end.  This matches the convention every
-      // existing pack-fixture test uses (`vertices: Array.from(...)`).
-      payload: normaliseForPack(a.payload as unknown) as Record<string, unknown>,
-      refs: a.refs.map((r) => r.guid),
-      artifacts: a.artifacts,
-    })),
-  };
-}
-
 /**
  * Run the importer for one parsed meta sidecar and produce its DDC.
  *
@@ -637,24 +572,12 @@ function ddcPackFor(meta: RunImportMeta, assets: readonly ProducedAsset[]): DdcP
  * @param fs the source-read capability (injected so the runner stays
  *   testable without touching real disk).
  */
-export function runImport(
-  meta: RunImportMeta & { readonly buildPack: false },
-  registry: ImporterRegistry,
-  fs: ImportRunnerFs,
-  cookers?: Pick<NativeCookerRegistry, 'get' | 'runDraft'>,
-): Promise<RunImportProductResult>;
-export function runImport(
-  meta: RunImportMeta,
-  registry: ImporterRegistry,
-  fs: ImportRunnerFs,
-  cookers?: Pick<NativeCookerRegistry, 'get' | 'runDraft'>,
-): Promise<RunImportResult>;
 export async function runImport(
   meta: RunImportMeta,
   registry: ImporterRegistry,
   fs: ImportRunnerFs,
   cookers?: Pick<NativeCookerRegistry, 'get' | 'runDraft'>,
-): Promise<RunImportResult | RunImportProductResult> {
+): Promise<RunImportResult> {
   // Reserved shader key: orthogonal vite-plugin-shader pipeline owns these.
   if (meta.importer === SHADER_RESERVED_IMPORTER_KEY) {
     return { ok: true, value: { skipped: 'shader' } };
@@ -828,21 +751,5 @@ export async function runImport(
       }),
     );
   }
-  if (meta.buildPack === false) {
-    return {
-      ok: true,
-      value: { product: terminalProduct.value, cookProducts },
-    };
-  }
-
-  const pack = ddcPackFor(meta, productWithDependencies.assets);
-
-  return {
-    ok: true,
-    value: {
-      product: terminalProduct.value,
-      cookProducts,
-      pack,
-    },
-  };
+  return { ok: true, value: { product: terminalProduct.value, cookProducts } };
 }

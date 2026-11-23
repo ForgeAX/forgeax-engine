@@ -1,36 +1,32 @@
 // @perf-budget-skip: this single integration assertion includes a cold Vite build setup.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gltfImporter } from '@forgeax/engine-gltf';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { build as viteBuild } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { pluginPack } from '../index.js';
 
 const CUBE_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
 
-const PROCEDURAL_META = JSON.stringify({
-  schemaVersion: '1.0.0',
-  kind: 'external-asset-package',
-  importer: 'gltf',
-  source: 'cube-mesh.stub',
-  importSettings: {
+const PROCEDURAL_META = metaFixture(
+  'cube-mesh.stub',
+  'gltf',
+  [{ guid: CUBE_GUID, sourceIndex: 0, kind: 'mesh' }],
+  {
     geometry: 'procedural',
   },
-  subAssets: [{ guid: CUBE_GUID, sourceIndex: 0, kind: 'mesh' }],
-});
+);
 
-const roots: string[] = [];
+const scratch = temporaryDirectories();
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
 
 describe('unregistered source providers', () => {
   it('fails closed instead of publishing an unproduced source alias', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-procedural-alias-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-vpp-procedural-alias-');
     const assets = join(root, 'assets');
     const dist = join(root, 'dist');
     await mkdir(assets, { recursive: true });
@@ -54,8 +50,7 @@ describe('unregistered source providers', () => {
   });
 
   it('lets the registered producer omit a buildless alias from the Catalog', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-procedural-alias-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-vpp-procedural-alias-');
     const assets = join(root, 'assets');
     const dist = join(root, 'dist');
     await mkdir(assets, { recursive: true });

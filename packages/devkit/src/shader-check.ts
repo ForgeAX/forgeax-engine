@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -8,10 +7,12 @@ import {
   materialShaderSourceRoots,
   reachableShaderImportIds,
 } from '@forgeax/engine-shader-compiler';
+import { sha256 } from '@forgeax/engine-types';
 import { build as viteBuild } from 'vite';
 import { createViteConfig } from './host.js';
 import { commandError, readProjectFacts } from './project.js';
 import type { CommandResult, ShaderCheckOptions } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 export async function shaderCheckCommand(
   options: ShaderCheckOptions = {},
@@ -40,15 +41,12 @@ export async function shaderCheckCommand(
       for (const moduleId of reachable) {
         const matches = dependencies.filter((record) => record.moduleId === moduleId);
         if (matches.length > 1)
-          return {
-            ok: false,
-            error: {
-              code: 'shader-module-id-duplicate',
-              expected: 'one source per imported module identity',
-              hint: 'Remove the duplicate source from the selected dependency closure.',
-              detail: { moduleId, paths: matches.map((record) => record.path) },
-            },
-          };
+          return failCommand(
+            'shader-module-id-duplicate',
+            'one source per imported module identity',
+            'Remove the duplicate source from the selected dependency closure.',
+            { moduleId, paths: matches.map((record) => record.path) },
+          );
       }
       const compiled = await compileShader(source, {
         id: target,
@@ -56,16 +54,13 @@ export async function shaderCheckCommand(
       });
       if (!compiled.ok)
         return { ok: false, error: commandError(compiled.error, 'shader-check-failed') };
-      return {
-        ok: true,
-        value: {
-          root: facts.value.root,
-          path: target,
-          scope: 'source',
-          sourceDigest: `sha256:${createHash('sha256').update(source).digest('hex')}`,
-          dependencies: dependencies.map((record) => record.path).sort(),
-        },
-      };
+      return completeCommand({
+        root: facts.value.root,
+        path: target,
+        scope: 'source',
+        sourceDigest: `sha256:${sha256(source)}`,
+        dependencies: dependencies.map((record) => record.path).sort(),
+      });
     } catch (cause) {
       return { ok: false, error: commandError(cause, 'shader-check-failed') };
     }

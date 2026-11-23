@@ -22,11 +22,11 @@
 #import forgeax_material::water_deformation_input::{waterDeformationInput, waterVertexFlowXZ, waterVertexFlowMPerSec, waterMeshFarContinuity}
 #endif
 #endif
-#import forgeax_material::displacement::{displaceVertex, displacedNormal}
+#import forgeax_material::displacement::{evaluateStandardVertexPosition}
 #define_import_path forgeax::default-shadow-caster
 #import forgeax_shadow::surface::{projectShadowPosition}
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
-#import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
+#import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface, evaluate_standard_coverage}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 #import forgeax_material::parameters::{material}
 
@@ -203,26 +203,28 @@ struct VsOut {
 #endif
 
 #if SKINNING_DISABLED == false
-#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate}
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskPosition, skinTaskDirectCandidate}
 #endif
 
 fn standardVertexPosition(in : VsInput) -> vec3<f32> {
 #if TERRAIN_GEOMETRY_AVAILABLE == true
   return terrainVertex(in.position, terrainHeightTexture, material.terrainSection, material.terrainLod, material.terrainNeighbors);
 #else
-#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement()) {
-    return displaceVertex(in.position, in.normal, displacementTexture, displacementTexture_sampler,
-      material.displacementScale, material.displacementBias,
-      material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata, material.displacementTextureCoordinatesRotation,
-#ifdef STANDARD_SINGLE_UV_SET
-      array<vec2<f32>, 8>(in.uv, in.uv, in.uv, in.uv, in.uv, in.uv, in.uv, in.uv));
-#else
-      array<vec2<f32>, 8>(in.uv, in.uv1, in.uv2, in.uv3, in.uv4, in.uv5, in.uv6, in.uv7));
-#endif
-  }
-#endif
+#ifdef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   return in.position;
+#else
+  return evaluateStandardVertexPosition(in.position, in.normal,
+#ifdef STANDARD_UV_INPUT_UNUSED
+    array<vec2<f32>, 8>(),
+#else
+#ifdef STANDARD_SINGLE_UV_SET
+    array<vec2<f32>, 8>(in.uv, in.uv, in.uv, in.uv, in.uv, in.uv, in.uv, in.uv),
+#else
+    array<vec2<f32>, 8>(in.uv, in.uv1, in.uv2, in.uv3, in.uv4, in.uv5, in.uv6, in.uv7),
+#endif
+#endif
+  );
+#endif
 #endif
 }
 
@@ -244,12 +246,12 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
   material = sceneMaterials[materialIndex];
 #if SKINNING_DISABLED == false
   let paletteBase = visible.z;
-  // The palette already carries world space; keep the shared scene rows bound.
-  _ = sceneDraw.world;
+  let meshTranslation = sceneDraw.world[3].xyz;
 #endif
 #else
 #if SKINNING_DISABLED == false
   let paletteBase = skinTaskDirectCandidate();
+  let meshTranslation = meshes[0u].worldFromLocal[3].xyz;
 #endif
 #endif
   var localPosition = standardVertexPosition(in);
@@ -268,7 +270,7 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
 #if WATER_WAVES_AVAILABLE == true
   let waterLocalToWorld = skinMatrix;
 #endif
-  var worldPos = skinMatrix * vec4<f32>(localPosition, 1.0);
+  var worldPos = skinTaskPosition(descriptor, skinMatrix, localPosition, meshTranslation);
   var biasNormal = transformNormal(skinMatrix, biasLocalNormal);
 #ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   let worldNormal = normalize((skinMatrix * vec4<f32>(in.normal, 0.0)).xyz);
@@ -578,7 +580,7 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
 #endif
   shadowInput.vertexColor.a = select(input.vertexColor.a, 1.0, textureOnly);
 #endif
-  return evaluate_standard_surface(shadowInput, shadowMaterial);
+  return evaluate_standard_coverage(shadowInput, shadowMaterial);
 #else
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
 #if ALPHA_MASK == true

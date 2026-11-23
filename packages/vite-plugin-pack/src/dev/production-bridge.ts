@@ -1,13 +1,15 @@
 import { relative, resolve } from 'node:path';
 import {
-  buildCatalogResult,
+  catalogImporterPolicyFor,
   containsSourcePackageError,
-  normalizeSourcePackageError,
   type ProducerReadiness,
   parseProducerReadiness,
 } from '@forgeax/engine-import';
 import {
+  buildCatalogProjection,
+  type CatalogBuildResult,
   type CatalogProducerVisibility,
+  calculateCatalogDelta,
   metaPathForGuid,
   STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
 } from '@forgeax/engine-pack/build';
@@ -35,10 +37,9 @@ import type {
   PluginServerRouteCallbacks,
   PluginServerState,
 } from './plugin-server.js';
-import { serialProductionSession } from './serial-production-session.js';
-import { projectSourcePackageFailure } from './transport-routes.js';
+import { isMaterializedDevRow, projectCatalogSourceFailure } from './transport-routes.js';
 
-type CatalogInventory = Awaited<ReturnType<typeof buildCatalogResult>>;
+type CatalogInventory = CatalogBuildResult;
 const MAX_PENDING_META_PREPARATIONS = 4;
 const MAX_ACTIVE_META_PREPARATIONS = 3;
 
@@ -186,6 +187,23 @@ interface ProductionBridgeContext {
   readonly callbacks: PluginServerCallbacks;
 }
 
+function metaAlreadyMaterialized(
+  guids: readonly string[],
+  state: PluginServerState,
+  callbacks: PluginServerCallbacks,
+  repairTransport: boolean,
+): boolean {
+  return (
+    guids[0] !== undefined &&
+    guids.every((guid) =>
+      state.catalogProjection.entries.some(
+        (row) => row.guid.toLowerCase() === guid.toLowerCase() && isMaterializedDevRow(row, state),
+      ),
+    ) &&
+    (!repairTransport || callbacks.metaTransportReady(guids[0]))
+  );
+}
+
 export function createProductionBridge(context: ProductionBridgeContext): ProductionBridge {
   const {
     producerReadiness,
@@ -216,16 +234,14 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
   };
   const createCandidateState = (
     catalogProjection: CatalogInventory,
-    accepted: PluginServerProjectionState | undefined,
   ): PluginServerProjectionState => {
     return {
-      catalogProjection: { ...catalogProjection, entries: [...catalogProjection.entries] },
-      importedGuids: new Set(accepted?.importedGuids ?? state.importedGuids),
-      metaPackBodies: new Map(accepted?.metaPackBodies ?? state.metaPackBodies),
+      catalogProjection,
+      metaPackBodies: new Map(state.metaPackBodies),
       // Producers replace entries; published bodies are immutable. Keep their
       // identity so unrelated lazy imports reuse prepared HTTP representations.
-      devArtifactBodies: new Map(accepted?.devArtifactBodies ?? state.devArtifactBodies),
-      publicationCandidates: new Map(),
+      devArtifactBodies: new Map(state.devArtifactBodies),
+      authoredPublications: state.authoredPublications,
       pendingImportPublications: new Map(),
     };
   };
@@ -257,21 +273,15 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
     ): void => {
       if (!signal.aborted) observe({ generation: observedGeneration, kind: 'source', source });
     };
-    const source = createProductionSession<ProductionGenerationState>({
+    return createProductionSession<ProductionGenerationState>({
+      serial: true,
       sourceKeys: () => [...roots()],
-      // Materialization keeps the accepted publications. Only a fresh inventory
-      // scan may project away rows whose authored source no longer exists.
-      createState: ({ acceptedState }) => ({
+      createState: ({ acceptedState, intent }) => ({
         inventory: acceptedState?.inventory,
         authoredPublished: false,
         metaPreparation: undefined,
         candidate:
-          acceptedState?.candidate === undefined
-            ? undefined
-            : createCandidateState(
-                acceptedState.candidate.catalogProjection,
-                acceptedState.candidate,
-              ),
+          intent === 'materialize' ? createCandidateState(state.catalogProjection) : undefined,
       }),
       inventory: async ({ generation, sourceKeys, signal, state: generationState }) => {
         observeGeneration(generation);
@@ -295,14 +305,13 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
           },
           ...(ignorePath === undefined ? {} : { ignorePath }),
         };
-        const inventory = await buildCatalogResult(
-          sourceKeys,
-          transportBase(),
-          registeredImporterKeys,
+        const inventory = await buildCatalogProjection(sourceKeys, {
+          base: transportBase() ?? '/',
+          importerPolicy: catalogImporterPolicyFor(registeredImporterKeys),
           scanOptions,
-          catalogVisibility,
-          sourceIdentityFor,
-        );
+          visibility: catalogVisibility,
+          ...(sourceIdentityFor === undefined ? {} : { sourceIdentityFor }),
+        });
         startupTiming('inventory-total', inventoryStartedAt, {
           rootCount: sourceKeys.length,
           entryCount: inventory.entries.length,
@@ -320,12 +329,10 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
           });
         }
         generationState.inventory = inventory;
-        const previousCatalog =
-          generationState.candidate?.catalogProjection.entries ?? state.catalogProjection.entries;
-        generationState.candidate = createCandidateState(
-          { ...inventory, entries: projectAcceptedEntries(inventory.entries, previousCatalog) },
-          generationState.candidate,
-        );
+        generationState.candidate = createCandidateState({
+          ...inventory,
+          entries: projectAcceptedEntries(inventory.entries, state.catalogProjection.entries),
+        });
         const declarations = declarationsForInventory(inventory);
         if (readiness.value === 'before-consume' && callbacks.metaImportPreparation !== undefined)
           generationState.metaPreparation = prepareMetaImports(
@@ -338,7 +345,14 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
           );
         return declarations;
       },
-      produce: async ({ generation, declaration, intent, signal, state: generationState }) => {
+      produce: async ({
+        generation,
+        declaration,
+        intent,
+        repairTransport,
+        signal,
+        state: generationState,
+      }) => {
         observeGeneration(generation);
         const inventory = generationState.inventory;
         const candidate = generationState.candidate;
@@ -354,21 +368,9 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
         if (declaration.format === 'meta.json') {
           if (!readiness.ok) throw readiness.error;
           if (intent === 'attempt' && readiness.value === 'on-demand') return;
-          // Sibling requests can queue before the first request publishes the
-          // complete Meta. Check the live accepted state after serialization;
-          // its imported set also carries watcher invalidation.
           if (
             intent === 'materialize' &&
-            declaration.guids.length > 0 &&
-            declaration.guids.every((guid) => {
-              const key = guid.toLowerCase();
-              return (
-                state.importedGuids.has(key) &&
-                state.catalogProjection.entries.some(
-                  (entry) => entry.guid.toLowerCase() === key && entry.lifecycle === 'current',
-                )
-              );
-            })
+            metaAlreadyMaterialized(declaration.guids, state, callbacks, repairTransport)
           )
             return;
         }
@@ -384,7 +386,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
               total: 1,
             });
             try {
-              producedEntries = await callbacks.ensureMetaImport(
+              await callbacks.ensureMetaImport(
                 metaPath,
                 inventory.declarations.get(metaPath),
                 signal,
@@ -418,7 +420,6 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                     entry.sourcePath.endsWith('.pack.ts'),
                 ),
                 candidate,
-                inventory.sourceDeclarations,
                 signal,
                 runtimeBinding(),
                 (source) => sourceProgress(signal, source),
@@ -454,19 +455,16 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
               : inventory.entries
                   .filter((entry) => entry.sourcePath === sourcePath)
                   .map((entry) => entry.guid);
-          const normalized = normalizeSourcePackageError(error, {
-            sourceMeta: sourcePath,
-            anchorGuid: affectedGuids[0] ?? sourcePath,
+          candidate.catalogProjection = projectCatalogSourceFailure(
+            candidate.catalogProjection,
+            error,
             affectedGuids,
-            producer: 'vite-plugin-pack',
-            importer: declarationMeta?.importer ?? 'unknown',
-          });
-          candidate.catalogProjection = {
-            ...candidate.catalogProjection,
-            entries: projectSourcePackageFailure(candidate.catalogProjection.entries, normalized),
-          };
+            sourcePath,
+            declaration.sourcePath,
+          ).catalog;
           return;
         }
+        if (producedEntries.length === 0) return;
         const candidateEntries = projectAcceptedEntries(
           candidate.catalogProjection.entries,
           producedEntries,
@@ -474,7 +472,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
         );
         candidate.catalogProjection = { ...inventory, entries: candidateEntries };
       },
-      publish: async ({ generation, signal, state: generationState }) => {
+      publish: async ({ generation, intent, signal, state: generationState }) => {
         if (signal.aborted) return;
         observeGeneration(generation);
         stage('publish');
@@ -497,21 +495,21 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
           startupTiming('generation-commit', publishStartedAt, { generation });
         }
         if (signal.aborted) return;
+        const previous = state.catalogProjection.entries;
         Object.assign(state, candidate);
+        generationState.candidate = undefined;
+        if (intent === 'materialize' && previous !== state.catalogProjection.entries) {
+          const delta = calculateCatalogDelta(previous, state.catalogProjection.entries);
+          if (delta !== undefined) callbacks.publishMaterializedCatalog(delta);
+        }
         stage('ready');
       },
       discard: async ({ state: generationState, error }) => {
         stage(error === undefined ? 'cancelled' : 'failed');
         await generationState.metaPreparation?.drain();
         generationState.metaPreparation = undefined;
-        const candidate = generationState.candidate;
-        if (candidate !== undefined) {
-          callbacks.discardPublications(candidate.publicationCandidates);
-          await callbacks.discardImportPublications(candidate.pendingImportPublications);
-        }
       },
     });
-    return serialProductionSession(source);
   };
 
   let session = createSession();
@@ -560,7 +558,6 @@ interface ProductionRouteBridgeContext {
   readonly activeDevSession: DevSession;
   readonly roots: readonly string[];
   readonly producerReadiness?: ProducerReadiness | undefined;
-  readonly freshnessBarrier?: (() => Promise<void>) | undefined;
   readonly state: PluginServerState;
 }
 
@@ -574,8 +571,7 @@ function containsFailureCode(error: unknown, code: string, seen = new Set<unknow
 export function createProductionRouteBridge(
   context: ProductionRouteBridgeContext,
 ): PluginServerRouteCallbacks {
-  const { callbacks, activeDevSession, roots, producerReadiness, freshnessBarrier, state } =
-    context;
+  const { callbacks, activeDevSession, roots, producerReadiness, state } = context;
   const acceptedEntries = (guid: string): readonly PackIndexEntry[] => {
     const guidLower = guid.toLowerCase();
     return state.catalogProjection.entries.filter(
@@ -613,35 +609,28 @@ export function createProductionRouteBridge(
     activeDevSession.track(
       signal === undefined ? task : task.then((entries) => (signal.aborted ? ([] as T) : entries)),
     );
-  const beforeConsume = async (): Promise<void> => {
-    await freshnessBarrier?.();
+  const materialize = async (guid: string): Promise<ProductionRunResult> => {
+    await activeDevSession.waitForRebuild();
+    return activeDevSession.production.materialize(guid);
   };
+  const rebuild = () =>
+    activeDevSession.production.rebuild(roots.map((sourceKey) => ({ sourceKey })));
   return {
-    materializeAsset: (guid, signal) => {
-      return trackRoute(
-        beforeConsume()
-          .then(() => activeDevSession.materializeProduction(guid))
-          .then((result) => entriesAfter(guid, result)),
+    materializeAsset: (guid, signal) =>
+      trackRoute(
+        materialize(guid).then((result) => entriesAfter(guid, result)),
         signal,
-      );
-    },
+      ),
     rebuildAsset: (guid, signal) => {
       const task = (async (): Promise<readonly PackIndexEntry[]> => {
-        await beforeConsume();
-        let result = await activeDevSession.rebuildProduction(
-          roots.map((sourceKey) => ({ sourceKey })),
-        );
-        if (result.status === 'stale') {
-          result = await activeDevSession.rebuildProduction(
-            roots.map((sourceKey) => ({ sourceKey })),
-          );
-        }
+        let result = await rebuild();
+        if (result.status === 'stale') result = await rebuild();
         let entries = entriesAfter(guid, result);
         const readiness = parseProducerReadiness(producerReadiness);
         if (readiness.ok && readiness.value === 'on-demand') {
           const metaPath = metaPathForGuid(state.catalogProjection.declarations, guid);
           if (metaPath !== undefined) {
-            entries = entriesAfter(guid, await activeDevSession.materializeProduction(guid));
+            entries = entriesAfter(guid, await materialize(guid));
           }
         }
         return entries;

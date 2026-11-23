@@ -83,7 +83,7 @@ it('rejects malformed packed-rows payloads explicitly', () => {
       ...packed,
       attributes: { ...packed.attributes, position: new Float32Array(3) },
     }),
-  ).toMatch(/interleaved position requires an empty canonical layout declaration/);
+  ).toBe('packed position requires an empty canonical layout declaration');
   expect(packedRowsMeshError({ ...packed, vertices: packed.vertices.subarray(0, 5) })).toMatch(
     /vertexCount|vertices.byteLength/,
   );
@@ -122,7 +122,9 @@ it('validates packed-rows payloads at the Render receiver and conflicts by conte
     mesh: malformed,
   });
   expect(rejected.ok).toBe(false);
-  expect(String(rejected.ok ? '' : rejected.error.message)).toMatch(/interleaved/);
+  expect(String(rejected.ok ? '' : rejected.error.message)).toContain(
+    'packed normal requires an empty canonical layout declaration',
+  );
   const prepared = receiver
     .prepareMesh({ ...identity, meshHandle: 7 as never, revision: 1, mesh: packed })
     .unwrap();

@@ -52,6 +52,7 @@ it.each([
       colorAttachmentFormat: 'rgba8unorm',
       skylightFallback: {
         irradianceView: view,
+        skySh: {},
         prefilterView: view,
         brdfLutView: view,
         sampler,
@@ -60,7 +61,7 @@ it.each([
     },
     frameState: {},
     validatedOrdered: gpuOnly ? [] : [entry],
-    hdrpClusterBindGroup: null,
+    clusterViewReady: false,
     materialSlots: [material],
     materialBindings: [{ material: resource, resourceClass: '', entityKey: 1 }],
     materialSlotIndices: [[0]],

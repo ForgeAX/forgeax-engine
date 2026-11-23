@@ -14,6 +14,7 @@ interface CanvasState {
   readonly canvas: HTMLCanvasElement | OffscreenCanvas;
   readonly flipY: boolean;
   readonly lifetime: AbortController;
+  frame?: VideoFrame | undefined;
   version: number;
 }
 
@@ -26,7 +27,7 @@ export class CanvasTexture {
 
   constructor(
     canvas: HTMLCanvasElement | OffscreenCanvas,
-    options: { readonly flipY?: boolean } = {},
+    options: { readonly flipY?: boolean; readonly snapshot?: boolean } = {},
   ) {
     this.state = {
       canvas,
@@ -34,6 +35,7 @@ export class CanvasTexture {
       version: 1,
       lifetime: new AbortController(),
     };
+    if (options.snapshot) this.state.frame = snapshotCanvas(this.state);
     this.source = Object.freeze({
       kind: 'render-texture-source',
       source: 'canvas',
@@ -45,14 +47,27 @@ export class CanvasTexture {
 
   /** Call after painting or resizing. Repeated draws share one upload of this version. */
   update(): void {
-    if (!this.state.lifetime.signal.aborted) this.state.version++;
+    const state = this.state;
+    if (state.lifetime.signal.aborted) return;
+    if (state.frame !== undefined) {
+      const next = snapshotCanvas(state);
+      state.frame.close();
+      state.frame = next;
+    }
+    state.version++;
   }
 
   /** Releases uploads in every Renderer; does not clear or destroy the caller's canvas. */
   dispose(): void {
     this.state.lifetime.abort();
+    this.state.frame?.close();
+    this.state.frame = undefined;
     sources.delete(renderTextureSourceKey(this.source));
   }
+}
+
+function snapshotCanvas(state: CanvasState): VideoFrame {
+  return new VideoFrame(state.canvas, { timestamp: state.version, alpha: 'keep' });
 }
 
 export type MaterialTextureSource =

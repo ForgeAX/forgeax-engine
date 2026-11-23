@@ -5,6 +5,7 @@ import {
   type ToolRuntime,
   type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
+import { failToolRun } from '../types.js';
 
 export function decorateResourcePreviewTerminal<TResult>(
   terminal: ToolTerminal<TResult>,
@@ -29,11 +30,7 @@ export function decorateResourcePreviewTerminal<TResult>(
 }
 
 function missingTool(id: string): ToolTerminal<never> {
-  return {
-    outcome: 'failed',
-    failure: capabilityUnavailableError(`tool:${id}`, 'build'),
-    artifacts: [],
-  };
+  return failToolRun(capabilityUnavailableError(`tool:${id}`, 'build'), []);
 }
 
 export function runNamedTool(
@@ -55,16 +52,17 @@ export function runGenericTool(
   try {
     args = JSON.parse(encodedArgs) as JsonValue;
   } catch {
-    return Promise.resolve({
-      outcome: 'failed',
-      failure: {
-        code: 'tool-invalid-args',
-        expected: 'generic CLI arguments to be valid JSON',
-        hint: 'Encode one JSON value that conforms to the descriptor argsSchema.',
-        detail: { message: 'Invalid JSON', value: null },
-      },
-      artifacts: [],
-    });
+    return Promise.resolve(
+      failToolRun(
+        {
+          code: 'tool-invalid-args',
+          expected: 'generic CLI arguments to be valid JSON',
+          hint: 'Encode one JSON value that conforms to the descriptor argsSchema.',
+          detail: { message: 'Invalid JSON', value: null },
+        },
+        [],
+      ),
+    );
   }
   return runNamedTool(runtime, id, args);
 }

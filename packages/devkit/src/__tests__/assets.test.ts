@@ -13,6 +13,8 @@ import {
 } from '../assets.js';
 import { writeDistManifest } from '../dist.js';
 import { DEFAULT_IMPORTERS } from '../importers.js';
+import { createPackAuthoringContributions } from '../tools/contributions.js';
+import { runLibraryTool } from '../tools/execution.js';
 import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 async function fixture(): Promise<string> {
@@ -263,6 +265,69 @@ describe('asset commands', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('lists and verifies Pack and Meta declarations in the same project', async () => {
+    const root = await fixture();
+    expect((await assetAddCommand({ root, path: 'assets/hero.png' })).ok).toBe(true);
+    await writeFile(
+      resolve(root, 'assets', 'direct.pack.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        packageId: '01900000-0000-7000-8000-000000000080',
+        assets: { 'scene/main': { kind: 'scene', payload: {}, refs: [] } },
+      }),
+    );
+    const contributions = createPackAuthoringContributions(root);
+    const run = (id: string, input: Record<string, unknown>) => {
+      const contribution = contributions.find(({ descriptor }) => descriptor.id === id);
+      if (contribution === undefined) throw new Error(`Missing Pack contribution ${id}`);
+      return runLibraryTool(contribution, { root: resolve(root, 'missing'), ...input });
+    };
+    expect(await run('asset.list', { type: 'texture', limit: 1 })).toMatchObject({
+      outcome: 'succeeded',
+      result: { assets: [{ kind: 'texture' }], page: { limit: 1 } },
+    });
+    expect(await run('asset.inspect', { subject: 'image:texture' })).toMatchObject({
+      outcome: 'succeeded',
+      result: { kind: 'texture' },
+    });
+    expect(
+      await run('asset.resolve', {
+        packageId: '01900000-0000-7000-8000-000000000080',
+        sourceKey: 'scene/main',
+        require: 'identity',
+      }),
+    ).toMatchObject({ outcome: 'succeeded', result: { status: 'identity' } });
+    expect(await run('asset.verify', {})).toMatchObject({
+      outcome: 'succeeded',
+      result: { schemaVersion: 'asset-verification-v1' },
+    });
+    expect(await run('asset.list', { requestId: '' })).toMatchObject({
+      outcome: 'failed',
+      failure: { code: 'tool-invalid-args' },
+    });
+    expect(await assetListCommand({ root })).toMatchObject({
+      ok: true,
+      value: {
+        assets: [{ kind: 'scene' }, { kind: 'texture', name: 'image:texture' }],
+        page: { total: 2, sourceTotal: 1 },
+      },
+    });
+    expect(await assetInspectCommand({ root, subject: 'image:texture' })).toMatchObject({
+      ok: true,
+      value: { kind: 'texture' },
+    });
+    expect(await assetVerifyCommand({ root })).toMatchObject({
+      ok: true,
+      value: {
+        assets: [
+          { source: { format: 'pack.json' }, type: 'scene' },
+          { source: { format: 'meta.json' }, type: 'texture' },
+        ],
+        summary: { assetCount: 2, unproducedAssetCount: 2 },
+      },
+    });
   });
 
   it('routes v3 Pack queries through the Pack authoring operation envelope', async () => {

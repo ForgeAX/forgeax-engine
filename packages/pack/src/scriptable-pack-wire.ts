@@ -1,4 +1,10 @@
-import type { PackParameterList, ScriptablePackDefinition } from './pack-authoring.js';
+import { AssetGuid } from './guid.js';
+import type {
+  PackParameterDefinition,
+  PackParameterList,
+  PackParameterValue,
+  ScriptablePackDefinition,
+} from './pack-authoring.js';
 
 const definitionFields = [
   'schemaVersion',
@@ -44,4 +50,25 @@ export function projectFailure(value: object): StructuredFailure {
     detail: failure.detail,
     message: failure.message,
   };
+}
+
+export function projectPackParameters(parameters: readonly PackParameterDefinition[]) {
+  return parameters.map((parameter) => ({
+    name: parameter.name,
+    type: parameter.type,
+    default: jsonParameterValue(parameter.default),
+    ...(parameter.minimum === undefined ? {} : { minimum: parameter.minimum }),
+    ...(parameter.maximum === undefined ? {} : { maximum: parameter.maximum }),
+    ...(parameter.values === undefined ? {} : { values: parameter.values }),
+    ...(parameter.kind === undefined ? {} : { kind: parameter.kind }),
+    ...(parameter.apply === undefined ? {} : { apply: parameter.apply }),
+  }));
+}
+
+function jsonParameterValue(value: PackParameterValue): unknown {
+  return value instanceof Uint8Array
+    ? AssetGuid.format(value)
+    : Array.isArray(value)
+      ? [...value]
+      : value;
 }

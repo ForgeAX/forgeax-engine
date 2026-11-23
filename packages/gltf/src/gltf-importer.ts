@@ -11,6 +11,7 @@ import {
   type Submesh,
 } from '@forgeax/engine-types';
 import { groupMeshPrimitives } from './mesh-primitives';
+
 // gltf-importer.ts - the build-time gltfImporter (feat-20260603-asset-import-loader-injection M2 / w19,
 // extended in feat-20260608 M3 w14 with the texture pipeline: three image
 // source paths funnelled through the ImportContext decodeImage seam).
@@ -45,8 +46,8 @@ import { groupMeshPrimitives } from './mesh-primitives';
 // gap as `import-produced-no-assets`. A texture sub-asset that fails byte
 // extraction surfaces as `gltf-image-extract-failed` (D-6).
 
+import { packMeshBin } from '@forgeax/engine-geometry';
 import { deriveDefaultLodScreenCoverages } from '@forgeax/engine-import';
-import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import {
   AssetGuid as AssetGuidCodec,
   TEXTURE_CONTENT_SOURCE_KEY_PREFIX,

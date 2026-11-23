@@ -5,11 +5,16 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { err } from '@forgeax/engine-types';
 import ts from 'typescript';
 import { AssetGuid, PackageId } from './guid.js';
-import { type AnyScriptablePackDefinition, resolvePackParameterValues } from './pack-authoring.js';
+import {
+  type AnyScriptablePackDefinition,
+  type PackParameterValue,
+  resolvePackParameterValues,
+} from './pack-authoring.js';
 import { executePackBuild } from './pack-parameter-bindings.js';
 import { declarationPackageId, type ScanSourceDeclaration, scanInventory } from './scanner.js';
-import { loadScriptablePack } from './scriptable-pack-node.js';
+import { type LoadScriptablePackOptions, loadScriptablePack } from './scriptable-pack-node.js';
 import { relativeScriptableImportCandidates } from './scriptable-pack-relative-import.js';
+import { createScriptablePackSourceSnapshot } from './scriptable-pack-source-snapshot.js';
 
 export interface AuthorPackFile {
   readonly path: string;
@@ -62,43 +67,47 @@ export async function collectAuthorPackClosure(
   projectRoot: string,
   sourcePath: string,
   assetRoots: readonly string[],
+  options?: Pick<LoadScriptablePackOptions, 'packageBinding'>,
 ): Promise<AuthorPackClosure> {
   const root = await realpath(projectRoot);
   const entry = await realpath(resolve(root, sourcePath));
   if (!inside(root, entry) || !/\.pack\.(?:json|ts)$/.test(entry))
     invalid(sourcePath, 'expected a project-local Pack source');
-  const scanned = await scanInventory(assetRoots.map((directory) => resolve(root, directory)));
+  const snapshot = createScriptablePackSourceSnapshot();
+  const scanned = await scanInventory(
+    assetRoots.map((directory) => resolve(root, directory)),
+    {
+      scriptablePack: { ...options, sourceSnapshot: snapshot },
+    },
+  );
   if (!scanned.ok) throw scanned.error;
   const declarations = scanned.value.declarations;
   if (!declarations.has(entry))
     invalid(sourcePath, 'Pack source must be inside a configured asset directory');
-  const identityOwners = new Map<string, string>();
-  const identities = new Map<string, { packageId?: string; sourceKey?: string }>();
-  const outputs = new Map<string, unknown>();
-  const blocked = new Set<string>();
-  const outputOrigins = new Map<string, string>();
-  for (const row of scanned.value.inventory) {
-    identityOwners.set(row.guid.toLowerCase(), row.sourcePath);
-    const packageId = declarationPackageId(declarations.get(row.sourcePath));
-    identities.set(row.guid.toLowerCase(), {
+  type Identity = { packageId?: string; sourceKey?: string };
+  const owners = new Map<string, { path: string; identity?: Identity }>();
+  const outputs = new Map<string, { origin: string; data: unknown; blocked: boolean }>();
+  const declare = (guid: string, path: string, packageId?: string, sourceKey?: string) => {
+    const identity = {
       ...(packageId ? { packageId } : {}),
-      ...(row.sourceKey ? { sourceKey: row.sourceKey } : {}),
-    });
-  }
+      ...(sourceKey ? { sourceKey } : {}),
+    };
+    owners.set(guid.toLowerCase(), { path, identity });
+  };
+  for (const row of scanned.value.inventory)
+    declare(
+      row.guid,
+      row.sourcePath,
+      declarationPackageId(declarations.get(row.sourcePath)),
+      row.sourceKey,
+    );
   for (const declaration of declarations.values()) {
+    const { sourcePath } = declaration;
     const namespace = declarationPackageId(declaration);
-    if (namespace) identityOwners.set(namespace.toLowerCase(), declaration.sourcePath);
-    // scanInventory's rows describe direct Packs. External resources own their
-    // identities in Meta, before any importer or cooked catalog exists.
-    if (declaration.format === 'meta.json')
-      for (const asset of declaration.value.subAssets) {
-        const guid = asset.guid.toLowerCase();
-        identityOwners.set(guid, declaration.sourcePath);
-        identities.set(guid, {
-          ...(namespace ? { packageId: namespace } : {}),
-          ...(asset.sourceKey ? { sourceKey: asset.sourceKey } : {}),
-        });
-      }
+    if (namespace) {
+      const previous = owners.get(namespace.toLowerCase());
+      owners.set(namespace.toLowerCase(), { ...previous, path: sourcePath });
+    }
   }
   // Evaluate through the existing isolated Pack executor, never runtime plugin apply.
   // Output identity and computed reference edges must not depend on textual UUID guesses.
@@ -107,42 +116,43 @@ export async function collectAuthorPackClosure(
     origin: string,
     definition: AnyScriptablePackDefinition,
     packageId = definition.packageId,
-    overrides: Readonly<Record<string, unknown>> = {},
+    values: Readonly<Record<string, PackParameterValue>> | undefined = 'parameters' in definition
+      ? resolvePackParameterValues(definition, {}).unwrap()
+      : undefined,
   ): Promise<void> {
-    const reads: string[] = [];
-    const context = {
+    let blocked = false;
+    const result = await executePackBuild(definition, {
       packageId,
-      async readByGuid(guid: AssetGuid) {
-        reads.push(AssetGuid.format(guid));
-        blocked.add(path);
+      async readByGuid() {
+        blocked = true;
         return err({ code: 'author-transfer-read-blocked' });
       },
-    };
-    const result = await executePackBuild(definition, {
-      ...context,
-      ...('parameters' in definition
-        ? { values: resolvePackParameterValues(definition, overrides).unwrap() }
-        : {}),
+      ...(values === undefined ? {} : { values }),
     });
-    if (!result.ok && !reads.length) throw result.error;
-    outputs.set(path, result.ok ? result.value : reads);
-    outputOrigins.set(path, origin);
+    if (!result.ok && !blocked) throw result.error;
+    outputs.set(path, { origin, data: result.ok ? result.value : undefined, blocked });
     if (result.ok)
-      for (const key of Object.keys(result.value)) {
-        const guid = AssetGuid.format(AssetGuid.derive(packageId, key));
-        identityOwners.set(guid, path);
-        identities.set(guid, { packageId: PackageId.format(packageId), sourceKey: key });
-      }
+      for (const key of Object.keys(result.value))
+        declare(
+          AssetGuid.format(AssetGuid.derive(packageId, key)),
+          path,
+          PackageId.format(packageId),
+          key,
+        );
   }
   for (const declaration of declarations.values()) {
     if (declaration.format === 'pack.ts')
       await evaluate(declaration.sourcePath, declaration.sourcePath, declaration.definition);
   }
+  // Each isolated build consumes its executor. Instances reuse the captured
+  // module inputs and resolved values, and acquire their own executor.
   for (const [sourcePath, instance] of scanned.value.instances) {
     await evaluate(
       sourcePath,
       instance.root.sourcePath,
-      (await loadScriptablePack(instance.root.sourcePath)).unwrap(),
+      (
+        await loadScriptablePack(instance.root.sourcePath, { ...options, sourceSnapshot: snapshot })
+      ).unwrap(),
       instance.packageId,
       instance.values,
     );
@@ -209,11 +219,8 @@ export async function collectAuthorPackClosure(
     )
       invalid(path, 'source closure crosses a project/generated boundary');
     const bytes = await readFile(path);
-    files.set(path, {
-      path: relative(root, path).replaceAll('\\', '/'),
-      bytes,
-      digest: authorFileDigest(bytes),
-    });
+    const digest = authorFileDigest(bytes);
+    files.set(path, { path: relative(root, path).replaceAll('\\', '/'), bytes, digest });
     // UiAuthoringProfile requires a same-basename CSS companion even when
     // HTML has no link element. Its own URLs are traversed by the CSS rule.
     if (path.endsWith('.ui.html'))
@@ -230,21 +237,22 @@ export async function collectAuthorPackClosure(
       selected.set(path, declaration);
       if (declaration.format === 'pack.ts')
         pending.push(...declaration.sourceClosure.map((file) => file.path));
-      if (outputs.has(path)) {
-        if (blocked.has(path))
+      const output = outputs.get(path);
+      if (output !== undefined) {
+        if (output.blocked)
           invalid(
             path,
             'source closure requires cooked reads; make the transferable Pack source-discoverable',
           );
-        const origin = outputOrigins.get(path) ?? path;
+        const { origin, data } = output;
         if (origin !== path) pending.push(origin);
         async function refs(value: unknown, key = ''): Promise<void> {
           if (value instanceof Uint8Array && value.length === 16) {
-            const owner = identityOwners.get(AssetGuid.format(value as AssetGuid));
+            const owner = owners.get(AssetGuid.format(value as AssetGuid))?.path;
             if (owner) pending.push(owner);
           } else if (typeof value === 'string') {
             shaderEdge(value);
-            const owner = identityOwners.get(value.toLowerCase());
+            const owner = owners.get(value.toLowerCase())?.path;
             if (owner) pending.push(owner);
             else if (key === '$asset') invalid(path, `missing referenced asset ${value}`);
             if (['specifier', 'executor'].includes(key)) await edge(origin, value);
@@ -254,7 +262,7 @@ export async function collectAuthorPackClosure(
             for (const [key, item] of Object.entries(value)) await refs(item, key);
           }
         }
-        await refs(outputs.get(path));
+        await refs(data);
       }
       if (declaration.format === 'meta.json')
         pending.push(
@@ -276,8 +284,8 @@ export async function collectAuthorPackClosure(
     const edges: string[] = [];
     if (isCode) {
       const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-      for (const imported of ts.preProcessFile(source, true, true).importedFiles)
-        edges.push(imported.fileName);
+      edges.push(...(await snapshot.imports(path, { includeTypeOnly: true })));
+      if ((await snapshot.digest(path)) !== digest) invalid(path, 'source changed during transfer');
       function visit(node: ts.Node): void {
         if (ts.isStringLiteralLike(node)) strings.push(node.text);
         if (
@@ -310,7 +318,7 @@ export async function collectAuthorPackClosure(
       function visit(value: unknown, key = ''): void {
         if (typeof value === 'string') {
           strings.push(value);
-          if (key === '$asset' && !identityOwners.has(value.toLowerCase()))
+          if (key === '$asset' && !owners.has(value.toLowerCase()))
             invalid(path, `missing referenced asset ${value}`);
           if (['specifier', 'executor', 'uri'].includes(key) && !value.startsWith('data:'))
             edges.push(value.startsWith('.') || key !== 'uri' ? value : `./${value}`);
@@ -339,7 +347,7 @@ export async function collectAuthorPackClosure(
     }
     for (const text of strings) {
       shaderEdge(text);
-      const owner = identityOwners.get(text.toLowerCase());
+      const owner = owners.get(text.toLowerCase())?.path;
       if (owner) pending.push(owner);
     }
     for (const specifier of new Set(edges)) await edge(path, specifier);
@@ -351,7 +359,9 @@ export async function collectAuthorPackClosure(
     declarations: [...selected.values()],
     dependencies,
     identities: new Map(
-      [...identities].filter(([guid]) => selected.has(identityOwners.get(guid) ?? '')),
+      [...owners].flatMap(([guid, owner]) =>
+        owner.identity && selected.has(owner.path) ? [[guid, owner.identity] as const] : [],
+      ),
     ),
     manifestRevision: authorFileDigest(manifestBytes),
   };

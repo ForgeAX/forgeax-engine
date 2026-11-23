@@ -99,7 +99,7 @@ afterEach(() => vi.restoreAllMocks());
   // ─── Assertion (a): merged BGL is length 13 with Skylight bindings 7..12 ────
 
   describe('t40 round-4 (a) IBL injection shape', () => {
-    it('returns 13 entries; binding 0..6 preserved; 7..13 in D-5 order [irrTex, irrSampler, prefTex, prefSampler, brdfTex, brdfSampler, uniform]', () => {
+    it('returns 13 entries; binding 0..6 preserved; 7..13 in D-5 order [skySh, brdfSampler, prefTex, prefSampler, brdfTex, brdfSampler, uniform]', () => {
       const materialEntries = makeMaterialBglEntries();
       const merged = [...materialEntries, ...appendInjection(materialEntries, 'ibl')];
 
@@ -112,11 +112,9 @@ afterEach(() => vi.restoreAllMocks());
         expect(got?.binding).toBe(original?.binding);
       }
 
-      // binding 7: irradianceMap (texture_cube)
+      // binding 7: Sky SH (uniform)
       expect(merged[7]?.binding).toBe(7);
-      expect((merged[7] as { texture?: { viewDimension: string } }).texture?.viewDimension).toBe(
-        'cube',
-      );
+      expect(merged[7]?.buffer).toMatchObject({ type: 'uniform', minBindingSize: 112 });
       // binding 8: irradianceSampler
       expect(merged[8]?.binding).toBe(8);
       expect((merged[8] as { sampler?: { type: string } }).sampler?.type).toBe('filtering');
@@ -151,6 +149,7 @@ afterEach(() => vi.restoreAllMocks());
       );
       expect(fallback.irradianceTexture).not.toBeUndefined();
       expect(fallback.irradianceView).not.toBeUndefined();
+      expect(fallback.skySh).not.toBeUndefined();
       expect(fallback.prefilterTexture).not.toBeUndefined();
       expect(fallback.prefilterView).not.toBeUndefined();
       expect(fallback.brdfLutTexture).not.toBeUndefined();
@@ -166,7 +165,7 @@ afterEach(() => vi.restoreAllMocks());
   // ─── Assertion (c): white irradiance cube / 2D prefilter + BRDF fallback data ───
 
   describe('t40 round-4 (c) fallback geometry + white-environment data', () => {
-    it('irradiance is a white cube, prefilter is white 2D, and BRDF preserves the DFG sampling axes', () => {
+    it('background is a white cube, prefilter is white 2D, and BRDF preserves the DFG sampling axes', () => {
       const device = makeMockDevice();
       const queue = makeMockQueue();
       createSkylightFallback(
@@ -245,7 +244,7 @@ afterEach(() => vi.restoreAllMocks());
   describe('t40 round-4 (d) assembleMaterialWithSkylightEntries shape', () => {
     it('returns 16 BindGroupEntry values; entry 7..13 reference the skylight resources', () => {
       const materialEntries = makeMaterialBindGroupEntries();
-      const irrView = { __brand: 'TextureView', id: 1 } as unknown as TextureView;
+      const skySh = { __brand: 'Buffer', id: 1 } as unknown as Buffer;
       const irrSampler = { __brand: 'Sampler', id: 1 } as unknown as Sampler;
       const prefView = { __brand: 'TextureView', id: 2 } as unknown as TextureView;
       const prefSampler = { __brand: 'Sampler', id: 2 } as unknown as Sampler;
@@ -253,7 +252,7 @@ afterEach(() => vi.restoreAllMocks());
       const intensityBuf = { __brand: 'Buffer' } as unknown as Buffer;
 
       const merged = assembleMaterialWithSkylightEntries(materialEntries, {
-        irradianceView: irrView,
+        skySh,
         irradianceSampler: irrSampler,
         prefilterView: prefView,
         prefilterSampler: prefSampler,
@@ -261,15 +260,11 @@ afterEach(() => vi.restoreAllMocks());
         intensityBuffer: intensityBuf,
       });
 
-      expect(merged).toHaveLength(16);
-      expect(merged[15]).toMatchObject({
-        binding: 47,
-        resource: { kind: 'textureView', value: prefView },
-      });
+      expect(merged).toHaveLength(15);
 
       // Skylight entries at binding 7..12 in D-5 order
       expect(merged[7]?.binding).toBe(7);
-      expect(merged[7]?.resource).toEqual({ kind: 'textureView', value: irrView });
+      expect(merged[7]?.resource).toEqual({ kind: 'buffer', value: { buffer: skySh, size: 112 } });
       expect(merged[8]?.binding).toBe(8);
       expect(merged[8]?.resource).toEqual({ kind: 'sampler', value: irrSampler });
       expect(merged[9]?.binding).toBe(9);
@@ -292,20 +287,16 @@ afterEach(() => vi.restoreAllMocks());
       // Per-shader-derived BGL (feat-20260621): the user-region length is no
       // longer fixed at 7. assembleMaterialWithSkylightEntries injects the 6
       // skylight entries starting at materialEntries.length. Empty user-region
-      // => IBL lands at binding 0..6 (no throw); the old fixed-7 guard is gone.
+      // => IBL lands at binding 0..5 (no throw); the old fixed-7 guard is gone.
       const merged = assembleMaterialWithSkylightEntries([], {
-        irradianceView: {} as TextureView,
+        skySh: {} as Buffer,
         irradianceSampler: {} as Sampler,
         prefilterView: {} as TextureView,
         prefilterSampler: {} as Sampler,
         brdfLutView: {} as TextureView,
         intensityBuffer: {} as Buffer,
       });
-      expect(merged).toHaveLength(9);
-      expect(merged[0]?.binding).toBe(0);
-      expect(merged[6]?.binding).toBe(6);
-      expect(merged[7]?.binding).toBe(7);
-      expect(merged[8]?.binding).toBe(47);
+      expect(merged.map(({ binding }) => binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     });
   });
 }

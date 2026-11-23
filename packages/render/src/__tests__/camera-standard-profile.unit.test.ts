@@ -10,18 +10,13 @@ import { MaterialFrame } from '../scene/material-dispatch';
 const lane = { storageBuffer: true, maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 72 };
 const ao = {
   enabled: true,
-  application: 0,
-  sceneColorStrength: 0.95,
-  sampleCount: 0,
   radius: 0.8,
-  bias: 0.03,
-  intensity: 1.4,
-  directLightingStrength: 0.6,
-  quality: 2,
-  thickness: 1,
-  distanceExponent: 1,
-  distanceFallOff: 1,
-  resolutionScale: 1,
+  bias: 3,
+  intensity: 0.7,
+  power: 2,
+  fadeDistance: 80,
+  fadeRadius: 50,
+  quality: 50,
 };
 const base = Object.freeze({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' as const });
 const config = Object.freeze({
@@ -34,38 +29,42 @@ const derive = (camera: Parameters<typeof deriveCameraStandardConfiguration>[2])
   return result.value;
 };
 
-it('registers zero direct AO as the schema default', () => {
-  expect(AmbientOcclusion.fields.directLightingStrength.default).toBe(0);
+it('leaves omitted camera parameters inherited', () => {
+  expect(AmbientOcclusion.fields.intensity.default).toBe(-1);
 });
 
 describe('selected-view Standard projection', () => {
-  it('selects Deferred for actual SLW bindings with no SSR or TAA request', () => {
+  it.each(['forward', 'deferred'] as const)('keeps %s when SLW is selected', (renderPath) => {
     const water = new MaterialResource({
       ...defaultMaterialSnapshot(),
       surfaceModel: 'single-layer-water',
     });
     const materials = new MaterialFrame(undefined).with(water);
-    const selected = deriveCameraStandardConfiguration(base, config, {}, lane, materials.hasWater);
-    expect(selected).toMatchObject({ ok: true, value: { profile: { renderPath: 'deferred' } } });
-    expect(base.renderPath).toBe('forward');
-  });
-  it('restores the author profile after the last SLW binding or candidate retires', () => {
-    const water = new MaterialResource({
-      ...defaultMaterialSnapshot(),
-      surfaceModel: 'single-layer-water',
-    });
-    const materials = new MaterialFrame(undefined).with(water);
-    const candidate = deriveCameraStandardConfiguration(base, config, {}, lane, materials.hasWater);
-    expect(candidate).toMatchObject({ ok: true, value: { profile: { renderPath: 'deferred' } } });
-    const removed = deriveCameraStandardConfiguration(
-      base,
+    const profile = { ...base, renderPath };
+    const selected = deriveCameraStandardConfiguration(
+      profile,
       config,
       {},
       lane,
-      materials.without(water).hasWater,
+      materials.hasWater,
     );
-    expect(removed).toMatchObject({ ok: true, value: { profile: base, config } });
-    if (removed.ok) expect(removed.value.profile).toBe(base);
+    expect(selected.unwrap().profile).toBe(profile);
+    expect(base.renderPath).toBe('forward');
+  });
+  it('keeps explicitly selected Forward with SLW and ordinary camera SSR', () => {
+    const water = new MaterialResource({
+      ...defaultMaterialSnapshot(),
+      surfaceModel: 'single-layer-water',
+    });
+    const materials = new MaterialFrame(undefined).with(water);
+    const selected = deriveCameraStandardConfiguration(
+      base,
+      config,
+      { screenSpaceReflection: {} },
+      lane,
+      materials.hasWater,
+    );
+    expect(selected.unwrap().profile).toBe(base);
   });
   it('does not infer SLW from zero bindings or a Standard WaterMesh material', () => {
     for (const [surfaceModel, bindings] of [
@@ -104,7 +103,7 @@ describe('selected-view Standard projection', () => {
       },
     });
   });
-  it('keeps Forward Water MSAA on the real Forward producer with SSR', () => {
+  it('keeps Forward Water MSAA on the real Forward producer with an ordinary SSR request', () => {
     for (const antialias of ['msaa', 'msaa-fxaa'] as const) {
       for (const screenSpaceReflection of [undefined, {}]) {
         const selected = deriveCameraStandardConfiguration(
@@ -122,19 +121,27 @@ describe('selected-view Standard projection', () => {
     expect(derive(undefined).profile).toBe(base);
     expect(derive(undefined).config).toBe(config);
   });
-  it('preserves an explicit spiral budget across camera configuration projection', () => {
+  it('preserves project GTAO limits when the camera overrides intensity', () => {
     expect(
       deriveCameraStandardConfiguration(
         base,
-        { ambientOcclusion: { enabled: false, method: 'spiral-ssao' } },
-        { ambientOcclusion: { ...ao, sampleCount: 16, resolutionScale: 0.5 } },
+        {
+          ambientOcclusion: {
+            enabled: false,
+            method: 'gtao',
+            levels: 2,
+            gtao: { downsample: true },
+          },
+        },
+        { ambientOcclusion: { ...ao, quality: -1, intensity: 0 } },
         lane,
       ).unwrap().config?.ambientOcclusion,
     ).toMatchObject({
       enabled: true,
-      method: 'spiral-ssao',
-      sampleCount: 16,
-      resolutionScale: 0.5,
+      method: 'gtao',
+      levels: 2,
+      gtao: { downsample: true },
+      intensity: 0,
     });
   });
   it('projects camera AO over install-time AO without changing other configuration', () => {
@@ -146,8 +153,8 @@ describe('selected-view Standard projection', () => {
           enabled: true,
           method: 'gtao',
           radius: 0.8,
-          directLightingStrength: 0.6,
-          quality: 'high',
+          intensity: 0.7,
+          quality: 50,
         },
       },
     });
@@ -199,12 +206,12 @@ describe('selected-view Standard projection', () => {
       deriveCameraStandardConfiguration(
         base,
         config,
-        { ambientOcclusion: { ...ao, directLightingStrength: NaN } },
+        { ambientOcclusion: { ...ao, power: NaN } },
         lane,
       ),
     ).toMatchObject({
       ok: false,
-      error: { code: 'ssao-parameter-invalid', detail: { paramName: 'directLightingStrength' } },
+      error: { code: 'ssao-parameter-invalid', detail: { paramName: 'power' } },
     });
   });
 });

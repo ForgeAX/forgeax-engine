@@ -44,6 +44,8 @@ const GATE_PROVED_ROWS = new Set([
   'Shared tier',
   'One-credit Worker frame pacing',
   'Explicit Worker World rebuild',
+  'Level streaming',
+  'World streaming',
   'Realm bootstrap',
   'Static plugin programs',
   // Native Host/Worker and producer-served Range fixtures; see README gate routes.

@@ -28,7 +28,7 @@ const SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;
 // This is the existing Standard View UBO, not a second camera state source.
 // The shader only consumes world/inverse projection and the validated SSR
 // parameter tail published by the record stage.
-#import forgeax_view::common::View
+#import forgeax_view::common::{View, screenSpaceReflectionRoughnessFade, ssrSceneColorLod, sampleSsrSceneColor, sampleSsrSceneColorLevel}
 @group(0) @binding(5) var<uniform> view : View;
 // RGB belongs to lighting; alpha is its exact Standard material coverage.
 @group(0) @binding(6) var reflectionFallback : texture_2d<f32>;
@@ -529,44 +529,64 @@ fn ssrHitTapAdmitted(pixel : vec2<i32>, rayDirection : vec3<f32>) -> bool {
   return textureLoad(reflectionFallback, pixel, 0).a > 0.5 && dot(normal, -rayDirection) > 0.0;
 }
 
+#if PORTABLE_FRAGMENT
+override SSR_SCENE_COLOR_MIP_COUNT : u32 = 1u;
+#endif
+
+fn ssrSceneColorMipCount() -> u32 {
+#if PORTABLE_FRAGMENT
+  return SSR_SCENE_COLOR_MIP_COUNT;
+#else
+  return textureNumLevels(sceneColor);
+#endif
+}
+
 struct SsrHitSample {
-  color : vec4<f32>,
+  color : vec3<f32>,
+  coverage : f32,
   reactivity : f32,
 };
 
-fn sampleSsrHitSample(uv : vec2<f32>, rayDirection : vec3<f32>) -> SsrHitSample {
-  // Like Three's colorNode.sample(hitUv), retain the refined subpixel hit.
-  // Explicit bilinear loads preserve the existing sampler-free compute ABI.
-  // Color and source reactivity use the same four admitted texels, so keep one
-  // footprint walk instead of reloading normal/coverage for a second
-  // independent reactivity pass. Preserve the old zero-weight guard for the
-  // reactivity max; a zero-weight moving neighbor must not invalidate history.
-  // Roughness filtering still belongs to the reflection-only mip pyramid.
-  let size = vec2<i32>(textureDimensions(sceneColor, 0));
+fn sampleSsrHit(uv : vec2<f32>, rayDirection : vec3<f32>, lod : f32) -> SsrHitSample {
+  // Admit source coverage and motion in full-resolution geometry coordinates.
+  let size = vec2<i32>(textureDimensions(sceneNormal, 0));
   let position = uv * vec2<f32>(size) - vec2<f32>(0.5);
   let first = vec2<i32>(floor(position));
   let fraction = fract(position);
   let last = size - vec2<i32>(1);
-  var sum = vec4<f32>(0.0);
+  let weights = vec4<f32>(
+    (1.0 - fraction.x) * (1.0 - fraction.y), fraction.x * (1.0 - fraction.y),
+    (1.0 - fraction.x) * fraction.y, fraction.x * fraction.y
+  );
+  var coverage = 0.0;
   var reactivity = 0.0;
-  for (var y = 0; y < 2; y++) {
-    for (var x = 0; x < 2; x++) {
-      let pixel = clamp(first + vec2<i32>(x, y), vec2<i32>(0), last);
-      // Match the trace's Standard source-coverage admission for every tap.
-      // Sky/background color is not hit radiance. Preserve its missing area
-      // as confidence so composition supplies the receiver's own fallback.
-      if (!ssrHitTapAdmitted(pixel, rayDirection)) {
-        continue;
-      }
-      let weight = select(1.0 - fraction.x, fraction.x, x == 1) * select(1.0 - fraction.y, fraction.y, y == 1);
-      let color = textureLoad(sceneColor, pixel, 0).rgb;
-      sum += vec4<f32>(color * weight, weight);
-      if (weight > 0.0) {
-        reactivity = max(reactivity, ssrSourceReactivity(pixel));
-      }
+  var admitted = 0u;
+  for (var tap = 0u; tap < 4u; tap++) {
+    let pixel = clamp(first + vec2<i32>(i32(tap % 2u), i32(tap / 2u)), vec2<i32>(0), last);
+    if (weights[tap] > 0.0 && ssrHitTapAdmitted(pixel, rayDirection)) {
+      coverage += weights[tap];
+      reactivity = max(reactivity, ssrSourceReactivity(pixel));
+      admitted |= 1u << tap;
     }
   }
-  return SsrHitSample(vec4<f32>(sum.rgb / max(sum.a, 1e-6), sum.a), reactivity);
+  if (coverage <= 0.0) { return SsrHitSample(vec3<f32>(0.0), 0.0, reactivity); }
+  if (coverage > 0.999) {
+    return SsrHitSample(sampleSsrSceneColor(sceneColor, uv, lod), coverage, reactivity);
+  }
+  // At silhouettes, only gather half-resolution level-zero texels that
+  // correspond to admitted full-resolution taps. Preserve missing area for
+  // the receiver's fallback and avoid adding coarse roughness blur there.
+  let colorSize = vec2<i32>(textureDimensions(sceneColor, 0));
+  var color = vec3<f32>(0.0);
+  for (var tap = 0u; tap < 4u; tap++) {
+    if ((admitted & (1u << tap)) != 0u) {
+      let pixel = clamp(first + vec2<i32>(i32(tap % 2u), i32(tap / 2u)), vec2<i32>(0), last);
+      let tapUv = (vec2<f32>(pixel) + 0.5) / vec2<f32>(size);
+      let colorPixel = min(vec2<i32>(tapUv * vec2<f32>(colorSize)), colorSize - 1);
+      color += textureLoad(sceneColor, colorPixel, 0).rgb * weights[tap];
+    }
+  }
+  return SsrHitSample(color / coverage, coverage, reactivity);
 }
 
 #if !PORTABLE_FRAGMENT
@@ -575,26 +595,9 @@ fn waterScreenVignette(uv: vec2<f32>) -> f32 {
   return clamp(1.0 - dot(edge, edge), 0.0, 1.0);
 }
 
-fn waterReflectionRoughnessFade(roughness: f32, maximumRoughness: f32) -> f32 {
-  return clamp(2.0 - 2.0 * waterParams.traceParams.z * roughness / clamp(maximumRoughness, 0.01, 1.0), 0.0, 1.0);
-}
-
 fn waterReflectionWeight(hitUv: vec2<f32>, colorUv: vec2<f32>, roughness: f32, maximumRoughness: f32) -> f32 {
-  return waterReflectionRoughnessFade(roughness, maximumRoughness) * waterParams.hitColorParams.z *
+  return screenSpaceReflectionRoughnessFade(roughness, maximumRoughness) * waterParams.hitColorParams.z *
     min(waterScreenVignette(hitUv), waterScreenVignette(colorUv));
-}
-
-fn sampleWaterHitColor(image: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> {
-  let size = vec2<i32>(textureDimensions(image));
-  let coordinate = uv * vec2<f32>(size) - vec2<f32>(0.5);
-  let first = vec2<i32>(floor(coordinate));
-  let fraction = fract(coordinate);
-  let last = size - vec2<i32>(1);
-  let top = mix(textureLoad(image, clamp(first, vec2<i32>(0), last), 0).rgb,
-    textureLoad(image, clamp(first + vec2<i32>(1, 0), vec2<i32>(0), last), 0).rgb, fraction.x);
-  let bottom = mix(textureLoad(image, clamp(first + vec2<i32>(0, 1), vec2<i32>(0), last), 0).rgb,
-    textureLoad(image, clamp(first + vec2<i32>(1, 1), vec2<i32>(0), last), 0).rgb, fraction.x);
-  return mix(top, bottom, fraction.y);
 }
 
 struct WaterSsrReceiver {
@@ -710,6 +713,7 @@ fn traceWaterProjectedRay(start: vec3<f32>, step: vec3<f32>, numSteps: u32,
 }
 
 fn waterTraceNoise(pixel: vec2<i32>) -> f32 {
+  if (waterParams.hitColorParams.w < 0.0) { return 0.0; }
   let frame = f32(u32(waterParams.hitColorParams.w) % 8u);
   let position = vec2<f32>(pixel) + vec2<f32>(0.5) + frame * vec2<f32>(47.0, 17.0) * 0.695;
   return fract(52.9829189 * fract(dot(position, vec2<f32>(0.06711056, 0.00583715)))) - 0.5;
@@ -795,13 +799,14 @@ fn waterHitPreviousScreen(hit: WaterSsrHit) -> vec2<f32> {
 fn waterHitHistoryColor(screenUv: vec2<f32>) -> vec3<f32> {
   let uv = clamp(screenUv * waterParams.hitColorUvScaleBias.xy + waterParams.hitColorUvScaleBias.zw,
     waterParams.hitColorUvClamp.xy, waterParams.hitColorUvClamp.zw);
-  return sampleWaterHitColor(waterSceneColorHistory, uv) * waterParams.hitColorParams.y;
+  return sampleSsrSceneColorLevel(waterSceneColorHistory, uv, 0u) * waterParams.hitColorParams.y;
 }
 
 fn waterCurrentReflection(hit: WaterSsrHit, roughness: f32) -> vec4<f32> {
   if (!hit.found) { return vec4<f32>(0.0); }
   let weight = waterReflectionWeight(hit.uv, hit.uv, roughness, view.ssrParams.z);
-  let color = sampleWaterHitColor(sceneColor, hit.uv);
+  let lod = ssrSceneColorLod(roughness, view.ssrParams.z, ssrSceneColorMipCount());
+  let color = sampleSsrSceneColor(sceneColor, hit.uv, lod);
   if (!all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b))) || !isFinite(weight)) {
     return vec4<f32>(0.0);
   }
@@ -821,26 +826,26 @@ fn waterHistoryReflection(hit: WaterSsrHit, roughness: f32) -> vec4<f32> {
 }
 
 fn storeWaterCurrentReflection(globalId: vec3<u32>) {
-  let size = textureDimensions(sceneColor);
+  let size = textureDimensions(waterOriginDepth);
   if (any(globalId.xy >= size)) { return; }
   let pixel = vec2<i32>(globalId.xy);
   textureStore(hitReactivityOutput, pixel, vec4<f32>(0.0));
   var reflection = vec4<f32>(0.0);
   let receiver = waterSsrReceiver(pixel, size);
-  if (receiver.valid && waterReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
+  if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
     reflection = waterCurrentReflection(traceWaterWorldRay(receiver, pixel), receiver.roughness);
   }
   textureStore(traceOutput, pixel, reflection);
 }
 
 fn storeWaterHistoryReflection(globalId: vec3<u32>) {
-  let size = textureDimensions(sceneColor);
+  let size = textureDimensions(waterOriginDepth);
   if (any(globalId.xy >= size)) { return; }
   let pixel = vec2<i32>(globalId.xy);
   textureStore(hitReactivityOutput, pixel, vec4<f32>(0.0));
   var reflection = vec4<f32>(0.0);
   let receiver = waterSsrReceiver(pixel, size);
-  if (receiver.valid && waterReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
+  if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
     reflection = waterHistoryReflection(traceWaterWorldRay(receiver, pixel), receiver.roughness);
   }
   textureStore(traceOutput, pixel, reflection);
@@ -864,7 +869,7 @@ fn ssrLuminanceWeight(rgb : vec3<f32>) -> vec3<f32> {
 
 fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : bool) -> SsrTraceOutput {
   var output = SsrTraceOutput(vec4<f32>(0.0), 0.0);
-  let fullSize = textureDimensions(sceneColor, 0);
+  let fullSize = textureDimensions(sceneDepth, 0);
   let traceScale = select(1.0, view.ssrQuality.x, view.ssrQuality.x > 0.0);
   let traceSize = max(vec2<u32>(vec2<f32>(fullSize) * traceScale), vec2<u32>(1u));
   if (globalId.x >= traceSize.x || globalId.y >= traceSize.y) {
@@ -903,7 +908,7 @@ fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : b
   let enabled = select(0.0, 1.0, isFinite(view.ssrParams.w) && view.ssrParams.w > 0.5);
   let maxDistance = enabled * view.ssrParams.x;
   let thickness = enabled * view.ssrParams.y;
-  let roughnessLimit = enabled * clamp(view.ssrParams.z, 0.0, 1.0);
+  let roughness = screenSpaceReflectionRoughnessFade(normalData.a, view.ssrParams.z);
   let worldPosition = reconstructWorldPosition(uv, depth);
   let viewDirectionRaw = view.cameraPos - worldPosition;
   let viewDirectionLength = length(viewDirectionRaw);
@@ -927,14 +932,6 @@ fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : b
   );
   let edge = traceEdge(hitResult.uv);
   output.reactivity = hitResult.reactivity;
-  let roughness = finiteConfidence(
-    select(
-      0.0,
-      // UE GetRoughnessFade: full SSR up to half the limit, linear to zero at it.
-      min(2.0 - 2.0 * clamp(normalData.a, 0.0, 1.0) / max(roughnessLimit, 1e-5), 1.0),
-      roughnessLimit > 0.0,
-    ),
-  );
   let temporal = 1.0;
   let confidence = traceConfidence(
     hitResult.hit,
@@ -947,20 +944,17 @@ fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : b
     output.color = vec4<f32>(0.0);
     return output;
   }
-  let hitSample = sampleSsrHitSample(hitResult.uv, reflectionDirection);
-  let hitColor = hitSample.color;
-  if (!all(vec3<bool>(isFinite(hitColor.r), isFinite(hitColor.g), isFinite(hitColor.b)))) {
-    output.color = vec4<f32>(0.0);
+  let lod = ssrSceneColorLod(normalData.a, view.ssrParams.z, ssrSceneColorMipCount());
+  let hitSample = sampleSsrHit(hitResult.uv, reflectionDirection, lod);
+  let color = hitSample.color;
+  if (!all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b)))) {
     return output;
   }
   // Unreal SSRTReflections.usf: each reflection ray's hit color is weighted by
   // 1 / (1 + luminance) before any averaging, and ScreenSpaceReflections
   // composition inverts it after the filter. Every SSR filter after this
-  // point (temporal history, neighborhood clamp, roughness pyramid,
-  // trilinear fetch) averages in this space, so a lone HDR texel (specular
-  // highlight, emissive) cannot dominate its neighborhood as a firefly while
-  // a uniform bright surface round-trips exactly.
-  output.color = vec4<f32>(ssrLuminanceWeight(hitColor.rgb), confidence * hitColor.a);
+  // point decodes the weighted radiance; confidence remains its own lane.
+  output.color = vec4<f32>(ssrLuminanceWeight(color), confidence * hitSample.coverage);
   output.reactivity = max(hitResult.reactivity, hitSample.reactivity);
   return output;
 }

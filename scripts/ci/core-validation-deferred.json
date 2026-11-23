@@ -144,6 +144,11 @@
     "reason": "Tutorial startup duplicates the maintained core Dawn smoke and Browser renderer owners."
   },
   {
+    "file": "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/cube-camera.browser.test.ts",
+    "retained": "apps/hello/ssr/src/__tests__/cube-camera.browser.test.ts",
+    "reason": "The tutorial duplicates the hello SSR six-face orientation test verbatim. Daily Browser keeps that oracle, and full validation runs both copies."
+  },
+  {
     "file": "packages/runtime/src/__tests__/barrel-distortion-output.dawn.test.ts",
     "reason": "Daily Browser retains the corresponding real GPU owner; full validation adds native Dawn.",
     "retained": "packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts"
@@ -269,10 +274,6 @@
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
   },
   {
-    "file": "packages/three/src/__tests__/variance-shadow.browser.test.ts",
-    "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
-  },
-  {
     "file": "packages/three/src/__tests__/material-output-0.browser.test.ts",
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
   },
@@ -291,6 +292,11 @@
   {
     "file": "packages/three/src/__tests__/environment-response.browser.test.ts",
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
+  },
+  {
+    "file": "packages/three/src/__tests__/node-inputs.browser.test.ts",
+    "reason": "Expanded r187 pixel comparison. Daily Browser retains bound and material references, node instance inputs and node family pixels. The Dawn suites cover the same input fixtures.",
+    "retained": "packages/three/src/__tests__/bound-reference-inputs.browser.test.ts"
   },
   {
     "file": "packages/three/src/__tests__/transmission-output.browser.test.ts",
@@ -477,6 +483,11 @@
     "reason": "Expanded full-car transformation and contact sweeps exercise example-specific mechanisms; core rig/joint/path operators and nominal S6 remain daily."
   },
   {
+    "file": "packages/modeling/examples/maid-whale/__tests__/g6-faceting.unit.test.ts",
+    "retained": "packages/modeling/src/__tests__/mesh-quality.unit.test.ts",
+    "reason": "The authored full-assembly faceting plan and obsolete-recipe falsifier are example validation. Engine core keeps the instrumented mesh-quality operator and the nominal S6 assembly."
+  },
+  {
     "file": "packages/devkit/src/__tests__/new-project-workers.e2e.test.ts",
     "reason": "Complete real-browser acceptance runs uninstrumented in the existing primary-pnpm worker. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
   },
@@ -486,7 +497,7 @@
   },
   {
     "file": "packages/devkit/src/__tests__/live-dev-look.e2e.test.ts",
-    "reason": "Complete real-browser acceptance runs uninstrumented in the existing primary-pnpm worker. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
+    "reason": "Complete private and session Play and Look acceptance runs together in the existing primary-pnpm worker. The independent Scene and other DevKit source suites retain V8 coverage."
   },
   {
     "file": "packages/devkit/src/__tests__/project-play.e2e.test.ts",

@@ -37,6 +37,7 @@ export function withInertTemporal<T extends object>(
   return Object.defineProperty(recorder, 'owner', {
     value: {
       internals,
+      postProcess: { params: { beginRecording: () => {}, finishRecording: () => {} } },
       skin: {
         beginRecording: () => undefined,
         trackSubmittedWork: () => undefined,

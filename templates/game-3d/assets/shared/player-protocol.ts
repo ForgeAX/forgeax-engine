@@ -2,6 +2,7 @@ import type { EntityHandle } from '@forgeax/engine/ecs';
 
 /** Port channels between the player plugin (World) and the guide UI (presentation). */
 export const PLAYER_CONTROL_CHANNEL = 'game-3d/player-controls';
+export const CHECKPOINT_CHANNEL = 'game-3d/checkpoint';
 export const PLAYER_STATE_CHANNEL = 'game-3d/player-state';
 
 /** Engine -> UI snapshot: what the HUD shows about the player. */

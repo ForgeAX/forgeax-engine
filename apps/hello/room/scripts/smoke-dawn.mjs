@@ -155,7 +155,7 @@ const { scenePlugin } = await import('@forgeax/engine-scene');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
 const ROOM_PACK_PATH = resolve(here, '..', 'assets', 'room.pack.json');
-const ROOM_SCENE_GUID = '019e2808-d3ba-735f-811f-ae7bbb465392';
+const ROOM_SCENE_GUID = '6498c168-6c36-55ae-aa5a-9ed01836ff62';
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/octet-stream;base64,${readFileSyncFs(MANIFEST_PATH).toString('base64')}`;

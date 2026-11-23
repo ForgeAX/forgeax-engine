@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const shaderFiles = [
   'standard-surface.wgsl',
-  'default-standard-pbr-skin.wgsl',
+  'material/standard-physical-inputs.wgsl',
   'unlit.wgsl',
   'sprite.wgsl',
   'sprite-lit.wgsl',
@@ -49,17 +49,12 @@ describe('built-in texture coordinate records', () => {
   it('keeps custom coordinate metadata distinct from texture resources', () => {
     for (const file of shaderFiles) {
       const text = source(file);
-      if (file === 'default-standard-pbr-skin.wgsl') {
-        // Standard templates are parameter-agnostic inputs. The compiler
-        // lowers the generated coordinate metadata together with the selected
-        // Surface, so the skinned template only needs to expose that seam.
-        expect(text, `${file} must delegate material facts to Surface`).toContain(
-          'evaluate_surface',
-        );
+      expect(text, `${file} must name coordinate metadata`).toMatch(/CoordinatesMetadata/);
+      if (file === 'material/standard-physical-inputs.wgsl') {
+        expect(text, `${file} must use generated resources`).not.toMatch(/@binding/);
       } else {
-        expect(text, `${file} must name coordinate metadata`).toMatch(/CoordinatesMetadata/);
+        expect(text, `${file} must preserve texture resources`).toMatch(/texture_2d|texture_cube/);
       }
-      expect(text, `${file} must preserve texture resources`).toMatch(/texture_2d|texture_cube/);
     }
   });
 });

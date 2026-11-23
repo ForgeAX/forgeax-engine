@@ -4,7 +4,7 @@ import { GlyphText } from '@forgeax/engine-render/authoring';
 import type { AssetHandle } from '@forgeax/engine-types';
 
 // Font source identity; its Pack closure includes atlas and sampler.
-export const FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
+export const FONT_GUID = '0172daac-227f-5a3b-b6ae-313f9fd52081';
 /**
  * The four world-space text scenes (data-driven so demo + smoke share one SSOT).
  * Each row maps to a requirements AC:

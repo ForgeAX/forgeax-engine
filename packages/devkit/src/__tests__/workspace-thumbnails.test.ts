@@ -4,8 +4,11 @@ import { resolve } from 'node:path';
 import type { EngineWorkspaceRuntime } from '@forgeax/engine-app';
 import type { CatalogEntry } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createThumbnailCache, thumbnailKey } from '../workspace-thumbnail-cache.js';
-import { createWorkspaceThumbnails } from '../workspace-thumbnails.js';
+import {
+  createThumbnailCache,
+  createWorkspaceThumbnails,
+  thumbnailKey,
+} from '../workspace-thumbnails.js';
 
 const png =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAABK0lEQVR4nO3SoQEAMBCEsNt/6e8YFUTEI9htR9d+B2AADIABMAAGwAAYAANgAAyAATAABsAAGAADYAAMgAEwAAbAABgAA2AADIABMAAGwAAYAANgAAyAATAABsAAGAADYAAMgAHiDBBngDgDxBkgzgBxBogzQJwB4gwQZ4A4A8QZIM4AcQaIM0CcAeIMEGeAOAPEGSDOAHEGiDNAnAHiDBBngDgDxBkgzgBxBogzQJwB4gwQZ4A4A8QZIM4AcQaIM0CcAeIMEGeAOAPEGSDOAHEGiDNAnAHiDBBngDgDxBkgzgBxBogzQJwB4gwQZ4A4A8QZIM4AcQaIM0CcAeIMEGeAOAPEGSDOAHEGiDNAnAHiDBBngDgDxBkgzgBxBogzQJwB4gwQZ4A4A8Q9VtGHcj7WUZsAAAAASUVORK5CYII=';

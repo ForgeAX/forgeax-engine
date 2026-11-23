@@ -26,7 +26,6 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 // SceneAsset GUID must return an error and the smoke must exit non-zero.
 //   FALSIFY=wrong-guid pnpm -F @forgeax/app-learn-render-3-model-loading-1-model-loading smoke
 
-import { readCatalogRows } from '@forgeax/engine-types';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -125,10 +124,10 @@ const mockCanvas = {
 // 3a. Read pack-index, build URL maps.
 const PACK_INDEX_PATH = resolve(DIST_DIR, 'pack-index.json');
 let packIndexWire;
-let packIndexJson;
+let packIndexRows;
 try {
   packIndexWire = JSON.parse(readFileSync(PACK_INDEX_PATH, 'utf8'));
-  packIndexJson = decodeCatalogWire(packIndexWire).unwrap();
+  packIndexRows = decodeCatalogWire(packIndexWire).unwrap();
 } catch (err) {
   console.error(`[smoke] FAIL - cannot read pack-index at ${PACK_INDEX_PATH}: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -137,8 +136,6 @@ try {
 // Build: URL -> disk path. Artifact URLs are registered from the pack
 // descriptor when that pack is fetched; the smoke therefore exercises the
 // same package-relative resolution contract as the runtime.
-const packIndexRows = readCatalogRows(packIndexJson);
-if (packIndexRows === undefined) throw new Error('Invalid published Catalog');
 const urlToPath = new Map();
 for (const entry of packIndexRows) {
   if (!urlToPath.has(entry.packageUrl)) {

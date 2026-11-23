@@ -56,6 +56,7 @@ export const SCREEN_PROBE_BINDINGS = {
   metaOut: [25, 'storage'],
   probeHistoryIn: [26, 'read'],
   probeHistoryOut: [27, 'storage'],
+  directionalReflection: [28, 'float'],
 } as const satisfies Record<string, readonly [number, Binding]>;
 export type ScreenProbeSlot = keyof typeof SCREEN_PROBE_BINDINGS;
 
@@ -130,7 +131,10 @@ export const SCREEN_PROBE_STAGES = {
     ],
     dispatch: 'threads',
   },
-  copySceneHistory: { slots: ['frame', 'scene', 'previousSceneOut'], dispatch: 'threads' },
+  copySceneHistory: {
+    slots: ['frame', 'scene', 'directionalReflection', 'previousSceneOut'],
+    dispatch: 'threads',
+  },
 } as const satisfies Record<
   string,
   { readonly slots: readonly ScreenProbeSlot[]; readonly dispatch: 'threads' | 'probes' }

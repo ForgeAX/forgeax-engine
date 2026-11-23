@@ -8,7 +8,10 @@ import {
   writeMeshSsboBuffer,
 } from '../assembly/mesh-ssbo-grow';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
-import { uniqueInstanceIdentities } from '../instances';
+import { MESH_DRAW_PARAMETER_FLOATS } from '../components/mesh-draw-parameters';
+import { GpuDirtyRanges } from '../gpu-dirty-ranges';
+import { previousInstanceRows, sameInstanceOrdinal } from '../instance-generations';
+
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
 import type {
   DispatchEntry,
@@ -16,13 +19,15 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
 import { recordContext } from '../world/view-record-context';
-import type { ValidatedRenderable } from './frame-snapshot';
+import { getOpaqueResourceIdentity, type ValidatedRenderable } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 /**
@@ -34,8 +39,8 @@ import type { _InternalRenderPipelineContext } from './render-context';
  */
 export const MESH_PER_ENTITY_STRIDE = 256;
 
-// Current/previous mat4, temporal, surface and draw-local Sprite region. See common.wgsl::Mesh.
-export const MESH_SSBO_BYTES = 176;
+// Current/previous mat4, temporal, surface, Sprite region and draw parameters.
+export const MESH_SSBO_BYTES = 208;
 
 /** Mesh flags carry previous transform validity, receiver opt-out and compact shadow caster data. */
 export function meshSurfaceFlags(source: {
@@ -51,7 +56,7 @@ export function meshSurfaceFlags(source: {
     (source.capsuleShadowRequested === true ? 8 : 0)
   );
 }
-export const MESH_UBO_FULL_ARRAY_BYTES = 96 * 128;
+export const MESH_UBO_FULL_ARRAY_BYTES = 128 * 128;
 
 // bug-20260723-webgl2-instancing-uniform-range: the WebGL2 fallback shader
 // declares `array<InstanceData, 128>` in the instances bind group. Even when
@@ -65,39 +70,63 @@ export const MAX_UNIFORM_INSTANCES = 128;
 /** The storage-backed InstanceData layout is current + previous mat4. */
 export const INSTANCE_STORAGE_STRIDE_FLOATS = 32;
 
-function hasStableGenerationColumn(generations: Uint32Array | undefined, count: number): boolean {
-  return (
-    generations !== undefined &&
-    generations.length === count &&
-    uniqueInstanceIdentities(generations)
-  );
-}
-
 function copyMat4(out: Float32Array, at: number, from: Float32Array, base: number): void {
   for (let k = 0; k < 16; k++) out[at + k] = from[base + k] as number;
 }
 
-const generationIndexes = new WeakMap<Uint32Array, Map<number, number>>();
+export type InstanceRowLookup = (ordinal: number) => number | undefined;
 
-/** Generation columns are immutable, so the ordinal index is built once per column. */
-function generationIndex(generations: Uint32Array): Map<number, number> {
-  let index = generationIndexes.get(generations);
-  if (index === undefined) {
-    index = new Map();
-    for (let i = 0; i < generations.length; i++) index.set(generations[i] as number, i);
-    generationIndexes.set(generations, index);
-  }
-  return index;
+/** Check the complete identity columns once, including rows outside the physical upload. */
+export function instanceStoragePairing(
+  count: number,
+  previousCount: number,
+  generations?: Uint32Array,
+  previousGenerations?: Uint32Array,
+): InstanceRowLookup | undefined {
+  if (generations === undefined && previousGenerations === undefined)
+    return count === previousCount ? sameInstanceOrdinal : undefined;
+  if (generations?.length !== count || previousGenerations?.length !== previousCount)
+    return undefined;
+  return previousInstanceRows(generations, previousGenerations);
 }
 
-/**
- * Project the ECS transform snapshot into the storage-backed InstanceData
- * layout. Unique identity generations select the previous matrix only when
- * the producer proves that the instance survived. Replaced slots seed
- * previous=current; reordered slots map back to the real prior ordinal so a
- * compaction cannot exchange velocities. Uniform-backed variants keep the
- * compact 16-float payload and do not use this projection.
- */
+/** Project current and submitted matrices into one physical InstanceData window. */
+export function packInstanceStorageRange(
+  out: Float32Array,
+  transforms: Float32Array,
+  previous: Float32Array,
+  first: number,
+  count: number,
+  lookup: InstanceRowLookup | undefined,
+): Float32Array {
+  if (
+    out.length !== count * INSTANCE_STORAGE_STRIDE_FLOATS ||
+    first < 0 ||
+    (first + count) * 16 > transforms.length
+  )
+    throw new RangeError('Instance storage output must match the packed instance count');
+  if (lookup === sameInstanceOrdinal || lookup === undefined) {
+    const old = lookup === undefined ? transforms : previous;
+    for (let local = 0; local < count; local++) {
+      const source = (first + local) * 16;
+      const target = local * INSTANCE_STORAGE_STRIDE_FLOATS;
+      copyMat4(out, target, transforms, source);
+      copyMat4(out, target + 16, old, source);
+    }
+  } else {
+    for (let local = 0; local < count; local++) {
+      const ordinal = first + local;
+      const target = local * INSTANCE_STORAGE_STRIDE_FLOATS;
+      copyMat4(out, target, transforms, ordinal * 16);
+      const old = lookup(ordinal);
+      if (old === undefined) copyMat4(out, target + 16, transforms, ordinal * 16);
+      else copyMat4(out, target + 16, previous, old * 16);
+    }
+  }
+  return out;
+}
+
+/** Storage-backed InstanceData contains the current pose and the previous pose of the same ID. */
 export function packInstanceStorageBuffer(
   out: Float32Array,
   transforms: Float32Array,
@@ -106,37 +135,13 @@ export function packInstanceStorageBuffer(
   previousGenerations?: Uint32Array,
 ): Float32Array {
   const count = Math.floor(transforms.length / 16);
-  if (out.length !== count * INSTANCE_STORAGE_STRIDE_FLOATS)
-    throw new RangeError('Instance storage output must match the packed instance count');
-  const previousCount = Math.floor(previousTransforms.length / 16);
-  const generationInput = generations !== undefined || previousGenerations !== undefined;
-  const identityProof =
-    hasStableGenerationColumn(generations, count) &&
-    hasStableGenerationColumn(previousGenerations, previousCount);
-  // An unchanged identity column pairs every ordinal with itself.
-  if (
-    (identityProof && generations === previousGenerations) ||
-    (!generationInput && previousCount === count)
-  ) {
-    for (let i = 0; i < count; i++) {
-      copyMat4(out, i * INSTANCE_STORAGE_STRIDE_FLOATS, transforms, i * 16);
-      copyMat4(out, i * INSTANCE_STORAGE_STRIDE_FLOATS + 16, previousTransforms, i * 16);
-    }
-    return out;
-  }
-  const previousIndexByGeneration =
-    identityProof && previousGenerations !== undefined
-      ? generationIndex(previousGenerations)
-      : undefined;
-  for (let i = 0; i < count; i++) {
-    const targetBase = i * INSTANCE_STORAGE_STRIDE_FLOATS;
-    copyMat4(out, targetBase, transforms, i * 16);
-    const previousIndex = previousIndexByGeneration?.get(generations?.[i] ?? 0);
-    if (previousIndex !== undefined && previousIndex < previousCount)
-      copyMat4(out, targetBase + 16, previousTransforms, previousIndex * 16);
-    else copyMat4(out, targetBase + 16, transforms, i * 16);
-  }
-  return out;
+  const lookup = instanceStoragePairing(
+    count,
+    Math.floor(previousTransforms.length / 16),
+    generations,
+    previousGenerations,
+  );
+  return packInstanceStorageRange(out, transforms, previousTransforms, 0, count, lookup);
 }
 
 /**
@@ -243,17 +248,13 @@ export function bindGroupChainLeaf6(
 }
 
 /** Numeric ranges belong to the same physical-resource cache as their groups. */
-export function bindGroupByteRangeLeaf4(
+export function bindGroupByteRangeLeaf2(
   root: WeakMap<object, unknown>,
   a: object,
   b: object,
-  c: object,
-  d: object,
 ): Map<number, BindGroup> {
   let node = bindGroupChainNode(root, a);
   node = bindGroupChainNode(node, b);
-  node = bindGroupChainNode(node, c);
-  node = bindGroupChainNode(node, d);
   let leaf = node.get(BYTE_RANGE_LEAF_KEY) as Map<number, BindGroup> | undefined;
   if (leaf === undefined) {
     leaf = new Map();
@@ -265,14 +266,12 @@ export function bindGroupByteRangeLeaf4(
 type SkinRangeGroups = Map<number, Map<number, Map<number, BindGroup>>>;
 
 /** The final map is keyed by auxiliary bytes; no composed string is retained. */
-export function bindGroupSkinRangeLeaf6(
+export function bindGroupSkinRangeLeaf4(
   root: WeakMap<object, unknown>,
   a: object,
   b: object,
   c: object,
   d: object,
-  e: object,
-  f: object,
   meshBytes: number,
   dataBytes: number,
 ): Map<number, BindGroup> {
@@ -280,8 +279,6 @@ export function bindGroupSkinRangeLeaf6(
   node = bindGroupChainNode(node, b);
   node = bindGroupChainNode(node, c);
   node = bindGroupChainNode(node, d);
-  node = bindGroupChainNode(node, e);
-  node = bindGroupChainNode(node, f);
   let ranges = node.get(SKIN_RANGE_LEAF_KEY) as SkinRangeGroups | undefined;
   if (ranges === undefined) {
     ranges = new Map();
@@ -457,12 +454,17 @@ export function ensureMeshSsboCapacity(
 
 // Transform, temporal, surface and Sprite region fit the aligned direct slot.
 const MESH_SLOT_FLOATS = 44;
+const MESH_DRAW_PARAMETER_OFFSET = MESH_SLOT_FLOATS;
+const MESH_UNIFORM_DRAW_PARAMETER_OFFSET = 24;
 const MESH_STRIDE_FLOATS = MESH_PER_ENTITY_STRIDE / Float32Array.BYTES_PER_ELEMENT;
 // Clean slots this close together are re-sent with their neighbours so a
 // scattered change still flushes as a few contiguous writes.
 const MESH_DIRTY_MERGE_GAP_SLOTS = 8;
 
-type MeshUpload = Pick<ValidatedRenderable, 'source' | 'meshSlot' | 'foldedMeshSlot'>;
+type MeshUpload = Pick<
+  ValidatedRenderable,
+  'source' | 'meshSlot' | 'foldedMeshSlot' | 'world' | 'sceneSlot'
+>;
 
 export function meshDrawSlot(
   entry: Pick<MeshUpload, 'meshSlot' | 'foldedMeshSlot'>,
@@ -480,50 +482,115 @@ export function meshDrawSlot(
  * replaced buffer starts with no known slots.
  */
 interface MeshSsboMirror {
+  readonly page: number;
+  first: number;
   bytes: Uint8Array;
   bits: Uint32Array;
   known: Uint8Array;
-  readonly dirty: Set<number>;
-  readonly sources: Map<
-    number,
-    {
-      readonly source: MeshUpload['source'];
-      readonly surfaceBase: number | undefined;
-      readonly storageBuffer: boolean;
-      readonly folded: boolean;
-      readonly hasSurface: boolean;
+  readonly dirty: number[];
+  stamps: Float64Array;
+  modes: Uint8Array;
+}
+
+function newMeshPage(page: number, first: number): MeshSsboMirror {
+  const bytes = new Uint8Array(MESH_PER_ENTITY_STRIDE);
+  return {
+    page,
+    first,
+    bytes,
+    bits: new Uint32Array(bytes.buffer),
+    known: new Uint8Array(1),
+    dirty: [],
+    stamps: new Float64Array(3),
+    modes: new Uint8Array(1),
+  };
+}
+
+/** Row data can grow in either direction without addressing bytes across an unoccupied interval. */
+function reserveMeshRow(
+  page: MeshSsboMirror,
+  slot: number,
+  start: number,
+  end: number,
+): MeshSsboMirror {
+  if (slot >= page.first && slot < page.first + page.known.length) return page;
+  const low = Math.min(page.first, slot);
+  const high = Math.max(page.first + page.known.length, slot + 1);
+  const capacity = Math.min(end - start, Math.max(high - low, page.known.length * 2));
+  const first =
+    slot < page.first ? Math.max(start, high - capacity) : Math.min(low, end - capacity);
+  const shift = page.first - first;
+  const bytes = new Uint8Array(capacity * MESH_PER_ENTITY_STRIDE);
+  const known = new Uint8Array(capacity);
+  const stamps = new Float64Array(capacity * 3);
+  const modes = new Uint8Array(capacity);
+  bytes.set(page.bytes, shift * MESH_PER_ENTITY_STRIDE);
+  known.set(page.known, shift);
+  stamps.set(page.stamps, shift * 3);
+  modes.set(page.modes, shift);
+  page.first = first;
+  page.bytes = bytes;
+  page.bits = new Uint32Array(bytes.buffer);
+  page.known = known;
+  page.stamps = stamps;
+  page.modes = modes;
+  return page;
+}
+
+const SPARSE_MESH_PAGE_ROWS = 4096;
+class MeshUploadPages {
+  private dense: MeshSsboMirror | undefined;
+  private denseStart = 0;
+  private denseEnd = Number.MAX_SAFE_INTEGER;
+  private current: MeshSsboMirror | undefined;
+  private byPage: Map<number, MeshSsboMirror> | undefined;
+  readonly pending: MeshSsboMirror[] = [];
+  readonly ranges = new GpuDirtyRanges();
+
+  constructor(private readonly uniformRows: number | undefined) {}
+
+  row(slot: number): MeshSsboMirror {
+    if (this.uniformRows === undefined) {
+      // A growing contiguous storage stream can remain one queue write. On its first
+      // disjoint address, close the dense region and place remote rows independently.
+      const dense = this.dense;
+      if (dense === undefined) {
+        this.dense = newMeshPage(0, slot);
+        return this.dense;
+      }
+      const end = dense.first + dense.known.length;
+      if (
+        this.denseEnd === Number.MAX_SAFE_INTEGER &&
+        (slot < dense.first - MESH_DIRTY_MERGE_GAP_SLOTS ||
+          slot >= end + MESH_DIRTY_MERGE_GAP_SLOTS)
+      ) {
+        this.denseStart = Math.floor(dense.first / SPARSE_MESH_PAGE_ROWS) * SPARSE_MESH_PAGE_ROWS;
+        this.denseEnd = Math.ceil(end / SPARSE_MESH_PAGE_ROWS) * SPARSE_MESH_PAGE_ROWS;
+      }
+      if (slot >= this.denseStart && slot < this.denseEnd)
+        return reserveMeshRow(dense, slot, this.denseStart, this.denseEnd);
     }
-  >;
+    const width = this.uniformRows ?? SPARSE_MESH_PAGE_ROWS;
+    const id = Math.floor(slot / width);
+    let page = this.current;
+    if (page === undefined || page.page !== id) {
+      page = this.byPage?.get(id);
+      if (page === undefined) {
+        page = newMeshPage(id, slot);
+        if (this.current !== undefined) {
+          this.byPage ??= new Map([[this.current.page, this.current]]);
+          this.byPage.set(id, page);
+        }
+      }
+      this.current = page;
+    }
+    return reserveMeshRow(page, slot, id * width, (id + 1) * width);
+  }
 }
 
-const mirrors = new WeakMap<object, MeshSsboMirror>();
-const candidate = new Float32Array(MESH_SLOT_FLOATS);
+const mirrors = new WeakMap<object, MeshUploadPages>();
+const candidate = new Float32Array(MESH_SLOT_FLOATS + MESH_DRAW_PARAMETER_FLOATS);
 const candidateBits = new Uint32Array(candidate.buffer);
-
-function meshSsboMirror(buffer: object, slotCount: number): MeshSsboMirror {
-  let mirror = mirrors.get(buffer);
-  if (mirror === undefined) {
-    mirror = {
-      bytes: new Uint8Array(0),
-      bits: new Uint32Array(0),
-      known: new Uint8Array(0),
-      dirty: new Set(),
-      sources: new Map(),
-    };
-    mirrors.set(buffer, mirror);
-  }
-  if (mirror.known.length < slotCount) {
-    const capacity = Math.max(slotCount, mirror.known.length * 2);
-    const bytes = new Uint8Array(capacity * MESH_PER_ENTITY_STRIDE);
-    bytes.set(mirror.bytes);
-    const known = new Uint8Array(capacity);
-    known.set(mirror.known);
-    mirror.bytes = bytes;
-    mirror.bits = new Uint32Array(bytes.buffer);
-    mirror.known = known;
-  }
-  return mirror;
-}
 
 function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
   candidate.fill(0);
@@ -543,27 +610,26 @@ function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
     candidate[33] = meshSurfaceFlags(entry.source);
     return;
   }
-  const worldFromLocal = entry.source.transform.world;
-  for (let k = 0; k < 16; k++) candidate[k] = worldFromLocal[k] ?? 0;
-  const previousWorld = entry.source.temporal?.previousTransform.world ?? worldFromLocal;
-  for (let k = 0; k < 16; k++) candidate[16 + k] = previousWorld[k] ?? 0;
+  const transform = entry.source.transform;
+  const previous = entry.source.temporal?.previousTransform;
+  CapturedSceneTransform.write(candidate, 0, transform);
+  if (previous === undefined || previous === transform) candidate.copyWithin(16, 0, 16);
+  else CapturedSceneTransform.write(candidate, 16, previous);
   candidate[32] = entry.source.temporal?.reactive === true ? 1 : 0;
   candidate[33] = meshSurfaceFlags(entry.source);
 }
 
 /** Returns whether the slot differed from the mirrored GPU contents. */
-function stageMeshSlot(mirror: MeshSsboMirror, slot: number): boolean {
+function stageMeshSlot(mirror: MeshSsboMirror, slot: number, length: number): boolean {
   const base = slot * MESH_STRIDE_FLOATS;
   let dirty = mirror.known[slot] !== 1;
-  for (let k = 0; k < MESH_SLOT_FLOATS; k++) {
+  for (let k = 0; k < length; k++) {
     const value = candidateBits[k] ?? 0;
     if (mirror.bits[base + k] !== value) {
       mirror.bits[base + k] = value;
       dirty = true;
     }
   }
-  // Candidate bytes are not evidence of a successful physical write.
-  if (dirty) mirror.known[slot] = 0;
   return dirty;
 }
 
@@ -580,10 +646,10 @@ function flushMeshRun(
     storage,
     offset,
     mirror.bytes,
-    offset,
+    (first - mirror.first) * MESH_PER_ENTITY_STRIDE,
     (end - first) * MESH_PER_ENTITY_STRIDE,
   );
-  mirror.known.fill(1, first, end);
+  mirror.known.fill(1, first - mirror.first, end - mirror.first);
 }
 
 /**
@@ -604,32 +670,63 @@ function stageMeshDraw(
   folded: boolean,
   visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
   storageBuffer: boolean,
+  slot = meshDrawSlot(entry, folded),
+  parameters?: readonly number[],
 ): void {
   const buffer =
     meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
   if (buffer === null) throw new Error('mesh draw storage is not allocated');
-  const slot = meshDrawSlot(entry, folded);
-  const mirror = meshSsboMirror(buffer, slot + 1);
+  let pages = mirrors.get(buffer);
+  if (pages === undefined) {
+    const stride = meshStorageBuffer.pages?.byteStride;
+    pages = new MeshUploadPages(
+      stride === undefined ? undefined : Math.max(1, Math.floor(stride / MESH_PER_ENTITY_STRIDE)),
+    );
+    mirrors.set(buffer, pages);
+  }
+  const mirror = pages.row(slot);
+  const row = slot - mirror.first;
   const surfaceBase = visibleSurfaceBases?.get(entry.source.entityKey);
-  const previous = mirror.sources.get(slot);
+  const stamp = row * 3;
+  const record = entry.sceneSlot;
+  const nativeVersion =
+    record instanceof SceneDrawSlot ? record.meshUploadVersion(entry.source) : undefined;
+  const sourceIdentity = nativeVersion ?? getOpaqueResourceIdentity(entry.source);
+  const parameterIdentity = parameters === undefined ? 0 : getOpaqueResourceIdentity(parameters);
+  const mode =
+    Number(storageBuffer) |
+    (Number(folded) << 1) |
+    (Number(visibleSurfaceBases !== undefined) << 2);
+  // An absent surface index and a valid zero have distinct shader inputs
+  // only through hasSurface, which is encoded in mode.
+  const base = surfaceBase ?? 0;
   if (
-    previous?.source === entry.source &&
-    previous.surfaceBase === surfaceBase &&
-    previous.storageBuffer === storageBuffer &&
-    previous.folded === folded &&
-    previous.hasSurface === (visibleSurfaceBases !== undefined)
+    mirror.known[row] !== 0 &&
+    mirror.stamps[stamp] === sourceIdentity &&
+    mirror.stamps[stamp + 1] === parameterIdentity &&
+    mirror.stamps[stamp + 2] === base &&
+    mirror.modes[row] === mode
   )
     return;
   writeMeshSlotCandidate(entry, folded);
   writeMeshSurfaceCandidate(entry, visibleSurfaceBases, surfaceBase, storageBuffer);
-  if (stageMeshSlot(mirror, slot)) mirror.dirty.add(slot);
-  mirror.sources.set(slot, {
-    source: entry.source,
-    surfaceBase,
-    storageBuffer,
-    folded,
-    hasSurface: visibleSurfaceBases !== undefined,
-  });
+  const offset = storageBuffer ? MESH_DRAW_PARAMETER_OFFSET : MESH_UNIFORM_DRAW_PARAMETER_OFFSET;
+  if (parameters !== undefined) candidate.set(parameters, offset);
+  else if (!storageBuffer) candidate.fill(0, offset, offset + MESH_DRAW_PARAMETER_FLOATS);
+  // Uniform parameters are inside the original storage footprint.
+  const hasStorageParameters =
+    (storageBuffer && parameters !== undefined) ||
+    (((mirror.modes[row] ?? 0) & 1) !== 0 && mirror.stamps[stamp + 1] !== 0);
+  const length = hasStorageParameters ? candidate.length : MESH_SLOT_FLOATS;
+  if (stageMeshSlot(mirror, row, length) && mirror.known[row] !== 2) {
+    if (mirror.dirty.length === 0) pages.pending.push(mirror);
+    mirror.dirty.push(slot);
+    mirror.known[row] = 2;
+  }
+  mirror.stamps[stamp] = sourceIdentity;
+  mirror.stamps[stamp + 1] = parameterIdentity;
+  mirror.stamps[stamp + 2] = base;
+  mirror.modes[row] = mode;
 }
 
 /** Encode the shared surface tail without changing the Mesh binding layout. */
@@ -658,6 +755,7 @@ export function prepareMeshDraw(
   c: _InternalRenderPipelineContext,
   entry: MeshUpload,
   folded = false,
+  slot = meshDrawSlot(entry, folded),
 ): number {
   stageMeshDraw(
     c.pipelineState.meshStorageBuffer,
@@ -665,8 +763,10 @@ export function prepareMeshDraw(
     folded,
     c.visibleSurface?.entityBases,
     c.runtime.device.caps.storageBuffer,
+    slot,
+    folded ? undefined : (entry.world ?? c.world)?.drawParameters?.(entry.source.entityKey),
   );
-  return meshDrawSlot(entry, folded);
+  return slot;
 }
 
 /** Flush the addresses explicitly staged by draws; failed ranges remain pending. */
@@ -676,37 +776,43 @@ export function flushMeshDrawUploads(
 ): number {
   const buffer =
     meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
-  const mirror = buffer === null ? undefined : mirrors.get(buffer);
-  if (mirror === undefined || mirror.dirty.size === 0) return 0;
-  const slots = [...mirror.dirty].sort((a, b) => a - b);
-  let first = -1,
-    end = -1,
-    runs = 0;
-  const flush = () => {
-    flushMeshRun(queue, meshStorageBuffer, mirror, first, end);
-    for (let slot = first; slot < end; slot++) mirror.dirty.delete(slot);
-    runs++;
-  };
-  for (const slot of slots) {
-    if (first >= 0 && slot - end <= MESH_DIRTY_MERGE_GAP_SLOTS) {
-      end = slot + 1;
-      continue;
+  const pages = buffer === null ? undefined : mirrors.get(buffer);
+  if (pages === undefined || pages.pending.length === 0) return 0;
+  let completed = 0;
+  let runCount = 0;
+  try {
+    for (const page of pages.pending) {
+      const runs = pages.ranges.coalesce(page.dirty, MESH_DIRTY_MERGE_GAP_SLOTS);
+      for (let i = 0; i < runs; i++)
+        flushMeshRun(queue, meshStorageBuffer, page, pages.ranges.start(i), pages.ranges.end(i));
+      page.dirty.length = 0;
+      completed++;
+      runCount += runs;
     }
-    if (first >= 0) flush();
-    first = slot;
-    end = slot + 1;
+  } catch (error) {
+    // Keep the failed logical range (including overlapping physical tails) and
+    // later pages. Earlier completed writes do not need a retry.
+    const page = pages.pending[completed];
+    if (page !== undefined) {
+      let kept = 0;
+      for (const slot of page.dirty)
+        if (page.known[slot - page.first] === 2) page.dirty[kept++] = slot;
+      page.dirty.length = kept;
+    }
+    pages.pending.splice(0, completed);
+    throw error;
   }
-  if (first >= 0) flush();
-  return runs;
+  pages.pending.length = 0;
+  return runCount;
 }
 
 /** Explicit batch preparation for standalone recorder callers. */
 export function uploadMeshSsboBatch(
   queue: RhiQueue,
   meshStorageBuffer: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
-  main: readonly MeshUpload[],
+  main: Iterable<MeshUpload>,
   foldDispatchPlan: FoldDispatchPlan | null,
-  shadow: readonly MeshUpload[] = [],
+  shadow: Iterable<MeshUpload> = [],
   visibleSurfaceBases?: ReadonlyMap<number, number>,
   storageBuffer = true,
 ): number {

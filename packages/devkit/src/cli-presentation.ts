@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { DIST_MANIFEST_FILE } from './dist.js';
 import type { UnifiedCliResult } from './unified-cli.js';
 
 /**
@@ -51,6 +52,7 @@ function physicalPath(path: string): string {
 }
 
 function buildEntry(target: unknown): string {
+  if (target === 'native') return 'game.mjs';
   return target === 'wechat' ? 'game.js' : target === 'tauri' ? 'web/index.html' : 'index.html';
 }
 
@@ -69,7 +71,7 @@ function compactBuild(result: UnifiedCliResult, context: CliPresentationContext)
     result,
     {
       ...manifest,
-      manifestPath: resolve(physicalPath(outDir), 'forgeax-dist.json'),
+      manifestPath: resolve(physicalPath(outDir), DIST_MANIFEST_FILE),
       entry: buildEntry(manifest.target),
       artifactCount: artifacts.length,
       artifactBytes: sized.reduce((total, entry) => total + entry.bytes, 0),

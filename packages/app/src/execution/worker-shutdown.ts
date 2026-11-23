@@ -2,7 +2,15 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
 
 /** Normal shutdown waits for realm cleanup. Termination is always the final step. */
-export function shutdownWorker(worker: Worker, timeoutMs = 5_000): Promise<Result<void, AppError>> {
+export function shutdownWorker(
+  worker: {
+    postMessage(message: { kind: 'dispose' }): void;
+    addEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
+    removeEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
+    terminate(): void;
+  },
+  timeoutMs = 5_000,
+): Promise<Result<void, AppError>> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result: Result<void, AppError>) => {

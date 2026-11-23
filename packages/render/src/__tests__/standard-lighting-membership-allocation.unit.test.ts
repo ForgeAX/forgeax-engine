@@ -6,6 +6,7 @@ import {
   DEFAULT_CLUSTER_GRID,
   LIGHT_INDEX_LIST_CAPACITY,
 } from '../pipeline/standard-lighting/layout';
+import { StandardClusterMembershipOwner } from '../pipeline/standard-lighting/membership-owner';
 import {
   prepareStandardLighting,
   type StandardLightFrame,
@@ -65,6 +66,29 @@ describe('Standard CPU membership allocation', () => {
     ).unwrap();
     expect(independent.scratch).not.toBe(scratch);
     expect(independent.clusterGrid).toEqual(first.clusterGrid);
+  });
+
+  it('projects moving lights each frame and publishes producer bytes only for visible cell occupants', () => {
+    const owner = new StandardClusterMembershipOwner();
+    const light = { ...coveringLight(), range: 1, position: vec3.create(0, 0, 20) };
+    const frame = makeFrame([light]);
+    const first = prepareStandardLighting(frame, undefined, undefined, owner).unwrap();
+    for (let x = 1; x <= 12; x++) {
+      light.position[0] = x;
+      const moved = prepareStandardLighting(frame, undefined, undefined, owner).unwrap();
+      expect(moved.lightBounds).toBe(first.lightBounds);
+      expect(moved.clusterGrid).toBe(first.clusterGrid);
+      expect(moved.membershipEntryCount).toBe(0);
+    }
+    light.position[0] = 0;
+    light.position[2] = -10;
+    const visible = prepareStandardLighting(frame, undefined, undefined, owner).unwrap();
+    expect(visible.membershipEntryCount).toBeGreaterThan(0);
+    expect(visible.lightBounds).not.toBe(first.lightBounds);
+    light.position[2] = 18;
+    const gone = prepareStandardLighting(frame, undefined, undefined, owner).unwrap();
+    expect(gone.lightBounds).toEqual(first.lightBounds);
+    expect(first.membershipEntryCount).toBe(0);
   });
 
   it('grows scratch for a changed grid and recovers after a capped overflow frame', () => {

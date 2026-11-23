@@ -32,3 +32,4 @@ export {
   retainSceneSourceReferences,
   type SceneSourceReferenceCustody,
 } from './instances/source-references';
+export { SynchronousTransform } from './synchronous-transform';

@@ -154,7 +154,7 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(VIEW_ABI.moduleId).toBe('forgeax_view::common');
     expect(VIEW_ABI.group).toBe(0);
     expect(VIEW_ABI.binding).toBe(0);
-    expect(VIEW_ABI.byteLength).toBe(1376);
+    expect(VIEW_ABI.byteLength).toBe(1392);
     expect(VIEW_ABI.fields.map((field) => field.name)).toEqual([
       'worldViewProj',
       'inverseViewProj',
@@ -174,21 +174,27 @@ describe('vite-plugin-shader public engine input surface', () => {
       'fogSky',
       'ssrQuality',
       'subsurfaceProfiles',
+      'groundSolar',
     ]);
-    expect(VIEW_ABI.fields.at(-3)).toEqual({
+    expect(VIEW_ABI.fields.at(-4)).toEqual({
       name: 'fogSky',
       offsetBytes: 1280,
       sizeBytes: 16,
     });
-    expect(VIEW_ABI.fields.at(-2)).toEqual({
+    expect(VIEW_ABI.fields.at(-3)).toEqual({
       name: 'ssrQuality',
       offsetBytes: 1296,
       sizeBytes: 16,
     });
-    expect(VIEW_ABI.fields.at(-1)).toEqual({
+    expect(VIEW_ABI.fields.at(-2)).toEqual({
       name: 'subsurfaceProfiles',
       offsetBytes: 1312,
       sizeBytes: 64,
+    });
+    expect(VIEW_ABI.fields.at(-1)).toEqual({
+      name: 'groundSolar',
+      offsetBytes: 1376,
+      sizeBytes: 16,
     });
     expect(JSON.stringify(VIEW_ABI)).not.toMatch(/device|buffer|texture/i);
   });
@@ -212,16 +218,13 @@ describe('vite-plugin-shader public engine input surface', () => {
       '#define_import_path forgeax_depth_pyramid::reduce',
     );
     expect(entries.ssrTrace.source).toContain('#define_import_path forgeax_ssr::trace');
-    expect(entries.ssrTemporal.source).toContain('#define_import_path forgeax_ssr::temporal');
     expect(entries.ssrCompose.source).toContain('fn fs_ssr_compose(');
     for (const reader of [
       entries.hdrpSsao,
       entries.hdrpGtaoCompute,
       entries.ssrTrace,
-      entries.ssrTemporal,
       entries.ssrCompose,
       entries.ssrTraceFragment,
-      entries.ssrTemporalFragment,
       entries.ssrComposeFragment,
       entries.rayRasterSource,
       entries.rayProbePlacement,
@@ -246,7 +249,6 @@ describe('vite-plugin-shader public engine input surface', () => {
       [entries.depthPyramidSeed, entries.depthPyramidSeedFragment],
       [entries.depthPyramidReduce, entries.depthPyramidReduceFragment],
       [entries.ssrTrace, entries.ssrTraceFragment],
-      [entries.ssrTemporal, entries.ssrTemporalFragment],
       [entries.ssrCompose, entries.ssrComposeFragment],
     ] as const) {
       expect(fragment.id).not.toBe(native.id);
@@ -341,11 +343,10 @@ describe('vite-plugin-shader public engine input surface', () => {
       'depth_pyramid_seed',
       'depth_pyramid_reduce',
       'ssr_trace',
-      'ssr_temporal',
+      'vs_ssr_compose',
       'depth_pyramid_seed_fragment',
       'depth_pyramid_reduce_fragment',
       'ssr_trace_fragment',
-      'ssr_temporal_fragment',
       'vs_ssr_compose_fragment',
     ]) {
       expect(
@@ -355,6 +356,8 @@ describe('vite-plugin-shader public engine input surface', () => {
         `${marker} must be published in the engine manifest`,
       ).toHaveLength(1);
     }
+    expect(utilitiesContaining('fn ssr_temporal(')).toEqual([]);
+    expect(utilitiesContaining('fn ssr_temporal_fragment(')).toEqual([]);
   }, 300_000);
 
   it.each([

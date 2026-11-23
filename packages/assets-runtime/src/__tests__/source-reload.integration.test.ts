@@ -1,4 +1,3 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogDelta,
   type CatalogEntry,
@@ -7,10 +6,12 @@ import {
   type TextureAsset,
 } from '@forgeax/engine-types';
 import { afterEach, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import type { CatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const ROOT = '11111111-1111-4111-8111-111111111111';
 const TEXTURE = '22222222-2222-4222-8222-222222222222';
@@ -105,49 +106,49 @@ function fixture(inherited = false, pushed = true) {
         albedo: { texture },
       },
     };
-    const publication = createRuntimePackPublication({
-      scopeId: 'reload',
-      generation: options.publicationGeneration ?? revision,
-      sourcePath: 'reload.pack',
-      sourceRevision: String(revision),
-      packageUrl,
-      pack: {
-        assets: [
-          ...(inherited
-            ? [
-                {
-                  guid: PARENT,
-                  kind: 'material',
-                  refs: [texture],
-                  artifacts: {},
-                  payload: material,
-                },
-              ]
-            : []),
-          {
-            guid: ROOT,
-            kind: 'material',
-            refs: inherited ? [PARENT] : [texture],
-            artifacts: {},
-            payload: inherited ? { kind: 'material', parent: PARENT, values: {} } : material,
-          },
-          {
-            guid: texture,
+    const publication = catalogPack(
+      [
+        ...(inherited
+          ? [
+              {
+                guid: PARENT,
+                kind: 'material',
+                refs: [texture],
+                artifacts: {},
+                payload: material,
+              },
+            ]
+          : []),
+        {
+          guid: ROOT,
+          kind: 'material',
+          refs: inherited ? [PARENT] : [texture],
+          artifacts: {},
+          payload: inherited ? { kind: 'material', parent: PARENT, values: {} } : material,
+        },
+        {
+          guid: texture,
+          kind: 'texture',
+          refs: [],
+          artifacts: {},
+          payload: {
             kind: 'texture',
-            refs: [],
-            artifacts: {},
-            payload: {
-              kind: 'texture',
-              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-              mips: { kind: 'none' },
-              format: 'rgba8unorm',
-              colorSpace: 'linear',
-              data: [revision, 0, 0, 255],
-            },
+            shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+            mips: { kind: 'none' },
+            format: 'rgba8unorm',
+            colorSpace: 'linear',
+            data: [revision, 0, 0, 255],
           },
-        ],
+        },
+      ],
+      {
+        scopeId: 'reload',
+        generation: options.publicationGeneration ?? revision,
+        sourcePath: 'reload.pack',
+        sourceRevision: String(revision),
+        packageUrl,
       },
-    });
+    );
     packages.set(packageUrl, JSON.stringify(publication.pack));
     const previous = new Set(rows.map((row) => row.guid));
     rows = publication.pack.assets.map(({ guid, kind }) => ({
@@ -183,14 +184,8 @@ function fixture(inherited = false, pushed = true) {
     requests,
     enumerations: () => enumerations,
     pause() {
-      let release = () => {};
-      let entered = () => {};
-      const pending = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const started = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
+      const { promise: pending, resolve: release } = testGate();
+      const { promise: started, resolve: entered } = testGate();
       wait = () => {
         entered();
         return pending;

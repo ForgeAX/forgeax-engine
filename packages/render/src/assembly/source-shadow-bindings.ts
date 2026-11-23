@@ -96,9 +96,16 @@ export function* prepareSourceShadowBindings(
         program,
         material,
         observed,
+        camera.clipping,
       );
       let commands: (() => boolean) | undefined;
-      if (shadowsRecordDirectly(row.identity, internals.device.caps)) {
+      if (
+        shadowsRecordDirectly(
+          row.identity,
+          internals.device.caps,
+          internals.options?.retainIndirectBundles,
+        )
+      ) {
         commands = () => row.view.indirectBuffer === raster.indirect;
       } else {
         row.view.resolveShadowBundle(row.projection.bundles, raster, live);

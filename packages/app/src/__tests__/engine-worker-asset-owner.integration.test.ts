@@ -8,11 +8,12 @@ const state = vi.hoisted(() => ({
   handles: [] as AssetHandle<string, { value: number }>[],
   rejectContext: false,
   rejectAssembly: false,
+  rejectAttachment: false,
 }));
 
 vi.mock('@forgeax/engine-runtime/internal/renderer-host', async () => {
   const { AssetRegistry, defineAssetKind } = await import('@forgeax/engine-assets-runtime');
-  const { ok } = await import('@forgeax/engine-types');
+  const { err, ok } = await import('@forgeax/engine-types');
   const createAssets = () => {
     const assets = new AssetRegistry();
     const counter = defineAssetKind<{ value: number }>('worker-owner-counter');
@@ -36,6 +37,10 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async () => {
         featureHost: {},
         renderer: {
           state: () => 'alive',
+          attach: () =>
+            state.rejectAttachment
+              ? err(new Error('injected attachment rejection'))
+              : ok({ dispose() {} }),
           subscribe: () => () => {},
           releaseSurface: () => ok(undefined),
           restoreSurface: () => ok(undefined),
@@ -82,10 +87,6 @@ vi.mock('@forgeax/engine-ecs', async (importOriginal) => ({
     };
   },
 }));
-vi.mock('../execution/attached-world-swap', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../execution/attached-world-swap')>()),
-  commitAttachedWorld: async () => true,
-}));
 vi.mock('../execution/source-render-worker', () => ({
   SourceRenderWorker: class {
     preloadModule() {}
@@ -107,6 +108,7 @@ beforeEach(() => {
   state.handles = [];
   state.rejectContext = false;
   state.rejectAssembly = false;
+  state.rejectAttachment = false;
   vi.stubGlobal('postMessage', vi.fn());
   vi.stubGlobal('close', vi.fn());
   vi.stubGlobal('onmessage', undefined);
@@ -117,9 +119,13 @@ afterEach(() => {
 });
 
 it.each([
-  false,
-  true,
-])('keeps the live asset owner after failed candidate Context admission (split=%s)', async (split) => {
+  { split: false, failure: 'context' },
+  { split: true, failure: 'context' },
+  { split: false, failure: 'attachment' },
+])('keeps the live asset owner after candidate $failure fails (split=$split)', async ({
+  split,
+  failure,
+}) => {
   await import('../execution/engine-worker-runtime');
   const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
   const post = vi.mocked(globalThis.postMessage);
@@ -138,7 +144,8 @@ it.each([
     .map(([message]) => message)
     .find((message) => message.kind === 'ready');
   const worldIdentity = ready.worldIdentity;
-  state.rejectContext = true;
+  state.rejectContext = failure === 'context';
+  state.rejectAttachment = failure === 'attachment';
   receive({ data: { kind: 'rebuild', worldIdentity, canvas: { width: 1, height: 1 } } });
   await vi.waitFor(() =>
     expect(post).toHaveBeenCalledWith(

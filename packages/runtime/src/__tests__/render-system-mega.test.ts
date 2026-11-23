@@ -592,9 +592,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Soft path: no error fired (D-Q7 mirroring; LO §1.1 minimum semantic).
       expect(errors).toHaveLength(0);
-      // Nine fallback clears, spot-shadow, merged sky/main, Grade and Final.
+      // Nine fallback clears, merged sky/main, Grade and Final.
       // Empty geometry still paints without a forced Forward depth prepass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(12);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
       // No geometry submitted.
       expect(log.drawIndexedCount).toBe(0);
@@ -838,9 +838,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Case E secondary-fix: even when every renderable fails asset
       // registration, the clear pass still runs (so visual debugging shows
       // the cleared canvas rather than a stale frame).
-      // Nine fallback clears, spot-shadow, merged sky/main, Grade and Final.
+      // Nine fallback clears, merged sky/main, Grade and Final.
       // Empty geometry still paints without a forced Forward depth prepass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(12);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
     });
 

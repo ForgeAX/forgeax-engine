@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type { ProjectFacts } from '../types.js';
 import { tauriResourceProtocol, tauriResourceServerSource } from './tauri-resource-server.js';
 import { tauriBuildScript, tauriLibrarySource, tauriSmokeScript } from './tauri-source.js';
+import { tauriStorageSource } from './tauri-storage-source.js';
 
 /** Tauri embeds the ordinary browser closure; it owns no second runtime or renderer. */
 export async function writeTauriProject(facts: ProjectFacts, outDir: string): Promise<void> {
@@ -109,7 +110,7 @@ custom-protocol = ["tauri/custom-protocol"]
         println!("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384");
     }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&["smoke_report", "finish_close", "request_close"])
+        tauri_build::AppManifest::new().commands(&["smoke_report", "finish_close", "request_close", "storage_io"])
     )).expect("Tauri application permissions could not be built");
 }\n`,
     'src-tauri/capabilities/main.json': `${JSON.stringify(
@@ -118,7 +119,12 @@ custom-protocol = ["tauri/custom-protocol"]
         description:
           'Only the packaged main WebView may finish Host cleanup and publish opt-in smoke evidence.',
         windows: ['main'],
-        permissions: ['allow-smoke-report', 'allow-finish-close', 'allow-request-close'],
+        permissions: [
+          'allow-smoke-report',
+          'allow-finish-close',
+          'allow-request-close',
+          'allow-storage-io',
+        ],
       },
       null,
       2,
@@ -126,6 +132,7 @@ custom-protocol = ["tauri/custom-protocol"]
     'src-tauri/src/main.rs':
       '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]\nfn main() { forgeax_game_lib::run(); }\n',
     'src-tauri/src/lib.rs': tauriLibrarySource,
+    'src-tauri/src/storage.rs': tauriStorageSource,
     'src-tauri/src/asset_server.rs': tauriResourceServerSource,
     'src-tauri/android/loopback-network.xml': `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>

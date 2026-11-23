@@ -552,6 +552,15 @@ describe('plugin program projection', () => {
     expect(projected).toContain('export const first');
     expect(projected).not.toContain("import('node:fs')");
     expect(() => assertStaticPluginImports(projected, 'source.pack.ts')).not.toThrow();
+    const authoringOnly =
+      "import { definePack } from '@forgeax/engine/pack/source'; export default definePack({ build: name => import(name) });";
+    expect(() => projectPluginRuntimeSource(authoringOnly, 'source.pack.ts')).not.toThrow();
+    expect(() =>
+      projectPluginRuntimeSource(
+        `${authoringOnly}\nexport const load = name => import(name);`,
+        'source.pack.ts',
+      ),
+    ).toThrow('source.pack.ts: plugin runtime imports must have literal specifiers');
     expect(() =>
       assertStaticPluginImports('export const load = name => import(name)', 'bad.ts'),
     ).toThrow('literal');

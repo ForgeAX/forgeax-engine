@@ -109,6 +109,7 @@ export {
   meshAttributeChannels,
   meshAttributeLayout,
   meshAttributeWindow,
+  skinWeightDenominator,
 } from './mesh-storage';
 export { packMeshTangentFrame32 } from './pack-tangent-frame32';
 export { createPlaneGeometry } from './plane';
@@ -145,8 +146,12 @@ export {
   deriveVertexLayoutProjection,
   deriveVertexLayoutProjectionFromMask,
   type GpuVertexBufferLayoutEntry,
+  interleaveStaticMeshVertexStreams,
+  type MeshVertexStreamRange,
   type PackedVertexAttributes,
   packInterleavedVertexAttributes,
+  prepareStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
   unpackInterleavedVertexAttributes,
   VertexAttributePackError,

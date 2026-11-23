@@ -1,17 +1,22 @@
 import { vec3 } from '@forgeax/engine-math';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
+import { hasForwardShadowCoverage } from '../../pipeline/forward-shadow-admission';
 import type {
   DispatchList,
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../../render-system-extract';
 import {
+  appendGeneratedQueue,
+  captureGeneratedQueueSource,
   dispatchCasterMaterials,
   dispatchPassWork,
   MaterialDispatch,
   MaterialFrame,
+  someCapturedMaterialPass,
+  visitCapturedPassRanks,
 } from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
 import { RenderScene } from '../render-scene';
@@ -307,37 +312,75 @@ it('captures fixed shared versions and prepares programs without iterating bindi
   expect(after.get(resource)?.snapshot).toBe(next);
 });
 
-it('reuses completed draw order after scalar adoption without rereading member trees', () => {
+it('reads the issuing numeric roster on every walk while material values change', () => {
   const resource = new MaterialResource(material(81));
   const owner = new MaterialDispatch();
-  const rows = Array.from({ length: 64 }, (_, index) => slot(index, resource));
+  const rows = Array.from({ length: 320 }, (_, index) => slot(index, resource));
   for (const row of rows) owner.bind(row.slot, row.snapshot);
-  const frame = query(owner, fixedSlots(rows));
+  const slots = fixedSlots(rows);
+  const frame = query(owner, slots);
   const consumed = [...frame];
-  const groups = (owner as unknown as { groups: Map<string, { members: object }> }).groups;
-  const restores: (() => void)[] = [];
-  for (const group of groups.values()) {
-    for (const key of ['left', 'right']) {
-      const descriptor = Object.getOwnPropertyDescriptor(group.members, key);
-      if (descriptor === undefined) continue;
-      Object.defineProperty(group.members, key, {
-        configurable: true,
-        get() {
-          throw new Error('completed draw order traversed again');
-        },
-      });
-      restores.push(() => Object.defineProperty(group.members, key, descriptor));
-    }
-  }
+  const reads = vi.spyOn(
+    frame as unknown as { entry(pass: object, slot: number): unknown },
+    'entry',
+  );
   try {
-    resource.adopt({ ...resource.snapshot, roughness: 0.75 });
-    owner.adopt(resource);
-    expect(query(owner, fixedSlots(rows))).toBe(frame);
-    expect([...frame]).toEqual(consumed);
-    expect(frame.slice(20, 30)).toEqual(consumed.slice(20, 30));
+    for (let change = 0; change < 3; change++) {
+      resource.adopt({ ...resource.snapshot, roughness: (change + 1) / 4 });
+      owner.adopt(resource);
+      expect(query(owner, slots)).toBe(frame);
+      const oneWalk: number[] = [];
+      frame.forEach((entry) => {
+        oneWalk.push(entry.entityIndex);
+      });
+      expect(oneWalk).toEqual(rows.map((row) => row.entityKey));
+      expect(reads).toHaveBeenCalledTimes(frame.length);
+      expect([...frame]).toEqual(consumed);
+      expect(reads).toHaveBeenCalledTimes(frame.length * 2);
+      expect(frame.slice(120, 140)).toEqual(consumed.slice(120, 140));
+      reads.mockClear();
+    }
   } finally {
-    for (const restore of restores.reverse()) restore();
+    reads.mockRestore();
   }
+});
+
+it('seeks a changing multi-group Pass by rank across page boundaries and large entity identities', () => {
+  const common = new MaterialResource(material(10, 1000));
+  const extra = Array.from({ length: 5 }, (_, i) => new MaterialResource(material(11 + i, 3000)));
+  const owner = new MaterialDispatch();
+  const original = Array.from({ length: 1000 }, (_, i) => {
+    const row = slot(i, common);
+    const entityKey = 2 ** 42 + ((i * 499) % 1000) * 19;
+    const companion = extra[i % extra.length] as MaterialResource;
+    return {
+      ...row,
+      entityKey,
+      snapshot: { ...row.snapshot, entityKey, materials: [common, companion] },
+    };
+  });
+  for (const row of original) owner.bind(row.slot, row.snapshot);
+  const current = [...original];
+  const first = query(owner, fixedSlots(original));
+  for (let round = 0; round < 3; round++) {
+    const row = current[round * 31] as RenderSceneSlot;
+    owner.remove(row.slot);
+    current.splice(round * 31, 1);
+    const frame = query(owner, fixedSlots([...current]));
+    const ordered = current.map((value) => value.entityKey).sort((a, b) => a - b);
+    for (const i of [0, 1, 17, 128, 511, ordered.length - 2]) {
+      expect(frame.at(i)?.entityIndex).toBe(ordered[i]);
+      const end = Math.min(i + 12, ordered.length);
+      expect(frame.slice(i, end).map((entry) => entry.entityIndex)).toEqual(ordered.slice(i, end));
+    }
+    expect([...frame].slice(0, ordered.length).map((entry) => entry.entityIndex)).toEqual(ordered);
+  }
+  expect(first.slice(980, 1000).map((entry) => entry.entityIndex)).toEqual(
+    original
+      .map((row) => row.entityKey)
+      .sort((a, b) => a - b)
+      .slice(980),
+  );
 });
 
 it('keeps complete nested walks independent when an outer forEach throws', () => {
@@ -438,6 +481,29 @@ it('retains hidden material versions and earlier frames after removal and rebind
   expect(before.get(resource)?.passes[0]?.queue).toBe(2000);
 });
 
+it('judges current shadow coverage once per occupied material pass across changing membership', () => {
+  const lit = new MaterialResource({
+    ...material(1),
+    materialProgramKeys: { Forward: 'forgeax::default-standard-pbr' },
+  });
+  const other = new MaterialResource(material(2));
+  const owner = new MaterialDispatch();
+  const rows = Array.from({ length: 256 }, (_, index) => slot(index, lit));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  for (let frame = 0; frame < 6; frame++) {
+    const index = frame >> 1;
+    const changed = slot(index, frame % 2 === 0 ? other : lit);
+    rows[index] = changed;
+    owner.bind(index, changed.snapshot);
+    const list = query(owner, fixedSlots(rows));
+    const classify = vi.fn(() => false);
+    expect(someCapturedMaterialPass(list, classify)).toBe(false);
+    expect(classify).toHaveBeenCalledTimes(frame % 2 === 0 ? 2 : 1);
+    expect(hasForwardShadowCoverage(list)).toBe(frame % 2 !== 0);
+    expect(hasForwardShadowCoverage([...list])).toBe(frame % 2 !== 0);
+  }
+});
+
 function material(handle: number, queue = 2000, shadow = false): MaterialSnapshot {
   return {
     materialHandle: handle,
@@ -475,6 +541,56 @@ function slot(id: number, resource: MaterialResource, caster = true): RenderScen
   };
   return { slot: id, generation: 1, version: 0, entityKey: id, snapshot };
 }
+
+it('dispatches an unread captured frame at its original entity and layer after the slot is reused', () => {
+  const resource = new MaterialResource(material(23));
+  const owner = new MaterialDispatch();
+  const firstRow = slot(0, resource);
+  const secondRow = { ...slot(14, resource), slot: 0 };
+  owner.bind(0, firstRow.snapshot);
+  const firstFrame = query(owner, fixedSlots([firstRow]));
+  owner.remove(0);
+  owner.bind(0, secondRow.snapshot);
+  const secondFrame = query(owner, fixedSlots([secondRow]));
+  expect(secondFrame.at(0)).toMatchObject({ entityIndex: 14, layer: 2, renderableIndex: 0 });
+  expect(firstFrame.at(0)).toMatchObject({ entityIndex: 0, layer: 0, renderableIndex: 0 });
+  expect([...secondFrame][0]).toMatchObject({ entityIndex: 14, layer: 2 });
+});
+
+it('projects display ranks without resolving shadow members and honors a replaced iterator', () => {
+  const resource = new MaterialResource(material(1, 2000, true));
+  const owner = new MaterialDispatch();
+  const rows = [slot(3, resource), slot(47, resource, false), slot(99, resource)];
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const dispatch = query(owner, slots);
+  const ranks = vi.spyOn(slots, 'indexOfSlot');
+  try {
+    const projected: number[] = [];
+    expect(visitCapturedPassRanks(dispatch, 'display', (index) => projected.push(index))).toBe(
+      true,
+    );
+    expect(ranks).toHaveBeenCalledTimes(rows.length);
+    ranks.mockClear();
+    const casters: number[] = [];
+    expect(visitCapturedPassRanks(dispatch, 'shadow', (index) => casters.push(index))).toBe(true);
+    expect(ranks).toHaveBeenCalledTimes(2);
+    expect(casters.sort()).toEqual([0, 2]);
+    const flat = [...dispatch].filter((entry) => entry.tags.LightMode !== 'ShadowCaster');
+    expect(projected).toEqual(flat.map((entry) => entry.renderableIndex));
+    ranks.mockClear();
+    const reread: number[] = [];
+    expect(visitCapturedPassRanks(dispatch, 'display', (index) => reread.push(index))).toBe(true);
+    expect(reread).toEqual(projected);
+    expect(ranks).not.toHaveBeenCalled();
+    const accessor = vi.fn(() => flat[Symbol.iterator].bind(flat));
+    Object.defineProperty(dispatch, Symbol.iterator, { get: accessor, configurable: true });
+    expect(visitCapturedPassRanks(dispatch, 'display', () => {})).toBe(false);
+    expect(accessor).not.toHaveBeenCalled();
+  } finally {
+    ranks.mockRestore();
+  }
+});
 
 it('adopts shared Passes while retaining exact prior frames and participation', () => {
   const resource = new MaterialResource(material(1));
@@ -708,8 +824,8 @@ it('adopts values and Passes without visiting Mesh expressions and retains unrel
   expect(query(owner, fixedSlots(rows), meshes)).toBe(before);
   shared.adopt(material(51, 3300));
   owner.adopt(shared);
-  groups.values = iterate;
   const changedPass = query(owner, fixedSlots(rows), meshes);
+  groups.values = iterate;
   expect(changedPass.length).toBe(rows.length);
   expect(changedPass.at(0)?.queue).toBe(3300);
   owner.adopt(next);
@@ -717,12 +833,13 @@ it('adopts values and Passes without visiting Mesh expressions and retains unrel
   groups.values = () => {
     throw new Error('Mesh adoption visited binding groups');
   };
+  let changedMesh: ReturnType<MaterialDispatch['query']>;
   try {
     owner.prepare(meshes);
+    changedMesh = owner.query(fixedSlots(rows), meshes);
   } finally {
     groups.values = iterate;
   }
-  const changedMesh = owner.query(fixedSlots(rows), meshes);
   expect(
     changedMesh.filter((entry) => entry.materialHandle === 52).map((entry) => entry.entityIndex),
   ).toEqual([512]);
@@ -730,6 +847,55 @@ it('adopts values and Passes without visiting Mesh expressions and retains unrel
   const expanded = [...changedMesh];
   for (const index of [0, 1, 20, 513, 1023]) expect(changedMesh.at(index)).toBe(expanded[index]);
   expect(changedMesh.slice(500, 520)).toEqual(expanded.slice(500, 520));
+});
+
+it('re-resolves only groups using a changed source handle and keeps failed Mesh variants private', async () => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const geometry = createPrimitiveMesh('cube').unwrap();
+  const raw = Array.from({ length: 64 }, (_, i) => new MaterialResource(material(i + 1)));
+  const variants = raw.map((_, i) => new MaterialResource(material(101 + i)));
+  const chosen = 31;
+  const source = raw[chosen] as MaterialResource;
+  const resolve = vi.fn((handle: number) => variants[handle - 1] as MaterialResource);
+  const owner = new MaterialDispatch(resolve);
+  let meshes = new MeshFrame();
+  const rows = raw.map((resource, index) => {
+    const base = slot(index, resource);
+    const row = {
+      ...base,
+      snapshot: { ...base.snapshot, assetHandle: index + 1, materialOverrides: [resource] },
+    };
+    meshes = meshes.with(index + 1, geometry);
+    owner.bind(row.slot, row.snapshot);
+    return row;
+  });
+  const slots = fixedSlots(rows);
+  const before = query(owner, slots, meshes);
+  expect(before.at(chosen)?.materialHandle).toBe(101 + chosen);
+  for (let tick = 0; tick < 60; tick++) {
+    const next = material(300 + tick, 3200);
+    if (tick % 2 === 0) variants[chosen] = new MaterialResource(next);
+    else (variants[chosen] as MaterialResource).adopt(next);
+    source.adopt(material(chosen + 1, 2500 + tick));
+    owner.adopt(source);
+    resolve.mockClear();
+    let fences = 0;
+    expect(() =>
+      owner.query(slots, meshes, () => {
+        if (++fences === 2) throw new Error('late variant change');
+      }),
+    ).toThrow('late variant change');
+    expect(resolve.mock.calls.map(([handle]) => handle)).toEqual([chosen + 1]);
+    resolve.mockClear();
+    const frame = owner.query(slots, meshes);
+    expect(resolve.mock.calls.map(([handle]) => handle)).toEqual([chosen + 1]);
+    expect(frame.length).toBe(64);
+    expect(frame.at(-1)?.materialHandle).toBe(300 + tick);
+    expect(before.at(chosen)?.materialHandle).toBe(101 + chosen);
+  }
+  for (const row of rows) owner.remove(row.slot);
+  expect(owner.query(fixedSlots([]), meshes).length).toBe(0);
 });
 
 it('retains an admitted default across replacing the last old Mesh binding', async () => {
@@ -1057,6 +1223,27 @@ it.each([
   ).toBeGreaterThan(700);
 });
 
+it('retires individual observed lanes and shrinks sparse Pass pages across queries', () => {
+  const common = new MaterialResource(material(31));
+  const owner = new MaterialDispatch();
+  const rows = Array.from({ length: 96 }, (_, i) => slot(i, common));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const first = owner.query(slots);
+  const before = [0, 2, 31, 32, 63, 95].map((index) => first.at(index));
+  const middle = owner.query(slots);
+  expect(middle.at(0)).toBe(before[0]);
+  expect(middle.at(31)).toBe(before[2]);
+  expect(middle.at(63)).toBe(before[4]);
+  const current = owner.query(slots);
+  for (const [ordinal, index] of [0, 2, 31, 32, 63, 95].entries()) {
+    const entry = current.at(index);
+    expect(entry).toEqual(before[ordinal]);
+    if (index === 0 || index === 31 || index === 63) expect(entry).toBe(before[ordinal]);
+    else expect(entry).not.toBe(before[ordinal]);
+  }
+});
+
 it('keeps dispatch entries only while consecutive queries read them; bindings own no entry objects', () => {
   const resource = new MaterialResource(material(131, 2000, true));
   const rows = Array.from({ length: 64 }, (_, id) => slot(id, resource));
@@ -1079,6 +1266,61 @@ it('keeps dispatch entries only while consecutive queries read them; bindings ow
   const columns = (owner as unknown as { bindings: { groups: unknown[]; count: number } }).bindings;
   expect(columns.count).toBe(64);
   expect(new Set(columns.groups).size).toBe(1);
+});
+
+it('settles changed material groups without visiting unrelated group or work entries', () => {
+  const owner = new MaterialDispatch();
+  const materials = Array.from({ length: 1024 }, (_, i) => new MaterialResource(material(i + 1)));
+  const rows = Array.from({ length: materials.length * 2 }, (_, i) =>
+    slot(i, materials[i % materials.length] as MaterialResource),
+  );
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const original = owner.query(slots);
+  const active = (
+    owner as unknown as {
+      active: {
+        queryWork: Map<MaterialResource, unknown>;
+        groupResources: Map<object, unknown>;
+      };
+    }
+  ).active;
+  const work = active.queryWork,
+    groups = active.groupResources;
+  expect(work.size).toBe(materials.length);
+  expect(groups.size).toBe(materials.length);
+  const readWork = vi.spyOn(work, Symbol.iterator),
+    readGroups = vi.spyOn(groups, Symbol.iterator);
+  const untouched = work.get(materials[2] as MaterialResource);
+  const first = materials[0] as MaterialResource,
+    second = materials[1] as MaterialResource;
+  try {
+    for (let frame = 0; frame < 60; frame++) {
+      const target = frame % 2 === 0 ? second : first;
+      owner.bind(0, slot(0, target).snapshot);
+      const before = work.get(first);
+      let checks = 0;
+      expect(() =>
+        owner.query(slots, undefined, () => {
+          if (++checks === 2) throw Error('changed source at the publication fence');
+        }),
+      ).toThrow('changed source at the publication fence');
+      expect(work.get(first)).toBe(before);
+      const now = owner.query(slots);
+      expect(now.length).toBe(original.length);
+      expect(owner.materials().get(first)?.bindings).toBe(target === first ? 2 : 1);
+      expect(owner.materials().get(second)?.bindings).toBe(target === second ? 3 : 2);
+      expect(active.queryWork.get(materials[2] as MaterialResource)).toBe(untouched);
+    }
+    expect(readWork).not.toHaveBeenCalled();
+    expect(readGroups).not.toHaveBeenCalled();
+    expect(active.queryWork).toBe(work);
+    expect(active.groupResources).toBe(groups);
+    expect(original.at(0)?.materialHandle).toBe(first.snapshot.materialHandle);
+  } finally {
+    readWork.mockRestore();
+    readGroups.mockRestore();
+  }
 });
 
 it('shares the caster set with members until a visible non-caster forks it, and rejoins after', () => {
@@ -1356,4 +1598,32 @@ it('retains resolved culling materials and Passes across equal slots in a geomet
   expect(cullingDisplacementRadius(row.snapshot, next.get(1), owner.materials())).toBe(0);
   expect(query(owner, fixedSlots(rows), next)).toBe(passes);
   expect(resolve).toHaveBeenCalledTimes(calls);
+});
+
+it('inserts generated commands after equal queues without expanding the native material roster', () => {
+  const owner = new MaterialDispatch();
+  const rows = [1000, 3000, 4000].map((queue, rank) =>
+    slot(rank, new MaterialResource(material(rank + 1, queue))),
+  );
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const base = owner.query(fixedSlots(rows));
+  const middle = base.at(1);
+  assert(middle !== undefined);
+  const generated = { ...middle, renderableIndex: 88 };
+  const end = base.at(-1);
+  const capture = captureGeneratedQueueSource(base);
+  expect(capture).toBe(base);
+  const merged = appendGeneratedQueue(capture, [generated]);
+  const sequence = [...merged];
+  expect(sequence.map((row) => row.queue)).toEqual([1000, 3000, 3000, 4000]);
+  expect(sequence[2]).toBe(generated);
+  for (let i = 0; i < sequence.length; i++) expect(merged.at(i)).toBe(sequence[i]);
+  expect(merged.at(-1)).toBe(end);
+  expect(merged.at(-5)).toBeUndefined();
+  const borrowed = [generated, ...base];
+  const fixed = captureGeneratedQueueSource(borrowed);
+  borrowed.length = 0;
+  expect([...appendGeneratedQueue(fixed, [])].map((row) => row.queue)).toEqual([
+    1000, 3000, 3000, 4000,
+  ]);
 });

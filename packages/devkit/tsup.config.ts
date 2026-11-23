@@ -8,6 +8,7 @@ export default defineConfig([
     loader: { '.svg': 'text' },
     entry: {
       index: 'src/index.ts',
+      'desktop-platform': 'src/build/desktop-platform.ts',
       'build-process': 'src/build/build-process.ts',
       'pack-program-host': 'src/build/pack-program-host.ts',
       'plugin-build': 'src/plugin-build.ts',

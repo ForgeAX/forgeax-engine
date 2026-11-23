@@ -85,7 +85,7 @@ function fixture() {
       output: undefined,
       viewport,
       captureSize: { width: 1, height: 1 },
-      picture: { texture: undefined, viewport, channels: 'all' },
+      picture: { source: undefined, viewport, channels: 'all' },
       renderedFrames: 0,
       lastFrame: Number.NEGATIVE_INFINITY,
       rendered: false,

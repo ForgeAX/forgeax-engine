@@ -14,7 +14,10 @@ import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
-it('publishes one native canvas frame for shared models, updates without ECS writes, and retires owned clones', () => {
+it.each([
+  false,
+  true,
+])('publishes shared canvas frames and retires owned clones with snapshot %s', (snapshot) => {
   const assets = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
@@ -28,7 +31,7 @@ it('publishes one native canvas frame for shared models, updates without ECS wri
   if (ctx === null) throw new Error('Canvas 2D context unavailable');
   ctx.fillStyle = 'red';
   ctx.fillRect(0, 0, 8, 8);
-  const texture = new CanvasTexture(canvas);
+  const texture = new CanvasTexture(canvas, { snapshot });
   const material = assets
     .create(
       Materials.unlit([1, 1, 1, 1], {
@@ -95,7 +98,12 @@ it('publishes one native canvas frame for shared models, updates without ECS wri
     candidate.discard();
     const signal = updated.resources.canvasFrame?.(id)?.signal;
     canvas.width = 0;
-    expect(publish().packet.canvasFrames?.[0]?.frame).toBeUndefined();
+    if (snapshot) {
+      expect(() => texture.update()).toThrow();
+      expect(publish().packet.canvasFrames?.[0]?.frame?.displayWidth).toBe(8);
+    } else {
+      expect(publish().packet.canvasFrames?.[0]?.frame).toBeUndefined();
+    }
     expect(signal?.aborted).toBe(false);
     canvas.width = 8;
     texture.update();

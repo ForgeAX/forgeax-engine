@@ -2,12 +2,11 @@ import { isStandardRootModule } from '@forgeax/engine-pack';
 import {
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_OBJECT_SPACE_NORMAL_BIT,
+  STANDARD_ORM_REUSE_OVERRIDE,
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
   STANDARD_PARALLAX_HEIGHT_DEFINE,
   STANDARD_PARALLAX_HEIGHT_PAIR,
   STANDARD_PHYSICAL_BINDING_START,
-  STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
-  STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING,
   STANDARD_SAMPLE_REUSE,
   STANDARD_SHARED_TRANSMISSION_DEFINE,
   STANDARD_SHARED_TRANSMISSION_SLOTS,
@@ -60,15 +59,19 @@ function hasTransmission(names: ReadonlySet<string>): boolean {
 
 /**
  * Static switches that select a Standard code path without touching the ABI.
- * `environmentBrdfApprox` opts into the analytic EnvBRDFApprox fit; the
- * default program samples the preintegrated environment BRDF LUT.
+ * Standard defaults to the analytic environment BRDF. An explicit false
+ * selects the preintegrated LUT for materials that need it.
  */
 export function standardStaticSwitchDefines(
   switches: MaterialStaticSwitches | undefined,
   passes?: readonly MaterialPass[],
 ): Record<string, boolean> {
-  if (switches?.environmentBrdfApprox !== true || !usesStandardTemplate(passes)) return {};
-  return { ENV_BRDF_FIT: true };
+  if (switches?.environmentBrdfApprox !== false || !usesStandardTemplate(passes)) return {};
+  return { ENV_BRDF_LUT: true };
+}
+
+export function standardTextureAvailabilityDefine(name: string): string {
+  return `${name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_AVAILABLE`;
 }
 
 /** Shared by exact-root cooking and the engine's fixed-layout shader producer. */
@@ -107,8 +110,7 @@ export function standardMaterialDefines(
     defines[STANDARD_PARALLAX_HEIGHT_DEFINE] = true;
   for (const parameter of schema) {
     if (parameter.type === 'texture2d') {
-      const name = parameter.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
-      defines[`${name}_AVAILABLE`] = true;
+      defines[standardTextureAvailabilityDefine(parameter.name)] = true;
     }
   }
   return defines;
@@ -198,23 +200,38 @@ export function lowerStandardContract(
   });
 }
 
-/**
- * Move the template's reserved physical texture declarations into the compact
- * resource region for this exact root contract.  The template keeps readable
- * canonical slots (26, 28, …) while the cooked artifact owns the final ABI;
- * absent slots are removed by the normal boolean-define specialization pass.
- */
+/** Standard material slots shared by generated declarations and pass resources. */
+export function standardMaterialResourceBindings(schema: readonly ParamSchemaEntry[]) {
+  const fields = standardPhysicalTextureFields(schema);
+  const physicalFieldSet = new Set<string>(fields);
+  const nonPhysicalSchema = schema.filter((entry) => !physicalFieldSet.has(entry.name));
+  const nonPhysical = derive(nonPhysicalSchema);
+  const bindingByName = new Map<string, number>();
+  for (const resource of nonPhysical.resourceBindings) {
+    bindingByName.set(resource.name, resource.binding);
+    if (resource.kind === 'sampler' && resource.parameter !== undefined)
+      bindingByName.set(`${resource.parameter.replace(/Texture$/, '')}Sampler`, resource.binding);
+  }
+  for (const [index, field] of STANDARD_PHYSICAL_TEXTURE_FIELDS.entries()) {
+    if (!fields.includes(field)) continue;
+    bindingByName.set(`${field}_sampler`, STANDARD_PHYSICAL_BINDING_START + index * 2);
+    bindingByName.set(
+      `${field.replace(/Texture$/, '')}Sampler`,
+      STANDARD_PHYSICAL_BINDING_START + index * 2,
+    );
+    bindingByName.set(field, STANDARD_PHYSICAL_BINDING_START + 1 + index * 2);
+  }
+  return { userRegionBindingEnd: nonPhysical.userRegionBindingEnd, bindingByName };
+}
+
+/** Lower the pass resources, texture aliases, and Standard texture-use policy. */
 export function lowerStandardPhysicalBindings(
   source: string,
   schema: readonly ParamSchemaEntry[],
   specializeTextures = false,
   defines: Readonly<Record<string, boolean>> = {},
 ): string {
-  const fields = standardPhysicalTextureFields(schema);
   const names = new Set(schema.map((entry) => entry.name));
-  const physicalFieldSet = new Set<string>(fields);
-  const nonPhysicalSchema = schema.filter((entry) => !physicalFieldSet.has(entry.name));
-  const nonPhysical = derive(nonPhysicalSchema);
   let lowered = source;
   const loadOnlySamplers = new Set(
     schema.flatMap((parameter) =>
@@ -236,19 +253,11 @@ export function lowerStandardPhysicalBindings(
         .join('\n'),
     );
   }
-  // The template keeps readable canonical slots for the base textures and
-  // engine injections.  The effective root may omit the old specular-color
-  // pair or any transmission pair, so move each fixed declaration to the
-  // exact binding derived from the effective non-physical schema before
-  // compacting IBL/transmission and the declaration-driven physical tail.
-  const bindingByName = new Map<string, number>();
-  for (const resource of nonPhysical.resourceBindings) {
-    bindingByName.set(resource.name, resource.binding);
-    if (resource.kind === 'sampler' && resource.parameter !== undefined)
-      bindingByName.set(`${resource.parameter.replace(/Texture$/, '')}Sampler`, resource.binding);
-  }
+  // Engine inputs follow the exact material region. The authored maps already
+  // use the generated layout, except for device-specific aliases below.
+  const { userRegionBindingEnd, bindingByName } = standardMaterialResourceBindings(schema);
   const iblNames = [
-    'irradianceMap',
+    'skySh',
     'irradianceSampler',
     'prefilterMap',
     'prefilterSampler',
@@ -256,20 +265,13 @@ export function lowerStandardPhysicalBindings(
     'skylight',
   ];
   for (const [index, name] of iblNames.entries())
-    bindingByName.set(name, nonPhysical.userRegionBindingEnd + index);
+    bindingByName.set(name, userRegionBindingEnd + index);
   if (hasTransmission(names)) {
-    bindingByName.set('transmissionBackdropSampler', nonPhysical.userRegionBindingEnd + 6);
-    bindingByName.set('transmissionBackdropTexture', nonPhysical.userRegionBindingEnd + 7);
+    bindingByName.set('transmissionBackdropSampler', userRegionBindingEnd + 6);
+    bindingByName.set('transmissionBackdropTexture', userRegionBindingEnd + 7);
   }
   if (names.has('directMultiscatteringLut'))
     bindingByName.set('directDfgLut', STANDARD_DIRECT_DFG_LUT_BINDING);
-  if (names.has('planarReflection')) {
-    bindingByName.set(
-      'standardPlanarReflectionTexture',
-      STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
-    );
-    bindingByName.set('standardPlanarReflection', STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING);
-  }
   // The low-limit transmission variant declares no split scalar maps; its
   // transmission resources take over those exact pairs of the fixed layout.
   if (defines[STANDARD_SHARED_TRANSMISSION_DEFINE] === true) {
@@ -279,17 +281,11 @@ export function lowerStandardPhysicalBindings(
       if (texture === undefined || sampler === undefined)
         throw new Error(`shared transmission host ${slot.host} is absent from the Standard ABI`);
       bindingByName.set(slot.resource, texture);
-      if ('sampler' in slot) bindingByName.set(slot.sampler, sampler);
+      if ('sampler' in slot) {
+        bindingByName.set(`${slot.resource}_sampler`, sampler);
+        bindingByName.set(slot.sampler, sampler);
+      }
     }
-  }
-  for (const [index, field] of STANDARD_PHYSICAL_TEXTURE_FIELDS.entries()) {
-    if (!fields.includes(field)) continue;
-    bindingByName.set(`${field}_sampler`, STANDARD_PHYSICAL_BINDING_START + index * 2);
-    bindingByName.set(
-      `${field.replace(/Texture$/, '')}Sampler`,
-      STANDARD_PHYSICAL_BINDING_START + index * 2,
-    );
-    bindingByName.set(field, STANDARD_PHYSICAL_BINDING_START + 1 + index * 2);
   }
   // Remap named declarations in one pass. Replacing bare binding numbers can
   // move an unrelated generated resource twice and alias a physical texture.
@@ -341,7 +337,9 @@ export function lowerStandardPhysicalBindings(
         const sourceName = source.charAt(0).toUpperCase() + source.slice(1);
         const selectorMask = 2 ** entry.width - 1;
         const value = specializeTextures
-          ? `((standardTextureMask >> ${entry.shift}u) & ${selectorMask}u) == ${index + 1}u`
+          ? entry.target === 'occlusionTexture'
+            ? 'standardOrmReuse != 0u'
+            : `((standardTextureMask >> ${entry.shift}u) & ${selectorMask}u) == ${index + 1}u`
           : 'false';
         return `fn standardReuses${targetName}From${sourceName}() -> bool { return ${value}; }`;
       }),
@@ -369,11 +367,17 @@ export function lowerStandardPhysicalBindings(
   const parallaxFunction = names.has('displacementTexture')
     ? `\nfn standardUsesParallaxDisplacement() -> bool { return ${parallaxValue}; }`
     : '';
-  const textureOverride = specializeTextures
-    ? `@id(${STANDARD_TEXTURE_MASK_OVERRIDE}) override standardTextureMask: u32 = ${standardTextureMask(STANDARD_MATERIAL_PARAM_SCHEMA)}u;\n`
-    : '';
+  const textureOverride = standardTextureOverrides(names, specializeTextures);
   // Keep the import prelude at the entry head. naga_oil resolves imports in
   // declaration order; prepending generated helper functions would make a
   // composable Surface import disappear before its inlined body is lowered.
   return `${lowered}\n${textureOverride}${textureFunctions}\n${sampleReuseFunctions}\n${projectionFunctions}${parallaxFunction}`;
+}
+
+function standardTextureOverrides(names: ReadonlySet<string>, specializeTextures: boolean): string {
+  if (!specializeTextures) return '';
+  const mask = `@id(${STANDARD_TEXTURE_MASK_OVERRIDE}) override standardTextureMask: u32 = ${standardTextureMask(STANDARD_MATERIAL_PARAM_SCHEMA)}u;\n`;
+  return names.has('occlusionTexture')
+    ? `${mask}@id(${STANDARD_ORM_REUSE_OVERRIDE}) override standardOrmReuse: u32 = 0u;\n`
+    : mask;
 }

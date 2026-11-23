@@ -1,12 +1,27 @@
 import { isStandardPbrMaterialShader } from '../pbr-pipeline';
 import { renderStateHash } from '../pipeline-spec';
 import type { DispatchEntry, DispatchList } from '../render-system-extract';
-import { FirstEntryMap } from './first-entry-map';
-import type { ValidatedRenderable } from './frame-snapshot';
+import { FirstEntryTable } from './first-entry-map';
+import type { DrawRows } from './frame-snapshot';
 
 /** One row's selected material Passes, in the emitted dispatch order. */
-export type MaterialPasses = FirstEntryMap<number, DispatchEntry | DispatchEntry[]>;
-export interface MaterialPassLookup {
+export class MaterialPasses extends FirstEntryTable<number, DispatchEntry | DispatchEntry[]> {
+  [Symbol.iterator](): IterableIterator<number> {
+    return this.keys();
+  }
+}
+
+export type MaterialHandles = Pick<ReadonlySet<number>, 'has' | 'size' | typeof Symbol.iterator>;
+
+/** Selection reads the handles of the same rows the encoder consumes. */
+export interface MaterialSelectionRows {
+  readonly size: number;
+  get(index: number): MaterialHandles | undefined;
+  has(index: number): boolean;
+  values(): IterableIterator<MaterialHandles>;
+  keys(): IterableIterator<number>;
+}
+export interface MaterialPassLookup extends MaterialSelectionRows {
   readonly temporal: boolean;
   readonly size: number;
   get(index: number): MaterialPasses | undefined;
@@ -16,7 +31,7 @@ export interface MaterialPassLookup {
 /** Exact Scene Pass context that may consume the phase's admitted groups. */
 export interface PreparedGeometryMaterialPasses {
   readonly dispatch: DispatchList;
-  readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly validatedOrdered: DrawRows;
   readonly ordered: boolean;
   readonly temporal: boolean;
   readonly groups: MaterialPassLookup;
@@ -88,7 +103,7 @@ export class MemberMaterialPasses {
     const slot = temporal ? 1 : 0;
     let value = this.groups[slot];
     if (value === undefined) {
-      value = new FirstEntryMap();
+      value = new MaterialPasses();
       for (const entry of this.entries) includeMaterialPass(value, entry, temporal);
       this.groups[slot] = value;
     }
@@ -107,6 +122,10 @@ export function materialPassLookup(
     size,
     temporal,
     get: (index) => rows[index - offset],
+    has: (index) => rows[index - offset] !== undefined,
+    *values() {
+      for (const group of rows) if (group !== undefined) yield group;
+    },
     *keys() {
       for (let index = 0; index < rows.length; index++)
         if (rows[index] !== undefined) yield offset + index;

@@ -130,7 +130,14 @@ export interface MaterialProgramVertexInput {
   readonly format: string;
 }
 
-export type MaterialSurfacePassKind = 'nearest-layer' | 'color' | 'depth' | 'shadow' | 'velocity';
+export type MaterialSurfacePassKind =
+  | 'nearest-layer'
+  | 'color'
+  | 'depth'
+  | 'visibility'
+  | 'forward-color'
+  | 'shadow'
+  | 'velocity';
 
 /** The versioned Water template owns these outputs in WGSL location order. */
 export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
@@ -141,6 +148,11 @@ export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
     { name: 'coverage', format: 'rgba16float' as const },
     { name: 'temporal', format: 'rgba16float' as const },
   ]),
+  visibility: Object.freeze([
+    { name: 'coverage', format: 'rgba16float' as const },
+    { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  'forward-color': Object.freeze([{ name: 'color', format: 'rgba16float' as const }]),
   color: Object.freeze([
     { name: 'color', format: 'rgba16float' as const },
     { name: 'captureSky', format: 'rgba16float' as const },
@@ -169,7 +181,14 @@ export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
 > = Object.freeze({
   standard: Object.freeze(['color'] as const),
   'single-layer-medium': Object.freeze(['nearest-layer', 'color'] as const),
-  'single-layer-water': Object.freeze(['depth', 'color', 'shadow', 'velocity'] as const),
+  'single-layer-water': Object.freeze([
+    'depth',
+    'visibility',
+    'color',
+    'forward-color',
+    'shadow',
+    'velocity',
+  ] as const),
 });
 
 /** Producer-owned model facts shared by the direct and scene-index entries. */

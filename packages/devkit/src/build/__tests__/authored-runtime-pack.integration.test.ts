@@ -22,6 +22,7 @@ import { ok } from '@forgeax/engine/types';
 const runtime = { export: 'generate', dependencies: [], outputs: { 'mesh/first': 'mesh', 'mesh/second': 'mesh' } };
 export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${packageId}'), runtime, build: () => ok({}) });
 export function generate() {
+  console.info('authored-pack-build:${packageId}');
   if (typeof WorkerGlobalScope === 'undefined' || !(self instanceof WorkerGlobalScope))
     throw new Error('runtime generator must run in a Worker');
   const first = createBoxGeometry(2, 1, 1).unwrap();
@@ -67,10 +68,10 @@ globalThis.run = async () => {
 };
 `;
 
-it('delivers an ordinary pack.ts and generates its sibling GUIDs in one Task Worker execution', async () => {
+it('publishes sibling GUIDs once and reuses the complete Pack after Chromium restarts', async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-authored-runtime-pack-')));
   const repository = resolve(import.meta.dirname, '../../../../..');
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   let server: Awaited<ReturnType<typeof createServer>> | undefined;
   try {
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
@@ -83,7 +84,7 @@ it('delivers an ordinary pack.ts and generates its sibling GUIDs in one Task Wor
     await writeFile(
       resolve(root, 'invalid.pack.ts'),
       generator
-        .replace(packageId, failureId)
+        .replaceAll(packageId, failureId)
         .replace(
           "return ok({ 'mesh/first': first, 'mesh/second': second });",
           "return ok({ 'mesh/first': first });",
@@ -98,21 +99,24 @@ it('delivers an ordinary pack.ts and generates its sibling GUIDs in one Task Wor
       },
     });
     if (!scan.ok) throw scan.error;
-    await expect(
-      prepareAuthoredRuntimePacks(root, scan.value.declarations, sourceSnapshot, 'wechat'),
-    ).rejects.toMatchObject({ code: 'runtime-pack-task-worker-unavailable' });
     const { packs } = await prepareAuthoredRuntimePacks(
       root,
       scan.value.declarations,
       sourceSnapshot,
     );
+    await expect(
+      prepareAuthoredRuntimePacks(root, scan.value.declarations, sourceSnapshot, 'native'),
+    ).resolves.toEqual({ packs });
+    await expect(
+      prepareAuthoredRuntimePacks(root, scan.value.declarations, sourceSnapshot, 'wechat'),
+    ).resolves.toEqual({ packs });
     expect(packs.map(({ source }) => source.source)).toEqual([
       'geometry.pack.ts',
       'invalid.pack.ts',
     ]);
     await writeFile(
       resolve(root, 'runtime-packs.ts'),
-      runtimePacksModule(authoredRuntimePackDeclarations(packs)),
+      runtimePacksModule(authoredRuntimePackDeclarations(packs), 'authored-pack-cache-test'),
     );
     await writeFile(resolve(root, 'main.ts'), entry);
     await writeFile(
@@ -129,17 +133,25 @@ it('delivers an ordinary pack.ts and generates its sibling GUIDs in one Task Wor
     await server.listen();
     const executablePath = process.env.FORGEAX_BROWSER_EXECUTABLE;
     const channel = process.env.FORGEAX_CHROME_CHANNEL;
-    browser = await chromium.launch({
-      headless: true,
-      ...(executablePath !== undefined
-        ? { executablePath }
-        : channel !== undefined
-          ? { channel }
-          : {}),
-      chromiumSandbox: true,
-    });
+    const openBrowser = () =>
+      chromium.launchPersistentContext(resolve(root, 'profile'), {
+        headless: true,
+        ...(executablePath !== undefined
+          ? { executablePath }
+          : channel !== undefined
+            ? { channel }
+            : {}),
+        chromiumSandbox: true,
+      });
+    browser = await openBrowser();
     const page = await browser.newPage();
-    await page.goto(server.resolvedUrls?.local[0] ?? 'http://127.0.0.1:5173/');
+    let builds = 0;
+    const countBuilds = (message: { text(): string }) => {
+      if (message.text() === `authored-pack-build:${packageId}`) builds++;
+    };
+    page.on('console', countBuilds);
+    const url = server.resolvedUrls?.local[0] ?? 'http://127.0.0.1:5173/';
+    await page.goto(url);
     const result = await page.evaluate(() => {
       const run = (globalThis as unknown as { run: () => Promise<Record<string, unknown>> }).run;
       return run();
@@ -170,6 +182,77 @@ it('delivers an ordinary pack.ts and generates its sibling GUIDs in one Task Wor
     });
     expect(result.afterFailure).toMatchObject({ lifecycle: 'missing' });
     expect(result.afterFailure).not.toHaveProperty('publication');
+    expect(builds).toBe(1);
+    await page.waitForFunction(
+      () =>
+        new Promise<boolean>((resolve, reject) => {
+          const request = indexedDB.open('forgeax.runtime-pack-cache.v1:authored-pack-cache-test');
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const db = request.result;
+            const count = db.transaction('packs').objectStore('packs').count();
+            count.onsuccess = () => {
+              db.close();
+              resolve(count.result === 1);
+            };
+            count.onerror = () => {
+              db.close();
+              reject(count.error);
+            };
+          };
+        }),
+    );
+    await browser.close();
+    builds = 0;
+    browser = await openBrowser();
+    const reopened = await browser.newPage();
+    reopened.on('console', countBuilds);
+    await reopened.goto(url);
+    const warm = await reopened.evaluate(() => {
+      const run = (globalThis as unknown as { run: () => Promise<Record<string, unknown>> }).run;
+      return run();
+    });
+    expect(warm.loaded).toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    expect(warm.executions).toEqual(result.executions);
+    expect(warm.afterFailure).not.toHaveProperty('publication');
+    expect(builds).toBe(0);
+    await reopened.evaluate(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open('forgeax.runtime-pack-cache.v1:authored-pack-cache-test');
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const write = db.transaction('packs', 'readwrite');
+            const cursor = write.objectStore('packs').openCursor();
+            cursor.onsuccess = () => {
+              cursor.result?.update({ accessedAt: Date.now(), bytes: new Blob(['corrupt']) });
+            };
+            write.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            write.onabort = () => {
+              db.close();
+              reject(write.error);
+            };
+          };
+        }),
+    );
+    await reopened.reload();
+    const repaired = await reopened.evaluate(() => {
+      const run = (globalThis as unknown as { run: () => Promise<Record<string, unknown>> }).run;
+      return run();
+    });
+    expect(repaired.loaded).toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    expect(repaired.executions).toEqual(result.executions);
+    expect(builds).toBe(1);
   } finally {
     await browser?.close();
     await server?.close();

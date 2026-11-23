@@ -27,7 +27,10 @@ export function prepareStandardLighting(
   scratch?: ClusterBinScratch,
   owner?: StandardClusterMembershipOwner,
 ): Result<PreparedStandardLighting, RenderError> {
-  const layout = createStandardClusterLayout(directLightSlotCapacity, frame.grid);
+  const layout =
+    owner === undefined
+      ? createStandardClusterLayout(directLightSlotCapacity, frame.grid)
+      : owner.graphLayout.layout(directLightSlotCapacity, frame.grid);
   const membership =
     owner === undefined
       ? deriveStandardMembership(frame, layout, scratch)
@@ -36,13 +39,18 @@ export function prepareStandardLighting(
   const derived = membership.value;
   return ok({
     // Forward the list lazily: a spread would materialize it for GPU producers.
+    publication: derived.publication,
     clusterGrid: derived.clusterGrid,
     get lightIndexList() {
       return derived.lightIndexList;
     },
-    lightBounds: derived.lightBounds,
+    boundsColumn: derived.boundsColumn,
+    get lightBounds() {
+      return derived.lightBounds;
+    },
     membershipLightCount: derived.membershipLightCount,
     membershipEntryCount: derived.membershipEntryCount,
+    occupiedClusterCount: derived.occupiedClusterCount,
     clusterEntryCapK: derived.clusterEntryCapK,
     droppedClusterEntries: derived.droppedClusterEntries,
     scratch: derived.scratch,

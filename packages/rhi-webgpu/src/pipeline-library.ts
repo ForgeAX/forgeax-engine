@@ -841,6 +841,17 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       backgroundWarmup: { ...this.backgroundWarmup },
     };
   }
+  inspectRenderPipelineIdentity(pipeline: RenderPipeline) {
+    for (const program of this.programs.values()) {
+      if (
+        program.kind === 'render' &&
+        program.handle === (pipeline as unknown as GPURenderPipeline)
+      )
+        return { localIdentity: program.localIdentity, identity: program.semanticIdentity ?? null };
+    }
+    return undefined;
+  }
+
   private inspectRuntimeRecipe(
     program: Program,
   ): NonNullable<PipelineLibraryInspection['runtimeRequests']>['requests'][number]['pipeline'] {

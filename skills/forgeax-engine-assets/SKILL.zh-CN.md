@@ -130,7 +130,7 @@ const snapshot = await assets.enumerateCatalog();
 if (snapshot.ok) mergeRowsByGuid(snapshot.value);
 ```
 
-Vite import/HMR 后 reloadAssetHost() 刷 source，static build 同样导航 Pack v2 rows。未配置 source 保留结构化失败，不编 fallback row。Vite 边界一个 producer/一个 Catalog projection：pluginPack 发 scoped dev/build result，createCatalogClient 订 dev delta、枚举快照，不把 Vite 移入 runtime。runtimeBinding 带 active scope/generation，旧 host late publication 被拒。sourceKey 为语义 source identity，不是 URL/filename/GUID fallback。
+Vite import/HMR 后 reloadAssetHost() 刷 source，static build 同样导航 Pack v2 rows。未配置 source 保留结构化失败，不编 fallback row。Vite 边界一个 producer/一个 Catalog projection：pluginPack 发 scoped dev/build result，createCatalogHotSubscription 订阅 dev delta，enumerateCatalog() 读取初始快照。runtimeBinding 带 active scope/generation，旧 host late publication 被拒。sourceKey 为语义 source identity，不是 URL/filename/GUID fallback。
 
 AssetEvidence 只读连接 source declaration、Catalog packageUrl/cookReceiptUrl、producer receipt freshness、Pack verification。用 lookup/verify --guid --project --catalog --json 或 injected inspection 区分 notCooked、ready/current、ready/stale、unknown；unknown 不通过。notCooked/stale 修 producer/recook 后重跑。单 catalog locator 不能把缺失/失败证据升 ready。
 
@@ -174,7 +174,7 @@ runtime generator 声明所有 runtime.dependencies（含非默认分支）。ad
 
 material producer cache 还要 Naga/WASM owner 已验证 executing compiler fingerprint，单 JS/WGSL bytes 不够，缺/无效 Native provenance 不复用旧 product。generated material/mesh 在 Vite host 注册 import 的 materialAssetOutputProducer/meshAssetOutputProducer。自包含 build 可省 assetSource；reader.readByGuid 前提供 host snapshot source。
 
-普通 prebuilt .pack.json dependency 由 build owner 用 engine-import 的 createScriptablePackFileAssetSnapshotSource({assetRoots})，一次验证索引 GUID，返回 private Asset snapshot/deterministic generation/digest，missing/malformed/unreadable/collision 均 Result error。
+外部 Pack 和 Meta 依赖由构建宿主将当前 inventory declarations、native cookers 和可用 GUID 传给 `@forgeax/engine-import` 的 `createDeclaredPackAssetSnapshotSource`。
 
 ## MaterialAsset Catalog 恢复
 

@@ -1,5 +1,7 @@
 import type {
   GraphAccess,
+  GraphBuffer,
+  GraphResourceResolver,
   GraphTextureView,
   RenderGraphBuilder,
 } from '@forgeax/engine-render-graph';
@@ -11,6 +13,7 @@ import {
   type RhiDevice,
   RhiError,
   type RenderPipeline as RhiPipeline,
+  type RhiRenderPassEncoder,
   type TextureView,
 } from '@forgeax/engine-rhi';
 import {
@@ -27,10 +30,15 @@ import {
 import { WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import type { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
+import {
+  projectAtmosphereViewLayout,
+  projectViewLayout,
+  viewEntryReads,
+} from '../environment/bindings';
 import { directionalPcssCapable } from '../environment/capability';
 import type { GraphEnvironment } from '../environment/ibl';
-import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
+import type { ClusterViewResources } from '../hdrp-buffers';
 import {
   SKYLIGHT_UNIFORM_BYTES,
   type SkylightBindGroupResources,
@@ -38,6 +46,7 @@ import {
 import { buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
+import { reflectionProbeResources } from '../record/reflection-probe-material';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
@@ -63,21 +72,31 @@ import {
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 /** Two vec4 lanes shared by the graph allocation and uniform binding layout. */
+export const DEFERRED_PCF_LIGHTING_FEATURE = 1 << 3;
+
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
 export interface StandardSceneShaderSources {
   readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
   readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
-  readonly forwardScreenPack?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly forwardDirectionalShadow?: string | ShaderSource | undefined;
   readonly forwardScreenCompose?: string | import('@forgeax/engine-types').ShaderSource;
   readonly forwardContact?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly shadowVariance?: string | import('@forgeax/engine-types').ShaderSource;
   readonly compactDecals?: true;
   readonly decalProject?: string | import('@forgeax/engine-types').ShaderSource;
   readonly decalApply?: string | import('@forgeax/engine-types').ShaderSource;
   readonly subsurface?: string | import('@forgeax/engine-types').ShaderSource;
   readonly deferredReflections?: ReadonlyMap<ShaderSource, ShaderReflection>;
-  readonly prepareDeferredLighting?: (clustered: boolean, usesLut: boolean) => boolean;
+  readonly prepareDeferredLighting?: (
+    clustered: boolean,
+    usesLut: boolean,
+    features?: number,
+  ) => boolean;
+  readonly specializedDeferredLighting?: (
+    clustered: boolean,
+    usesLut: boolean,
+    features: number,
+  ) => ShaderSource;
   readonly deferred?: {
     readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
     readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
@@ -104,8 +123,7 @@ interface DeferredLightingProgram {
     compilation?: DeferredPipelineCompilation;
   };
   readonly material: BindGroupLayout;
-  readonly cluster: BindGroupLayout;
-  readonly probe: BindGroupLayout;
+  readonly probe: BindGroupLayout | undefined;
 }
 
 function compileDeferredPipeline(
@@ -143,7 +161,9 @@ function deferredLightingSource(
   sources: StandardSceneShaderSources | undefined,
   clustered: boolean,
   usesLut: boolean,
+  features: number,
 ) {
+  if (features !== 0) return sources?.specializedDeferredLighting?.(clustered, usesLut, features);
   const deferred = sources?.deferred;
   if (clustered) return usesLut ? deferred?.clusteredLut : deferred?.clustered;
   return usesLut ? deferred?.unclusteredLut : deferred?.unclustered;
@@ -205,6 +225,179 @@ function programsFor(
   return variants;
 }
 
+function importDeferredLightProbeRecords(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  lightProbes: boolean | undefined,
+) {
+  return lightProbes !== true
+    ? ok(undefined)
+    : graph.importBuffer(
+        'deferred-probe-records',
+        { size: 256, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST },
+        (frame) => {
+          const buffer = (frame as _InternalRenderPipelineContext).frameState
+            .probeBlendRecordBuffer;
+          if (buffer === undefined)
+            throw new RhiError({
+              code: 'rhi-not-available',
+              expected: 'prepared Standard probe records',
+              hint: 'prepare the deferred frame before recording lighting',
+            });
+          return buffer.handle;
+        },
+      );
+}
+
+function deferredAuxiliaryAccesses(
+  lightProbes: GraphBuffer | undefined,
+  diffuseGi: GraphBuffer | undefined,
+  arrayTable: GraphBuffer | undefined,
+): GraphAccess[] {
+  const accesses: GraphAccess[] = [];
+  if (arrayTable !== undefined) accesses.push({ resource: arrayTable, usage: 'uniform-read' });
+  if (lightProbes !== undefined) accesses.push({ resource: lightProbes, usage: 'storage-read' });
+  if (diffuseGi !== undefined) accesses.push({ resource: diffuseGi, usage: 'storage-write' });
+  return accesses;
+}
+
+function deferredAuxiliaryLayout(
+  device: RhiDevice,
+  arrayCount: number,
+  lightProbes: boolean,
+  diffuseGi: boolean,
+) {
+  if (arrayCount === 0 && !lightProbes && !diffuseGi) return;
+  return device
+    .createBindGroupLayout({
+      entries: [
+        ...(!lightProbes
+          ? []
+          : [
+              {
+                binding: 0,
+                visibility: 2,
+                buffer: { type: 'read-only-storage' as const, minBindingSize: 256 },
+              },
+            ]),
+        ...(!diffuseGi
+          ? []
+          : [{ binding: 4, visibility: 2, buffer: { type: 'storage' as const } }]),
+        ...Array.from({ length: arrayCount }, (_, index) => ({
+          binding: index + 1,
+          visibility: 2,
+          texture: { sampleType: 'float' as const, viewDimension: '2d-array' as const },
+        })),
+        ...(arrayCount === 0
+          ? []
+          : [
+              {
+                binding: 3,
+                visibility: 2,
+                buffer: {
+                  type: 'uniform' as const,
+                  minBindingSize: DEFERRED_REFLECTION_TABLE_BYTES,
+                },
+              },
+            ]),
+      ],
+    })
+    .unwrap();
+}
+
+function deferredBindGroupLayouts(
+  view: BindGroupLayout,
+  material: BindGroupLayout,
+  cluster: BindGroupLayout,
+  auxiliary: BindGroupLayout | undefined,
+) {
+  return auxiliary === undefined ? [view, material, cluster] : [view, material, cluster, auxiliary];
+}
+
+function bindDeferredAuxiliaryGroup(
+  pass: RhiRenderPassEncoder,
+  resources: GraphResourceResolver,
+  state: DeferredLightingProgram & { readonly groups: WeakMap<object, unknown> },
+  counts: _InternalRenderPipelineContext['bindGroupCounts'],
+  lightProbes: GraphBuffer | undefined,
+  diffuseGiBaseline: GraphBuffer | undefined,
+  arrayTable: GraphBuffer | undefined,
+  arrays: ReturnType<typeof prepareDeferredReflectionArrays>,
+) {
+  if (state.probe === undefined) return;
+  const layout = state.probe;
+  const device = state.device;
+  const tableBuffer =
+    arrays === undefined || arrayTable === undefined
+      ? undefined
+      : resources.buffer(arrayTable).unwrap();
+  const probeBuffer =
+    lightProbes === undefined ? undefined : resources.buffer(lightProbes).unwrap();
+  const baselineBuffer =
+    diffuseGiBaseline === undefined ? undefined : resources.buffer(diffuseGiBaseline).unwrap();
+  const probeGroup = (pmremViews: readonly TextureView[]) =>
+    getOrCreateFromChain(
+      state.groups,
+      [
+        layout,
+        ...(probeBuffer === undefined ? [] : [probeBuffer]),
+        ...pmremViews,
+        ...(baselineBuffer === undefined ? [] : [baselineBuffer]),
+        ...(tableBuffer === undefined ? [] : [tableBuffer]),
+      ],
+      'deferred-probe',
+      () =>
+        device
+          .createBindGroup({
+            layout,
+            entries: [
+              ...(probeBuffer === undefined
+                ? []
+                : [
+                    {
+                      binding: 0,
+                      resource: { kind: 'buffer' as const, value: { buffer: probeBuffer } },
+                    },
+                  ]),
+              ...(baselineBuffer === undefined
+                ? []
+                : [
+                    {
+                      binding: 4,
+                      resource: { kind: 'buffer' as const, value: { buffer: baselineBuffer } },
+                    },
+                  ]),
+              ...pmremViews.map((value, index) => ({
+                binding: index + 1,
+                resource: { kind: 'textureView' as const, value },
+              })),
+              ...(tableBuffer === undefined
+                ? []
+                : [
+                    {
+                      binding: 3,
+                      resource: { kind: 'buffer' as const, value: { buffer: tableBuffer } },
+                    },
+                  ]),
+            ],
+          })
+          .unwrap(),
+      counts,
+    );
+  pass.setBindGroup(3, probeGroup(arrays?.views ?? []));
+  return probeGroup;
+}
+
+function deferredSunTable(environment: GraphEnvironment | undefined, perPixel?: boolean) {
+  return perPixel === false ? undefined : environment?.atmosphere?.transmittance;
+}
+
+function resolveDeferredSunTable(
+  resources: GraphResourceResolver,
+  table: GraphTextureView | undefined,
+) {
+  return table === undefined ? undefined : { transmittance: resources.textureView(table).unwrap() };
+}
+
 /** Geometry initializes emissive; this pass adds deferred lighting radiance. */
 export function addStandardDeferredLighting(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -214,18 +407,21 @@ export function addStandardDeferredLighting(
     readonly receiverGeometry?: RenderPipelineTarget;
     readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
     readonly projectedDirectionalPcf?: boolean;
+    readonly pcfLighting?: boolean;
     readonly depth: GraphTextureView;
     readonly reflectionFallback?: RenderPipelineTarget;
     readonly localProbes: boolean;
+    readonly lightProbes?: boolean;
     readonly response?: RenderPipelineTarget;
     readonly diffuse?: RenderPipelineTarget;
+    readonly diffuseGiBaseline?: GraphBuffer;
     readonly ssao?: RenderPipelineTarget;
     readonly directionalShadow?: RenderPipelineTarget;
-    readonly spotShadow: RenderPipelineTarget;
-    readonly shadowMoments?: RenderPipelineTarget | undefined;
+    readonly spotShadow: RenderPipelineTarget | undefined;
     readonly pointShadow?: RenderPipelineTarget;
     readonly cloudShadow?: RenderPipelineTarget;
     readonly environment?: GraphEnvironment;
+    readonly perPixelAtmosphereTransmittance?: boolean | undefined;
     readonly cluster: StandardClusterGraphBuffers | null;
     readonly extraAccesses: readonly GraphAccess[];
     /** Lighting target extent; sizes the capsule shadow tile table. */
@@ -245,20 +441,13 @@ export function addStandardDeferredLighting(
     size: tileBytes,
   });
   if (!capsuleTiles.ok) return capsuleTiles;
-  const probe = graph.importBuffer(
-    'deferred-probe-records',
-    { size: 256, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST },
-    (frame) => {
-      const buffer = (frame as _InternalRenderPipelineContext).frameState.probeBlendRecordBuffer;
-      if (buffer === undefined)
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected: 'prepared Standard probe records',
-          hint: 'prepare the deferred frame before recording lighting',
-        });
-      return buffer.handle;
-    },
-  );
+  const diffuseGiBaseline = input.diffuseGiBaseline;
+  const features =
+    Number(diffuseGiBaseline !== undefined) |
+    (Number(input.lightProbes === true) << 1) |
+    (Number(input.perPixelAtmosphereTransmittance === false) << 2) |
+    (Number(input.pcfLighting === true) * DEFERRED_PCF_LIGHTING_FEATURE);
+  const probe = importDeferredLightProbeRecords(graph, input.lightProbes);
   if (!probe.ok) return probe;
   const colors = [
     input.color,
@@ -301,6 +490,39 @@ export function addStandardDeferredLighting(
       }
     | undefined;
   const clustered = input.cluster !== null;
+  const lightingViewLayout = (
+    internal: _InternalRenderPipelineContext,
+    source: ShaderSource | string,
+    entryPoint: string,
+    hasOverflow: boolean,
+  ) => {
+    const device = internal.runtime.device;
+    const base = internal.pipelineState.viewBindGroupLayout;
+    const reflection =
+      typeof source === 'object'
+        ? internal.runtime.standardSceneShaders?.deferredReflections?.get(source)
+        : undefined;
+    const reads = viewEntryReads(reflection?.entryPoints, 'vs_standard_deferred', entryPoint);
+    const overflowReads = hasOverflow
+      ? viewEntryReads(
+          reflection?.entryPoints,
+          DEFERRED_REFLECTION_OVERFLOW_VERTEX,
+          deferredReflectionOverflowEntry(input.reflectionFallback !== undefined, compact),
+        )
+      : undefined;
+    if (reads === undefined || (hasOverflow && overflowReads === undefined))
+      return projectAtmosphereViewLayout(
+        device,
+        base,
+        input.perPixelAtmosphereTransmittance !== false,
+        clustered,
+      );
+    if (overflowReads === undefined) return projectViewLayout(device, base, reads);
+    const union = new Map(reads);
+    for (const [slot, visibility] of overflowReads)
+      union.set(slot, (union.get(slot) ?? 0) | visibility);
+    return projectViewLayout(device, base, union);
+  };
   const lutDemand = new WeakMap<ScenePipelineSourceContext['validatedOrdered'], boolean>();
   const useDirectDfgLut = (rows: ScenePipelineSourceContext['validatedOrdered']) => {
     if (rows === undefined) return false;
@@ -317,7 +539,11 @@ export function addStandardDeferredLighting(
   const prepareSource = (internal: ScenePipelineSourceContext) => {
     const shaders = internal.runtime.standardSceneShaders;
     if (shaders?.prepareDeferredLighting !== undefined && hasDeferredLightingDemand(internal))
-      shaders.prepareDeferredLighting(clustered, useDirectDfgLut(internal.validatedOrdered));
+      shaders.prepareDeferredLighting(
+        clustered,
+        useDirectDfgLut(internal.validatedOrdered),
+        features,
+      );
   };
   const environmentPlan = (internal: _InternalRenderPipelineContext) => {
     const cached = environmentPlans.get(internal);
@@ -325,12 +551,12 @@ export function addStandardDeferredLighting(
     if (!hasDeferredLightingDemand(internal)) return;
     const usesLut = useDirectDfgLut(internal.validatedOrdered);
     const shaders = internal.runtime.standardSceneShaders;
-    if (shaders?.prepareDeferredLighting?.(clustered, usesLut) === false) {
+    if (shaders?.prepareDeferredLighting?.(clustered, usesLut, features) === false) {
       markPipelinePreparationPending(internal.frameState, { code: 'scene-pipeline-preparation' });
       return;
     }
     const rows = referencedDeferredProbes(internal.reflectionProbes);
-    const source = deferredLightingSource(shaders, clustered, usesLut);
+    const source = deferredLightingSource(shaders, clustered, usesLut, features);
     const reflection =
       typeof source === 'object' ? shaders?.deferredReflections?.get(source) : undefined;
     let arrays: ReturnType<typeof prepareDeferredReflectionArrays>;
@@ -354,6 +580,7 @@ export function addStandardDeferredLighting(
             usesLut,
             input.reflectionFallback !== undefined,
             compact,
+            input.perPixelAtmosphereTransmittance !== false,
           ),
         };
       }
@@ -372,7 +599,6 @@ export function addStandardDeferredLighting(
     ],
     encodeDirect: (encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
-      const settings = internal.frameState.installedPipelineConfig?.ambientOcclusion;
       const queue = frame.runtime.device.queue;
       const arrays = environmentPlan(internal)?.arrays;
       if (arrays !== undefined && arrayTable !== undefined)
@@ -430,7 +656,7 @@ export function addStandardDeferredLighting(
             // Lane z gates the capsule evaluation; lane w is the light cone half-angle.
             capsuleFrame?.submission.capsuleCount ?? 0,
             capsuleFrame?.coneHalfAngle ?? 0,
-            input.ssao === undefined ? 0 : (settings?.directLightingStrength ?? 0),
+            0,
             0,
             0,
             0,
@@ -440,6 +666,7 @@ export function addStandardDeferredLighting(
     },
   });
   if (!upload.ok) return upload;
+  const solarTable = deferredSunTable(input.environment, input.perPixelAtmosphereTransmittance);
   const sampled = [
     ...input.gbuffer.map((target) => target.view),
     ...(input.receiverGeometry === undefined ? [] : [input.receiverGeometry.view]),
@@ -448,23 +675,18 @@ export function addStandardDeferredLighting(
       input.ssao,
       input.directionalShadow,
       input.spotShadow,
-      input.shadowMoments,
       input.pointShadow,
       input.cloudShadow,
     ].flatMap((target) => (target === undefined ? [] : [target.view])),
-    ...(input.environment === undefined
-      ? []
-      : [
-          input.environment.irradiance,
-          input.environment.prefilter,
-          ...(input.environment.atmosphere === undefined
-            ? []
-            : atmosphereTextures(input.environment.atmosphere)),
-        ]),
+    ...(input.environment === undefined ? [] : [input.environment.prefilter]),
+    ...(solarTable === undefined ? [] : [solarTable]),
   ];
   const states = new Map<
     string,
-    DeferredLightingProgram & { readonly groups: WeakMap<object, unknown> }
+    DeferredLightingProgram & {
+      readonly groups: WeakMap<object, unknown>;
+      readonly baseViewLayout: BindGroupLayout;
+    }
   >();
   const subsurface = input.diffuse !== undefined;
   const targetKey = JSON.stringify(colors.map((target) => target.format));
@@ -495,6 +717,7 @@ export function addStandardDeferredLighting(
       internal.runtime.standardSceneShaders,
       input.cluster !== null,
       usesLut,
+      features,
     );
     if (source === undefined)
       throw new RhiError({
@@ -510,16 +733,17 @@ export function addStandardDeferredLighting(
         hint: 'recreate the Renderer after device retirement',
       });
 
-    const viewLayout = internal.pipelineState.viewBindGroupLayout;
+    const baseViewLayout = internal.pipelineState.viewBindGroupLayout;
     const stateKey = `${usesLut}:${arrayCount}`;
     let state = states.get(stateKey);
     if (
       state === undefined ||
       state.scope !== scope ||
       state.device !== device ||
-      state.viewLayout !== viewLayout ||
+      state.baseViewLayout !== baseViewLayout ||
       state.source !== source
     ) {
+      const viewLayout = lightingViewLayout(internal, source, entryPoint, arrayCount > 0);
       const programs = programsFor(scope, device, viewLayout, source);
       const key = `${input.cluster !== null}:${usesLut}:${entryPoint}:${projectedPcf}:${subsurface}:${targetKey}`;
       let program = programs.get(key);
@@ -564,12 +788,12 @@ export function addStandardDeferredLighting(
                 visibility: 2,
                 buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
               },
-              ...(arrayCount === 0 ? [8, 9, 10, 11] : [8, 10, 11]).map((binding) => ({
+              ...[9, 10].map((binding) => ({
                 binding,
                 visibility: 2,
                 texture: {
                   sampleType: 'float' as const,
-                  viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
+                  viewDimension: '2d' as const,
                 },
               })),
               {
@@ -600,51 +824,23 @@ export function addStandardDeferredLighting(
             ],
           })
           .unwrap();
-        const cluster = device
-          .createBindGroupLayout({
-            entries:
-              input.cluster === null
-                ? []
-                : [3, 4, 5, 6].map((binding) => ({
-                    binding,
-                    visibility: 2,
-                    buffer: {
-                      type: binding === 6 ? ('uniform' as const) : ('read-only-storage' as const),
-                    },
-                  })),
-          })
-          .unwrap();
-        const probeLayout = device
-          .createBindGroupLayout({
-            entries: [
-              {
-                binding: 0,
-                visibility: 2,
-                buffer: { type: 'read-only-storage', minBindingSize: 256 },
-              },
-              ...Array.from({ length: arrayCount }, (_, index) => ({
-                binding: index + 1,
-                visibility: 2,
-                texture: { sampleType: 'float' as const, viewDimension: '2d-array' as const },
-              })),
-              ...(arrayCount === 0
-                ? []
-                : [
-                    {
-                      binding: 3,
-                      visibility: 3,
-                      buffer: {
-                        type: 'uniform' as const,
-                        minBindingSize: DEFERRED_REFLECTION_TABLE_BYTES,
-                      },
-                    },
-                  ]),
-            ],
-          })
-          .unwrap();
+        const probeLayout = deferredAuxiliaryLayout(
+          device,
+          arrayCount,
+          probe.value !== undefined,
+          diffuseGiBaseline !== undefined,
+        );
         const layout = device
           .createPipelineLayout({
-            bindGroupLayouts: [viewLayout, material, cluster, probeLayout],
+            bindGroupLayouts:
+              probeLayout === undefined
+                ? [viewLayout, material]
+                : deferredBindGroupLayouts(
+                    viewLayout,
+                    material,
+                    device.createBindGroupLayout({ entries: [] }).unwrap(),
+                    probeLayout,
+                  ),
           })
           .unwrap();
         const descriptor: RenderPipelineDescriptor = {
@@ -712,7 +908,6 @@ export function addStandardDeferredLighting(
           viewLayout,
           source,
           material,
-          cluster,
           probe: probeLayout,
           compilation: compileDeferredPipeline(device, descriptor),
           ...(overflow === undefined ? {} : { overflow }),
@@ -728,7 +923,7 @@ export function addStandardDeferredLighting(
         throw program.compilation.result.error;
       }
       program.pipeline = program.compilation.result.value;
-      state = { ...program, groups: new WeakMap() };
+      state = { ...program, baseViewLayout, groups: new WeakMap() };
       states.set(stateKey, state);
     }
 
@@ -766,13 +961,13 @@ export function addStandardDeferredLighting(
   );
   return graph.addRasterPass('lighting', {
     accesses: [
+      ...(input.environment === undefined
+        ? []
+        : [{ resource: input.environment.skySh, usage: 'uniform-read' as const }]),
       ...sampled.map((resource) => ({ resource, usage: 'sampled-read' as const })),
       ...colors.map((target) => ({ resource: target.view, usage: 'color-attachment' as const })),
       { resource: params.value, usage: 'uniform-read' },
-      ...(arrayTable === undefined
-        ? []
-        : [{ resource: arrayTable, usage: 'uniform-read' as const }]),
-      { resource: probe.value, usage: 'storage-read' },
+      ...deferredAuxiliaryAccesses(probe.value, diffuseGiBaseline, arrayTable),
       { resource: capsules.value, usage: 'storage-read' },
       { resource: capsuleTiles.value, usage: 'storage-read' },
       ...input.extraAccesses,
@@ -798,16 +993,45 @@ export function addStandardDeferredLighting(
         : undefined;
       const view = (target: RenderPipelineTarget | undefined) =>
         target === undefined ? undefined : resources.textureView(target.view).unwrap();
+      if (input.cluster?.kind === 'texture')
+        throw new RhiError({
+          code: 'rhi-not-available',
+          expected: 'Deferred lighting requires storage-buffer capabilities',
+          hint: 'use the Standard Forward path on this device',
+        });
+      const cluster: ClusterViewResources | undefined =
+        input.cluster === null
+          ? undefined
+          : {
+              kind: 'storage',
+              lightDataBuffer: resources.buffer(input.cluster.lightData).unwrap(),
+              clusterGridBuffer: resources.buffer(input.cluster.clusterGrid).unwrap(),
+              lightIndexListBuffer: resources.buffer(input.cluster.lightIndexList).unwrap(),
+              clusterUniformBuffer: resources.buffer(input.cluster.clusterUniform).unwrap(),
+            };
+      const environment =
+        input.environment === undefined
+          ? internal
+          : {
+              ...internal,
+              environmentIbl: {
+                skySh: resources.buffer(input.environment.skySh).unwrap(),
+                prefilter: resources.textureView(input.environment.prefilter).unwrap(),
+              },
+            };
+      const sky = prepareMaterialSkylight(environment).skylightResources;
       const viewBindGroup = buildViewBindGroup(
         internal.runtime as RenderSystemInternals,
         internal.frameState,
         internal.pipelineState,
         internal.bindGroupCounts,
         {
-          atmosphere: atmosphereVolumeViews(resources, input.environment?.atmosphere),
+          viewBindGroupLayout: state.viewLayout,
+          sky,
+          cluster,
+          atmosphere: resolveDeferredSunTable(resources, solarTable),
           directionalShadow: view(input.directionalShadow),
           spotShadow: view(input.spotShadow),
-          shadowMoments: view(input.shadowMoments),
           cloudShadow: view(input.cloudShadow),
           projector: internal.spotLightProjector?.view,
           projectorSampler: internal.spotLightProjector?.sampler,
@@ -821,94 +1045,19 @@ export function addStandardDeferredLighting(
         });
       pass.setPipeline(state.pipeline);
       pass.setBindGroup(0, viewBindGroup, [0, 0]);
-      if (input.cluster?.kind === 'texture')
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected: 'Deferred lighting requires storage-buffer capabilities',
-          hint: 'use the Standard Forward path on this device',
-        });
-      const clusterBuffers =
-        input.cluster === null
-          ? []
-          : [
-              input.cluster.lightData,
-              input.cluster.clusterGrid,
-              input.cluster.lightIndexList,
-              input.cluster.clusterUniform,
-            ].map((ref) => resources.buffer(ref).unwrap());
-      const clusterGroup = getOrCreateFromChain(
-        state.groups,
-        [state.cluster, ...clusterBuffers],
-        'deferred-cluster',
-        () =>
-          device
-            .createBindGroup({
-              layout: current.cluster,
-              entries: clusterBuffers.map((buffer, index) => ({
-                binding: index + 3,
-                resource: { kind: 'buffer' as const, value: { buffer } },
-              })),
-            })
-            .unwrap(),
-        internal.bindGroupCounts,
-      );
-      pass.setBindGroup(2, clusterGroup);
       const reflectionPlan = environmentPlan(internal);
       if (reflectionPlan === undefined) return;
       const { rows, arrays } = reflectionPlan;
-      const tableBuffer =
-        arrays === undefined || arrayTable === undefined
-          ? undefined
-          : resources.buffer(arrayTable).unwrap();
-      const probeBuffer = resources.buffer(probe.value).unwrap();
-      const probeGroup = (pmremViews: readonly TextureView[]) =>
-        getOrCreateFromChain(
-          state.groups,
-          [
-            state.probe,
-            probeBuffer,
-            ...pmremViews,
-            ...(tableBuffer === undefined ? [] : [tableBuffer]),
-          ],
-          'deferred-probe',
-          () =>
-            device
-              .createBindGroup({
-                layout: current.probe,
-                entries: [
-                  {
-                    binding: 0,
-                    resource: { kind: 'buffer' as const, value: { buffer: probeBuffer } },
-                  },
-                  ...pmremViews.map((value, index) => ({
-                    binding: index + 1,
-                    resource: { kind: 'textureView' as const, value },
-                  })),
-                  ...(tableBuffer === undefined
-                    ? []
-                    : [
-                        {
-                          binding: 3,
-                          resource: { kind: 'buffer' as const, value: { buffer: tableBuffer } },
-                        },
-                      ]),
-                ],
-              })
-              .unwrap(),
-          internal.bindGroupCounts,
-        );
-      pass.setBindGroup(3, probeGroup(arrays?.views ?? []));
-      const environment =
-        input.environment === undefined
-          ? internal
-          : {
-              ...internal,
-              environmentIbl: {
-                irradiance: resources.textureView(input.environment.irradiance).unwrap(),
-                prefilter: resources.textureView(input.environment.prefilter).unwrap(),
-              },
-            };
-      const sky = prepareMaterialSkylight(environment).skylightResources;
+      const probeGroup = bindDeferredAuxiliaryGroup(
+        pass,
+        resources,
+        state,
+        internal.bindGroupCounts,
+        probe.value,
+        diffuseGiBaseline,
+        arrayTable,
+        arrays,
+      );
       const environments: SkylightBindGroupResources[] = [sky];
       for (const row of arrays === undefined ? rows : []) {
         if (row.index > DEFERRED_REFLECTION_MAX_PROBE_INDEX)
@@ -917,13 +1066,7 @@ export function addStandardDeferredLighting(
             expected: 'at most 255 deferred reflection environments',
             hint: 'reduce the resident reflection-probe roster',
           });
-        environments.push({
-          ...sky,
-          prefilterView: row.filteredView,
-          prefilterSampler: row.sampler,
-          skylightPrefilterView: sky.prefilterView,
-          intensityBuffer: row.uniformBuffer,
-        });
+        environments.push(reflectionProbeResources(sky, row));
       }
       const surfaces = [
         ...input.gbuffer.map((target) => resources.textureView(target.view).unwrap()),
@@ -945,10 +1088,8 @@ export function addStandardDeferredLighting(
           env.irradianceSampler,
           paramsBuffer,
           ...capsuleBuffers,
-          env.irradianceView,
           env.prefilterView,
           env.brdfLutView,
-          env.skylightPrefilterView ?? env.prefilterView,
           env.intensityBuffer,
           ...(directDfgLut === undefined ? [] : [directDfgLut.view]),
         ];
@@ -985,27 +1126,12 @@ export function addStandardDeferredLighting(
                     resource: { kind: 'buffer' as const, value: { buffer: paramsBuffer } },
                   },
                   {
-                    binding: 8,
-                    resource: { kind: 'textureView' as const, value: env.irradianceView },
+                    binding: 9,
+                    resource: { kind: 'textureView' as const, value: env.prefilterView },
                   },
-                  ...(current.arrayCount === 0
-                    ? [
-                        {
-                          binding: 9,
-                          resource: { kind: 'textureView' as const, value: env.prefilterView },
-                        },
-                      ]
-                    : []),
                   {
                     binding: 10,
                     resource: { kind: 'textureView' as const, value: env.brdfLutView },
-                  },
-                  {
-                    binding: 11,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: env.skylightPrefilterView ?? env.prefilterView,
-                    },
                   },
                   {
                     binding: 12,
@@ -1032,12 +1158,18 @@ export function addStandardDeferredLighting(
         pass.draw(3);
       }
       const overflowPipeline = state.overflow?.compilation?.result;
-      if (arrays === undefined || !overflowPipeline?.ok || arrays.overflow.length === 0) return;
+      if (
+        probeGroup === undefined ||
+        arrays === undefined ||
+        !overflowPipeline?.ok ||
+        arrays.overflow.length === 0
+      )
+        return;
       pass.setPipeline(overflowPipeline.value);
       for (const { view: pmrem, sizeClass } of arrays.overflow) {
         const views = arrays.views[1] === undefined ? [pmrem] : [pmrem, arrays.views[1]];
         pass.setBindGroup(3, probeGroup(views));
-        pass.draw(6, 1, 0, sizeClass);
+        pass.draw(3, 1, 0, sizeClass);
       }
     },
   });

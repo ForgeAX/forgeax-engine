@@ -1,11 +1,15 @@
 import { type NativeCooker, NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
+import type { ScriptablePackSceneComponent } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
+import { pluginAssetOutputProducer } from './plugin-asset-producer.js';
+import type { AssetOutputProducerRegistry } from './scriptable-pack.js';
 import {
   type ScriptablePackBuildOptions as ExecutionOptions,
   buildScriptablePack as execute,
   buildScriptablePackWorklist as executeWorklist,
   type ScriptablePackBuildWorklistOptions as WorklistOptions,
 } from './scriptable-pack-build-core.js';
+import { createAssetOutputProducerRegistry } from './scriptable-pack-output-producers.js';
 import { createMaterialDraftSharing } from './shared-material-drafts.js';
 
 export type {
@@ -43,4 +47,12 @@ export function buildScriptablePack(options: ScriptablePackBuildOptions) {
 }
 export function buildScriptablePackWorklist(options: ScriptablePackBuildWorklistOptions) {
   return executeWorklist({ ...options, cookers: registry(options.cookers) });
+}
+
+export function createStandardAssetOutputProducerRegistry(
+  sceneComponents: readonly ScriptablePackSceneComponent[] = [],
+): AssetOutputProducerRegistry {
+  const registry = createAssetOutputProducerRegistry(sceneComponents);
+  registry.register(pluginAssetOutputProducer);
+  return registry;
 }

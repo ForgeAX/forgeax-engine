@@ -1,15 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
+  "schemaVersion": "3.0.0",
+  "packageId": "af30c4ea-587d-5279-8e6b-ddd1d718b97d",
+  "assets": {
+    "scene/inner-cube": {
       "kind": "scene",
-      "guid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-      "refs": [
-        "ea110435-6e3a-5c6a-8475-bec8573c0640",
-        "008e4f75-e7a3-4715-b05b-b93a9ec12074"
-      ],
-      "artifacts": {},
       "payload": {
         "entities": {
           "cube": {
@@ -43,10 +37,13 @@
             }
           }
         }
-      }
+      },
+      "refs": [
+        "ea110435-6e3a-5c6a-8475-bec8573c0640",
+        "a2a95227-db50-5e9a-bf22-2a9d3c74a890"
+      ]
     },
-    {
-      "guid": "008e4f75-e7a3-4715-b05b-b93a9ec12074",
+    "material/inner-cube": {
       "kind": "material",
       "payload": {
         "kind": "material",
@@ -73,8 +70,7 @@
           ]
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

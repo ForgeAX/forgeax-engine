@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 // The input backend source, so the test reads movement the way a game does.
 import { attachBrowserInputBackend } from '../../../input/src/browser-backend';
-import { lookInPage } from '../play-look';
+import { lookInPage } from '../play-input-page';
 
 afterEach(() => {
   Reflect.deleteProperty(document, 'pointerLockElement');

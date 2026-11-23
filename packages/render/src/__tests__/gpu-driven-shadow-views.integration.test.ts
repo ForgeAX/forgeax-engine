@@ -56,33 +56,30 @@ describe('GPU-driven shadow view graph integration', () => {
   it.each([
     false,
     true,
-  ])('initializes the empty spot atlas once, including with shadow features=%s', async (withFeatures) => {
+  ])('owns spot depth for exactly its submitted casting views, with features=%s', async (withFeatures) => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
-    const textures = vi.spyOn(device, 'createTexture');
-    // Rebuilding as lights enter/leave must reinitialize each graph's atlas.
-    for (const spotCount of [0, 1, 0]) {
-      textures.mockClear();
+    const layers = new ShadowDepthLayers(device);
+    const creates = vi.spyOn(device, 'createTexture');
+    const destroys = vi.spyOn(device, 'destroyTexture');
+    for (const spotCount of [0, 1, 0, 1, 0]) {
+      creates.mockClear();
+      destroys.mockClear();
+      const prior = layers.allocation('spot-shadow-depth');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const base = topology();
-      const input = {
-        ...base,
-        shadow: { ...base.shadow, directional: 'disabled' as const, pointCount: 0, spotCount },
-      };
-      addTypedShadowPasses(graph, input, {
-        shadowFeatures: withFeatures ? { accesses: [], encode: vi.fn() } : undefined,
-      }).unwrap();
+      const shadow = { ...base.shadow, directional: 'disabled' as const, pointCount: 0, spotCount };
+      const products = addTypedShadowPasses(
+        graph,
+        { shadow },
+        {
+          depthLayers: layers,
+          shadowFeatures: withFeatures ? { accesses: [], encode: vi.fn() } : undefined,
+        },
+      ).unwrap();
       const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap();
-      const spot = textures.mock.calls
-        .map(([descriptor]) => descriptor)
-        .find((descriptor) => descriptor.label === 'spot-shadow-depth');
-      // An absent shadow needs only initialized depth; an actual light keeps
-      // its authored resolution across the same enter/leave graph rebuilds.
-      expect(spot?.size).toEqual({
-        width: spotCount === 0 ? 1 : input.shadow.spotMapSize,
-        height: spotCount === 0 ? 1 : input.shadow.spotMapSize,
-        depthOrArrayLayers: 4,
-      });
+      expect(products.spot !== undefined).toBe(spotCount > 0);
+      expect(layers.allocation('spot-shadow-depth')).toBe(prior);
       let passes = 0;
       for (let frameId = 0; frameId < 3; frameId++) {
         const encoder = device.createCommandEncoder().unwrap();
@@ -95,10 +92,29 @@ describe('GPU-driven shadow view graph integration', () => {
           .unwrap();
         passes += begin.mock.calls.length;
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        if (frameId === 0) layers.acceptSubmittedTextures(compiled);
+        layers._commit();
       }
-      expect(passes).toBe(spotCount === 0 ? 1 : 3);
+      const texture = creates.mock.calls.find(
+        ([descriptor]) => descriptor.label === 'spot-shadow-depth',
+      );
+      expect(texture?.[0].size).toEqual(
+        spotCount === 0
+          ? undefined
+          : {
+              width: shadow.spotMapSize,
+              height: shadow.spotMapSize,
+              depthOrArrayLayers: 4,
+            },
+      );
+      expect(passes).toBe(spotCount === 0 ? 0 : 3);
+      expect(layers.byteSize('spot-shadow-depth')).toBe(
+        spotCount === 0 ? 0 : 4 * shadow.spotMapSize ** 2 * 4,
+      );
+      if (prior !== undefined && spotCount === 0) expect(destroys).toHaveBeenCalledWith(prior);
       (await compiled.retire()).unwrap();
     }
+    layers.dispose();
   });
 
   it('keeps directional, point, and spot views in one typed graph', async () => {
@@ -131,123 +147,6 @@ describe('GPU-driven shadow view graph integration', () => {
     ]);
   });
 
-  it('initializes missing layers before the full variance array is read', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const base = topology();
-    const input: RenderPipelineTopology = {
-      ...base,
-      shadow: {
-        ...base.shadow,
-        directional: 'disabled',
-        pointCount: 0,
-        spotCount: 4,
-        variance: { directional: false, spots: [3] },
-      },
-    };
-
-    const added = addTypedShadowPasses(graph, input).unwrap();
-    expect(added.moments).toBeDefined();
-    if (added.moments === undefined) return;
-    graph
-      .addCopyPass('consume-shadow-variance-array', {
-        accesses: [{ resource: added.moments.view, usage: 'copy-src' }],
-        encodeDirect: () => undefined,
-      })
-      .unwrap();
-
-    const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } });
-    expect(compiled.ok).toBe(true);
-    if (!compiled.ok) return;
-    const names = compiled.value.inspect().passes.map((pass) => pass.name);
-    expect(names).toContain('shadow-variance-0-initialize');
-    expect(names).toContain('shadow-variance-6-initialize');
-    expect(names).not.toContain('shadow-variance-7-initialize');
-    await compiled.value.retire();
-  });
-
-  it('retries missing variance clears after abort and retains them after submit', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
-    const retained = new ShadowDepthLayers(device);
-    retained.texture('shadow-variance', 32, 8, 'rg16float');
-    for (let layer = 0; layer < 8; layer += 1) retained.rastered('shadow-variance', layer);
-    retained._commit();
-
-    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const base = topology();
-    const input: RenderPipelineTopology = {
-      ...base,
-      shadow: {
-        ...base.shadow,
-        directional: 'disabled',
-        pointCount: 0,
-        spotCount: 4,
-        variance: { directional: false, spots: [3] },
-      },
-    };
-    const added = addTypedShadowPasses(graph, input, { depthLayers: retained }).unwrap();
-    expect(added.moments).toBeDefined();
-    if (added.moments === undefined) return;
-    graph
-      .addCopyPass('consume-shadow-variance-array', {
-        accesses: [{ resource: added.moments.view, usage: 'copy-src' }],
-        encodeDirect: () => undefined,
-      })
-      .unwrap();
-    const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } });
-    expect(compiled.ok).toBe(true);
-    if (!compiled.ok) return;
-
-    const executeInitializers = (submit: boolean): string[] => {
-      const ledger = new ShadowRasterLedger();
-      ledger.begin();
-      const encoder = device.createCommandEncoder().unwrap();
-      const initialized: string[] = [];
-      compiled.value
-        .execute(
-          {
-            encoder,
-            frameState: {
-              spotShadowSnapshots: [],
-              pointShadowSnapshots: [],
-              shadowRaster: ledger,
-            },
-            runtime: { device },
-          } as unknown as RenderPipelineFrame,
-          (pass, encode) => {
-            if (!pass.name.endsWith('-initialize')) return;
-            initialized.push(pass.name);
-            encode();
-          },
-        )
-        .unwrap();
-      const commandBuffer = encoder.finish().unwrap();
-      if (submit) {
-        device.queue.submit([commandBuffer]).unwrap();
-        compiled.value.commitExecution();
-        retained._commit();
-        ledger.commit();
-      } else {
-        compiled.value.discardExecution();
-        retained._abort();
-      }
-      return initialized;
-    };
-
-    expect(executeInitializers(false)).toHaveLength(7);
-    for (let layer = 0; layer < 7; layer += 1)
-      expect(retained.retained('shadow-variance', layer)).toBe(false);
-    expect(executeInitializers(true)).toHaveLength(7);
-    for (let layer = 0; layer < 7; layer += 1)
-      expect(retained.retained('shadow-variance', layer)).toBe(true);
-    expect(executeInitializers(true)).toEqual([]);
-
-    await compiled.value.retire();
-    retained.dispose();
-  });
-
   it('exposes only the active spot prefix while keeping four physical layers', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
@@ -264,9 +163,11 @@ describe('GPU-driven shadow view graph integration', () => {
     };
 
     const added = addTypedShadowPasses(graph, input).unwrap();
+    const spot = added.spot;
+    if (spot === undefined) throw new Error('Two spot views require an atlas');
     graph
       .addCopyPass('consume-spot-shadow-prefix', {
-        accesses: [{ resource: added.spot.view, usage: 'copy-src' }],
+        accesses: [{ resource: spot.view, usage: 'copy-src' }],
         encodeDirect: () => undefined,
       })
       .unwrap();

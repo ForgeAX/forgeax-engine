@@ -204,10 +204,21 @@ interface SceneHost {
 
 let pixelHost: Promise<SceneHost> | undefined;
 let pixelDeviceRequests = 0;
+let temporalHost: Promise<SceneHost> | undefined;
+let temporalRecorder: RecorderAttachment | undefined;
+
+function temporalCapture() {
+  temporalRecorder ??= attachRecorder(webgpu).unwrap();
+  return temporalRecorder;
+}
 
 afterAll(async () => {
-  if (pixelHost !== undefined) await disposeSceneHost(await pixelHost);
-  // Ordinary pixel scenes share assembly; temporal captures retain fresh devices.
+  try {
+    if (pixelHost !== undefined) await disposeSceneHost(await pixelHost);
+    if (temporalHost !== undefined) await disposeSceneHost(await temporalHost);
+  } finally {
+    if (temporalRecorder !== undefined) (await temporalRecorder.dispose()).unwrap();
+  }
   expect(pixelDeviceRequests).toBeLessThanOrEqual(1);
 });
 
@@ -281,13 +292,13 @@ async function createSceneHost(recorder?: RecorderAttachment): Promise<SceneHost
 }
 
 async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
-  const shared = probe.recorder === undefined;
   let host: SceneHost;
-  if (shared) {
+  if (probe.recorder === undefined) {
     pixelHost ??= createSceneHost();
     host = await pixelHost;
   } else {
-    host = await createSceneHost(probe.recorder);
+    temporalHost ??= createSceneHost(probe.recorder);
+    host = await temporalHost;
   }
   const { renderer, device } = host;
   let attachment: RenderWorldLease | undefined;
@@ -330,7 +341,6 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
     return await probe.finish({ device, target, recorder: probe.recorder, capture });
   } finally {
     attachment?.dispose();
-    if (!shared) await disposeSceneHost(host);
   }
 }
 
@@ -359,58 +369,54 @@ const render = (scene: Scene): Promise<Uint8Array> =>
 
 /** Fraction of the central region the scene-temporal target marks as uncovered (z < 0). */
 async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
-  const recorder = attachRecorder(webgpu).unwrap();
-  try {
-    return await withScene(
-      { ...scene, temporal: true },
-      {
-        recorder,
-        frames: 4,
-        async finish({ capture }) {
-          if (capture === undefined) throw new Error('missing frame capture');
-          const tape = decodeTape((await capture).unwrap().bytes).unwrap();
-          const model = buildFrameModel(tape);
-          const producer = model.works.find((work) =>
-            work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_temporal'),
+  const recorder = temporalCapture();
+  return withScene(
+    { ...scene, temporal: true },
+    {
+      recorder,
+      frames: 4,
+      async finish({ capture }) {
+        if (capture === undefined) throw new Error('missing frame capture');
+        const tape = decodeTape((await capture).unwrap().bytes).unwrap();
+        const model = buildFrameModel(tape);
+        const producer = model.works.find((work) =>
+          work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_temporal'),
+        );
+        if (producer?.attachments === undefined) throw new Error('missing fs_temporal work');
+        const id = producer.attachments.colorViewHandleIds[0];
+        if (id === undefined) throw new Error('missing temporal attachment');
+        const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+        const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
+        const replay = (
+          await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
+        ).unwrap();
+        try {
+          const temporal = (await replay.readResourceAtWork(id, producer.workIndex)).unwrap();
+          expect(temporal.format).toBe('rgba16float');
+          const view = new DataView(
+            temporal.bytes.buffer,
+            temporal.bytes.byteOffset,
+            temporal.bytes.byteLength,
           );
-          if (producer?.attachments === undefined) throw new Error('missing fs_temporal work');
-          const id = producer.attachments.colorViewHandleIds[0];
-          if (id === undefined) throw new Error('missing temporal attachment');
-          const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-          const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
-          const replay = (
-            await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
-          ).unwrap();
-          try {
-            const temporal = (await replay.readResourceAtWork(id, producer.workIndex)).unwrap();
-            expect(temporal.format).toBe('rgba16float');
-            const view = new DataView(
-              temporal.bytes.buffer,
-              temporal.bytes.byteOffset,
-              temporal.bytes.byteLength,
-            );
-            const width = temporal.width ?? SIZE;
-            const height = temporal.height ?? SIZE;
-            let uncovered = 0;
-            let total = 0;
-            for (let y = Math.floor(height * 0.375); y < Math.floor(height * 0.625); y++)
-              for (let x = Math.floor(width * 0.375); x < Math.floor(width * 0.625); x++) {
-                total++;
-                if (halfFloat.f16ToF32(view.getUint16((y * width + x) * 8 + 4, true)) < 0)
-                  uncovered++;
-              }
-            return uncovered / total;
-          } finally {
-            (await replay.dispose()).unwrap();
-            webgpu.disposeDevice(device);
-            expect((await device.lost).reason).toBe('destroyed');
-          }
-        },
+          const width = temporal.width ?? SIZE;
+          const height = temporal.height ?? SIZE;
+          let uncovered = 0;
+          let total = 0;
+          for (let y = Math.floor(height * 0.375); y < Math.floor(height * 0.625); y++)
+            for (let x = Math.floor(width * 0.375); x < Math.floor(width * 0.625); x++) {
+              total++;
+              if (halfFloat.f16ToF32(view.getUint16((y * width + x) * 8 + 4, true)) < 0)
+                uncovered++;
+            }
+          return uncovered / total;
+        } finally {
+          (await replay.dispose()).unwrap();
+          webgpu.disposeDevice(device);
+          expect((await device.lost).reason).toBe('destroyed');
+        }
       },
-    );
-  } finally {
-    (await recorder.dispose()).unwrap();
-  }
+    },
+  );
 }
 
 const near = (a: Uint8Array, ai: number, b: Uint8Array, bi: number, tolerance = 3): boolean =>

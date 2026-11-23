@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "f150593f-bdb8-5204-b75c-3f3fda283d83",
+  "schemaVersion": "3.0.0",
+  "packageId": "d584ae4f-17e9-5806-a7c5-4cebe9d0528f",
+  "assets": {
+    "fractal-pyramid.wgsl": {
       "kind": "material",
-      "execution": "cooked",
-      "sourceKey": "fractal-pyramid.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -21,7 +18,9 @@
               "cullMode": "none",
               "depthCompare": "always",
               "depthWriteEnabled": false,
-              "tags": { "LightMode": "Forward" },
+              "tags": {
+                "LightMode": "Forward"
+              },
               "queue": 2000
             }
           }
@@ -39,5 +38,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

@@ -5,9 +5,23 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { AnimationPlayer, AnimationTargetId, animationPlugin, bindAnimationTargets } from '@forgeax/engine-animation';
 import { World, createWorldContext } from '@forgeax/engine-ecs';
+import {
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
+  interleaveStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
+} from '@forgeax/engine-geometry';
 
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, renderComponentsPlugin } from '@forgeax/engine-render';
-import { attachRecorder, buildFrameModel, decodeTape, encodeTape, openReplay, replayDeviceRequest } from '@forgeax/engine-rhi-debug';
+import {
+  attachRecorder,
+  buildFrameModel,
+  decodeTape,
+  encodeTape,
+  openReplay,
+  replayDeviceRequest,
+  type WorkEntry,
+} from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { skinningPlugin } from '@forgeax/engine-skinning';
@@ -27,6 +41,62 @@ function difference(a: Uint8Array, b: Uint8Array): number {
   if (a.length !== b.length) throw new Error(`readback length mismatch ${a.length}/${b.length}`);
   let changed = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
   return changed;
+}
+
+function matchesImportedVertices(
+  mesh: MeshAsset,
+  bindings: WorkEntry['vertexBuffers'],
+  bytes: Uint8Array,
+): boolean {
+  const position = bindings[0];
+  if (
+    position === undefined ||
+    position.slot !== 0 ||
+    position.offset !== 0 ||
+    bytes.length !== mesh.vertices.byteLength
+  )
+    return false;
+  const source = new Uint8Array(
+    mesh.vertices.buffer,
+    mesh.vertices.byteOffset,
+    mesh.vertices.byteLength,
+  );
+  if (bindings.length === 1)
+    return (position.size ?? bytes.length) === bytes.length && difference(bytes, source) === 0;
+
+  const layout = deriveVertexLayoutProjection(mesh.attributes);
+  const count = deriveVertexCount(mesh.vertices, layout);
+  const streams = count === undefined ? undefined : projectStaticMeshVertexStreams(layout, count);
+  if (streams === undefined || streams.ranges.length !== bindings.length) return false;
+  const rangesMatch = streams.ranges.every(({ offset, size }, slot) => {
+    const binding = bindings[slot];
+    return (
+      binding?.slot === slot &&
+      binding.bufferHandleId === position.bufferHandleId &&
+      binding.offset === offset &&
+      binding.size === size
+    );
+  });
+  if (!rangesMatch) return false;
+  const rows = interleaveStaticMeshVertexStreams(new Float32Array(bytes.slice().buffer), layout);
+  return difference(new Uint8Array(rows.buffer, rows.byteOffset, rows.byteLength), source) === 0;
+}
+
+function importedMeshDraws(draws: readonly WorkEntry[]) {
+  // A PreDepth draw may bind only position. Retain the widest recorded
+  // binding of each imported mesh allocation for the byte comparison.
+  const result = new Map<
+    string,
+    { draw: WorkEntry; index: NonNullable<WorkEntry['indexBuffer']> }
+  >();
+  for (const draw of draws) {
+    const position = draw.vertexBuffers[0];
+    if (position === undefined || draw.indexBuffer === null) continue;
+    const previous = result.get(position.bufferHandleId);
+    if (previous === undefined || previous.draw.vertexBuffers.length < draw.vertexBuffers.length)
+      result.set(position.bufferHandleId, { draw, index: draw.indexBuffer });
+  }
+  return result;
 }
 
 const files: { name: string; bytes: Uint8Array }[] = [];
@@ -191,18 +261,24 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     const geometryChecks: unknown[] = [];
     try {
       inspection = (await replay.inspectWork(selected.workIndex, ['pipeline', 'bindings'])).unwrap();
-      const checkedBuffers = new Set<string>();
-      for (const draw of draws) {
-        const vertexBuffer = draw.vertexBuffers[0];
-        if (vertexBuffer === undefined || draw.indexBuffer === null || checkedBuffers.has(vertexBuffer.bufferHandleId)) continue;
-        checkedBuffers.add(vertexBuffer.bufferHandleId);
-        const vertexRead = (await replay.readResourceAtWork(vertexBuffer.bufferHandleId, draw.workIndex)).unwrap();
-        const indexRead = (await replay.readResourceAtWork(draw.indexBuffer.bufferHandleId, draw.workIndex)).unwrap();
-        const match = loadedMeshes.find((mesh) => vertexRead.bytes.length === mesh.vertices.byteLength && difference(vertexRead.bytes, new Uint8Array(mesh.vertices.buffer, mesh.vertices.byteOffset, mesh.vertices.byteLength)) === 0);
+      for (const [bufferId, { draw, index }] of importedMeshDraws(draws)) {
+        const vertexRead = (await replay.readResourceAtWork(bufferId, draw.workIndex)).unwrap();
+        const indexRead = (await replay.readResourceAtWork(index.bufferHandleId, draw.workIndex)).unwrap();
+        const match = loadedMeshes.find((mesh) => matchesImportedVertices(mesh, draw.vertexBuffers, vertexRead.bytes));
         if (match?.indices === undefined) throw new Error('GPU vertex bytes do not match an imported canonical mesh');
         const indexDelta = difference(indexRead.bytes, new Uint8Array(match.indices.buffer, match.indices.byteOffset, match.indices.byteLength));
         if (indexDelta !== 0) throw new Error(`GPU index bytes differ from imported mesh: ${indexDelta}`);
-        geometryChecks.push({ workIndex: draw.workIndex, vertexBuffer: vertexBuffer.bufferHandleId, indexBuffer: draw.indexBuffer.bufferHandleId, vertexBytes: vertexRead.bytes.length, indexBytes: indexRead.bytes.length, indexFormat: draw.indexBuffer.format, vertexChangedBytes: 0, indexChangedBytes: indexDelta });
+        geometryChecks.push({
+          workIndex: draw.workIndex,
+          vertexBuffer: bufferId,
+          vertexBindings: draw.vertexBuffers,
+          indexBuffer: index.bufferHandleId,
+          vertexBytes: vertexRead.bytes.length,
+          indexBytes: indexRead.bytes.length,
+          indexFormat: index.format,
+          vertexChangedBytes: 0,
+          indexChangedBytes: indexDelta,
+        });
         save(`${fixture.id}/geometry-${geometryChecks.length}.vertices`, vertexRead.bytes);
         save(`${fixture.id}/geometry-${geometryChecks.length}.indices`, indexRead.bytes);
       }

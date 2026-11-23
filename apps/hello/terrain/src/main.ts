@@ -78,6 +78,11 @@ async function start() {
   ).unwrap();
 if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
 
+  if (new URL(location.href).searchParams.has('storage')) {
+    const { startTerrainStorageView } = await import('./storage-view.ts');
+    await startTerrainStorageView(app);
+    return;
+  }
   const subjects = await buildTerrainWorld(app, rootGuid);
   const errors: unknown[] = [];
   const rejections: unknown[] = [];

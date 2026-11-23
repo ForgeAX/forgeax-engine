@@ -1,9 +1,12 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AssetGuid as EngineAssetGuid, Result } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
-import type { AssetVerificationReport } from './cli-asset.js';
+import {
+  type AssetVerificationReport,
+  projectAssetVerificationReport,
+  verificationSourceFacts,
+} from './evidence/source-inventory.js';
 import { AssetGuid, isValidPackSourceKey, PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
@@ -24,22 +27,20 @@ import {
   validatePackDefinition,
 } from './pack-authoring.js';
 import {
+  PackSourceRevisionConflict,
+  writePackSourceAtomically,
+} from './pack-authoring-document.js';
+import {
   createFileSystemPackDrafts,
   type FileSystemPackDraftOptions,
 } from './pack-authoring-drafts-node.js';
-import { packSourceFailure, readPackAuthoringDeclaration } from './pack-authoring-literals.js';
-import { declaredPackAssets, type ScanInventory, scanInventory } from './scanner.js';
-
-export interface PackAuthoringMaterializedAsset {
-  readonly packageId: string;
-  readonly sourceKey: string;
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourcePath?: string;
-  readonly refs?: readonly string[];
-  readonly ready?: boolean;
-  readonly artifactsReady?: boolean;
-}
+import {
+  packSourceFailure,
+  packSourceRevision,
+  readPackAuthoringDeclaration,
+} from './pack-authoring-literals.js';
+import { type ScanInventory, type ScanOptions, type ScanResult, scanInventory } from './scanner.js';
+import { projectPackParameters } from './scriptable-pack-wire.js';
 
 export interface FileSystemPackAuthoringOptions {
   readonly drafts?: Omit<FileSystemPackDraftOptions<unknown>, 'gameRoot'>;
@@ -49,23 +50,19 @@ export interface FileSystemPackAuthoringOptions {
     operation: PackAuthoringOperation,
   ) => Promise<Result<PackAuthoringOperationResult, PackAuthoringError>>;
   readonly scanRoots?: readonly string[];
-  /** Current-generation rows only; this callback is never called by mutations. */
-  readonly materialized?: () =>
-    | readonly PackAuthoringMaterializedAsset[]
-    | Promise<readonly PackAuthoringMaterializedAsset[]>;
-  /**
-   * GUIDs published by non-Pack producers in the same Catalog projection.
-   * They are accepted as dependency identities but never exposed as Pack
-   * authoring assets.
-   */
-  readonly additionalKnownGuids?: () => readonly string[] | Promise<readonly string[]>;
+  /** Include external Catalog subjects and GUID aliases in ordinary inspection. */
+  readonly inspectCatalogSubjects?: boolean;
+  /** Catalog rows from the host's current projection. */
+  readonly catalog?: () => readonly unknown[] | Promise<readonly unknown[]>;
   /** Build owner callback; the gateway itself does not own DDC or Catalog state. */
   readonly rebuild?: (
     sourcePath: string,
     mode: 'rebuild' | 'cold-cook',
   ) => Promise<Result<unknown, PackAuthoringError>>;
   /** Injection point for hosts that already own a validated Source Index. */
-  readonly inventory?: () => Promise<Result<ScanInventory, unknown>>;
+  readonly inventory?: (
+    onSourceFailure?: ScanOptions['onSourceFailure'],
+  ) => Promise<ScanResult<ScanInventory, unknown>>;
 }
 
 interface ConfinedPath {
@@ -119,12 +116,11 @@ interface GatewaySnapshot {
   readonly inventory: ScanInventory;
   readonly sourceFailures: ReadonlyMap<string, PackAuthoringError>;
   readonly subjects: ReadonlyMap<string, Subject>;
-  readonly directAssets: readonly DirectAuthorAsset[];
+  readonly assets: ReadonlyMap<string, DirectAuthorAsset | MaterializedAsset>;
   readonly materialized: readonly MaterializedAsset[];
+  readonly declaredAssets: readonly DirectAuthorAsset[];
   readonly knownGuids: ReadonlySet<string>;
 }
-
-const VERIFY_PROVENANCE_LIMIT = 256;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -137,10 +133,6 @@ function jsonValue(value: unknown): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonValue(item)]));
   }
   return value;
-}
-
-function revisionOf(source: string): string {
-  return `sha256:${createHash('sha256').update(source).digest('hex')}`;
 }
 
 function makeError(
@@ -214,18 +206,6 @@ function confinedPath(
   return ok({ absolute, relative: relativePath });
 }
 
-async function atomicWrite(path: string, source: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await writeFile(temporary, source, { encoding: 'utf8', flag: 'wx' });
-    await rename(temporary, path);
-  } catch (cause) {
-    await rm(temporary, { force: true });
-    throw cause;
-  }
-}
-
 function packageKey(packageId: PackageId): string {
   return PackageId.format(packageId).toLowerCase();
 }
@@ -236,70 +216,60 @@ function parsePackageId(value: unknown): PackageId | undefined {
   return parsed.ok ? parsed.value : undefined;
 }
 
-function projectParameters(
-  parameters: readonly PackParameterDefinition[],
-): readonly Readonly<Record<string, unknown>>[] {
-  return parameters.map((parameter) => ({
-    name: parameter.name,
-    type: parameter.type,
-    default: jsonValue(parameter.default),
-    ...(parameter.minimum === undefined ? {} : { minimum: parameter.minimum }),
-    ...(parameter.maximum === undefined ? {} : { maximum: parameter.maximum }),
-    ...(parameter.values === undefined ? {} : { values: parameter.values }),
-    ...(parameter.kind === undefined ? {} : { kind: parameter.kind }),
-    ...(parameter.apply === undefined ? {} : { apply: parameter.apply }),
-  }));
-}
-
 function serializedParameters(
   definition: AnyScriptablePackDefinition,
 ): readonly Readonly<Record<string, unknown>>[] | undefined {
-  return 'parameters' in definition ? projectParameters(definition.parameters) : undefined;
+  return 'parameters' in definition ? projectPackParameters(definition.parameters) : undefined;
 }
 
-function sourceResult(
-  subject: Subject,
-  operation: PackAuthoringOperation,
-): PackAuthoringOperationResult {
+function sourceSummary(subject: Subject) {
   const base = {
-    operation: operation.operation,
-    requestId: operation.requestId,
     sourcePath: subject.relativePath,
     packageId: PackageId.format(subject.packageId),
     format: subject.format === 'source' ? 'pack.ts' : subject.format,
   } as const;
   if (subject.format === 'source') {
     const parameters = serializedParameters(subject.definition);
-    return {
-      ...base,
-      ...(parameters === undefined ? {} : { parameters }),
-      ...(parameters === undefined
-        ? {}
-        : {
-            capabilities: [
-              'asset.source.instance.create',
-              'asset.source.rebuild',
-              'asset.source.cold-cook',
-            ],
-          }),
-    };
+    return { ...base, ...(parameters === undefined ? {} : { parameters }) };
   }
-  if (subject.format === 'instance') {
-    return {
-      ...base,
-      parentPackageId: PackageId.format(subject.parent),
-      values: jsonValue(subject.values) as Readonly<Record<string, unknown>>,
-    };
-  }
+  return subject.format === 'instance'
+    ? {
+        ...base,
+        parentPackageId: PackageId.format(subject.parent),
+        values: jsonValue(subject.values) as Readonly<Record<string, unknown>>,
+      }
+    : base;
+}
+
+function sourceResult(
+  subject: Subject,
+  operation: PackAuthoringOperation,
+): PackAuthoringOperationResult {
+  const summary = sourceSummary(subject);
   return {
-    ...base,
-    assets: subject.assets.map((asset) => ({
-      sourceKey: asset.sourceKey,
-      guid: asset.guid,
-      kind: asset.kind,
-      ...(asset.name === undefined ? {} : { name: asset.name }),
-      refs: asset.refs,
-    })),
+    operation: operation.operation,
+    requestId: operation.requestId,
+    ...summary,
+    ...(subject.format === 'source' && 'parameters' in summary
+      ? {
+          capabilities: [
+            'asset.source.instance.create',
+            'asset.source.rebuild',
+            'asset.source.cold-cook',
+          ],
+        }
+      : {}),
+    ...(subject.format === 'direct'
+      ? {
+          assets: subject.assets.map(({ sourceKey, guid, kind, name, refs }) => ({
+            sourceKey,
+            guid,
+            kind,
+            ...(name === undefined ? {} : { name }),
+            refs,
+          })),
+        }
+      : {}),
   };
 }
 
@@ -311,7 +281,8 @@ function scanFailure(operation: PackAuthoringOperation, cause: unknown): PackAut
   const code: PackAuthoringErrorCode =
     reason === 'pack-parent-not-found' ||
     reason === 'pack-parent-cycle' ||
-    reason === 'pack-parent-has-no-parameters'
+    reason === 'pack-parent-has-no-parameters' ||
+    reason === 'pack-source-revision-conflict'
       ? reason
       : value.code === 'pack-guid-collision'
         ? 'pack-guid-collision'
@@ -340,223 +311,113 @@ function scanRoots(options: FileSystemPackAuthoringOptions): readonly string[] {
     : options.scanRoots.map((root) => resolve(options.gameRoot, root));
 }
 
-async function readMaterialized(
-  options: FileSystemPackAuthoringOptions,
-  operation: PackAuthoringOperation,
-): Promise<Result<readonly MaterializedAsset[], PackAuthoringError>> {
-  let rawRows: unknown;
-  try {
-    rawRows = (await options.materialized?.()) ?? [];
-  } catch (cause) {
-    return err(
-      makeError(
-        'pack-parameter-invalid',
-        'the materialized projection callback to return current-generation rows',
-        'repair the build-owner projection callback, then retry the Pack operation',
-        {
-          requestId: operation.requestId,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-    );
-  }
-  if (!Array.isArray(rawRows)) {
-    return err(
-      makeError(
-        'pack-parameter-invalid',
-        'the materialized projection callback to return an array',
-        'repair the build-owner projection callback, then retry the Pack operation',
-        { requestId: operation.requestId, actual: typeof rawRows },
-      ),
-    );
-  }
-  const materialized: MaterializedAsset[] = [];
-  const pairOwners = new Map<string, string>();
-  const guidOwners = new Map<string, string>();
-  for (const rawRow of rawRows) {
-    if (!isRecord(rawRow)) {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'materialized rows to be objects',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, actual: typeof rawRow },
-        ),
-      );
-    }
-    const row = rawRow as unknown as PackAuthoringMaterializedAsset;
-    const parsedPackageId = parsePackageId(row.packageId);
-    if (parsedPackageId === undefined) {
-      return err(
-        makeError(
-          'pack-package-id-invalid',
-          'materialized rows to contain a valid UUID packageId',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, packageId: row.packageId, sourceKey: row.sourceKey },
-        ),
-      );
-    }
-    if (!isValidPackSourceKey(row.sourceKey)) {
-      return err(
-        makeError(
-          'pack-source-key-invalid',
-          'materialized rows to contain a valid sourceKey',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, packageId: row.packageId, sourceKey: row.sourceKey },
-        ),
-      );
-    }
-    if (
-      typeof row.guid !== 'string' ||
-      !isValidAssetGuidString(row.guid) ||
-      typeof row.kind !== 'string' ||
-      row.kind.length === 0
-    ) {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'materialized rows to contain a valid GUID and non-empty kind',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, packageId: row.packageId, sourceKey: row.sourceKey },
-        ),
-      );
-    }
-    if (
-      row.refs !== undefined &&
-      (!Array.isArray(row.refs) ||
-        row.refs.some((ref) => typeof ref !== 'string' || !isValidAssetGuidString(ref)))
-    ) {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'materialized refs to contain UUID AssetGuid strings when present',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, packageId: row.packageId, sourceKey: row.sourceKey },
-        ),
-      );
-    }
-    if (row.sourcePath !== undefined && typeof row.sourcePath !== 'string') {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'materialized sourcePath to be a string when present',
-          'repair the current generation projection before querying Pack authoring',
-          { requestId: operation.requestId, sourcePath: row.sourcePath },
-        ),
-      );
-    }
-    const packageId = PackageId.format(parsedPackageId).toLowerCase();
-    const expectedGuid = AssetGuid.format(
-      AssetGuid.derive(parsedPackageId, row.sourceKey),
-    ).toLowerCase();
-    const guid = row.guid.toLowerCase();
-    if (guid !== expectedGuid) {
-      return err(
-        makeError(
-          'pack-guid-collision',
-          'materialized GUID to equal UUIDv5(packageId, sourceKey)',
-          'rebuild the current generation from the stable packageId and sourceKey pair',
-          {
-            requestId: operation.requestId,
-            packageId,
-            sourceKey: row.sourceKey,
-            expectedGuid,
-            observedGuid: row.guid,
-          },
-        ),
-      );
-    }
-    const pair = `${packageId}/${row.sourceKey}`;
-    const pairOwner = pairOwners.get(pair);
-    if (pairOwner !== undefined) {
-      return err(
-        makeError(
-          'pack-guid-collision',
-          'one materialized row per packageId/sourceKey pair',
-          'remove the stale duplicate row from the current generation projection',
-          { requestId: operation.requestId, pair, paths: [pairOwner, row.sourcePath] },
-        ),
-      );
-    }
-    pairOwners.set(pair, row.sourcePath ?? pair);
-    const guidOwner = guidOwners.get(guid);
-    if (guidOwner !== undefined) {
-      return err(
-        makeError(
-          'pack-guid-collision',
-          'one materialized owner per derived AssetGuid',
-          'repair the current generation projection so each derived GUID has one owner',
-          { requestId: operation.requestId, guid, paths: [guidOwner, row.sourcePath] },
-        ),
-      );
-    }
-    guidOwners.set(guid, row.sourcePath ?? pair);
-    materialized.push({
-      packageId,
-      sourceKey: row.sourceKey,
-      guid,
-      kind: row.kind,
-      ...(row.sourcePath === undefined ? {} : { sourcePath: row.sourcePath }),
-      ...(row.refs === undefined ? {} : { refs: Object.freeze([...row.refs]) }),
-      ready: row.ready === true && row.artifactsReady !== false,
+type InvalidCatalogRow = (
+  code: PackAuthoringError['code'],
+  expected: string,
+  detail: Record<string, unknown>,
+) => Result<never, PackAuthoringError>;
+
+function projectCatalogPackRow(
+  row: Record<string, unknown>,
+  ready: boolean,
+  invalid: InvalidCatalogRow,
+): Result<MaterializedAsset | undefined, PackAuthoringError> {
+  const { guid, kind, sourcePath, sourceKey, refs, packageId, subject, provenance } = row;
+  const provider = isRecord(provenance) ? provenance.provider : undefined;
+  if (
+    typeof packageId !== 'string' ||
+    typeof sourceKey !== 'string' ||
+    (subject !== 'internal-asset' && provider !== 'pack-ts' && provider !== 'pack')
+  )
+    return ok(undefined);
+  const identity = { packageId, sourceKey };
+  const parsed = parsePackageId(packageId);
+  if (!parsed)
+    return invalid('pack-package-id-invalid', 'a valid Catalog Pack packageId', identity);
+  if (!isValidPackSourceKey(sourceKey))
+    return invalid('pack-source-key-invalid', 'a valid Catalog Pack sourceKey', identity);
+  if (!isValidAssetGuidString(guid) || typeof kind !== 'string' || !kind)
+    return invalid('pack-parameter-invalid', 'Catalog Pack rows with a GUID and kind', identity);
+  const key = guid.toLowerCase();
+  const expectedGuid = AssetGuid.format(AssetGuid.derive(parsed, sourceKey)).toLowerCase();
+  if (key !== expectedGuid)
+    return invalid('pack-guid-collision', 'Catalog GUID to equal UUIDv5(packageId, sourceKey)', {
+      ...identity,
+      expectedGuid,
+      observedGuid: guid,
     });
-  }
-  materialized.sort((left, right) =>
-    `${left.packageId}/${left.sourceKey}`.localeCompare(`${right.packageId}/${right.sourceKey}`),
-  );
-  return ok(materialized);
+  if (Array.isArray(refs) && !refs.every(isValidAssetGuidString))
+    return invalid('pack-parameter-invalid', 'Catalog refs to contain AssetGuid strings', identity);
+  return ok({
+    packageId: PackageId.format(parsed),
+    sourceKey,
+    guid: key,
+    kind,
+    ready,
+    ...(typeof sourcePath === 'string' ? { sourcePath } : {}),
+    ...(Array.isArray(refs) ? { refs: Object.freeze([...refs]) } : {}),
+  });
 }
 
-async function readAdditionalKnownGuids(
+async function readCatalogProjection(
   options: FileSystemPackAuthoringOptions,
   operation: PackAuthoringOperation,
-): Promise<Result<readonly string[], PackAuthoringError>> {
-  let rawGuids: unknown;
+) {
+  const invalid = (
+    code: PackAuthoringError['code'],
+    expected: string,
+    detail: Record<string, unknown>,
+  ) =>
+    err(
+      makeError(code, expected, 'repair the Catalog projection before querying Pack authoring', {
+        requestId: operation.requestId,
+        ...detail,
+      }),
+    );
+  let rows: unknown;
   try {
-    rawGuids = (await options.additionalKnownGuids?.()) ?? [];
+    rows = (await options.catalog?.()) ?? [];
   } catch (cause) {
-    return err(
-      makeError(
-        'pack-parameter-invalid',
-        'the additionalKnownGuids callback to return current Catalog GUIDs',
-        'repair the build-owner Catalog projection callback, then retry the Pack operation',
-        {
-          requestId: operation.requestId,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-    );
+    return invalid('pack-parameter-invalid', 'the host to return readable Catalog rows', {
+      cause: cause instanceof Error ? cause.message : String(cause),
+    });
   }
-  if (!Array.isArray(rawGuids)) {
-    return err(
-      makeError(
-        'pack-parameter-invalid',
-        'additionalKnownGuids to be an array of AssetGuid strings',
-        'repair the build-owner Catalog projection before querying Pack authoring',
-        { requestId: operation.requestId, actual: typeof rawGuids },
-      ),
-    );
-  }
-  const guids: string[] = [];
-  const seen = new Set<string>();
-  for (const candidate of rawGuids) {
-    if (typeof candidate !== 'string' || !isValidAssetGuidString(candidate)) {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'additionalKnownGuids to contain valid AssetGuid strings',
-          'repair the build-owner Catalog projection before querying Pack authoring',
-          { requestId: operation.requestId, guid: candidate },
-        ),
-      );
+  if (!Array.isArray(rows))
+    return invalid('pack-parameter-invalid', 'the host to return a Catalog row array', {});
+
+  const materialized = new Map<string, MaterializedAsset>();
+  const knownGuids = new Set<string>();
+  for (const row of rows) {
+    if (!isRecord(row)) return invalid('pack-parameter-invalid', 'Catalog rows to be objects', {});
+    const current = isRecord(row.publication) ? row.publication.current : undefined;
+    const ready =
+      row.lifecycle === 'current' &&
+      isRecord(current) &&
+      typeof current.packageUrl === 'string' &&
+      current.packageUrl.length > 0;
+    const projected = projectCatalogPackRow(row, ready, invalid);
+    if (!projected.ok) return projected;
+    const asset = projected.value;
+    if (asset !== undefined) {
+      const previous = materialized.get(asset.guid);
+      if (previous !== undefined)
+        return invalid('pack-guid-collision', 'one Catalog owner per derived AssetGuid', {
+          guid: asset.guid,
+          packageId: asset.packageId,
+          sourceKey: asset.sourceKey,
+          paths: [previous.sourcePath, asset.sourcePath],
+        });
+      materialized.set(asset.guid, asset);
     }
-    const guid = candidate.toLowerCase();
-    if (!seen.has(guid)) {
-      seen.add(guid);
-      guids.push(guid);
-    }
+    if (ready && typeof row.kind === 'string' && row.kind && isValidAssetGuidString(row.guid))
+      knownGuids.add(row.guid.toLowerCase());
   }
-  return ok(guids);
+  return ok({
+    materialized: [...materialized.values()].sort((left, right) =>
+      `${left.packageId}/${left.sourceKey}`.localeCompare(`${right.packageId}/${right.sourceKey}`),
+    ),
+    knownGuids,
+  });
 }
 
 async function createSnapshot(
@@ -567,20 +428,16 @@ async function createSnapshot(
   const partialRead = ['asset.list', 'asset.inspect', 'asset.resolve'].includes(
     operation.operation,
   );
-  const scanned =
-    options.inventory === undefined
-      ? await scanInventory(scanRoots(options), {
-          // Authoring queries and source edits consume declarations, never
-          // executable build closures or their retained Worker leases.
-          scriptablePack: { metadataOnly: true },
-          ...(partialRead
-            ? {
-                onSourceFailure: (sourcePath, error) =>
-                  sourceFailures.set(sourcePath, scanFailure(operation, error)),
-              }
-            : {}),
-        })
-      : await options.inventory();
+  const onSourceFailure: ScanOptions['onSourceFailure'] = partialRead
+    ? (sourcePath, error) => sourceFailures.set(sourcePath, scanFailure(operation, error))
+    : undefined;
+  // Authoring consumes metadata without retaining worker leases.
+  const scanned = options.inventory
+    ? await options.inventory(onSourceFailure)
+    : await scanInventory(scanRoots(options), {
+        scriptablePack: { metadataOnly: true },
+        ...(onSourceFailure === undefined ? {} : { onSourceFailure }),
+      });
   if (!scanned.ok) return err(scanFailure(operation, scanned.error));
   const subjects = new Map<string, Subject>();
   const directAssets: DirectAuthorAsset[] = [];
@@ -596,7 +453,7 @@ async function createSnapshot(
       });
       continue;
     }
-    if (declaration.format !== 'pack.json' || declaration.value.schemaVersion !== '3.0.0') continue;
+    if (declaration.format !== 'pack.json') continue;
     const parsed = declaration.value;
     if (parsed.format === 'direct') {
       const projected = projectDirectPackJson(parsed);
@@ -620,85 +477,50 @@ async function createSnapshot(
         })),
       );
     } else {
-      subjects.set(packageKey(parsed.packageId), {
-        format: 'instance',
-        packageId: parsed.packageId,
-        parent: parsed.parent,
-        values: parsed.values,
-        sourcePath,
-        relativePath,
-      });
+      subjects.set(packageKey(parsed.packageId), { ...parsed, sourcePath, relativePath });
     }
   }
-  const materializedResult = await readMaterialized(options, operation);
-  if (!materializedResult.ok) return materializedResult;
-  const additionalKnownGuidsResult = await readAdditionalKnownGuids(options, operation);
-  if (!additionalKnownGuidsResult.ok) return additionalKnownGuidsResult;
-  const materialized = materializedResult.value;
+  const catalog = await readCatalogProjection(options, operation);
+  if (!catalog.ok) return catalog;
+  const { materialized, knownGuids } = catalog.value;
   const guidOwners = new Map<string, string>();
-  const directPairs = new Set<string>();
+  const assets = new Map<string, DirectAuthorAsset | MaterializedAsset>();
   for (const entry of scanned.value.inventory) {
     const declaration = scanned.value.declarations.get(entry.sourcePath);
-    // scanInventory already projects v3 direct entries below; keep that
-    // source-local projection from colliding with its gateway subject copy.
-    if (declaration?.format === 'pack.json' && declaration.value.schemaVersion === '3.0.0') {
-      continue;
-    }
+    if (declaration?.format === 'pack.json') continue;
     guidOwners.set(entry.guid.toLowerCase(), entry.sourcePath);
   }
-  for (const asset of directAssets) {
-    directPairs.add(`${asset.packageId}/${asset.sourceKey}`);
+  for (const asset of [...directAssets, ...materialized]) {
     const existing = guidOwners.get(asset.guid);
-    if (existing !== undefined) {
+    const direct = assets.get(asset.guid);
+    if (
+      existing !== undefined &&
+      (!('ready' in asset) ||
+        direct?.packageId !== asset.packageId ||
+        direct.sourceKey !== asset.sourceKey)
+    ) {
       return err(
         makeError(
           'pack-guid-collision',
           'one current-generation owner per AssetGuid',
-          'repair the direct Pack or external source projection before querying Pack authoring',
-          {
-            requestId: operation.requestId,
-            guid: asset.guid,
-            paths: [existing, asset.sourcePath],
-          },
+          'remove the conflicting projection or repair the source owner before querying Pack authoring',
+          { requestId: operation.requestId, guid: asset.guid, paths: [existing, asset.sourcePath] },
         ),
       );
     }
+    // A published row for a direct author asset overlays the same derived GUID.
+    assets.set(asset.guid, asset);
     guidOwners.set(asset.guid, asset.sourcePath ?? asset.packageId);
   }
-  for (const asset of materialized) {
-    const existing = guidOwners.get(asset.guid);
-    const pair = `${asset.packageId}/${asset.sourceKey}`;
-    // A published row for a direct author asset is the expected current
-    // generation. It shares the source identity; only a different owner is a
-    // collision.
-    if (existing !== undefined && !directPairs.has(pair)) {
-      return err(
-        makeError(
-          'pack-guid-collision',
-          'one current-generation owner per AssetGuid',
-          'remove the stale materialized row or repair the direct/source owner before querying Pack authoring',
-          {
-            requestId: operation.requestId,
-            guid: asset.guid,
-            paths: [existing, asset.sourcePath],
-          },
-        ),
-      );
-    }
-    guidOwners.set(asset.guid, asset.sourcePath ?? asset.packageId);
-  }
-  const knownGuids = new Set<string>([
-    ...scanned.value.inventory.map((entry) => entry.guid.toLowerCase()),
-    ...directAssets.map((asset) => asset.guid),
-    ...materialized.map((asset) => asset.guid),
-    ...additionalKnownGuidsResult.value,
-  ]);
+  for (const entry of scanned.value.inventory) knownGuids.add(entry.guid.toLowerCase());
+  for (const asset of assets.keys()) knownGuids.add(asset);
   return ok({
     inventory: scanned.value,
     sourceFailures,
     subjects,
-    directAssets,
+    assets,
     materialized,
+    declaredAssets: directAssets,
     knownGuids,
   });
 }
@@ -716,29 +538,63 @@ function parentSubject(
       parameters: 'parameters' in subject.definition ? subject.definition.parameters : [],
     };
   }
-  if (subject.format === 'instance') {
-    return {
-      format: 'instance',
-      packageId: subject.packageId,
-      parent: subject.parent,
-      values: subject.values,
-    };
-  }
-  return { format: 'direct', packageId: subject.packageId };
+  return subject;
 }
 
 async function resolveInstance(
   snapshot: GatewaySnapshot,
   subject: InstanceSubject,
 ): Promise<Result<ResolvedPackParameterInheritance, PackAuthoringError>> {
-  return resolvePackParameterInheritance(
+  return resolvePackParameterInheritance(subject, (packageId) =>
+    packageKey(subject.packageId) === packageKey(packageId)
+      ? subject
+      : parentSubject(snapshot, packageId),
+  );
+}
+
+function locateSourcePath(
+  gameRoot: string,
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+  locator: string,
+): Result<Subject, PackAuthoringError> {
+  const confined = confinedPath(gameRoot, locator, operation);
+  if (!confined.ok) return confined;
+  const sourcePath = confined.value.relative;
+  const subject = [...snapshot.subjects.values()].find(
+    (entry) => entry.relativePath === sourcePath,
+  );
+  return subject === undefined
+    ? err(
+        pathError(
+          'pack-source-not-found',
+          operation,
+          'sourcePath to identify a current Pack subject',
+          'inspect the current Source Index and choose an existing source path',
+          { sourcePath },
+          sourcePath,
+        ),
+      )
+    : ok(subject);
+}
+
+function conflictingSourcePackage(
+  operation: PackAuthoringOperation,
+  source: Subject,
+  packageId: PackageId | undefined,
+  requestedText = packageId === undefined ? undefined : PackageId.format(packageId),
+): PackAuthoringError | undefined {
+  if (packageId === undefined || packageKey(packageId) === packageKey(source.packageId)) return;
+  return makeError(
+    'pack-parameter-invalid',
+    'sourcePath and packageId to identify the same Pack subject',
+    'remove the conflicting locator or use the packageId returned by asset.list',
     {
-      format: 'instance',
-      packageId: subject.packageId,
-      parent: subject.parent,
-      values: subject.values,
+      requestId: operation.requestId,
+      sourcePath: source.relativePath,
+      packageId: requestedText,
+      observedPackageId: PackageId.format(source.packageId),
     },
-    async (packageId) => parentSubject(snapshot, packageId),
   );
 }
 
@@ -748,56 +604,27 @@ function subjectFor(
   operation: PackAuthoringOperation,
 ): Result<Subject, PackAuthoringError> {
   if (operation.sourcePath !== undefined) {
-    const confined = confinedPath(gameRoot, operation.sourcePath, operation);
-    if (!confined.ok) return confined;
-    const expected = confined.value.relative;
-    const source = [...snapshot.subjects.values()].find(
-      (candidate) => candidate.relativePath === expected,
-    );
-    if (source !== undefined) {
-      const requestedPackageId =
-        operation.packageId === undefined ? undefined : PackageId.parse(operation.packageId);
-      if (requestedPackageId?.ok === false) {
-        return err(
-          makeError(
-            'pack-package-id-invalid',
-            'a UUID packageId',
-            'repair packageId before querying the Pack subject',
-            { requestId: operation.requestId, packageId: operation.packageId },
-            operation.packageId,
-          ),
-        );
-      }
-      if (
-        requestedPackageId?.ok === true &&
-        packageKey(requestedPackageId.value) !== packageKey(source.packageId)
-      ) {
-        return err(
-          makeError(
-            'pack-parameter-invalid',
-            'sourcePath and packageId to identify the same Pack subject',
-            'remove the conflicting locator or use the packageId returned by asset.list',
-            {
-              requestId: operation.requestId,
-              sourcePath: expected,
-              packageId: operation.packageId,
-              observedPackageId: PackageId.format(source.packageId),
-            },
-          ),
-        );
-      }
-      return ok(source);
+    const source = locateSourcePath(gameRoot, snapshot, operation, operation.sourcePath);
+    if (!source.ok || operation.packageId === undefined) return source;
+    const parsed = PackageId.parse(operation.packageId);
+    if (!parsed.ok) {
+      return err(
+        makeError(
+          'pack-package-id-invalid',
+          'a UUID packageId',
+          'repair packageId before querying the Pack subject',
+          { requestId: operation.requestId, packageId: operation.packageId },
+          operation.packageId,
+        ),
+      );
     }
-    return err(
-      pathError(
-        'pack-source-not-found',
-        operation,
-        'sourcePath to identify a current Pack subject',
-        'inspect the current Source Index and choose an existing source path',
-        { sourcePath: expected },
-        expected,
-      ),
+    const conflict = conflictingSourcePackage(
+      operation,
+      source.value,
+      parsed.value,
+      operation.packageId,
     );
+    return conflict === undefined ? source : err(conflict);
   }
   if (operation.packageId !== undefined) {
     const parsed = PackageId.parse(operation.packageId);
@@ -835,9 +662,7 @@ function subjectFor(
     const guid = operation.subject.toLowerCase();
     const packageSubject = snapshot.subjects.get(guid);
     if (packageSubject !== undefined) return ok(packageSubject);
-    const asset = [...snapshot.directAssets, ...snapshot.materialized].find(
-      (candidate) => candidate.guid === guid,
-    );
+    const asset = snapshot.assets.get(guid);
     if (asset !== undefined) {
       const subject = snapshot.subjects.get(asset.packageId);
       if (subject !== undefined) return ok(subject);
@@ -851,6 +676,33 @@ function subjectFor(
       { requestId: operation.requestId, subject: operation.subject },
     ),
   );
+}
+
+function assetStatus(
+  asset: DirectAuthorAsset | MaterializedAsset | undefined,
+): PackAuthoringResolutionStatus {
+  if (asset === undefined || !('ready' in asset)) return 'identity';
+  return asset.ready ? 'ready' : 'present';
+}
+
+function instanceInspection(snapshot: GatewaySnapshot, subject: InstanceSubject) {
+  const resolved = snapshot.inventory.instances.get(subject.sourcePath);
+  const failure = snapshot.sourceFailures.get(subject.sourcePath);
+  if (failure !== undefined) return err(failure);
+  if (resolved === undefined)
+    return err(
+      makeError(
+        'pack-source-not-found',
+        'a resolved instance in the validated Source Index',
+        'repair the parent chain and refresh the Pack inventory',
+        { sourcePath: subject.relativePath },
+      ),
+    );
+  return ok({
+    parameters: projectPackParameters(resolved.parameters),
+    effectiveValues: jsonValue(resolved.values) as Readonly<Record<string, unknown>>,
+    parentChain: resolved.parentChain,
+  });
 }
 
 async function inspectAsset(
@@ -902,54 +754,30 @@ async function inspectAsset(
           ),
         );
       }
-      const materialized = snapshot.materialized.find(
-        (candidate) =>
-          candidate.packageId === packageKey(subject.packageId) &&
-          candidate.sourceKey === operation.sourceKey,
-      );
+      const output = snapshot.assets.get(asset.guid.toLowerCase());
       return ok({
         ...inspectedSource,
         sourceKey: asset.sourceKey,
         guid: asset.guid,
         kind: asset.kind,
         payload: jsonValue(asset.payload) as Readonly<Record<string, unknown>>,
-        status:
-          materialized === undefined
-            ? ('identity' as const)
-            : materialized.ready
-              ? 'ready'
-              : 'present',
+        status: assetStatus(output),
       });
     }
     try {
       const guid = AssetGuid.format(AssetGuid.derive(subject.packageId, operation.sourceKey));
-      const materialized = [...snapshot.materialized].find(
-        (candidate) =>
-          candidate.packageId === packageKey(subject.packageId) &&
-          candidate.sourceKey === operation.sourceKey,
-      );
+      const output = snapshot.assets.get(guid.toLowerCase());
+      const materialized = output !== undefined && 'ready' in output ? output : undefined;
       const resolvedInstance =
-        subject.format === 'instance' ? await resolveInstance(snapshot, subject) : undefined;
+        subject.format === 'instance' ? instanceInspection(snapshot, subject) : undefined;
       if (resolvedInstance !== undefined && !resolvedInstance.ok) return resolvedInstance;
       return ok({
         ...inspectedSource,
         sourceKey: operation.sourceKey,
         guid,
-        ...(resolvedInstance?.ok
-          ? {
-              parameters: projectParameters(resolvedInstance.value.parameters),
-              effectiveValues: jsonValue(resolvedInstance.value.values) as Readonly<
-                Record<string, unknown>
-              >,
-              parentChain: resolvedInstance.value.parentChain,
-            }
-          : {}),
-        ...(materialized === undefined
-          ? { status: 'identity' as const }
-          : {
-              status: materialized.ready ? ('ready' as const) : ('present' as const),
-              kind: materialized.kind,
-            }),
+        ...resolvedInstance?.value,
+        status: assetStatus(materialized),
+        ...(materialized === undefined ? {} : { kind: materialized.kind }),
       });
     } catch (cause) {
       return err(
@@ -964,23 +792,71 @@ async function inspectAsset(
     }
   }
   if (subject.format === 'instance') {
-    const resolved = await resolveInstance(snapshot, subject);
-    if (!resolved.ok) return resolved;
-    return ok({
-      ...inspectedSource,
-      parameters: projectParameters(resolved.value.parameters),
-      effectiveValues: jsonValue(resolved.value.values) as Readonly<Record<string, unknown>>,
-      parentChain: resolved.value.parentChain,
-    });
+    const instance = instanceInspection(snapshot, subject);
+    return instance.ok ? ok({ ...inspectedSource, ...instance.value }) : instance;
   }
   return ok(inspectedSource);
+}
+
+function* metaAssets(snapshot: GatewaySnapshot) {
+  for (const { sourceKey: _sourceKey, ...entry } of snapshot.inventory.inventory) {
+    if (snapshot.inventory.declarations.get(entry.sourcePath)?.format === 'meta.json') yield entry;
+  }
+}
+
+async function inspectCatalogSubject(
+  gameRoot: string,
+  snapshot: GatewaySnapshot,
+  operation: PackAuthoringOperation,
+  sourceFailure: PackAuthoringError | undefined,
+): Promise<OperationResult> {
+  const subject = operation.subject ?? '';
+  if (snapshot.subjects.size > 0 || operation.sourceKey !== undefined) {
+    if (isValidAssetGuidString(subject)) {
+      const resolved = await resolveAsset(gameRoot, snapshot, {
+        operation: 'asset.resolve',
+        requestId: operation.requestId,
+        subject,
+      });
+      if (resolved.ok) return ok({ ...resolved.value, operation: 'asset.inspect' });
+    }
+    const inspected = sourceFailure
+      ? err(sourceFailure)
+      : await inspectAsset(gameRoot, snapshot, operation);
+    if (
+      inspected.ok ||
+      operation.sourceKey !== undefined ||
+      !['pack-source-not-found', 'pack-source-path-invalid'].includes(inspected.error.code)
+    )
+      return inspected;
+  }
+  const key = subject.toLowerCase();
+  const matches = [...metaAssets(snapshot)].filter(
+    (entry) => entry.guid.toLowerCase() === key || entry.name?.toLowerCase() === key,
+  );
+  const [entry] = matches;
+  if (entry && matches.length === 1)
+    return ok({
+      operation: 'asset.inspect',
+      requestId: operation.requestId,
+      catalogSubject: entry,
+    });
+  const missing = matches.length === 0;
+  return err(
+    makeError(
+      missing ? 'asset-not-found' : 'asset-subject-ambiguous',
+      'the GUID or name to resolve to exactly one asset',
+      missing ? 'Run asset list and choose a known subject.' : 'Use the stable GUID.',
+      { subject, matches },
+    ),
+  );
 }
 
 function listAssets(
   snapshot: GatewaySnapshot,
   operation: PackAuthoringOperation,
 ): PackAuthoringOperationResult {
-  const assets = snapshotAssets(snapshot)
+  const assets: Readonly<Record<string, unknown>>[] = [...snapshot.assets.values()]
     .map((asset) => ({
       packageId: asset.packageId,
       sourceKey: asset.sourceKey,
@@ -988,41 +864,14 @@ function listAssets(
       kind: asset.kind,
       ...(asset.name === undefined ? {} : { name: asset.name }),
       ...(asset.sourcePath === undefined ? {} : { sourcePath: asset.sourcePath }),
-      status: !('ready' in asset)
-        ? ('identity' as const)
-        : asset.ready
-          ? ('ready' as const)
-          : ('present' as const),
+      status: assetStatus(asset),
     }))
     .sort((left, right) =>
       `${left.packageId}/${left.sourceKey}`.localeCompare(`${right.packageId}/${right.sourceKey}`),
     );
+  assets.push(...metaAssets(snapshot));
   const sources = [...snapshot.subjects.values()]
-    .map((subject) => {
-      if (subject.format === 'source') {
-        const parameters = serializedParameters(subject.definition);
-        return {
-          packageId: PackageId.format(subject.packageId),
-          sourcePath: subject.relativePath,
-          format: 'pack.ts' as const,
-          ...(parameters === undefined ? {} : { parameters }),
-        };
-      }
-      if (subject.format === 'instance') {
-        return {
-          packageId: PackageId.format(subject.packageId),
-          sourcePath: subject.relativePath,
-          format: 'instance' as const,
-          parentPackageId: PackageId.format(subject.parent),
-          values: jsonValue(subject.values) as Readonly<Record<string, unknown>>,
-        };
-      }
-      return {
-        packageId: PackageId.format(subject.packageId),
-        sourcePath: subject.relativePath,
-        format: 'direct' as const,
-      };
-    })
+    .map(sourceSummary)
     .sort((left, right) =>
       `${left.packageId}/${left.sourcePath}`.localeCompare(
         `${right.packageId}/${right.sourcePath}`,
@@ -1043,28 +892,6 @@ function listAssets(
       : {}),
     snapshot: { sourceCount: snapshot.subjects.size, assetCount: assets.length },
   };
-}
-
-function snapshotAssets(
-  snapshot: GatewaySnapshot,
-): readonly (DirectAuthorAsset | MaterializedAsset)[] {
-  const assets = new Map<string, DirectAuthorAsset | MaterializedAsset>();
-  for (const asset of snapshot.directAssets) {
-    assets.set(`${asset.packageId}/${asset.sourceKey}`, asset);
-  }
-  for (const asset of snapshot.materialized) {
-    assets.set(`${asset.packageId}/${asset.sourceKey}`, asset);
-  }
-  return [...assets.values()];
-}
-
-function assetForPair(
-  snapshot: GatewaySnapshot,
-  packageId: PackageId,
-  sourceKey: string,
-): DirectAuthorAsset | MaterializedAsset | undefined {
-  const key = `${packageKey(packageId)}/${sourceKey}`;
-  return snapshotAssets(snapshot).find((asset) => `${asset.packageId}/${asset.sourceKey}` === key);
 }
 
 async function resolveAsset(
@@ -1106,9 +933,7 @@ async function resolveAsset(
     packageId = parsed.value;
   }
   if (operation.subject !== undefined && isValidAssetGuidString(operation.subject)) {
-    const found = [...snapshot.directAssets, ...snapshot.materialized].find(
-      (asset) => asset.guid === operation.subject?.toLowerCase(),
-    );
+    const found = snapshot.assets.get(operation.subject.toLowerCase());
     if (found !== undefined) {
       const parsed = PackageId.parse(found.packageId);
       if (parsed.ok) {
@@ -1161,44 +986,12 @@ async function resolveAsset(
     (operation.subject !== undefined && !isValidAssetGuidString(operation.subject)
       ? operation.subject
       : undefined);
-  let sourceLocator: string | undefined;
   if (sourceLocatorCandidate !== undefined) {
-    const confined = confinedPath(gameRoot, sourceLocatorCandidate, operation);
-    if (!confined.ok) return confined;
-    sourceLocator = confined.value.relative;
-  }
-  if (sourceLocator !== undefined) {
-    const source = [...snapshot.subjects.values()].find(
-      (candidate) => candidate.relativePath === sourceLocator,
-    );
-    if (source === undefined) {
-      return err(
-        pathError(
-          'pack-source-not-found',
-          operation,
-          'sourcePath to identify a current Pack subject',
-          'inspect the current Source Index and choose an existing source path',
-          { sourcePath: sourceLocator },
-          sourceLocator,
-        ),
-      );
-    }
-    if (packageId !== undefined && packageKey(packageId) !== packageKey(source.packageId)) {
-      return err(
-        makeError(
-          'pack-parameter-invalid',
-          'sourcePath and packageId to identify the same Pack subject',
-          'remove the conflicting locator or use the packageId returned by asset.list',
-          {
-            requestId: operation.requestId,
-            sourcePath: sourceLocator,
-            packageId: PackageId.format(packageId),
-            observedPackageId: PackageId.format(source.packageId),
-          },
-        ),
-      );
-    }
-    packageId ??= source.packageId;
+    const source = locateSourcePath(gameRoot, snapshot, operation, sourceLocatorCandidate);
+    if (!source.ok) return source;
+    const conflict = conflictingSourcePackage(operation, source.value, packageId);
+    if (conflict !== undefined) return err(conflict);
+    packageId ??= source.value.packageId;
   }
   if (packageId === undefined || sourceKey === undefined) {
     return err(
@@ -1254,13 +1047,10 @@ async function resolveAsset(
       ),
     );
   }
-  const asset = assetForPair(snapshot, packageId, sourceKey);
-  const materialized = snapshot.materialized.find(
-    (candidate) =>
-      candidate.packageId === packageKey(packageId) && candidate.sourceKey === sourceKey,
-  );
+  const asset = snapshot.assets.get(guidString.toLowerCase());
+  const status = assetStatus(asset);
   const requirement: PackAuthoringResolutionStatus = operation.require ?? 'identity';
-  if (requirement === 'present' && materialized === undefined) {
+  if (requirement === 'present' && status === 'identity') {
     return err(
       makeError(
         'pack-output-not-materialized',
@@ -1275,7 +1065,7 @@ async function resolveAsset(
       ),
     );
   }
-  if (requirement === 'ready' && (materialized === undefined || !materialized.ready)) {
+  if (requirement === 'ready' && status !== 'ready') {
     return err(
       makeError(
         'asset-not-ready',
@@ -1296,7 +1086,7 @@ async function resolveAsset(
     packageId: PackageId.format(packageId),
     sourceKey,
     guid: guidString,
-    status: materialized === undefined ? 'identity' : materialized.ready ? 'ready' : 'present',
+    status,
     ...(asset === undefined
       ? {}
       : {
@@ -1321,37 +1111,8 @@ function verificationSourceFormat(
   return fallback;
 }
 
-function verificationAuthorFacts(
-  snapshot: GatewaySnapshot,
-  entry: GatewaySnapshot['inventory']['inventory'][number],
-): { readonly name?: string; readonly dependencies: readonly string[] } {
-  const declaration = snapshot.inventory.declarations.get(entry.sourcePath);
-  if (declaration?.format === 'meta.json') {
-    const asset = declaration.value.subAssets.find(
-      (candidate) => candidate.guid.toLowerCase() === entry.guid.toLowerCase(),
-    );
-    return {
-      ...(asset?.name === undefined && asset?.sourceKey === undefined
-        ? {}
-        : { name: asset.name ?? asset.sourceKey }),
-      dependencies: [],
-    };
-  }
-  if (declaration?.format === 'pack.json') {
-    const asset = declaredPackAssets(declaration.value).find(
-      (candidate) => candidate.guid.toLowerCase() === entry.guid.toLowerCase(),
-    );
-    return {
-      ...(asset?.name === undefined ? {} : { name: asset.name }),
-      dependencies: asset?.refs ?? [],
-    };
-  }
-  return { dependencies: [] };
-}
-
 function verificationOutput(
   materialized: MaterializedAsset | undefined,
-  legacyPublished = false,
 ): VerificationAsset['output'] {
   if (materialized !== undefined) {
     return {
@@ -1360,50 +1121,28 @@ function verificationOutput(
       freshness: 'unknown',
     };
   }
-  if (legacyPublished) {
-    return {
-      status: 'produced',
-      availability: 'unknown',
-      freshness: 'unknown',
-      // A legacy Pack row is a validated published declaration. The bytes
-      // remain outside this read-only gateway, so availability is unknown.
-    };
-  }
   return { status: 'unproduced', availability: 'unknown', freshness: 'unknown' };
 }
 
 function createGatewayVerificationReport(
   gameRoot: string,
   snapshot: GatewaySnapshot,
-): AssetVerificationReport & Pick<PackAuthoringOperationResult, 'operation' | 'requestId'> {
+): AssetVerificationReport {
   const materializedByGuid = new Map(
     snapshot.materialized.map((asset) => [asset.guid.toLowerCase(), asset] as const),
   );
   const rows = new Map<string, VerificationAsset>();
   for (const entry of snapshot.inventory.inventory) {
     const declaration = snapshot.inventory.declarations.get(entry.sourcePath);
-    const format = declaration?.format ?? verificationSourceFormat(gameRoot, entry.sourcePath);
-    const facts = verificationAuthorFacts(snapshot, entry);
     const materialized = materializedByGuid.get(entry.guid.toLowerCase());
-    const legacyPublished =
-      declaration?.format === 'pack.json' && declaration.value.schemaVersion !== '3.0.0';
     rows.set(entry.guid.toLowerCase(), {
-      guid: entry.guid,
-      type: entry.kind,
-      source: {
-        path: entry.sourcePath,
-        format,
-        role: 'author',
-        ...(entry.sourceRevision === undefined ? {} : { revision: entry.sourceRevision }),
-      },
-      output: verificationOutput(materialized, legacyPublished),
-      dependencies: facts.dependencies,
-      producer: {
-        state: materialized !== undefined ? 'published' : legacyPublished ? 'published' : 'not-run',
-      },
-      ...(facts.name === undefined ? {} : { name: facts.name }),
-      ...(entry.sourceKey === undefined ? {} : { sourceKey: entry.sourceKey }),
-      ...(entry.sourceIndex === undefined ? {} : { sourceIndex: entry.sourceIndex }),
+      ...verificationSourceFacts(
+        entry,
+        declaration,
+        verificationSourceFormat(gameRoot, entry.sourcePath),
+      ),
+      output: verificationOutput(materialized),
+      producer: { state: materialized !== undefined ? 'published' : 'not-run' },
     });
   }
   for (const asset of snapshot.materialized) {
@@ -1432,56 +1171,19 @@ function createGatewayVerificationReport(
   const assets = [...rows.values()].sort((left, right) =>
     `${left.source.path}:${left.guid}`.localeCompare(`${right.source.path}:${right.guid}`),
   );
-  const emitted = assets.slice(0, VERIFY_PROVENANCE_LIMIT);
-  const sourcePaths = [...snapshot.inventory.declarations.keys()].sort();
-  const scriptablePackSources = [...snapshot.inventory.declarations.values()]
-    .filter((declaration) => declaration.format === 'pack.ts')
-    .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
-  const unmaterializedScriptable = scriptablePackSources.filter(
-    (source) =>
-      !snapshot.materialized.some(
-        (asset) =>
-          asset.packageId === source.value.packageId.toLowerCase() ||
-          (asset.sourcePath !== undefined &&
-            resolve(gameRoot, asset.sourcePath) === source.sourcePath),
-      ),
+  const publishedSources = new Set<string>();
+  for (const asset of snapshot.materialized) {
+    publishedSources.add(asset.packageId);
+    if (asset.sourcePath !== undefined) publishedSources.add(resolve(gameRoot, asset.sourcePath));
+  }
+  return projectAssetVerificationReport(
+    resolve(gameRoot),
+    snapshot.inventory.declarations,
+    assets,
+    (asset) => asset,
+    assets.filter((asset) => asset.type === 'material').length,
+    publishedSources,
   );
-  return {
-    schemaVersion: 'asset-verification-v1',
-    root: resolve(gameRoot),
-    operation: 'asset.verify',
-    requestId: 'gateway',
-    scope: {
-      sourceCount: sourcePaths.length,
-      assetCount: assets.length,
-      sourcePaths: sourcePaths.slice(0, VERIFY_PROVENANCE_LIMIT),
-      omittedSourceCount: Math.max(0, sourcePaths.length - VERIFY_PROVENANCE_LIMIT),
-      assetLimit: VERIFY_PROVENANCE_LIMIT,
-      truncated: assets.length > VERIFY_PROVENANCE_LIMIT,
-      scriptablePackSourceCount: scriptablePackSources.length,
-      scriptablePackSources: unmaterializedScriptable
-        .slice(0, VERIFY_PROVENANCE_LIMIT)
-        .map((source) => ({
-          sourcePath: source.sourcePath,
-          packageId: source.value.packageId,
-          output: 'unproduced' as const,
-          reason: 'producer-not-run' as const,
-        })),
-      omittedScriptablePackSourceCount: Math.max(
-        0,
-        unmaterializedScriptable.length - VERIFY_PROVENANCE_LIMIT,
-      ),
-    },
-    assets: emitted,
-    summary: {
-      assetCount: assets.length,
-      emittedAssetCount: emitted.length,
-      materialCount: assets.filter((asset) => asset.type === 'material').length,
-      unproducedAssetCount: assets.filter((asset) => asset.output.status === 'unproduced').length,
-      unknownAssetCount: assets.filter((asset) => asset.output.status === 'unknown').length,
-      unmaterializedScriptablePackCount: unmaterializedScriptable.length,
-    },
-  };
 }
 
 async function verify(
@@ -1489,49 +1191,27 @@ async function verify(
   snapshot: GatewaySnapshot,
   operation: PackAuthoringOperation,
 ): Promise<Result<PackAuthoringOperationResult, PackAuthoringError>> {
-  for (const subject of snapshot.subjects.values()) {
-    if (subject.format === 'instance') {
-      const resolved = await resolveInstance(snapshot, subject);
-      if (!resolved.ok) return err(resolved.error);
-    }
-    if (subject.format === 'direct') {
-      for (const asset of subject.assets) {
-        const missing = asset.refs.find((ref) => !snapshot.knownGuids.has(ref.toLowerCase()));
-        if (missing !== undefined) {
-          return err(
-            makeError(
-              'pack-output-reference-missing',
-              'every direct Pack ref to resolve to a known AssetGuid',
-              'repair the payload ref or add the owning external asset before verifying',
-              {
-                requestId: operation.requestId,
-                packageId: PackageId.format(subject.packageId),
-                sourceKey: asset.sourceKey,
-                guid: missing,
-              },
-            ),
-          );
-        }
-      }
-    }
-  }
-  for (const asset of snapshotAssets(snapshot)) {
+  for (const asset of [...snapshot.declaredAssets, ...snapshot.materialized]) {
     const missing = asset.refs?.find((ref) => !snapshot.knownGuids.has(ref.toLowerCase()));
-    if (missing !== undefined) {
-      return err(
-        makeError(
-          'pack-output-reference-missing',
-          'every materialized Pack ref to resolve to a known AssetGuid',
-          'repair the published output reference or publish its owning asset before verifying',
-          {
-            requestId: operation.requestId,
-            packageId: asset.packageId,
-            sourceKey: asset.sourceKey,
-            guid: missing,
-          },
-        ),
-      );
-    }
+    if (missing === undefined) continue;
+    const direct = !('ready' in asset);
+    return err(
+      makeError(
+        'pack-output-reference-missing',
+        direct
+          ? 'every direct Pack ref to resolve to a known AssetGuid'
+          : 'every materialized Pack ref to resolve to a known AssetGuid',
+        direct
+          ? 'repair the payload ref or add the owning external asset before verifying'
+          : 'repair the published output reference or publish its owning asset before verifying',
+        {
+          requestId: operation.requestId,
+          packageId: asset.packageId,
+          sourceKey: asset.sourceKey,
+          guid: missing,
+        },
+      ),
+    );
   }
   const report = createGatewayVerificationReport(gameRoot, snapshot);
   return ok({ ...report, operation: operation.operation, requestId: operation.requestId });
@@ -1581,7 +1261,7 @@ async function readConfined(
   if (!path.ok) return path;
   try {
     const source = await readFile(path.value.absolute, 'utf8');
-    return ok({ ...path.value, source, revision: revisionOf(source) });
+    return ok({ ...path.value, source, revision: packSourceRevision(source) });
   } catch (cause) {
     const code: 'pack-source-not-found' | 'pack-source-write-failed' =
       (cause as NodeJS.ErrnoException).code === 'ENOENT'
@@ -1658,6 +1338,50 @@ function packSourceScaffold(
   );
 }
 
+async function writeAuthoringSource(
+  operation: PackAuthoringOperation,
+  path: ConfinedPath,
+  packageId: PackageId,
+  source: string,
+  extra: Partial<PackAuthoringOperationResult>,
+): Promise<OperationResult> {
+  try {
+    await mkdir(dirname(path.absolute), { recursive: true });
+    await writePackSourceAtomically(
+      path.absolute,
+      source,
+      operation.operation === 'asset.source.values.apply'
+        ? { expectedRevision: operation.expectedRevision ?? '' }
+        : {},
+    );
+  } catch (cause) {
+    if (cause instanceof PackSourceRevisionConflict)
+      return err(revisionConflict(operation, path.relative, cause.revision));
+    const updating = operation.operation === 'asset.source.values.apply';
+    const creatingInstance = operation.operation === 'asset.source.instance.create';
+    const subject = updating
+      ? 'updated instance'
+      : creatingInstance
+        ? 'new instance'
+        : 'new Pack source';
+    return err(
+      pathError(
+        'pack-source-write-failed',
+        operation,
+        `the ${subject} to be written atomically`,
+        creatingInstance
+          ? 'repair filesystem permissions or disk capacity, then retry'
+          : 'repair filesystem permissions or disk capacity, then retry with a new requestId',
+        {
+          [updating ? 'sourcePath' : 'targetPath']: path.relative,
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      ),
+    );
+  }
+  return inspectAfterWrite(operation, path, source, packageId, extra);
+}
+
 async function inspectAfterWrite(
   operation: PackAuthoringOperation,
   path: ConfinedPath,
@@ -1671,7 +1395,7 @@ async function inspectAfterWrite(
     sourcePath: path.relative,
     targetPath: path.relative,
     packageId: PackageId.format(packageId),
-    revision: revisionOf(source),
+    revision: packSourceRevision(source),
     ...extra,
   });
 }
@@ -1702,7 +1426,7 @@ async function inspectParameters(
     packageId: declaration.value.packageId,
     format: 'pack.ts',
     status: 'identity',
-    parameters: projectParameters(declaration.value.parameters).map((parameter) => ({
+    parameters: projectPackParameters(declaration.value.parameters).map((parameter) => ({
       ...parameter,
       mode: typeof parameter.apply === 'object' ? 'runtime' : 'generation',
       location: declaration.value.defaults.get(String(parameter.name))?.location,
@@ -1722,6 +1446,8 @@ async function readSourceIndex(
     typeof selected === 'string'
       ? snapshot.value.sourceFailures.get(resolve(options.gameRoot, selected))
       : undefined;
+  if (operation.operation === 'asset.inspect' && options.inspectCatalogSubjects)
+    return inspectCatalogSubject(options.gameRoot, snapshot.value, operation, sourceFailure);
   if (sourceFailure) return err(sourceFailure);
   if (operation.operation === 'asset.resolve')
     return resolveAsset(options.gameRoot, snapshot.value, operation);
@@ -1730,69 +1456,40 @@ async function readSourceIndex(
     : await inspectAsset(options.gameRoot, snapshot.value, operation);
 }
 
-/** Rejects an occupied creation target; a missing target is the only success. */
+/** A missing path is the only valid target for source or instance creation. */
 async function ensureNewSourceTarget(
   path: ConfinedPath,
   operation: PackAuthoringOperation,
 ): Promise<Result<void, PackAuthoringError>> {
+  const instance = operation.operation === 'asset.source.instance.create';
   try {
     await stat(path.absolute);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return ok(undefined);
     return err(
       pathError(
-        'pack-source-revision-conflict',
+        'pack-source-write-failed',
         operation,
-        'an unused target source path',
-        'inspect the existing source or choose another target path',
-        { targetPath: path.relative },
-        path.relative,
+        instance
+          ? 'the instance target to be writable'
+          : 'the target path to be available for atomic creation',
+        instance ? 'repair filesystem permissions and retry' : 'repair the filesystem and retry',
+        { targetPath: path.relative, cause: String(cause) },
       ),
     );
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return err(
-        pathError(
-          'pack-source-write-failed',
-          operation,
-          'the target path to be available for atomic creation',
-          'repair the filesystem and retry',
-          { targetPath: path.relative, cause: String(cause) },
-        ),
-      );
-    }
   }
-  return ok(undefined);
-}
-
-async function ensureNewInstanceTarget(
-  path: ConfinedPath,
-  operation: PackAuthoringOperation,
-): Promise<Result<void, PackAuthoringError>> {
-  try {
-    await stat(path.absolute);
-    return err(
-      pathError(
-        'pack-source-revision-conflict',
-        operation,
-        'an unused instance target path',
-        'inspect the existing instance or choose another path',
-        { targetPath: path.relative },
-        path.relative,
-      ),
-    );
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return err(
-        pathError(
-          'pack-source-write-failed',
-          operation,
-          'the instance target to be writable',
-          'repair filesystem permissions and retry',
-          { targetPath: path.relative, cause: String(cause) },
-        ),
-      );
-    }
-  }
-  return ok(undefined);
+  return err(
+    pathError(
+      'pack-source-revision-conflict',
+      operation,
+      instance ? 'an unused instance target path' : 'an unused target source path',
+      instance
+        ? 'inspect the existing instance or choose another path'
+        : 'inspect the existing source or choose another target path',
+      { targetPath: path.relative },
+      path.relative,
+    ),
+  );
 }
 
 function directCreateSource(
@@ -1930,36 +1627,13 @@ async function createSource(
     if (!parameters.ok) return parameters;
     source = packSourceScaffold(identity.value, parameters.value);
     const serialized =
-      parameters.value === undefined
-        ? undefined
-        : serializedParameters({
-            schemaVersion: '2.0.0',
-            packageId: identity.value,
-            parameters: parameters.value,
-            build: () => ok({}),
-          } as AnyScriptablePackDefinition);
+      parameters.value === undefined ? undefined : projectPackParameters(parameters.value);
     extra = {
       format: format.value,
       ...(serialized === undefined ? {} : { parameters: serialized }),
     };
   }
-  try {
-    await atomicWrite(path.value.absolute, source);
-  } catch (cause) {
-    return err(
-      pathError(
-        'pack-source-write-failed',
-        operation,
-        'the new Pack source to be written atomically',
-        'repair filesystem permissions or disk capacity, then retry with a new requestId',
-        {
-          targetPath: path.value.relative,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-    );
-  }
-  return inspectAfterWrite(operation, path.value, source, identity.value, extra);
+  return writeAuthoringSource(operation, path.value, identity.value, source, extra);
 }
 
 /** The instance parent: an existing ScriptablePack source or instance with parameters. */
@@ -2035,11 +1709,7 @@ async function instanceSource(
   >
 > {
   const serializedValues = jsonValue(candidate.values) as Readonly<Record<string, unknown>>;
-  const withCandidate: GatewaySnapshot = {
-    ...snapshot,
-    subjects: new Map([...snapshot.subjects, [packageKey(candidate.packageId), candidate]]),
-  };
-  const resolved = await resolveInstance(withCandidate, candidate);
+  const resolved = await resolveInstance(snapshot, candidate);
   if (!resolved.ok) return err(resolved.error);
   const source = `${JSON.stringify(
     {
@@ -2076,7 +1746,7 @@ async function createInstance(
   if (!target.ok) return target;
   const parent = instanceParent(snapshot, operation);
   if (!parent.ok) return parent;
-  const unused = await ensureNewInstanceTarget(target.value, operation);
+  const unused = await ensureNewSourceTarget(target.value, operation);
   if (!unused.ok) return unused;
   const identity = packageIdFromOperation(snapshot, operation);
   if (!identity.ok) return identity;
@@ -2089,27 +1759,11 @@ async function createInstance(
     relativePath: target.value.relative,
   });
   if (!written.ok) return written;
-  try {
-    await atomicWrite(target.value.absolute, written.value.source);
-  } catch (cause) {
-    return err(
-      pathError(
-        'pack-source-write-failed',
-        operation,
-        'the new instance to be written atomically',
-        'repair filesystem permissions or disk capacity, then retry',
-        {
-          targetPath: target.value.relative,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-    );
-  }
-  return inspectAfterWrite(
+  return writeAuthoringSource(
     operation,
     target.value,
-    written.value.source,
     identity.value,
+    written.value.source,
     written.value.extra,
   );
 }
@@ -2180,27 +1834,11 @@ async function applyInstanceValues(
     relativePath: read.value.relative,
   });
   if (!written.ok) return written;
-  try {
-    await atomicWrite(read.value.absolute, written.value.source);
-  } catch (cause) {
-    return err(
-      pathError(
-        'pack-source-write-failed',
-        operation,
-        'the updated instance to be written atomically',
-        'repair filesystem permissions or disk capacity, then retry with a new requestId',
-        {
-          sourcePath: read.value.relative,
-          cause: cause instanceof Error ? cause.message : String(cause),
-        },
-      ),
-    );
-  }
-  return inspectAfterWrite(
+  return writeAuthoringSource(
     operation,
     read.value,
-    written.value.source,
     document.value.packageId,
+    written.value.source,
     written.value.extra,
   );
 }

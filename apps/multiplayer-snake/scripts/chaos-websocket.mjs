@@ -1,3 +1,4 @@
+import { HOST_ACTIVATION_REPORT_SERVICE } from '@forgeax/engine-host/transport';
 import WebSocket, { WebSocketServer } from 'ws';
 import { DEFAULT_REPLICATION_LIMITS, decodeReplicationPacket } from '@forgeax/engine-net';
 
@@ -11,6 +12,7 @@ export const M17_CHAOS_CONTROLS = Object.freeze([
 
 const OPEN = 1;
 const DEFAULT_DELAY_MS = 40;
+const LATE_ACTIVATION_DELAY_MS = 2500;
 const MAX_QUEUED_FRAMES = 128;
 const MAX_EVENTS = 512;
 const SABOTAGE_CONTROLS = Object.freeze({
@@ -78,6 +80,7 @@ export function startChaosWebSocketProxy({
   mode = 'all',
   sabotage = '',
   delayMs = DEFAULT_DELAY_MS,
+  lateTransport,
 } = {}) {
   if (typeof targetUrl !== 'string' || targetUrl.length === 0)
     return Promise.reject(new Error('M17 chaos proxy requires a target WebSocket URL'));
@@ -334,8 +337,13 @@ export function startChaosWebSocketProxy({
   };
 
   const forwardClientFrame = (connection, bytes) => {
-    noteSession(connection, decodedPacket(bytes));
     if (connection.closed) return;
+    const packet = decodedPacket(bytes);
+    noteSession(connection, packet);
+    if (lateTransport?.blockedConnection === connection.id && packet?.kind === 'ack') {
+      lateTransport.ackDrops++;
+      return;
+    }
     if (connection.upstream?.readyState === OPEN) {
       try {
         connection.upstream.send(bytes, { binary: true });
@@ -409,6 +417,7 @@ export function startChaosWebSocketProxy({
         upstreamOpened: false,
       };
       connections.push(connection);
+      if (lateTransport !== undefined) lateTransport.connections = connection.id;
       if (lateJoinPending) {
         lateJoinPending = false;
         controls['late-join'].observed += 1;
@@ -450,10 +459,14 @@ export function startChaosWebSocketProxy({
         queue: [],
       };
       hostConnections.push(connection);
+      let activationReportId;
+      let activationTimer;
       const closeHostConnection = (reason) => {
         if (connection.closed) return;
         connection.closed = true;
         connection.queue.length = 0;
+        clearTimeout(activationTimer);
+        timers.delete(activationTimer);
         if (connection.downstream.readyState === OPEN) connection.downstream.close();
         else connection.downstream.terminate();
         if (connection.upstream?.readyState === OPEN) connection.upstream.close();
@@ -468,18 +481,41 @@ export function startChaosWebSocketProxy({
       const upstream = new WebSocket(targetHostUrl);
       connection.upstream = upstream;
       upstream.on('open', flushHostQueue);
-      upstream.on('message', (data, isBinary) => {
+      const sendHostFrame = (data, isBinary) => {
         if (connection.closed || connection.downstream.readyState !== OPEN) return;
         try {
           connection.downstream.send(data, { binary: isBinary });
         } catch {
           closeHostConnection('host-downstream-send-error');
         }
+      };
+      upstream.on('message', (data, isBinary) => {
+        if (lateTransport !== undefined && activationReportId !== undefined) {
+          const response = JSON.parse(String(data));
+          if (response.kind === 'response' && response.id === activationReportId) {
+            activationReportId = undefined;
+            lateTransport.delayedActivationReports++;
+            console.log(JSON.stringify({
+              phase: 'late-join-host-activation-held',
+              delayMs: LATE_ACTIVATION_DELAY_MS,
+            }));
+            activationTimer = schedule(LATE_ACTIVATION_DELAY_MS, () =>
+              sendHostFrame(data, isBinary),
+            );
+            return;
+          }
+        }
+        sendHostFrame(data, isBinary);
       });
       upstream.on('error', () => closeHostConnection('host-upstream-error'));
       upstream.on('close', () => closeHostConnection('host-upstream-close'));
       downstream.on('message', (data, isBinary) => {
         if (connection.closed) return;
+        if (lateTransport !== undefined) {
+          const request = JSON.parse(String(data));
+          if (request.kind === 'request' && request.service === HOST_ACTIVATION_REPORT_SERVICE &&
+            request.payload?.state === 'active') activationReportId = request.id;
+        }
         if (connection.upstream?.readyState === OPEN) {
           try {
             connection.upstream.send(data, { binary: isBinary });

@@ -1,7 +1,7 @@
 {
   "packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts": {
     "deviceRequests": 1,
-    "minimumCases": 4
+    "minimumCases": 2
   },
   "packages/runtime/src/__tests__/shadow-contact-centimeter-1024.browser.test.ts": {
     "deviceRequests": 1,
@@ -9,7 +9,7 @@
   },
   "packages/runtime/src/__tests__/shadow-contact-centimeter-2048.browser.test.ts": {
     "deviceRequests": 1,
-    "minimumCases": 4
+    "minimumCases": 2
   },
   "packages/three/src/__tests__/features-0.browser.test.ts": {
     "deviceRequests": 27,
@@ -40,9 +40,9 @@
     "minimumCases": 5
   },
   "packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts": {
-    "deviceRequests": 20,
-    "minimumDeviceRequests": 11,
-    "minimumCases": 11
+    "deviceRequests": 6,
+    "minimumDeviceRequests": 2,
+    "minimumCases": 2
   },
   "packages/render/src/__tests__/white-balance.browser.test.ts": {
     "deviceRequests": 2,

@@ -1,3 +1,4 @@
+import { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { UiGpuFrame, UiGpuShaders } from '@forgeax/engine-types';
@@ -84,6 +85,64 @@ describe('UI compositor prepare outcome', () => {
     expect(paint).toHaveBeenCalledTimes(4);
     c.dispose();
     owner.destroyTexture(surface).unwrap();
+  });
+
+  it('uploads a changing borrowed picture into the same owned bytes across color-space changes', async () => {
+    const owner = await device();
+    const writes = vi.spyOn(owner.queue, 'writeTexture');
+    const pipelines = vi.spyOn(owner, 'createRenderPipeline');
+    const groups = vi.spyOn(owner, 'createBindGroup');
+    const surface = owner
+      .createTexture({ size: [4, 4], format: 'rgba8unorm', usage: 0x10 })
+      .unwrap();
+    const bytes = new Uint8Array(4 * 4 * 4);
+    const releases: (() => void)[] = [];
+    const c = await createUiCompositor({
+      source: { kind: 'rgba', paint: () => bytes },
+      device: owner,
+      format: 'rgba8unorm',
+      retire: (_device, release) => releases.push(release),
+      createShaderModule: async (target, source) =>
+        (await rhi.createShaderModule(target, { code: source })).unwrap(),
+    });
+    const before = renderGraphCompileCount();
+    const textures = vi.spyOn(owner, 'createTexture');
+    const destroyed = vi.spyOn(owner, 'destroyTexture');
+    try {
+      for (let frame = 0; frame < 300; frame++) {
+        bytes.fill(frame & 255);
+        expect(c.prepare(frame, 0, 4, 4, frame % 2 ? 'display-p3' : 'srgb', true).kind).toBe(
+          'painted',
+        );
+        const upload = writes.mock.calls[frame]?.[1];
+        expect(upload).toBe(writes.mock.calls[0]?.[1]);
+        expect(upload).not.toBe(bytes);
+        bytes.fill(255);
+        expect((upload as Uint8Array)[0]).toBe(frame & 255);
+        const encoder = owner.createCommandEncoder().unwrap();
+        expect(c.encode(frame, encoder, surface, frame % 2 === 0).kind).toBe('encoded');
+        owner.queue.submit([encoder.finish().unwrap()]).unwrap();
+      }
+      expect(renderGraphCompileCount()).toBe(before);
+      expect(textures).toHaveBeenCalledTimes(2);
+      expect(pipelines).toHaveBeenCalledTimes(3);
+      expect(groups).toHaveBeenCalledTimes(2);
+      expect(releases).toHaveLength(0);
+      const output = c.output;
+      expect(c.prepare(300, 0, 4, 4, 'srgb', false).kind).toBe('painted');
+      expect(c.output).toBeUndefined();
+      expect(c.encode(299, owner.createCommandEncoder().unwrap(), surface, false).kind).toBe(
+        'failed',
+      );
+      expect(destroyed).not.toHaveBeenCalledWith(output);
+      expect(releases).toHaveLength(1);
+      releases.shift()?.();
+      expect(destroyed).toHaveBeenCalledWith(output);
+    } finally {
+      c.dispose();
+      for (const release of releases) release();
+      owner.destroyTexture(surface).unwrap();
+    }
   });
 
   it('returns ui-paint-invalid-bytes instead of throwing', async () => {

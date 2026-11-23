@@ -51,6 +51,13 @@ Authoring Mesh inputs without `attributeStorage` supply complete finite channels
 
 Use `meshAttributeWindow(mesh, key)` once outside a CPU loop, then read `data[offset + vertex * stride + component]`. It is a zero-copy view, including mixed uint16 skin channels and nonzero byte offsets. Take vertex cardinality from its `count` or `deriveVertexCount`, never from an empty runtime declaration. GPU raster uploads use `vertices` directly. `copyMeshAttribute(mesh, key, output?)` explicitly copies one contiguous channel when an algorithm needs it; `meshAttributeChannels(mesh)` is an uncached cold conversion for authoring algorithms. Retaining either result explicitly retains a second representation. No Proxy or lazy getter participates in numeric access.
 
+Skin weights accept `Float32Array` or normalized `Uint8Array` and `Uint16Array`.
+Vertex fetch delivers the integer lanes as float weights at location 5
+(`unorm8x4` or `unorm16x4`). This uses 4 or 8 bytes per vertex for weights,
+compared with 16 bytes for Float32. Mesh binary v8 stores these packed lanes.
+The raw window and authoring channels preserve the encoded integers.
+`copyMeshAttribute(mesh, 'skinWeight')` gives an explicit decoded Float32 copy.
+
 `ReadonlyMeshAttributeWindow` carries the same numeric addressing contract over
 read-only array-like storage. Immutable dependency consumers derive offsets from
 `deriveVertexLayoutProjection`, which reads attribute presence independently of

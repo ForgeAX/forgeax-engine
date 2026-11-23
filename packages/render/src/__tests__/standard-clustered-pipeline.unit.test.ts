@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { resolvePostColorDomainContract } from '../render-pipeline';
 
 const clusteredSource = readFileSync(
@@ -21,8 +22,7 @@ const frameLightingSource = readFileSync(
 );
 
 describe('Standard clustered post color-domain order', () => {
-  it('retains the LUT stage before the single output encoder', async () => {
-    const { createStandardOutputPlan } = await import('../pipeline/standard-output/graph');
+  it('retains the LUT stage before the single output encoder', () => {
     const plan = createStandardOutputPlan({
       temporal: true,
       meter: true,
@@ -64,7 +64,8 @@ describe('Standard clustered post color-domain order', () => {
   });
 
   it('routes both Standard lanes through the one shared post-chain owner', () => {
-    expect(clusteredSource.match(/addStandardPost\(/g)).toHaveLength(1);
+    // Ordered Deferred and graph Deferred funnel into the same post-chain owner.
+    expect(clusteredSource.match(/addStandardPost\(/g)).toHaveLength(2);
     expect(forwardSource.match(/addStandardPost\(/g)).toHaveLength(1);
     expect(clusteredSource).not.toContain("target(graph, 'ldr-color'");
     expect(forwardSource).not.toContain("target(graph, 'ldr-color'");
@@ -74,7 +75,7 @@ describe('Standard clustered post color-domain order', () => {
     const result = resolvePostColorDomainContract('linear-hdr');
     expect(result).toContainEqual(['bloom', 'linear-hdr', 'linear-hdr']);
     expect(clusteredSource).toContain('spotShadow: shadows.spot');
-    expect(clusteredSource).toContain('spotShadow: sources.shadows.spot.view');
+    expect(clusteredSource).toContain('spotShadow: sources.shadows.spot?.view');
     expect(clusterGraphSource).toContain("'hdrp-light-index-list'");
   });
 
@@ -82,6 +83,8 @@ describe('Standard clustered post color-domain order', () => {
     expect(frameLightingSource).toMatch(
       /writeLightModifierTextures\(\s*internals,\s*pipelineState,\s*\{[\s\S]*?\},\s*frameState,?\s*\)/,
     );
-    expect(recordSource).toContain('pending.work.execute(encoder)');
+    expect(recordSource).toContain(
+      'pending.work.execute(encoder, recordContext(internals).framePassNames)',
+    );
   });
 });

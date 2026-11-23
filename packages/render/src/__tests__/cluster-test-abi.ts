@@ -57,8 +57,8 @@ export const STANDARD_CLUSTER_TEST_REFLECTION: ShaderReflection = {
   uvSetCount: 0,
   boundGlobals: [
     {
-      group: 2,
-      binding: 3,
+      group: 0,
+      binding: 30,
       addressSpace: 'storage',
       resourceKind: 'storage-buffer',
       resourceAccess: 'read-write',
@@ -79,8 +79,8 @@ export const STANDARD_CLUSTER_TEST_REFLECTION: ShaderReflection = {
       },
     },
     {
-      group: 2,
-      binding: 6,
+      group: 0,
+      binding: 33,
       addressSpace: 'uniform',
       resourceKind: 'buffer',
       resourceAccess: 'read-only',

@@ -40,7 +40,7 @@ async function fixture({
 
 test('extracts static, side-effect, dynamic, and require imports with subpaths', () => {
   const imports = extractRuntimeEngineImports(`
-    import value from '@forgeax/engine-import/mesh-bin';
+    import value from '@forgeax/engine-import/mesh-lod-generator';
     import '@forgeax/engine-font/font-importer';
     export { thing } from '@forgeax/engine-image';
     const dynamic = import('@forgeax/engine-runtime/internal/renderer-host');
@@ -50,7 +50,7 @@ test('extracts static, side-effect, dynamic, and require imports with subpaths',
   assert.deepEqual(
     imports.map(({ dependency, specifier }) => [dependency, specifier]),
     [
-      ['@forgeax/engine-import', '@forgeax/engine-import/mesh-bin'],
+      ['@forgeax/engine-import', '@forgeax/engine-import/mesh-lod-generator'],
       ['@forgeax/engine-font', '@forgeax/engine-font/font-importer'],
       ['@forgeax/engine-image', '@forgeax/engine-image'],
       ['@forgeax/engine-runtime', '@forgeax/engine-runtime/internal/renderer-host'],

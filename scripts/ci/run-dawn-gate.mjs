@@ -11,10 +11,14 @@ import {
   DAWN_GATE_SHARDS,
   DAWN_VITEST_CONFIG,
   dawnAuthoringCapturesOutsideCi,
+  dawnGateGroupPriority,
+  dawnNativeExecutionOrder,
 } from './dawn-gate-roster.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
+
+export { dawnNativeExecutionOrder } from './dawn-gate-roster.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VITEST = resolve(ROOT, 'node_modules/vitest/vitest.mjs');
@@ -76,17 +80,6 @@ export function dawnNativeConcurrency(environment, ordinaryWorkers) {
     environment.FORGEAX_DAWN_LIGHTWEIGHT === '1'
     ? 2
     : 1;
-}
-
-export function dawnNativeExecutionOrder(groups, forecasts) {
-  const native = groups.filter((group) => group.vitestShard === undefined);
-  const priority = (group) =>
-    Math.max(forecasts.get(group.id) ?? 0, group.placementReserveSeconds ?? 0);
-  return [
-    ...native.slice(0, 2),
-    ...native.slice(2).sort((left, right) => priority(right) - priority(left)),
-    ...groups.filter((group) => group.vitestShard !== undefined),
-  ];
 }
 
 async function dawnCapacityGroups(groups, nativeConcurrency, environment) {
@@ -153,13 +146,15 @@ export async function executeDawnGroups(
 
 export function dawnGroupEnvironment(group, environment, ordinaryWorkers, nativeConcurrency = 1) {
   const rasterThreads = Number(environment.LP_NUM_THREADS);
+  const limitSoftwareGpuWorkers =
+    group.limitSoftwareGpuWorkers || (nativeConcurrency === 2 && group.nativeProcessSlots === 1);
   return {
     ...environment,
     ...group.env,
     ...(group.vitestShard !== undefined && ordinaryWorkers === 2
       ? { LP_NUM_THREADS: '4', FORGEAX_SHADER_COMPILE_WORKERS: '1' }
       : {}),
-    ...(nativeConcurrency === 2 && group.nativeProcessSlots === 1
+    ...(limitSoftwareGpuWorkers
       ? {
           LP_NUM_THREADS: String(
             Number.isInteger(rasterThreads) && rasterThreads > 0 ? Math.min(4, rasterThreads) : 4,
@@ -192,13 +187,7 @@ export function selectDawnShard(value) {
     );
   }
   const ids = new Set(DAWN_GATE_SHARDS[index - 1]);
-  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(
-    // Long Modeling captures retain first start when a larger reserved native
-    // owner shares their lane; every other reservation still precedes backfill.
-    (left, right) =>
-      Number(right.id.startsWith('modeling-')) - Number(left.id.startsWith('modeling-')) ||
-      (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
-  );
+  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(dawnGateGroupPriority);
 }
 
 function dawnExecutionEnvironment(id, environment) {

@@ -14,7 +14,7 @@ import {
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderPrepare, renderSubmission } from './render-world';
 
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import {
@@ -139,12 +139,8 @@ export function viewEnvironmentOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewEnvironmentOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewEnvironment)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewEnvironmentState>(
-      requireViewField(world, entity, ViewEnvironment, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewEnvironmentState>(world, entity, ViewEnvironment);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

@@ -138,6 +138,7 @@ test('coverage core defers expanded Modeling examples while retaining core opera
     'packages/modeling/examples/mech-gt/__tests__/s6c-car-form.integration.test.ts',
     'packages/modeling/examples/mech-gt/__tests__/s6c-ranges.unit.test.ts',
     'packages/modeling/examples/mech-gt/__tests__/s7-motion.unit.test.ts',
+    'packages/modeling/examples/maid-whale/__tests__/g6-faceting.unit.test.ts',
   ];
   for (const file of files) {
     assert.ok(excluded.has(file), file);
@@ -155,18 +156,37 @@ test('coverage core defers expanded Modeling examples while retaining core opera
   assert.equal(selected.length, full.length);
 });
 
+test('authored Modeling showcases stay outside daily and expanded instrumented rosters', () => {
+  const files = [
+    'packages/modeling/examples/maid-whale/__tests__/g7-charts.integration.test.ts',
+    'packages/modeling/examples/limb-choreography/__tests__/choreo.unit.test.ts',
+  ];
+  for (const environment of [{}, core]) {
+    const groups = coverageGroups(['@forgeax/engine-modeling'], 8, { environment });
+    for (const file of files) {
+      assert.ok(!groups.some((group) => group.files.includes(file)));
+      assert.ok(
+        groups.filter((group) => group.shard).every((group) => group.excludes.includes(file)),
+      );
+    }
+  }
+});
+
 test('daily native journeys stay complete and uninstrumented on the existing primary worker', () => {
+  const liveJourney = 'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts';
   const files = [
     'packages/devkit/src/__tests__/new-project-workers.e2e.test.ts',
     'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
-    'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts',
+    liveJourney,
   ];
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   const step = workflow.jobs['primary-pnpm'].steps.find(
     (entry) => entry.name === 'DevKit native browser journeys (uninstrumented)',
   );
   assert.ok(step);
-  for (const file of files) assert.ok(step.run.includes(file));
+  assert.ok(step.run.includes(files[0]));
+  assert.ok(!step.run.includes(files[1]), 'the worker and live edit journeys own native startup');
+  assert.ok(step.run.includes(liveJourney));
   assert.match(step.run, /--maxWorkers=1/);
   assert.match(step.run, /--coverage.enabled=false/);
   assert.match(step.run, /--passWithNoTests=false/);
@@ -174,7 +194,10 @@ test('daily native journeys stay complete and uninstrumented on the existing pri
   const full = coverageGroups(['@forgeax/engine-devkit'], 8, { environment: {} });
   const daily = coverageGroups(['@forgeax/engine-devkit'], 8, { environment: core });
   for (const file of files) {
-    assert.equal(full.filter((group) => group.files.includes(file)).length, 1);
+    assert.equal(
+      full.filter((group) => group.files.includes(file)).length,
+      file === liveJourney ? 0 : 1,
+    );
     assert.ok(daily.every((group) => !group.files.includes(file)));
     assert.ok(
       daily
@@ -268,4 +291,33 @@ test('Core provenance records the shared template producer facts once', () => {
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+test('Core releases consumer declarations while a required existing owner checks the full graph', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const core = workflow.jobs['core-build'].steps;
+  const checks = workflow.jobs['primary-pnpm'].steps;
+  assert.equal(workflow.jobs['smoke-fleet'].needs.includes('primary-pnpm'), false);
+  for (const owner of ['app-shard-0', 'app-shard-1', 'app-shard-2'])
+    assert.ok(
+      !workflow.jobs[owner].steps.some(({ name }) => name === 'Package declaration typecheck'),
+    );
+  assert.match(
+    core.find(({ name }) => name === 'Emit package declarations for prepared inputs').run,
+    /tsc -b --noCheck/,
+  );
+  assert.equal(
+    core.some(({ name }) => name === 'Package declaration typecheck'),
+    false,
+  );
+  assert.match(
+    checks.find(({ name }) => name === 'Package declaration typecheck').run,
+    /tsc -b --force/,
+  );
+  assert.equal(checks.filter(({ name }) => name?.startsWith('Reproduce clean')).length, 2);
+  assert.ok(workflow.jobs['build-artifacts'].needs.includes('app-shard-2'));
+  assert.match(
+    workflow.jobs['build-artifacts'].steps.map(({ run }) => run).join('\n'),
+    /needs.app-shard-2.result/,
+  );
 });

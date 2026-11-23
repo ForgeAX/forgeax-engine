@@ -36,8 +36,13 @@ declare module 'vitest/browser' {
 }
 
 it.each([
-  1, 4,
-] as const)('ordinary ECS custom-lit reads real scene depth with %i samples and restores the next shared View', async (sampleCount) => {
+  { sampleCount: 1, current: false },
+  { sampleCount: 4, current: false },
+  { sampleCount: 1, current: true },
+] as const)('ordinary ECS custom-lit reads real scene depth with $sampleCount samples (current=$current) and restores the next shared View', async ({
+  sampleCount,
+  current,
+}) => {
   const server = await commands.startOrdinaryLitDepth();
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
@@ -75,7 +80,9 @@ it.each([
       const scene = addTypedScenePass(graph, {
         name: 'ordinary-consumers',
         color,
-        depth,
+        depth: current
+          ? { ...depth, currentMaterialDepthExtent: { width: canvas.width, height: canvas.height } }
+          : depth,
         materialSceneDepth: topology.materialSceneDepth,
         ...(sampleCount === 4 ? { resolve: resolved } : {}),
         selector: { LightMode: ['Forward'] },

@@ -13,7 +13,7 @@ import {
   MATERIAL_TEXTURE_SLOTS,
 } from '@forgeax/engine-types';
 import type { RunImportMeta } from './import-runner.js';
-import { materialAssetOutputProducer } from './scriptable-pack-output-producers.js';
+import { projectNativeMaterial } from './scriptable-pack-output-producers.js';
 
 function failure(guid: string, reason: string): never {
   throw new ImportError({
@@ -169,42 +169,24 @@ export async function cookImportedMaterials(
     const draft = await drafts.get(asset.guid);
     if (draft === undefined) return failure(asset.guid, 'material cook was not started');
     if (!draft.ok) return failure(asset.guid, JSON.stringify(draft.error));
-    if (draft.value.guid.toLowerCase() !== asset.guid.toLowerCase())
-      return failure(asset.guid, 'material cooker changed its declared GUID');
-    if (
-      draft.value.payload === null ||
-      typeof draft.value.payload !== 'object' ||
-      !('kind' in draft.value.payload) ||
-      draft.value.payload.kind !== 'material'
-    )
-      return failure(asset.guid, 'material cooker did not return a MaterialAsset');
-    const cooked = (draft.value.payload as { cooked?: unknown }).cooked;
+    const projected = await projectNativeMaterial(asset.guid, sourceKey, draft.value, asset.refs);
+    if (!projected.ok) return failure(asset.guid, JSON.stringify(projected.error));
+    const cooked = (projected.value.payload as { cooked?: unknown }).cooked;
     const record = validateCookedMaterialRecord(cooked);
     if (!record.ok || record.value.guid.toLowerCase() !== asset.guid.toLowerCase())
       return failure(asset.guid, 'material cooker did not publish a valid record for this GUID');
-    const projected = await materialAssetOutputProducer.produce({
-      guid: asset.guid,
-      sourceKey,
-      asset: draft.value.payload as MaterialAsset,
-    });
-    if (!projected.ok) return failure(asset.guid, JSON.stringify(projected.error));
-    const refs = [...projected.value.refs];
-    const seen = new Set(refs.map((ref) => ref.guid.toLowerCase()));
-    for (const ref of [...asset.refs, ...draft.value.refs.map((guid) => ({ guid }))]) {
-      if (!AssetGuid.parse(ref.guid).ok)
-        return failure(asset.guid, 'material cooker returned an invalid reference');
-      if (!seen.has(ref.guid.toLowerCase())) {
-        refs.push(ref);
-        seen.add(ref.guid.toLowerCase());
-      }
-    }
     const artifacts = { ...asset.artifacts };
     for (const [path, artifact] of Object.entries(draft.value.artifacts)) {
       if (path in artifacts)
         return failure(asset.guid, `material cooker collided with importer artifact ${path}`);
       artifacts[path] = artifact;
     }
-    assets.push({ ...asset, payload: projected.value.payload as MaterialAsset, refs, artifacts });
+    assets.push({
+      ...asset,
+      payload: projected.value.payload as MaterialAsset,
+      refs: projected.value.refs,
+      artifacts,
+    });
     for (const path of draft.value.sourceDependencies ?? []) dependencies.add(path);
     fingerprints.push(`${asset.guid}=${draft.value.inputFingerprint}`);
   }

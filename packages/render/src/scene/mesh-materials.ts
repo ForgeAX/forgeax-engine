@@ -60,6 +60,7 @@ type BindingContexts = Map<MeshMaterialGeometry, EffectiveMeshMaterials>;
 type BindingVersions = WeakMap<Overrides, BindingContexts>;
 interface BindingTable {
   versions: BindingVersions;
+  reader?: MeshMaterialReader;
 }
 const bindings = new WeakMap<MeshGeometry, BindingTable>();
 
@@ -87,33 +88,23 @@ export function retainMeshMaterialBindings(previous: MeshGeometry, next: MeshGeo
   if (table !== undefined) bindingTable(next).versions = table.versions;
 }
 
-/** The existing draw-table lifetime owns this lookup, not another global cache. */
-export function createMeshMaterialReader(mesh: MeshGeometry) {
+type MeshMaterialReader = (
+  source: Parameters<typeof effectiveMeshMaterials>[0],
+  geometry?: MeshMaterialGeometry,
+) => EffectiveMeshMaterials;
+
+/** The admitted mesh binding table owns its one reader across renderers and pose changes. */
+export function createMeshMaterialReader(mesh: MeshGeometry): MeshMaterialReader {
   const table = bindingTable(mesh);
-  let previousVersions: BindingVersions | undefined;
-  let previousOverrides: Overrides | undefined;
-  let previousContexts: BindingContexts | undefined;
-  return (
-    source: Parameters<typeof effectiveMeshMaterials>[0],
-    geometry: MeshMaterialGeometry = 'mesh',
-  ): EffectiveMeshMaterials => {
+  if (table.reader !== undefined) return table.reader;
+  table.reader = (source, geometry = 'mesh') => {
     const overrides = source.materialOverrides;
     if (overrides === undefined) return source;
-    const versions = table.versions;
-    let contexts = previousContexts;
-    if (
-      versions !== previousVersions ||
-      overrides !== previousOverrides ||
-      contexts === undefined
-    ) {
-      contexts = bindingContexts(versions, overrides);
-      previousVersions = versions;
-      previousOverrides = overrides;
-      previousContexts = contexts;
-    }
+    const contexts = bindingContexts(table.versions, overrides);
     // Borrow the live context, not its value: fenced query commits can replace it.
     return contexts.get(geometry) ?? buildMeshMaterials(mesh, geometry, overrides, contexts);
   };
+  return table.reader;
 }
 
 export function meshMaterialGeometry(
@@ -171,6 +162,16 @@ function meshMaterials(
   return buildMeshMaterials(mesh, geometry, overrides, contexts, cached, resolve, pending);
 }
 
+/** Numeric asset identity consulted by a geometry-specific material resolver. */
+export function meshMaterialSourceHandle(
+  mesh: MeshGeometry,
+  index: number,
+  override: MaterialResource | undefined,
+): number | undefined {
+  const handle = override?.snapshot.materialHandle ?? mesh.materialSlots[index]?.defaultMaterial;
+  return typeof handle === 'number' && handle !== 0 ? handle : undefined;
+}
+
 function buildMeshMaterials(
   mesh: MeshGeometry,
   geometry: MeshMaterialGeometry,
@@ -186,10 +187,9 @@ function buildMeshMaterials(
     const override = overrides[index];
     let material = override ?? mesh.materials[index] ?? defaultMeshMaterial;
     if (resolve !== undefined) {
-      const handle =
-        override?.snapshot.materialHandle ?? mesh.materialSlots[index]?.defaultMaterial;
+      const handle = meshMaterialSourceHandle(mesh, index, override);
       material =
-        typeof handle === 'number' && handle !== 0
+        handle !== undefined
           ? resolve(
               handle,
               geometry,

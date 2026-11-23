@@ -28,6 +28,7 @@ export interface ViewGraphCompileRequest {
   readonly clearOnly: boolean;
   readonly subsurfaceClass: SubsurfaceCaptureClass;
   readonly rendererRecording: boolean;
+  readonly currentGpuCamera?: boolean;
   readonly forwardCapsuleShadows?: boolean;
   readonly shadowDepthLayers: GraphCompileInput['shadowDepthLayers'];
 }
@@ -131,6 +132,7 @@ function readGraphInput(
     surface: recordContext(internals).canvas,
     shadowMapSize: inputs.shadowMapSize,
     gpuDriven: gpu.raster?.raster,
+    currentGpuCamera: request.currentGpuCamera === true,
     featurePlan: feature.plan,
     cubeCaptureState: recordContext(internals).captureView?.state ?? captures,
     clearOnly: request.clearOnly,

@@ -53,7 +53,7 @@ function hiddenNativeFeatures(): ReadonlySet<string> {
 
 /** Create an opt-in same-process native presentation target; no WebView or Rust World is involved. */
 export function createNativeWindow(options: NativeWindowOptions): Result<NativeWindow, RhiError> {
-  const binding = loadNativeBinding();
+  const binding = loadNativeBinding(options.addonPath);
   if (!binding.ok) return binding;
   try {
     const native = new binding.value.NativeWindow(

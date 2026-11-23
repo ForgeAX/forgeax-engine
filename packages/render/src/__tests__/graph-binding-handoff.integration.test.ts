@@ -1,21 +1,14 @@
 import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import { RhiError, type TextureView } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { GpuSceneCapacityPreparation } from '../gpu-scene-capacity';
-import { createHdrpUnifiedBindGroup, getOrCreateHdrpBuffers } from '../hdrp-buffers';
 import { worldRenderResources } from '../publication/resource-scope';
-import {
-  observeClusterMeshBinding,
-  prepareClusterMeshBindings,
-  rememberClusterMeshBinding,
-  retireClusterMeshBindings,
-} from '../record/cluster-mesh-binding-preparation';
 import type { GraphBindingViews } from '../record/graph-binding-views';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
-import { bindGroupByteRangeLeaf4 } from '../record/mesh-ssbo';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import { MATERIAL_UNIFORM_BYTES } from '../record/render-context';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { recordContext } from '../world/view-record-context';
@@ -27,8 +20,6 @@ async function fixture() {
   let capacity: GpuSceneCapacityPreparation | undefined;
   let work: ReturnType<typeof f.scene.prepareSourceCapacity> | undefined;
   const graphs: CompiledRenderGraph<RenderPipelineFrame>[] = [];
-  const tasks = new Set<ReturnType<typeof prepareClusterMeshBindings>>();
-  const cache = f.manager.currentOwner.frameState.meshBindGroupCache;
   const close = async () => {
     const failures: unknown[] = [];
     const attempt = async (action: () => unknown | Promise<unknown>) => {
@@ -38,11 +29,8 @@ async function fixture() {
         failures.push(cause);
       }
     };
-    for (const task of tasks) await attempt(() => task.release());
-    tasks.clear();
     for (const graph of graphs)
       await attempt(async () => {
-        retireClusterMeshBindings(cache, graph);
         (await graph.retire()).unwrap();
       });
     await attempt(() => work?.return(undefined as never));
@@ -60,8 +48,6 @@ async function fixture() {
     if (failures.length > 0) throw new AggregateError(failures, 'binding fixture cleanup failed');
   };
   try {
-    const hdrp = getOrCreateHdrpBuffers(runtime);
-    assert(hdrp);
     const row = f.internals.sceneComposition?.entry?.projection.slotsSnapshot().at(0)?.snapshot;
     assert(row);
     work = f.scene.prepareSourceCapacity(
@@ -96,48 +82,11 @@ async function fixture() {
       const facts: GraphBindingViews = { graph: compiled, views: [['ssao', port, view]] };
       return { compiled, view, facts };
     };
-    const noAo = {};
-    const issue = (view?: TextureView) => {
-      const lightingKey = view ?? noAo;
-      const leaf = bindGroupByteRangeLeaf4(
-        cache,
-        f.scene.transformBuffer,
-        hdrp.unifiedBindGroupLayout,
-        hdrp,
-        lightingKey,
-      );
-      const group = createHdrpUnifiedBindGroup(
-        runtime,
-        hdrp,
-        f.scene.transformBuffer,
-        view === undefined ? { enabled: false } : { enabled: true, ssaoBlurredView: view },
-        f.scene.transformByteLength,
-        (created, descriptor) =>
-          rememberClusterMeshBinding(cache, created, {
-            runtime,
-            hdrp,
-            lightingKey,
-            descriptor,
-            leaf,
-            key: f.scene.transformByteLength,
-          }),
-      );
-      assert(group);
-      leaf.set(f.scene.transformByteLength, group);
-      return group;
-    };
     const result = {
       f,
       runtime,
-      cache,
       target,
       graph,
-      issue,
-      task: () => {
-        const task = prepareClusterMeshBindings(runtime, cache, target, () => true);
-        tasks.add(task);
-        return task;
-      },
       close,
     };
     onTestFinished(result.close);
@@ -151,71 +100,6 @@ async function fixture() {
     throw cause;
   }
 }
-
-it.each([
-  'first',
-  'successor',
-] as const)('keeps the other graph qualified when %s retires its shared SSAO binding', async (side) => {
-  const f = await fixture();
-  const task = f.task();
-  try {
-    const a = f.graph(),
-      b = f.graph(a.compiled);
-    expect(b.view).toBe(a.view);
-    const group = f.issue(a.view);
-    observeClusterMeshBinding(f.cache, group, a.compiled, a.facts, false).unwrap();
-    observeClusterMeshBinding(f.cache, group, b.compiled, b.facts, false).unwrap();
-    const retired = side === 'first' ? a : b;
-    const survivor = side === 'first' ? b : a;
-    retireClusterMeshBindings(f.cache, retired.compiled);
-    (await retired.compiled.retire()).unwrap();
-    task.prepareIssued(survivor.compiled).unwrap();
-    expect(task.isCurrent()).toBe(true);
-    task.publish().unwrap();
-  } finally {
-    task.release();
-  }
-});
-
-it('refuses replacement when native creation retires the original graph', async () => {
-  const f = await fixture();
-  const task = f.task();
-  const a = f.graph();
-  const group = f.issue(a.view);
-  observeClusterMeshBinding(f.cache, group, a.compiled, a.facts, false).unwrap();
-  const create = f.runtime.device.createBindGroup.bind(f.runtime.device);
-  const spy = vi.spyOn(f.runtime.device, 'createBindGroup').mockImplementationOnce((descriptor) => {
-    const result = create(descriptor);
-    retireClusterMeshBindings(f.cache, a.compiled);
-    void a.compiled.retire();
-    return result;
-  });
-  try {
-    expect(task.prepareIssued(a.compiled).ok).toBe(false);
-    expect(task.isCurrent()).toBe(false);
-    expect(task.publish().ok).toBe(false);
-    expect(observeClusterMeshBinding(f.cache, group, a.compiled, a.facts, false).ok).toBe(false);
-    expect(spy).toHaveBeenCalledOnce();
-  } finally {
-    spy.mockRestore();
-    task.release();
-  }
-});
-
-it('invalidates an empty issued roster when its first actual group appears', async () => {
-  const f = await fixture();
-  const task = f.task();
-  try {
-    const a = f.graph();
-    task.prepareIssued(a.compiled).unwrap();
-    const group = f.issue();
-    observeClusterMeshBinding(f.cache, group, a.compiled, undefined, false).unwrap();
-    expect(task.isCurrent()).toBe(false);
-    expect(task.publish().ok).toBe(false);
-  } finally {
-    task.release();
-  }
-});
 
 it('rejects material table preparation if native creation issues another variant', async () => {
   const f = await fixture();
@@ -268,34 +152,6 @@ it('rebinds current material assemblies even after a different material lifetime
   }
 });
 
-it.each([
-  false,
-  true,
-])('refuses ordinary first issuance after native callback retires its graph, SSAO %s', async (ssao) => {
-  const f = await fixture();
-  const task = f.task();
-  const a = f.graph();
-  const create = f.runtime.device.createBindGroup.bind(f.runtime.device);
-  const spy = vi.spyOn(f.runtime.device, 'createBindGroup').mockImplementationOnce((descriptor) => {
-    const result = create(descriptor);
-    retireClusterMeshBindings(f.cache, a.compiled);
-    void a.compiled.retire();
-    return result;
-  });
-  try {
-    const group = f.issue(ssao ? a.view : undefined);
-    expect(
-      observeClusterMeshBinding(f.cache, group, a.compiled, ssao ? a.facts : undefined, false).ok,
-    ).toBe(false);
-    expect(task.prepareIssued(a.compiled).ok).toBe(false);
-    expect(task.isCurrent()).toBe(false);
-    expect(spy).toHaveBeenCalledOnce();
-  } finally {
-    spy.mockRestore();
-    task.release();
-  }
-});
-
 it('cannot reinsert a material graph variant after its original graph retires', async () => {
   const f = await fixture();
   const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
@@ -325,9 +181,9 @@ it.each([
   'retention',
 ] as const)('refuses an ordinary material result when %s callback retires its original graph', async (stage) => {
   const f = await fixture();
-  const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
-  const entry = [...cache.values()][0];
+  const entry = [...f.f.manager.currentOwner.frameState.materialBgAssemblyCache.values()][0];
   assert(entry);
+  const cache = new MaterialBgAssemblyCache();
   const a = f.graph();
   const port = a.facts.views[0]?.[1];
   assert(port);
@@ -342,7 +198,7 @@ it.each([
     materialSlice: MATERIAL_UNIFORM_BYTES,
     videoHighPerfAvailable: false,
     skylightResources: entry.skylightResources,
-    materialBgShared: f.f.manager.currentOwner.frameState.materialBgShared,
+    materialBgShared: new Map(),
     materialBgAssemblyCache: cache,
     sceneMaterialBuffer: f.f.scene.materialBuffer,
     transmissionBackdropView: a.view,

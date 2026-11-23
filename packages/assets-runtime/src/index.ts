@@ -38,6 +38,7 @@ export type {
   CatalogReconcileResult,
   MeshAsset,
   RuntimeAssetError,
+  RuntimeEvidenceSource,
 } from './asset-registry.js';
 export { AssetRegistry } from './asset-registry.js';
 export { captureAssetPublication } from './capture-publication.js';
@@ -130,10 +131,6 @@ export {
 // ─── Register-time payload validation ───────────────────────────────────────
 export { type TilesetValidateOptions, validateTilesetPayload } from './payload-validate.js';
 export { assetDecoderPlugin, assetsPlugin } from './plugin.js';
-export {
-  createRuntimeAssetEvidenceAdapter,
-  type RuntimeEvidenceSource,
-} from './registry/asset-evidence.js';
 export { CatalogReplica, type CatalogReplicaSnapshot } from './registry/catalog-state.js';
 // ─── Scene instantiate collaboration contract types (D-1 injected hook) ─────
 export {
@@ -146,14 +143,11 @@ export {
 export {
   compareScenePublicationFences,
   createScenePublicationFence,
-  observeScenePublication,
-  parseScenePublicationFence,
   SCENE_PUBLICATION_FENCE_SCHEMA,
   SCENE_PUBLICATION_RECOVERY_ACTIONS,
   type ScenePublicationFence,
   type ScenePublicationFenceError,
   type ScenePublicationFencePhase,
-  type ScenePublicationObservation,
   scenePublicationFenceFromCatalog,
 } from './registry/scene-publication-fence.js';
 export { retainAssetPublications } from './retain-publication.js';

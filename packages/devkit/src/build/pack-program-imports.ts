@@ -111,20 +111,16 @@ async function resolveProgramImport(
   specifier: string,
   selectEngine: () => ReturnType<typeof selectProgramEngine>,
 ): Promise<PackProgramImport> {
-  if (isBuiltin(specifier)) {
-    const url = specifier.startsWith('node:') ? specifier : `node:${specifier}`;
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
-  if (specifier.startsWith('npm:')) {
-    const url = await resolveNativeModuleKey(root, specifier);
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
-  if (specifier === '@deepseek-ai/cordis') {
-    const url = pathToFileURL(
+  let nativeUrl: string | undefined;
+  if (isBuiltin(specifier))
+    nativeUrl = specifier.startsWith('node:') ? specifier : `node:${specifier}`;
+  else if (specifier.startsWith('npm:')) nativeUrl = await resolveNativeModuleKey(root, specifier);
+  else if (specifier === '@deepseek-ai/cordis')
+    nativeUrl = pathToFileURL(
       createRequire(import.meta.resolve('@forgeax/engine-plugin')).resolve(specifier),
     ).href;
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
+  if (nativeUrl !== undefined)
+    return { url: nativeUrl, identity: await nativeModuleIdentity(nativeUrl) };
   if (
     specifier === '@forgeax/engine' ||
     specifier.startsWith('@forgeax/engine/') ||

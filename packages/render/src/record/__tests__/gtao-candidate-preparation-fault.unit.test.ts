@@ -25,12 +25,18 @@ describe('GTAO candidate-preparation fault owner', () => {
     armGtaoCandidatePreparationFault(state, 4);
     expect(consumeGtaoCandidatePreparationFault(state, 4, ['main', 'ssao-blur'])).toBe(false);
     expect(state.gtaoCandidatePreparationFailureGeneration).toBe(4);
-    expect(consumeGtaoCandidatePreparationFault(state, 5, ['ssao-calc', 'ssao-blur'])).toBe(false);
+    expect(
+      consumeGtaoCandidatePreparationFault(state, 5, ['ssao-furthest-hzb-seed', 'ssao-calc']),
+    ).toBe(false);
     expect(state.gtaoCandidatePreparationFailureGeneration).toBeUndefined();
 
     armGtaoCandidatePreparationFault(state, 5);
-    expect(consumeGtaoCandidatePreparationFault(state, 5, ['ssao-calc', 'ssao-blur'])).toBe(true);
-    expect(consumeGtaoCandidatePreparationFault(state, 5, ['ssao-calc', 'ssao-blur'])).toBe(false);
+    expect(
+      consumeGtaoCandidatePreparationFault(state, 5, ['ssao-furthest-hzb-seed', 'ssao-calc']),
+    ).toBe(true);
+    expect(
+      consumeGtaoCandidatePreparationFault(state, 5, ['ssao-furthest-hzb-seed', 'ssao-calc']),
+    ).toBe(false);
 
     armGtaoCandidatePreparationFault(state, 5);
     clearGtaoCandidatePreparationFault(state);
@@ -55,7 +61,7 @@ describe('GTAO candidate-preparation fault owner', () => {
         if (!rawView.ok) return rawView;
         const filteredView = graph.view(filtered.value);
         if (!filteredView.ok) return filteredView;
-        const calc = graph.addRasterPass('ssao-calc', {
+        const calc = graph.addRasterPass('ssao-furthest-hzb-seed', {
           accesses: [{ resource: rawView.value, usage: 'color-attachment' }],
           colorAttachments: [
             {
@@ -68,7 +74,7 @@ describe('GTAO candidate-preparation fault owner', () => {
           encode() {},
         });
         if (!calc.ok) return calc;
-        return graph.addRasterPass('ssao-blur', {
+        return graph.addRasterPass('ssao-calc', {
           accesses: [
             { resource: rawView.value, usage: 'sampled-read' },
             { resource: filteredView.value, usage: 'color-attachment' },

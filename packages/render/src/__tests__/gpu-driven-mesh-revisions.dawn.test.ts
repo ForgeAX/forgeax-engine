@@ -1,7 +1,11 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  deriveVertexBufferLayoutFromProjection,
+  type VertexLayoutProjection,
+} from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { type GraphBuffer, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type Buffer, ok, type RenderPipeline, type RhiCommandEncoder } from '@forgeax/engine-rhi';
@@ -29,7 +33,10 @@ import type { GpuSceneCapacityPreparation } from '../gpu-scene-capacity';
 import { GPU_MATERIAL_DESCRIPTOR, type GpuSceneInputPreparation } from '../gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
-import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
+import {
+  buildGpuDrivenPbrInstancesBindGroupLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
+} from '../pbr-pipeline';
 import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { recordGpuDrivenShadowIndirect } from '../record/shadow-pass';
@@ -55,6 +62,12 @@ const WITNESS_WGSL = `
 }
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 `;
+
+function witnessVertexBuffers(layout: VertexLayoutProjection) {
+  const buffer = defined(deriveVertexBufferLayoutFromProjection(layout)[0]);
+  return [{ ...buffer, attributes: buffer.attributes.filter((attr) => attr.shaderLocation === 0) }];
+}
+
 async function fixture(mergedSources = false, inputWitness = false) {
   const { device, native } = await nativeDeviceFixture({
     requiredFeatures: ['depth32float-stencil8'],
@@ -208,9 +221,10 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) color: vec4<f32> }
     })
     .unwrap();
   const instancesLayout = buildGpuDrivenPbrInstancesBindGroupLayout(device, device.caps);
+  const primitive = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
   const pipelineLayout = device
     .createPipelineLayout({
-      bindGroupLayouts: [viewLayout, materialLayout, meshLayout, instancesLayout],
+      bindGroupLayouts: [viewLayout, materialLayout, primitive, instancesLayout],
     })
     .unwrap();
   const uniforms = device.createBuffer({ size: 256, usage: 64 | 8 }).unwrap();
@@ -247,6 +261,7 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) color: vec4<f32> }
     ...defined(programs.materialPipelineState),
     pbrPipelineLayout: pipelineLayout,
     gpuDrivenPbrPipelineLayout: pipelineLayout,
+    gpuDrivenPrimitiveBindGroupLayout: primitive,
     meshBindGroupLayout: meshLayout,
     instancesBindGroupLayout: instancesLayout,
     gpuDrivenInstancesBindGroupLayout: instancesLayout,
@@ -1137,12 +1152,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
         vertex: {
           module: mainModule,
           entryPoint: 'vs_scene_index',
-          buffers: [
-            {
-              arrayStride: defined(projection).arrayStride,
-              attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-            },
-          ],
+          buffers: witnessVertexBuffers(defined(projection)),
         },
         fragment: {
           module: mainModule,
@@ -1270,7 +1280,8 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
           for (const batch of submitted.plan.batches) {
             const projection = defined(projections.get(batch.batchId));
             const artifact = projection.shadowArtifact;
-            const key = artifact.program.identity;
+            const layout = projection.mesh.layoutProjection;
+            const key = `${artifact.program.identity}:${layout.digest}`;
             let pipeline = pipelines.get(key);
             if (pipeline === undefined) {
               const module = (
@@ -1282,12 +1293,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
                   vertex: {
                     module,
                     entryPoint: 'vs_scene_index',
-                    buffers: [
-                      {
-                        arrayStride: projection.mesh.layoutProjection.arrayStride,
-                        attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-                      },
-                    ],
+                    buffers: witnessVertexBuffers(layout),
                   },
                   primitive: { topology: 'triangle-list', cullMode: 'none' },
                   depthStencil: {
@@ -1307,6 +1313,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
               deformation: projection.deformation,
               materialGroup: f.materialGroup,
               vertexBuffer: projection.mesh.vertexBuffer.handle,
+              vertexStreams: projection.mesh.vertexStreams,
               indexBuffer: defined(projection.mesh.indexBuffer).handle,
               indexFormat: projection.mesh.indexFormat,
             });
@@ -1417,6 +1424,8 @@ it.each([
       const buffer = otherRead.buffer().unwrap().buffer;
       otherRead.seal().unwrap();
       raster.ensureSceneTables(
+        other.transformBuffer,
+        other.transformByteLength,
         other.instanceBuffer,
         other.rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
         other.primitiveBuffer,
@@ -1571,12 +1580,7 @@ it('publishes native shadow arena bindings for active and retiring owned Views',
         vertex: {
           module: f.shader,
           entryPoint: 'vs_scene_index',
-          buffers: [
-            {
-              arrayStride: defined(f.meshes[0]).layoutProjection.arrayStride,
-              attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-            },
-          ],
+          buffers: witnessVertexBuffers(defined(f.meshes[0]).layoutProjection),
         },
         primitive: { topology: 'triangle-list', cullMode: 'none' },
         depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
@@ -1603,6 +1607,7 @@ it('publishes native shadow arena bindings for active and retiring owned Views',
             deformation: projection.deformation,
             materialGroup: f.materialGroup,
             vertexBuffer: projection.mesh.vertexBuffer.handle,
+            vertexStreams: projection.mesh.vertexStreams,
             indexBuffer: defined(projection.mesh.indexBuffer).handle,
             indexFormat: projection.mesh.indexFormat,
           };

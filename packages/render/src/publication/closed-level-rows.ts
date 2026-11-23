@@ -1,6 +1,7 @@
 import type { MaterialResource } from '../material-resource';
 import { materialSourceReferences } from '../material-source';
 import { sameValue } from '../same-value';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import type { PreparedMeshSource } from '../scene/prepared-mesh-source';
 import type { RenderPublicationRows, RenderPublicationTemplate } from './contract';
 import { renderableTemplateSnapshot } from './renderable-template';
@@ -57,7 +58,7 @@ export function* encodeClosedLevelRows(
       upserts[index * 2] = row.entityKey;
       upserts[index * 2 + 1] = index;
       transformEntities[index] = row.entityKey;
-      transforms.set(row.transform.world, index * 16);
+      CapturedSceneTransform.write(transforms, index * 16, row.transform);
       templates.push({
         snapshot: renderableTemplateSnapshot(row, {
           material: materialId(row.material),

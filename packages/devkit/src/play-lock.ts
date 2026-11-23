@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname } from 'node:path';
+import { processAlive } from './backend-lifetime.js';
 
 /** The process that holds a project's play lock. */
 export interface PlayLockHolder {
@@ -62,15 +63,6 @@ const UNREADABLE_STALE_MS = 5_000;
 const TRANSIENT_RETRIES = 10;
 const TRANSIENT_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
@@ -121,10 +113,7 @@ const TAKEOVER_STALE_MS = 10_000;
  */
 async function withMutex(path: string, work: () => Promise<void>): Promise<boolean> {
   const mutex = `${path}.takeover`;
-  try {
-    await writeFile(mutex, `${process.pid} ${randomUUID()}\n`, { flag: 'wx' });
-  } catch (error) {
-    if (errorCode(error) !== 'EEXIST') throw error;
+  if (!(await create(mutex, `${process.pid} ${randomUUID()}\n`))) {
     const seen = await readFile(mutex, 'utf8').catch(() => undefined);
     const age = await stat(mutex).then(
       (info) => Date.now() - info.mtimeMs,

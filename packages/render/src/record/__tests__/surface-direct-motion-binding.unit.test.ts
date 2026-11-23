@@ -17,7 +17,8 @@ it.each([
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
-  const entry = f.add({ entity: 7, submeshes: 1, instances: count });
+  const submeshes = kind === 'forward' && count === 3 && producer === 'ready' ? 3 : 1;
+  const entry = f.add({ entity: 7, submeshes, instances: count });
   entry.source.material.adopt({
     ...entry.source.material.snapshot,
     materialShaderId: 'forgeax::default-standard-pbr',
@@ -68,12 +69,12 @@ it.each([
     expected: 'the accepted direct Surface draw identity is prepared',
     hint: 'prepare the exact retained Surface source before recording',
   });
-  const resolve = vi.fn(() =>
+  const resolve = vi.fn(({ drawItemIndex }: { drawItemIndex: number }) =>
     producer === 'rejected'
       ? err(rejected)
       : ok({
           bindGroup: direct,
-          dynamicOffsets: [2048, 256],
+          dynamicOffsets: [2048, drawItemIndex === 0 ? 256 : 512],
           frameBase: 13,
           memberIds: ['medium'],
         }),
@@ -90,6 +91,7 @@ it.each([
     const directExpected = surfaceModel === 'single-layer-medium' && kind !== 'deferred';
     expect(lookup.mock.calls[0]?.[15]).toBe(directExpected ? 'surface-direct-pbr' : undefined);
     const expectedInput = {
+      includeMemberIds: false,
       entityKey: 7,
       drawItemIndex: 0,
       instanceCount: count,
@@ -98,12 +100,21 @@ it.each([
       probeBuffer: expect.anything(),
       probeOffset: 2048,
     };
-    if (directExpected && producer !== 'absent')
-      expect(resolve).toHaveBeenCalledExactlyOnceWith(expectedInput);
-    else expect(resolve).not.toHaveBeenCalled();
+    if (directExpected && producer !== 'absent') {
+      expect(resolve).toHaveBeenCalledTimes(submeshes);
+      for (let i = 0; i < submeshes; i++)
+        expect(resolve).toHaveBeenNthCalledWith(i + 1, { ...expectedInput, drawItemIndex: i });
+    } else expect(resolve).not.toHaveBeenCalled();
     const instanceGroups = groups.mock.calls.filter(([slot]) => slot === 3);
     if (directExpected && producer === 'ready') {
-      expect(instanceGroups).toEqual([[3, direct, [2048, 256]]]);
+      expect(instanceGroups).toEqual(
+        submeshes === 1
+          ? [[3, direct, [2048, 256]]]
+          : [
+              [3, direct, [2048, 256]],
+              [3, direct, [2048, 512]],
+            ],
+      );
     } else if (directExpected) {
       expect(instanceGroups).toEqual([]);
       expect(f.receipts).toEqual([]);
@@ -114,7 +125,9 @@ it.each([
       expect(instanceGroups).toEqual([[3, expect.anything(), [2048]]]);
       expect(instanceGroups[0]?.[1]).not.toBe(direct);
     }
-    expect(f.receipts).toEqual([{ entity: 7, submesh: 0 }]);
+    expect(f.receipts).toEqual(
+      Array.from({ length: submeshes }, (_, submesh) => ({ entity: 7, submesh })),
+    );
     expect(f.errors).toEqual([]);
   } finally {
     pass.end();

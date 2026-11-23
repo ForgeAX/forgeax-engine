@@ -64,7 +64,10 @@ function planeWorld() {
   return world;
 }
 
-it('default zero-bias GTAO leaves an unoccluded tilted receiver unchanged', async () => {
+it.each([
+  true,
+  false,
+])('keeps an unoccluded tilted receiver unchanged with GTAO spatialFilter=%s', async (spatialFilter) => {
   const target = offscreenCanvas(RESPONSE_SIZE);
   const recorder = attachRecorder(webgpu).unwrap();
   const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
@@ -75,14 +78,16 @@ it('default zero-bias GTAO leaves an unoccluded tilted receiver unchanged', asyn
   );
   if (!host.ok) throw host.error;
   const renderer = host.value.renderer;
-  const directory =
-    process.env.FORGEAX_GTAO_EVIDENCE_DIR ?? 'artifacts/rendering-parity/gtao-plane';
+  const directory = `${process.env.FORGEAX_GTAO_EVIDENCE_DIR ?? 'artifacts/rendering-parity/gtao-plane'}/${spatialFilter ? 'spatial' : 'bypass'}`;
   mkdirSync(directory, { recursive: true });
   try {
+    const original = renderer.inspect().profile;
+    const disabled = renderer.setProfile({ ...original, ambientOcclusion: { enabled: false } });
+    if (!disabled.ok) throw disabled.error;
     const baseline = await renderWorldResponse(renderer, planeWorld(), 'deferred');
     const profile = renderer.setProfile({
       ...renderer.inspect().profile,
-      ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high' },
+      ambientOcclusion: { enabled: true, method: 'gtao', quality: 100, gtao: { spatialFilter } },
     });
     if (!profile.ok) throw profile.error;
     const actual = await renderWorldResponse(renderer, planeWorld(), 'deferred', async (draw) => {

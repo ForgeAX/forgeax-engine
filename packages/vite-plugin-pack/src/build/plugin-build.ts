@@ -1,8 +1,11 @@
 import type { BuildProductionSink, ImporterRegistry, ImportRunnerFs } from '@forgeax/engine-import';
-import { buildCatalogResult, produceBuildAssets } from '@forgeax/engine-import';
+import { catalogImporterPolicyFor, produceBuildAssets } from '@forgeax/engine-import';
 import { encodeCatalogWire } from '@forgeax/engine-pack';
 import {
+  buildCatalogProjection,
+  type CatalogBuildResult,
   type CatalogProducerVisibility,
+  RUNTIME_PACK_SUFFIX,
   STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
 } from '@forgeax/engine-pack/build';
 import {
@@ -28,23 +31,20 @@ interface PluginBuildContext {
   readonly importerRegistry: ImporterRegistry;
   readonly fsForImport: ImportRunnerFs;
   readonly cookedCurrentProjection: Record<string, unknown>;
-  readonly directCurrentProjection: Record<string, unknown>;
   readonly authoredCookedCurrentProjection: Record<string, unknown>;
   readonly onPack?: (
     url: string,
     body: Parameters<BuildProductionSink['emitFile']>[0]['source'],
   ) => void;
-  readonly onPublication?: (inventory: Awaited<ReturnType<typeof buildCatalogResult>>) => void;
-  readonly onInventory?: (
-    inventory: Awaited<ReturnType<typeof buildCatalogResult>>,
-  ) => void | Promise<void>;
+  readonly onPublication?: (inventory: CatalogBuildResult) => void;
+  readonly onInventory?: (inventory: CatalogBuildResult) => void | Promise<void>;
 }
 
 async function scanBuildInventory(
   roots: readonly string[],
   context: PluginBuildContext,
   sourceSnapshot: ScriptablePackSourceSnapshot = createScriptablePackSourceSnapshot(),
-): Promise<Awaited<ReturnType<typeof buildCatalogResult>>> {
+): Promise<CatalogBuildResult> {
   const scanOptions = {
     // Build inventory needs source metadata only; the build producer acquires
     // a fresh definition lease when it evaluates each authored source.
@@ -58,21 +58,22 @@ async function scanBuildInventory(
     },
     ...(context.opts.ignorePath === undefined ? {} : { ignorePath: context.opts.ignorePath }),
   };
-  return buildCatalogResult(
-    roots,
-    context.transportBase,
-    context.registeredImporterKeys,
+  return buildCatalogProjection(roots, {
+    base: context.transportBase ?? '/',
+    importerPolicy: catalogImporterPolicyFor(context.registeredImporterKeys),
     scanOptions,
-    context.catalogVisibility,
-    context.opts.sourceIdentityFor,
-  );
+    visibility: context.catalogVisibility,
+    ...(context.opts.sourceIdentityFor === undefined
+      ? {}
+      : { sourceIdentityFor: context.opts.sourceIdentityFor }),
+  });
 }
 
 async function buildProduction(
   plugin: MinimalPluginContext,
   context: PluginBuildContext,
   sourceSnapshot: ScriptablePackSourceSnapshot,
-  inventory: Awaited<ReturnType<typeof buildCatalogResult>>,
+  inventory: CatalogBuildResult,
 ): Promise<void> {
   if (inventory.authority !== 'authoritative') {
     throw structuredPluginError({
@@ -92,9 +93,6 @@ async function buildProduction(
     cwd: process.cwd(),
     basePrefix,
     generation: 1,
-    ...(context.opts.cookedRuntimePacks === undefined
-      ? {}
-      : { cookedRuntimePacks: context.opts.cookedRuntimePacks }),
     ...(context.opts.enginePackageRoot === undefined
       ? {}
       : { enginePackageRoot: context.opts.enginePackageRoot }),
@@ -108,7 +106,6 @@ async function buildProduction(
       ? {}
       : { producerIdentity: context.opts.producerIdentity }),
     cookedCurrentProjection: context.cookedCurrentProjection,
-    directCurrentProjection: context.directCurrentProjection,
     authoredCookedCurrentProjection: context.authoredCookedCurrentProjection,
     ...(context.opts.ddc?.buildCacheRoot === undefined
       ? {}
@@ -118,7 +115,7 @@ async function buildProduction(
       : { runtimeBinding: context.opts.runtimeBinding }),
     sink: {
       emitFile: (asset) => {
-        if (asset.fileName?.endsWith('.pack.json')) {
+        if (asset.fileName?.endsWith(RUNTIME_PACK_SUFFIX)) {
           context.onPack?.(projectPackIndexUrl(basePrefix, asset.fileName), asset.source);
         }
         return plugin.emitFile(asset);

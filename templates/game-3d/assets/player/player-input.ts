@@ -2,6 +2,14 @@ import type { InputSnapshot } from '@forgeax/engine/input';
 import { PLAYER_CONTROL_CHANNEL, type PlayerInput } from '../shared/player-protocol.ts';
 
 const bounded = (value: number, limit: number) => Math.max(-limit, Math.min(limit, value));
+const stick = (value: number) => Math.sign(value) * Math.max(0, (Math.abs(value) - 0.18) / 0.82);
+
+// The single local player uses the first connected standard controller.
+function firstGamepad(input: InputSnapshot) {
+  let pad = input.gamepad(0);
+  for (let slot = 1; !pad.standardMapping && slot < 4; slot++) pad = input.gamepad(slot);
+  return pad;
+}
 
 /** UI owns touch gestures; the existing World Update samples bounded semantic intent. */
 export function createPlayerInput() {
@@ -39,23 +47,24 @@ export function createPlayerInput() {
         case 'reset': reset(); break;
       }
     },
-    sample(input: InputSnapshot, width: number, height: number): PlayerInput {
+    sample(input: InputSnapshot, width: number, height: number, deltaSeconds = 0): PlayerInput {
       if (previousWidth > 0 && (width !== previousWidth || height !== previousHeight)) reset();
       previousWidth = width;
       previousHeight = height;
-      jumpPending ||= jumpQueued || input.keyboard.justPressedCode('Space');
+      const pad = firstGamepad(input);
+      jumpPending ||= jumpQueued || input.keyboard.justPressedCode('Space') || pad.justPressed(0);
       jumpQueued = false;
-      transformPending ||= transformQueued || input.keyboard.justPressedCode('KeyT');
+      transformPending ||= transformQueued || input.keyboard.justPressedCode('KeyT') || pad.justPressed(3);
       transformQueued = false;
       const mouseLook = input.mouse.pointerLocked || input.mouse.button(2);
       const result = {
-        horizontal: horizontal + Number(input.keyboard.downCode('KeyD') || input.keyboard.downCode('ArrowRight')) -
+        horizontal: horizontal + stick(pad.axis(0)) + Number(input.keyboard.downCode('KeyD') || input.keyboard.downCode('ArrowRight')) -
           Number(input.keyboard.downCode('KeyA') || input.keyboard.downCode('ArrowLeft')),
-        vertical: vertical + Number(input.keyboard.downCode('KeyW') || input.keyboard.downCode('ArrowUp')) -
+        vertical: vertical - stick(pad.axis(1)) + Number(input.keyboard.downCode('KeyW') || input.keyboard.downCode('ArrowUp')) -
           Number(input.keyboard.downCode('KeyS') || input.keyboard.downCode('ArrowDown')),
-        lookX: lookX + (mouseLook ? input.mouse.movementDelta.x : 0),
-        lookY: lookY + (mouseLook ? input.mouse.movementDelta.y : 0),
-        run: run || input.keyboard.downCode('ShiftLeft') || input.keyboard.downCode('ShiftRight'),
+        lookX: lookX + (mouseLook ? input.mouse.movementDelta.x : 0) + stick(pad.axis(2)) * deltaSeconds * 560,
+        lookY: lookY + (mouseLook ? input.mouse.movementDelta.y : 0) + stick(pad.axis(3)) * deltaSeconds * 560,
+        run: run || input.keyboard.downCode('ShiftLeft') || input.keyboard.downCode('ShiftRight') || pad.button(10),
       };
       lookX = lookY = 0;
       return result;

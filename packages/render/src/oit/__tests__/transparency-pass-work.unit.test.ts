@@ -5,6 +5,8 @@ import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-e
 import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialDispatch } from '../../scene/material-dispatch';
+import { SceneDrawSlot } from '../../scene/mesh-draw';
+import { RenderScene } from '../../scene/render-scene-view';
 import { SceneSlots } from '../../scene/scene-slots';
 import { resolveTransparencyView } from '../view';
 
@@ -117,6 +119,83 @@ it('classifies a query per Pass, reading only transparent members at any scene s
       ).toEqual(requested === 'sorted' ? sorted.inspection : blended.inspection);
   }
   expect(visits).toEqual([8, 8]);
+});
+
+it('classifies changing native pass members and skin slots without issuing per-draw rows', () => {
+  const render = new RenderScene();
+  const owner = new MaterialDispatch();
+  const glass = new MaterialResource(material(33, true));
+  const count = 120;
+  const sources = Array.from(
+    { length: count },
+    (_, entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: 1,
+      material: glass,
+      materials: [glass],
+      materialBindingSources: ['renderer-override'],
+      transform: { world: new Float32Array(16) },
+    }),
+  );
+  render.apply(
+    sources.map((snapshot) => ({ kind: 'update', entityKey: snapshot.entityKey, snapshot })),
+  );
+  for (const slot of render.slotsSnapshot()) owner.bind(slot.slot, slot.snapshot);
+  const draw = vi.spyOn(SceneDrawSlot.prototype, 'draw');
+  try {
+    for (let tick = 0; tick < 60; tick++) {
+      const base = sources[tick] as RenderableSnapshot;
+      const next =
+        tick % 3 !== 0 ? { ...base, skinBinding: { skeleton: tick, joints: [1, 2] } } : base;
+      render.apply([{ kind: 'update', entityKey: tick, snapshot: next }]);
+      const roster = render.slotsSnapshot();
+      const result = resolveTransparencyView({
+        requested: 'weighted-blended',
+        rgba16floatRenderable: true,
+        renderables: render.materialize(),
+        materialFrame: owner.materials(),
+        dispatch: owner.query(roster),
+      });
+      const skinned = tick + 1 - (Math.floor(tick / 3) + 1);
+      expect(result.inspection.accumulatedDrawCount).toBe(count - skinned);
+      expect(result.inspection.sortedDrawCount).toBe(skinned);
+      expect(result.inspection.ineligible['program-without-oit-output']).toBe(skinned);
+    }
+    expect(draw).not.toHaveBeenCalled();
+  } finally {
+    draw.mockRestore();
+  }
+});
+
+it('reads the current borrowed skin flag from a fixed dispatch after in-place edits', () => {
+  const glass = new MaterialResource(material(9, true));
+  const seed: RenderableSnapshot = {
+    entityKey: 1,
+    assetHandle: 1,
+    material: glass,
+    materials: [glass],
+    transform: { world: new Float32Array(16) },
+  };
+  const store = new MaterialDispatch();
+  const slots = new SceneSlots();
+  store.bind(0, seed);
+  setSceneRow(slots, 0, { slot: 0, generation: 1, entityKey: 1, snapshot: seed });
+  const dispatch = Object.freeze([...store.query(slots.capture())]);
+  const rows = [seed];
+  const input = {
+    requested: 'weighted-blended' as const,
+    rgba16floatRenderable: true,
+    renderables: rows,
+    materialFrame: store.materials(),
+    dispatch,
+  };
+  for (let tick = 0; tick < 9; tick++) {
+    const skinned = tick % 2 !== 0;
+    rows[0] = skinned ? { ...seed, skinBinding: { skeleton: 1, joints: [7] } } : seed;
+    const result = resolveTransparencyView(input);
+    expect(result.inspection.accumulatedDrawCount).toBe(Number(!skinned));
+    expect(result.inspection.sortedDrawCount).toBe(Number(skinned));
+  }
 });
 
 it('revisits only changed Pass work of a sorted view across frames of unique materials', () => {

@@ -67,3 +67,33 @@ function invalidPath(
     },
   });
 }
+
+/** Inspect decoded Pack descriptors without opening or copying artifact bodies. */
+export function visitPackArtifactDescriptors(
+  pack: unknown,
+  visit: (
+    descriptor: Readonly<Record<string, unknown>> & { readonly path: string },
+  ) => string | undefined,
+  requireMaps = false,
+): string | undefined {
+  const assets = pack && typeof pack === 'object' && 'assets' in pack ? pack.assets : undefined;
+  if (!Array.isArray(assets)) return 'published Pack does not contain an assets array';
+  for (const asset of assets) {
+    if (asset === null || typeof asset !== 'object')
+      return 'published Pack contains a non-object asset row';
+    const artifacts: unknown = asset.artifacts;
+    if (artifacts === undefined && !requireMaps) continue;
+    if (artifacts === null || typeof artifacts !== 'object' || Array.isArray(artifacts))
+      return 'published Pack contains an invalid asset artifact map';
+    for (const [key, raw] of Object.entries(artifacts)) {
+      if (raw === null || typeof raw !== 'object')
+        return `artifact descriptor ${key} is not an object`;
+      const descriptor = raw as Record<string, unknown>;
+      if (typeof descriptor.path !== 'string' || (!requireMaps && descriptor.path.length === 0))
+        return `artifact descriptor ${key} has no package-relative path`;
+      const error = visit(descriptor as typeof descriptor & { path: string });
+      if (error !== undefined) return error;
+    }
+  }
+  return undefined;
+}

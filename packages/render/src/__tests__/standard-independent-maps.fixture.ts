@@ -2,7 +2,7 @@ import { vec3 } from '@forgeax/engine-math';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { STANDARD_SAMPLE_REUSE, STANDARD_TEXTURE_MASK_OVERRIDE } from '@forgeax/engine-shader';
+import { STANDARD_SAMPLE_REUSE } from '@forgeax/engine-shader';
 import {
   derive,
   STANDARD_MATERIAL_PARAM_SCHEMA,
@@ -11,16 +11,19 @@ import {
 import { expect } from 'vitest';
 import alphaHashSource from '../../../shader/src/alpha-hash.wgsl?raw';
 import surfaceSource from '../../../shader/src/default_standard_surface.wgsl?raw';
+import surfaceMapsSource from '../../../shader/src/material/standard-surface-maps.wgsl?raw';
 import abiSource from '../../../shader/src/surface_v1.wgsl?raw';
 import samplingSource from '../../../shader/src/surface-sampling.wgsl?raw';
 import normalSource from '../../../shader/src/tbn.wgsl?raw';
 import coordinatesSource from '../../../shader/src/texture-coordinates.wgsl?raw';
+import { projectShaderConditionals } from '../../../shader-compiler/src/conditionals';
 import { generateParameterModule } from '../../../shader-compiler/src/material/cook';
 import {
   lowerStandardPhysicalBindings,
   standardMaterialDefines,
 } from '../../../shader-compiler/src/material/lower-standard-contract';
 import { packMaterialProgramRow } from '../material-row';
+import { materialAbiRasterConstants } from '../material-stage-constants';
 import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
 import { materialStandardTextureMask } from '../render-system-extract';
 
@@ -48,17 +51,7 @@ const derived = derive(schema);
 // enable their shader branches. This raster fixture has no ray context.
 const defines = standardMaterialDefines(schema);
 function preprocess(text: string): string {
-  const live: boolean[] = [];
-  return text
-    .split('\n')
-    .filter((line) => {
-      const ifdef = /^#ifdef\s+(\w+)/.exec(line);
-      if (ifdef) live.push(defines[ifdef[1] as string] === true);
-      else if (line.startsWith('#else')) live.push(!(live.pop() as boolean));
-      else if (line.startsWith('#endif')) live.pop();
-      return !line.startsWith('#') && live.every(Boolean);
-    })
-    .join('\n');
+  return projectShaderConditionals(text, defines, 'all').replace(/^#[^\n]*\n/gm, '');
 }
 const source = lowerStandardPhysicalBindings(
   preprocess(
@@ -69,6 +62,7 @@ const source = lowerStandardPhysicalBindings(
       coordinatesSource,
       normalSource,
       alphaHashSource,
+      surfaceMapsSource,
       surfaceSource,
     ].join('\n'),
   ) +
@@ -87,7 +81,7 @@ const source = lowerStandardPhysicalBindings(
   input.vertexColor = vec4f(1,1,1,0.5);
   let value = evaluate_surface(input);
   if (value.opacity <= value.alphaClipThreshold) { discard; }
-  return vec4f(value.metallic, value.roughness, value.opacity, 1);
+  return vec4f(value.metallic, value.roughness, value.opacity, value.occlusion);
 }`,
   schema,
   true,
@@ -100,6 +94,120 @@ const texels: Readonly<Record<string, readonly number[]>> = {
   alphaTexture: [240, 180, 120, 60, 20, 40, 80, 160],
   baseColorTexture: [255, 255, 255, 192, 255, 255, 255, 64],
 };
+
+const independent = ['metallicTexture', 'roughnessTexture', 'alphaTexture'];
+const cases = [
+  { name: 'neutral', slots: [], channel: 0, uv: false, cutoff: 0 },
+  { name: 'packed', slots: ['metallicRoughnessTexture'], channel: 2, uv: false, cutoff: 0 },
+  { name: 'default-channels', slots: independent, channel: undefined, uv: false, cutoff: 0 },
+  {
+    name: 'metallic-only',
+    slots: ['metallicTexture', 'metallicRoughnessTexture'],
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+  },
+  {
+    name: 'roughness-only',
+    slots: ['roughnessTexture', 'metallicRoughnessTexture'],
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+  },
+  ...[0, 1, 2, 3].map((channel) => ({
+    name: `channel-${channel}`,
+    slots: [...independent, 'metallicRoughnessTexture', 'baseColorTexture'],
+    channel,
+    uv: false,
+    cutoff: 0,
+  })),
+  { name: 'uv-set-transform', slots: independent, channel: 0, uv: true, cutoff: 0 },
+  {
+    name: 'shared-independent-image',
+    slots: independent,
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+    alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
+    reuse: [0, 3, 3, 0],
+  },
+  {
+    name: 'shared-image-different-uv',
+    slots: independent,
+    channel: undefined,
+    uv: false,
+    roughUv: true,
+    cutoff: 0,
+    alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
+    reuse: [0, 0, 3, 0],
+  },
+  {
+    name: 'shared-image-different-sampler',
+    slots: independent,
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+    samplerMismatch: true,
+    alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
+    reuse: [0, 0, 3, 0],
+  },
+  {
+    name: 'shared-packed-and-base-images',
+    slots: [...independent, 'metallicRoughnessTexture', 'baseColorTexture'],
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+    alias: {
+      metallicTexture: 'metallicRoughnessTexture',
+      roughnessTexture: 'metallicRoughnessTexture',
+      alphaTexture: 'baseColorTexture',
+    },
+    reuse: [1, 2, 1, 0],
+  },
+  ...[false, true].map((occlusionUv) => ({
+    name: occlusionUv ? 'orm-separate-uv' : 'orm-shared-sample',
+    slots: ['metallicRoughnessTexture', 'occlusionTexture'],
+    channel: undefined,
+    uv: false,
+    cutoff: 0,
+    occlusionUv,
+    alias: { occlusionTexture: 'metallicRoughnessTexture' },
+    reuse: [0, 0, 0, occlusionUv ? 0 : 1],
+  })),
+  { name: 'alpha-discard', slots: independent, channel: 3, uv: false, cutoff: 0.1 },
+  { name: 'alpha-pass', slots: independent, channel: 1, uv: false, cutoff: 0.1 },
+];
+
+function expectedMapOutput(row: (typeof cases)[number]): number[] {
+  const aliases: Readonly<Record<string, string>> | undefined = row.alias;
+  const sample = (slot: string, channel: number, right = false) =>
+    (texels[aliases?.[slot] ?? slot]?.[(right ? 4 : 0) + channel] ?? 255) / 255;
+  const packed = row.slots.includes('metallicRoughnessTexture');
+  const metallic =
+    0.8 *
+    (row.slots.includes('metallicTexture')
+      ? sample('metallicTexture', row.channel ?? 2, row.uv)
+      : packed
+        ? sample('metallicRoughnessTexture', row.channel ?? 2)
+        : 1);
+  const roughness = Math.max(
+    0.04,
+    0.6 *
+      (row.slots.includes('roughnessTexture')
+        ? sample('roughnessTexture', row.channel ?? 1, row.uv || row.roughUv || row.samplerMismatch)
+        : packed
+          ? sample('metallicRoughnessTexture', row.channel ?? 1)
+          : 1),
+  );
+  const opacity =
+    0.25 *
+    (row.slots.includes('alphaTexture') ? sample('alphaTexture', row.channel ?? 1) : 1) *
+    (row.slots.includes('baseColorTexture') ? sample('baseColorTexture', 3) : 1);
+  const occlusion = row.slots.includes('occlusionTexture')
+    ? sample('occlusionTexture', 0, row.occlusionUv)
+    : 1;
+  return opacity <= row.cutoff ? [0, 0, 0, 0] : [metallic, roughness, opacity, occlusion];
+}
 
 export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) => () => void) {
   const recorder = attachRecorder(webgpu).unwrap();
@@ -152,78 +260,6 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
     .createPipelineLayout({ bindGroupLayouts: [emptyLayout, materialLayout] })
     .unwrap();
   const shader = (await recorder.backend.createShaderModule(device, { code: source })).unwrap();
-  const independent = ['metallicTexture', 'roughnessTexture', 'alphaTexture'];
-  const cases = [
-    { name: 'neutral', slots: [], channel: 0, uv: false, cutoff: 0 },
-    { name: 'packed', slots: ['metallicRoughnessTexture'], channel: 2, uv: false, cutoff: 0 },
-    { name: 'default-channels', slots: independent, channel: undefined, uv: false, cutoff: 0 },
-    {
-      name: 'metallic-only',
-      slots: ['metallicTexture', 'metallicRoughnessTexture'],
-      channel: undefined,
-      uv: false,
-      cutoff: 0,
-    },
-    {
-      name: 'roughness-only',
-      slots: ['roughnessTexture', 'metallicRoughnessTexture'],
-      channel: undefined,
-      uv: false,
-      cutoff: 0,
-    },
-    ...[0, 1, 2, 3].map((channel) => ({
-      name: `channel-${channel}`,
-      slots: [...independent, 'metallicRoughnessTexture', 'baseColorTexture'],
-      channel,
-      uv: false,
-      cutoff: 0,
-    })),
-    { name: 'uv-set-transform', slots: independent, channel: 0, uv: true, cutoff: 0 },
-    {
-      name: 'shared-independent-image',
-      slots: independent,
-      channel: undefined,
-      uv: false,
-      cutoff: 0,
-      alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
-      reuse: [0, 3, 3],
-    },
-    {
-      name: 'shared-image-different-uv',
-      slots: independent,
-      channel: undefined,
-      uv: false,
-      roughUv: true,
-      cutoff: 0,
-      alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
-      reuse: [0, 0, 3],
-    },
-    {
-      name: 'shared-image-different-sampler',
-      slots: independent,
-      channel: undefined,
-      uv: false,
-      cutoff: 0,
-      samplerMismatch: true,
-      alias: { roughnessTexture: 'metallicTexture', alphaTexture: 'metallicTexture' },
-      reuse: [0, 0, 3],
-    },
-    {
-      name: 'shared-packed-and-base-images',
-      slots: [...independent, 'metallicRoughnessTexture', 'baseColorTexture'],
-      channel: undefined,
-      uv: false,
-      cutoff: 0,
-      alias: {
-        metallicTexture: 'metallicRoughnessTexture',
-        roughnessTexture: 'metallicRoughnessTexture',
-        alphaTexture: 'baseColorTexture',
-      },
-      reuse: [1, 2, 1],
-    },
-    { name: 'alpha-discard', slots: independent, channel: 3, uv: false, cutoff: 0.1 },
-    { name: 'alpha-pass', slots: independent, channel: 1, uv: false, cutoff: 0.1 },
-  ];
   const receipts = [];
   try {
     for (const row of cases) {
@@ -250,6 +286,8 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
           { set: 0, transform: { offset: [row.samplerMismatch ? -0.5 : 0, 0] as const } },
         ],
       ]);
+      if (row.occlusionUv)
+        coordinates.set('occlusionTexture', { set: 1, transform: { offset: [0, 0] } });
       const payload = packMaterialProgramRow(
         schema,
         {
@@ -290,7 +328,9 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
       if (mask === undefined) throw new Error('missing Standard texture mask');
       if (row.reuse) {
         expect(
-          STANDARD_SAMPLE_REUSE.map(({ shift, width }) => (mask >>> shift) & (2 ** width - 1)),
+          STANDARD_SAMPLE_REUSE.map(
+            ({ shift, width }) => Math.floor(mask / 2 ** shift) % 2 ** width,
+          ),
         ).toEqual(row.reuse);
       }
       const group = device
@@ -328,7 +368,7 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
           fragment: {
             module: shader,
             entryPoint: 'fs',
-            constants: { [STANDARD_TEXTURE_MASK_OVERRIDE]: mask },
+            constants: materialAbiRasterConstants(mask, undefined),
             targets: [{ format: 'rgba32float' }],
           },
         })
@@ -358,34 +398,7 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
       const mapped = (await readback.mapAsync(1)).unwrap();
       const live = [...new Float32Array(mapped.getMappedRange().unwrap().slice(0, 16))];
       mapped.unmap();
-      const sample = (slot: string, channel: number, right = false) =>
-        (texels[aliases?.[slot] ?? slot]?.[(right ? 4 : 0) + channel] ?? 255) / 255;
-      const packed = row.slots.includes('metallicRoughnessTexture');
-      const metallic =
-        0.8 *
-        (row.slots.includes('metallicTexture')
-          ? sample('metallicTexture', row.channel ?? 2, row.uv)
-          : packed
-            ? sample('metallicRoughnessTexture', row.channel ?? 2)
-            : 1);
-      const roughness = Math.max(
-        0.04,
-        0.6 *
-          (row.slots.includes('roughnessTexture')
-            ? sample(
-                'roughnessTexture',
-                row.channel ?? 1,
-                row.uv || row.roughUv || row.samplerMismatch,
-              )
-            : packed
-              ? sample('metallicRoughnessTexture', row.channel ?? 1)
-              : 1),
-      );
-      const opacity =
-        0.25 *
-        (row.slots.includes('alphaTexture') ? sample('alphaTexture', row.channel ?? 1) : 1) *
-        (row.slots.includes('baseColorTexture') ? sample('baseColorTexture', 3) : 1);
-      const expected = opacity <= row.cutoff ? [0, 0, 0, 0] : [metallic, roughness, opacity, 1];
+      const expected = expectedMapOutput(row);
       live.forEach((value, index) => {
         expect(value, row.name).toBeCloseTo(expected[index] ?? Number.NaN, 5);
       });

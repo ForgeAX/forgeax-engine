@@ -1,6 +1,7 @@
-import type { AssetHandle, AssetReferenceOwner } from '@forgeax/engine-types';
+import type { AssetHandle, AssetReferenceOwner, Result } from '@forgeax/engine-types';
 import type { AssetRegistry } from '../asset-registry';
 import type { CatalogSource } from '../catalog-source';
+import { type MeshRange, prepareRuntimeMeshRanges } from '../runtime-mesh';
 import type { AssetRecords } from './asset-records';
 import type { AdoptedAssetSource, AssetSource } from './asset-source';
 import type { DecoderRegistry } from './decoder-registry';
@@ -36,6 +37,23 @@ export function runtimeAssets(owner: AssetReferenceOwner | undefined): AssetReco
   const records = owner === undefined ? undefined : owners.get(owner)?.records;
   if (records === undefined) throw new TypeError('a runtime asset owner is required');
   return records;
+}
+
+/** Commit admitted mesh content ranges with a producer's existing asset adoption. */
+export function adoptWithMeshRanges<T, E>(
+  owner: AssetReferenceOwner,
+  adopt: () => Result<T, E>,
+  edits: () =>
+    | readonly {
+        readonly handle: AssetHandle<'mesh'>;
+        readonly input: readonly MeshRange[];
+      }[]
+    | undefined,
+) {
+  return runtimeAssets(owner).adoptClosure(adopt, {
+    edits,
+    prepare: prepareRuntimeMeshRanges,
+  });
 }
 
 /** Borrow a source identity already adopted by this owner; it grants no new hold. */

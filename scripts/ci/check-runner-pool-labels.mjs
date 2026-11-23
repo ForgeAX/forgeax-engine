@@ -10,7 +10,11 @@ import { fileURLToPath } from 'node:url';
 
 export const SELF_HOSTED_LABEL = 'self-hosted';
 export const POOL_LABELS = Object.freeze(['standard', 'heavy']);
-export const SELF_HOSTED_CAPABILITY_LABELS = Object.freeze(['gpu', 'engine-sdk-fullscene']);
+export const SELF_HOSTED_CAPABILITY_LABELS = Object.freeze([
+  'gpu',
+  'engine-sdk-fullscene',
+  'gpu-benchmarked',
+]);
 
 const HOSTED_LABEL_PATTERN = /^(?:ubuntu|windows|macos)(?:-[a-z0-9][a-z0-9.-]*)?$/;
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from '../frame-graph-key';
+import {
+  retainedFrameGraphPolicy,
+  retainedFrameGraphPolicyMatches,
+  serializeFrameGraphKey,
+} from '../frame-graph-key';
 
 function input() {
   return {
@@ -92,32 +96,60 @@ describe('current frame graph key', () => {
   });
 });
 
-it('uses conservative absent policy for malformed retained graph keys', () => {
+it('requires an installed receiver policy for capsule, compact GBuffer and Terrain', () => {
   const directional = { mapSize: 1024, cascadeCount: 4 as const };
-  for (const key of ['invalid', 'null', '{}']) {
-    expect(retainedFrameGraphPolicyMatches(key, directional, false)).toBe(true);
-    expect(retainedFrameGraphPolicyMatches(key, directional, false, 'standard-gbuffer/4')).toBe(
+  expect(retainedFrameGraphPolicyMatches(undefined, directional, false)).toBe(true);
+  expect(retainedFrameGraphPolicyMatches(undefined, directional, false, 'standard-gbuffer/4')).toBe(
+    false,
+  );
+  expect(retainedFrameGraphPolicyMatches(undefined, directional, true)).toBe(false);
+  expect(
+    retainedFrameGraphPolicyMatches(
+      undefined,
+      {
+        ...directional,
+        terrainReceivers: [{ entityKey: 1 }],
+      },
       false,
-    );
-    expect(retainedFrameGraphPolicyMatches(key, directional, true)).toBe(false);
-    expect(
-      retainedFrameGraphPolicyMatches(
-        key,
-        {
-          ...directional,
-          terrainReceivers: [{ entityKey: 1 }],
-        },
-        false,
-      ),
-    ).toBe(false);
-  }
+    ),
+  ).toBe(false);
 });
 
-it('retains only a graph with the configured legacy layout', () => {
-  const directional = { mapSize: 1024, cascadeCount: 4 as const };
-  const key = serializeFrameGraphKey({
-    topology: { shadow: { directional }, compactGbuffer: 'standard-gbuffer/4' },
+it('owns the installed GBuffer and directional receiver identities through candidate failures', () => {
+  const receiver = { entityKey: 1 };
+  const directional = { mapSize: 1024, cascadeCount: 4 as const, terrainReceivers: [receiver] };
+  const policy = retainedFrameGraphPolicy({
+    shadow: { directional, pointCount: 0, pointFaceSize: 0, spotCount: 0, spotMapSize: 0 },
+    compactGbuffer: 'standard-gbuffer/4',
   });
-  expect(retainedFrameGraphPolicyMatches(key, directional, false)).toBe(false);
-  expect(retainedFrameGraphPolicyMatches(key, directional, false, 'standard-gbuffer/4')).toBe(true);
+  expect(retainedFrameGraphPolicyMatches(policy, directional, false)).toBe(false);
+  expect(retainedFrameGraphPolicyMatches(policy, directional, false, 'standard-gbuffer/4')).toBe(
+    true,
+  );
+  receiver.entityKey = 2;
+  expect(retainedFrameGraphPolicyMatches(policy, directional, false, 'standard-gbuffer/4')).toBe(
+    false,
+  );
+});
+
+it('requires the current static layer admission before reusing a graph after a rejected candidate', () => {
+  const directional = { mapSize: 32, cascadeCount: 1 as const };
+  const policy = retainedFrameGraphPolicy({
+    shadow: {
+      directional,
+      pointCount: 2,
+      pointFaceSize: 32,
+      pointStaticMask: 2,
+      spotCount: 1,
+      spotMapSize: 32,
+      spotStaticMask: 1,
+    },
+  });
+  const current = { directional: true, pointMask: 2, spotMask: 1 };
+  const matches = (layers: typeof current) =>
+    retainedFrameGraphPolicyMatches(policy, directional, false, undefined, false, layers);
+  expect(matches(current)).toBe(true);
+  expect(matches({ ...current, pointMask: 0 })).toBe(false);
+  expect(matches({ ...current, spotMask: 0 })).toBe(false);
+  expect(matches({ ...current, directional: false })).toBe(false);
 });

@@ -3,10 +3,32 @@ import type { NativeCookDraft } from '@forgeax/engine-pack/native-cooker';
 import { DEFAULT_STANDARD_SURFACE_MODULE } from '@forgeax/engine-shader';
 import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { programAffinityKey, selectAffineJob } from '../node-material-cooker.js';
+import {
+  planMaterialWorkerBudget,
+  programAffinityKey,
+  selectAffineJob,
+} from '../node-material-cooker.js';
 import { createMaterialPackCooker } from '../pack-cooker.js';
 
 afterEach(() => vi.unstubAllEnvs());
+
+it('admits one wide cold cook within the memory reserved for resident workers', () => {
+  const gib = 2 ** 30;
+  const budget = planMaterialWorkerBudget(8, 8 * gib, 7);
+  expect(budget).toEqual({
+    total: 7,
+    materials: 3,
+    programs: 1,
+    singleMaterialPrograms: 6,
+    singleMaterialLanes: 1,
+  });
+  // More memory admits the same cold compiler width alongside narrow cooks.
+  expect(planMaterialWorkerBudget(8, 16 * gib, 7)).toMatchObject({
+    singleMaterialPrograms: 6,
+    singleMaterialLanes: 4,
+  });
+  expect(planMaterialWorkerBudget(8, 8 * gib).singleMaterialPrograms).toBe(1);
+});
 
 describe('material pool program affinity', () => {
   const lane = { name: 'a' };

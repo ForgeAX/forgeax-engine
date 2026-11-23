@@ -1,12 +1,15 @@
 import { type Buffer, ok, type Result, RhiError } from '@forgeax/engine-rhi';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import {
+  DEFAULT_STANDARD_SURFACE_MODULE,
+  type MaterialShaderArtifact,
+} from '@forgeax/engine-shader';
 import type { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import type {
   GpuDrivenPreparationFailureInspection,
   GpuDrivenProductionInspection,
 } from '../inspection-types';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { DrawRows } from '../record/frame-snapshot';
 import type { FramePresentationPendingReason, RenderRecordPhase } from '../render-contract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { GpuDrivenBatch, GpuDrivenBatchBinding } from './batch-topology';
@@ -201,13 +204,26 @@ export function rasterSampleCount(value: number): 1 | 4 {
   });
 }
 
-export function hasSurfaceArtifact(input: GpuDrivenPrepareInput): boolean {
+function needsSurfacePreparation(artifact: MaterialShaderArtifact | undefined): boolean {
+  const surface = artifact?.receipt?.surface;
+  return (
+    surface !== undefined &&
+    (surface.model !== 'standard' ||
+      surface.module !== DEFAULT_STANDARD_SURFACE_MODULE ||
+      surface.deformation !== undefined ||
+      surface.dynamicInput !== undefined)
+  );
+}
+
+export function requiresGpuSurfacePreparation(input: GpuDrivenPrepareInput): boolean {
   if (input.directSurface !== undefined) return true;
-  if (input.materialArtifact?.receipt?.surface !== undefined) return true;
-  if (input.materialSkinArtifact?.receipt?.surface !== undefined) return true;
+  // Source-built stock Standard publishes its Surface receipt too. That receipt
+  // is valid for an ordinary direct draw and does not require GPU Scene filtering.
+  if (needsSurfacePreparation(input.materialArtifact)) return true;
+  if (needsSurfacePreparation(input.materialSkinArtifact)) return true;
   if (input.materialArtifacts === undefined) return false;
   for (const artifact of input.materialArtifacts.values()) {
-    if (artifact.receipt?.surface !== undefined) return true;
+    if (needsSurfacePreparation(artifact)) return true;
   }
   return false;
 }
@@ -258,10 +274,6 @@ export function rebindRaster(
   return ok(raster);
 }
 
-export function sceneTransformBytes(scene: PersistentGpuDrivenState): number {
-  return scene.scene.transformByteLength;
-}
-
 export function shadowDirectRequired(
   scene: PersistentGpuDrivenState,
   executions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
@@ -276,7 +288,7 @@ export function shadowDirectRequired(
 
 export function runPipelinePreparations(
   jobs: ReadonlyMap<string, PipelinePreparationJob>,
-  entries: readonly ValidatedRenderable[],
+  entries: DrawRows,
   artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
   onPending: ((reason: FramePresentationPendingReason) => void) | undefined,
   materials: import('../scene/material-dispatch').MaterialFrame | undefined,

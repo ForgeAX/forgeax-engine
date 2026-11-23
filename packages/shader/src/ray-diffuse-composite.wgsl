@@ -135,3 +135,37 @@ fn shadeReflectionIrradiance(in: FullscreenOutput, d: vec4f) -> RayDiffuseOutput
 @fragment fn fs_ray_diffuse_reconstructed_reflections(in: FullscreenOutput) -> RayDiffuseOutput {
   return shadeReflectionIrradiance(in, reconstructedIrradiance(in));
 }
+
+// Deferred lighting produced these values using the selected Sky SH / local
+// probe, the material response, and the same material + screen occlusion.
+@group(0) @binding(7) var<storage, read> diffuseGiBaseline: array<u32>;
+
+fn replaceDiffuse(in: FullscreenOutput, d: vec4f) -> RayDiffuseOutput {
+  if (d.w != 1.0 || !all(d.xyz >= vec3f(0.0)) || !all(d.xyz < vec3f(1e30))) {
+    return RayDiffuseOutput(vec4f(0), vec4f(0));
+  }
+  let pixel = vec2u(in.position.xy);
+  if (!standardGBufferValid(textureLoad(normal, vec2i(pixel), 0).rg) ||
+      !(textureLoad(depth, vec2i(pixel), 0) > 0.0)) {
+    return RayDiffuseOutput(vec4f(0), vec4f(0));
+  }
+  let index = (pixel.y * textureDimensions(depth).x + pixel.x) * 3u;
+  let packedR = diffuseGiBaseline[index];
+  let r = unpack2x16float(packedR & 0x7fffffffu);
+  let g = unpack2x16float(diffuseGiBaseline[index + 1u]);
+  let b = unpack2x16float(diffuseGiBaseline[index + 2u]);
+  return routeIndirectLight(vec3f(0), d.xyz * vec3f(r.y, g.y, b.y) - vec3f(r.x, g.x, b.x), (packedR >> 31u) != 0u);
+}
+
+@fragment fn fs_ray_diffuse_replace(in: FullscreenOutput) -> @location(0) vec4f {
+  return replaceDiffuse(in, rawIrradiance(in)).radiance;
+}
+@fragment fn fs_ray_diffuse_reconstructed_replace(in: FullscreenOutput) -> @location(0) vec4f {
+  return replaceDiffuse(in, reconstructedIrradiance(in)).radiance;
+}
+@fragment fn fs_ray_diffuse_replace_subsurface(in: FullscreenOutput) -> RayDiffuseOutput {
+  return replaceDiffuse(in, rawIrradiance(in));
+}
+@fragment fn fs_ray_diffuse_reconstructed_replace_subsurface(in: FullscreenOutput) -> RayDiffuseOutput {
+  return replaceDiffuse(in, reconstructedIrradiance(in));
+}

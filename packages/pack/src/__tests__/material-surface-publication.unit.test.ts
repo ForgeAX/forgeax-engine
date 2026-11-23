@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Materials } from '@forgeax/engine-render';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { checkMaterialProgramSetDigest, validateCookedMaterialRecord } from '../material-cook.js';
 import { NativeCookerRegistry } from '../native-cooker-registry.js';
 
@@ -27,52 +27,49 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
 describe('Surface Pack publication', () => {
   it('publishes one complete cooked record with source closure and artifact', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-surface-publication-'));
-    try {
-      const sourcePath = join(root, 'rusted-iron-surface.wgsl');
-      await writeFile(sourcePath, SURFACE);
-      const material = Materials.standard({
-        surfaceModule: 'game_3d::rusted_iron_surface',
-        parameters: [],
-        values: {},
-      });
-      const { createMaterialPackCooker } = await import(compilerModule);
-      const draft = await createMaterialPackCooker([root]).cook({
-        guid: GUID,
-        source: material,
-        sourcePath,
-      });
-      const cooked = validateCookedMaterialRecord(draft.payload.cooked).unwrap();
-      expect(cooked.receipt.sourceClosure).toContain(sourcePath);
-      expect(cooked.programs.length).toBeGreaterThan(0);
-      for (const program of cooked.programs) {
-        const artifact = draft.artifacts[program.artifact.path];
-        expect(artifact?.bytes.byteLength).toBeGreaterThan(0);
-        expect(
-          Buffer.from(artifact?.bytes ?? []).equals(Buffer.from(program.artifact.bytes)),
-          program.artifact.path,
-        ).toBe(true);
-      }
+    onTestFinished(() => rm(root, { recursive: true, force: true }));
+    const sourcePath = join(root, 'rusted-iron-surface.wgsl');
+    await writeFile(sourcePath, SURFACE);
+    const material = Materials.standard({
+      surfaceModule: 'game_3d::rusted_iron_surface',
+      parameters: [],
+      values: {},
+    });
+    const { createMaterialPackCooker } = await import(compilerModule);
+    const draft = await createMaterialPackCooker([root]).cook({
+      guid: GUID,
+      source: material,
+      sourcePath,
+    });
+    const cooked = validateCookedMaterialRecord(draft.payload.cooked).unwrap();
+    expect(cooked.receipt.sourceClosure).toContain(sourcePath);
+    expect(cooked.programs.length).toBeGreaterThan(0);
+    for (const program of cooked.programs) {
+      const artifact = draft.artifacts[program.artifact.path];
+      expect(artifact?.bytes.byteLength).toBeGreaterThan(0);
       expect(
-        cooked.resolved.passes?.find((pass) => pass.name === 'shadow-caster')?.program,
-      ).toMatchObject({ module: 'forgeax::default-shadow-caster', fragmentEntry: 'fs_shadow' });
-      expect(checkMaterialProgramSetDigest(cooked).ok).toBe(true);
-      const stale = {
-        ...cooked,
-        resolved: {
-          ...cooked.resolved,
-          passes: cooked.resolved.passes.map((pass) => ({
-            ...pass,
-            program: { ...pass.program, fragmentEntry: 'changed' },
-          })),
-        },
-      };
-      expect(checkMaterialProgramSetDigest(stale)).toMatchObject({
-        ok: false,
-        error: { code: 'material-cook-record-invalid' },
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
+        Buffer.from(artifact?.bytes ?? []).equals(Buffer.from(program.artifact.bytes)),
+        program.artifact.path,
+      ).toBe(true);
     }
+    expect(
+      cooked.resolved.passes?.find((pass) => pass.name === 'shadow-caster')?.program,
+    ).toMatchObject({ module: 'forgeax::default-shadow-caster', fragmentEntry: 'fs_shadow' });
+    expect(checkMaterialProgramSetDigest(cooked).ok).toBe(true);
+    const stale = {
+      ...cooked,
+      resolved: {
+        ...cooked.resolved,
+        passes: cooked.resolved.passes.map((pass) => ({
+          ...pass,
+          program: { ...pass.program, fragmentEntry: 'changed' },
+        })),
+      },
+    };
+    expect(checkMaterialProgramSetDigest(stale)).toMatchObject({
+      ok: false,
+      error: { code: 'material-cook-record-invalid' },
+    });
   }, 30_000);
 
   it('keeps the accepted generation as last known good after cook failure', async () => {
@@ -110,39 +107,35 @@ describe('Surface Pack publication', () => {
 
   it('cold-cooks a child through the Pack-owned root table and publishes its parent ref', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-surface-root-child-'));
-    try {
-      const rootMaterial = Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        metallic: 0,
-        roughness: 0.5,
-      });
-      const child = {
-        kind: 'material' as const,
-        parent: ROOT_GUID as never,
-        values: { baseColor: [0.4, 0.45, 0.47, 1] },
+    onTestFinished(() => rm(root, { recursive: true, force: true }));
+    // The graph contract needs a real cooked parent with a color parameter.
+    // The Standard family and its artifact matrix are exercised above.
+    const rootMaterial = Materials.unlit([1, 1, 1, 1]);
+    const child = {
+      kind: 'material' as const,
+      parent: ROOT_GUID as never,
+      values: { baseColor: [0.4, 0.45, 0.47, 1] },
+    };
+    const { createMaterialPackCooker } = await import(compilerModule);
+    const draft = await createMaterialPackCooker([root], { profile: 'webgpu-storage' }).cook({
+      guid: CHILD_GUID,
+      source: child,
+      table: { [ROOT_GUID]: rootMaterial, [CHILD_GUID]: child },
+    });
+    const cooked = draft.payload.cooked as {
+      readonly authored: { readonly parent?: string };
+      readonly resolved: {
+        readonly parameters: readonly { readonly name: string }[];
+        readonly values: Readonly<Record<string, unknown>>;
       };
-      const { createMaterialPackCooker } = await import(compilerModule);
-      const draft = await createMaterialPackCooker([root]).cook({
-        guid: CHILD_GUID,
-        source: child,
-        table: { [ROOT_GUID]: rootMaterial, [CHILD_GUID]: child },
-      });
-      const cooked = draft.payload.cooked as {
-        readonly authored: { readonly parent?: string };
-        readonly resolved: {
-          readonly parameters: readonly { readonly name: string }[];
-          readonly values: Readonly<Record<string, unknown>>;
-        };
-        readonly refs: { readonly parent: readonly string[] };
-      };
-      expect(cooked.authored.parent).toBe(ROOT_GUID);
-      expect(cooked.refs.parent).toEqual([ROOT_GUID]);
-      expect(cooked.resolved.parameters.map((parameter) => parameter.name)).toContain('baseColor');
-      expect(cooked.resolved.values.baseColor).toEqual([0.4, 0.45, 0.47, 1]);
-      expect(draft.refs).toContain(ROOT_GUID);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+      readonly refs: { readonly parent: readonly string[] };
+    };
+    expect(cooked.authored.parent).toBe(ROOT_GUID);
+    expect(cooked.refs.parent).toEqual([ROOT_GUID]);
+    expect(cooked.resolved.parameters.map((parameter) => parameter.name)).toContain('baseColor');
+    expect(cooked.resolved.values.baseColor).toEqual([0.4, 0.45, 0.47, 1]);
+    expect(draft.refs).toContain(ROOT_GUID);
+    expect(Object.keys(draft.artifacts).length).toBeGreaterThan(0);
   }, 30_000);
 
   it('does not publish an artifact when a physical material requests Deferred', async () => {

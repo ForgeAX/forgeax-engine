@@ -22,7 +22,7 @@ import { GPU_TEXTURE_USAGE_COPY_DST, GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '.
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from './gpu-usage';
 import { texelFallbackDescriptor, writeTexelFallback } from './ibl/skylight-bind-group';
 import type { RenderSystemRuntime } from './record/render-context';
-import { SSAO_UNIFORM_BYTES } from './ssao-uniform';
+import { SSAO_UNIFORM_BYTES, SsaoUniformPage } from './ssao-uniform';
 
 // Deterministic host-side SSAO data is owned by the buffer allocator because
 // these values have no consumer outside the resources they initialize.
@@ -241,6 +241,7 @@ export interface SsaoBuffers {
   /** SSAO uniform UBO: view (mat4) + projection (mat4) + inverseProjection (mat4). */
   readonly uniformBuffer: Buffer;
   readonly uniformBytes: number;
+  readonly uniformPage: SsaoUniformPage;
 }
 
 const cache = new WeakMap<RenderSystemRuntime, SsaoBuffers>();
@@ -419,6 +420,7 @@ export function getOrCreateSsaoBuffers(runtime: RenderSystemRuntime): SsaoBuffer
     noiseView: noiseViewRes.value,
     uniformBuffer: uniformBufRes.value,
     uniformBytes: SSAO_UNIFORM_BYTES,
+    uniformPage: new SsaoUniformPage(),
   };
 
   cache.set(runtime, buffers);

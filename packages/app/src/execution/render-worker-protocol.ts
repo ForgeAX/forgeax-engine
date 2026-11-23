@@ -16,7 +16,7 @@ import type {
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
 import type { RhiRemoteCaptureCompletion } from '../internal/rhi-capture';
 import type {
-  ClosedLevelFrameSelection,
+  ClosedLevelFrameChanges,
   ClosedLevelFrameSelectionReceipt,
   ClosedLevelRowReceipt,
   ClosedLevelRowRequest,
@@ -106,6 +106,13 @@ export type RenderWorkerInput =
       readonly worldIdentity: string;
     }
   | { readonly kind: 'hdr-observe-cancel'; readonly requestId: number }
+  | {
+      readonly kind: 'viewport-hit';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly request: import('@forgeax/engine-render').ViewportHitRequest;
+    }
+  | { readonly kind: 'viewport-hit-cancel'; readonly requestId: number }
   | MeshResidencyRequest
   | ClosedLevelRowRequest
   | {
@@ -125,7 +132,9 @@ export type RenderWorkerInput =
       | 'pipelineLibrary'
       | 'backgroundPipelineLibrary'
       | 'backgroundPipelineLibraryConcurrency'
+      | 'viewportHitWarmup'
       | 'dynamicGeometryMeshBudgetBytes'
+      | 'staticShadowBudgetBytes'
       | 'assetBudgetBytes'
       | 'featureTextureReadbackBudgetBytes'
       | 'textureMipSkip'
@@ -156,7 +165,7 @@ export type RenderWorkerInput =
       readonly width: number;
       readonly height: number;
       readonly publication: RenderPublicationMessage;
-      readonly groupSelection?: ClosedLevelFrameSelection;
+      readonly groupSelection?: ClosedLevelFrameChanges;
       readonly sourceFixedStep: number;
       /** Engine Worker World update milliseconds for this published frame. */
       readonly engineUpdateMs?: number;
@@ -195,6 +204,12 @@ export type RenderWorkerInput =
     }
   | { readonly kind: 'dispose' };
 export type RenderWorkerOutput =
+  | {
+      readonly kind: 'viewport-hit-result';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly result: import('@forgeax/engine-render').ViewportHitResult;
+    }
   | import('../configuration-apply').ConfigurationApplyResponse
   | {
       readonly kind: 'geometry-observation-result';

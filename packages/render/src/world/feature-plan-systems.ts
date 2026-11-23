@@ -29,7 +29,7 @@ import {
 } from './feature-systems';
 import { ViewRecorder } from './render-views';
 import { RenderCleanup, RenderQueue, renderSubmission, renderWorldFor } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { ownerOf, type PostProcessSettlement, type ViewSettlementOwner } from './view-settlement';
 
@@ -91,12 +91,8 @@ export const ViewFeaturePlans = defineComponent('ViewFeaturePlans', {
 });
 
 function planStateOf(world: World, entity: EntityHandle): ViewFeaturePlanState | undefined {
-  if (!world.hasComponent(entity, ViewFeaturePlans)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewFeaturePlanState>(
-      requireViewField(world, entity, ViewFeaturePlans, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewFeaturePlanState>(world, entity, ViewFeaturePlans);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 

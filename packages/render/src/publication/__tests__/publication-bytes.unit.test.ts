@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  prepareRenderPublicationTransfer,
   type RenderPublicationMessage,
   renderPublicationBytes,
   renderPublicationRecordBytes,
@@ -78,4 +79,30 @@ describe('renderPublicationBytes', () => {
       assets: 256 + 16 + 10,
     });
   });
+});
+
+it('charges and transfers a shader slice without detaching or sending its source library', () => {
+  const library = new Uint8Array(1024 * 1024);
+  const source = library.subarray(400, 416);
+  source.fill(7);
+  const side = {
+    programs: [
+      {
+        key: 'shader',
+        shader: { sourceEncoding: 'utf8', paramSchema: [], entryPoints: [] },
+        artifact: { key: 'shader', bytes: source },
+      },
+    ],
+  } satisfies RenderPublicationMessage['side'];
+  const candidate = message(side);
+  const required = candidate.record.byteLength + source.byteLength;
+  expect(() => prepareRenderPublicationTransfer(candidate, required - 1)).toThrow();
+  const wire = prepareRenderPublicationTransfer(candidate, required);
+  expect(wire.bytes).toBe(required);
+  const received = structuredClone(wire.message, { transfer: wire.transfers });
+  const bytes = received.side?.programs?.[0]?.artifact?.bytes;
+  expect(bytes).toEqual(source);
+  expect(bytes?.buffer.byteLength).toBe(16);
+  expect(library.byteLength).toBe(1024 * 1024);
+  expect(renderPublicationBytes(received).assets).toBe(16);
 });

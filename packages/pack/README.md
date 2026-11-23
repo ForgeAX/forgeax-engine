@@ -190,8 +190,8 @@ A `terrain` ScriptablePack output supplies a validated `TerrainSource`. The terr
 > Keep the two first-class source entities visibly distinct: `ScriptablePack` is
 > executable `*.pack.ts` TypeScript source; `Pack` is editable, persistable
 > `*.pack.json` JSON source. Parameterization is an optional capability of
-> ScriptablePack/Pack instances, not a third entity. Built Pack v2 is a transport
-> artifact; runtime loads artifacts by GUID only.
+> ScriptablePack/Pack instances, not a third entity. Built Pack v2 uses
+> `*.runtime-pack.json`; the runtime locates it by asset GUID through the Catalog.
 
 The current authoring contract keeps one Pack identity and derives every output
 identity from the author-owned pair `(packageId, sourceKey)`:
@@ -399,10 +399,9 @@ consume the loaded handles through the World's asset registry.
 For failure, switch on `code`, inspect `expected`, `hint`, and narrowed `detail`:
 repair the definition or producer, rebuild/cold-cook, refresh the Catalog LKG,
 or attach the missing Host capability. A missing audio/video/VFX capability is
-an install/play/execute error, not a durable-load error. The machine contract
-lives in [`pack.schema.json`](schema/pack.schema.json) and
-[`meta.schema.json`](schema/meta.schema.json); this section is guidance, not a
-second manifest.
+an install/play/execute error, not a durable-load error. Runtime Pack v2 and Meta sidecars use [`pack.schema.json`](schema/pack.schema.json)
+and [`meta.schema.json`](schema/meta.schema.json). Authored v3 Pack JSON uses
+`parsePackSourceJson`.
 
 The machine contract is [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json). The audit gate is [`check-asset-authority-audit.mjs`](../../scripts/forgeax/check-asset-authority-audit.mjs); it reports subject, execution, author authority, runtime source, lifecycle, owner, producer, and sourceKey evidence for every named category.
 
@@ -927,14 +926,18 @@ The `verify` subcommand runs a fail-fast 7-step chain:
 ## Mesh-binary artifact contract
 
 `MESH_BIN_VERSION` and `MESH_BIN_HEADER_BYTES` are the Pack-owned facts for
-the v5 `<guid>.bin` mesh artifact. The header carries the geometry projection
-version, attribute mask, stride, digest, cardinality, and payload byte lengths;
-the import encoder and assets-runtime decoder consume those facts from the
-package root. Independent test fixtures may keep literal header values only as
+the `<guid>.bin` mesh artifact. The header carries the geometry projection
+version, attribute mask, stride, digest, cardinality, and payload byte lengths.
+The Geometry encoder and decoder consume those facts from Pack. Independent test fixtures may keep literal header values only as
 wire-format oracles, never as a second layout table.
 
 The 80-byte header stores `morphBytes` at offset 40; offset 44 remains zero.
-Payload order is header, interleaved vertices, morph streams, indices, JSON.
+Payload order is header, vertices, morph streams, indices, JSON. V4 through V6
+store interleaved vertices. V7 uses a digest for the physical vertex layout and
+stores the position, tangent basis, UV and color streams in that order, omitting
+absent streams. The total stride and vertex byte length stay the same. V7
+omits the morph section and is restricted to standalone rigid triangle meshes.
+
 V5 metadata stores `morphTargetMasks` (one to eight targets): bits 1/2/4 select
 position/normal/tangent with 3/3/4 little-endian float32 components per vertex.
 Bits 8/16/32 mark present channels containing only positive zero; those lanes
@@ -1096,7 +1099,7 @@ binary transport table and the same typed-array allowlist as capture. They accep
 captured plain-object snapshot roots; root arrays and binary views are rejected.
 Encoding reserves the root `binary` field and rejects collisions before data can
 be overwritten. Nested author objects need no reserved fields. See Import's
-`runtime-pack-source/2` snapshot contract for portable source archives.
+`runtime-pack-source/3` snapshot contract for portable source archives.
 
 Material publication uniqueness and direct/scene-index completeness include the
 color input derived from each ABI receipt. Plain and colored programs may share

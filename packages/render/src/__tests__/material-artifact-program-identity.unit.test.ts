@@ -25,7 +25,9 @@ describe('material artifact program identity', () => {
     const original = artifact('fn fs_main() -> vec4f { return vec4f(1.0); }');
     const edited = {
       ...original,
-      program: createMaterialShaderProgram('@group(2) @binding(3) var<uniform> cluster: vec4f;'),
+      program: createMaterialShaderProgram(
+        '@group(0) @binding(33) var<uniform> cluster_uniform: vec4f;',
+      ),
     };
     expect(materialArtifactProgramIdentity(edited)).not.toBe(
       materialArtifactProgramIdentity(original),

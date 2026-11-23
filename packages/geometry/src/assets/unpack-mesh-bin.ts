@@ -13,20 +13,27 @@ import {
 } from '@forgeax/engine-types';
 import { validateMeshCardLayout } from '../mesh-card-artifact';
 import type { MeshCardLayout } from '../mesh-card-layout';
-import { interleavedMeshFiniteFailure, meshAttributeLayout } from '../mesh-storage';
+import {
+  interleavedMeshFiniteFailure,
+  meshAttributeLayout,
+  staticMeshStreamsFiniteFailure,
+} from '../mesh-storage';
 import {
   deriveVertexLayoutProjectionFromMask,
+  interleaveStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
   unpackInterleavedVertexAttributes,
   type VertexLayoutProjection,
+  vertexAttributeArrayType,
 } from '../vertex-attribute-layout';
 import { MeshBinAssetError } from './mesh-bin-error';
 
 export interface UnpackedMeshBin {
-  readonly version: 4 | 5 | 6;
+  readonly version: MeshBinHeader['version'];
   readonly projection: VertexLayoutProjection;
   readonly vertices: Float32Array;
   readonly attributes: VertexAttributeMap;
-  readonly attributeStorage?: 'interleaved';
+  readonly attributeStorage?: 'interleaved' | 'static-streams';
   readonly indices?: Uint16Array | Uint32Array;
   readonly submeshes: ReadonlyArray<Record<string, unknown>>;
   readonly cardLayout?: MeshCardLayout;
@@ -183,10 +190,15 @@ function projectionFor(
     );
   }
   const projection = projectionResult.value;
+  const digest =
+    header.version === 7
+      ? projectStaticMeshVertexStreams(projection, header.vertexCount)?.layout.digest
+      : projection.digest;
   if (
+    digest === undefined ||
     projection.schemaVersion !== header.projectionVersion ||
     projection.arrayStride !== header.stride ||
-    projection.digest !== header.digest
+    digest !== header.digest
   ) {
     return fail(
       sourceKey,
@@ -381,13 +393,15 @@ function decodeAttributes(
   projection: VertexLayoutProjection,
   header: MeshBinHeader,
   sourceKey: string,
-  storage: 'channels' | 'interleaved',
+  storage: 'channels' | 'interleaved' | 'static-streams',
   validateInterleaved: boolean,
 ): Result<VertexAttributeMap, MeshBinAssetError> {
-  if (storage === 'interleaved') {
+  if (storage !== 'channels') {
     const declaration: VertexAttributeMap = {};
     const nonfinite = validateInterleaved
-      ? interleavedMeshFiniteFailure(vertices, projection)
+      ? storage === 'static-streams'
+        ? staticMeshStreamsFiniteFailure(vertices, projection)
+        : interleavedMeshFiniteFailure(vertices, projection)
       : undefined;
     if (nonfinite !== undefined)
       return fail(
@@ -398,15 +412,7 @@ function decodeAttributes(
         'payload-non-finite',
       );
     for (const attribute of projection.attributes)
-      Reflect.set(
-        declaration,
-        attribute.key,
-        attribute.format === 'uint32'
-          ? new Uint32Array(0)
-          : attribute.format === 'uint16x4'
-            ? new Uint16Array(0)
-            : new Float32Array(0),
-      );
+      Reflect.set(declaration, attribute.key, new (vertexAttributeArrayType(attribute.format))(0));
     return ok(meshAttributeLayout(declaration));
   }
   const attributes = unpackInterleavedVertexAttributes(vertices, projection);
@@ -431,7 +437,8 @@ function decodeAttributes(
           field: 'attribute',
           attribute: attribute.key,
           expectedLength:
-            header.vertexCount * (attribute.byteLength / (attribute.format === 'uint16x4' ? 2 : 4)),
+            header.vertexCount *
+            (attribute.byteLength / vertexAttributeArrayType(attribute.format).BYTES_PER_ELEMENT),
         },
         {
           field: 'attribute',
@@ -539,15 +546,42 @@ export function unpackMeshBin(
 export function unpackMeshBinForAsset(
   bytes: Uint8Array,
   sourceKey: string,
-  storage: 'channels' | 'interleaved',
+  storage: 'channels' | 'interleaved' | 'native',
 ): Result<UnpackedMeshBin, MeshBinAssetError> {
   return unpackMeshBinBody(bytes, sourceKey, storage, false);
+}
+
+function admitsStaticStreamMetadata(meta: MeshBinTables): boolean {
+  return (
+    meta.morphTargets === undefined &&
+    meta.morphWeights === undefined &&
+    meta.morphTargetMasks === undefined &&
+    meta.collision === undefined &&
+    meta.cardLayout === undefined &&
+    meta.submeshes.every(
+      ({ topology }) => topology === 'triangle-list' || topology === 'triangle-strip',
+    )
+  );
+}
+
+function decodeVertexStorage(
+  stored: Float32Array,
+  projection: VertexLayoutProjection,
+  storage: 'channels' | 'interleaved' | 'native',
+  split: boolean,
+): { physical: 'channels' | 'interleaved' | 'static-streams'; vertices: Float32Array } {
+  const physical = storage === 'native' ? (split ? 'static-streams' : 'interleaved') : storage;
+  const vertices =
+    split && physical !== 'static-streams'
+      ? interleaveStaticMeshVertexStreams(stored, projection)
+      : stored;
+  return { physical, vertices };
 }
 
 function unpackMeshBinBody(
   bytes: Uint8Array,
   sourceKey: string,
-  storage: 'channels' | 'interleaved',
+  storage: 'channels' | 'interleaved' | 'native',
   validateInterleaved: boolean,
 ): Result<UnpackedMeshBin, MeshBinAssetError> {
   const headerResult = decodeMeshBinHeader(bytes, sourceKey);
@@ -557,10 +591,24 @@ function unpackMeshBinBody(
   if (!projection.ok) return projection;
   const lengthFailure = payloadLengthFailure(bytes, header, sourceKey);
   if (lengthFailure !== undefined) return lengthFailure;
-  const { vertices, morphBytes, indices, jsonBytes } = splitPayload(bytes, header);
+  const { vertices: storedVertices, morphBytes, indices, jsonBytes } = splitPayload(bytes, header);
   const metaResult = parseMetadata(jsonBytes, header, sourceKey);
   if (!metaResult.ok) return metaResult;
   const meta = metaResult.value;
+  const split = header.version === 7;
+  if (split && !admitsStaticStreamMetadata(meta))
+    return metadataFailure(
+      sourceKey,
+      'standalone rigid triangle metadata',
+      'incompatible static stream metadata',
+      header,
+    );
+  const { physical: physicalStorage, vertices } = decodeVertexStorage(
+    storedVertices,
+    projection.value,
+    storage,
+    split,
+  );
   const lodPolicy = decodeLodPolicy(meta, header, sourceKey);
   if (!lodPolicy.ok) return lodPolicy;
   const attributes = decodeAttributes(
@@ -568,7 +616,7 @@ function unpackMeshBinBody(
     projection.value,
     header,
     sourceKey,
-    storage,
+    physicalStorage,
     validateInterleaved,
   );
   if (!attributes.ok) return attributes;
@@ -595,7 +643,7 @@ function unpackMeshBinBody(
     projection: projection.value,
     vertices,
     attributes: attributes.value,
-    ...(storage === 'interleaved' ? { attributeStorage: 'interleaved' as const } : {}),
+    ...(physicalStorage === 'channels' ? {} : { attributeStorage: physicalStorage }),
     ...(indices === undefined ? {} : { indices }),
     submeshes: meta.submeshes,
     ...(meta.cardLayout === undefined ? {} : { cardLayout: meta.cardLayout }),

@@ -1,10 +1,12 @@
+export { projectImportPack } from './pack-value.js';
+
 // @forgeax/engine-import — build-time asset import runner + ImporterRegistry.
 //
 // The build-time half of the engine's import/load split (the runtime half is
 // AssetRegistry domain decoding). An Importer turns an external
 // source (.gltf / .png / .ttf) plus its *.meta.json GUID declarations into
 // in-memory ImportedAsset[] PODs; the import runner enforces the GUID
-// import-stable iron law and writes the DDC (.pack.json / .bin).
+// import-stable iron law; publication stores the accepted Pack and artifacts in DDC.
 //
 // This Node entry includes filesystem/DDC producers. Browser exports select
 // browser.ts, which exposes the shared data kernel and opt-in runtime Pack
@@ -15,6 +17,10 @@
 // math-free SSOT) and is re-exported here so build tooling has a single
 // import surface.
 
+export {
+  type MeshBinEncodeError,
+  packMeshBin,
+} from '@forgeax/engine-geometry';
 export type {
   AnimationClip,
   AnimationGraph,
@@ -57,9 +63,9 @@ export {
 export {
   type CatalogImporterPolicy,
   catalogImporterPolicy,
+  catalogImporterPolicyFor,
   DEFAULT_CATALOG_IMPORTER_KEYS,
 } from './catalog-importer-policy.js';
-export { buildCatalogResult } from './catalog-inventory.js';
 export {
   createMeshDistanceFieldCooker,
   type DistanceFieldCookInput,
@@ -88,7 +94,6 @@ export {
   normaliseForPack,
   type RunImportMeta,
   type RunImportOk,
-  type RunImportProductResult,
   type RunImportResult,
   runImport,
   SHADER_RESERVED_IMPORTER_KEY,
@@ -103,10 +108,6 @@ export {
   validateLightmapUvs,
 } from './lightmap-uv.js';
 export { projectMaterialPackTransport } from './material-pack-transport.js';
-export {
-  type MeshBinEncodeError,
-  packMeshBin,
-} from './mesh-bin.js';
 export {
   createMeshCardCooker,
   type MeshCardCookInput,
@@ -130,8 +131,16 @@ export {
   reconcileMeshLodMeta,
   validateMeshLodContract,
 } from './mesh-lod.js';
-export { projectImportProductForBuild, projectPackBuildCatalog } from './pack-projection.js';
-export { pluginAssetOutputProducer, resolvePluginProgram } from './plugin-asset-producer.js';
+export {
+  importSourceKeys,
+  projectImportProductForBuild,
+  projectPackBuildCatalog,
+  publishImportedCatalogRows,
+} from './pack-projection.js';
+export {
+  pluginAssetOutputProducer,
+  resolvePluginProgram,
+} from './plugin-asset-producer.js';
 export * from './runtime-pack.js';
 export type { RuntimePackPinnedAsset, RuntimePackRecipe } from './runtime-pack-snapshot.js';
 export {
@@ -150,6 +159,7 @@ export {
 export {
   buildScriptablePack,
   buildScriptablePackWorklist,
+  createStandardAssetOutputProducerRegistry,
   type ScriptablePackBuildOptions,
   type ScriptablePackBuildProduct,
   type ScriptablePackBuildProductCache,
@@ -159,30 +169,24 @@ export {
   type ScriptablePackBuildWorklistProduct,
 } from './scriptable-pack-build.js';
 export type { PackBuildCacheSubject } from './scriptable-pack-build-core.js';
-export {
-  createScriptablePackFileAssetSnapshotSource,
-  type ScriptablePackFileAssetSnapshotError,
-  type ScriptablePackFileAssetSnapshotSourceOptions,
-} from './scriptable-pack-file-snapshot.js';
 export { scriptablePackFingerprint } from './scriptable-pack-fingerprint';
 export {
   canonicalScriptableSourcePath,
   createDeclaredPackAssetSnapshotSource,
-  createScriptablePackProduction,
   type DirectPackTransport,
   type DirectPackTransportInput,
   declaredPackExternalOutputs,
-  type LegacyPackTransport,
+  directPackCookInput,
   materializePreparedScriptablePack,
   type PreparedScriptablePack,
+  planScriptablePackInputs,
   prepareDirectPackTransport,
-  prepareLegacyPackTransport,
   produceScriptablePackProducts,
-  readCookedAuthoredPack,
+  projectPreparedPackPublication,
+  rebindPreparedScriptablePack,
   type ScriptablePackExternalImportOptions,
   type ScriptablePackInput,
   type ScriptablePackProductionOptions,
-  type ScriptablePackPublicationFacts,
   type ScriptablePackTransportPaths,
   type ScriptablePackTransportSink,
 } from './scriptable-pack-host.js';
@@ -210,6 +214,7 @@ export {
   type ProducerReadinessError,
   type ProducerReadinessResult,
   parseProducerReadiness,
+  prepareImportedPackPublication,
   produceSourcePackage,
   runSourcePackageImport,
   type SourcePackageClosureDetail,
@@ -235,13 +240,13 @@ export {
 } from './source-package-errors.js';
 export {
   commitImportPublication,
-  discardImportPublication,
   type ImportPublicationArtifact,
   type ImportPublicationError,
   type ImportPublicationInput,
   type ImportPublicationResult,
   type ImportPublicationSnapshot,
-  publishImportPublication,
+  importPackArtifactPaths,
+  readImportPack,
   readImportPublication,
   restoreImportPublication,
   type StagedImportPublication,
@@ -252,4 +257,3 @@ export {
   type CatalogSourceDeclaration,
   sourceDeclarationForCatalogPath,
 } from './source-path.js';
-export { createStandardAssetOutputProducerRegistry } from './standard-output-producers.js';

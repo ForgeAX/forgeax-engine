@@ -8,11 +8,13 @@ import {
   ok,
 } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { packAssetFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import type { CatalogSource } from '../catalog-source';
 import { runtimeAssetReference, runtimeAssets } from '../internal/runtime-assets';
 import { CatalogReplica } from '../registry/catalog-state';
+import { catalogPack } from './fixtures/catalog-pack';
 
 interface Payload {
   value: number;
@@ -32,16 +34,16 @@ afterEach(() => {
 function externalEvidenceRow(revision: number): CatalogEntry {
   const sourcePath = 'evidence.pack';
   const packageUrl = `https://ingestion.invalid/${revision}/evidence.json`;
-  const { publication } = createRuntimePackPublication({
-    scopeId: 'ingestion-fixture',
-    sourcePath,
-    sourceRevision: String(revision),
-    generation: revision,
-    packageUrl,
-    pack: {
-      assets: [{ guid: EVIDENCE, kind: kind.kind, payload: { value: revision, children: [] } }],
+  const { publication } = catalogPack(
+    [{ guid: EVIDENCE, kind: kind.kind, payload: { value: revision, children: [] } }],
+    {
+      scopeId: 'ingestion-fixture',
+      sourcePath,
+      sourceRevision: String(revision),
+      generation: revision,
+      packageUrl,
     },
-  });
+  );
   return { guid: EVIDENCE, kind: kind.kind, sourcePath, packageUrl, publication };
 }
 
@@ -106,13 +108,7 @@ function fixture(withExternalEvidence = false) {
         : [],
       pack: {
         assets: [
-          {
-            guid: CHILD,
-            kind: kind.kind,
-            payload: { value: revision, children: [] },
-            refs: [],
-            artifacts: {},
-          },
+          packAssetFixture(CHILD, kind.kind, { value: revision, children: [] }),
           {
             guid: ROOT,
             kind: kind.kind,

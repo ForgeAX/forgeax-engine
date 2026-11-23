@@ -13,12 +13,12 @@ export interface RasterBatch<Frame extends RenderGraphFrame> {
   readonly name: string;
   readonly names: readonly string[];
   readonly colorAttachments: readonly RasterColorAttachment<Frame>[];
-  readonly depthStencilAttachment: RasterDepthStencilAttachment | undefined;
+  readonly depthStencilAttachment: RasterDepthStencilAttachment<Frame> | undefined;
 }
 
-function joinDepth(
-  a: RasterDepthStencilAttachment | undefined,
-  b: RasterDepthStencilAttachment | undefined,
+function joinDepth<Frame>(
+  a: RasterDepthStencilAttachment<Frame> | undefined,
+  b: RasterDepthStencilAttachment<Frame> | undefined,
 ): boolean {
   if (a === undefined || b === undefined) return a === b;
   return (
@@ -52,7 +52,7 @@ function eligible<Frame extends RenderGraphFrame>(pass: CompiledPass<Frame>): bo
   );
 }
 
-function compatible<Frame extends RenderGraphFrame>(
+function adjacentAttachments<Frame extends RenderGraphFrame>(
   previous: RasterGraphPass<Frame>,
   next: RasterGraphPass<Frame>,
 ): boolean {
@@ -73,40 +73,42 @@ function compatible<Frame extends RenderGraphFrame>(
     )
       return false;
   }
-  const attachments = new Set([
-    ...previous.colorAttachments.map((a) =>
-      accessResourceId({ resource: a.view, usage: 'color-attachment' }),
-    ),
-    ...next.colorAttachments.flatMap((a) =>
-      a.resolveTarget === undefined
-        ? []
-        : [accessResourceId({ resource: a.resolveTarget, usage: 'color-attachment' })],
-    ),
-    ...(previous.depthStencilAttachment === undefined
-      ? []
-      : [
-          accessResourceId({
-            resource: previous.depthStencilAttachment.view,
-            usage: 'depth-stencil-read',
-          }),
-        ]),
-  ]);
-  // Include all view aliases of attachment allocations: even disjoint mips
-  // can violate the backend's simultaneous render-attachment usage scope.
-  return [...previous.accesses, ...next.accesses].every(
-    (access) =>
-      !attachments.has(accessResourceId(access)) ||
+  return true;
+}
+
+/** Other uses of an attachment's backing, even from a different mip, cannot share its pass. */
+function admitRasterUses<Frame extends RenderGraphFrame>(
+  descriptor: RasterGraphPass<Frame>,
+  attachments: ReadonlySet<number | undefined>,
+  reads: Set<number | undefined>,
+): boolean {
+  for (const access of descriptor.accesses) {
+    if (
       access.usage === 'color-attachment' ||
       access.usage === 'depth-stencil-read' ||
-      access.usage === 'depth-stencil-write',
-  );
+      access.usage === 'depth-stencil-write'
+    )
+      continue;
+    const id = accessResourceId(access);
+    if (attachments.has(id)) return false;
+    reads.add(id);
+  }
+  for (const attachment of descriptor.colorAttachments)
+    if (
+      attachment.resolveTarget !== undefined &&
+      reads.has(accessResourceId({ resource: attachment.resolveTarget, usage: 'color-attachment' }))
+    )
+      return false;
+  return true;
 }
 
 /** Build only consecutive, unconditional groups; never reorder feature work. */
 export function planRasterBatches<Frame extends RenderGraphFrame>(
   passes: readonly CompiledPass<Frame>[],
-): ReadonlyMap<number, RasterBatch<Frame>> {
-  const batches = new Map<number, RasterBatch<Frame>>();
+): readonly (RasterBatch<Frame> | undefined)[] {
+  const batches: (RasterBatch<Frame> | undefined)[] = [];
+  const attachments = new Set<number | undefined>();
+  const reads = new Set<number | undefined>();
   let first = 0;
   while (first < passes.length) {
     const start = passes[first];
@@ -122,20 +124,27 @@ export function planRasterBatches<Frame extends RenderGraphFrame>(
         previous?.pass.kind !== 'raster' ||
         next?.pass.kind !== 'raster' ||
         !eligible(next) ||
-        !compatible(previous.pass.descriptor, next.pass.descriptor)
+        !adjacentAttachments(previous.pass.descriptor, next.pass.descriptor)
       )
         break;
-      const nextDescriptor = next.pass.descriptor;
-      // Usage compatibility must hold across the entire physical group.
-      if (
-        passes
-          .slice(first, last)
-          .some(
-            (member) =>
-              member.pass.kind !== 'raster' || !compatible(member.pass.descriptor, nextDescriptor),
-          )
-      )
-        break;
+      if (last === first) {
+        reads.clear();
+        attachments.clear();
+        const initial = start.pass.descriptor;
+        for (const attachment of initial.colorAttachments)
+          attachments.add(
+            accessResourceId({ resource: attachment.view, usage: 'color-attachment' }),
+          );
+        if (initial.depthStencilAttachment !== undefined)
+          attachments.add(
+            accessResourceId({
+              resource: initial.depthStencilAttachment.view,
+              usage: 'depth-stencil-read',
+            }),
+          );
+        if (!admitRasterUses(initial, attachments, reads)) break;
+      }
+      if (!admitRasterUses(next.pass.descriptor, attachments, reads)) break;
       last++;
     }
     const end = passes[last];
@@ -167,7 +176,7 @@ export function planRasterBatches<Frame extends RenderGraphFrame>(
                 stencilStoreOp: final.depthStencilAttachment?.stencilStoreOp,
               }),
       });
-      for (let i = first; i <= last; i++) batches.set(i, batch);
+      for (let i = first; i <= last; i++) batches[i] = batch;
     }
     first = last + 1;
   }

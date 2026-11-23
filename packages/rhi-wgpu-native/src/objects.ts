@@ -221,7 +221,7 @@ export class NativeGPUBuffer extends DeviceChild {
 
 export class NativeGPUTexture extends DeviceChild {
   private expired = false;
-  private readonly borrowed: boolean;
+  readonly #borrowedViewIds: number[] | undefined;
   readonly width: number;
   readonly height: number;
   readonly depthOrArrayLayers: number;
@@ -251,7 +251,7 @@ export class NativeGPUTexture extends DeviceChild {
         ),
       descriptor.label,
     );
-    this.borrowed = nativeId !== undefined;
+    this.#borrowedViewIds = nativeId === undefined ? undefined : [];
     this.width = size.width;
     this.height = size.height;
     this.depthOrArrayLayers = size.depthOrArrayLayers;
@@ -267,6 +267,7 @@ export class NativeGPUTexture extends DeviceChild {
   createView(descriptor: GPUTextureViewDescriptor = {}): NativeGPUTextureView {
     if (this.expired) throw domError('InvalidStateError', 'The native surface texture has expired');
     const id = this.device.native.createView(this.nativeId, JSON.stringify(descriptor));
+    this.#borrowedViewIds?.push(id);
     this.device.touch();
     return new NativeGPUTextureView(
       this.device,
@@ -278,7 +279,7 @@ export class NativeGPUTexture extends DeviceChild {
   }
 
   destroy(): void {
-    if (this.borrowed) {
+    if (this.#borrowedViewIds !== undefined) {
       this.expire();
       return;
     }
@@ -286,11 +287,13 @@ export class NativeGPUTexture extends DeviceChild {
     this.device.touch();
   }
 
-  /** Presentation retires the borrowed table entry, never the native window. */
+  /** Retire the image and its views before the swapchain can be reconfigured. */
   expire(): void {
     if (this.expired) return;
     this.expired = true;
-    if (this.borrowed) {
+    if (this.#borrowedViewIds !== undefined) {
+      for (const id of this.#borrowedViewIds) this.device.releaseId(id);
+      this.#borrowedViewIds.length = 0;
       this.device.native.textureDestroy(this.nativeId);
       this.device.releaseId(this.nativeId);
     }

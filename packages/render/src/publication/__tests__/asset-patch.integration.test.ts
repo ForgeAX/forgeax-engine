@@ -370,6 +370,28 @@ it('retains a cold Level Mesh once and adopts the exact payload into the ordinar
   }
 });
 
+it('resolves cold Level GPU generation dependencies by GUID until the last hold retires', () => {
+  const f = fixture();
+  try {
+    const guid = '38490823-ce4b-5d26-83f6-cde7e9c5f676';
+    const row = { handle: 1000, revision: 1, guid, value: { kind: 'sampler' } as const };
+    const first = f.receiver.retainClosedLevelAsset(f.identity, row).unwrap();
+    const second = f.receiver
+      .retainClosedLevelAsset(f.identity, { handle: row.handle, revision: 1 })
+      .unwrap();
+    expect(f.accepted.resources.handleForGuid(guid)).toBe(row.handle);
+    expect(f.accepted.resources.lookupAsset(guid)).toBe(first.value);
+    expect(f.receiver.referencesAcceptedAsset(row.handle)).toBe(false);
+    expect(f.receiver.retainClosedLevelAsset(f.identity, { ...row, handle: 1001 }).ok).toBe(false);
+    first.release();
+    expect(f.accepted.resources.lookupAsset(guid)).toBe(second.value);
+    second.release();
+    expect(f.accepted.resources.lookupAsset(guid)).toBeUndefined();
+  } finally {
+    f.close();
+  }
+});
+
 it('keeps held Level texels fixed while an ordinary frame installs a newer region', () => {
   const f = fixture();
   try {

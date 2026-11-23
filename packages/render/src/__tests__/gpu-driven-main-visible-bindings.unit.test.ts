@@ -493,6 +493,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       r.record(f.prepare());
       expect(create).not.toHaveBeenCalled();
       expect(f.production.inspect().preparedBundleHits).toBeGreaterThan(0);
+      expect(f.production.inspect().preparedBundleFixedHits).toBeGreaterThan(0);
       // Unchanged runs replay their retained native commands without
       // resolving visible windows again.
       expect(recordings.windows).toHaveLength(0);

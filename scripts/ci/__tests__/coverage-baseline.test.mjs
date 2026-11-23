@@ -12,6 +12,7 @@ import {
 } from '../ci-input-changes.mjs';
 import {
   baselineGroupResult,
+  collectCoverageBaselines,
   findCoverageProducer,
   reusableCoverageGroup,
   writeCoverageBaseline,
@@ -65,6 +66,39 @@ test('a portable coverage receipt re-roots only matching untouched coverage and 
     baselineGroupResult(next, { ...group, label: 'other' }, baseline, new Set(), green),
     undefined,
   );
+});
+
+test('moved Coverage groups restore from another shard and validate the original inputs', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-coverage-repartition-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const manifest = join(root, 'packages/model');
+  mkdirSync(manifest, { recursive: true });
+  writeFileSync(join(manifest, 'package.json'), JSON.stringify({ name: '@engine/model' }));
+  const filename = 'packages/model/src/model.ts';
+  const path = join(root, filename);
+  const coveragePath = join(root, 'coverage.json');
+  writeFileSync(coveragePath, JSON.stringify({ [path]: { path, s: { 1: 1 } } }));
+  const report = { success: true, testResults: [{ name: join(root, 'packages/model/a.test.ts') }] };
+  writeCoverageBaseline(root, root, 'a'.repeat(40), [group], [{ report, coveragePath }]);
+  const saved = JSON.parse(readFileSync(join(root, 'group-baseline.json'), 'utf8'));
+  const eligible = () => true;
+  const baseline = { ...saved, run: 7, job: 8, artifact: 9 };
+  const result = await collectCoverageBaselines([group], async function* () {
+    yield { baseline: { ...baseline, receipts: {} }, changed: new Set(), eligible };
+    yield { baseline, changed: new Set([filename]), eligible };
+    yield { baseline, changed: new Set(), eligible };
+    assert.fail('stop fetching after the wanted group is admitted');
+  });
+  assert.equal(result.get(group)?.baseline.artifact, 9);
+  assert.equal(result.get(group)?.changed.size, 0);
+  const overBudget = await collectCoverageBaselines(
+    [group],
+    async function* () {
+      yield { baseline, changed: new Set(), eligible };
+    },
+    1,
+  );
+  assert.equal(overBudget.size, 0);
 });
 
 test('the next baseline retains each inherited group’s real original execution', (t) => {
@@ -184,6 +218,20 @@ test('uncertain CI input changes retain full verification', () => {
     false,
   );
   assert.equal(engineWithoutViewRequired({ files: [change('scripts/build.mjs')] }), true);
+  const stable = () => true;
+  const implementation = change('packages/math/src/vector.ts');
+  assert.equal(engineWithoutViewRequired({ files: [implementation] }, stable), false);
+  assert.equal(
+    engineWithoutViewRequired({ files: [implementation] }, () => false),
+    true,
+  );
+  for (const path of [
+    'packages/math/src/index.ts',
+    'packages/math/src/__tests__/vector.unit.test.ts',
+    'packages/render/src/renderer.ts',
+    'packages/math/package.json',
+  ])
+    assert.equal(engineWithoutViewRequired({ files: [change(path)] }, stable), true);
 });
 
 test('CI uses the exact base and checkout and treats a rename as a deletion and addition', (t) => {

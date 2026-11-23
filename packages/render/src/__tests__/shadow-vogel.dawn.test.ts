@@ -70,12 +70,7 @@ it('matches Three Vogel footprints at interior and clamped texture edges with re
         }
         result[id.x] = vec4(actual, reference*0.2, inward*0.2, 0.0);
       }`,
-        {
-          'forgeax_view::common': readFileSync(
-            new URL('../../../shader/src/common.wgsl', import.meta.url),
-            'utf8',
-          ),
-        },
+        {},
         { STORAGE_BUFFER_AVAILABLE: true },
       ),
     });

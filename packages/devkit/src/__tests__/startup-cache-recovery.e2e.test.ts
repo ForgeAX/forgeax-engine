@@ -4,7 +4,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { type LoadProgressLabelInput, resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { chromium } from 'playwright';
 import { expect, it } from 'vitest';
-import { createStartupCacheIdentity } from '../host/startup-cache-identity.js';
+import { createStartupCacheIdentity } from '../host/startup-cache-http.js';
 import { type StartupCacheIdentity, startupEntrySource } from '../host/startup-cache-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 

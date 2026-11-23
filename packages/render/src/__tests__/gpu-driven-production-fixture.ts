@@ -111,11 +111,7 @@ export function standardPbrInputs(
   'materialArtifact' | 'materialPipelineState'
 > {
   const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const meshLayout = device
-    .createBindGroupLayout({
-      entries: [{ binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } }],
-    })
-    .unwrap();
+  const meshLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const instancesLayout = device
     .createBindGroupLayout({
       entries: [
@@ -149,6 +145,7 @@ export function standardPbrInputs(
       meshBindGroupLayout: meshLayout,
       instancesBindGroupLayout: instancesLayout,
       gpuDrivenInstancesBindGroupLayout: instancesLayout,
+      gpuDrivenPrimitiveBindGroupLayout: meshLayout,
       gpuDrivenPbrPipelineLayout: pbrPipelineLayout,
       gpuDrivenPbrPrograms: new Map([[programKey, { module: shader, artifact }]]),
       standardPbrShaderUvSetCount: 1,

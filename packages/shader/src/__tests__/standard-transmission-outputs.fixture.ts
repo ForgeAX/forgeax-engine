@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { on } from 'node:events';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, onTestFailed } from 'vitest';
 import {
   admitShaderTemplateManifest,
   type MaterialShaderManifestVariant,
@@ -17,56 +17,71 @@ import {
 const compilerUrl = new URL('../../../shader-compiler/dist/program.mjs', import.meta.url).href;
 const workerSource = `
 const { parentPort, workerData } = require('node:worker_threads');
-async function compile() {
-  const { prepareShaderProgramCompiler } = await import(workerData.compilerUrl);
-  const compiler = (await prepareShaderProgramCompiler()).unwrap();
-  return workerData.rows.map(({ key, defines }) => {
-    const result = compiler.compile(workerData.template, defines);
-    if (!result.ok) throw Error(key + ': ' + result.error.message);
-    return [key, result.value.manifestEntry.wgsl];
-  });
-}
-compile().then(entries => parentPort.postMessage({ entries }), error => parentPort.postMessage({ error: String(error) }));`;
+const compiler = import(workerData.compilerUrl).then(async ({ prepareShaderProgramCompiler }) =>
+  (await prepareShaderProgramCompiler()).unwrap());
+parentPort.on('message', async (rows) => {
+  try {
+    const prepared = await compiler;
+    const entries = rows.map(({ key, defines }) => {
+      const result = prepared.compile(workerData.template, defines);
+      if (!result.ok) throw Error(key + ': ' + result.error.message);
+      return [key, result.value.manifestEntry.wgsl];
+    });
+    parentPort.postMessage({ entries });
+  } catch (error) {
+    parentPort.postMessage({ error: String(error) });
+  }
+});`;
 
 type Row = Pick<MaterialShaderManifestVariant, 'definesKey' | 'defines'>;
 type Reply = { entries: Array<[string, string]> } | { error: string };
 
-async function compileBatch(
-  template: ShaderProgramTemplate,
-  rows: readonly Row[],
-): Promise<Map<string, string>> {
+function createBatchCompiler(template: ShaderProgramTemplate, maxRows: number) {
   const requested = Number.parseInt(process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '', 10);
-  const count = Math.max(1, Math.min(rows.length, 4, requested || availableParallelism() - 1));
-  const batches = Array.from({ length: count }, (_, lane) =>
-    rows
-      .filter((_, index) => index % count === lane)
-      .map(({ definesKey, defines }) => ({ key: definesKey, defines })),
-  );
-  const results = await Promise.allSettled(
-    batches.map(async (batch) => {
-      const worker = new Worker(workerSource, {
-        eval: true,
-        workerData: { compilerUrl, template, rows: batch },
-      });
-      const replies = on(worker, 'message', { close: ['exit'] });
-      try {
-        const reply = await replies.next();
-        if (reply.done) throw new Error('Shader compiler worker exited without results');
-        const [message] = reply.value as [Reply];
-        if ('error' in message) throw new Error(message.error);
-        return message.entries;
-      } finally {
-        await replies.return?.();
-        await worker.terminate();
-      }
-    }),
-  );
-  return new Map(
-    results.flatMap((result) => {
-      if (result.status === 'rejected') throw result.reason;
-      return result.value;
-    }),
-  );
+  const count = Math.max(1, Math.min(maxRows, 4, requested || availableParallelism() - 1));
+  // These workers validate the built compiler. Vitest still instruments the
+  // source registry, selection, and validation path that requested the work.
+  const env = { ...process.env };
+  delete env.NODE_V8_COVERAGE;
+  const workers = Array.from({ length: count }, () => {
+    const worker = new Worker(workerSource, {
+      eval: true,
+      workerData: { compilerUrl, template },
+      env,
+    });
+    return { worker, replies: on(worker, 'message', { close: ['exit'] }) };
+  });
+  return {
+    async compile(rows: readonly Row[]): Promise<Map<string, string>> {
+      const results = await Promise.allSettled(
+        workers.map(async ({ worker, replies }, lane) => {
+          const batch = rows
+            .filter((_, index) => index % count === lane)
+            .map(({ definesKey, defines }) => ({ key: definesKey, defines }));
+          worker.postMessage(batch);
+          const reply = await replies.next();
+          if (reply.done) throw new Error('Shader compiler worker exited without results');
+          const [message] = reply.value as [Reply];
+          if ('error' in message) throw new Error(message.error);
+          return message.entries;
+        }),
+      );
+      return new Map(
+        results.flatMap((result) => {
+          if (result.status === 'rejected') throw result.reason;
+          return result.value;
+        }),
+      );
+    },
+    async close() {
+      await Promise.all(
+        workers.map(async ({ worker, replies }) => {
+          await replies.return?.();
+          await worker.terminate();
+        }),
+      );
+    },
+  };
 }
 
 function expectResources(row: Row, code: string): void {
@@ -99,6 +114,7 @@ function expectProgramChoice(row: Row, code: string, choices: Map<string, string
   if (defines.LEAN_LIGHTING || unusedProjector) {
     expect(code, key).not.toMatch(/textureSampleLevel\(projectorTexture\w*,/);
   }
+  // Extended lighting still binds the Forward SSR inputs on lean unclustered rows.
   const choice = unusedProjector
     ? key.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*')
     : key;
@@ -106,6 +122,31 @@ function expectProgramChoice(row: Row, code: string, choices: Map<string, string
   const previous = choices.get(digest);
   if (previous !== undefined) expect(choice, key).toBe(previous);
   choices.set(digest, choice);
+}
+
+// Lighting resource assertions depend on these four flags. For the wet
+// slices, cross each remaining define with every reachable resource path.
+// The dry slice still compiles every row for its full program-identity oracle.
+function resourceWitnesses(rows: readonly Row[]): Row[] {
+  const resourceFlags = [
+    'CLUSTER_FORWARD_AVAILABLE',
+    'EXTENDED_LIGHTING_AVAILABLE',
+    'LEAN_LIGHTING',
+    'STORAGE_BUFFER_AVAILABLE',
+  ];
+  const seen = new Set<string>();
+  return rows.filter(({ defines }) => {
+    const path = resourceFlags.map((flag) => String(defines[flag])).join('/');
+    let witness = false;
+    for (const [flag, value] of Object.entries(defines)) {
+      if (resourceFlags.includes(flag)) continue;
+      const interaction = `${path}/${flag}=${value}`;
+      if (seen.has(interaction)) continue;
+      seen.add(interaction);
+      witness = true;
+    }
+    return witness;
+  });
 }
 
 export async function testStandardTransmissionOutputs(
@@ -134,16 +175,24 @@ export async function testStandardTransmissionOutputs(
       definesKey,
     }));
   expect(rows).toHaveLength(expectedRows);
+  const witnesses = waves || rgba16 ? resourceWitnesses(rows) : rows;
+  expect(witnesses.length).toBeGreaterThan(0);
   const choices = new Map<string, string>();
   const compiled = new Set<string>();
   const batchSize = 128;
-  const batches = Array.from({ length: Math.ceil(rows.length / batchSize) }, (_, i) =>
-    rows.slice(i * batchSize, (i + 1) * batchSize),
+  const batches = Array.from({ length: Math.ceil(witnesses.length / batchSize) }, (_, i) =>
+    witnesses.slice(i * batchSize, (i + 1) * batchSize),
   );
   describe.sequential(`compiled Standard transmission outputs with waves=${waves} and rgba16=${rgba16}`, () => {
+    let compiler: ReturnType<typeof createBatchCompiler> | undefined;
     for (const [index, batch] of batches.entries()) {
       it(`checks batch ${index + 1} of ${batches.length}`, { timeout: 60_000 }, async () => {
-        const result = await compileBatch(program.template, batch);
+        onTestFailed(async () => {
+          await compiler?.close();
+          compiler = undefined;
+        });
+        compiler ??= createBatchCompiler(program.template, batchSize);
+        const result = await compiler.compile(batch);
         expect(result.size).toBe(batch.length);
         for (const row of batch) {
           const code = result.get(row.definesKey);
@@ -155,9 +204,17 @@ export async function testStandardTransmissionOutputs(
         }
       });
     }
-    afterAll(() => {
-      expect(compiled.size).toBe(expectedRows);
-      if (!waves && !rgba16) expect(choices.size).toBe(5776);
+    afterAll(async () => {
+      await compiler?.close();
+      expect(compiled.size).toBe(witnesses.length);
+      if (!waves && !rgba16) {
+        // The identity oracle skips the 96 full-shadow lean rows. The dry
+        // no-storage color slice aliases one projector pair per alpha/clip,
+        // vertex color and reflection choice. Coverage keys stay distinct.
+        const fullShadowLeanRows = 96;
+        const unusedProjectorPairs = 4 * 2 * 2;
+        expect(choices.size).toBe(expectedRows - fullShadowLeanRows - unusedProjectorPairs);
+      }
     });
   });
 }

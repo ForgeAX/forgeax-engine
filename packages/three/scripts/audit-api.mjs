@@ -100,6 +100,20 @@ for (const [name] of expected)
 const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const addonPaths = (await readdir(resolve(upstreamRoot, 'examples/jsm'), { recursive: true }))
   .filter(path => path.endsWith('.js')).map(path => `./addons/${path.replaceAll('\\', '/')}`).sort();
+// Reference identity is observable for CPU objects. Native execution depends on
+// the operation and its inputs, including when the original constructor is used.
+const referenceNames = Object.keys(upstream).filter(name =>
+  typeof upstream[name] === 'function' || (upstream[name] !== null && typeof upstream[name] === 'object'));
+const renderRoutes = [
+  { operation: 'WebGPURenderer.render / renderAsync', route: 'native', owner: 'src/renderer.ts', condition: 'Admitted source scene, material and target contracts' },
+  { operation: 'InstancedMesh draw', route: 'native instances', owner: 'src/scene.ts', condition: 'No per-instance morph texture and either no tint or uniform stock RGB with orientation-preserving orthogonal transforms' },
+  { operation: 'InstancedMesh / BatchedMesh draw', route: 'CPU geometry expansion', owner: 'src/instance-geometry.ts', condition: 'Varying RGB, per-instance morph texture, or BatchedMesh draw roster' },
+  { operation: 'Stock lit skin', route: 'native skin palette', owner: 'src/skinning.ts', condition: 'Supported material, normalized float32 weights and compatible transforms' },
+  { operation: 'Other admitted lit skin', route: 'CPU geometry deformation', owner: 'src/skinning.ts', condition: 'Outside native skin eligibility' },
+  { operation: 'Material node surface', route: 'cooked surface program', owner: 'src/node-surface.ts', condition: 'Admitted bound graph with its cooked publication' },
+  { operation: 'EffectComposer.render', route: 'native camera effects', owner: 'src/addons/postprocessing/EffectComposer.ts', condition: 'RenderPass, optional GTAOPass then optional UnrealBloomPass, OutputPass' },
+  { operation: 'CubeCamera capture', route: 'native asynchronous capture', owner: 'src/render-targets.ts', condition: 'Six admitted faces, mip zero and one environment publication' },
+];
 const report = {
   revision: upstream.REVISION,
   scope: {
@@ -111,6 +125,14 @@ const report = {
     note: 'Keep the raw inventory complete. Excluded WebGL, deferred addons and removed upstream APIs do not establish native rendering work.',
   },
   runtimeExports: { expected: Object.keys(upstream).length, missing: Object.keys(upstream).filter(name => !(name in facade)) },
+  runtimeReferenceIdentity: {
+    expected: referenceNames.length,
+    meaning: 'Object identity between this built facade and a separately imported upstream module. Bundled copies can differ even for direct source reexports.',
+    identical: referenceNames.filter(name => facade[name] === upstream[name]),
+    distinct: referenceNames.filter(name => name in facade && facade[name] !== upstream[name]),
+    sameDeclarationSymbol: referenceNames.filter(name => expected.has(name) && expected.get(name) === actual.get(name)),
+  },
+  renderRoutes: { basis: 'Selected source implementation contracts. Runtime and pixel results are measured separately.', entries: renderRoutes },
   declarationExports: { expected: expected.size, mismatches },
   addonModules: { expected: addonPaths.length, missing: addonPaths.filter(path => manifest.exports[path] === undefined) },
   meaning: 'Interface presence, TypeScript assignability and upstream call argument admission only. Rendering, side effects, timing and lifecycle require independent behavioral tests.',

@@ -30,12 +30,17 @@ export {
   trimRetainedBytes,
 } from './internal/retention-budget.js';
 export {
+  adoptWithMeshRanges,
   runtimeAssetReference,
   runtimeAssetRegistry,
   runtimeAssetSource,
   runtimeAssets,
 } from './internal/runtime-assets.js';
-export { completeSourceMaterialPayload, createMaterialLoader } from './material/loader.js';
+export {
+  completeEmbeddedMaterial,
+  completeSourceMaterialPayload,
+  createMaterialLoader,
+} from './material/loader.js';
 export type { PrepareMaterialSourceProgram } from './material/runtime-shader.js';
 export {
   createSceneContentPublicationTask,

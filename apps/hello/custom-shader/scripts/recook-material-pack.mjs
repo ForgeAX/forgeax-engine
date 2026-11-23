@@ -1,81 +1,49 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
-const APP_ROOT = resolve(new URL('..', import.meta.url).pathname);
-const FIXTURE_PATH = resolve(APP_ROOT, 'assets/pulse-material.pack.json');
-const WASM_PROVENANCE_PATH = resolve(APP_ROOT, '../../../packages/wgpu-wasm/pkg/provenance.json');
+import { fileURLToPath } from 'node:url';
+import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
+import { captureMaterialSourceSnapshot, createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import { projectPackSourceClosure } from '../../../../scripts/forgeax/repository-public-policy.mjs';
+
+const app = fileURLToPath(new URL('..', import.meta.url));
+const root = resolve(app, 'src');
+const sourcePath = resolve(root, 'pulse-material.pack.json');
+const fixturePath = resolve(app, 'fixtures/pulse-material.runtime-pack.json');
 const writeFixture = process.argv.includes('--write');
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-function jsonWithBytes(value) {
-  return JSON.stringify(value, (_key, entry) =>
-    entry instanceof Uint8Array ? [...entry] : entry,
-  );
-}
-
-const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
-const wasm = JSON.parse(readFileSync(WASM_PROVENANCE_PATH, 'utf8'));
-const cooker = createMaterialPackCooker([resolve(APP_ROOT, 'src')]);
+const alternate = process.argv.includes('--alternate');
+const parsed = parsePackSourceJson(JSON.parse(await readFile(sourcePath, 'utf8'))).unwrap();
+if (parsed.format !== 'direct') throw new Error('Expected the direct pulse material Pack');
+const { assets } = projectDirectPackJson(parsed);
+const table = Object.fromEntries(assets.filter((asset) => asset.kind === 'material').map((asset) => [asset.guid, asset.payload]));
+const sourceSnapshot = alternate
+  ? await captureMaterialSourceSnapshot([root], {
+      async readText(path) {
+        const source = await readFile(path, 'utf8');
+        if (path !== resolve(root, 'pulse-material.wgsl')) return source;
+        const variant = source.replace('* 0.25 + 0.75;', '* 0.25 + 0.7505;');
+        if (variant === source) throw new Error('Missing alternate pulse brightness input');
+        return variant;
+      },
+    })
+  : undefined;
+const wasm = JSON.parse(await readFile(resolve(app, '../../../packages/wgpu-wasm/pkg/provenance.json'), 'utf8'));
+const cooker = createMaterialPackCooker([root], sourceSnapshot === undefined ? {} : { sourceSnapshot });
+const rows = [];
 const publications = [];
-const materialRows = (fixture.assets ?? []).filter(
-  (asset) => asset?.kind === 'material' && asset.payload?.kind === 'material',
-);
-const authoredMaterial = (payload) => {
-  const { kind, parent, colorSpace, passes, parameters, values } = payload;
-  if (parent !== undefined) {
-    assert(typeof parent === 'string', 'derived material parent must be a GUID');
-    return { kind, parent, values };
+for (const { guid, sourceKey, kind, payload, refs } of assets) {
+  if (kind !== 'material') {
+    rows.push({ guid, sourceKey, kind, payload, refs, artifacts: {} });
+    continue;
   }
-  return {
-    kind,
-    ...(colorSpace === undefined ? {} : { colorSpace }),
-    passes,
-    parameters,
-    values,
-  };
-};
-const authoredTable = Object.fromEntries(
-  materialRows.map((asset) => {
-    assert(typeof asset.guid === 'string', 'material row GUID is required');
-    return [asset.guid, authoredMaterial(asset.payload)];
-  }),
-);
-for (const asset of materialRows) {
-  const guid = asset.guid;
-  const authored = authoredTable[guid];
-  assert(authored !== undefined, `material source is missing for ${guid}`);
-  const draft = await cooker.cook({
-    guid,
-    source: authored,
-    table: authoredTable,
-    sourcePath: FIXTURE_PATH,
-    sourceKey: '../src/pulse-material.wgsl',
-    refs: [],
-    compilerFingerprint: wasm.compilerFingerprint,
-    wasm,
-  });
+  const draft = await cooker.cook({ guid, source: payload, table, sourcePath, sourceKey, refs, wasm, compilerFingerprint: wasm.compilerFingerprint });
   const record = draft.payload.cooked;
-  assert(record !== undefined, `pack producer did not publish ${guid}`);
-  asset.payload = { ...authored, cooked: record };
-  publications.push({
-    guid: record.guid,
-    artifactDigest: record.artifactDigest,
-    cookIdentity: record.receipt.identity.cookIdentity,
-  });
+  if (record === undefined) throw new Error(`Missing compiled publication for ${guid}`);
+  rows.push({ guid, sourceKey, kind, payload: draft.payload, refs: draft.refs, artifacts: {} });
+  publications.push({ guid, artifactDigest: record.artifactDigest, cookIdentity: record.receipt.identity.cookIdentity });
 }
-
-const output = `${jsonWithBytes(fixture)}\n`;
-if (writeFixture) writeFileSync(FIXTURE_PATH, output);
-const summary = {
-  status: 'pass',
-  producer: 'shader-compiler Pack material cooker',
-  publications,
-  fixtureWritten: writeFixture,
-  ...(writeFixture ? { fixturePath: FIXTURE_PATH } : {}),
-};
-console.log(JSON.stringify(summary));
+const fixture = { schemaVersion: '2.0.0', kind: 'internal-text-package', assets: rows };
+const json = JSON.stringify(fixture, (_key, value) => value instanceof Uint8Array ? [...value] : value);
+if (writeFixture) await writeFile(fixturePath, `${JSON.stringify(projectPackSourceClosure(JSON.parse(json)))}\n`);
+console.log(JSON.stringify({ status: 'pass', publications, fixtureWritten: writeFixture }));

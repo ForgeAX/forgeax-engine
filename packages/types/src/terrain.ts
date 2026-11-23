@@ -23,6 +23,14 @@ export interface TerrainSource {
   /** Sample-major, one linear weight per ordered layer. */
   readonly weights: Float32Array;
   readonly layers: readonly TerrainLayer[];
+  /** Linear RGBA bias, indexed by author layer, for up to four weight-blended layers. */
+  readonly weightDetail?: {
+    readonly texture: TerrainReference<'texture' | 'gpu-texture'>;
+    /** Texture repeat period in Terrain-local metres. */
+    readonly period: number;
+    /** Maximum absolute bias in log2 weight units, from zero to four. */
+    readonly strength: number;
+  };
 }
 
 /** Cooked subsection. Edge values are derived from the same source coordinates. */

@@ -1,21 +1,28 @@
 import type { Buffer, RhiCaps, Texture, TextureView, Tlas } from '@forgeax/engine-rhi';
-import { textureFormatBlock } from '@forgeax/engine-types';
-import { placeColorStores } from './color-store-placement.js';
+import { AttachmentBindings } from './attachment-bindings.js';
+import {
+  type AttachmentSlots,
+  addAttachmentSlot,
+  placeColorAttachments,
+  privateSamples,
+} from './color-attachment-placement.js';
 import { CompiledRenderGraphImpl } from './compiled-graph.js';
-import { subtractTextureRange, textureRangeCovered } from './content-ranges.js';
+import {
+  applyTextureContentWrite,
+  intersectTextureRange,
+  textureRangeCovered,
+} from './content-ranges.js';
 import { err, ok, RenderGraphError, type Result } from './errors.js';
-import type { ResolvedColorTargetDescriptor } from './graph.js';
 import {
   accelerationStructureHandle,
-  accessResourceId,
   bufferHandle,
   type CompiledPass,
   type CompiledResource,
-  type CompiledView,
   type GraphTextureAllocation,
   handleData,
+  LINEAR_PASS_ACCESS_LIMIT,
   type PassRecord,
-  physicalAllocationKey,
+  PhysicalGraphSlots,
   type ResourceRecord,
   releaseGraphTexture,
   snapshotPass,
@@ -24,12 +31,18 @@ import {
   textureHandle,
   textureViewHandle,
 } from './kernel-internal.js';
+import { allocateRenderPassGeneration } from './native-pass.js';
+import {
+  accessMode,
+  accessModeForPass,
+  mayLoadAttachment,
+  rangesOverlap,
+  viewAccessRange,
+} from './pass-access.js';
 import { planRasterBatches } from './raster-batching.js';
-import { placeColorResolves } from './resolve-placement.js';
 import { isTextureViewDimensionCompatible } from './resource-registry.js';
 import type {
   CompiledRenderGraph,
-  CompiledRenderGraphInfo,
   ComputeGraphPass,
   CopyGraphPass,
   GraphAccelerationStructure,
@@ -56,46 +69,6 @@ import type {
   SubgraphPass,
 } from './types.js';
 
-function inspectResourceDescriptor<FrameCtx>(
-  resource: CompiledResource<FrameCtx>,
-): CompiledRenderGraphInfo['resources'][number]['descriptor'] {
-  const texture =
-    resource.record.kind === 'texture'
-      ? (resource.record.descriptor as GraphTextureDescriptor)
-      : undefined;
-  const buffer =
-    resource.record.kind === 'buffer'
-      ? (resource.record.descriptor as GraphBufferDescriptor)
-      : undefined;
-  const accelerationStructure =
-    resource.record.kind === 'acceleration-structure' ? resource.record.descriptor : undefined;
-  const extent = resource.textureDescriptor?.size;
-  return Object.freeze(
-    accelerationStructure !== undefined
-      ? {
-          kind: 'acceleration-structure' as const,
-          maxInstances: accelerationStructure.maxInstances,
-        }
-      : texture === undefined
-        ? {
-            kind: 'buffer' as const,
-            size: buffer?.size ?? 0,
-          }
-        : {
-            kind: 'texture' as const,
-            format: texture.format,
-            ...(texture.domain === undefined ? {} : { domain: texture.domain }),
-            size:
-              typeof texture.size === 'string' ? texture.size : Object.freeze({ ...texture.size }),
-            width: extent?.width ?? 1,
-            height: extent?.height ?? 1,
-            depthOrArrayLayers: extent?.depthOrArrayLayers ?? 1,
-            mipLevelCount: texture.mipLevelCount ?? 1,
-            sampleCount: texture.sampleCount ?? 1,
-          },
-  );
-}
-
 const BUFFER_USAGE = {
   copySrc: 0x0004,
   copyDst: 0x0008,
@@ -114,24 +87,18 @@ const TEXTURE_USAGE = {
   renderAttachment: 0x10,
 } as const;
 
-const DEPTH_ONLY_FORMATS = new Set<GPUTextureFormat>([
-  'depth16unorm',
-  'depth24plus',
-  'depth32float',
-]);
+const NO_TEXTURE_WRITES = Object.freeze([]);
+const NO_CONSUMER_READS: readonly GraphAccess[] = Object.freeze([]);
+type TextureRecord<Frame extends RenderGraphFrame> = Extract<
+  ResourceRecord<Frame>,
+  { kind: 'texture' }
+>;
 const DEPTH_STENCIL_FORMATS = new Set<GPUTextureFormat>([
   'depth24plus-stencil8',
   'depth32float-stencil8',
 ]);
 
-function canonicalTextureAspect(
-  format: GPUTextureFormat,
-  aspect: GPUTextureAspect,
-): GPUTextureAspect {
-  return aspect === 'all' && DEPTH_ONLY_FORMATS.has(format) ? 'depth-only' : aspect;
-}
-
-let nextGeneration = 1;
+let compileCount = 0;
 
 /**
  * Realm-lifetime count of compiled render graphs (monotonic). Engine-owned
@@ -140,88 +107,146 @@ let nextGeneration = 1;
  * @internal
  */
 export function renderGraphCompileCount(): number {
-  return nextGeneration - 1;
+  return compileCount;
 }
 
 // Inspection retains its admitted format set; implementation-dependent depth and
 // unmodeled compressed allocations still report an unknown byte size.
-const KNOWN_TEXTURE_BYTE_FORMATS = new Set<GPUTextureFormat>([
-  'r8unorm',
-  'r8snorm',
-  'r8uint',
-  'r8sint',
-  'rg8unorm',
-  'rg8snorm',
-  'rg8uint',
-  'rg8sint',
-  'r16unorm',
-  'r16snorm',
-  'r16uint',
-  'r16sint',
-  'r16float',
-  'rgba8unorm',
-  'rgba8unorm-srgb',
-  'rgba8snorm',
-  'rgba8uint',
-  'rgba8sint',
-  'r32float',
-  'r32uint',
-  'r32sint',
-  'depth32float',
-  'rg16float',
-  'rg16uint',
-  'rg16sint',
-  'rg16snorm',
-  'rg16unorm',
-  'rgba16float',
-  'rgba16uint',
-  'rgba16sint',
-  'rgba16snorm',
-  'rgba16unorm',
-  'rg32float',
-  'rg32uint',
-  'rg32sint',
-  'rgba32float',
-  'rgba32uint',
-  'rgba32sint',
-]);
-
-function textureByteSize(
-  format: GPUTextureFormat,
-  dimension: GPUTextureDimension,
-  extent: { readonly width: number; readonly height: number; readonly depthOrArrayLayers: number },
-  mipLevelCount: number,
-  sampleCount: number,
-): number | undefined {
-  if (!KNOWN_TEXTURE_BYTE_FORMATS.has(format)) return undefined;
-  const bytesPerTexel = textureFormatBlock(format).bytesPerBlock;
-  let bytes = 0;
-  let width = extent.width;
-  let height = extent.height;
-  let depth = extent.depthOrArrayLayers;
-  for (let level = 0; level < mipLevelCount; level += 1) {
-    bytes += width * height * depth * bytesPerTexel * sampleCount;
-    width = Math.max(1, Math.floor(width / 2));
-    height = Math.max(1, Math.floor(height / 2));
-    // Array layers are independent images and retain their layer count at
-    // every mip. Only a true 3D allocation reduces its depth axis.
-    if (dimension === '3d') depth = Math.max(1, Math.floor(depth / 2));
-  }
-  return bytes;
-}
-
 type ResourceAnalysis = {
   -readonly [Key in 'usage' | 'firstUse' | 'lastUse']: CompiledResource<unknown>[Key];
+} & {
+  lastAccess?: number;
+  firstClear?: GraphTextureView;
+  resolvedView?: GraphTextureView | undefined;
 };
 
+type BindingOptions = Omit<RenderGraphCompileOptions, 'reuseResourcesFrom'> & {
+  readonly previous: AttachmentBindings | undefined;
+};
+
+function bindingOptions(options: RenderGraphCompileOptions): BindingOptions {
+  const { device, surfaceSize, retainPassLocalTargets, reuseResourcesFrom } = options;
+  return {
+    device,
+    surfaceSize,
+    retainPassLocalTargets: retainPassLocalTargets === true,
+    previous:
+      reuseResourcesFrom instanceof CompiledRenderGraphImpl
+        ? reuseResourcesFrom._attachmentBindings(device)
+        : undefined,
+  };
+}
+
+type PhysicalTextureShape = {
+  readonly descriptor: NonNullable<CompiledResource<unknown>['textureDescriptor']> & {
+    readonly usage: number;
+    readonly label: string;
+  };
+  readonly signature: string;
+};
+
+/** A physical attachment moves between one descriptor family and a last-use pass. */
+interface PassLocalSlot {
+  readonly label: string;
+  readonly id: number;
+  readonly family: PassLocalSlot[];
+  nextEnding: PassLocalSlot | undefined;
+  allocation?: GraphTextureAllocation;
+}
+
 interface NormalizedAccess {
-  readonly passIndex: number;
+  nextOfResource?: number;
+  repeatedColorAccess?: true;
+  precedingResolve?: number;
   readonly resourceId: number;
   readonly viewId?: number | undefined;
   readonly usage: GraphAccessUsage;
-  readonly read: boolean;
+  read: boolean;
+  /** A bound color source stores or discards. A resolve destination always stores. */
+  colorStore?: boolean;
   readonly write: boolean;
   readonly range?: GraphTextureContentRange | undefined;
+}
+
+/** Builder-owned until the pass is emitted to its physical program. */
+type RecordingPass<Frame extends RenderGraphFrame> = {
+  -readonly [P in keyof CompiledPass<Frame>]: CompiledPass<Frame>[P];
+};
+
+interface PassDeclaration<Frame extends RenderGraphFrame> {
+  record: RecordingPass<Frame>;
+  accesses: NormalizedAccess[];
+  requiredCaps: number;
+}
+
+interface PhysicalPassProgram<Frame extends RenderGraphFrame> {
+  readonly passes: CompiledPass<Frame>[];
+  readonly preparationPasses: readonly CompiledPass<Frame>[];
+  readonly hasSubgraph: boolean;
+  readonly accessIds: Uint32Array;
+  readonly requiredTextureReads: readonly {
+    readonly resourceId: number;
+    readonly range: GraphTextureContentRange;
+    readonly passName: string;
+    readonly usage: GraphAccessUsage;
+  }[];
+}
+
+interface PassStream<Frame extends RenderGraphFrame> {
+  append(
+    pass: RecordingPass<Frame>,
+    accesses: readonly NormalizedAccess[],
+    requiredCaps: number,
+  ): RenderGraphError | undefined;
+  finish(
+    shapes: readonly (PhysicalTextureShape | undefined)[],
+  ): Result<PhysicalPassProgram<Frame>, RenderGraphError>;
+}
+
+function uninitializedRead(
+  label: string,
+  passName: string,
+  usage: GraphAccessUsage,
+): RenderGraphError {
+  return new RenderGraphError({
+    code: 'uninitialized-read',
+    expected: `graph-created resource '${label}' is written before pass '${passName}' reads it`,
+    hint: 'add a clear/write/copy-dst pass before the first read, or import initialized data',
+    detail: { passName, resourceLabel: label, usage },
+  });
+}
+
+const STORAGE_BUFFER_CAP = 1;
+const STORAGE_TEXTURE_CAP = 2;
+const INDIRECT_CAP = 4;
+const RAY_QUERY_CAP = 8;
+const ACCESS_CAPABILITIES = {
+  [STORAGE_BUFFER_CAP]: 'storage-buffer',
+  [STORAGE_TEXTURE_CAP]: 'storage-texture',
+  [INDIRECT_CAP]: 'indirect',
+  [RAY_QUERY_CAP]: 'ray-query',
+} as const;
+
+function operandCapability(
+  access: NormalizedAccess,
+  kind: ResourceRecord<unknown>['kind'] | undefined,
+) {
+  switch (access.usage) {
+    case 'storage-read':
+    case 'storage-write':
+    case 'storage-read-write':
+      return kind === 'buffer' ? STORAGE_BUFFER_CAP : kind === 'texture' ? STORAGE_TEXTURE_CAP : 0;
+    case 'sampled-storage-read-write':
+    case 'sampled-storage-write':
+      return kind === 'texture' ? STORAGE_TEXTURE_CAP : 0;
+    case 'indirect-read':
+      return INDIRECT_CAP;
+    case 'acceleration-structure-read':
+    case 'acceleration-structure-build':
+      return RAY_QUERY_CAP;
+    default:
+      return 0;
+  }
 }
 
 function bufferUsage(access: GraphBufferAccess): number {
@@ -267,46 +292,6 @@ function textureUsage(access: GraphTextureAccess): number {
   }
 }
 
-const READ_ACCESS_MODE = Object.freeze({ read: true, write: false });
-const WRITE_ACCESS_MODE = Object.freeze({ read: false, write: true });
-const READ_WRITE_ACCESS_MODE = Object.freeze({ read: true, write: true });
-
-function accessMode(access: GraphAccessUsage): {
-  readonly read: boolean;
-  readonly write: boolean;
-} {
-  switch (access) {
-    case 'storage-read-write':
-    case 'sampled-storage-read-write':
-      return READ_WRITE_ACCESS_MODE;
-    case 'storage-write':
-    case 'sampled-storage-write':
-    case 'color-attachment':
-    case 'depth-stencil-write':
-    case 'copy-dst':
-    case 'acceleration-structure-build':
-      return WRITE_ACCESS_MODE;
-    default:
-      return READ_ACCESS_MODE;
-  }
-}
-
-function rangesOverlap(
-  left: GraphTextureContentRange | undefined,
-  right: GraphTextureContentRange | undefined,
-): boolean {
-  if (left === undefined || right === undefined) return true;
-  const aspectOverlap =
-    left.aspect === 'all' || right.aspect === 'all' || left.aspect === right.aspect;
-  return (
-    aspectOverlap &&
-    left.mipStart < right.mipEnd &&
-    right.mipStart < left.mipEnd &&
-    left.layerStart < right.layerEnd &&
-    right.layerStart < left.layerEnd
-  );
-}
-
 export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
   private readonly consumerReadGroups = new Map<string, GraphAccess[]>();
   /** Share the exact graph handle with a later native consumer pass. This is
@@ -324,21 +309,73 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       reads = [];
       this.consumerReadGroups.set(group, reads);
     }
-    if (!reads.some((read) => read.resource === resource && read.usage === usage))
-      reads.push({ resource, usage } as GraphAccess);
+    if (!reads.some((read) => read.resource === resource && read.usage === usage)) {
+      // A previously published snapshot may still be held by another pass.
+      if (Object.isFrozen(reads)) {
+        reads = reads.slice();
+        this.consumerReadGroups.set(group, reads);
+      }
+      reads.push(Object.freeze({ resource, usage }) as GraphAccess);
+    }
     return ok(undefined);
   }
   consumerReads(group: string): readonly GraphAccess[] {
-    return Object.freeze([...(this.consumerReadGroups.get(group) ?? [])]);
+    const reads = this.consumerReadGroups.get(group);
+    return reads === undefined ? NO_CONSUMER_READS : Object.freeze(reads);
   }
   private readonly owner = Object.freeze({});
-  private readonly labels = new Set<string>();
-  private readonly resources = new Map<number, ResourceRecord<FrameCtx>>();
-  private readonly views = new Map<number, TextureViewRecord<FrameCtx>>();
-  private readonly passes: PassRecord<FrameCtx>[] = [];
+  private slotsByLabel: Map<string, number> | undefined = new Map();
+  private readonly declarations: (ResourceRecord<FrameCtx> | TextureViewRecord<FrameCtx>)[] = [];
+  private resourceAt(id: number): ResourceRecord<FrameCtx> | undefined {
+    const row = this.declarations[id - 1];
+    return row !== undefined && 'kind' in row ? row : undefined;
+  }
+  private viewAt(id: number): TextureViewRecord<FrameCtx> | undefined {
+    const row = this.declarations[id - 1];
+    return row !== undefined && 'textureId' in row ? row : undefined;
+  }
+  private readonly deferredPasses: PassDeclaration<FrameCtx>[] = [];
+  /** Only automatic attachment stores and overwritten resolves need their future uses. */
+  private placements?: Map<number, AttachmentSlots | undefined>;
+  private bindings: BindingOptions | undefined;
+  private ordered:
+    | {
+        readonly program: PassStream<FrameCtx>;
+        readonly operands: NormalizedAccess[];
+      }
+    | undefined;
+
+  /** The stock procedure emits checked physical operands on append. An authored
+   * pipeline may defer that analysis until all declarations arrive. Both borrow
+   * only active physical bindings from their source and drop them after binding. */
+  static procedure<Frame extends RenderGraphFrame>(
+    options: RenderGraphCompileOptions,
+    mode: 'ordered' | 'deferred' = 'ordered',
+  ) {
+    const passes = new RenderGraphBuilder<Frame>();
+    passes.bindings = bindingOptions(options);
+    if (mode === 'ordered') {
+      passes.ordered = { program: passes.passStream(passes.bindings), operands: [] };
+    }
+    return { passes, bindResources: () => passes.bindResources() };
+  }
+
+  private bindResources(): Result<CompiledRenderGraph<FrameCtx>, RenderGraphError> {
+    return this.bindings === undefined ? err(this.sealedError()) : this.finish(this.bindings);
+  }
+
+  private snapshotError: RenderGraphError | undefined;
+  private readonly passLocalFirstUses: number[] = [];
+  private readonly physicalUsage: (ResourceAnalysis | undefined)[] = [];
   private readonly passNames = new Set<string>();
-  private nextId = 1;
-  private sealed = false;
+  private lastSubgraph = -1;
+  private get nextId(): number {
+    return this.declarations.length + 1;
+  }
+  private addressWordCount = 0;
+  private get sealed(): boolean {
+    return this.slotsByLabel === undefined;
+  }
 
   createTexture(
     label: string,
@@ -347,14 +384,16 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
     if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.resources.set(id, {
+    const id = this.nextId;
+    this.declarations.push({
       id,
       label,
       kind: 'texture',
       origin: 'created',
       descriptor: snapshotTextureDescriptor(descriptor),
     });
+    const usage = descriptor.usage ?? 0;
+    if (usage !== 0) this.physicalUsage[id] = { usage, firstUse: null, lastUse: null };
     return ok(textureHandle(this.owner, id));
   }
 
@@ -367,8 +406,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
     if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.resources.set(id, {
+    const id = this.nextId;
+    this.declarations.push({
       id,
       label,
       kind: 'texture',
@@ -381,6 +420,9 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
             native: Object.freeze({
               prepare: native.prepare.bind(native),
               current: native.current.bind(native),
+              ...(native.resolvedExtent === undefined
+                ? {}
+                : { resolvedExtent: native.resolvedExtent.bind(native) }),
             }),
           }),
     });
@@ -393,11 +435,21 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     source: GraphTexture,
     sampleCount?: 1 | 4,
   ): Result<GraphTexture, RenderGraphError> {
+    if (this.sealed) return err(this.sealedError());
     const data = handleData(source);
     if (data?.kind !== 'texture' || data.owner !== this.owner)
       return err(this.foreignHandleError());
-    const record = this.resources.get(data.id);
+    const record = this.resourceAt(data.id);
     if (record?.kind !== 'texture') return err(this.foreignHandleError());
+    if (record.origin === 'imported' && record.native?.resolvedExtent !== undefined)
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'a graph-created image has a fixed allocation descriptor',
+          hint: 'allocate the corresponding destination from the current owner extent',
+          detail: { resourceLabel: label, field: 'size', expected: 'fixed source extent' },
+        }),
+      );
     return this.createTexture(
       label,
       sampleCount === undefined ? record.descriptor : { ...record.descriptor, sampleCount },
@@ -411,8 +463,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
     if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.resources.set(id, {
+    const id = this.nextId;
+    this.declarations.push({
       id,
       label,
       kind: 'buffer',
@@ -430,8 +482,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
     if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.resources.set(id, {
+    const id = this.nextId;
+    this.declarations.push({
       id,
       label,
       kind: 'buffer',
@@ -450,8 +502,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
     if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.resources.set(id, {
+    const id = this.nextId;
+    this.declarations.push({
       id,
       label,
       kind: 'acceleration-structure',
@@ -471,19 +523,9 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (data?.kind !== 'texture' || data.owner !== this.owner) {
       return err(this.foreignHandleError());
     }
-    const textureRecord = this.resources.get(data.id);
+    const textureRecord = this.resourceAt(data.id);
     if (textureRecord?.kind !== 'texture') return err(this.foreignHandleError());
-    const label = descriptor.label ?? `${textureRecord.label}.view.${this.nextId}`;
-    const unique = this.reserveLabel(label);
-    if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.views.set(id, {
-      id,
-      label,
-      textureId: data.id,
-      descriptor: Object.freeze({ ...descriptor }),
-    });
-    return ok(textureViewHandle(this.owner, id, data.id));
+    return this.declareView(textureRecord, descriptor);
   }
 
   importView(
@@ -496,7 +538,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (data?.kind !== 'texture' || data.owner !== this.owner) {
       return err(this.foreignHandleError());
     }
-    const textureRecord = this.resources.get(data.id);
+    const textureRecord = this.resourceAt(data.id);
     if (textureRecord?.kind !== 'texture' || textureRecord.origin !== 'imported') {
       return err(
         new RenderGraphError({
@@ -512,36 +554,72 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         }),
       );
     }
-    const label = descriptor.label ?? `${textureRecord.label}.view.${this.nextId}`;
-    const unique = this.reserveLabel(label);
-    if (unique !== undefined) return err(unique);
-    const id = this.nextId++;
-    this.views.set(id, {
-      id,
-      label,
-      textureId: data.id,
-      descriptor: Object.freeze({ ...descriptor }),
-      resolve,
-    });
-    return ok(textureViewHandle(this.owner, id, data.id));
+    return this.declareView(textureRecord, descriptor, resolve);
   }
 
+  private declareView(
+    texture: Extract<ResourceRecord<FrameCtx>, { kind: 'texture' }>,
+    descriptor: GraphTextureViewDescriptor,
+    resolve?: ImportedTextureViewResolver<FrameCtx>,
+  ): Result<GraphTextureView, RenderGraphError> {
+    const label = descriptor.label ?? `${texture.label}.view.${this.nextId}`;
+    if (
+      texture.origin === 'imported' &&
+      texture.native?.resolvedExtent !== undefined &&
+      (resolve === undefined ||
+        (texture.descriptor.mipLevelCount ?? 1) !== 1 ||
+        (descriptor.baseMipLevel ?? 0) !== 0 ||
+        (descriptor.mipLevelCount ?? 1) !== 1 ||
+        (descriptor.baseArrayLayer ?? 0) !== 0 ||
+        descriptor.arrayLayerCount !== undefined)
+    ) {
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'an owner-sized image exposes its complete single-mip imported view',
+          hint: 'record physical attachment slices inside the owner pass',
+          detail: { resourceLabel: label, field: 'view', expected: 'whole imported texture view' },
+        }),
+      );
+    }
+    const unique = this.reserveLabel(label);
+    if (unique !== undefined) return err(unique);
+    const id = this.nextId;
+    const captured = Object.freeze({ ...descriptor });
+    this.declarations.push({
+      id,
+      label,
+      textureId: texture.id,
+      descriptor: captured,
+      range: Object.freeze(viewAccessRange(texture.descriptor, captured)),
+      resolve,
+    });
+    return ok(textureViewHandle(this.owner, id, texture.id));
+  }
+
+  /** A transfer gives the graph exclusive ownership of all descriptor data and callbacks. */
   addRasterPass(
     name: string,
     descriptor: RasterGraphPass<FrameCtx>,
+    ownership?: 'transfer',
   ): Result<void, RenderGraphError> {
-    return this.addPass(name, { kind: 'raster', descriptor });
+    return this.addPass(name, { kind: 'raster', descriptor }, ownership);
   }
 
   addComputePass(
     name: string,
     descriptor: ComputeGraphPass<FrameCtx>,
+    ownership?: 'transfer',
   ): Result<void, RenderGraphError> {
-    return this.addPass(name, { kind: 'compute', descriptor });
+    return this.addPass(name, { kind: 'compute', descriptor }, ownership);
   }
 
-  addCopyPass(name: string, descriptor: CopyGraphPass<FrameCtx>): Result<void, RenderGraphError> {
-    return this.addPass(name, { kind: 'copy', descriptor });
+  addCopyPass(
+    name: string,
+    descriptor: CopyGraphPass<FrameCtx>,
+    ownership?: 'transfer',
+  ): Result<void, RenderGraphError> {
+    return this.addPass(name, { kind: 'copy', descriptor }, ownership);
   }
 
   addSubgraphPass(
@@ -554,144 +632,92 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
   compile(
     options: RenderGraphCompileOptions,
   ): Result<CompiledRenderGraph<FrameCtx>, RenderGraphError> {
-    if (this.sealed) return err(this.sealedError());
-    this.sealed = true;
+    if (this.bindings !== undefined)
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'bind the resources of the active procedure',
+          hint: 'call bindResources on the procedure that owns the device and surface',
+          detail: {
+            resourceLabel: 'active procedure',
+            field: 'compile',
+            expected: 'bindResources',
+          },
+        }),
+      );
+    return this.finish(bindingOptions(options));
+  }
 
-    const descriptors = this.validateDescriptors(options.surfaceSize);
-    if (!descriptors.ok) return descriptors;
-    const analyzed = this.analyze(options);
+  private finish(options: BindingOptions): Result<CompiledRenderGraph<FrameCtx>, RenderGraphError> {
+    const labels = this.slotsByLabel;
+    if (labels === undefined) return err(this.sealedError());
+    this.slotsByLabel = undefined;
+    try {
+      return this.compileDeclarations(options, labels);
+    } finally {
+      // Callbacks and external inspection may keep a sealed builder alive.
+      // The compiled graph has taken the actual records and its label map.
+      this.declarations.length = 0;
+      this.deferredPasses.length = 0;
+      this.placements?.clear();
+      this.physicalUsage.length = 0;
+      this.passLocalFirstUses.length = 0;
+      this.passNames.clear();
+      this.snapshotError = undefined;
+      this.ordered = undefined;
+      this.bindings = undefined;
+    }
+  }
+
+  private compileDeclarations(
+    options: BindingOptions,
+    labels: Map<string, number>,
+  ): Result<CompiledRenderGraph<FrameCtx>, RenderGraphError> {
+    const physical = this.preparePhysicalShapes(options.surfaceSize);
+    if (!physical.ok) return physical;
+    if (this.snapshotError !== undefined) return err(this.snapshotError);
+    const shapes = physical.value;
+    let program = this.ordered?.program;
+    if (program === undefined) {
+      program = this.passStream(options);
+      for (const { record, accesses, requiredCaps } of this.deferredPasses) {
+        const failure = program.append(record, accesses, requiredCaps);
+        if (failure !== undefined) return err(failure);
+      }
+    }
+    const analyzed = program.finish(shapes);
     if (!analyzed.ok) return analyzed;
 
-    const resolvedPasses = placeColorResolves(
-      analyzed.value.passes,
-      new Set(
-        [...this.resources.values()]
-          .filter((resource) => resource.kind === 'texture' && resource.origin === 'created')
-          .map((resource) => resource.id),
-      ),
-    );
-    const passes = placeColorStores(resolvedPasses, this.resources);
-    const allocated = this.allocate(options, analyzed.value.resources);
+    const passes = analyzed.value.passes;
+    const bindings = new AttachmentBindings();
+    const allocated = this.allocate(options, shapes, bindings);
     if (!allocated.ok) return allocated;
     const rasterBatches = planRasterBatches(passes);
 
-    const generation = nextGeneration;
-    const physicalKey = (resource: CompiledResource<FrameCtx>): string | undefined => {
-      const handle = resource.texture ?? resource.buffer;
-      return handle === undefined ? undefined : physicalAllocationKey(handle);
-    };
-    const info: CompiledRenderGraphInfo = Object.freeze({
-      generation,
-      passes: Object.freeze(
-        passes.map((pass, executionIndex) =>
-          Object.freeze({
-            name: pass.name,
-            kind: pass.pass.kind,
-            executionIndex,
-            ...(rasterBatches.has(executionIndex)
-              ? { rasterBatch: rasterBatches.get(executionIndex)?.names }
-              : {}),
-            accesses: Object.freeze(
-              pass.pass.descriptor.accesses.map((access) => {
-                const id = accessResourceId(access);
-                return Object.freeze({
-                  resource: this.resources.get(id ?? -1)?.label ?? 'foreign',
-                  usage: access.usage,
-                });
-              }),
-            ),
-            dependencies: Object.freeze(
-              pass.dependencies.map((dependency) => passes[dependency]?.name ?? 'unknown'),
-            ),
-          }),
-        ),
-      ),
-      resources: Object.freeze(
-        Array.from(allocated.value.resources.values(), (resource) => {
-          const texture =
-            resource.record.kind === 'texture'
-              ? (resource.record.descriptor as GraphTextureDescriptor)
-              : undefined;
-          const buffer =
-            resource.record.kind === 'buffer'
-              ? (resource.record.descriptor as GraphBufferDescriptor)
-              : undefined;
-          const allocationKey = physicalKey(resource);
-          const extent = resource.textureDescriptor?.size;
-          const knownByteSize =
-            resource.record.origin === 'imported' || resource.usage === 0
-              ? undefined
-              : texture === undefined || extent === undefined
-                ? buffer?.size
-                : textureByteSize(
-                    texture.format,
-                    texture.dimension ?? '2d',
-                    extent,
-                    texture.mipLevelCount ?? 1,
-                    texture.sampleCount ?? 1,
-                  );
-          const byteSizeUnknownReason =
-            resource.record.origin === 'imported'
-              ? ('imported-owner' as const)
-              : resource.usage === 0
-                ? ('not-allocated' as const)
-                : knownByteSize === undefined
-                  ? ('format-or-layout-unknown' as const)
-                  : undefined;
-          return Object.freeze({
-            label: resource.record.label,
-            kind: resource.record.kind,
-            origin: resource.record.origin,
-            descriptor: inspectResourceDescriptor(resource),
-            firstUse: resource.firstUse,
-            lastUse: resource.lastUse,
-            derivedUsage: resource.usage,
-            ...(allocationKey === undefined ? {} : { physicalAllocationKey: allocationKey }),
-            ...(texture === undefined ? {} : { format: texture.format }),
-            ...(knownByteSize === undefined ? {} : { byteSize: knownByteSize }),
-            ...(byteSizeUnknownReason === undefined ? {} : { byteSizeUnknownReason }),
-            ...(texture === undefined
-              ? {}
-              : {
-                  dimension: texture.dimension ?? '2d',
-                  extent,
-                }),
-          });
-        }),
-      ),
-    });
-
-    const colorTargetDescriptors = new Map<string, ResolvedColorTargetDescriptor>();
-    for (const resource of allocated.value.resources.values()) {
-      if (resource.record.kind !== 'texture' || resource.texture === undefined) continue;
-      const extent = resource.textureDescriptor?.size;
-      if (extent === undefined) continue;
-      colorTargetDescriptors.set(resource.record.label, {
-        texture: resource.texture,
-        format: resource.record.descriptor.format,
-        size: { width: extent.width, height: extent.height },
-        usage: resource.usage,
-        sample: resource.record.descriptor.sampleCount ?? 1,
-      });
-    }
-
+    compileCount++;
     return ok(
       new CompiledRenderGraphImpl(
-        nextGeneration++,
+        allocateRenderPassGeneration(),
         this.owner,
         options.device,
-        allocated.value.resources,
-        allocated.value.views,
+        allocated.value,
+        bindings,
+        labels,
+        analyzed.value.accessIds,
         Object.freeze(passes),
-        info,
-        colorTargetDescriptors,
+        analyzed.value.preparationPasses,
+        analyzed.value.hasSubgraph,
         analyzed.value.requiredTextureReads,
         rasterBatches,
       ),
     );
   }
 
-  private addPass(name: string, pass: GraphPass<FrameCtx>): Result<void, RenderGraphError> {
+  private addPass(
+    name: string,
+    pass: GraphPass<FrameCtx>,
+    ownership?: 'transfer',
+  ): Result<void, RenderGraphError> {
     if (this.sealed) return err(this.sealedError());
     if (this.passNames.has(name)) {
       return err(
@@ -707,7 +733,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       const valid = this.validateAccessHandle(name, access);
       if (valid !== undefined) return err(valid);
     }
-    const captured = snapshotPass(pass);
+    const captured = ownership === 'transfer' ? pass : snapshotPass(pass);
     if (captured.kind !== 'subgraph') {
       const { encode, encodeDirect } = captured.descriptor;
       if (
@@ -728,9 +754,163 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
           }),
         );
     }
+    const id = this.passNames.size;
+    const record = {
+      id,
+      name,
+      pass: captured,
+      accessStart: 0,
+      accessEnd: 0,
+      textureWrites: NO_TEXTURE_WRITES,
+    };
+    const accesses = this.ordered?.operands ?? [];
+    let requiredCaps = 0;
+    for (const access of captured.descriptor.accesses) {
+      const normalized = this.normalizeAccess(record, access);
+      if (normalized instanceof RenderGraphError) {
+        // An accessor can change its handle between admission and descriptor capture.
+        this.snapshotError ??= normalized;
+        break;
+      }
+      const index = accesses.length;
+      const resource = this.resourceAt(normalized.resourceId);
+      if (
+        resource?.kind === 'texture' &&
+        resource.origin === 'imported' &&
+        resource.native?.resolvedExtent !== undefined &&
+        captured.kind !== 'subgraph' &&
+        normalized.usage !== 'sampled-read' &&
+        normalized.usage !== 'copy-src'
+      ) {
+        this.snapshotError ??= new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'ordinary consumers sample or copy the owner-sized image',
+          hint: 'record shape-dependent attachments or writes with their physical producer',
+          detail: {
+            resourceLabel: resource.label,
+            field: 'usage',
+            expected: 'sampled-read or copy-src',
+            actual: normalized.usage,
+          },
+        });
+      }
+      requiredCaps |= operandCapability(normalized, resource?.kind);
+      const usage =
+        resource?.kind === 'buffer'
+          ? bufferUsage(normalized.usage as GraphBufferAccess)
+          : resource?.kind === 'texture'
+            ? textureUsage(normalized.usage as GraphTextureAccess)
+            : 0;
+      const prior = this.physicalUsage[normalized.resourceId];
+      if (
+        prior?.firstUse == null &&
+        resource?.kind === 'texture' &&
+        resource.origin === 'created' &&
+        resource.descriptor.lifetime === 'pass-local' &&
+        captured.kind !== 'subgraph' &&
+        captured.descriptor.executeIf === undefined
+      )
+        this.passLocalFirstUses.push(resource.id);
+      if (prior === undefined)
+        this.physicalUsage[normalized.resourceId] = {
+          usage,
+          firstUse: id,
+          lastUse: id,
+          lastAccess: index,
+        };
+      else {
+        if (prior.resolvedView !== undefined) {
+          if (
+            prior.resolvedView === access.resource &&
+            prior.lastUse !== null &&
+            prior.lastUse > this.lastSubgraph
+          )
+            normalized.precedingResolve = prior.lastUse;
+          prior.resolvedView = undefined;
+        }
+        prior.usage |= usage;
+        prior.firstUse ??= id;
+        if (prior.lastUse === id && prior.lastAccess !== undefined) {
+          if (normalized.usage === 'color-attachment') normalized.repeatedColorAccess = true;
+          const sibling = accesses[prior.lastAccess];
+          if (sibling !== undefined) sibling.nextOfResource = index;
+        }
+        prior.lastUse = id;
+        prior.lastAccess = index;
+      }
+      accesses.push(normalized);
+      this.addressWordCount += normalized.viewId === undefined ? 1 : 2;
+    }
     this.passNames.add(name);
-    this.passes.push({ id: this.passes.length, name, pass: captured });
+    if (captured.kind === 'subgraph') this.lastSubgraph = id;
+    if (captured.kind === 'raster') {
+      this.addressWordCount += 1 + 2 * captured.descriptor.colorAttachments.length;
+      for (const attachment of captured.descriptor.colorAttachments) {
+        if (attachment.resolveTarget !== undefined && captured.descriptor.executeIf === undefined)
+          this.recordColorResolve(
+            id,
+            attachment.resolveTarget,
+            captured.descriptor.accesses,
+            accesses,
+          );
+        if (attachment.storeOp === 'auto') {
+          this.placements ??= new Map();
+          this.placements.set(id, undefined);
+        }
+        if (attachment.loadOp === 'clear' && captured.descriptor.executeIf === undefined) {
+          const data = handleData(attachment.view);
+          if (data?.kind !== 'texture-view') continue;
+          const use = this.physicalUsage[data.textureId];
+          if (
+            use?.firstUse !== id ||
+            use.lastAccess === undefined ||
+            !privateSamples(this.resourceAt(data.textureId))
+          )
+            continue;
+          const access = accesses[use.lastAccess];
+          if (
+            access?.usage === 'color-attachment' &&
+            !access.repeatedColorAccess &&
+            captured.descriptor.accesses[use.lastAccess]?.resource === attachment.view
+          )
+            use.firstClear = attachment.view;
+        }
+      }
+    }
+    if (this.ordered !== undefined) {
+      this.snapshotError ??= this.ordered.program.append(record, accesses, requiredCaps);
+      accesses.length = 0;
+    } else {
+      this.deferredPasses.push({ record, accesses, requiredCaps });
+    }
     return ok(undefined);
+  }
+
+  /** A resolve may replace only an unobserved write to the same private view.
+   * The ordinary resource access walk has already identified its sole use and prior writer. */
+  private recordColorResolve(
+    pass: number,
+    view: GraphTextureView,
+    declared: readonly GraphAccess[],
+    normalized: readonly NormalizedAccess[],
+  ): void {
+    const data = handleData(view);
+    if (data?.kind !== 'texture-view' || this.resourceAt(data.textureId)?.origin !== 'created')
+      return;
+    const use = this.physicalUsage[data.textureId];
+    if (use?.lastUse !== pass || use.lastAccess === undefined) return;
+    const access = normalized[use.lastAccess];
+    if (
+      access?.usage !== 'color-attachment' ||
+      access.repeatedColorAccess ||
+      declared[use.lastAccess]?.resource !== view
+    )
+      return;
+    use.resolvedView = view;
+    if (access.precedingResolve === undefined) return;
+    const previous = access.precedingResolve;
+    this.placements ??= new Map();
+    this.placements.set(previous, addAttachmentSlot(this.placements.get(previous), data.textureId));
   }
 
   private validateAccessHandle(
@@ -742,288 +922,210 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       return this.foreignHandleError(passName);
     }
     if (data.kind === 'texture-view') {
-      if (!this.views.has(data.id)) return this.foreignHandleError(passName);
+      if (this.viewAt(data.id) === undefined) return this.foreignHandleError(passName);
       return undefined;
     }
     if (
       (data.kind !== 'buffer' && data.kind !== 'acceleration-structure') ||
-      !this.resources.has(data.id)
+      this.resourceAt(data.id) === undefined
     ) {
       return this.foreignHandleError(passName);
     }
     return undefined;
   }
 
-  private analyze(options: RenderGraphCompileOptions): Result<
-    {
-      readonly passes: readonly CompiledPass<FrameCtx>[];
-      readonly resources: ReadonlyMap<number, ResourceAnalysis>;
-      readonly requiredTextureReads: readonly {
-        readonly resourceId: number;
-        readonly range: GraphTextureContentRange;
-        readonly passName: string;
-        readonly usage: GraphAccessUsage;
-      }[];
-    },
-    RenderGraphError
-  > {
-    const resources = new Map<number, ResourceAnalysis>();
+  /** Both graph declarations and built-in procedures issue the same checked operand stream. */
+  private passStream(options: BindingOptions): PassStream<FrameCtx> {
     const compiledPasses: CompiledPass<FrameCtx>[] = [];
-    const historyByResource = new Map<number, NormalizedAccess[]>();
-    const writesByResource = new Map<number, NormalizedAccess[]>();
-    const contentRangesByResource = new Map<number, GraphTextureContentRange[]>();
-    const initialContentRangesByResource = new Map<number, GraphTextureContentRange[]>();
-    const locallyTouchedRangesByResource = new Map<number, GraphTextureContentRange[]>();
+    const preparationIds: number[] = [];
+    let hasSubgraph = false;
+    let accessIds = new Uint32Array(this.addressWordCount);
+    const colorBindings = new Map<GraphTextureView, number>();
+    let accessEnd = 0;
+    const initializedBuffers: number[] = [];
+    const contentRanges: (GraphTextureContentRange[] | undefined)[] = [];
+    // Each inherited cell either has its first use verified on execution, or is replaced
+    // by a local write. No later pass replays the preceding write history.
+    const inheritedRanges: (GraphTextureContentRange[] | undefined)[] = [];
     const requiredTextureReads: {
       resourceId: number;
       range: GraphTextureContentRange;
       passName: string;
       usage: GraphAccessUsage;
     }[] = [];
-    const noHistory: readonly NormalizedAccess[] = [];
 
-    for (const resource of this.resources.values()) {
-      if (resource.kind !== 'texture' || resource.origin !== 'created') continue;
-      const usage = resource.descriptor.usage ?? 0;
-      if (usage !== 0) resources.set(resource.id, { usage, firstUse: null, lastUse: null });
-    }
+    const prior = options.previous;
+    // Later operands determine the complete allocation signature. Until bind, only
+    // first reads of cells left untouched by this procedure can require prior bytes.
+    const beginTexture = (texture: TextureRecord<FrameCtx>): void => {
+      if (
+        contentRanges[texture.id] !== undefined ||
+        prior === undefined ||
+        texture.origin !== 'created' ||
+        texture.descriptor.lifetime !== 'persistent'
+      )
+        return;
+      const whole = viewAccessRange(texture.descriptor, {});
+      contentRanges[texture.id] = [whole];
+      inheritedRanges[texture.id] = [whole];
+    };
 
-    const capturePhysicalUsage = () => {
-      // Compute full physical usage before checking imported-generation content.
-      for (let passIndex = 0; passIndex < this.passes.length; passIndex++) {
-        const pass = this.passes[passIndex];
-        if (pass === undefined) continue;
-        for (const access of pass.pass.descriptor.accesses) {
-          const item = this.normalizeAccess(passIndex, pass, access);
-          if (item instanceof RenderGraphError) return err(item);
-          const resource = this.resources.get(item.resourceId);
-          const usage =
-            resource?.kind === 'acceleration-structure'
-              ? 0
-              : (resource?.kind === 'texture' && resource.origin === 'created'
-                  ? (resource.descriptor.usage ?? 0)
-                  : 0) |
-                (resource?.kind === 'buffer'
-                  ? bufferUsage(access.usage as GraphBufferAccess)
-                  : textureUsage(access.usage as GraphTextureAccess));
-          const previous = resources.get(item.resourceId);
-          if (previous === undefined)
-            resources.set(item.resourceId, { usage, firstUse: null, lastUse: null });
-          else previous.usage |= usage;
+    const readTextureRange = (
+      access: NormalizedAccess,
+      range: GraphTextureContentRange,
+      passName: string,
+    ): boolean => {
+      const id = access.resourceId;
+      const committed = contentRanges[id];
+      if (committed === undefined || !textureRangeCovered(range, committed)) return false;
+      const inherited = inheritedRanges[id];
+      if (inherited !== undefined && inherited.length !== 0) {
+        const firstRead = requiredTextureReads.length;
+        for (const cell of inherited) {
+          const dependency = intersectTextureRange(cell, range);
+          if (dependency !== undefined)
+            requiredTextureReads.push({
+              resourceId: id,
+              range: dependency,
+              passName,
+              usage: access.usage,
+            });
         }
+        if (requiredTextureReads.length !== firstRead)
+          applyTextureContentWrite(inherited, range, false);
       }
+      return true;
+    };
+
+    let textureWrites: CompiledPass<FrameCtx>['textureWrites'][number][] | undefined;
+    const writeTextureRange = (
+      texture: TextureRecord<FrameCtx>,
+      range: GraphTextureContentRange,
+      stored: boolean,
+    ) => {
+      const id = texture.id;
+      if (texture.origin === 'created') {
+        beginTexture(texture);
+        contentRanges[id] ??= [];
+        applyTextureContentWrite(contentRanges[id], range, stored);
+        const inherited = inheritedRanges[id];
+        if (inherited !== undefined && inherited.length !== 0)
+          applyTextureContentWrite(inherited, range, false);
+      }
+      if (texture.origin === 'imported' || texture.descriptor.lifetime === 'persistent') {
+        textureWrites ??= [];
+        textureWrites.push({ resourceId: id, range, stored });
+      }
+    };
+
+    const writeAttachments = (pass: CompiledPass<FrameCtx>, at: number): number => {
+      if (pass.pass.kind !== 'raster') return at;
+      const descriptor = pass.pass.descriptor;
+      accessIds[at++] = handleData(descriptor.depthStencilAttachment?.view)?.id ?? 0;
+      for (const color of descriptor.colorAttachments) {
+        accessIds[at++] = handleData(color.view)?.id ?? 0;
+        accessIds[at++] = handleData(color.resolveTarget)?.id ?? 0;
+      }
+      return at;
+    };
+    const append: PassStream<FrameCtx>['append'] = (pass, normalized, requiredCaps) => {
+      if (accessIds.length < this.addressWordCount) {
+        const next = new Uint32Array(Math.max(this.addressWordCount, 32, accessIds.length * 2));
+        next.set(accessIds);
+        accessIds = next;
+      }
+      const capability = this.validateCapabilities(
+        pass,
+        options.device.caps,
+        requiredCaps,
+        normalized,
+      );
+      if (capability !== undefined) return capability;
+      const accessStart = accessEnd;
+      for (const item of normalized) {
+        accessIds[accessEnd++] = item.resourceId;
+        if (item.viewId !== undefined) accessIds[accessEnd++] = item.viewId;
+      }
+      if (accessEnd - accessStart > LINEAR_PASS_ACCESS_LIMIT)
+        accessIds.subarray(accessStart, accessEnd).sort();
+      const conflict = this.validatePassAccesses(pass, normalized);
+      if (conflict !== undefined) return conflict;
+      const attachments = this.bindRasterAttachments(pass, normalized, colorBindings);
+      if (attachments !== undefined) return attachments;
+
+      for (const current of normalized) {
+        if (!current.read) continue;
+        const resource = this.resourceAt(current.resourceId);
+        if (resource?.origin !== 'created') continue;
+        let initialized: boolean;
+        let range = current.range;
+        if (range === undefined) initialized = initializedBuffers[current.resourceId] === 1;
+        else {
+          if (resource.kind === 'texture') beginTexture(resource);
+          // Color clear/resolve was classified as write-only on admission. Only mixed
+          // depth/stencil can narrow a read to part of the declared view.
+          let second: GraphTextureContentRange | undefined;
+          const depth =
+            pass.pass.kind === 'raster' && current.usage === 'depth-stencil-write'
+              ? pass.pass.descriptor.depthStencilAttachment
+              : undefined;
+          if (depth !== undefined && handleData(depth.view)?.id === current.viewId) {
+            const depthLoad = mayLoadAttachment(depth.depthLoadOp);
+            const stencilLoad = mayLoadAttachment(depth.stencilLoadOp);
+            if (
+              range.aspect === 'all' &&
+              resource.kind === 'texture' &&
+              DEPTH_STENCIL_FORMATS.has(resource.descriptor.format)
+            ) {
+              if (!depthLoad && !stencilLoad) continue;
+              if (depthLoad && stencilLoad) second = { ...range, aspect: 'stencil-only' };
+              range = { ...range, aspect: depthLoad ? 'depth-only' : 'stencil-only' };
+            } else if (!(range.aspect === 'stencil-only' ? stencilLoad : depthLoad)) continue;
+          }
+          initialized =
+            readTextureRange(current, range, pass.name) &&
+            (second === undefined || readTextureRange(current, second, pass.name));
+        }
+        if (!initialized) return uninitializedRead(resource.label, pass.name, current.usage);
+      }
+
+      // Publish only after every read in this pass has been checked.
+      textureWrites = undefined;
+      for (const access of normalized) {
+        if (!access.write) continue;
+        const id = access.resourceId;
+        const range = access.range;
+        if (range === undefined) {
+          initializedBuffers[id] = 1;
+          continue;
+        }
+        if (pass.pass.kind === 'subgraph') continue;
+        const texture = this.resourceAt(id);
+        if (texture?.kind !== 'texture') continue;
+        this.publishTextureAccess(pass, access, texture, range, writeTextureRange);
+      }
+
+      pass.accessStart = accessStart;
+      pass.accessEnd = accessEnd;
+      pass.textureWrites =
+        textureWrites === undefined ? NO_TEXTURE_WRITES : Object.freeze(textureWrites);
+      compiledPasses.push(pass);
+      hasSubgraph ||= pass.pass.kind === 'subgraph';
+      const descriptor = pass.pass.descriptor;
+      if (
+        descriptor.prepareResources !== undefined ||
+        descriptor.preparedResourcesCurrent !== undefined
+      )
+        preparationIds.push(pass.id);
+      accessEnd = writeAttachments(pass, accessEnd);
       return undefined;
     };
-    const capturePhysicalUsageFailure = capturePhysicalUsage();
-    if (capturePhysicalUsageFailure !== undefined) return capturePhysicalUsageFailure;
-
-    const captureInitialContent = () => {
-      for (const resource of this.resources.values()) {
-        if (resource.kind !== 'texture' || resource.origin !== 'created') continue;
-        const priorContent = this.reusedTextureContentRanges(
-          options,
-          resource.id,
-          resources.get(resource.id)?.usage ?? 0,
-        );
-        contentRangesByResource.set(resource.id, [...priorContent]);
-        initialContentRangesByResource.set(resource.id, [...priorContent]);
-        locallyTouchedRangesByResource.set(resource.id, []);
-      }
-    };
-    captureInitialContent();
-
-    for (let passIndex = 0; passIndex < this.passes.length; passIndex++) {
-      const pass = this.passes[passIndex];
-      if (pass === undefined) continue;
-      const capability = this.validateCapabilities(pass, options.device.caps);
-      if (!capability.ok) return capability;
-      const normalized: NormalizedAccess[] = [];
-      const resourceIds = new Set<number>();
-      const viewIds = new Set<number>();
-      const capturePassAccesses = () => {
-        for (const access of pass.pass.descriptor.accesses) {
-          const item = this.normalizeAccess(passIndex, pass, access);
-          if (item instanceof RenderGraphError) return err(item);
-          normalized.push(item);
-          resourceIds.add(item.resourceId);
-          if (item.viewId !== undefined) viewIds.add(item.viewId);
-          const resource = this.resources.get(item.resourceId);
-          const usage =
-            resource?.kind === 'acceleration-structure'
-              ? 0
-              : (resource?.kind === 'texture' && resource.origin === 'created'
-                  ? (resource.descriptor.usage ?? 0)
-                  : 0) |
-                (resource?.kind === 'buffer'
-                  ? bufferUsage(access.usage as GraphBufferAccess)
-                  : textureUsage(access.usage as GraphTextureAccess));
-          const previous = resources.get(item.resourceId);
-          if (previous === undefined) {
-            resources.set(item.resourceId, { usage, firstUse: passIndex, lastUse: passIndex });
-          } else {
-            previous.usage |= usage;
-            previous.firstUse ??= passIndex;
-            previous.lastUse = passIndex;
-          }
-        }
-        return undefined;
-      };
-      const accessFailure = capturePassAccesses();
-      if (accessFailure !== undefined) return accessFailure;
-      const conflict = this.validatePassAccesses(pass, normalized);
-      if (!conflict.ok) return conflict;
-      const attachments = this.validateAttachments(pass);
-      if (!attachments.ok) return attachments;
-
-      const dependencies = new Set<number>();
-      const captureDependencies = () => {
-        for (const current of normalized) {
-          if (current.read) {
-            const priorWrite = this.findPriorWrite(
-              writesByResource.get(current.resourceId) ?? noHistory,
-              current,
-            );
-            if (priorWrite !== undefined) {
-              dependencies.add(priorWrite.passIndex);
-            }
-            const resource = this.resources.get(current.resourceId);
-            const readRanges =
-              current.range === undefined
-                ? []
-                : this.textureInitializationReadRanges(
-                    pass,
-                    current.viewId,
-                    current.usage,
-                    current.range,
-                  );
-            const initialized =
-              current.range === undefined
-                ? priorWrite !== undefined
-                : readRanges.every((range) =>
-                    textureRangeCovered(
-                      range,
-                      contentRangesByResource.get(current.resourceId) ?? [],
-                    ),
-                  );
-            const captureRequiredReads = () => {
-              if (
-                resource?.kind === 'texture' &&
-                resource.origin === 'created' &&
-                resource.descriptor.lifetime === 'persistent'
-              ) {
-                const localTouches = locallyTouchedRangesByResource.get(current.resourceId) ?? [];
-                const initialRanges = initialContentRangesByResource.get(current.resourceId) ?? [];
-                for (const range of readRanges) {
-                  const dependencies = localTouches.reduce(
-                    (remaining, touched) =>
-                      remaining.flatMap((part) => subtractTextureRange(part, touched)),
-                    [range],
-                  );
-                  for (const dependency of dependencies) {
-                    if (textureRangeCovered(dependency, initialRanges))
-                      requiredTextureReads.push({
-                        resourceId: current.resourceId,
-                        range: dependency,
-                        passName: pass.name,
-                        usage: current.usage,
-                      });
-                  }
-                }
-              }
-            };
-            captureRequiredReads();
-
-            if (resource?.origin === 'created' && !initialized) {
-              const label = this.resources.get(current.resourceId)?.label;
-              return err(
-                new RenderGraphError({
-                  code: 'uninitialized-read',
-                  expected: `graph-created resource '${label}' is written before pass '${pass.name}' reads it`,
-                  hint: 'add a clear/write/copy-dst pass before the first read, or import initialized data',
-                  detail: { passName: pass.name, resourceLabel: label, usage: current.usage },
-                }),
-              );
-            }
-          }
-          if (current.write) {
-            this.findWriteDependencies(
-              historyByResource.get(current.resourceId) ?? noHistory,
-              current,
-              dependencies,
-            );
-          }
-        }
-        return undefined;
-      };
-      const captureDependenciesFailure = captureDependencies();
-      if (captureDependenciesFailure !== undefined) return captureDependenciesFailure;
-
-      const publishPassAccesses = () => {
-        const publishAccessHistory = () => {
-          // Publish only after the whole pass: accesses within one pass are not prior accesses.
-          for (const access of normalized) {
-            let history = historyByResource.get(access.resourceId);
-            if (history === undefined) {
-              history = [];
-              historyByResource.set(access.resourceId, history);
-            }
-            history.push(access);
-            if (access.write) {
-              let writes = writesByResource.get(access.resourceId);
-              if (writes === undefined) {
-                writes = [];
-                writesByResource.set(access.resourceId, writes);
-              }
-              writes.push(access);
-            }
-          }
-        };
-        publishAccessHistory();
-        const textureWrites: CompiledPass<FrameCtx>['textureWrites'][number][] = [];
-        const contentWrites: CompiledPass<FrameCtx>['textureWrites'][number][] = [];
-        for (const access of normalized) {
-          const resource = this.resources.get(access.resourceId);
-          if (!access.write || access.range === undefined || resource?.kind !== 'texture') continue;
-          for (const content of this.textureAccessContent(pass, access.viewId, access.range)) {
-            const write = { resourceId: access.resourceId, ...content };
-            if (resource.origin === 'created') contentWrites.push(write);
-            if (pass.pass.kind !== 'subgraph') textureWrites.push(write);
-          }
-        }
-        for (const write of contentWrites) {
-          const ranges = contentRangesByResource.get(write.resourceId) ?? [];
-          const remaining = ranges.flatMap((range) => subtractTextureRange(range, write.range));
-          if (write.stored) remaining.push(write.range);
-          contentRangesByResource.set(write.resourceId, remaining);
-        }
-        if (pass.pass.kind !== 'subgraph') {
-          for (const access of normalized) {
-            if (!access.write || access.range === undefined) continue;
-            const resource = this.resources.get(access.resourceId);
-            if (resource?.kind !== 'texture' || resource.origin !== 'created') continue;
-            const touched = locallyTouchedRangesByResource.get(access.resourceId) ?? [];
-            touched.push(access.range);
-            locallyTouchedRangesByResource.set(access.resourceId, touched);
-          }
-        }
-
-        return textureWrites;
-      };
-      const textureWrites = publishPassAccesses();
-
-      compiledPasses.push({
-        ...pass,
-        dependencies: Object.freeze([...dependencies].sort((left, right) => left - right)),
-        resourceIds,
-        viewIds,
-        textureWrites: Object.freeze(textureWrites),
-      });
-    }
 
     const validateImportedUsage = () => {
-      for (const [resourceId, { usage }] of resources) {
-        const resource = this.resources.get(resourceId);
-        if (resource?.origin !== 'imported' || resource.kind === 'acceleration-structure') continue;
+      for (const resource of this.declarations) {
+        if (!('kind' in resource)) continue;
+        if (resource.origin !== 'imported' || resource.kind === 'acceleration-structure') continue;
+        const usage = this.physicalUsage[resource.id]?.usage ?? 0;
         if ((resource.descriptor.usage & usage) !== usage) {
           return err(
             new RenderGraphError({
@@ -1042,134 +1144,83 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       }
       return undefined;
     };
-    const validateImportedUsageFailure = validateImportedUsage();
-    if (validateImportedUsageFailure !== undefined) return validateImportedUsageFailure;
-
-    return ok({ passes: compiledPasses, resources, requiredTextureReads });
-  }
-
-  private reusedTextureContentRanges(
-    options: RenderGraphCompileOptions,
-    resourceId: number,
-    usage: number,
-  ): readonly GraphTextureContentRange[] {
-    const resource = this.resources.get(resourceId);
-    if (
-      resource?.kind !== 'texture' ||
-      resource.origin !== 'created' ||
-      resource.descriptor.lifetime !== 'persistent' ||
-      !(options.reuseResourcesFrom instanceof CompiledRenderGraphImpl)
-    )
-      return [];
-    const descriptor = {
-      label: resource.label,
-      size: this.resolveExtent(resource.descriptor.size, options.surfaceSize),
-      mipLevelCount: resource.descriptor.mipLevelCount ?? 1,
-      sampleCount: resource.descriptor.sampleCount ?? 1,
-      dimension: resource.descriptor.dimension ?? '2d',
-      format: resource.descriptor.format,
-      usage: usage | (resource.descriptor.usage ?? 0),
-      viewFormats: [...(resource.descriptor.viewFormats ?? [])],
+    const finish = (
+      shapes: readonly (PhysicalTextureShape | undefined)[],
+    ): Result<PhysicalPassProgram<FrameCtx>, RenderGraphError> => {
+      if (requiredTextureReads.length && prior !== undefined) {
+        const checked: (readonly GraphTextureContentRange[] | undefined)[] = [];
+        for (const { resourceId, range, passName, usage } of requiredTextureReads) {
+          const texture = this.resourceAt(resourceId) as TextureRecord<FrameCtx>;
+          const shape = shapes[resourceId] as PhysicalTextureShape;
+          checked[resourceId] ??= prior.texture(
+            texture.label,
+            shape.signature,
+          )?.committedContentRanges;
+          const committed = checked[resourceId];
+          if (committed === undefined || !textureRangeCovered(range, committed))
+            return err(uninitializedRead(texture.label, passName, usage));
+        }
+      }
+      const failure = validateImportedUsage();
+      if (failure !== undefined) return failure;
+      // Future users can alter only auto-stores and unobserved resolves. Their
+      // attachment operands are the only portion of an emitted pass that needs patching.
+      if (this.placements !== undefined)
+        for (const [id, omitted] of this.placements) {
+          const placed = placeColorAttachments(
+            compiledPasses[id] as CompiledPass<FrameCtx>,
+            omitted,
+            this.physicalUsage,
+            this.lastSubgraph,
+          );
+          compiledPasses[id] = placed;
+          writeAttachments(placed, placed.accessEnd);
+        }
+      return ok({
+        passes: compiledPasses,
+        preparationPasses: preparationIds.map((id) => compiledPasses[id] as CompiledPass<FrameCtx>),
+        hasSubgraph,
+        accessIds,
+        requiredTextureReads,
+      });
     };
-    const signature = JSON.stringify({ ...descriptor, lifetime: resource.descriptor.lifetime });
-    return (
-      options.reuseResourcesFrom._getCommittedTextureRanges(
-        options.device,
-        resource.label,
-        signature,
-      ) ?? []
-    );
+    return { append, finish };
   }
 
-  private textureAccessContent(
+  private publishTextureAccess(
     pass: PassRecord<FrameCtx>,
-    viewId: number | undefined,
+    access: NormalizedAccess,
+    texture: TextureRecord<FrameCtx>,
     range: GraphTextureContentRange,
-  ): { readonly range: GraphTextureContentRange; readonly stored: boolean }[] {
-    if (pass.pass.kind === 'subgraph') return [];
-    if (pass.pass.kind !== 'raster' || viewId === undefined) return [{ range, stored: true }];
-    const color = pass.pass.descriptor.colorAttachments.find(
-      (attachment) => handleData(attachment.view)?.id === viewId,
-    );
-    if (color !== undefined) return [{ range, stored: color.storeOp !== 'discard' }];
-    const resolveTarget = pass.pass.descriptor.colorAttachments.find(
-      (attachment) => handleData(attachment.resolveTarget)?.id === viewId,
-    );
-    if (resolveTarget !== undefined) return [{ range, stored: true }];
+    store: (
+      texture: TextureRecord<FrameCtx>,
+      range: GraphTextureContentRange,
+      stored: boolean,
+    ) => void,
+  ): void {
+    if (
+      pass.pass.kind !== 'raster' ||
+      (access.usage !== 'color-attachment' && access.usage !== 'depth-stencil-write')
+    ) {
+      store(texture, range, true);
+      return;
+    }
+    if (access.usage === 'color-attachment') {
+      if (access.colorStore !== undefined) store(texture, range, access.colorStore);
+      return;
+    }
     const depth = pass.pass.descriptor.depthStencilAttachment;
-    if (depth !== undefined && handleData(depth.view)?.id === viewId) {
-      const view = this.views.get(viewId);
-      const texture = view === undefined ? undefined : this.resources.get(view.textureId);
-      if (view === undefined || texture?.kind !== 'texture') return [];
-      const aspect = canonicalTextureAspect(
-        texture.descriptor.format,
-        view.descriptor.aspect ?? 'all',
-      );
-      if (aspect === 'depth-only')
-        return [{ range: { ...range, aspect }, stored: depth.depthStoreOp === 'store' }];
-      if (aspect === 'stencil-only')
-        return [{ range: { ...range, aspect }, stored: depth.stencilStoreOp === 'store' }];
-      if (DEPTH_STENCIL_FORMATS.has(texture.descriptor.format))
-        return [
-          {
-            range: { ...range, aspect: 'depth-only' as const },
-            stored: depth.depthStoreOp === 'store',
-          },
-          {
-            range: { ...range, aspect: 'stencil-only' as const },
-            stored: depth.stencilStoreOp === 'store',
-          },
-        ];
-      return [{ range: { ...range, aspect }, stored: depth.depthStoreOp === 'store' }];
+    if (depth === undefined || handleData(depth.view)?.id !== access.viewId) return;
+    if (range.aspect === 'all' && DEPTH_STENCIL_FORMATS.has(texture.descriptor.format)) {
+      store(texture, { ...range, aspect: 'depth-only' }, depth.depthStoreOp === 'store');
+      store(texture, { ...range, aspect: 'stencil-only' }, depth.stencilStoreOp === 'store');
+    } else {
+      const op = range.aspect === 'stencil-only' ? depth.stencilStoreOp : depth.depthStoreOp;
+      store(texture, range, op === 'store');
     }
-    return [];
-  }
-
-  private colorAttachmentInitializationReadRanges(
-    pass: RasterGraphPass<FrameCtx>,
-    viewId: number,
-    range: GraphTextureContentRange,
-  ): GraphTextureContentRange[] {
-    const attachment = pass.colorAttachments.find(
-      (candidate) => handleData(candidate.view)?.id === viewId,
-    );
-    return attachment?.loadOp === 'load' || typeof attachment?.loadOp === 'function' ? [range] : [];
-  }
-
-  private textureInitializationReadRanges(
-    pass: PassRecord<FrameCtx>,
-    viewId: number | undefined,
-    usage: GraphAccessUsage,
-    range: GraphTextureContentRange,
-  ): GraphTextureContentRange[] {
-    if (pass.pass.kind !== 'raster' || viewId === undefined) return [range];
-    if (usage === 'color-attachment')
-      return this.colorAttachmentInitializationReadRanges(pass.pass.descriptor, viewId, range);
-    if (usage !== 'depth-stencil-write') return [range];
-    const attachment = pass.pass.descriptor.depthStencilAttachment;
-    if (attachment === undefined || handleData(attachment.view)?.id !== viewId) return [range];
-    const view = this.views.get(viewId);
-    const texture = view === undefined ? undefined : this.resources.get(view.textureId);
-    if (view === undefined || texture?.kind !== 'texture') return [range];
-    const aspect = canonicalTextureAspect(
-      texture.descriptor.format,
-      view.descriptor.aspect ?? 'all',
-    );
-    if (aspect === 'depth-only')
-      return attachment.depthLoadOp === 'load' ? [{ ...range, aspect }] : [];
-    if (aspect === 'stencil-only')
-      return attachment.stencilLoadOp === 'load' ? [{ ...range, aspect }] : [];
-    if (DEPTH_STENCIL_FORMATS.has(texture.descriptor.format)) {
-      const reads: GraphTextureContentRange[] = [];
-      if (attachment.depthLoadOp === 'load') reads.push({ ...range, aspect: 'depth-only' });
-      if (attachment.stencilLoadOp === 'load') reads.push({ ...range, aspect: 'stencil-only' });
-      return reads;
-    }
-    return attachment.depthLoadOp === 'load' ? [{ ...range, aspect }] : [];
   }
 
   private normalizeAccess(
-    passIndex: number,
     pass: PassRecord<FrameCtx>,
     access: GraphAccess,
   ): NormalizedAccess | RenderGraphError {
@@ -1178,10 +1229,14 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (data === undefined || data.owner !== this.owner) {
       return this.foreignHandleError(passName);
     }
-    const mode = this.accessModeForPass(pass, access);
+    // Raster colors acquire their load/store roles from the bound output slot at seal.
+    const mode =
+      pass.pass.kind === 'raster' && access.usage === 'color-attachment'
+        ? accessMode(access.usage)
+        : accessModeForPass(pass, access);
     if (data.kind === 'buffer' || data.kind === 'acceleration-structure') {
+      if (this.resourceAt(data.id) === undefined) return this.foreignHandleError(passName);
       return {
-        passIndex,
         resourceId: data.id,
         usage: access.usage,
         read: mode.read,
@@ -1189,72 +1244,26 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       };
     }
     if (data.kind !== 'texture-view') return this.foreignHandleError(passName);
-    const view = this.views.get(data.id);
-    const texture = this.resources.get(data.textureId);
-    if (view === undefined || texture?.kind !== 'texture') {
+    const view = this.viewAt(data.id);
+    if (view === undefined || view.textureId !== data.textureId) {
       return this.foreignHandleError(passName);
     }
-    const mipLevels = texture.descriptor.mipLevelCount ?? 1;
-    const layers =
-      typeof texture.descriptor.size === 'object'
-        ? (texture.descriptor.size.depthOrArrayLayers ?? 1)
-        : 1;
-    const mipStart = view.descriptor.baseMipLevel ?? 0;
-    const layerStart = view.descriptor.baseArrayLayer ?? 0;
     return {
-      passIndex,
       resourceId: data.textureId,
       viewId: data.id,
       usage: access.usage,
       read: mode.read,
       write: mode.write,
-      range: {
-        mipStart,
-        mipEnd: mipStart + (view.descriptor.mipLevelCount ?? mipLevels - mipStart),
-        layerStart,
-        layerEnd: layerStart + (view.descriptor.arrayLayerCount ?? layers - layerStart),
-        aspect: canonicalTextureAspect(texture.descriptor.format, view.descriptor.aspect ?? 'all'),
-      },
+      range: view.range,
     };
-  }
-
-  private accessModeForPass(
-    pass: PassRecord<FrameCtx>,
-    access: GraphAccess,
-  ): { readonly read: boolean; readonly write: boolean } {
-    const base = accessMode(access.usage);
-    if (
-      pass.pass.kind === 'subgraph' &&
-      (access.usage === 'color-attachment' || access.usage === 'depth-stencil-write')
-    )
-      return READ_WRITE_ACCESS_MODE;
-    if (pass.pass.kind !== 'raster' || handleData(access.resource)?.kind !== 'texture-view') {
-      return base;
-    }
-    if (access.usage === 'color-attachment') {
-      const attachment = pass.pass.descriptor.colorAttachments.find(
-        (candidate) => candidate.view === access.resource,
-      );
-      return attachment?.loadOp === 'load' || typeof attachment?.loadOp === 'function'
-        ? READ_WRITE_ACCESS_MODE
-        : base;
-    }
-    if (access.usage === 'depth-stencil-write') {
-      const attachment = pass.pass.descriptor.depthStencilAttachment;
-      if (
-        attachment?.view === access.resource &&
-        (attachment.depthLoadOp === 'load' || attachment.stencilLoadOp === 'load')
-      ) {
-        return READ_WRITE_ACCESS_MODE;
-      }
-    }
-    return base;
   }
 
   private validateCapabilities(
     pass: PassRecord<FrameCtx>,
     caps: RhiCaps,
-  ): Result<void, RenderGraphError> {
+    required: number,
+    accesses: readonly NormalizedAccess[],
+  ): RenderGraphError | undefined {
     if (
       pass.pass.kind === 'raster' &&
       pass.pass.descriptor.colorAttachments.length > caps.maxColorAttachments
@@ -1264,39 +1273,20 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (pass.pass.kind === 'compute' && !caps.compute) {
       return this.capabilityError(pass.name, 'compute');
     }
-    for (const access of pass.pass.descriptor.accesses) {
-      if (
-        (access.usage === 'storage-read' ||
-          access.usage === 'storage-write' ||
-          access.usage === 'storage-read-write') &&
-        handleData(access.resource)?.kind === 'buffer' &&
-        !caps.storageBuffer
-      ) {
-        return this.capabilityError(pass.name, 'storage-buffer', access);
-      }
-      if (
-        (access.usage === 'storage-read' ||
-          access.usage === 'storage-write' ||
-          access.usage === 'storage-read-write' ||
-          access.usage === 'sampled-storage-read-write' ||
-          access.usage === 'sampled-storage-write') &&
-        handleData(access.resource)?.kind === 'texture-view' &&
-        !caps.storageTexture
-      ) {
-        return this.capabilityError(pass.name, 'storage-texture', access);
-      }
-      if (access.usage === 'indirect-read' && !caps.indirectDrawing) {
-        return this.capabilityError(pass.name, 'indirect', access);
-      }
-      if (
-        (access.usage === 'acceleration-structure-build' ||
-          access.usage === 'acceleration-structure-read') &&
-        !caps.rayQuery.supported
-      ) {
-        return this.capabilityError(pass.name, 'ray-query', access);
+    let missing = 0;
+    if ((required & STORAGE_BUFFER_CAP) !== 0 && !caps.storageBuffer) missing |= STORAGE_BUFFER_CAP;
+    if ((required & STORAGE_TEXTURE_CAP) !== 0 && !caps.storageTexture)
+      missing |= STORAGE_TEXTURE_CAP;
+    if ((required & INDIRECT_CAP) !== 0 && !caps.indirectDrawing) missing |= INDIRECT_CAP;
+    if ((required & RAY_QUERY_CAP) !== 0 && !caps.rayQuery.supported) missing |= RAY_QUERY_CAP;
+    if (missing !== 0) {
+      for (const access of accesses) {
+        const cap = operandCapability(access, this.resourceAt(access.resourceId)?.kind);
+        if (cap !== 0 && (missing & cap) !== 0)
+          return this.capabilityError(pass.name, ACCESS_CAPABILITIES[cap], access);
       }
     }
-    return ok(undefined);
+    return undefined;
   }
 
   private capabilityError(
@@ -1308,47 +1298,37 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       | 'indirect'
       | 'color-attachments'
       | 'ray-query',
-    access?: GraphAccess,
-  ): Result<never, RenderGraphError> {
-    const resourceId = access === undefined ? undefined : accessResourceId(access);
-    return err(
-      new RenderGraphError({
-        code: 'capability-missing',
-        expected: `pass '${passName}' is built only when capability '${capability}' is available`,
-        hint: 'select the fallback algorithm before adding this pass to the builder',
-        detail: {
-          passName,
-          capability,
-          ...(resourceId === undefined
-            ? {}
-            : { resourceLabel: this.resources.get(resourceId)?.label, usage: access?.usage }),
-        },
-      }),
-    );
+    access?: NormalizedAccess,
+  ): RenderGraphError {
+    const resourceId = access?.resourceId;
+    return new RenderGraphError({
+      code: 'capability-missing',
+      expected: `pass '${passName}' is built only when capability '${capability}' is available`,
+      hint: 'select the fallback algorithm before adding this pass to the builder',
+      detail: {
+        passName,
+        capability,
+        ...(resourceId === undefined
+          ? {}
+          : { resourceLabel: this.resourceAt(resourceId)?.label, usage: access?.usage }),
+      },
+    });
   }
 
   private validatePassAccesses(
     pass: PassRecord<FrameCtx>,
     accesses: readonly NormalizedAccess[],
-  ): Result<void, RenderGraphError> {
+  ): RenderGraphError | undefined {
     // A child has separately validated, ordered scopes rather than one GPU pass.
-    if (pass.pass.kind === 'subgraph') return ok(undefined);
-    // Link equal-resource indices in the original ascending order, including sparse inputs.
-    const nextAccessByResource: (number | undefined)[] = [];
-    const nextResourceAccess = new Map<number, number>();
-    for (let index = accesses.length - 1; index >= 0; index--) {
-      const access = accesses[index];
-      if (access === undefined) continue;
-      nextAccessByResource[index] = nextResourceAccess.get(access.resourceId);
-      nextResourceAccess.set(access.resourceId, index);
-    }
+    if (pass.pass.kind === 'subgraph') return undefined;
+    // Admission linked siblings in declaration order while recording physical lifetimes.
     for (let leftIndex = 0; leftIndex < accesses.length; leftIndex++) {
       const left = accesses[leftIndex];
       if (left === undefined) continue;
       for (
-        let rightIndex = nextAccessByResource[leftIndex];
+        let rightIndex = left.nextOfResource;
         rightIndex !== undefined;
-        rightIndex = nextAccessByResource[rightIndex]
+        rightIndex = accesses[rightIndex]?.nextOfResource
       ) {
         const right = accesses[rightIndex];
         if (
@@ -1364,45 +1344,39 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
           (left.usage === 'storage-read-write' || left.usage === 'sampled-storage-read-write')
         )
           continue;
-        const label = this.resources.get(left.resourceId)?.label;
-        return err(
-          new RenderGraphError({
-            code: 'access-conflict',
-            expected: `pass '${pass.name}' uses resource '${label}' in one compatible WebGPU usage scope`,
-            hint: 'split conflicting read/write roles into ordered passes or use storage-read-write once',
-            detail: {
-              passName: pass.name,
-              resourceLabel: label,
-              accesses: [left.usage, right.usage],
-            },
-          }),
-        );
+        const label = this.resourceAt(left.resourceId)?.label;
+        return new RenderGraphError({
+          code: 'access-conflict',
+          expected: `pass '${pass.name}' uses resource '${label}' in one compatible WebGPU usage scope`,
+          hint: 'split conflicting read/write roles into ordered passes or use storage-read-write once',
+          detail: {
+            passName: pass.name,
+            resourceLabel: label,
+            accesses: [left.usage, right.usage],
+          },
+        });
       }
     }
     if (pass.pass.kind !== 'compute') {
       const invalid = accesses.find((access) => access.usage === 'sampled-storage-write');
       if (invalid !== undefined) {
-        return err(
-          new RenderGraphError({
-            code: 'access-conflict',
-            expected: `pass '${pass.name}' uses ordered compute dispatches for sampled-storage-write`,
-            hint: 'move the write-then-sample chain into a compute pass',
-            detail: { passName: pass.name, usage: invalid.usage },
-          }),
-        );
+        return new RenderGraphError({
+          code: 'access-conflict',
+          expected: `pass '${pass.name}' uses ordered compute dispatches for sampled-storage-write`,
+          hint: 'move the write-then-sample chain into a compute pass',
+          detail: { passName: pass.name, usage: invalid.usage },
+        });
       }
     }
     if (pass.pass.kind !== 'copy') {
       const invalid = accesses.find((access) => access.usage === 'acceleration-structure-build');
       if (invalid !== undefined) {
-        return err(
-          new RenderGraphError({
-            code: 'access-conflict',
-            expected: `pass '${pass.name}' builds acceleration structures only from a copy pass`,
-            hint: 'record acceleration-structure-build in a copy pass ordered before its readers',
-            detail: { passName: pass.name, usage: invalid.usage },
-          }),
-        );
+        return new RenderGraphError({
+          code: 'access-conflict',
+          expected: `pass '${pass.name}' builds acceleration structures only from a copy pass`,
+          hint: 'record acceleration-structure-build in a copy pass ordered before its readers',
+          detail: { passName: pass.name, usage: invalid.usage },
+        });
       }
     }
     if (pass.pass.kind === 'copy') {
@@ -1413,108 +1387,85 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
           access.usage !== 'acceleration-structure-build',
       );
       if (invalid !== undefined) {
-        return err(
-          new RenderGraphError({
-            code: 'access-conflict',
-            expected: `copy pass '${pass.name}' declares only copy-src/copy-dst/acceleration-structure-build accesses`,
-            hint: 'move shader or attachment work into raster/compute passes',
-            detail: { passName: pass.name, usage: invalid.usage },
-          }),
-        );
+        return new RenderGraphError({
+          code: 'access-conflict',
+          expected: `copy pass '${pass.name}' declares only copy-src/copy-dst/acceleration-structure-build accesses`,
+          hint: 'move shader or attachment work into raster/compute passes',
+          detail: { passName: pass.name, usage: invalid.usage },
+        });
       }
     }
-    return ok(undefined);
+    return undefined;
   }
 
-  private validateAttachments(pass: PassRecord<FrameCtx>): Result<void, RenderGraphError> {
-    if (pass.pass.kind !== 'raster') return ok(undefined);
-    const accesses = pass.pass.descriptor.accesses;
-    const has = (view: GraphTextureView, usage: GraphTextureAccess): boolean =>
-      accesses.some((access) => access.resource === view && access.usage === usage);
-    for (const attachment of pass.pass.descriptor.colorAttachments) {
-      if (!has(attachment.view, 'color-attachment')) {
-        return this.missingAttachmentAccess(pass.name, attachment.view, 'color-attachment');
-      }
+  /** Match physical outputs to their declaring access once. The table belongs to
+   * this seal, is reused across passes, and contains only the current color outputs.
+   * Positive entries await a grant. Negative entries preserve the granted slot. */
+  private bindRasterAttachments(
+    pass: PassRecord<FrameCtx>,
+    normalized: readonly NormalizedAccess[],
+    colors: Map<GraphTextureView, number>,
+  ): RenderGraphError | undefined {
+    if (pass.pass.kind !== 'raster') return undefined;
+    const { accesses, colorAttachments, depthStencilAttachment: depth } = pass.pass.descriptor;
+    colors.clear();
+    if (colorAttachments.length === 0 && depth === undefined) return undefined;
+    for (const color of colorAttachments) {
+      if (color.resolveTarget !== undefined) colors.set(color.resolveTarget, 1);
+    }
+    // A source takes precedence over a resolve to the same view. The first source
+    // defines its load/store operations, including repeated attachment declarations.
+    for (let i = colorAttachments.length - 1; i >= 0; i--)
+      colors.set((colorAttachments[i] as (typeof colorAttachments)[number]).view, i + 2);
+    const depthUsage = depth?.depthReadOnly === true ? 'depth-stencil-read' : 'depth-stencil-write';
+    let depthGranted = false;
+    for (let i = 0; i < normalized.length; i++) {
+      const access = normalized[i] as NormalizedAccess;
       if (
-        attachment.resolveTarget !== undefined &&
-        !has(attachment.resolveTarget, 'color-attachment')
-      ) {
-        return this.missingAttachmentAccess(
-          pass.name,
-          attachment.resolveTarget,
-          'color-attachment',
-        );
-      }
+        access.usage !== 'color-attachment' &&
+        (depth === undefined || access.usage !== depthUsage)
+      )
+        continue;
+      const view = (accesses[i] as GraphAccess).resource as GraphTextureView;
+      if (access.usage === depthUsage && view === depth?.view) depthGranted = true;
+      if (access.usage !== 'color-attachment') continue;
+      const slot = colors.get(view);
+      if (slot === undefined) continue;
+      if (slot > 0) colors.set(view, -slot);
+      const source = colorAttachments[Math.abs(slot) - 2];
+      access.read = mayLoadAttachment(source?.loadOp);
+      access.colorStore = source?.storeOp !== 'discard';
     }
-    const depth = pass.pass.descriptor.depthStencilAttachment;
-    if (depth !== undefined) {
-      const usage = depth.depthReadOnly === true ? 'depth-stencil-read' : 'depth-stencil-write';
-      if (!has(depth.view, usage))
-        return this.missingAttachmentAccess(pass.name, depth.view, usage);
+    for (const color of colorAttachments) {
+      if ((colors.get(color.view) ?? 0) >= 0)
+        return this.missingAttachmentAccess(pass.name, color.view, 'color-attachment');
+      if (color.resolveTarget !== undefined && (colors.get(color.resolveTarget) ?? 0) >= 0)
+        return this.missingAttachmentAccess(pass.name, color.resolveTarget, 'color-attachment');
     }
-    return ok(undefined);
+    if (depth !== undefined && !depthGranted)
+      return this.missingAttachmentAccess(pass.name, depth.view, depthUsage);
+    return undefined;
   }
 
   private missingAttachmentAccess(
     passName: string,
     view: GraphTextureView,
     usage: GraphTextureAccess,
-  ): Result<never, RenderGraphError> {
+  ): RenderGraphError {
     const data = handleData(view);
-    const label = data?.kind === 'texture-view' ? this.views.get(data.id)?.label : undefined;
-    return err(
-      new RenderGraphError({
-        code: 'resource-not-declared-by-pass',
-        expected: `raster pass '${passName}' attachment '${label}' declares '${usage}' access`,
-        hint: 'add the attachment view and matching usage to accesses',
-        detail: { passName, resourceLabel: label, usage },
-      }),
-    );
+    const label = data?.kind === 'texture-view' ? this.viewAt(data.id)?.label : undefined;
+    return new RenderGraphError({
+      code: 'resource-not-declared-by-pass',
+      expected: `raster pass '${passName}' attachment '${label}' declares '${usage}' access`,
+      hint: 'add the attachment view and matching usage to accesses',
+      detail: { passName, resourceLabel: label, usage },
+    });
   }
 
-  private findPriorWrite(
-    history: readonly NormalizedAccess[],
-    current: NormalizedAccess,
-  ): NormalizedAccess | undefined {
-    for (let index = history.length - 1; index >= 0; index--) {
-      const prior = history[index];
-      if (
-        prior !== undefined &&
-        prior.resourceId === current.resourceId &&
-        prior.write &&
-        rangesOverlap(prior.range, current.range)
-      ) {
-        return prior;
-      }
-    }
-    return undefined;
-  }
-
-  private findWriteDependencies(
-    history: readonly NormalizedAccess[],
-    current: NormalizedAccess,
-    dependencies: Set<number>,
-  ): void {
-    for (let index = history.length - 1; index >= 0; index--) {
-      const prior = history[index];
-      if (
-        prior === undefined ||
-        prior.resourceId !== current.resourceId ||
-        !rangesOverlap(prior.range, current.range)
-      ) {
-        continue;
-      }
-      if (prior.read) dependencies.add(prior.passIndex);
-      if (prior.write) {
-        dependencies.add(prior.passIndex);
-        break;
-      }
-    }
-  }
-
-  private validateDescriptors(
+  private preparePhysicalShapes(
     surfaceSize: RenderGraphCompileOptions['surfaceSize'],
-  ): Result<void, RenderGraphError> {
+  ): Result<(PhysicalTextureShape | undefined)[], RenderGraphError> {
+    const shapes: (PhysicalTextureShape | undefined)[] = [];
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return err(
         new RenderGraphError({
@@ -1530,7 +1481,12 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         }),
       );
     }
-    for (const resource of this.resources.values()) {
+    let viewError: RenderGraphError | undefined;
+    for (const resource of this.declarations) {
+      if (!('kind' in resource)) {
+        viewError ??= this.viewDimensionError(resource);
+        continue;
+      }
       if (resource.kind === 'buffer' && resource.descriptor.size <= 0) {
         return err(
           new RenderGraphError({
@@ -1547,7 +1503,8 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         );
       }
       if (resource.kind === 'texture') {
-        const extent = this.resolveExtent(resource.descriptor.size, surfaceSize);
+        const d = resource.descriptor;
+        const extent = this.resolveExtent(d.size, surfaceSize);
         if (extent.width <= 0 || extent.height <= 0 || extent.depthOrArrayLayers <= 0) {
           return err(
             new RenderGraphError({
@@ -1563,44 +1520,104 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
             }),
           );
         }
+        const usage =
+          resource.origin === 'imported'
+            ? resource.descriptor.usage
+            : (d.usage ?? 0) | (this.physicalUsage[resource.id]?.usage ?? 0);
+        const descriptor = {
+          label: resource.label,
+          size: extent,
+          dimension: d.dimension ?? '2d',
+          format: d.format,
+          sampleCount: d.sampleCount ?? 1,
+          mipLevelCount: d.mipLevelCount ?? 1,
+          usage,
+          viewFormats: [...(d.viewFormats ?? [])],
+        };
+        // All textual fields are closed enum values. Labels identify the owning slot separately.
+        const signature = `${d.lifetime ?? 'transient'}/${extent.width}/${extent.height}/${extent.depthOrArrayLayers}/${descriptor.dimension}/${d.format}/${descriptor.sampleCount}/${descriptor.mipLevelCount}/${usage}/${descriptor.viewFormats.join(',')}`;
+        shapes[resource.id] = { descriptor, signature };
       }
     }
-    for (const view of this.views.values()) {
-      const texture = this.resources.get(view.textureId);
-      if (texture?.kind !== 'texture') continue;
-      const allocationDimension = texture.descriptor.dimension ?? '2d';
-      const viewDimension = view.descriptor.dimension;
-      if (!isTextureViewDimensionCompatible(allocationDimension, viewDimension)) {
-        return err(
-          new RenderGraphError({
-            code: 'resource-descriptor-invalid',
-            expected: `texture '${texture.label}' view dimension matches allocation dimension`,
-            hint: 'use a 3d view only for a 3d allocation and preserve array views on 2d allocations',
-            detail: {
-              resourceLabel: texture.label,
-              field: 'dimension',
-              expected: allocationDimension,
-              actual: viewDimension ?? '2d',
-            },
-          }),
-        );
-      }
+    return viewError === undefined ? ok(shapes) : err(viewError);
+  }
+
+  private viewDimensionError(view: TextureViewRecord<FrameCtx>): RenderGraphError | undefined {
+    const texture = this.resourceAt(view.textureId);
+    if (texture?.kind !== 'texture') return undefined;
+    const allocationDimension = texture.descriptor.dimension ?? '2d';
+    const viewDimension = view.descriptor.dimension;
+    if (!isTextureViewDimensionCompatible(allocationDimension, viewDimension)) {
+      return new RenderGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: `texture '${texture.label}' view dimension matches allocation dimension`,
+        hint: 'use a 3d view only for a 3d allocation and preserve array views on 2d allocations',
+        detail: {
+          resourceLabel: texture.label,
+          field: 'dimension',
+          expected: allocationDimension,
+          actual: viewDimension ?? '2d',
+        },
+      });
     }
-    return ok(undefined);
+    return undefined;
+  }
+
+  /** First uses were recorded in pass order. Only pass-local lifetimes enter this sweep. */
+  private planPassLocalSlots(
+    shapes: readonly (PhysicalTextureShape | undefined)[],
+  ): (PassLocalSlot | undefined)[] {
+    const slots: (PassLocalSlot | undefined)[] = [];
+    const idle = new Map<string, PassLocalSlot[]>();
+    const ending: (PassLocalSlot | undefined)[] = [];
+    let cursor = 0;
+    for (const id of this.passLocalFirstUses) {
+      const interval = this.physicalUsage[id];
+      const shape = shapes[id];
+      if (
+        interval?.firstUse == null ||
+        interval.lastUse === null ||
+        shape === undefined ||
+        (shape.descriptor.usage & TEXTURE_USAGE.copySrc) !== 0
+      )
+        continue;
+      while (cursor < interval.firstUse) {
+        let released = ending[cursor++];
+        while (released !== undefined) {
+          const next = released.nextEnding;
+          released.nextEnding = undefined;
+          released.family.push(released);
+          released = next;
+        }
+      }
+      let family = idle.get(shape.signature);
+      if (family === undefined) {
+        family = [];
+        idle.set(shape.signature, family);
+      }
+      const slot = family.pop() ?? {
+        id,
+        label: shape.descriptor.label,
+        family,
+        nextEnding: undefined,
+      };
+      slots[id] = slot;
+      slot.nextEnding = ending[interval.lastUse];
+      ending[interval.lastUse] = slot;
+    }
+    return slots;
   }
 
   private allocate(
-    options: RenderGraphCompileOptions,
-    analyzedResources: ReadonlyMap<number, ResourceAnalysis>,
-  ): Result<
-    {
-      readonly resources: ReadonlyMap<number, CompiledResource<FrameCtx>>;
-      readonly views: ReadonlyMap<number, CompiledView<FrameCtx>>;
-    },
-    RenderGraphError
-  > {
-    const compiledResources = new Map<number, CompiledResource<FrameCtx>>();
-    const compiledViews = new Map<number, CompiledView<FrameCtx>>();
+    options: BindingOptions,
+    shapes: readonly (PhysicalTextureShape | undefined)[],
+    bindings: AttachmentBindings,
+  ): Result<PhysicalGraphSlots<FrameCtx>, RenderGraphError> {
+    const physical = new PhysicalGraphSlots<FrameCtx>();
+    const slots =
+      this.passLocalFirstUses.length !== 0 && !options.retainPassLocalTargets
+        ? this.planPassLocalSlots(shapes)
+        : undefined;
     const createdTextures: GraphTextureAllocation[] = [];
     const createdBuffers: Buffer[] = [];
     const discard = (): void => {
@@ -1608,62 +1625,53 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       for (const buffer of createdBuffers) options.device.destroyBuffer(buffer);
     };
 
-    for (const resource of this.resources.values()) {
-      const analysis = analyzedResources.get(resource.id) ?? {
+    for (const resource of this.declarations) {
+      if (!('kind' in resource)) continue;
+      const analysis = this.physicalUsage[resource.id] ?? {
         usage: 0,
         firstUse: null,
         lastUse: null,
       };
       const { usage } = analysis;
+      const slot = slots?.[resource.id];
       let texture: Texture | undefined;
       let textureAllocation: GraphTextureAllocation | undefined;
       let buffer: Buffer | undefined;
-      const textureDescriptor: CompiledResource<FrameCtx>['textureDescriptor'] =
-        resource.kind === 'texture'
-          ? {
-              label: resource.label,
-              size: this.resolveExtent(resource.descriptor.size, options.surfaceSize),
-              mipLevelCount: resource.descriptor.mipLevelCount ?? 1,
-              sampleCount: resource.descriptor.sampleCount ?? 1,
-              dimension: resource.descriptor.dimension ?? '2d',
-              format: resource.descriptor.format,
-              usage:
-                resource.origin === 'imported'
-                  ? resource.descriptor.usage
-                  : usage | (resource.descriptor.usage ?? 0),
-              viewFormats: [...(resource.descriptor.viewFormats ?? [])],
-            }
-          : undefined;
+      const shape = shapes[resource.id];
+      const textureDescriptor = shape?.descriptor;
       if (resource.origin === 'created' && usage !== 0) {
-        if (textureDescriptor !== undefined) {
-          const descriptor = textureDescriptor;
-          const lifetime =
-            resource.kind === 'texture'
-              ? (resource.descriptor.lifetime ?? 'transient')
-              : 'transient';
-          const signature = JSON.stringify({ ...descriptor, lifetime });
-          textureAllocation =
-            options.reuseResourcesFrom instanceof CompiledRenderGraphImpl
-              ? options.reuseResourcesFrom.retainTexture(options.device, resource.label, signature)
-              : undefined;
-          const created =
-            textureAllocation === undefined
-              ? options.device.createTexture(descriptor)
-              : ok(textureAllocation.texture);
-          if (!created.ok) {
-            discard();
-            return err(
-              new RenderGraphError({
-                code: 'resource-allocation-failed',
-                expected: `RHI creates graph texture '${resource.label}'`,
-                hint: 'inspect detail.rhiCode and repair the descriptor/capability route',
-                detail: { resourceKey: resource.label, rhiCode: created.error.code },
-              }),
-            );
+        if (shape !== undefined && textureDescriptor !== undefined) {
+          textureAllocation = slot?.allocation;
+          if (textureAllocation !== undefined) {
+            texture = textureAllocation.texture;
+          } else {
+            const label = slot?.label ?? resource.label;
+            const descriptor =
+              label === resource.label ? textureDescriptor : { ...textureDescriptor, label };
+            const signature = shape.signature;
+            textureAllocation = options.previous?.texture(label, signature);
+            if (textureAllocation !== undefined) textureAllocation.references++;
+            const created =
+              textureAllocation === undefined
+                ? options.device.createTexture(descriptor)
+                : ok(textureAllocation.texture);
+            if (!created.ok) {
+              discard();
+              return err(
+                new RenderGraphError({
+                  code: 'resource-allocation-failed',
+                  expected: `RHI creates graph texture '${resource.label}'`,
+                  hint: 'inspect detail.rhiCode and repair the descriptor/capability route',
+                  detail: { resourceKey: resource.label, rhiCode: created.error.code },
+                }),
+              );
+            }
+            texture = created.value;
+            textureAllocation ??= { texture, signature, references: 1, committedContentRanges: [] };
+            createdTextures.push(textureAllocation);
+            bindings.own(label, textureAllocation);
+            if (slot !== undefined) slot.allocation = textureAllocation;
           }
-          texture = created.value;
-          textureAllocation ??= { texture, signature, references: 1, committedContentRanges: [] };
-          createdTextures.push(textureAllocation);
         } else if (resource.kind === 'buffer') {
           const created = options.device.createBuffer({
             label: resource.label,
@@ -1686,42 +1694,54 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
           createdBuffers.push(buffer);
         }
       }
-      compiledResources.set(resource.id, {
+      physical.insert({
         record: resource,
-        ...analysis,
+        usage: analysis.usage,
+        firstUse: analysis.firstUse,
+        lastUse: analysis.lastUse,
         ...(textureDescriptor === undefined ? {} : { textureDescriptor }),
         ...(texture === undefined ? {} : { texture, textureAllocation }),
+        ...(resource.kind === 'texture' &&
+        resource.origin === 'created' &&
+        resource.descriptor.lifetime === 'pass-local' &&
+        !options.retainPassLocalTargets &&
+        ((textureDescriptor?.usage ?? usage) & TEXTURE_USAGE.copySrc) === 0
+          ? { passLocal: true }
+          : {}),
+        ...(slot !== undefined && slot.id !== resource.id ? { borrowedTextureSlot: true } : {}),
         ...(buffer === undefined ? {} : { buffer }),
       });
     }
 
     const allocateGraphViews = () => {
-      for (const view of this.views.values()) {
-        const resource = compiledResources.get(view.textureId);
+      for (const view of this.declarations) {
+        if (!('textureId' in view)) continue;
+        const resource = physical.resource(view.textureId);
         let physicalView: TextureView | undefined;
         if (resource?.record.origin === 'created' && resource.texture !== undefined) {
-          const retained =
-            options.reuseResourcesFrom instanceof CompiledRenderGraphImpl
-              ? options.reuseResourcesFrom.reuseTextureView(options.device, resource.texture, view)
-              : undefined;
-          const created =
-            retained === undefined
-              ? options.device.createTextureView(resource.texture, view.descriptor)
-              : ok(retained);
-          if (!created.ok) {
-            discard();
-            return err(
-              new RenderGraphError({
-                code: 'resource-allocation-failed',
-                expected: `RHI creates graph texture view '${view.label}'`,
-                hint: 'inspect detail.rhiCode and repair the view descriptor',
-                detail: { resourceKey: view.label, rhiCode: created.error.code },
-              }),
-            );
+          const { texture } = resource;
+          physicalView = bindings.view(texture, view.descriptor);
+          if (physicalView === undefined) {
+            physicalView = options.previous?.view(texture, view.descriptor);
+            if (physicalView === undefined) {
+              const created = options.device.createTextureView(texture, view.descriptor);
+              if (!created.ok) {
+                discard();
+                return err(
+                  new RenderGraphError({
+                    code: 'resource-allocation-failed',
+                    expected: `RHI creates graph texture view '${view.label}'`,
+                    hint: 'inspect detail.rhiCode and repair the view descriptor/capability route',
+                    detail: { resourceKey: view.label, rhiCode: created.error.code },
+                  }),
+                );
+              }
+              physicalView = created.value;
+            }
+            bindings.bindView(texture, view.descriptor, physicalView);
           }
-          physicalView = created.value;
         }
-        compiledViews.set(view.id, {
+        physical.insert({
           record: view,
           ...(physicalView === undefined ? {} : { view: physicalView }),
         });
@@ -1730,7 +1750,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     };
     const viewFailure = allocateGraphViews();
     if (viewFailure !== undefined) return viewFailure;
-    return ok({ resources: compiledResources, views: compiledViews });
+    return ok(physical);
   }
 
   private resolveExtent(
@@ -1763,9 +1783,9 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
   }
 
   private reserveLabel(label: string): RenderGraphError | undefined {
-    const size = this.labels.size;
-    this.labels.add(label);
-    if (this.labels.size === size) {
+    const labels = this.slotsByLabel;
+    if (labels === undefined) return this.sealedError();
+    if (labels.has(label)) {
       return new RenderGraphError({
         code: 'duplicate-resource-label',
         expected: `resource label '${label}' is unique within one builder`,
@@ -1773,6 +1793,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         detail: { resourceLabel: label },
       });
     }
+    labels.set(label, this.nextId);
     return undefined;
   }
 

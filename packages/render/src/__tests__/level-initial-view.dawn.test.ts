@@ -358,9 +358,11 @@ async function firstSourceNative(
     }
     if (mode !== 'compute') {
       const owner = f.manager.currentOwner;
-      const prepared = hasPermanentMesh(mode)
-        ? owner.frameState.compiledFrameGraph
-        : owner.frameState.unsubmittedCompiledFrameGraph?.installed;
+      // A camera may already own the physical display while its first Level is hidden.
+      // A distinct layout remains staged until its first real submission.
+      const prepared =
+        owner.frameState.unsubmittedCompiledFrameGraph?.installed ??
+        owner.frameState.compiledFrameGraph;
       assert(prepared);
       const indirectBytes = view.inspect().indirectCapacity * 40;
       const commandReadback = f.internals.device

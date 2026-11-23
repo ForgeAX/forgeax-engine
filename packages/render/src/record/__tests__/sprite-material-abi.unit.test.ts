@@ -111,7 +111,7 @@ describe('sprite Standard material ABI', () => {
     expect(entries).toHaveLength(userEnd);
 
     const merged = assembleMaterialWithSkylightEntries(entries, {
-      irradianceView: {} as TextureView,
+      skySh: {} as TextureView,
       irradianceSampler: sampler,
       prefilterView: {} as TextureView,
       prefilterSampler: sampler,
@@ -120,7 +120,7 @@ describe('sprite Standard material ABI', () => {
     });
     expect(merged[userEnd]).toMatchObject({
       binding: userEnd,
-      resource: { kind: 'textureView' },
+      resource: { kind: 'buffer', value: { size: 112 } },
     });
     expect(merged[userEnd + 6]).toMatchObject({
       binding: userEnd + 6,
@@ -130,8 +130,8 @@ describe('sprite Standard material ABI', () => {
       binding: userEnd + 7,
       resource: { kind: 'textureView' },
     });
-    expect(merged).toHaveLength(userEnd + 9);
-    expect(merged.find((entry) => entry.binding === 47)?.resource.kind).toBe('textureView');
+    expect(merged).toHaveLength(userEnd + 8);
+    expect(merged.some((entry) => entry.binding === 47)).toBe(false);
 
     const complete = [
       ...merged,
@@ -140,7 +140,7 @@ describe('sprite Standard material ABI', () => {
         resource: { kind: 'buffer' as const, value: { buffer: {} as Buffer } },
       },
     ];
-    expect(complete).toHaveLength(userEnd + 10);
+    expect(complete).toHaveLength(userEnd + 9);
     expect(complete.find((entry) => entry.binding === 46)).toMatchObject({
       binding: 46,
       resource: { kind: 'buffer' },
@@ -150,7 +150,7 @@ describe('sprite Standard material ABI', () => {
     const active = assembleMaterialWithSkylightEntries(
       entries,
       {
-        irradianceView: {} as TextureView,
+        skySh: {} as TextureView,
         irradianceSampler: sampler,
         prefilterView: {} as TextureView,
         prefilterSampler: sampler,

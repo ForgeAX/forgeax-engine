@@ -6,13 +6,24 @@ import type { Asset, MeshAsset, TilesetAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { inferAtlasExtent, validateMeshPayload, validateTilesetPayload } from '../payload-validate';
 
-function mesh(over: Partial<MeshAsset>): Asset {
+function mesh(
+  vertexCount = 0,
+  submesh: Partial<MeshAsset['submeshes'][number]> = {},
+  over: Partial<MeshAsset> = {},
+): MeshAsset {
   return {
     kind: 'mesh',
-    vertices: new Float32Array(0),
+    vertices: new Float32Array(vertexCount * 12),
     attributes: {},
     submeshes: [
-      { indexOffset: 0, indexCount: 0, vertexCount: 0, topology: 'triangle-list', materialSlot: 0 },
+      {
+        indexOffset: 0,
+        indexCount: 0,
+        vertexCount,
+        topology: 'triangle-list',
+        materialSlot: 0,
+        ...submesh,
+      },
     ],
     materialSlots: [{ slotName: 'Default' }],
     ...over,
@@ -20,175 +31,80 @@ function mesh(over: Partial<MeshAsset>): Asset {
 }
 
 describe('validateMeshPayload', () => {
-  it('returns null for a non-mesh asset', () => {
-    expect(validateMeshPayload({ kind: 'material' } as unknown as Asset)).toBeNull();
-  });
-
-  it('returns null for a legal empty mesh (triangle-list, no vertices/indices)', () => {
-    expect(validateMeshPayload(mesh({}))).toBeNull();
-  });
-
-  it('errors when submeshes is empty', () => {
-    const e = validateMeshPayload(mesh({ submeshes: [] }));
-    expect(e?.code).toBe('mesh-asset-submeshes-empty');
+  it.each([
+    ['a non-mesh asset', { kind: 'material' } as Asset],
+    ['an empty mesh', mesh()],
+    ['a vertex-only mesh', mesh(2)],
+    ['a line strip', mesh(1, { topology: 'line-strip' })],
+    ['a triangle strip', mesh(1, { topology: 'triangle-strip' })],
+    ['an indexed mesh', mesh(3, { indexCount: 3 }, { indices: Uint16Array.of(0, 1, 2) })],
+    [
+      'sparse Landscape LOD indices into shared vertices',
+      mesh(4, { indexCount: 3 }, { indices: Uint16Array.of(0, 1, 2) }),
+    ],
+    [
+      'optional vertex colors',
+      mesh(
+        3,
+        { indexCount: 3 },
+        {
+          vertices: new Float32Array(3 * 16),
+          indices: Uint16Array.of(0, 1, 2),
+          attributes: {
+            position: new Float32Array(9),
+            normal: new Float32Array(9),
+            uv: new Float32Array(6),
+            tangent: new Float32Array(12),
+            color: new Float32Array(12),
+          },
+        },
+      ),
+    ],
+  ] as const)('accepts %s', (_name, asset) => {
+    expect(validateMeshPayload(asset)).toBeNull();
   });
 
   it.each([
-    'line-strip',
-    'triangle-strip',
-  ] as const)('accepts nonindexed %s geometry', (topology) => {
-    const e = validateMeshPayload(
-      mesh({
-        vertices: new Float32Array(12),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 0,
-            vertexCount: 1,
-            topology,
-            materialSlot: 0,
-          },
-        ],
-      }),
-    );
-    expect(e).toBeNull();
-  });
-
-  it('errors when an empty-geometry submesh uses a non-triangle-list topology', () => {
-    const e = validateMeshPayload(
-      mesh({
-        vertices: new Float32Array(0),
-        submeshes: [
-          { indexOffset: 0, indexCount: 0, vertexCount: 0, topology: 'line-list', materialSlot: 0 },
-        ],
-      }),
-    );
-    expect(e?.code).toBe('asset-invalid-value');
-    expect((e?.detail as { reason: string }).reason).toBe('empty-geometry-non-default-topology');
-  });
-
-  it('errors when a submesh index range exceeds the index buffer length', () => {
-    const e = validateMeshPayload(
-      mesh({
-        vertices: new Float32Array(36), // 3 verts * 12
-        indices: Uint16Array.of(0, 1, 2),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 6,
-            vertexCount: 3,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-      }),
-    );
-    expect(e?.code).toBe('mesh-submesh-index-range-out-of-bounds');
-  });
-
-  it('errors when vertices.length is not divisible by 12 (stride mismatch)', () => {
-    const e = validateMeshPayload(
-      mesh({
-        vertices: new Float32Array(13),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 0,
-            vertexCount: 1,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-      }),
-    );
-    expect(e?.code).toBe('mesh-vertex-stride-mismatch');
-  });
-
-  it('errors when maxIndex + 1 !== vertexCount', () => {
-    const e = validateMeshPayload(
-      mesh({
-        vertices: new Float32Array(24), // 2 vertices
-        indices: Uint16Array.of(0, 1, 5), // maxIndex 5 -> expects 6 verts
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 3,
-            vertexCount: 2,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-      }),
-    );
-    expect(e?.code).toBe('mesh-vertex-stride-mismatch');
-    expect((e?.detail as { vertexCount: number }).vertexCount).toBe(6);
-  });
-
-  it('accepts a well-formed indexed mesh', () => {
-    expect(
-      validateMeshPayload(
-        mesh({
-          vertices: new Float32Array(36), // 3 vertices
-          indices: Uint16Array.of(0, 1, 2),
-          submeshes: [
-            {
-              indexOffset: 0,
-              indexCount: 3,
-              vertexCount: 3,
-              topology: 'triangle-list',
-              materialSlot: 0,
-            },
-          ],
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  it('accepts a vertex-only mesh (no indices, skips the maxIndex invariant)', () => {
-    expect(
-      validateMeshPayload(
-        mesh({
-          vertices: new Float32Array(24),
-          submeshes: [
-            {
-              indexOffset: 0,
-              indexCount: 0,
-              vertexCount: 2,
-              topology: 'triangle-list',
-              materialSlot: 0,
-            },
-          ],
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  it('uses the geometry projection for optional vertex colors', () => {
-    const attributes = {
-      position: new Float32Array(9),
-      normal: new Float32Array(9),
-      uv: new Float32Array(6),
-      tangent: new Float32Array(12),
-      color: new Float32Array(12),
-    };
-    expect(
-      validateMeshPayload(
-        mesh({
-          vertices: new Float32Array(3 * 16),
-          indices: Uint16Array.of(0, 1, 2),
-          attributes,
-          submeshes: [
-            {
-              indexOffset: 0,
-              indexCount: 3,
-              vertexCount: 3,
-              topology: 'triangle-list',
-              materialSlot: 0,
-            },
-          ],
-        }),
-      ),
-    ).toBeNull();
+    ['no submeshes', mesh(0, {}, { submeshes: [] }), { code: 'mesh-asset-submeshes-empty' }],
+    [
+      'non-triangle topology on empty geometry',
+      mesh(0, { topology: 'line-list' }),
+      {
+        code: 'asset-invalid-value',
+        detail: { reason: 'empty-geometry-non-default-topology' },
+      },
+    ],
+    [
+      'an index range beyond its buffer',
+      mesh(3, { indexCount: 6 }, { indices: Uint16Array.of(0, 1, 2) }),
+      {
+        code: 'mesh-submesh-index-range-out-of-bounds',
+      },
+    ],
+    [
+      'a vertex buffer with an invalid stride',
+      mesh(1, {}, { vertices: new Float32Array(13) }),
+      {
+        code: 'mesh-vertex-stride-mismatch',
+      },
+    ],
+    [
+      'an out-of-range index',
+      mesh(2, { indexCount: 3 }, { indices: Uint16Array.of(0, 1, 5) }),
+      {
+        code: 'mesh-vertex-stride-mismatch',
+        detail: { vertexCount: 6 },
+      },
+    ],
+    [
+      'an out-of-range Landscape LOD index',
+      mesh(4, { indexCount: 3 }, { indices: Uint16Array.of(0, 1, 4) }),
+      {
+        code: 'mesh-vertex-stride-mismatch',
+      },
+    ],
+  ] as const)('rejects %s', (_name, asset, error) => {
+    expect(validateMeshPayload(asset)).toMatchObject(error);
   });
 });
 
@@ -244,19 +160,14 @@ describe('validateTilesetPayload', () => {
     expect(e?.code).toBe('tileset-region-index-out-of-range');
   });
 
-  it('errors on widthCells / heightCells / pivotX / pivotY out of bounds', () => {
-    expect(
-      validateTilesetPayload(tileset({ tiles: [{ regionIndex: 0, widthCells: 0 }] }))?.detail,
-    ).toMatchObject({ field: 'widthCells' });
-    expect(
-      validateTilesetPayload(tileset({ tiles: [{ regionIndex: 0, heightCells: 65 }] }))?.detail,
-    ).toMatchObject({ field: 'heightCells' });
-    expect(
-      validateTilesetPayload(tileset({ tiles: [{ regionIndex: 0, pivotX: 2 }] }))?.detail,
-    ).toMatchObject({ field: 'pivotX' });
-    expect(
-      validateTilesetPayload(tileset({ tiles: [{ regionIndex: 0, pivotY: -1 }] }))?.detail,
-    ).toMatchObject({ field: 'pivotY' });
+  it.each([
+    ['widthCells', 0],
+    ['heightCells', 65],
+    ['pivotX', 2],
+    ['pivotY', -1],
+  ] as const)('rejects out-of-bounds %s', (field, value) => {
+    const asset = tileset({ tiles: [{ regionIndex: 0, [field]: value }] });
+    expect(validateTilesetPayload(asset)?.detail).toMatchObject({ field });
   });
 
   it('accepts a valid rect collider and rejects a malformed one', () => {
@@ -312,21 +223,4 @@ describe('inferAtlasExtent', () => {
       inferAtlasExtent(tileset({ columns: 8, tileWidth: 16, rows: 4, tileHeight: 32 })),
     ).toEqual({ atlasWidth: 128, atlasHeight: 128 });
   });
-});
-
-it('accepts sparse Landscape LOD indices into a complete shared vertex allocation', () => {
-  const asset = {
-    kind: 'mesh',
-    attributes: {},
-    vertices: new Float32Array(4 * 12),
-    indices: new Uint16Array([0, 1, 2]),
-    materialSlots: [{ slotName: 'Default' }],
-    submeshes: [
-      { indexOffset: 0, indexCount: 3, vertexCount: 4, topology: 'triangle-list', materialSlot: 0 },
-    ],
-  } as import('@forgeax/engine-types').MeshAsset;
-  expect(validateMeshPayload(asset)).toBeNull();
-  expect(validateMeshPayload({ ...asset, indices: new Uint16Array([0, 1, 4]) })?.code).toBe(
-    'mesh-vertex-stride-mismatch',
-  );
 });

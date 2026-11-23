@@ -14,7 +14,6 @@ function blockedAdmission(): SsrSpatialAdmission {
       near: 0.1,
       far: 100,
       screenSpaceReflection: {
-        waterTemporal: 0,
         maxDistance: 40,
         thickness: 0.2,
         maxRoughness: 0.6,
@@ -64,7 +63,6 @@ describe('SSR zero-work contract', () => {
         near: 0.1,
         far: 100,
         screenSpaceReflection: {
-          waterTemporal: 0,
           maxDistance: 40,
           thickness: 0.2,
           maxRoughness: 0.6,

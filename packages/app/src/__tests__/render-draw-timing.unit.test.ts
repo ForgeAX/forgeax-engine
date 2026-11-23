@@ -81,6 +81,28 @@ describe('RenderDrawTiming', () => {
     expect(timing.pipelineCreations).toBe(0);
   });
 
+  it('charges native animation frame waits to scheduling instead of draw CPU', () => {
+    const { state, timing } = fixture();
+    const frame = {};
+    timing.arrive(frame);
+    timing.begin(frame);
+    state.now = 20;
+    timing.resumedPresentation(2);
+    state.now = 24;
+    timing.submit();
+    expect(timing.cpuMs).toBe(6);
+    timing.end();
+
+    const next = {};
+    state.now = 25;
+    timing.arrive(next);
+    timing.begin(next);
+    expect(timing.intervalMs).toBe(25);
+    expect(timing.stallReason).toBe('queue');
+    expect(timing.queuedMs).toBe(18);
+    expect(timing.awaitMs).toBe(1);
+  });
+
   it('reports a queued wait when the draw arrived during the previous turn', () => {
     const { state, timing } = fixture();
     const first = {};

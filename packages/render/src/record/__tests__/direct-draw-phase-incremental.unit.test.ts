@@ -167,26 +167,75 @@ it('retains sealed published rows while readdressing only changed members', () =
   // captures owned Water closures; it does not seal ordinary draw addresses.
   for (const row of first.rows) Object.freeze(row);
   expect(finalizeWaterMaterialAdmissionDraws(first.rows)).toBeUndefined();
-  expect(Object.getOwnPropertyDescriptor(first.rows[0], 'renderableIndex')?.writable).toBe(false);
+  expect(Object.getOwnPropertyDescriptor(first.rows.at(0), 'renderableIndex')?.writable).toBe(
+    false,
+  );
   const work = { ...phase.work };
   const bins = { ...phase.binWork };
   expect(drawn(phase, input())).toBe(first);
   f.write([source(1, opaque, 20)]);
   const moved = drawn(phase, input());
   expect(moved.dispatch).toBe(first.dispatch);
-  expect(moved.rows[0]).toBe(first.rows[0]);
-  expect(moved.rows[1]).not.toBe(first.rows[1]);
-  expect(first.rows[1]?.source.transform.world[14]).toBe(1);
+  expect(moved.rows.at(0)).toBe(first.rows.at(0));
+  expect(moved.rows.at(1)).not.toBe(first.rows.at(1));
+  expect(first.rows.at(1)?.source.transform.world[14]).toBe(1);
   finalizeWaterMaterialAdmissionDraws(moved.rows);
   const shifted = phase.emit(100);
   expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([100, 101, 102, 103]);
   expect(moved.rows.map((row) => row.renderableIndex)).toEqual([0, 1, 2, 3]);
   expect(shifted.dispatch).not.toBe(moved.dispatch);
-  expect(shifted.entryRows.every((row) => shifted.rows.includes(row))).toBe(true);
+  expect(
+    shifted.dispatch.every(
+      (entry) =>
+        shifted.rows.at(entry.renderableIndex - 100)?.source.entityKey === entry.entityIndex,
+    ),
+  ).toBe(true);
   expect(phase.work.rebuilt - work.rebuilt).toBe(1);
   expect(phase.binWork.enqueued).toBe(bins.enqueued);
   expect(phase.binWork.dequeued).toBe(bins.dequeued);
   expect(phase.emit(100)).toBe(shifted);
+});
+
+it('issues moving native batch members at their current pass address without a second row', () => {
+  const f = fixture(64, 0);
+  const native = new DirectDrawPhase();
+  const borrowed = new DirectDrawPhase();
+  const raw = f.input();
+  assert(raw.materials);
+  const materials = raw.materials.with(opaque, undefined, {
+    ...opaque.snapshot,
+    immutableValues: true,
+  });
+  const enter = (phase: DirectDrawPhase, nativeLod: boolean) => {
+    const input = f.input();
+    phase.queue({
+      ...input,
+      materials,
+      lod: nativeLod ? undefined : input.lod,
+      select: (binding) => materials.get(binding.material)?.snapshot,
+    });
+    return phase.emit(100);
+  };
+  const pinned = enter(native, true);
+  enter(borrowed, false);
+  for (const row of pinned.rows) Object.freeze(row);
+  const firstCopies = [native.work.readdressed, borrowed.work.readdressed];
+  for (let frame = 1; frame <= 100; frame++) {
+    const entity = frame % 64;
+    f.write([source(entity, opaque, 100 + frame)]);
+    const a = enter(native, true);
+    const b = enter(borrowed, false);
+    expect(a.rows.at(entity)?.renderableIndex).toBe(100 + entity);
+    expect(a.rows.at(entity)?.source.transform.world[14]).toBe(100 + frame);
+    expect(a.rows.at(entity)?.renderState).toEqual(b.rows.at(entity)?.renderState);
+    expect(a.dispatch).toEqual(b.dispatch);
+  }
+  expect(native.work.readdressed - (firstCopies[0] as number)).toBe(0);
+  expect(borrowed.work.readdressed - (firstCopies[1] as number)).toBe(100);
+  expect(pinned.rows.at(33)?.source.transform.world[14]).toBe(33);
+  const shifted = native.emit(7);
+  expect(shifted.rows.at(33)?.renderableIndex).toBe(40);
+  expect(pinned.rows.at(33)?.renderableIndex).toBe(133);
 });
 
 it('reorders sealed publications without rewriting their original compact addresses', () => {
@@ -204,7 +253,9 @@ it('reorders sealed publications without rewriting their original compact addres
   expect(next.rows.find((row) => row.source.entityKey === 1)).toBe(firstByEntity.get(1));
   expect(next.rows.find((row) => row.source.entityKey === 0)).not.toBe(firstByEntity.get(0));
   expect(next.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 2]);
-  expect(next.entryRows).toEqual(next.rows);
+  expect(
+    next.dispatch.map((entry) => next.rows.at(entry.renderableIndex)?.source.entityKey),
+  ).toEqual(next.dispatch.map((entry) => entry.entityIndex));
   expect(phase.work.rebuilt).toBe(work.rebuilt);
   expect(phase.binWork).toEqual(bins);
   expect(drawn(phase, f.input(eye(3)))).toBe(next);
@@ -228,7 +279,7 @@ it('projects readonly LOD rows without changing placement or quiet camera identi
   };
   const input = (camera: number): DirectDrawInput => ({ ...f.input(), lod, lodCamera: [camera] });
   const first = drawn(phase, input(0));
-  expect(first.rows[0]?.renderableIndex).toBe(0);
+  expect(first.rows.at(0)?.renderableIndex).toBe(0);
   expect(projected?.renderableIndex).toBe(91);
   const work = { ...phase.work };
   const bins = { ...phase.binWork };
@@ -236,9 +287,9 @@ it('projects readonly LOD rows without changing placement or quiet camera identi
   assert(projected);
   projected = Object.freeze({ ...projected, mesh: { ...mesh } });
   const next = drawn(phase, input(2));
-  expect(next.rows[0]?.mesh).toBe(projected.mesh);
-  expect(next.rows[0]).not.toBe(first.rows[0]);
-  expect(next.rows[0]?.renderableIndex).toBe(0);
+  expect(next.rows.at(0)?.mesh).toBe(projected.mesh);
+  expect(next.rows.at(0)).not.toBe(first.rows.at(0));
+  expect(next.rows.at(0)?.renderableIndex).toBe(0);
   expect(projected.renderableIndex).toBe(91);
   expect(phase.work.rebuilt).toBe(work.rebuilt);
   expect(phase.binWork).toEqual(bins);
@@ -257,7 +308,7 @@ it('refreshes retained rows even when no authored pass enters a bin', () => {
   expect(first.rows).toHaveLength(1);
   f.write([source(0, opaque, 9)]);
   const next = drawn(phase, input());
-  expect(next.rows[0]?.source.transform.world[14]).toBe(9);
+  expect(next.rows.at(0)?.source.transform.world[14]).toBe(9);
   expect(next).not.toBe(first);
   expect(drawn(phase, input())).toBe(next);
 });
@@ -432,7 +483,8 @@ it('updates only the D changed rows of a steady frame (O(D) bin and sort operati
   expect(phase.binWork.dequeued - bins.dequeued).toBe(0);
   expect(phase.binWork.enqueued - bins.enqueued).toBe(0);
   expect(phase.binWork.bins).toBe(bins.bins);
-  expect(phase.sortWork.changed - sort.changed).toBe(8);
+  // Each of the four moved transparent entries updates its existing depth once.
+  expect(phase.sortWork.changed - sort.changed).toBe(4);
   expect(phase.work.cold).toBe(work.cold);
   // The retained order equals a fresh phase's order over the same frame.
   expect(order(output)).toEqual(order(drawn(new DirectDrawPhase(), f.input())));
@@ -475,6 +527,118 @@ it('keeps views independent: each view orders its own camera from its own diffs'
   expect(order(drawn(front, f.input(eye(-100)))).at(0)).toBe(20);
   expect(order(drawn(back, f.input(eye(100)))).at(-1)).toBe(20);
   expect(front.work.rebuilt - work.rebuilt).toBe(1);
+});
+
+it('samples a mutable predicate once per source and rebuilds only changed members', () => {
+  const f = fixture(64, 0);
+  const phase = new DirectDrawPhase();
+  let hidden = 7;
+  let samples = 0;
+  const visible = (row: RenderableSnapshot) => {
+    samples++;
+    return row.entityKey !== hidden;
+  };
+  expect(drawn(phase, { ...f.input(), visible }).rows).toHaveLength(63);
+  const before = phase.work.rebuilt;
+  hidden = 11;
+  f.write([source(5, opaque, 42)]);
+  samples = 0;
+  const output = drawn(phase, { ...f.input(), visible });
+  expect(samples).toBe(64);
+  expect(output.rows.map((row) => row.source.entityKey)).toContain(7);
+  expect(output.rows.map((row) => row.source.entityKey)).not.toContain(11);
+  expect(phase.work.rebuilt - before).toBe(3);
+  const unchanged = phase.work.rebuilt;
+  drawn(phase, { ...f.input(), visible: (row) => visible(row) });
+  expect(phase.work.rebuilt).toBe(unchanged);
+  expect(drawn(phase, f.input()).rows).toHaveLength(64);
+  expect(phase.work.rebuilt - unchanged).toBe(1);
+});
+
+it('publishes a replacement borrowed source with unchanged admission and Scene row', () => {
+  const f = fixture(12, 0);
+  const phase = new DirectDrawPhase();
+  const input = f.input();
+  const { draws: _evidence, ...scene } = input.scene;
+  const slot = f.scene.slot(5)?.slot;
+  assert(slot !== undefined && scene.drawSnapshotAt);
+  let changed = scene.drawSnapshotAt(slot);
+  const borrowed = {
+    ...input,
+    scene: {
+      ...scene,
+      drawSnapshotAt: (index: number) => (index === slot ? changed : scene.drawSnapshotAt?.(index)),
+    },
+    visible: () => true,
+  };
+  const before = drawn(phase, borrowed);
+  const count = phase.work.rebuilt;
+  changed = source(5, opaque, 42);
+  const after = drawn(phase, borrowed);
+  expect(phase.work.rebuilt - count).toBe(1);
+  expect(after.rows.find((row) => row.source.entityKey === 5)?.source).toBe(changed);
+  expect(before.rows.find((row) => row.source.entityKey === 5)?.source).not.toBe(changed);
+});
+
+it('addresses only moved native rows across several pages and preserves older pass submissions', () => {
+  const f = fixture(4096, 0);
+  const phase = new DirectDrawPhase();
+  const initial = f.input().materials;
+  assert(initial);
+  const materials = initial.with(opaque, undefined, { ...opaque.snapshot, immutableValues: true });
+  const issue = () => {
+    const frame = f.input();
+    return drawn(phase, {
+      ...frame,
+      lod: undefined,
+      materials,
+      select: (binding) => materials.get(binding.material)?.snapshot,
+      scene: { ...frame.scene, allocatedSourceAddress: f.scene.allocatedSourceAddress },
+    }).rows;
+  };
+  const first = issue();
+  const held = f.scene.addressOwnedMeshDrawRows(first);
+  expect(held.rows.length).toBe(4096);
+  const firstAddresses = held.rows.map((row) => row.meshSlot);
+  const address = vi.spyOn(f.scene, 'meshDrawSlot');
+  try {
+    for (let frame = 1; frame <= 4; frame++) {
+      f.write([source(5, opaque, frame), source(71, opaque, frame), source(4001, opaque, frame)]);
+      const rows = issue();
+      const current = f.scene.addressOwnedMeshDrawRows(rows);
+      expect(current.capacity).toBe(held.capacity);
+      for (const index of [5, 71, 4001]) {
+        expect(current.rows.at(index)?.source.transform.world[14]).toBe(frame);
+        expect(current.rows.at(index)?.meshSlot).toBe(firstAddresses[index]);
+        expect(held.rows.at(index)?.source.transform.world[14]).toBe(index);
+      }
+      expect(current.rows.at(1500)).toBe(held.rows.at(1500));
+    }
+    expect(address).not.toHaveBeenCalled();
+    expect(first.at(-1)?.source.entityKey).toBe(4095);
+    expect(first.slice(63, 66).map((row) => row.source.entityKey)).toEqual([63, 64, 65]);
+  } finally {
+    address.mockRestore();
+  }
+});
+
+it('publishes dense pose edits with the current ordinary physical addresses', () => {
+  const f = fixture(128, 0);
+  const phase = new DirectDrawPhase();
+  const input = () => {
+    const frame = f.input();
+    return {
+      ...frame,
+      scene: { ...frame.scene, allocatedSourceAddress: f.scene.allocatedSourceAddress },
+    };
+  };
+  const cold = drawn(phase, input());
+  const placed = f.scene.addressOwnedMeshDrawRows(cold.rows);
+  expect(placed.rows).not.toBe(cold.rows);
+  f.write(Array.from({ length: 128 }, (_, index) => source(index, opaque, index + 1)));
+  const moved = drawn(phase, input());
+  expect(f.scene.addressOwnedMeshDrawRows(moved.rows).rows).toBe(moved.rows);
+  expect(moved.rows.map((row) => row.meshSlot)).toEqual(placed.rows.map((row) => row.meshSlot));
 });
 
 it('re-reads only flipped rows when camera admission evidence changes', () => {
@@ -533,13 +697,13 @@ it('replays unchanged bins as retained bundles while rows enter another bin', as
   // One draw per dispatch entry in phase order, addressed by its stable slot.
   const record = (output: ReturnType<DirectDrawPhase['emit']>) => (pass: RhiRenderPassEncoder) => {
     let pipeline: unknown;
-    for (const [index, entry] of output.dispatch.entries()) {
+    for (const entry of output.dispatch) {
       const next = pipelines.get(entry.materialHandle);
       if (next !== pipeline) {
         pipeline = next;
         pass.setPipeline(next as never);
       }
-      const row = output.entryRows[index];
+      const row = output.rows.at(entry.renderableIndex);
       pass.setBindGroup(2, group, [(row?.sceneSlot?.slot ?? 0) * 256]);
       pass.draw(3);
     }
@@ -668,13 +832,13 @@ it('keeps placements of moved rows exactly equal to a fresh phase (randomized mo
       row.source.layer ?? 0,
       row.renderState?.blend === undefined,
     ]),
-    dispatch: output.dispatch.map((entry, index) => [
+    dispatch: output.dispatch.map((entry) => [
       entry.entityIndex,
       entry.renderableIndex,
       entry.queue,
       entry.layer,
       entry.tags.LightMode,
-      output.entryRows[index]?.source.transform.world[14],
+      output.rows.at(entry.renderableIndex)?.source.transform.world[14],
     ]),
   });
   let retained = 0;
@@ -775,14 +939,17 @@ it('retains fixed dispatch identity for row-only moves while publishing new row 
   const oldRow = first.rows.find((row) => row.source.entityKey === 31);
   assert(oldRow);
   const oldZ = oldRow.source.transform.world[14];
+  const write = vi.spyOn(MaterialRelations.prototype, 'write');
   const append = vi.spyOn(MemberMaterialPasses.prototype, 'append');
   const finish = vi.spyOn(MemberMaterialPasses.prototype, 'finish');
   onTestFinished(() => {
+    write.mockRestore();
     append.mockRestore();
     finish.mockRestore();
   });
   f.write([source(31, opaque, 200)]);
   const next = drawn(phase, input());
+  expect(write).toHaveBeenCalledTimes(1);
   expect(next.materialRows).toBe(first.materialRows);
   expect(append.mock.calls.length).toBe(0);
   expect(finish.mock.calls.length).toBe(0);
@@ -832,6 +999,7 @@ it('replaces the consumed dispatch key when compact indices move to a new offset
   const shifted = phase.emit(100);
   expect(shifted.dispatch).not.toBe(first.dispatch);
   expect(shifted.dispatch.map((entry) => entry.renderableIndex)).toEqual([100, 101, 102, 103]);
+  expect(first.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 2, 3]);
   assert(first.materialPasses);
   assert(shifted.materialPasses);
   expect(shifted.materialPasses).not.toBe(first.materialPasses);
@@ -843,7 +1011,7 @@ it('replaces the consumed dispatch key when compact indices move to a new offset
 it('owns editable addresses and overlays when an LOD projection returns frozen rows', () => {
   const f = fixture(2, 0);
   const phase = new DirectDrawPhase();
-  const borrowed: ReturnType<DirectDrawInput['lod']>[number][] = [];
+  const borrowed: import('../frame-snapshot').ValidatedRenderable[] = [];
   const input: DirectDrawInput = {
     ...f.input(),
     lod: (rows) =>
@@ -869,12 +1037,12 @@ it('keeps ordinary phase publications detached after Water admission observes th
   expect(finalizeWaterMaterialAdmissionDraws(rows)).toBeUndefined();
   const shifted = phase.emit(20);
   expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([20, 21]);
-  expect(shifted.rows[0]).not.toBe(rows[0]);
+  expect(shifted.rows.at(0)).not.toBe(rows.at(0));
   expect(rows.map((row) => row.renderableIndex)).toEqual([0, 1]);
-  expect(shifted.rows[0]?.source).toBe(rows[0]?.source);
+  expect(shifted.rows.at(0)?.source).toBe(rows.at(0)?.source);
   expect(phase.emit(20)).toBe(shifted);
-  expect(Object.getOwnPropertyDescriptor(rows[0], 'source')?.writable).toBe(true);
-  expect(Object.getOwnPropertyDescriptor(rows[0], 'renderableIndex')?.writable).toBe(true);
+  expect(Object.getOwnPropertyDescriptor(rows.at(0), 'source')?.writable).toBe(true);
+  expect(Object.getOwnPropertyDescriptor(rows.at(0), 'renderableIndex')?.writable).toBe(true);
   expect(Object.isFrozen(rows)).toBe(false);
 });
 
@@ -1038,6 +1206,37 @@ it('maintains material relations only while their recording owner admits reuse',
   expect(drawn(phase, { ...raw, retainMaterialBindings: true }).materialRows).toBeUndefined();
 });
 
+it('requeues changed members after their pose projection throws, preserving the previous frame', () => {
+  const f = fixture(32, 0);
+  const phase = new DirectDrawPhase();
+  const previous = drawn(phase, f.input());
+  f.write(
+    [7, 15, 23].map((id) => {
+      const moved = source(id, opaque);
+      moved.transform.world[12] = id + 100;
+      return moved;
+    }),
+  );
+  const current = f.input();
+  expect(() =>
+    phase.queue({
+      ...current,
+      lod: () => {
+        throw new Error('pose projection');
+      },
+    }),
+  ).toThrow('pose projection');
+  const retried = drawn(phase, current);
+  for (const id of [7, 15, 23]) {
+    expect(
+      retried.rows.find((row) => row.source.entityKey === id)?.source.transform.world[12],
+    ).toBe(id + 100);
+    expect(
+      previous.rows.find((row) => row.source.entityKey === id)?.source.transform.world[12],
+    ).not.toBe(id + 100);
+  }
+});
+
 it('retries an emitted material relationship failure instead of accepting the prior output', () => {
   const f = fixture(64, 0);
   const phase = new DirectDrawPhase();
@@ -1062,4 +1261,22 @@ it('retries an emitted material relationship failure instead of accepting the pr
   const retried = phase.emit();
   expect(retried.rows).toHaveLength(64);
   expect(retried.materialRows?.length).toBe(64);
+});
+
+it('publishes the local keyed-draw span across changing rows and relocated passes', () => {
+  const f = fixture(8, 0);
+  const phase = new DirectDrawPhase();
+  const onlyOrdinary = drawn(phase, f.input());
+  expect([onlyOrdinary.nativeStart, onlyOrdinary.nativeEnd]).toEqual([0, 0]);
+  f.write([2, 5].map((id) => ({ ...source(id, opaque), nativeDraw: { key: 'mesh-child' } })));
+  const mixed = drawn(phase, f.input());
+  const native = mixed.rows.filter((row) => row.source.nativeDraw !== undefined);
+  expect(native.map((row) => row.source.entityKey)).toEqual([2, 5]);
+  expect([mixed.nativeStart, mixed.nativeEnd]).toEqual([2, 6]);
+  const relocated = phase.emit(100);
+  expect([relocated.nativeStart, relocated.nativeEnd]).toEqual([2, 6]);
+  f.write([source(2, opaque), source(5, opaque)]);
+  const cleared = drawn(phase, f.input());
+  expect([cleared.nativeStart, cleared.nativeEnd]).toEqual([0, 0]);
+  expect([mixed.nativeStart, mixed.nativeEnd]).toEqual([2, 6]);
 });

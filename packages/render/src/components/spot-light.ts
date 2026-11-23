@@ -129,6 +129,8 @@ export const SpotLight = defineComponent('SpotLight', {
   // 7 shadow fields aligned with the shared light shadow vocabulary.
   shadowMapAspect: { type: 'f32', default: 1 },
   shadowCasterChannels: { type: 'f64', default: 0xffffffff },
+  // Opt into a second depth product for this light's static casters.
+  staticShadowCache: { type: 'bool', default: false },
   shadowAutoUpdate: { type: 'bool', default: true },
   shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 1024 },
@@ -140,7 +142,7 @@ export const SpotLight = defineComponent('SpotLight', {
   pcfKernelSize: { type: 'f32', default: 3 },
   shadowFilter: {
     type: 'enum',
-    labels: { basic: 1, pcfVogel: 6, pcfSoft: 7, variance: 8 },
+    labels: { basic: 1, pcfVogel: 6, pcfSoft: 7 },
     default: 6,
   },
   shadowBiasMode: { type: 'enum', labels: { facingNormal: 0, constant: 1 }, default: 0 },
@@ -150,7 +152,6 @@ export const SpotLight = defineComponent('SpotLight', {
   // to a shadowed contribution. Keep it in the author-facing [0,1] domain;
   // extract/record transport this one fact to surface and volume consumers.
   shadowIntensity: { type: 'f32', default: 1 },
-  shadowBlurSamples: { type: 'f32', default: 8 },
   // Optional shared TextureAsset identity; absent keeps the normal spot path.
   // Publication and residency remain owned by the asset and GPU resource owners.
   projector: { type: 'asset<texture>', simulationTransient: true },

@@ -93,9 +93,11 @@ export function addAtmosphereBackground(
   options:
     | {
         readonly mode: 'full';
+        readonly computeSkySh?: boolean;
+        readonly fastAerialPerspective?: boolean | undefined;
         readonly clusters?: StandardClusterGraphBuffers | null | undefined;
       }
-    | { readonly mode: 'sky' } = { mode: 'full' },
+    | { readonly mode: 'sky'; readonly computeSkySh?: boolean } = { mode: 'full' },
 ): Result<GraphEnvironment, RenderGraphError> {
   const mode = options.mode;
   const cube = graph.importTexture(
@@ -189,8 +191,15 @@ export function addAtmosphereBackground(
   const full =
     options.mode === 'full'
       ? options.clusters?.kind === 'texture'
-        ? addAtmospherePackedLuts(graph, options.clusters, params.value, dirty, visibility)
-        : addAtmosphereLuts(graph, params.value, dirty, visibility)
+        ? addAtmospherePackedLuts(
+            graph,
+            options.clusters,
+            params.value,
+            dirty,
+            visibility,
+            options.fastAerialPerspective,
+          )
+        : addAtmosphereLuts(graph, params.value, dirty, visibility, options.fastAerialPerspective)
       : undefined;
   if (full !== undefined && !full.ok) return full;
   const tables = full ?? addAtmosphereSkyLuts(graph, { parameters: params.value, dirty });
@@ -331,7 +340,7 @@ export function addAtmosphereBackground(
     });
     if (!pass.ok) return pass;
   }
-  const ibl = addAtmosphereIbl(graph, cubeView.value, vertices.value, dirty);
+  const ibl = addAtmosphereIbl(graph, cubeView.value, options.computeSkySh === true, dirty);
   if (!ibl.ok) return ibl;
   const background = graph.addRasterPass(SkyPass.atmosphereBackground, {
     accesses: [

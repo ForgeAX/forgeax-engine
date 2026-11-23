@@ -92,6 +92,27 @@ function header(message: RenderPublicationMessage): Float64Array {
 }
 
 describe('render publication record protocol', () => {
+  it('releases publication storage under pressure without invalidating a sealed record', () => {
+    const s = session(1);
+    try {
+      s.frame();
+      const candidate = s.publisher.prepare(1).unwrap();
+      s.publisher.trimStorage();
+      const sent = structuredClone(candidate.message, {
+        transfer: renderPublicationTransfers(candidate.message),
+      });
+      candidate.accept();
+      s.receiver.accept(sent).unwrap();
+      s.publisher.recycle(sent.revision, [sent.record]).unwrap();
+      const before = s.publisher.inspect().allocations;
+      s.frame();
+      expect(s.publisher.inspect().allocations).toBe(before + 1);
+      s.frame();
+      expect(s.publisher.inspect().allocations).toBe(before + 1);
+    } finally {
+      s.dispose();
+    }
+  });
   it('sends an unchanged frame as one header-only record and no side rows', () => {
     const s = session(1);
     try {

@@ -3,36 +3,10 @@ interface RasterClass {
   readonly recordingClassKey: string;
 }
 interface Publication {
-  source: object;
   readonly sceneIdentity: number;
   readonly graphGeneration: number;
-  readonly rawClasses: readonly string[];
-  readonly recordingClasses: readonly string[];
-  rigidBindings: object;
-  skinBindings: object | undefined;
   readonly raw: object;
-  recording: object;
-  /** Stock-recorder classes the last graph with this recording identity was built with. */
-  builtRecording: ReadonlySet<string>;
-}
-
-function sameRawClasses(previous: Publication | undefined, classes: ReadonlySet<string>): boolean {
-  return (
-    previous !== undefined &&
-    previous.rawClasses.length === classes.size &&
-    previous.rawClasses.every((key) => classes.has(key))
-  );
-}
-
-function coversRecordingClasses(
-  previous: Publication | undefined,
-  classes: ReadonlySet<string>,
-): boolean {
-  if (previous === undefined) return false;
-  for (const key of classes) {
-    if (!previous.builtRecording.has(key)) return false;
-  }
-  return true;
+  readonly recording: object;
 }
 
 /** One raster publication, with the original and stock-recorder dependency projections. */
@@ -48,6 +22,9 @@ export class RasterGraphIdentity {
     return identity;
   }
   private current: Publication | undefined;
+  private readonly rawMembers = new Map<string, boolean>();
+  private readonly recordingMembers = new Map<string, boolean>();
+  private visit = false;
   /** Diagnostic counts of which input replaced the raw or recording identity. */
   readonly changes: Record<string, number> = {};
   private count(reason: string): void {
@@ -55,90 +32,74 @@ export class RasterGraphIdentity {
   }
 
   update(
-    source: object,
+    _source: object,
     sceneIdentity: number,
     graphGeneration: number,
     batches: readonly RasterClass[],
-    rigidBindings: object,
-    skinBindings: object | undefined,
+    _rigidBindings: object,
+    _skinBindings: object | undefined,
   ): Pick<Publication, 'raw' | 'recording'> {
     const old = this.current;
-    // Capacities and visible-window bindings are resolved when the graph
-    // executes; only the view's pass-list generation shapes the graph.
-    const sameResources =
+    const sameGeneration =
       old !== undefined &&
       old.sceneIdentity === sceneIdentity &&
       old.graphGeneration === graphGeneration;
-    if (sameResources && old.source === source) {
-      old.rigidBindings = rigidBindings;
-      old.skinBindings = skinBindings;
-      return old;
+    const priorCount = this.rawMembers.size;
+    this.visit = !this.visit;
+    let seen = 0;
+    let added = false;
+    let late = false;
+    let seenRecording = 0;
+    if (!sameGeneration) this.recordingMembers.clear();
+    for (const batch of batches) {
+      const stamp = this.rawMembers.get(batch.classKey);
+      if (stamp !== this.visit) {
+        this.rawMembers.set(batch.classKey, this.visit);
+        seen++;
+        if (stamp === undefined) added = true;
+      }
+      const recording = this.recordingMembers.get(batch.recordingClassKey);
+      if (recording !== this.visit) {
+        this.recordingMembers.set(batch.recordingClassKey, this.visit);
+        seenRecording++;
+        if (recording === undefined) late = true;
+      }
     }
+    if (this.recordingMembers.size > seenRecording)
+      this.recordingMembers.forEach((stamp, key) => {
+        if (stamp !== this.visit) this.recordingMembers.delete(key);
+      });
+    const removed = this.rawMembers.size > seen;
+    if (removed)
+      this.rawMembers.forEach((stamp, key) => {
+        if (stamp !== this.visit) this.rawMembers.delete(key);
+      });
     if (old !== undefined) {
       if (old.sceneIdentity !== sceneIdentity) this.count('sceneIdentity');
       if (old.graphGeneration !== graphGeneration) this.count('resourceGeneration');
+      if (late && sameGeneration) this.count('lateRecordingClasses');
+      if (added || seen !== priorCount) this.count('rawClasses');
     }
-    const raw = new Set<string>(),
-      recording = new Set<string>();
-    for (const batch of batches) {
-      raw.add(batch.classKey);
-      recording.add(batch.recordingClassKey);
-    }
-    // Membership is the contract; neither projection observes class order.
-    const sameRaw = sameRawClasses(old, raw);
-    // A stock-recorder graph projects classes first seen after compilation
-    // from the live frame (residency-owned meshes are bound outside the
-    // graph), so its identity no longer depends on the class set. Count the
-    // classes it had to admit late for diagnostics only.
-    const covered = coversRecordingClasses(old, recording);
-    const recordingIdentity = sameResources ? old.recording : {};
-    if (old !== undefined && !covered) this.count('lateRecordingClasses');
-    let recordingClasses: string[] | undefined;
-    let builtRecording: ReadonlySet<string>;
-    if (sameResources && covered) {
-      builtRecording = old.builtRecording;
-    } else {
-      recordingClasses = [...recording];
-      builtRecording = sameResources
-        ? new Set([...old.builtRecording, ...recordingClasses])
-        : new Set(recordingClasses);
-    }
-    if (old !== undefined && !sameRaw) this.count('rawClasses');
-    if (sameResources && sameRaw) {
-      old.source = source;
-      old.recording = recordingIdentity;
-      old.builtRecording = builtRecording;
-      old.rigidBindings = rigidBindings;
-      old.skinBindings = skinBindings;
-      return old;
-    }
-    const rawClasses = [...raw];
-    recordingClasses ??= [...recording];
-    this.current = {
-      source,
+    if (sameGeneration && !added && !removed) return old;
+    const current = {
       sceneIdentity,
       graphGeneration,
-      rawClasses,
-      recordingClasses,
-      rigidBindings,
-      skinBindings,
       raw: {},
-      recording: recordingIdentity,
-      builtRecording,
+      recording: sameGeneration ? old.recording : {},
     };
-    return this.current;
+    this.current = current;
+    return current;
   }
 
-  /**
-   * Record the classes a stock-recorder graph was actually built with. A graph
-   * rebuilt for another dependency holds only the then-live classes; a later
-   * reappearing class must change the identity again.
-   */
+  /** The authored graph initially projects its then-live classes. */
   built(recordingClasses: Iterable<string>): void {
-    if (this.current !== undefined) this.current.builtRecording = new Set(recordingClasses);
+    this.recordingMembers.clear();
+    for (const key of recordingClasses) this.recordingMembers.set(key, this.visit);
   }
 
   clear(): void {
     this.current = undefined;
+    this.rawMembers.clear();
+    this.recordingMembers.clear();
   }
 }

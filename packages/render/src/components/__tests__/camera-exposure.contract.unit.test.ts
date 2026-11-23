@@ -71,15 +71,34 @@ describe('CameraExposure contract', () => {
     expect(describeExposure(cameraExposureFromColumns(perspectiveCamera))).toBe('auto:1.25');
   });
 
+  it('retains zero manual exposure through both camera factories', () => {
+    const exposure = { kind: 'manual', multiplier: 0 } as const;
+    expect(cameraExposureFromColumns(perspective({ fov: 1, aspect: 1, exposure }))).toEqual(
+      exposure,
+    );
+    expect(
+      cameraExposureFromColumns(orthographic({ left: -1, right: 1, bottom: -1, top: 1, exposure })),
+    ).toEqual(exposure);
+    expect(() =>
+      validateCameraExposure({
+        kind: 'auto',
+        fallback: 0,
+        compensationEv: 0,
+        rangeEv: [-8, 8],
+        rates: [3, 1],
+      }),
+    ).toThrow(CameraError);
+  });
+
   it('rejects non-finite, reversed, and negative-rate authoring', () => {
-    expect(() => validateCameraExposure({ kind: 'manual', multiplier: 0 })).toThrow(CameraError);
+    expect(() => validateCameraExposure({ kind: 'manual', multiplier: -1 })).toThrow(CameraError);
     try {
-      validateCameraExposure({ kind: 'manual', multiplier: 0 });
+      validateCameraExposure({ kind: 'manual', multiplier: -1 });
     } catch (error) {
       expect(error).toMatchObject({
         code: 'camera-exposure-invalid',
-        expected: 'a finite number greater than zero',
-        detail: { field: 'multiplier', actual: 0 },
+        expected: 'a finite non-negative number',
+        detail: { field: 'multiplier', actual: -1 },
       });
     }
     expect(() =>

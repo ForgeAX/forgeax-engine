@@ -1,4 +1,5 @@
 // @perf-budget-skip: intentional real Vite server integration gate.
+
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,19 +18,43 @@ import { createUiLoader, type UiAsset } from '@forgeax/engine-ui';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { createServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import {
   AssetRegistry,
   createCatalogHotSubscription,
   createCatalogSource,
   defineAssetKind,
 } from '../../../assets-runtime/src/index.js';
+import {
+  directPackFixture,
+  metaFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
-const GUID = '01900000-0000-7000-8000-aaaaaaaaaaaa';
+const drainCalls = vi.hoisted(() => vi.fn());
+vi.mock('../dev/revision-observer.js', async (original) => {
+  const observer = await original<typeof import('../dev/revision-observer.js')>();
+  return {
+    ...observer,
+    createRevisionObserver(...args: Parameters<typeof observer.createRevisionObserver>) {
+      const live = observer.createRevisionObserver(...args);
+      return {
+        ...live,
+        drain: () => {
+          drainCalls();
+          return live.drain();
+        },
+      };
+    },
+  };
+});
+
+const GUID = 'a1521f51-67a3-52f2-9241-5373b3afb6fc';
 
 describe('DevSession through a real Vite server', () => {
   let root: string | undefined;
-  let server: Awaited<ReturnType<typeof createServer>> | undefined;
+  let server: Awaited<ReturnType<typeof createPackTestServer>> | undefined;
 
   afterEach(async () => {
     await server?.close();
@@ -49,14 +74,9 @@ describe('DevSession through a real Vite server', () => {
       await writeFile(join(assets, `${name}.ui.css`), 'div { color: white; }');
       await writeFile(
         join(assets, `${name}.ui.html.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'ui',
-          source: `${name}.ui.html`,
-          importSettings: {},
-          subAssets: [{ guid, sourceKey: `ui/${name}`, sourceIndex: 0, kind: 'ui' }],
-        }),
+        metaFixture(`${name}.ui.html`, 'ui', [
+          { guid, sourceKey: `ui/${name}`, sourceIndex: 0, kind: 'ui' },
+        ]),
       );
     }
     const uiImporter = createUiImporter();
@@ -69,13 +89,7 @@ describe('DevSession through a real Vite server', () => {
       importers: [{ ...uiImporter, import: imported }],
       ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc', 'v2') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     const base = server.resolvedUrls?.local[0];
     if (!base) throw new Error('Vite did not expose its local URL');
@@ -85,10 +99,7 @@ describe('DevSession through a real Vite server', () => {
     expect(imported).not.toHaveBeenCalled();
     let hotDelta: (data: unknown) => void = () => {};
     let publishedDigest: string | undefined;
-    let observedPublication = () => {};
-    const publicationHot = new Promise<void>((resolve) => {
-      observedPublication = resolve;
-    });
+    const { promise: publicationHot, resolve: observedPublication } = testGate();
     const send = vi.fn((message: { type?: string; event?: string; data?: unknown }) => {
       if (
         typeof message === 'object' &&
@@ -162,7 +173,7 @@ describe('DevSession through a real Vite server', () => {
       expect(imported).toHaveBeenCalledTimes(1);
       const after = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
       expect(after.find((row) => row.guid === GUID)).toMatchObject({
-        lifecycle: 'current',
+        lifecycle: 'stale',
         publication: { generation: expect.any(Number) },
       });
       expect(after.find((row) => row.guid === unused)).toMatchObject({
@@ -283,21 +294,15 @@ describe('DevSession through a real Vite server', () => {
     await writeFile(source, '{broken');
     await writeFile(
       join(assets, 'sibling.pack.json'),
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: '01900000-0000-7000-8000-bbbbbbbbbbbb',
-        assets: { 'effect/sibling': { kind: 'test-effect', payload: { value: 2 }, refs: [] } },
-      }),
+      JSON.stringify(
+        directPackFixture('01900000-0000-7000-8000-bbbbbbbbbbbb', {
+          'effect/sibling': { kind: 'test-effect', payload: { value: 2 }, refs: [] },
+        }),
+      ),
     );
     const binding = createStandaloneRuntimeAssetBinding('startup-repair');
     const plugin = pluginPack({ roots: [assets], runtimeBinding: binding });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     const catalogUrl = new URL(binding.catalogUrl, server.resolvedUrls?.local[0]).href;
     expect((await fetch(catalogUrl)).status).toBe(500);
@@ -305,11 +310,11 @@ describe('DevSession through a real Vite server', () => {
     expect((await fetch(catalogUrl)).status).toBe(500);
     await writeFile(
       source,
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: GUID,
-        assets: { 'effect/main': { kind: 'test-effect', payload: { value: 1 }, refs: [] } },
-      }),
+      JSON.stringify(
+        directPackFixture(GUID, {
+          'effect/main': { kind: 'test-effect', payload: { value: 1 }, refs: [] },
+        }),
+      ),
     );
     await expect.poll(async () => (await fetch(catalogUrl)).status, { timeout: 5000 }).toBe(200);
     const catalog = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
@@ -352,14 +357,7 @@ describe('DevSession through a real Vite server', () => {
       await writeFile(join(assets, `${index}.blob`), String(index));
       await writeFile(
         join(assets, `${index}.blob.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'test-blob',
-          source: `${index}.blob`,
-          importSettings: {},
-          subAssets: [{ guid, sourceIndex: 0, kind: 'test-blob' }],
-        }),
+        metaFixture(`${index}.blob`, 'test-blob', [{ guid, sourceIndex: 0, kind: 'test-blob' }]),
       );
     }
     const importer: Importer = {
@@ -397,22 +395,18 @@ describe('DevSession through a real Vite server', () => {
       producerReadiness: 'on-demand',
       ddc: { projectDdcRoot: join(root, 'ddc') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     const catalogUrl = new URL(binding.catalogUrl, server.resolvedUrls?.local[0]).href;
     expect((await fetch(catalogUrl)).status).toBe(200);
+    drainCalls.mockClear();
     const responses = await Promise.all(
       guids.map((guid) =>
         fetch(new URL(`${binding.importUrlBase}/${guid}`, catalogUrl), { method: 'POST' }),
       ),
     );
     for (const response of responses) expect(response.status).toBe(200);
+    expect(drainCalls).toHaveBeenCalledTimes(guids.length);
     const catalog = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
     expect(catalog).toHaveLength(2);
     expect(catalog.every((row) => row.lifecycle === 'current')).toBe(true);
@@ -431,11 +425,9 @@ describe('DevSession through a real Vite server', () => {
   it('keeps invalid producer configuration failed after a source change', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-invalid-readiness-'));
     const source = join(root, 'effect.pack.json');
-    const pack = JSON.stringify({
-      schemaVersion: '3.0.0',
-      packageId: GUID,
-      assets: { 'effect/main': { kind: 'test-effect', payload: {}, refs: [] } },
-    });
+    const pack = JSON.stringify(
+      directPackFixture(GUID, { 'effect/main': { kind: 'test-effect', payload: {}, refs: [] } }),
+    );
     await writeFile(source, pack);
     const binding = createStandaloneRuntimeAssetBinding('invalid-readiness');
     const plugin = pluginPack({
@@ -443,13 +435,7 @@ describe('DevSession through a real Vite server', () => {
       runtimeBinding: binding,
       producerReadiness: 'invalid' as never,
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     const url = new URL(binding.catalogUrl, server.resolvedUrls?.local[0]);
     expect((await fetch(url)).status).toBe(500);
@@ -464,33 +450,18 @@ describe('DevSession through a real Vite server', () => {
     await mkdir(join(root, 'assets'));
     await writeFile(
       join(root, 'assets', 'effect.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: GUID,
-            kind: 'test-effect',
-            execution: 'direct',
-            payload: { schemaVersion: 1 },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture('01900000-0000-7000-8000-aaaaaaaaaaaa', {
+          output: { kind: 'test-effect', payload: { schemaVersion: 1 }, refs: [] },
+        }),
+      ),
     );
     const binding = createStandaloneRuntimeAssetBinding('vite-session');
     const plugin = pluginPack({
       roots: [join(root, 'assets')],
       runtimeBinding: binding,
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
 
     const baseUrl = server.resolvedUrls?.local[0];
@@ -522,30 +493,15 @@ describe('DevSession through a real Vite server', () => {
     const assets = join(root, 'assets');
     await mkdir(assets);
     const source = join(assets, 'effect.pack.json');
-    const valid = JSON.stringify({
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        {
-          guid: GUID,
-          kind: 'test-effect',
-          execution: 'direct',
-          payload: { schemaVersion: 1 },
-          refs: [],
-          artifacts: {},
-        },
-      ],
-    });
+    const valid = JSON.stringify(
+      directPackFixture('01900000-0000-7000-8000-aaaaaaaaaaaa', {
+        output: { kind: 'test-effect', payload: { schemaVersion: 1 }, refs: [] },
+      }),
+    );
     await writeFile(source, valid);
     const binding = createStandaloneRuntimeAssetBinding('watcher-recovery');
     const plugin = pluginPack({ roots: [assets], runtimeBinding: binding, refresh: () => {} });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     const catalogUrl = new URL(binding.catalogUrl, server.resolvedUrls?.local[0]).href;
     const acceptedCatalog = await (await fetch(catalogUrl)).json();
@@ -610,16 +566,10 @@ describe('DevSession through a real Vite server', () => {
       roots: [join(root, 'assets')],
       runtimeBinding: binding,
     });
-    let first: Awaited<ReturnType<typeof createServer>> | undefined;
-    let second: Awaited<ReturnType<typeof createServer>> | undefined;
+    let first: Awaited<ReturnType<typeof createPackTestServer>> | undefined;
+    let second: Awaited<ReturnType<typeof createPackTestServer>> | undefined;
     try {
-      first = await createServer({
-        root,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [plugin],
-        server: { host: '127.0.0.1', port: 0 },
-      });
+      first = await createPackTestServer(root, plugin);
       await first.listen();
       const firstUrl = first.resolvedUrls?.local[0];
       if (firstUrl === undefined) throw new Error('first Vite server did not expose a local URL');
@@ -627,13 +577,7 @@ describe('DevSession through a real Vite server', () => {
       await first.close();
       first = undefined;
 
-      second = await createServer({
-        root,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [plugin],
-        server: { host: '127.0.0.1', port: 0 },
-      });
+      second = await createPackTestServer(root, plugin);
       await second.listen();
       const secondUrl = second.resolvedUrls?.local[0];
       if (secondUrl === undefined) throw new Error('second Vite server did not expose a local URL');

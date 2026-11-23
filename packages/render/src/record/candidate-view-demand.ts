@@ -11,6 +11,8 @@ import type { LightRoster, MaterialSnapshot, RenderableSnapshot } from '../rende
 import { resolveCameraTarget } from '../render-system-extract';
 import { sameValue } from '../same-value';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { projectedProbeCount } from '../scene/probe-blend';
+import { hasScreenAoPrograms, ssaoUsesLighting } from '../ssao-config';
 import { resolveViewSsrDependencies } from '../world/reflection-systems';
 import { renderLightsOf } from '../world/render-lights';
 import { renderProbesOf } from '../world/render-probes';
@@ -223,19 +225,19 @@ function readLightingDemand(
     );
   if (!configuration.ok) return undefined;
   const renderPath = (configuration.value.profile ?? DEFAULT_STANDARD_PROFILE).renderPath;
-  const ssao = configuration.value.config?.ambientOcclusion?.enabled === true;
+  const ssao =
+    ssaoUsesLighting(configuration.value.config?.ambientOcclusion) &&
+    hasScreenAoPrograms(pipelineState, internals.depthPyramidShaders);
+  const reflectedAbi = pipelineState.standardClusterAbi ?? internals.standardClusterAbi;
   const lighting = standardLightingPipelineDemand(
     true,
     lights,
-    ssao,
-    caps.storageBuffer,
+    false,
+    internals.device,
     pipelineState.pbrPipelineLayout,
+    reflectedAbi !== undefined,
   );
-  if (
-    lighting.lightingKind === 'clustered' &&
-    (pipelineState.standardClusterAbi ?? internals.standardClusterAbi) === undefined
-  )
-    return undefined;
+  if (lighting.lightingKind === 'clustered' && reflectedAbi === undefined) return undefined;
   return { pipelineState, renderPath, ssao, lighting };
 }
 
@@ -385,7 +387,7 @@ export function readCandidateViewDemand(
     shadowReflections: shadows,
     hasShadowViews: hasShadowPipelineDemand(lights, directionalViews),
     tonemapActive: camera.tonemap !== 'none' || standardBloomAdmitted(camera),
-    probeBlend: (gpuScene?.probeBlend?.records.length ?? 0) > 0,
+    probeBlend: projectedProbeCount(gpuScene?.probeBlend) > 0,
     sourceCurrent,
   };
 }

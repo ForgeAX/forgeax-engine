@@ -19,7 +19,12 @@ import {
 import { type AudioClipAsset, err, ok, type Result } from '@forgeax/engine-types';
 import { BusGraph } from './bus-graph';
 import type { MusicOutput } from './music-transport';
-import { type AudioStreamState, PcmStreamPlayer, StreamBudget } from './pcm-stream-player';
+import {
+  type AudioStreamState,
+  type PcmStreamFetcher,
+  PcmStreamPlayer,
+  StreamBudget,
+} from './pcm-stream-player';
 import { SourceBusRoutes } from './source-bus-routes';
 
 interface ActiveSource {
@@ -43,6 +48,38 @@ interface ActiveSource {
 const GESTURE_EVENTS = ['click', 'keydown', 'touchstart'] as const;
 const GAIN_TRANSITION_SECONDS = 0.01;
 
+export interface AudioOutputDevice {
+  readonly id: string;
+  readonly label: string;
+}
+
+interface OutputContext extends BaseAudioContext {
+  readonly sinkId: string | { readonly type: 'none' };
+  setSinkId(id: string): Promise<void>;
+}
+
+function outputError(reason: string) {
+  return err(
+    new AudioError({
+      code: 'control-failed',
+      expected: 'an available Host audio output device',
+      hint: 'refresh the device list and select an available output',
+      detail: { code: 'control-failed', reason },
+    }),
+  );
+}
+
+async function outputClockResumed(context: BaseAudioContext): Promise<boolean> {
+  const position = context.currentTime;
+  const deadline = performance.now() + 750;
+  // Native sink setup can complete before the replacement device renders its graph.
+  while (context.state !== 'closed' && performance.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    if (context.currentTime >= position + 0.05) return true;
+  }
+  return false;
+}
+
 function clipPosition(position: number, loop: boolean, duration: number): number {
   return loop && duration > 0 ? position % duration : Math.min(position, duration);
 }
@@ -54,6 +91,9 @@ export class WebAudioEngine {
   private ctx: BaseAudioContext | undefined;
   private readonly contextFactory: (() => BaseAudioContext) | undefined;
   private readonly ownsContext: boolean;
+  private readonly fetchStream: PcmStreamFetcher | undefined;
+  private readonly enumerateOutputs: (() => Promise<readonly AudioOutputDevice[]>) | undefined;
+  private switchingOutput = false;
   private closed = false;
   private globalPlaybackRate = 1;
   private musicTap: GainNode | undefined;
@@ -70,10 +110,21 @@ export class WebAudioEngine {
   private lastError: AudioError | null = null;
   private decodeErrorKey: string | undefined;
 
-  constructor(options: { readonly context?: BaseAudioContext | (() => BaseAudioContext) } = {}) {
+  constructor(
+    options: {
+      readonly context?: BaseAudioContext | (() => BaseAudioContext);
+      /** Transfer responsibility for closing an injected online context. */
+      readonly ownsContext?: boolean;
+      /** Host package transport for verified PCM ranges. */
+      readonly fetchStream?: PcmStreamFetcher;
+      readonly enumerateOutputs?: () => Promise<readonly AudioOutputDevice[]>;
+    } = {},
+  ) {
     this.ctx = typeof options.context === 'function' ? undefined : options.context;
     this.contextFactory = typeof options.context === 'function' ? options.context : undefined;
-    this.ownsContext = options.context === undefined;
+    this.ownsContext = options.ownsContext ?? options.context === undefined;
+    this.fetchStream = options.fetchStream;
+    this.enumerateOutputs = options.enumerateOutputs;
     // Lazy: AudioContext is NOT created here (D-3 / AC-01).
     // The gesture resume handler is a bound arrow so we can pass it
     // to addEventListener/removeEventListener with the same identity.
@@ -81,6 +132,50 @@ export class WebAudioEngine {
       void this.tryResume();
     };
     this.registerGestureListener();
+  }
+
+  /** The Host lists devices on demand so an unplugged sink can be removed by the caller. */
+  async listOutputDevices(): Promise<Result<readonly AudioOutputDevice[], AudioError>> {
+    if (!this.enumerateOutputs || this.closed)
+      return outputError('output enumeration is unavailable');
+    try {
+      const outputs = await this.enumerateOutputs();
+      return this.closed ? outputError('audio context is closed') : ok(outputs);
+    } catch (cause) {
+      return outputError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  /** Null means the current context has no selectable physical sink. Empty ID is system default. */
+  getOutputDevice(): string | null {
+    if (this.closed) return null;
+    const context = this.ctx as OutputContext | undefined;
+    if (context === undefined) return this.enumerateOutputs === undefined ? null : '';
+    return typeof context.sinkId === 'string' ? context.sinkId : null;
+  }
+
+  /** Switch the live context in place so its sources, spatial graph and playheads survive. */
+  async setOutputDevice(id: string): Promise<Result<void, AudioError>> {
+    if (!this.ownsContext || this.enumerateOutputs === undefined || this.retireClosedContext())
+      return outputError('output switching requires a live Host audio context');
+    if (this.switchingOutput) return outputError('an output switch is already pending');
+    this.switchingOutput = true;
+    try {
+      const context = this.ensureContext() as OutputContext;
+      if (typeof context.setSinkId !== 'function')
+        return outputError('output switching is unavailable');
+      if (context.sinkId !== id) {
+        const running = context.state === 'running';
+        await context.setSinkId(id);
+        if (running && !(await outputClockResumed(context)))
+          return outputError('the selected audio output did not resume playback');
+      }
+      return this.closed ? outputError('audio context is closed') : ok(undefined);
+    } catch (cause) {
+      return outputError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      this.switchingOutput = false;
+    }
   }
 
   /**
@@ -415,6 +510,7 @@ export class WebAudioEngine {
         },
         () => source.filters[0] ?? source.sourceGain,
         () => {},
+        this.fetchStream,
       );
     } else if (clipBuffer && !source.loop && source.offset >= clipBuffer.duration)
       this.stop(entityId);

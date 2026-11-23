@@ -8,7 +8,11 @@ import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-syst
 import { RenderScene } from '../scene/render-scene';
 import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
 
-export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSet) {
+export function skinTaskFixture(
+  jointCount = 1,
+  shadowCapsules?: ShadowCapsuleSet,
+  affinePoint = false,
+) {
   const arena = new GpuInputArena(),
     scene = new RenderScene(),
     inverse = new Float32Array(jointCount * 16);
@@ -22,13 +26,15 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
     ...(shadowCapsules === undefined ? {} : { shadowCapsules }),
   }));
   const material = MaterialResource.from(defaultMaterialSnapshot());
+  const meshWorld = mat4.identity(mat4.create());
+  if (affinePoint) meshWorld[12] = 2;
   const row = (entityKey: number): RenderableSnapshot => ({
     entityKey,
-    transform: { world: matrix },
+    transform: { world: meshWorld },
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    skinBinding: { skeleton: 7, joints },
+    skinBinding: { skeleton: 7, joints, ...(affinePoint ? { affinePoint } : {}) },
   });
   skin.apply(
     scene.apply(

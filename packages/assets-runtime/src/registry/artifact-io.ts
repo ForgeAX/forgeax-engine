@@ -5,12 +5,14 @@ import {
 } from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import {
+  artifactDigestHex,
   decodedArtifactRangeIssue,
+  matchesArtifactSha256,
   selectDecodedArtifactBytes,
   storedArtifactRangeIssue,
 } from '@forgeax/engine-pack/bundle';
 import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@forgeax/engine-types';
-import { beginLoadTimeline, encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
+import { beginLoadTimeline, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
 import type { BundleTransferObservation } from '../internal/bundle-diagnostics.js';
 import type { BundleStore } from '../internal/bundle-store.js';
@@ -161,21 +163,14 @@ export async function verifyArtifactBytes(
   const integrity = request.descriptor.integrity;
   if (integrity === undefined) return ok(bytes);
   const digest = await sha256(bytes);
-  const expectedDigest = integrity.digest.startsWith('sha256:')
-    ? integrity.digest.slice('sha256:'.length)
-    : integrity.digest;
-  const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  const matches = /^[0-9a-f]{64}$/i.test(expectedDigest)
-    ? expectedDigest.toLowerCase() === hex
-    : expectedDigest === encodeBase64(digest);
-  if (!matches) {
+  if (!matchesArtifactSha256(integrity.digest, digest)) {
     return err(
       failure(
         'asset-artifact-integrity-mismatch',
         request,
         `sha256 digest ${integrity.digest}`,
         're-cook the artifact or replace the corrupted stored bytes',
-        hex,
+        artifactDigestHex(digest),
       ),
     );
   }

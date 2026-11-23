@@ -1,33 +1,25 @@
 import { watch as fsWatch } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createRevisionObserver } from '../dev/revision-observer.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 describe('revision observer lifecycle contract', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  afterEach(scratch.clear);
 
   it('drains an in-flight batch and publishes no work after close', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-observer-close-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-observer-close-');
     await mkdir(join(root, 'assets'));
     const source = join(root, 'assets', 'hero.bin');
     await writeFile(source, 'old');
-    let release!: () => void;
-    const batchRelease = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let markStarted!: () => void;
-    const batchStarted = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
+    const { promise: batchRelease, resolve: release } = testGate();
+    const { promise: batchStarted, resolve: markStarted } = testGate();
     let batches = 0;
     const observer = createRevisionObserver({
       roots: [join(root, 'assets')],

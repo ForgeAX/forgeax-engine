@@ -1,9 +1,12 @@
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import { RenderGraphBuilder, renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
+import { GpuResourceAllocationLedger } from '../../gpu-driven/resource-allocation';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../../render-pipeline';
 import { addTypedScenePass } from '../../typed-render-graph-primitives';
+import { addCurrentMaterialDepth, CurrentMaterialDepth } from '../current-material-depth';
 import { addOrdinaryMaterialDepthSnapshot } from '../ordinary-material-depth';
+import { ViewTargetTextures } from '../view-target-textures';
 
 it.each([
   undefined,
@@ -109,6 +112,97 @@ it.each([
       'actual-consumer',
     ]);
   } finally {
+    await compiled.retire();
+  }
+});
+
+it('shares physical depth between ordered consumers and retires it on the last use across 60 changing frames', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+  const extent = { width: 7, height: 3 };
+  const depth = createRenderPipelineTarget(graph, 'scene-depth', {
+    format: 'depth32float',
+    size: extent,
+  }).unwrap();
+  const retired = vi.fn((release: () => void) => release());
+  const ledger = new GpuResourceAllocationLedger();
+  const owner = new CurrentMaterialDepth(new ViewTargetTextures(device, ledger, retired));
+  const beforeClear = {};
+  const beforeCopy = {};
+  let reads = false;
+  let executions = 0;
+  let earlier: ReturnType<typeof owner.sampled>;
+  const inspect = (token: object) => {
+    const current = owner.sampled(token);
+    if (!reads) {
+      expect(current).toBeUndefined();
+      return;
+    }
+    expect(current).toBeDefined();
+    if (token === beforeClear) earlier = current;
+    else {
+      expect(current).toBe(earlier);
+      expect(owner.sampled(beforeClear)).toBeUndefined();
+    }
+    executions++;
+  };
+  addCurrentMaterialDepth(graph, depth, extent, beforeClear, 'first', true, () => reads).unwrap();
+  graph
+    .addRasterPass('first', {
+      accesses: [{ resource: depth.view, usage: 'depth-stencil-write' }],
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: depth.view,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+        depthClearValue: 0.5,
+      },
+      encodeDirect() {
+        inspect(beforeClear);
+      },
+    })
+    .unwrap();
+  addCurrentMaterialDepth(graph, depth, extent, beforeCopy, 'second', false, () => reads).unwrap();
+  graph
+    .addCopyPass('second', {
+      accesses: [],
+      encodeDirect() {
+        inspect(beforeCopy);
+      },
+    })
+    .unwrap();
+  const compiled = graph.compile({ device, surfaceSize: extent }).unwrap();
+  const compilations = renderGraphCompileCount();
+  const create = vi.spyOn(device, 'createTexture');
+  try {
+    for (let tick = 0; tick < 60; tick++) {
+      reads = tick % 3 !== 2;
+      owner.begin();
+      const encoder = device.createCommandEncoder().unwrap();
+      const frame = {
+        encoder,
+        currentMaterialDepthDemand: reads,
+        frameState: { ordinaryMaterialDepth: owner },
+      } as unknown as RenderPipelineFrame;
+      compiled.execute(frame).unwrap();
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      compiled.commitExecution();
+      owner.finish();
+    }
+    expect(executions).toBe(80);
+    expect(
+      create.mock.calls.filter(([descriptor]) => descriptor.label === 'ordinary-material-depth'),
+    ).toHaveLength(20);
+    expect(retired).toHaveBeenCalledTimes(20);
+    expect(ledger.inspect()).toMatchObject({
+      liveBytes: 0,
+      pendingRetirementBytes: 0,
+      retiredBytes: 7 * 3 * 4 * 20,
+    });
+    expect(renderGraphCompileCount()).toBe(compilations);
+  } finally {
+    create.mockRestore();
+    owner.release();
     await compiled.retire();
   }
 });

@@ -40,10 +40,33 @@ interface BatchSource {
   _colorsTexture: { version: number } | null;
 }
 
+/** A Three pool slot can collapse every vertex to one finite point. */
+export function isCollapsedInstance(matrix: ArrayLike<number>, offset: number): boolean {
+  return (
+    matrix[offset] === 0 &&
+    matrix[offset + 1] === 0 &&
+    matrix[offset + 2] === 0 &&
+    matrix[offset + 3] === 0 &&
+    matrix[offset + 4] === 0 &&
+    matrix[offset + 5] === 0 &&
+    matrix[offset + 6] === 0 &&
+    matrix[offset + 7] === 0 &&
+    matrix[offset + 8] === 0 &&
+    matrix[offset + 9] === 0 &&
+    matrix[offset + 10] === 0 &&
+    matrix[offset + 11] === 0 &&
+    Number.isFinite(matrix[offset + 12]) &&
+    Number.isFinite(matrix[offset + 13]) &&
+    Number.isFinite(matrix[offset + 14]) &&
+    matrix[offset + 15] === 1
+  );
+}
+
 export function instanceGeometryValues(
   mesh: InstancedMesh | BatchedMesh,
   camera: Camera,
   material: Material,
+  rosters: WeakMap<BatchedMesh, Uint32Array>,
 ): unknown[] {
   if (mesh instanceof InstancedMesh)
     return [
@@ -59,29 +82,35 @@ export function instanceGeometryValues(
   // consumes the upstream CPU roster directly, including holes, sorting and culling.
   const source = mesh as unknown as BatchSource;
   source._updateDrawParameters(camera, mesh.geometry, material);
-  return [
-    source._matricesTexture.version,
-    source._colorsTexture?.version,
-    source._multiDrawCount,
-    ...source._multiDrawStarts.subarray(0, source._multiDrawCount),
-    ...source._multiDrawCounts.subarray(0, source._multiDrawCount),
-    ...source._indirectTexture.image.data.subarray(0, source._multiDrawCount),
-  ];
+  const count = source._multiDrawCount;
+  const ids = source._indirectTexture.image.data;
+  let roster = rosters.get(mesh);
+  let equal = roster?.length === count * 3;
+  for (let i = 0; equal && i < count; i++) {
+    equal =
+      roster?.[3 * i] === source._multiDrawStarts[i] &&
+      roster?.[3 * i + 1] === source._multiDrawCounts[i] &&
+      roster?.[3 * i + 2] === ids[i];
+  }
+  if (!roster || !equal) {
+    roster = new Uint32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      roster[i * 3] = source._multiDrawStarts[i] as number;
+      roster[i * 3 + 1] = source._multiDrawCounts[i] as number;
+      roster[i * 3 + 2] = ids[i] as number;
+    }
+    rosters.set(mesh, roster);
+  }
+  return [source._matricesTexture.version, source._colorsTexture?.version, roster];
 }
 
-/** Per-instance attributes have no native stream yet. Expand ordinary Mesh source
- * data once per source revision, keeping the same material and one native draw.
- * This intentionally trades CPU/upload memory for compatibility, not a second renderer.
- */
-export function projectInstanceGeometry(
-  mesh: InstancedMesh | BatchedMesh,
-  base: MeshAsset,
-): MeshAsset | undefined {
+function projectInstanceEntries(mesh: InstancedMesh | BatchedMesh, base: MeshAsset): Instance[] {
   const entries: Instance[] = [];
   const color = new Color();
   if (mesh instanceof InstancedMesh) {
     const morph = { morphTargetInfluences: [] as number[] };
     for (let index = 0; index < mesh.count; index++) {
+      if (isCollapsedInstance(mesh.instanceMatrix.array, index * 16)) continue;
       const matrix = new Matrix4();
       mesh.getMatrixAt(index, matrix);
       color.setRGB(1, 1, 1);
@@ -115,6 +144,128 @@ export function projectInstanceGeometry(
       });
     }
   }
+  return entries;
+}
+
+// Three approximates instance normals using the squared column lengths. Native
+// inverse-transpose normals agree for ordinary orthogonal TRS instances.
+function admitsNativeTintMatrices(mesh: InstancedMesh): boolean {
+  const data = mesh.instanceMatrix.array;
+  const x = new Vector3(),
+    y = new Vector3(),
+    z = new Vector3(),
+    cross = new Vector3();
+  for (let i = 0; i < mesh.count * 16; i += 16) {
+    if (isCollapsedInstance(data, i)) continue;
+    if (data[i + 3] !== 0 || data[i + 7] !== 0 || data[i + 11] !== 0 || data[i + 15] !== 1)
+      return false;
+    x.fromArray(data, i).normalize();
+    y.fromArray(data, i + 4).normalize();
+    z.fromArray(data, i + 8).normalize();
+    if (
+      !(
+        Math.abs(x.dot(y)) <= 1e-6 &&
+        Math.abs(y.dot(z)) <= 1e-6 &&
+        Math.abs(z.dot(x)) <= 1e-6 &&
+        cross.crossVectors(x, y).dot(z) > 0
+      )
+    )
+      return false;
+  }
+  return true;
+}
+
+/** A uniform instance tint can use one colored source mesh and native instance matrices. */
+export class InstanceTints {
+  private readonly entries = new WeakMap<
+    InstancedMesh,
+    {
+      matrices: InstancedMesh['instanceMatrix']['array'];
+      matrixVersion: number;
+      attribute: InstancedMesh['instanceColor'];
+      array: Float32Array;
+      version: number;
+      count: number;
+      tint: readonly number[] | undefined;
+    }
+  >();
+
+  common(mesh: InstancedMesh): readonly number[] | undefined {
+    const attribute = mesh.instanceColor;
+    if (
+      attribute === null ||
+      mesh.getColorAt !== InstancedMesh.prototype.getColorAt ||
+      mesh.getMatrixAt !== InstancedMesh.prototype.getMatrixAt ||
+      !(attribute.array instanceof Float32Array) ||
+      attribute.itemSize !== 3 ||
+      attribute.normalized ||
+      mesh.count < 1 ||
+      mesh.count > attribute.count
+    )
+      return undefined;
+    const { array, version } = attribute;
+    const cached = this.entries.get(mesh);
+    if (
+      cached?.attribute === attribute &&
+      cached.array === array &&
+      cached.matrices === mesh.instanceMatrix.array &&
+      cached.matrixVersion === mesh.instanceMatrix.version &&
+      cached.version === version &&
+      cached.count === mesh.count
+    )
+      return cached.tint;
+    const [r, g, b] = array;
+    let tint: readonly number[] | undefined;
+    if (r !== undefined && g !== undefined && b !== undefined && [r, g, b].every(Number.isFinite)) {
+      let end = 3;
+      while (
+        end < mesh.count * 3 &&
+        array[end] === r &&
+        array[end + 1] === g &&
+        array[end + 2] === b
+      )
+        end += 3;
+      if (end === mesh.count * 3 && admitsNativeTintMatrices(mesh)) tint = [r, g, b];
+    }
+    this.entries.set(mesh, {
+      attribute,
+      array,
+      version,
+      count: mesh.count,
+      tint,
+      matrices: mesh.instanceMatrix.array,
+      matrixVersion: mesh.instanceMatrix.version,
+    });
+    return tint;
+  }
+}
+
+export function tintInstanceGeometry(base: MeshAsset, tint: readonly number[]): MeshAsset {
+  const count = (base.attributes.position as Float32Array).length / 3;
+  const source = base.attributes.color as Float32Array | undefined;
+  const color = new Float32Array(count * 4);
+  for (let i = 0; i < color.length; i += 4) {
+    for (let lane = 0; lane < 3; lane++)
+      color[i + lane] = (source?.[i + lane] ?? 1) * (tint[lane] as number);
+    color[i + 3] = source?.[i + 3] ?? 1;
+  }
+  const attributes = { ...base.attributes, color };
+  return {
+    ...base,
+    attributes,
+    vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
+  };
+}
+
+/** Per-instance attributes have no native stream yet. Expand ordinary Mesh source
+ * data once per source revision, keeping the same material and one native draw.
+ * This intentionally trades CPU/upload memory for compatibility, not a second renderer.
+ */
+export function projectInstanceGeometry(
+  mesh: InstancedMesh | BatchedMesh,
+  base: MeshAsset,
+): MeshAsset | undefined {
+  const entries = projectInstanceEntries(mesh, base);
   if (entries.length === 0) return undefined;
   const arrays: Record<string, number[]> = Object.fromEntries(
     Object.keys(base.attributes).map((name) => [name, []]),
@@ -124,21 +275,33 @@ export function projectInstanceGeometry(
   const submeshes: MeshAsset['submeshes'][number][] = [];
   const positionCount = (base.attributes.position as Float32Array).length / 3;
   const vector = new Vector3();
-  // Three's instance normal contract uses column lengths, including its shear approximation.
+  const streams = Object.entries(arrays).map(([name, output]) => {
+    const source = base.attributes[name as keyof VertexAttributeMap] as Float32Array | undefined;
+    const width = name === 'color' ? 4 : (source?.length ?? 0) / positionCount;
+    return { name, output, source, width, values: new Array<number>(width) };
+  });
+  const prepared = entries.map((entry) => {
+    const m = entry.matrix.elements;
+    if (
+      !m.every(Number.isFinite) ||
+      entry.matrix.determinant() === 0 ||
+      !entry.color.every(Number.isFinite)
+    )
+      return invalid('Instance matrix/color', mesh.uuid).unwrap();
+    if (entry.weights !== undefined && !entry.weights.every(Number.isFinite))
+      return invalid('Instance morph weights', mesh.uuid).unwrap();
+    // Three's instance normal contract uses column lengths, including its shear approximation.
+    const square = (i: number) =>
+      (m[i] as number) ** 2 + (m[i + 1] as number) ** 2 + (m[i + 2] as number) ** 2;
+    return {
+      entry,
+      linear: new Matrix3().setFromMatrix4(entry.matrix),
+      normalScale: new Vector3(square(0), square(4), square(8)),
+    };
+  });
   for (const submesh of base.submeshes) {
     const offset = indices.length;
-    for (const entry of entries) {
-      if (
-        !entry.matrix.elements.every(Number.isFinite) ||
-        entry.matrix.determinant() === 0 ||
-        !entry.color.every(Number.isFinite)
-      )
-        return invalid('Instance matrix/color', mesh.uuid).unwrap();
-      const linear = new Matrix3().setFromMatrix4(entry.matrix),
-        m = entry.matrix.elements;
-      const normalScale = [0, 4, 8].map(
-        (i) => (m[i] ?? 0) ** 2 + (m[i + 1] ?? 0) ** 2 + (m[i + 2] ?? 0) ** 2,
-      );
+    for (const { entry, linear, normalScale } of prepared) {
       const remap = new Map<number, number>();
       const first = Math.max(submesh.indexOffset, entry.start ?? 0);
       const last = Math.min(
@@ -151,28 +314,20 @@ export function projectInstanceGeometry(
         if (target === undefined) {
           target = (arrays.position?.length ?? 0) / 3;
           remap.set(sourceIndex, target);
-          for (const [name, output] of Object.entries(arrays)) {
-            const source = base.attributes[name as keyof VertexAttributeMap] as
-              | Float32Array
-              | undefined;
-            const width = name === 'color' ? 4 : (source?.length ?? 0) / positionCount;
-            const values = Array.from(
-              { length: width },
-              (_, lane) => source?.[sourceIndex * width + lane] ?? 1,
-            );
+          for (const { name, output, source, width, values } of streams) {
+            for (let lane = 0; lane < width; lane++)
+              values[lane] = source?.[sourceIndex * width + lane] ?? 1;
             if (name === 'position' || name === 'normal') {
               for (let i = 0; i < (entry.weights?.length ?? 0); i++) {
                 const delta = base.morphTargets?.[i]?.[name];
                 const weight = entry.weights?.[i] ?? 0;
-                if (!Number.isFinite(weight))
-                  return invalid('Instance morph weights', mesh.uuid).unwrap();
                 for (let lane = 0; lane < 3; lane++)
                   values[lane] =
                     (values[lane] ?? 0) + (delta?.[sourceIndex * 3 + lane] ?? 0) * weight;
               }
               vector.fromArray(values);
               if (name === 'position') vector.applyMatrix4(entry.matrix);
-              else vector.divide(new Vector3().fromArray(normalScale)).applyMatrix3(linear);
+              else vector.divide(normalScale).applyMatrix3(linear);
               vector.toArray(values);
             } else if (name === 'tangent')
               vector.fromArray(values).applyMatrix3(linear).toArray(values);

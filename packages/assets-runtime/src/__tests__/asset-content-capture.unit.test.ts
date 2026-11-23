@@ -112,9 +112,9 @@ describe('incremental exact-closure content capture', () => {
     capture.step(1).unwrap();
     const before = records.inspect();
     expect(() =>
-      records.adoptClosure(
-        () => {
-          records
+      records.adoptPreparedClosure(
+        (candidate) => {
+          candidate
             .adopt(
               'texture',
               { data: new Uint8Array([8]), label: 'uncommitted' },

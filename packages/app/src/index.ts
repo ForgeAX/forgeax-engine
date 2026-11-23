@@ -168,6 +168,26 @@ export type {
   GameReadDef,
 } from './game-context';
 export { gameHostPlugin } from './game-context';
+export {
+  createBrowserGameSaves,
+  createGameSaves,
+  createRecordGameSaves,
+  type GameSave,
+  type GameSaveFailure,
+  type GameSaveStorage,
+  type GameSaves,
+} from './game-saves';
+export {
+  type Level,
+  LevelError,
+  type LevelErrorCode,
+  type LevelPhase,
+  type LevelRequest,
+  type LevelService,
+  type LevelStatus,
+  type LevelTarget,
+  type LevelVisualExchange,
+} from './levels/level-service';
 export { type AppObservation, createAppObservation } from './observation';
 export { inputPlugin } from './plugin-factories';
 export type {
@@ -289,6 +309,21 @@ export {
   type RuntimePackAssembly,
   type RuntimePackOptions,
 } from './runtime-packs.js';
+export type { StreamingScenePlacement, StreamingSceneSource } from './streaming/streaming-scene';
+export {
+  type StreamingBounds,
+  type StreamingCell,
+  type StreamingGrid,
+  WorldStreamingError,
+  type WorldStreamingErrorCode,
+} from './streaming/world-index';
+export {
+  createWorldStreaming,
+  type StreamingEntryStatus,
+  type StreamingSource,
+  type WorldStreaming,
+  type WorldStreamingOptions,
+} from './streaming/world-streaming';
 export { createTextureWorkspacePreview } from './texture-preview';
 export {
   createToolPreviewHost,

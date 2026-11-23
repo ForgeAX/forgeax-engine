@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { ok } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { AssetGuid, PackageId } from '../guid.js';
+import { definePack, projectScriptablePackMeta } from '../pack-authoring.js';
 import { createFileSystemPackAuthoringGateway } from '../pack-authoring-node.js';
 import { installPackProjectDependencies } from './support/pack-project-dependencies.js';
 
@@ -11,23 +13,59 @@ const CLONE_PACKAGE = '01900000-0000-7000-8000-000000000071';
 const SOURCE_PACKAGE = '01900000-0000-7000-8000-000000000072';
 const INSTANCE_PACKAGE = '01900000-0000-7000-8000-000000000073';
 
-const roots: string[] = [];
-
 function packageId(value: string) {
   const parsed = PackageId.parse(value);
   if (!parsed.ok) throw parsed.error;
   return parsed.value;
 }
 
-afterEach(async () => {
-  const root = roots.pop();
-  if (root !== undefined) await rm(root, { recursive: true, force: true });
-});
+const scratch = temporaryDirectories();
+afterEach(scratch.clear);
 
 describe('Pack authoring gateway', () => {
+  it('detaches vector defaults when the host retains its source inventory', async () => {
+    const root = await scratch.make('forgeax-pack-parameter-inventory-');
+    const sourcePath = join(root, 'scene.pack.ts');
+    await writeFile(sourcePath, '');
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId: packageId(SOURCE_PACKAGE),
+      parameters: [{ name: 'position', type: 'vec3', default: [1, 2, 3] }],
+      build: () => ok({}),
+    });
+    const inventory = {
+      paths: [sourcePath],
+      inventory: [],
+      instances: new Map(),
+      declarations: new Map([
+        [
+          sourcePath,
+          {
+            format: 'pack.ts' as const,
+            sourcePath,
+            sourceRevision: 'source',
+            value: projectScriptablePackMeta(definition, sourcePath),
+            definition,
+            sourceClosure: [],
+          },
+        ],
+      ]),
+    };
+    const gateway = createFileSystemPackAuthoringGateway({
+      gameRoot: root,
+      inventory: async () => ok(inventory),
+    });
+    const inspect = (requestId: string) =>
+      gateway.execute({ operation: 'asset.inspect', requestId, sourcePath: 'scene.pack.ts' });
+
+    const first = (await inspect('first')).unwrap().parameters?.[0]?.default;
+    if (!Array.isArray(first)) throw new TypeError('expected a vector default');
+    first[0] = 99;
+    expect((await inspect('second')).unwrap().parameters?.[0]?.default).toEqual([1, 2, 3]);
+  });
+
   it('inspects parameter declarations without scanning siblings or executing user code', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-parameters-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-parameters-');
     await installPackProjectDependencies(root);
     const source = `throw new Error('inspection must not execute this module');
 export default definePack({
@@ -46,7 +84,7 @@ export default definePack({
       inventory: async () => {
         throw new Error('parameter inspection must not scan');
       },
-      materialized: () => {
+      catalog: () => {
         throw new Error('parameter inspection must not read Catalog');
       },
     });
@@ -109,8 +147,7 @@ export default definePack({
   });
 
   it('keeps healthy read queries and source diagnostics when a sibling is malformed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-partial-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-partial-');
     await installPackProjectDependencies(root);
     await writeFile(
       join(root, 'good.pack.json'),
@@ -177,9 +214,8 @@ export default definePack({
     ).toMatchObject({ ok: false, error: { code: 'pack-parameter-invalid' } });
   });
 
-  it('writes guid-less direct JSON, derives identity, and makes mutations idempotent', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-direct-'));
-    roots.push(root);
+  it('creates, inspects and resolves guid-less direct sources with guarded replay', async () => {
+    const root = await scratch.make('forgeax-pack-gateway-direct-');
     await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     const operation = {
@@ -190,6 +226,8 @@ export default definePack({
       packageId: DIRECT_PACKAGE,
       initialAssets: {
         'mesh/main': { kind: 'mesh', payload: { vertices: [] }, refs: [] },
+        'material/main': { kind: 'material', payload: { roughness: 0.4 }, refs: [] },
+        'material/other': { kind: 'material', payload: { roughness: 0.9 }, refs: [] },
       },
     };
 
@@ -205,7 +243,7 @@ export default definePack({
     expect(raw).toEqual({
       schemaVersion: '3.0.0',
       packageId: DIRECT_PACKAGE,
-      assets: { 'mesh/main': { kind: 'mesh', payload: { vertices: [] }, refs: [] } },
+      assets: operation.initialAssets,
     });
     expect(JSON.stringify(raw)).not.toContain('guid');
 
@@ -228,15 +266,16 @@ export default definePack({
 
     const publishedGateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
-      materialized: () => [
+      catalog: () => [
         {
           packageId: DIRECT_PACKAGE,
           sourceKey: 'mesh/main',
           guid: AssetGuid.format(AssetGuid.derive(packageId(DIRECT_PACKAGE), 'mesh/main')),
           kind: 'mesh',
           sourcePath: 'dist/pack.json',
-          ready: true,
-          artifactsReady: true,
+          subject: 'internal-asset',
+          lifecycle: 'current',
+          publication: { current: { packageUrl: '/assets/direct.runtime-pack.json' } },
         },
       ],
     });
@@ -257,6 +296,38 @@ export default definePack({
       },
     });
 
+    const source = await gateway.execute({
+      operation: 'asset.inspect',
+      requestId: 'inspect-source',
+      subject: operation.targetPath,
+    });
+    expect(source).toMatchObject({
+      ok: true,
+      value: {
+        assets: [
+          { sourceKey: 'material/main' },
+          { sourceKey: 'material/other' },
+          { sourceKey: 'mesh/main' },
+        ],
+      },
+    });
+    expect(source.unwrap().assets?.every((asset) => !('payload' in asset))).toBe(true);
+
+    const selected = await gateway.execute({
+      operation: 'asset.inspect',
+      requestId: 'inspect-one-output',
+      subject: operation.targetPath,
+      sourceKey: 'material/main',
+    });
+    expect(selected).toMatchObject({
+      ok: true,
+      value: {
+        guid: AssetGuid.format(AssetGuid.derive(packageId(DIRECT_PACKAGE), 'material/main')),
+        payload: { roughness: 0.4 },
+      },
+    });
+    expect(selected.unwrap().assets?.every((asset) => !('payload' in asset))).toBe(true);
+
     const clone = await gateway.execute({
       operation: 'asset.source.clone',
       requestId: 'clone-direct',
@@ -267,55 +338,8 @@ export default definePack({
     expect(clone).toMatchObject({ ok: false, error: { code: 'pack-source-mutation-unsupported' } });
   });
 
-  it('keeps source inspection as identity and returns only the selected direct payload', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-inspect-output-'));
-    roots.push(root);
-    await installPackProjectDependencies(root);
-    const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
-    const created = await gateway.execute({
-      operation: 'asset.source.create',
-      requestId: 'create-two-outputs',
-      targetPath: 'assets/direct.pack.json',
-      format: 'pack.json',
-      packageId: DIRECT_PACKAGE,
-      initialAssets: {
-        'material/main': { kind: 'material', payload: { roughness: 0.4 }, refs: [] },
-        'material/other': { kind: 'material', payload: { roughness: 0.9 }, refs: [] },
-      },
-    });
-    expect(created.ok).toBe(true);
-    const source = await gateway.execute({
-      operation: 'asset.inspect',
-      requestId: 'inspect-source',
-      subject: 'assets/direct.pack.json',
-    });
-    expect(source).toMatchObject({
-      ok: true,
-      value: { assets: [{ sourceKey: 'material/main' }, { sourceKey: 'material/other' }] },
-    });
-    if (!source.ok) return;
-    expect(source.value.assets?.every((asset) => !('payload' in asset))).toBe(true);
-
-    const selected = await gateway.execute({
-      operation: 'asset.inspect',
-      requestId: 'inspect-one-output',
-      subject: 'assets/direct.pack.json',
-      sourceKey: 'material/main',
-    });
-    expect(selected).toMatchObject({
-      ok: true,
-      value: {
-        guid: AssetGuid.format(AssetGuid.derive(packageId(DIRECT_PACKAGE), 'material/main')),
-        payload: { roughness: 0.4 },
-      },
-    });
-    if (!selected.ok) return;
-    expect(selected.value.assets?.every((asset) => !('payload' in asset))).toBe(true);
-  });
-
   it('creates ScriptablePack source and Pack instance documents with CAS-protected value edits', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-instance-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-instance-');
     await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     const source = await gateway.execute({
@@ -413,21 +437,44 @@ export default definePack({
       values: { count: 6 },
     });
     expect(stale).toMatchObject({ ok: false, error: { code: 'pack-source-revision-conflict' } });
+    if (!applied.ok || applied.value.revision === undefined)
+      throw new Error('apply-values did not return a new revision');
+    const expectedRevision = applied.value.revision;
+    const contenders = await Promise.all(
+      [7, 8].map((count) =>
+        gateway.execute({
+          operation: 'asset.source.values.apply',
+          requestId: `concurrent-${count}`,
+          sourcePath: 'assets/instance.pack.json',
+          expectedRevision,
+          values: { count },
+        }),
+      ),
+    );
+    const accepted = contenders.filter((entry) => entry.ok);
+    expect(accepted).toHaveLength(1);
+    expect(contenders.filter((entry) => !entry.ok)).toMatchObject([
+      { ok: false, error: { code: 'pack-source-revision-conflict' } },
+    ]);
+    expect(
+      JSON.parse(await readFile(join(root, 'assets/instance.pack.json'), 'utf8')).values,
+    ).toEqual(accepted[0]?.value.effectiveValues);
   }, 15_000);
 
   it('fails closed when the current materialized projection violates derived identity', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-projection-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-projection-');
     await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
-      materialized: () => [
+      catalog: () => [
         {
           packageId: DIRECT_PACKAGE,
           sourceKey: 'mesh/main',
           guid: AssetGuid.format(AssetGuid.derive(packageId(DIRECT_PACKAGE), 'mesh/other')),
           kind: 'mesh',
-          ready: true,
+          subject: 'internal-asset',
+          lifecycle: 'current',
+          publication: { current: { packageUrl: '/assets/direct.runtime-pack.json' } },
         },
       ],
     });
@@ -445,8 +492,7 @@ export default definePack({
   });
 
   it('does not fall back from a missing sourcePath to another package locator', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-locator-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-locator-');
     await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     await gateway.execute({
@@ -467,12 +513,11 @@ export default definePack({
   });
 
   it('converts a broken materialized projection callback into a structured error', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-projection-callback-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-projection-callback-');
     await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
-      materialized: () => {
+      catalog: () => {
         throw new Error('projection unavailable');
       },
     });
@@ -481,13 +526,20 @@ export default definePack({
   });
 
   it('accepts references to published assets owned by another producer', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-external-ref-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-pack-gateway-external-ref-');
     await installPackProjectDependencies(root);
     const externalGuid = '01900000-0000-7000-8000-000000000099';
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
-      additionalKnownGuids: () => [externalGuid],
+      catalog: () => [
+        {
+          guid: externalGuid,
+          kind: 'texture',
+          subject: 'imported-output',
+          lifecycle: 'current',
+          publication: { current: { packageUrl: '/assets/external.runtime-pack.json' } },
+        },
+      ],
     });
     await gateway.execute({
       operation: 'asset.source.create',
@@ -508,23 +560,25 @@ export default definePack({
 });
 
 it('inspects the exact source revision used by rebuild conflict checks', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'forgeax-inspect-revision-'));
-  roots.push(root);
+  const root = await scratch.make('forgeax-inspect-revision-');
   await installPackProjectDependencies(root);
-  const outputs = [
-    {
-      packageId: SOURCE_PACKAGE,
-      sourceKey: 'mesh/main',
-      guid: AssetGuid.format(AssetGuid.derive(packageId(SOURCE_PACKAGE), 'mesh/main')),
-      kind: 'mesh',
-      sourcePath: 'assets/source.pack.ts',
-      ready: true,
-    },
-  ];
+  const output = {
+    packageId: SOURCE_PACKAGE,
+    sourceKey: 'mesh/main',
+    guid: AssetGuid.format(AssetGuid.derive(packageId(SOURCE_PACKAGE), 'mesh/main')),
+    kind: 'mesh',
+    sourcePath: 'assets/source.pack.ts',
+  };
+  const row = {
+    ...output,
+    subject: 'internal-asset',
+    lifecycle: 'current',
+    publication: { current: { packageUrl: '/assets/build.runtime-pack.json' } },
+  };
   let published = false;
   const gateway = createFileSystemPackAuthoringGateway({
     gameRoot: root,
-    materialized: () => (published ? outputs : []),
+    catalog: () => (published ? [row] : []),
     rebuild: async () => ({ ok: true, value: undefined }),
   });
   const created = await gateway.execute({
@@ -547,7 +601,7 @@ it('inspects the exact source revision used by rebuild conflict checks', async (
     value: {
       revision: created.value.revision,
       sourcePath: 'assets/source.pack.ts',
-      assets: outputs,
+      assets: [{ ...output, ready: true }],
     },
   });
   const rebuilt = await gateway.execute({
@@ -558,7 +612,7 @@ it('inspects the exact source revision used by rebuild conflict checks', async (
   });
   expect(rebuilt).toMatchObject({
     ok: true,
-    value: { assets: outputs, revision: created.value.revision },
+    value: { assets: [{ ...output, ready: true }], revision: created.value.revision },
   });
   const path = join(root, 'assets/source.pack.ts');
   await writeFile(path, `${await readFile(path, 'utf8')}\n// source edit\n`);

@@ -7,6 +7,7 @@ import type {
   Tlas,
 } from '@forgeax/engine-rhi';
 import { ok } from './errors.js';
+import type { ResolvedColorTargetDescriptor } from './graph.js';
 import type {
   GraphAccelerationStructure,
   GraphAccess,
@@ -98,6 +99,21 @@ export function handleData(resource: unknown): ResourceHandleData | undefined {
   return candidate as ResourceHandleData;
 }
 
+/** Resource identity across typed views, including reinterpreted formats and subresources. */
+export function sameGraphTexture(
+  view: GraphTextureView,
+  resource: GraphAccess['resource'],
+): boolean {
+  const a = handleData(view);
+  const b = handleData(resource);
+  return (
+    a?.kind === 'texture-view' &&
+    b?.kind === 'texture-view' &&
+    a.owner === b.owner &&
+    a.textureId === b.textureId
+  );
+}
+
 interface ResourceRecordBase {
   readonly id: number;
   readonly label: string;
@@ -150,6 +166,7 @@ export interface TextureViewRecord<FrameCtx extends RenderGraphFrame = RenderGra
   readonly id: number;
   readonly label: string;
   readonly textureId: number;
+  readonly range: GraphTextureContentRange;
   readonly descriptor: GraphTextureViewDescriptor;
   readonly resolve?: ImportedTextureViewResolver<FrameCtx> | undefined;
 }
@@ -176,7 +193,14 @@ export interface CompiledResource<FrameCtx> {
         };
       })
     | undefined;
+  /** Actual size supplied by the current imported allocation, separate from its declaration. */
+  resolvedDescriptor?: CompiledResource<FrameCtx>['textureDescriptor'];
+  resolvedViewExtent?: ReturnType<import('./types.js').GraphResourceResolver['textureViewExtent']>;
   readonly textureAllocation?: GraphTextureAllocation | undefined;
+  /** Materialized only for a named read of a graph-owned texture. */
+  colorTarget?: ResolvedColorTargetDescriptor;
+  readonly borrowedTextureSlot?: true;
+  readonly passLocal?: true;
   readonly buffer?: Buffer | undefined;
 }
 
@@ -215,10 +239,39 @@ export interface CompiledView<FrameCtx extends RenderGraphFrame = RenderGraphFra
   readonly view?: TextureView | undefined;
 }
 
+/** Builder handle ids occupy one dense namespace shared by resources and views. */
+export class PhysicalGraphSlots<Frame extends RenderGraphFrame> {
+  private readonly rows: (CompiledResource<Frame> | CompiledView<Frame> | undefined)[] = [];
+
+  insert(row: CompiledResource<Frame> | CompiledView<Frame>): void {
+    this.rows[row.record.id] = row;
+  }
+
+  resource(id: number): CompiledResource<Frame> | undefined {
+    const row = this.rows[id];
+    return row !== undefined && 'usage' in row ? row : undefined;
+  }
+
+  view(id: number): CompiledView<Frame> | undefined {
+    const row = this.rows[id];
+    return row !== undefined && !('usage' in row) ? row : undefined;
+  }
+
+  *resources(): IterableIterator<CompiledResource<Frame>> {
+    for (const row of this.rows) if (row !== undefined && 'usage' in row) yield row;
+  }
+
+  *views(): IterableIterator<CompiledView<Frame>> {
+    for (const row of this.rows) if (row !== undefined && !('usage' in row)) yield row;
+  }
+}
+
+/** Short pass ranges stay in declaration order. Longer ranges are sorted on seal. */
+export const LINEAR_PASS_ACCESS_LIMIT = 12;
+
 export interface CompiledPass<FrameCtx extends RenderGraphFrame> extends PassRecord<FrameCtx> {
-  readonly dependencies: readonly number[];
-  readonly resourceIds: ReadonlySet<number>;
-  readonly viewIds: ReadonlySet<number>;
+  readonly accessStart: number;
+  readonly accessEnd: number;
   readonly textureWrites: readonly {
     readonly resourceId: number;
     readonly range: GraphTextureContentRange;
@@ -253,18 +306,30 @@ export function snapshotPass<FrameCtx extends RenderGraphFrame>(
   switch (pass.kind) {
     case 'subgraph': {
       const descriptor = pass.descriptor;
-      const commands = descriptor.commands;
+      const direct = descriptor.commandsDirect;
+      const commands = direct === undefined ? descriptor.commands : undefined;
+      const encoding = () => {
+        if (direct !== undefined) return { commandsDirect: direct.bind(descriptor) };
+        if (commands !== undefined) return { commands: commands.bind(descriptor) };
+        const child = descriptor.child;
+        if (child === undefined) throw new TypeError('Missing subgraph execution callback');
+        return { child: child.bind(descriptor) };
+      };
+      const prepare = descriptor.prepareResources?.bind(descriptor);
+      const prepared = descriptor.preparedResourcesCurrent?.bind(descriptor);
+      const names =
+        direct !== undefined || commands !== undefined
+          ? descriptor.appendPassNames?.bind(descriptor)
+          : undefined;
       return {
         kind: 'subgraph',
         descriptor: Object.freeze({
           accesses,
-          ...(commands === undefined
-            ? (() => {
-                const child = descriptor.child;
-                if (child === undefined) throw new TypeError('Missing subgraph execution callback');
-                return { child: child.bind(descriptor) };
-              })()
-            : { commands: commands.bind(descriptor) }),
+          ...encoding(),
+          ...(prepare === undefined ? {} : { prepareResources: prepare }),
+          ...(prepared === undefined ? {} : { preparedResourcesCurrent: prepared }),
+          ...(names === undefined ? {} : { appendPassNames: names }),
+          profilePasses: descriptor.profilePasses?.bind(descriptor),
           executeIf: descriptor.executeIf?.bind(descriptor),
         }),
       };

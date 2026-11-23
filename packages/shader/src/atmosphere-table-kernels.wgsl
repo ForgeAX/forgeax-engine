@@ -60,14 +60,14 @@ fn atmosphere_sky_view_texel(v: View, uv: vec2<f32>, transmittance: texture_2d<f
 }
 
 // One unit-white optical result per quadratic AP slice, independent of storage.
-fn atmosphere_aerial_texel(v:View, id:vec3<u32>, size:vec3<u32>, transmittance:texture_2d<f32>, multiple:texture_2d<f32>, filtering:sampler)->AtmosphereTransport {
+fn atmosphere_aerial_texel(v:View, id:vec3<u32>, size:vec3<u32>, transmittance:texture_2d<f32>, multiple:texture_2d<f32>, filtering:sampler, samples:u32)->AtmosphereTransport {
   let uv=(vec2<f32>(id.xy)+0.5)/vec2<f32>(size.xy);
   let cameraRay=atmosphere_view_ray(v,uv);
   let origin=atmosphere_observer(v.atmosphere,cameraRay.origin);
   let w=(f32(id.z)+0.5)/f32(size.z);
   let distance=v.atmosphere.geometry.z+v.atmosphereControl.z*w*w;
   var unitLight=v;unitLight.lightColor=vec3<f32>(1.0);
-  return atmosphere_aerial_integrate(unitLight,origin,cameraRay.direction,distance,transmittance,multiple,filtering,64u);
+  return atmosphere_aerial_integrate(unitLight,origin,cameraRay.direction,distance,transmittance,multiple,filtering,samples);
 }
 // Both the cooperative reduction and raster average retain this exact cohort.
 fn atmosphere_distant_sky_sample(v:View, i:u32, transmittance:texture_2d<f32>, multiple:texture_2d<f32>, filtering:sampler)->vec3<f32> {

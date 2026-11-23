@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir, totalmem } from 'node:os';
+import { totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
@@ -24,12 +24,13 @@ import {
   type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
 import { WebSocket } from 'ws';
-import { backendHeapEnv } from './backend-heap.js';
-import { watchBackendLifetime } from './backend-lifetime.js';
+import { backendStateDirectory, processAlive, watchBackendLifetime } from './backend-lifetime.js';
 import { logBackendStartup, traceBackendStartup } from './backend-startup.js';
+import { backendHeapEnv } from './child-process.js';
 import { isValidStartupTimeoutMs } from './project.js';
+import { failCommand } from './types.js';
 
-export { backendHeapEnv } from './backend-heap.js';
+export { backendHeapEnv } from './child-process.js';
 
 export const DEFAULT_BACKEND_STARTUP_TIMEOUT_MS = 120_000;
 
@@ -80,18 +81,7 @@ interface BackendState {
 }
 
 function statePath(root: string): string {
-  const key = createHash('sha256').update(resolve(root)).digest('hex');
-  return join(tmpdir(), 'forgeax-backend', key, 'session.json');
-}
-
-function alive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
+  return join(backendStateDirectory(root), 'session.json');
 }
 
 function readState(root: string): BackendState | undefined {
@@ -102,6 +92,29 @@ function readState(root: string): BackendState | undefined {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
   }
+}
+
+function waitForResidentReady(
+  root: string,
+  id: string,
+  timeoutMs: number | null,
+  signal: AbortSignal | undefined,
+  timeoutMessage: string,
+  stoppedMessage: string,
+): Promise<void> {
+  let owner: BackendState | undefined;
+  return waitForBackendStartup(
+    timeoutMs,
+    () => {
+      owner = readState(root);
+      return owner?.id === id && owner.phase === 'ready';
+    },
+    () => {
+      if (owner?.id !== id || !processAlive(owner.pid)) throw new Error(stoppedMessage);
+    },
+    () => new Error(timeoutMessage),
+    signal,
+  );
 }
 
 function removeState(root: string, id: string): void {
@@ -143,14 +156,19 @@ async function startEarlyViewShell(root: string, hostPack?: string) {
 }
 
 async function request(
-  root: string,
+  state: BackendState | undefined,
   service: string,
   payload?: unknown,
   timeout = 120_000,
   signal?: AbortSignal,
 ) {
-  const state = readState(root);
-  if (!state || !alive(state.pid) || state.phase !== 'ready' || !state.endpoint || !state.token) {
+  if (
+    !state ||
+    !processAlive(state.pid) ||
+    state.phase !== 'ready' ||
+    !state.endpoint ||
+    !state.token
+  ) {
     throw new Error('Engine backend is not ready. Run forgeax backend start first.');
   }
   const url = new URL(state.endpoint);
@@ -177,8 +195,8 @@ export async function discoverDevKitBackendTools(
   root: string,
 ): Promise<readonly ToolContribution[]> {
   const state = readState(root);
-  if (!state || !alive(state.pid) || state.phase !== 'ready') return [];
-  const contract = await request(root, 'engine.backend.tool.list', undefined, 5000);
+  if (!state || !processAlive(state.pid) || state.phase !== 'ready') return [];
+  const contract = await request(state, 'engine.backend.tool.list', undefined, 5000);
   if (!isToolCommandContract(contract)) throw new TypeError('invalid backend tool contract');
   return contract.commands.map((declaration) =>
     commandContribution(declaration, async () => async (args, context) => {
@@ -186,15 +204,12 @@ export async function discoverDevKitBackendTools(
       if (terminal.outcome === 'succeeded')
         return { ok: true, value: terminal.result, artifacts: terminal.artifacts };
       if (terminal.outcome === 'failed') return { ok: false, error: terminal.failure };
-      return {
-        ok: false,
-        error: {
-          code: 'tool-run-cancelled',
-          expected: 'a completed backend operation',
-          hint: 'Start a fresh request.',
-          detail: { reason: 'backend operation cancelled' },
-        },
-      };
+      return failCommand(
+        'tool-run-cancelled',
+        'a completed backend operation',
+        'Start a fresh request.',
+        { reason: 'backend operation cancelled' },
+      );
     }),
   );
 }
@@ -206,7 +221,7 @@ export async function runDevKitBackendTool(
   signal?: AbortSignal,
 ): Promise<ToolTerminal<unknown>> {
   return (await request(
-    root,
+    readState(root),
     'engine.backend.call',
     { operation, args },
     300_000,
@@ -227,17 +242,15 @@ export async function callDevKitBackend(root: string, operation: string, args: u
 export async function devKitBackendStatus(rootInput: string, signal?: AbortSignal) {
   const root = resolve(rootInput);
   const state = readState(root);
-  if (!state || !alive(state.pid)) return { root, phase: 'stopped' as const };
-  if (state.phase === 'starting')
-    return {
-      root,
-      phase: 'starting',
-      pid: state.pid,
-      ...(state.hostPack === undefined ? {} : { hostPack: state.hostPack }),
-      ...(state.viewUrl === undefined ? {} : { viewUrl: state.viewUrl }),
-    };
+  if (!state || !processAlive(state.pid)) return { root, phase: 'stopped' as const };
+  const owner = {
+    pid: state.pid,
+    ...(state.hostPack === undefined ? {} : { hostPack: state.hostPack }),
+  };
+  const view = state.viewUrl === undefined ? {} : { viewUrl: state.viewUrl };
+  if (state.phase === 'starting') return { root, phase: 'starting', ...owner, ...view };
   try {
-    const status = (await request(root, 'engine.backend.status', undefined, 5000, signal)) as {
+    const status = (await request(state, 'engine.backend.status', undefined, 5000, signal)) as {
       readonly root?: unknown;
       readonly phase?: unknown;
       readonly hostPack?: unknown;
@@ -250,22 +263,11 @@ export async function devKitBackendStatus(rootInput: string, signal?: AbortSigna
       throw new Error(
         'The resident backend source identity or root differs from its selected owner state.',
       );
-    return {
-      root,
-      phase: 'ready',
-      pid: state.pid,
-      ...(state.hostPack === undefined ? {} : { hostPack: state.hostPack }),
-      ...(state.viewUrl === undefined ? {} : { viewUrl: state.viewUrl }),
-    };
+    return { root, phase: 'ready', ...owner, ...view };
   } catch {
     if (signal?.aborted)
       throw signal.reason ?? new DOMException('Backend status wait cancelled', 'AbortError');
-    return {
-      root,
-      phase: 'unreachable',
-      pid: state.pid,
-      ...(state.hostPack === undefined ? {} : { hostPack: state.hostPack }),
-    };
+    return { root, phase: 'unreachable', ...owner };
   }
 }
 
@@ -273,14 +275,15 @@ export async function stopDevKitBackend(rootInput: string) {
   const root = resolve(rootInput);
   const state = readState(root);
   if (!state) return { root, phase: 'stopped' };
-  if (!alive(state.pid)) {
+  if (!processAlive(state.pid)) {
     removeState(root, state.id);
     return { root, phase: 'stopped' };
   }
-  await request(root, 'engine.backend.stop', undefined, 5000);
+  await request(state, 'engine.backend.stop', undefined, 5000);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    if (!alive(state.pid) || readState(root)?.id !== state.id) return { root, phase: 'stopped' };
+    if (!processAlive(state.pid) || readState(root)?.id !== state.id)
+      return { root, phase: 'stopped' };
     await new Promise((done) => setTimeout(done, 50));
   }
   throw new Error(
@@ -290,7 +293,7 @@ export async function stopDevKitBackend(rootInput: string) {
 
 export function devKitBackendHostPack(rootInput: string): string | undefined {
   const state = readState(resolve(rootInput));
-  return state && alive(state.pid) ? state.hostPack : undefined;
+  return state && processAlive(state.pid) ? state.hostPack : undefined;
 }
 
 export async function startDevKitBackend(
@@ -310,6 +313,15 @@ export async function startDevKitBackend(
   const hostPack = options.hostPack === undefined ? undefined : realpathSync(options.hostPack);
   const startupTimeoutMs = resolveBackendStartupTimeoutMs(options.startupTimeoutMs);
   const current = readState(root);
+  const waitForClaim = (owner: BackendState) =>
+    waitForResidentReady(
+      root,
+      owner.id,
+      startupTimeoutMs,
+      options.signal,
+      `Engine backend startup is still pending after ${startupTimeoutMs}ms; inspect backend status.`,
+      'The claimed Engine backend stopped before becoming ready.',
+    );
   const reuseBackend = async (current: BackendState) => {
     if (options.lifetime !== current.lifetime)
       throw new Error(
@@ -319,27 +331,14 @@ export async function startDevKitBackend(
       throw new Error(
         `Backend already runs with a different host Pack: ${current.hostPack ?? 'none'}`,
       );
-    if (current.phase === 'starting') {
-      if (options.waitForReady === false && options.viewShell && current.viewUrl)
-        return devKitBackendStatus(root, options.signal);
-      await waitForBackendStartup(
-        startupTimeoutMs,
-        () => readState(root)?.id === current.id && readState(root)?.phase === 'ready',
-        () => {
-          const state = readState(root);
-          if (state?.id !== current.id || !alive(current.pid))
-            throw new Error('The claimed Engine backend stopped before becoming ready.');
-        },
-        () =>
-          new Error(
-            `Engine backend startup is still pending after ${startupTimeoutMs}ms; inspect backend status.`,
-          ),
-        options.signal,
-      );
-    }
+    if (
+      current.phase === 'starting' &&
+      !(options.waitForReady === false && options.viewShell && current.viewUrl)
+    )
+      await waitForClaim(current);
     return devKitBackendStatus(root, options.signal);
   };
-  if (current && alive(current.pid)) return reuseBackend(current);
+  if (current && processAlive(current.pid)) return reuseBackend(current);
   if (current) removeState(root, current.id);
   const path = statePath(root);
   mkdirSync(dirname(path), { recursive: true });
@@ -366,21 +365,7 @@ export async function startDevKitBackend(
         throw new Error(
           `Backend already starts with a different host Pack: ${owner?.hostPack ?? 'none'}`,
         );
-      if (owner?.phase === 'starting') {
-        await waitForBackendStartup(
-          startupTimeoutMs,
-          () => readState(root)?.id === owner.id && readState(root)?.phase === 'ready',
-          () => {
-            if (readState(root)?.id !== owner.id || !alive(owner.pid))
-              throw new Error('The claimed Engine backend stopped before becoming ready.');
-          },
-          () =>
-            new Error(
-              `Engine backend startup is still pending after ${startupTimeoutMs}ms; inspect backend status.`,
-            ),
-          options.signal,
-        );
-      }
+      if (owner?.phase === 'starting') await waitForClaim(owner);
       return devKitBackendStatus(root, options.signal);
     }
     throw error;
@@ -421,46 +406,107 @@ export async function startDevKitBackend(
     failure = error;
   });
   child.unref();
-  if (options.waitForReady === false && options.viewShell) {
-    await waitForBackendStartup(
-      startupTimeoutMs,
-      () => {
-        const state = readState(root);
-        return state?.id === id && (state.phase === 'ready' || state.viewUrl !== undefined);
-      },
-      () => {
-        if (failure || !child.pid || !alive(child.pid)) {
-          removeState(root, id);
-          throw failure ?? new Error(`Engine View shell startup failed; inspect ${logPath}`);
-        }
-      },
-      () =>
-        new Error(
-          `Engine View shell is still preparing after ${startupTimeoutMs}ms; inspect ${logPath} and backend status.`,
-        ),
-      options.signal,
-    );
-    return devKitBackendStatus(root, options.signal);
-  }
+  const shellOnly = options.waitForReady === false && Boolean(options.viewShell);
   await waitForBackendStartup(
     startupTimeoutMs,
     () => {
       const state = readState(root);
-      return state?.id === id && state.phase === 'ready';
+      return (
+        state?.id === id && (state.phase === 'ready' || (shellOnly && state.viewUrl !== undefined))
+      );
     },
     () => {
-      if (failure || !child.pid || !alive(child.pid)) {
+      if (failure || !child.pid || !processAlive(child.pid)) {
         removeState(root, id);
-        throw failure ?? new Error(`Engine backend startup failed; inspect ${logPath}`);
+        const owner = shellOnly ? 'Engine View shell' : 'Engine backend';
+        throw failure ?? new Error(`${owner} startup failed; inspect ${logPath}`);
       }
     },
     () =>
       new Error(
-        `Engine backend startup is still pending after ${startupTimeoutMs}ms; inspect ${logPath} and backend status.`,
+        `${shellOnly ? 'Engine View shell is still preparing' : 'Engine backend startup is still pending'} after ${startupTimeoutMs}ms; inspect ${logPath} and backend status.`,
       ),
     options.signal,
   );
   return devKitBackendStatus(root, options.signal);
+}
+
+async function requireResidentBackend(
+  root: string,
+  backend: Awaited<ReturnType<typeof startDevKitBackend>>,
+  startupTimeoutMs: number | null | undefined,
+  signal: AbortSignal | undefined,
+) {
+  if (backend.phase === 'starting') {
+    const backendId = readState(root)?.id;
+    if (!backendId) throw new Error('Engine backend startup ownership disappeared.');
+    await waitForResidentReady(
+      root,
+      backendId,
+      resolveBackendStartupTimeoutMs(startupTimeoutMs),
+      signal,
+      'Engine backend is still preparing; inspect backend status.',
+      'Engine backend stopped before its workspace owner became ready.',
+    );
+    backend = await devKitBackendStatus(root, signal);
+  }
+  if (backend.phase !== 'ready') throw new Error(`Backend ensure ended in ${backend.phase}`);
+  return backend;
+}
+
+function viewEnsureFailure(
+  code: 'backend-start-failed' | 'view-start-failed' | 'tool-run-cancelled',
+  cause: unknown,
+  stage: 'backend.start' | 'view.start',
+) {
+  const value = cause && typeof cause === 'object' ? (cause as Record<string, unknown>) : {};
+  const ownerFailure =
+    value.failure && typeof value.failure === 'object'
+      ? (value.failure as Record<string, unknown>)
+      : value;
+  return {
+    ok: false as const,
+    error: {
+      code,
+      expected:
+        typeof ownerFailure.expected === 'string'
+          ? ownerFailure.expected
+          : code === 'tool-run-cancelled'
+            ? 'the ensure caller to remain active'
+            : 'the owner startup operation to succeed',
+      hint:
+        typeof ownerFailure.hint === 'string'
+          ? ownerFailure.hint
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      detail: {
+        stage,
+        ownerFailure: {
+          ...(typeof ownerFailure.code === 'string' ? { code: ownerFailure.code } : {}),
+          ...(typeof ownerFailure.expected === 'string' ? { expected: ownerFailure.expected } : {}),
+          ...(typeof ownerFailure.hint === 'string' ? { hint: ownerFailure.hint } : {}),
+          ...(ownerFailure.detail === undefined ? {} : { detail: ownerFailure.detail }),
+        },
+      },
+    },
+  };
+}
+
+function viewStartupResult(
+  backend: Awaited<ReturnType<typeof requireResidentBackend>>,
+  terminal: ToolTerminal<unknown>,
+) {
+  if (terminal.outcome === 'failed')
+    return viewEnsureFailure(
+      terminal.failure.code === 'tool-run-cancelled' ? 'tool-run-cancelled' : 'view-start-failed',
+      terminal.failure,
+      'view.start',
+    );
+  const view = terminal.result as { readonly ok?: unknown; readonly error?: unknown };
+  if (view && typeof view === 'object' && view.ok === false)
+    return viewEnsureFailure('view-start-failed', view.error, 'view.start');
+  return { ok: true as const, value: { backend, view: terminal.result } };
 }
 
 /** Ensure the selected resident backend and its View shell through Engine-owned control. */
@@ -474,57 +520,17 @@ export async function ensureDevKitView(
     readonly signal?: AbortSignal;
   },
 ) {
-  const failure = (
-    code: 'backend-start-failed' | 'view-start-failed' | 'tool-run-cancelled',
-    cause: unknown,
-    stage: 'backend.start' | 'view.start',
-  ) => {
-    const value = cause && typeof cause === 'object' ? (cause as Record<string, unknown>) : {};
-    const ownerFailure =
-      value.failure && typeof value.failure === 'object'
-        ? (value.failure as Record<string, unknown>)
-        : value;
-    return {
-      ok: false as const,
-      error: {
-        code,
-        expected:
-          typeof ownerFailure.expected === 'string'
-            ? ownerFailure.expected
-            : code === 'tool-run-cancelled'
-              ? 'the ensure caller to remain active'
-              : 'the owner startup operation to succeed',
-        hint:
-          typeof ownerFailure.hint === 'string'
-            ? ownerFailure.hint
-            : cause instanceof Error
-              ? cause.message
-              : String(cause),
-        detail: {
-          stage,
-          ownerFailure: {
-            ...(typeof ownerFailure.code === 'string' ? { code: ownerFailure.code } : {}),
-            ...(typeof ownerFailure.expected === 'string'
-              ? { expected: ownerFailure.expected }
-              : {}),
-            ...(typeof ownerFailure.hint === 'string' ? { hint: ownerFailure.hint } : {}),
-            ...(ownerFailure.detail === undefined ? {} : { detail: ownerFailure.detail }),
-          },
-        },
-      },
-    };
-  };
   if (options.signal?.aborted)
-    return failure(
+    return viewEnsureFailure(
       'tool-run-cancelled',
       options.signal.reason ?? new DOMException('Ensure cancelled', 'AbortError'),
       'backend.start',
     );
   const root = resolve(rootInput);
   let project = options.project === undefined ? undefined : canonicalProjectRoot(options.project);
-  let backend: Awaited<ReturnType<typeof startDevKitBackend>>;
+  let backend: Awaited<ReturnType<typeof requireResidentBackend>>;
   try {
-    backend = await startDevKitBackend(root, {
+    const started = await startDevKitBackend(root, {
       hostPack: options.hostPack,
       ...(options.lifetime === undefined ? {} : { lifetime: options.lifetime }),
       ...(options.startupTimeoutMs === undefined
@@ -534,72 +540,26 @@ export async function ensureDevKitView(
       waitForReady: false,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
+    backend = await requireResidentBackend(root, started, options.startupTimeoutMs, options.signal);
   } catch (cause) {
-    return failure(
+    return viewEnsureFailure(
       options.signal?.aborted ? 'tool-run-cancelled' : 'backend-start-failed',
       cause,
       'backend.start',
     );
   }
-  const awaitWorkspaceOwner = async () => {
-    if (backend.phase !== 'ready' && backend.phase !== 'starting')
-      return failure(
-        'backend-start-failed',
-        new Error(`Backend ensure ended in ${backend.phase}`),
-        'backend.start',
-      );
-    if (backend.phase !== 'ready') {
-      const backendId = readState(root)?.id;
-      if (!backendId)
-        return failure(
-          'backend-start-failed',
-          new Error('Engine backend startup ownership disappeared.'),
-          'backend.start',
-        );
-      try {
-        await waitForBackendStartup(
-          resolveBackendStartupTimeoutMs(options.startupTimeoutMs),
-          () => readState(root)?.id === backendId && readState(root)?.phase === 'ready',
-          () => {
-            const current = readState(root);
-            if (current?.id !== backendId || !('pid' in current) || !alive(current.pid))
-              throw new Error('Engine backend stopped before its workspace owner became ready.');
-          },
-          () => new Error('Engine backend is still preparing; inspect backend status.'),
-          options.signal,
-        );
-        backend = await devKitBackendStatus(root, options.signal);
-      } catch (cause) {
-        return failure(
-          options.signal?.aborted ? 'tool-run-cancelled' : 'backend-start-failed',
-          cause,
-          'backend.start',
-        );
-      }
-    }
-    if (backend.phase !== 'ready')
-      return failure(
-        'backend-start-failed',
-        new Error(`Backend ensure ended in ${backend.phase}`),
-        'backend.start',
-      );
-    return { ok: true as const, value: backend };
-  };
-  const admitted = await awaitWorkspaceOwner();
-  if (!admitted.ok) return admitted;
-  backend = admitted.value;
   if (options.signal?.aborted)
-    return failure(
+    return viewEnsureFailure(
       'tool-run-cancelled',
       options.signal.reason ?? new DOMException('Ensure cancelled', 'AbortError'),
       'view.start',
     );
   if (project === undefined && options.lifetime === 'clients') {
-    const { createWorkspaceSelection } = await import('./workspace-selection.js');
+    const { createWorkspaceSelection } = await import('./backend-lifetime.js');
     try {
       project = (await createWorkspaceSelection(root).read()) ?? undefined;
     } catch (cause) {
-      return failure('view-start-failed', cause, 'view.start');
+      return viewEnsureFailure('view-start-failed', cause, 'view.start');
     }
   }
   let terminal: ToolTerminal<unknown>;
@@ -611,25 +571,13 @@ export async function ensureDevKitView(
       options.signal,
     );
   } catch (cause) {
-    return failure(
+    return viewEnsureFailure(
       options.signal?.aborted ? 'tool-run-cancelled' : 'view-start-failed',
       cause,
       'view.start',
     );
   }
-  const finishViewStart = () => {
-    if (terminal.outcome === 'failed')
-      return failure(
-        terminal.failure.code === 'tool-run-cancelled' ? 'tool-run-cancelled' : 'view-start-failed',
-        terminal.failure,
-        'view.start',
-      );
-    const view = terminal.result as { readonly ok?: unknown; readonly error?: unknown };
-    if (view && typeof view === 'object' && view.ok === false)
-      return failure('view-start-failed', view.error, 'view.start');
-    return { ok: true as const, value: { backend, view: terminal.result } };
-  };
-  return finishViewStart();
+  return viewStartupResult(backend, terminal);
 }
 
 export async function runDevKitBackendProcess(root: string, id: string): Promise<void> {
@@ -680,12 +628,14 @@ export async function runDevKitBackendProcess(root: string, id: string): Promise
       earlyView = await traceBackendStartup('view-static-listen', () =>
         startEarlyViewShell(root, hostPack),
       );
-    writeState({
+    const owner = {
       ...claim,
+      root,
+      id,
       pid: process.pid,
-      phase: 'starting',
       ...(earlyView === undefined ? {} : { viewUrl: earlyView.viewerUrl }),
-    });
+    };
+    writeState({ ...owner, phase: 'starting' });
     backend = await traceBackendStartup('backend-create', () =>
       createDevKitBackend(root, {
         ...(hostPack === undefined ? {} : { hostPack }),
@@ -706,17 +656,7 @@ export async function runDevKitBackendProcess(root: string, id: string): Promise
     await traceBackendStartup('server-listen', async () => {
       await (await startedBackend.host.context.plugin(devKitBackendServerPlugin, { stop })).await();
     });
-    writeState({
-      root,
-      id,
-      pid: process.pid,
-      phase: 'ready',
-      ...(hostPack === undefined ? {} : { hostPack }),
-      ...(claim.viewShell === undefined ? {} : { viewShell: claim.viewShell }),
-      ...(claim.lifetime === undefined ? {} : { lifetime: claim.lifetime }),
-      ...(earlyView === undefined ? {} : { viewUrl: earlyView.viewerUrl }),
-      ...backend.host.context.devkitBackendServer,
-    });
+    writeState({ ...owner, phase: 'ready', ...backend.host.context.devkitBackendServer });
     await closed;
   } finally {
     let cleanupError: unknown;

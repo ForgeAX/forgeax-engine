@@ -1,7 +1,26 @@
+import { get as getHttp } from 'node:http';
+import { get as getHttps } from 'node:https';
 import { resolve } from 'node:path';
+import { text } from 'node:stream/consumers';
 import ts from 'typescript';
 import * as vite from 'vite';
 const packageRoot = resolve(import.meta.dirname, '../..');
+const sourceHeaders = { accept: 'text/javascript' };
+const closedSocketCodes = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET']);
+
+async function readFreshSource(url, signal) {
+  const get = url.protocol === 'https:' ? getHttps : getHttp;
+  const response = await new Promise((resolve, reject) => {
+    get(url, { agent: false, headers: sourceHeaders, signal }, resolve).once('error', reject);
+  });
+  const status = response.statusCode;
+  if (status < 200 || status >= 300) {
+    response.destroy();
+    throw new Error(`Vite source HTTP ${status}: ${url.pathname}`);
+  }
+  return text(response);
+}
+
 export function createRemoteBundler(allow, { signal: lifetime } = {}) {
   const cache = new Map();
   let activeReads = 0;
@@ -14,26 +33,19 @@ export function createRemoteBundler(allow, { signal: lifetime } = {}) {
     try {
       const deadline = AbortSignal.timeout(30000);
       const signal = scope ? AbortSignal.any([scope, deadline]) : deadline;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const response = await fetch(url, {
-            headers: { accept: 'text/javascript' },
-            signal,
-          });
-          if (!response.ok)
-            throw new Error(`Vite source HTTP ${response.status}: ${url.pathname}`);
-          return await response.text();
-        } catch (cause) {
-          // Vite can close a source connection during startup. Replay only an
-          // incomplete GET, once, within the original read deadline and slot.
-          if (
-            attempt === 0 &&
-            !signal.aborted &&
-            ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(cause?.cause?.code)
-          ) continue;
-          throw new Error(`Vite source fetch failed: ${url.origin}${url.pathname}`, { cause });
-        }
+      try {
+        const response = await fetch(url, { headers: sourceHeaders, signal });
+        if (!response.ok)
+          throw new Error(`Vite source HTTP ${response.status}: ${url.pathname}`);
+        return await response.text();
+      } catch (cause) {
+        // A pooled socket can close during startup. Replay the incomplete GET
+        // once on a new connection within the original read deadline and slot.
+        if (signal.aborted || !closedSocketCodes.has(cause?.cause?.code)) throw cause;
+        return await readFreshSource(url, signal);
       }
+    } catch (cause) {
+      throw new Error(`Vite source fetch failed: ${url.origin}${url.pathname}`, { cause });
     } finally {
       const next = waitingReads.shift();
       if (next) next();

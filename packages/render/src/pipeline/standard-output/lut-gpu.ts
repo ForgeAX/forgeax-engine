@@ -20,8 +20,8 @@ import {
   type StandardLutAdmissionErrorCode,
 } from './lut-admission';
 
-/** Device-lifetime binding cached per managed reference; per-camera facts extend it. */
-interface CachedLutBinding {
+/** Physical binding held by the view that admitted the texture. */
+interface ResidentLutBinding {
   readonly texture: Texture;
   readonly view: TextureView;
   readonly sampler: Sampler;
@@ -30,7 +30,7 @@ interface CachedLutBinding {
   readonly size: number;
 }
 
-export interface StandardLutGpuResources extends CachedLutBinding {
+export interface StandardLutGpuResources extends ResidentLutBinding {
   readonly sourceKey: string;
   readonly strength: number;
 }
@@ -38,18 +38,27 @@ export interface StandardLutGpuResources extends CachedLutBinding {
 export interface StandardLutGraphProjection {
   readonly view: import('@forgeax/engine-render-graph').GraphTextureView;
   readonly strength: number;
-  bind(frame: RenderPipelineFrame): Pick<CachedLutBinding, 'bindGroupLayout' | 'bindGroup'>;
+  bind(
+    frame: RenderPipelineFrame,
+  ): Pick<ResidentLutBinding, 'bindGroupLayout' | 'bindGroup'> & { readonly strength?: number };
 }
 
 export interface StandardLutGpuPreparationInput {
   readonly world: RenderResourceScope;
   readonly handle: AssetHandle<'texture' | 'gpu-texture'>;
   readonly strength: number;
+  readonly previous?: StandardLutGpuResources | undefined;
   readonly gpuStore: GpuResidencyCache;
   readonly device: RhiDevice;
 }
 
-const lutBindingCache = new WeakMap<object, Map<string, CachedLutBinding>>();
+// A device has one sampling ABI. Texture bindings retire with the owning views.
+const lutSamplingAbi = new WeakMap<
+  RhiDevice,
+  Pick<ResidentLutBinding, 'sampler' | 'bindGroupLayout'> & {
+    readonly byTexture: WeakMap<Texture, ResidentLutBinding>;
+  }
+>();
 
 /** Release only the projection-owned LUT objects; texture residency is cache-owned. */
 export function retireStandardLutGpuResources(_resources: StandardLutGpuResources): void {
@@ -172,22 +181,19 @@ export function prepareStandardLutGpu(
     );
   }
   const source = input.world.sourceForAsset(input.handle);
-  const reference = `${input.world.identity}:${input.handle}`;
-  const sourceKey = source?.sourceKey ?? reference;
+  const sourceKey = source?.sourceKey ?? `${input.world.identity}:${input.handle}`;
   const resident = resolveResidentLutTexture(input, asset.value, source?.guid, sourceKey);
   if (!resident.ok) return resident;
   const texture = resident.value;
-  const cache =
-    lutBindingCache.get(input.device) ??
-    (() => {
-      const created = new Map<string, CachedLutBinding>();
-      lutBindingCache.set(input.device, created);
-      return created;
-    })();
-  const cached = cache.get(reference);
-  if (cached !== undefined && cached.texture === texture) {
-    return ok({ ...cached, sourceKey, strength: input.strength });
+  const previous = input.previous;
+  if (previous?.texture === texture && previous.sourceKey === sourceKey) {
+    return ok(
+      previous.strength === input.strength ? previous : { ...previous, strength: input.strength },
+    );
   }
+  const abi = lutSamplingAbi.get(input.device);
+  const physical = abi?.byTexture.get(texture);
+  if (physical !== undefined) return ok({ ...physical, sourceKey, strength: input.strength });
   // Recreate the resident view with an explicit 3D descriptor.  This is a
   // live capability check rather than a shape assertion: a device that
   // rejects a 3D view cannot admit this LUT route.
@@ -201,9 +207,9 @@ export function prepareStandardLutGpu(
     );
   }
   const sampler =
-    cached === undefined
+    abi === undefined
       ? input.device.createSampler(createStandardLutSamplerDescriptor())
-      : ok(cached.sampler);
+      : ok(abi.sampler);
   if (!sampler.ok) {
     return failure(
       'standard-lut-sampler-failed',
@@ -213,14 +219,14 @@ export function prepareStandardLutGpu(
     );
   }
   const bindGroupLayout =
-    cached === undefined
+    abi === undefined
       ? input.device.createBindGroupLayout({
           entries: [
             { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '3d' } },
             { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
           ],
         })
-      : ok(cached.bindGroupLayout);
+      : ok(abi.bindGroupLayout);
   if (!bindGroupLayout.ok) {
     return failure(
       'standard-lut-bind-group-layout-failed',
@@ -274,7 +280,7 @@ export function prepareStandardLutGpu(
       causeDetail(liveBindGroup.error),
     );
   }
-  const binding: CachedLutBinding = {
+  const binding: ResidentLutBinding = {
     texture,
     view: liveView.value,
     sampler: sampler.value,
@@ -282,13 +288,20 @@ export function prepareStandardLutGpu(
     bindGroup: liveBindGroup.value,
     size: admission.value.extent.width,
   };
-  cache.set(reference, binding);
+  const owner = abi ?? {
+    sampler: sampler.value,
+    bindGroupLayout: bindGroupLayout.value,
+    byTexture: new WeakMap<Texture, ResidentLutBinding>(),
+  };
+  owner.byTexture.set(texture, binding);
+  if (abi === undefined) lutSamplingAbi.set(input.device, owner);
   return ok({ ...binding, sourceKey, strength: input.strength });
 }
 
 // Same sRGB-domain, texel-centre lookup as fs_tone_lut_encode (engine-shader tonemap.wgsl,
 // UE PostProcessCombineLUTs.usf:200-202,224); the transfer literals match common.wgsl.
 const LUT_STAGE_WGSL = /* wgsl */ `
+@group(0) @binding(2) var<uniform> lutParams: vec4<f32>;
 @group(1) @binding(0) var lut: texture_3d<f32>;
 @group(1) @binding(1) var lutSampler: sampler;
 @fragment fn color_stage_fs(input: VertexOutput) -> @location(0) vec4<f32> {
@@ -298,7 +311,7 @@ const LUT_STAGE_WGSL = /* wgsl */ `
   let size = f32(textureDimensions(lut).x);
   let g = textureSampleLevel(lut, lutSampler, encoded * ((size - 1.0) / size) + vec3<f32>(0.5 / size), 0.0).rgb;
   let mapped = select(pow((g + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), g / 12.92, g <= vec3<f32>(0.04045));
-  return vec4<f32>(mix(color.rgb, mapped, LUT_STRENGTH), color.a);
+  return vec4<f32>(mix(color.rgb, mapped, lutParams.x), color.a);
 }`;
 
 /** Record a fullscreen 3D LUT sample into the same Standard graph. */
@@ -313,7 +326,11 @@ export function addStandardColorLutPass(
     'standard-color-lut',
     input,
     output,
-    LUT_STAGE_WGSL.replace('LUT_STRENGTH', String(lut.strength)),
+    LUT_STAGE_WGSL,
+    4,
+    (values, frame) => {
+      values[0] = lut.bind(frame).strength ?? lut.strength;
+    },
     {
       accesses: [{ resource: lut.view, usage: 'sampled-read' }],
       bind: (_device, _resources, frame) => {

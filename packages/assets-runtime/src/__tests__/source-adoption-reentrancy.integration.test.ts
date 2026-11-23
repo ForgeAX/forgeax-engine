@@ -1,4 +1,3 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { AssetError, err, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { samplerContribution } from '../../../render/src/assets/asset-decoders';
@@ -6,6 +5,7 @@ import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
+import { catalogPack } from './fixtures/catalog-pack';
 
 function setup() {
   const assets = new AssetRegistry();
@@ -90,24 +90,19 @@ it.each(
   const guid = '00000000-0000-7000-8000-000000000919';
   const dependencyGuid = '00000000-0000-7000-8000-000000000918';
   const packageUrl = 'https://reentrant.invalid/pack.json';
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    sourcePath: 'reentrant.pack',
-    sourceRevision: '1',
-    packageUrl,
-    pack: {
-      assets: [
-        {
-          guid: dependencyGuid,
-          kind: 'sampler',
-          refs: [],
-          artifacts: {},
-          payload: { kind: 'sampler', minFilter: 'nearest' },
-        },
-        { guid, kind: kind.kind, refs: [dependencyGuid], artifacts: {}, payload: { count: 1 } },
-      ],
-    },
-  });
+  const publication = catalogPack(
+    [
+      {
+        guid: dependencyGuid,
+        kind: 'sampler',
+        refs: [],
+        artifacts: {},
+        payload: { kind: 'sampler', minFilter: 'nearest' },
+      },
+      { guid, kind: kind.kind, refs: [dependencyGuid], artifacts: {}, payload: { count: 1 } },
+    ],
+    { sourcePath: 'reentrant.pack', packageUrl },
+  );
   assets.setCatalogSource(
     createCatalogSource({
       entries: [

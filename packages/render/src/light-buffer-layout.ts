@@ -1,3 +1,4 @@
+import { CLUSTER_LIGHT_VIEW_SLOT, CLUSTER_PARAMS_VIEW_SLOT } from './environment/bindings';
 // @forgeax/engine-render - host-side DirectLightSlot ABI and buffer helpers.
 //
 // Point, Spot, Rect and additional unshadowed Directional snapshots share
@@ -190,8 +191,12 @@ function requiredClusterGlobals(
   | undefined {
   const globals = reflection.boundGlobals;
   if (globals === undefined) return undefined;
-  const lightData = globals.find((global) => global.group === 2 && global.binding === 3);
-  const uniform = globals.find((global) => global.group === 2 && global.binding === 6);
+  const lightData = globals.find(
+    (global) => global.group === 0 && global.binding === CLUSTER_LIGHT_VIEW_SLOT,
+  );
+  const uniform = globals.find(
+    (global) => global.group === 0 && global.binding === CLUSTER_PARAMS_VIEW_SLOT,
+  );
   if (!isClusterLightDataGlobal(lightData) || !isClusterUniformGlobal(uniform)) return undefined;
   return { lightData, uniform };
 }

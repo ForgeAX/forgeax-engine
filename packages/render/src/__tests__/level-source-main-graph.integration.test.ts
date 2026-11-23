@@ -1,4 +1,5 @@
-import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
+import { type CompiledRenderGraph, RenderGraphError } from '@forgeax/engine-render-graph';
+import { err } from '@forgeax/engine-types';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { SourceViewPreparation } from '../assembly/source-view-preparation';
 import * as graphOwner from '../record/graph-adoption';
@@ -18,6 +19,8 @@ await levelShaderManifestFixture();
 it.each([
   'post-allocation-rejection',
   'retired-before-accept',
+  'superseded-during-hiz',
+  'retired-during-resource-preparation',
 ] as const)('keeps exact native main graph responsibility after %s', async (mode) => {
   const f = await levelInitialViewFixture();
   let work: SourceViewPreparation | undefined;
@@ -56,6 +59,7 @@ it.each([
     return source;
   });
   restore.push(() => capture.mockRestore());
+  const owner = f.manager.currentOwner;
   const native = f.internals.device.createComputePipeline.bind(f.internals.device);
   f.internals.device.createComputePipelineAsync = (descriptor) => native(descriptor);
   let prepared = f.candidate.step();
@@ -68,17 +72,59 @@ it.each([
   }
   assert(!prepared.ok && source?.ok);
   const staged = source.value;
-  const owner = f.manager.currentOwner;
   const previous = owner.frameState.compiledFrameGraph;
   let held: graphOwner.PreparedViewGraph | undefined;
+  let retiredOnAdoption: ReturnType<graphOwner.PreparedViewGraph['retire']> | undefined;
   const hold = graphOwner.holdPreparedViewGraph;
   const heldGraph = vi.spyOn(graphOwner, 'holdPreparedViewGraph').mockImplementation((...args) => {
-    held = hold(...args);
-    return held;
+    const lease = hold(...args);
+    held = lease;
+    if (mode === 'superseded-during-hiz') {
+      const preparation = vi
+        .spyOn(lease.installed.graph, 'prepareResources')
+        .mockImplementationOnce(function* (current) {
+          expect(current()).toBe(true);
+          yield Promise.resolve().then(() => {
+            owner.frameState.compiledFrameGraphGeneration++;
+          });
+          expect(current()).toBe(false);
+          return err(
+            new RenderGraphError({
+              code: 'pass-preparation-failed',
+              expected: 'the current AO depth pyramid seed',
+              hint: 'inspect the original native preparation',
+              detail: {
+                passName: 'ssao-furthest-hzb-seed',
+                passKind: 'compute',
+                cause: Error('the prepared program lost its View'),
+              },
+            }),
+          );
+        });
+      restore.push(() => preparation.mockRestore());
+    } else if (mode === 'retired-during-resource-preparation') {
+      const { graph } = lease.installed;
+      const prepare = graph.prepareResources.bind(graph);
+      const capture = vi.spyOn(graph, 'prepareResources').mockImplementation(function* (current) {
+        const retirement = lease.retire();
+        retiredOnAdoption = retirement;
+        yield retirement.then((result) => result.unwrap());
+        return yield* prepare(current);
+      });
+      restore.push(() => capture.mockRestore());
+    }
+    return lease;
   });
   restore.push(() => heldGraph.mockRestore());
   let rejected: CompiledRenderGraph<RenderPipelineFrame> | undefined;
   if (mode === 'post-allocation-rejection') {
+    // Exercise the candidate allocation and rejection even when the live view already owns
+    // all ordinary display ports required by this Source.
+    const previousFault = owner.frameState.gtaoCandidatePreparationFailureGeneration;
+    fault.armGtaoCandidatePreparationFault(owner.frameState, f.internals.deviceScope.generation);
+    restore.push(() => {
+      owner.frameState.gtaoCandidatePreparationFailureGeneration = previousFault;
+    });
     const compile = compiler.compileSourceViewGraph;
     const compilation = vi.spyOn(compiler, 'compileSourceViewGraph').mockImplementation((input) => {
       const outcome = compile(input);
@@ -92,8 +138,7 @@ it.each([
       .mockReturnValueOnce(true);
     restore.push(() => injected.mockRestore());
   }
-  let retiredOnAdoption: ReturnType<graphOwner.PreparedViewGraph['retire']> | undefined;
-  work = f.manager.prepareInitialSourceViews(staged.group, () => {
+  const preparing = f.manager.prepareInitialSourceViews(staged.group, () => {
     // This is the exact post-storage.accept bookend, after all graph preparation yields.
     if (
       mode === 'retired-before-accept' &&
@@ -104,34 +149,33 @@ it.each([
       retiredOnAdoption = held.retire();
     return staged.isCurrent();
   });
-  if (mode === 'post-allocation-rejection') {
-    let failed = false;
-    try {
-      for (let step = 0; step < 1000; step++) {
-        const next = work.next();
-        if (next.done) break;
-        if (next.value instanceof Promise) await next.value;
-      }
-    } catch {
-      failed = true;
+  work = preparing;
+  const prepare = async () => {
+    for (let step = 0; step < 1000; step++) {
+      const next = preparing.next();
+      if (next.done) return;
+      if (next.value instanceof Promise) await next.value;
     }
-    expect(failed).toBe(true);
+  };
+  if (mode === 'superseded-during-hiz') {
+    await expect(prepare()).rejects.toMatchObject({
+      code: 'rhi-descriptor-invalid',
+      cause: { code: 'pass-preparation-failed', detail: { passName: 'ssao-furthest-hzb-seed' } },
+    });
+    expect(preparing.isObsolete()).toBe(true);
+    (await preparing.retire()).unwrap();
+  } else if (mode === 'post-allocation-rejection') {
+    await expect(prepare()).rejects.toThrow();
     assert(rejected);
     (await work.retire()).unwrap();
     expect(rejected.isRetired()).toBe(true);
     (await rejected.retire()).unwrap();
   } else {
-    let failed = false;
-    try {
-      for (let step = 0; step < 1000; step++) {
-        const next = work.next();
-        if (next.done) break;
-        if (next.value instanceof Promise) await next.value;
-      }
-    } catch {
-      failed = true;
-    }
-    expect(failed).toBe(true);
+    if (mode === 'retired-during-resource-preparation') {
+      await expect(prepare()).rejects.toMatchObject({ code: 'rhi-descriptor-invalid' });
+      expect(preparing.isObsolete()).toBe(true);
+      expect(staged.isCurrent()).toBe(true);
+    } else await expect(prepare()).rejects.toThrow();
     assert(held);
     expect(retiredOnAdoption).toBeDefined();
     (await retiredOnAdoption)?.unwrap();

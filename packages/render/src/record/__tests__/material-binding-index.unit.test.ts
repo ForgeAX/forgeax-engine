@@ -7,7 +7,7 @@ import { MaterialFrame } from '../../scene/material-dispatch';
 import { buildDispatchPlan, buildMaterialSlotPlan } from '../fold-buckets';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { MaterialBindingIndex, MaterialRelations } from '../material-binding-index';
-import { drawMaterial } from '../material-pass-selection';
+import { materialFromSubmittedSlots, submittedMaterialRow } from '../material-pass-selection';
 
 const scope = { identity: 'material-relation-test' } as RenderResourceScope;
 const material = (handle: number) =>
@@ -65,11 +65,10 @@ describe('persistent material reader membership', () => {
     const owner = new MaterialRelations();
     const index = new MaterialBindingIndex();
     const table = index.build([capture(owner, [row(0)])], [], accepted, [row(0)]);
-    const context = { materialSlots: table.slots, materialSlotIndices: table.slotIndices };
     for (const address of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])
-      expect(() => drawMaterial(context, address)).toThrow(
-        'Draw has no fixed submitted material slot',
-      );
+      expect(() =>
+        materialFromSubmittedSlots(table.slots, submittedMaterialRow(table.slotIndices, address)),
+      ).toThrow('Draw has no fixed submitted material slot');
   });
   it('retains quiet and pose-only relations without re-indexing their rows', () => {
     const owner = new MaterialRelations();
@@ -155,6 +154,38 @@ describe('persistent material reader membership', () => {
     expect(next.slotIndices).toBe(old.slotIndices);
     expect(next.slots[0]).toBe(snapshot);
     expect(old.slots[0]).toBe(accepted.get(a)?.snapshot);
+  });
+
+  it('shares singleton rows and detaches additional GPU material classes from the CPU layout', () => {
+    const owner = new MaterialRelations();
+    const index = new MaterialBindingIndex();
+    const rows = Array.from({ length: 256 }, (_, id) => row(id, Object.freeze([a])));
+    const first = capture(owner, rows);
+    const cpu = index.build([first], [], accepted, rows);
+    expect(cpu.slotIndices.at(255)).toBe(cpu.slotIndices.at(0));
+    const gpu = buildDispatchPlan(
+      { meshSsboState: { meshSlotCount: 512, materialSlotCount: 8 } } as never,
+      rows,
+      [],
+      [],
+      [],
+      undefined,
+      false,
+      { bindings: [{ material: a, resourceClass: 'extra' }], sourceScope: scope, frame: accepted },
+      undefined,
+      true,
+      { owner: index, renderables: rows, rows: [first] },
+    );
+    expect(gpu.materialBindingSlots.get(a)?.get('extra')).toBe(1);
+    expect(cpu.bindingSlots.get(a)?.has('extra')).toBe(false);
+    const moved = rows.map((entry, i) => ({
+      ...entry,
+      source: { ...entry.source, entityKey: i + 1 },
+    }));
+    const next = index.build([capture(owner, moved)], [], accepted, moved);
+    expect(next.bindingSlots).toBe(cpu.bindingSlots);
+    expect(next.bindings[0]?.entityKey).toBe(1);
+    expect(cpu.bindings[0]?.entityKey).toBe(0);
   });
 
   it('keeps transient resource scopes outside persistent entity relationships', () => {

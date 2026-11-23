@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "3ce70155-2b31-580d-b0e3-520ebb4b0ae9",
+  "schemaVersion": "3.0.0",
+  "packageId": "ab6a8835-ebe0-57f1-9706-37f686912d1a",
+  "assets": {
+    "shader-defs-red.wgsl": {
       "kind": "material",
-      "sourceKey": "shader-defs-red.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -16,17 +14,42 @@
               "vertexEntry": "vs_main",
               "fragmentEntry": "fs_main"
             },
-            "renderState": { "tags": { "LightMode": "Forward" }, "queue": 2000 }
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
           }
         ],
         "parameters": [
-          { "name": "baseColor", "type": "color", "default": [1, 1, 1, 1] },
-          { "name": "time", "type": "f32", "default": 0 },
-          { "name": "speed", "type": "f32", "default": 1 },
-          { "name": "baseColorTexture", "type": "texture" }
+          {
+            "name": "baseColor",
+            "type": "color",
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
+          },
+          {
+            "name": "time",
+            "type": "f32",
+            "default": 0
+          },
+          {
+            "name": "speed",
+            "type": "f32",
+            "default": 1
+          },
+          {
+            "name": "baseColorTexture",
+            "type": "texture"
+          }
         ]
       },
       "refs": []
     }
-  ]
+  }
 }

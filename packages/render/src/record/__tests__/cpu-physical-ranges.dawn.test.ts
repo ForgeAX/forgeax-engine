@@ -1,8 +1,9 @@
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
+import { flushMeshDrawUploads } from '../mesh-ssbo';
 import { cpuPhysicalRangesFixture } from './cpu-physical-ranges-fixture';
 import { CPU_SETUP_SHADER } from './main-pass-cpu-setup-fixture';
 
@@ -53,6 +54,7 @@ it.each([
       { buffer: readback, bytesPerRow: 256, rowsPerImage: 32 },
       { width: 64, height: 32, depthOrArrayLayers: 1 },
     );
+    flushMeshDrawUploads(device.queue, f.c.pipelineState.meshStorageBuffer);
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     await device.queue.onSubmittedWorkDone();
     const error = await native.popErrorScope();
@@ -84,6 +86,41 @@ it.each([
       ).toBe(true);
       expect(f.secondMesh.submeshes).toBe(f.sourceSubmeshes);
       expect(f.second.source.gpuDrivenDraws).toEqual(f.sourceDraws);
+    }
+    if (shadow) {
+      // Finish each reference frame independently. Only the pose changes
+      // within each run; the LOD switch changes the actual first/base range.
+      const inputs = Array.from({ length: 60 }, (_, frame) => ({
+        level: (frame < 30 ? 0 : 1) as 0 | 1,
+        x: (frame % 30) / 40,
+      }));
+      const references = [];
+      for (const { level, x } of inputs)
+        references.push(
+          await render((pass) => f.recordRange(pass, kind, level, false, { adjacent: false, x })),
+        );
+      expect(equalBytes(references[0], references[29])).toBe(false);
+      for (let frame = 0; frame < inputs.length; frame++) {
+        const input = inputs[frame];
+        if (input === undefined) throw new Error('Missing shadow input');
+        const { level, x } = input;
+        expect(
+          equalBytes(
+            await render((pass) => {
+              const draws = vi.spyOn(pass, 'drawIndexed');
+              const bundles = vi.spyOn(pass, 'executeBundles');
+              f.recordRange(pass, kind, level, false, { adjacent: true, x });
+              expect(draws.mock.calls).toEqual([
+                [3, 1, 0, 0, 0],
+                [3, 1, level ? 6 : 3, level ? 5 : 2, 0],
+              ]);
+              expect(bundles).not.toHaveBeenCalled();
+            }),
+            references[frame],
+          ),
+        ).toBe(true);
+      }
+      expect(f.shadowCounters.preparedHits).toBe(0);
     }
     expect(f.errors).toEqual([]);
     expect(await native.popErrorScope()).toBeNull();

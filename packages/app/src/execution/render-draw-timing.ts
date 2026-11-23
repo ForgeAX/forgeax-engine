@@ -59,6 +59,7 @@ export class RenderDrawTiming {
   private startedAt = 0;
   private graphCompilesAtStart = 0;
   private pipelineCreationsAtStart = 0;
+  private presentationWait = 0;
   /** Start-to-start milliseconds; absent on the first draw. */
   intervalMs: number | undefined;
   awaitMs = 0;
@@ -85,12 +86,18 @@ export class RenderDrawTiming {
     this.previousStartedAt = startedAt;
     this.intervalMs = previousStartedAt === undefined ? undefined : startedAt - previousStartedAt;
     this.awaitMs = roundMs(arrivedAt - previousEndedAt);
-    this.queuedMs = roundMs(startedAt - Math.max(arrivedAt, previousEndedAt));
+    // The preceding turn held this serial lane while waiting for a display
+    // callback. Charge that part of the interval to queueing rather than draw.
+    const previousPresentationWait = this.presentationWait;
+    this.presentationWait = 0;
+    this.queuedMs = roundMs(
+      startedAt - Math.max(arrivedAt, previousEndedAt) + previousPresentationWait,
+    );
     this.stallReason =
       previousStartedAt === undefined
         ? undefined
         : renderStallReason(
-            previousEndedAt - previousStartedAt,
+            previousEndedAt - previousStartedAt - previousPresentationWait,
             this.awaitMs,
             this.queuedMs,
             message.engineCreditWaitMs ?? 0,
@@ -100,9 +107,14 @@ export class RenderDrawTiming {
     this.pipelineCreationsAtStart = this.sources.pipelineCreations();
   }
 
+  /** A native display wait occupies the serial lane without doing recording work. */
+  resumedPresentation(waitBeganAt: number): void {
+    this.presentationWait = this.sources.now() - waitBeganAt;
+  }
+
   /** Closes the CPU part of the turn at queue submission. */
   submit(): void {
-    this.cpuMs = roundMs(this.sources.now() - this.startedAt);
+    this.cpuMs = roundMs(this.sources.now() - this.startedAt - this.presentationWait);
     this.graphCompiles = this.sources.graphCompiles() - this.graphCompilesAtStart;
     this.pipelineCreations = this.sources.pipelineCreations() - this.pipelineCreationsAtStart;
   }

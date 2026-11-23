@@ -43,8 +43,12 @@ const materialPackages = [];
 for (const directory of [join(root, 'apps'), join(root, 'packages')]) {
   for (const path of await collect(directory, '.pack.json')) {
     const pack = JSON.parse(readArtifactJsonText(path));
+    // This inventory lists the single-output shader plugin inputs.
     const materialAssets =
-      pack.schemaVersion === '3.0.0' && pack.assets && !Array.isArray(pack.assets)
+      pack.schemaVersion === '3.0.0' &&
+      pack.assets &&
+      !Array.isArray(pack.assets) &&
+      Object.keys(pack.assets).length === 1
         ? Object.entries(pack.assets)
             .filter(
               ([sourceKey, asset]) => sourceKey.endsWith('.wgsl') && asset?.kind === 'material',

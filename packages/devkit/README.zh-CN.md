@@ -12,6 +12,8 @@ DevKit 负责项目构建、资产生产、开发宿主、运行观察和工具�
 | 任务 | 入口与边界 |
 |:--|:--|
 | 创建、检查和构建项目 | [CLI 与目录](README.md#cli-and-catalog)：通过项目声明的构建根生产资产，保持源 GUID 和 sourceKey 稳定 |
+| 构建原生桌面开发版 | [原生桌面开发构建](README.md#native-desktop-development-build)：从同一项目生成 Node ESM 入口，用已构建的原生插件开窗 |
+| 打包 Windows 原生游戏 | [Windows MSI](README.md#windows-native-installer) 通过 `forgeax project package --format native` 生成安装包，并支持带时间戳的签名 |
 | 启动独立后端 | [后端启动](README.md#independent-backend-startup)：后端工作区与游戏项目身份分开，启动回执不等于项目或画面就绪 |
 | 修改 Pack 参数 | [创作会话](README.md#pack-authoring-sessions)：运行时字段立即预览，生成字段等待显式生成；保存写回原始源 |
 | 创建行为资产 | [行为资产](README.md#create-behavior-assets)：通过原生插件程序与项目根组合能力 |

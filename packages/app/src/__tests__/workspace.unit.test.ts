@@ -27,6 +27,7 @@ import {
   projectEngineWorkspaceAssets,
 } from '../workspace';
 import { workspaceAssetFacts } from '../workspace-asset-facts';
+import type { EngineWorkspacePickGranularity } from '../workspace-target-tools';
 import { createEngineWorkspaceTools } from '../workspace-tools';
 import { publishWorkspaceAssets } from './workspace-asset-fixture';
 
@@ -170,7 +171,7 @@ describe('Engine workspace public runtime', () => {
     }
   });
 
-  it('publishes bounds as the target.pick default and forwards explicit triangle granularity', async () => {
+  it('publishes bounds as the target.pick default and forwards explicit triangle and GPU granularity', async () => {
     const { app, assets } = fixtureApp();
     const project = { id: '/pick', root: '/pick' };
     const target = {
@@ -181,12 +182,14 @@ describe('Engine workspace public runtime', () => {
       width: 320,
       height: 240,
     };
-    const pick = vi.fn(({ granularity = 'bounds' }: { granularity?: 'bounds' | 'triangle' }) => ({
-      targetId: target.targetId,
-      frameId: 12,
-      entityId: 'pick-target:rear-cube',
-      granularity,
-    }));
+    const pick = vi.fn(
+      ({ granularity = 'bounds' }: { granularity?: EngineWorkspacePickGranularity }) => ({
+        targetId: target.targetId,
+        frameId: 12,
+        entityId: 'pick-target:rear-cube',
+        granularity,
+      }),
+    );
     const provider = createEngineWorkspaceProvider({
       openProjectSession: ({ generation }) =>
         projectSessionFixture(project.root, generation, {
@@ -222,7 +225,7 @@ describe('Engine workspace public runtime', () => {
         height: target.height,
       });
       const identity = { targetId: target.targetId, targetGeneration: preview.target.generation };
-      const call = async (granularity?: 'bounds' | 'triangle') => {
+      const call = async (granularity?: EngineWorkspacePickGranularity) => {
         const terminal = await api.run(
           'engine.target.pick',
           {
@@ -239,17 +242,30 @@ describe('Engine workspace public runtime', () => {
 
       const bounds = await call();
       const triangle = await call('triangle');
+      const visible = await call('visible-entity');
       expect(bounds).toMatchObject({ entityId: 'pick-target:rear-cube', granularity: 'bounds' });
       expect(triangle).toMatchObject({
         entityId: 'pick-target:rear-cube',
         granularity: 'triangle',
+      });
+      expect(visible).toMatchObject({
+        entityId: 'pick-target:rear-cube',
+        granularity: 'visible-entity',
+      });
+      expect(pick).toHaveBeenNthCalledWith(3, {
+        x: 160,
+        y: 120,
+        granularity: 'visible-entity',
+        signal: expect.any(AbortSignal),
       });
       expect(pick).toHaveBeenNthCalledWith(1, { x: 160, y: 120 });
       expect(pick).toHaveBeenNthCalledWith(2, { x: 160, y: 120, granularity: 'triangle' });
       expect(
         api.list().find((record) => record.descriptor.id === 'engine.target.pick')?.descriptor
           .inputSchema,
-      ).toMatchObject({ properties: { granularity: { enum: ['bounds', 'triangle'] } } });
+      ).toMatchObject({
+        properties: { granularity: { enum: ['bounds', 'triangle', 'visible-entity'] } },
+      });
     } finally {
       await api.dispose();
       await runtime.dispose();

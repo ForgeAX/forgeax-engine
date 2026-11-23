@@ -1,6 +1,7 @@
 #define_import_path forgeax_material::displacement
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 
+#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
 // Level zero is identical in color, depth, temporal and every shadow view.
 // Height is normalized linear data; bounding uses this same closed [0, 1] range.
 fn displaceVertex(position : vec3<f32>, normal : vec3<f32>, heightMap : texture_2d<f32>,
@@ -24,6 +25,9 @@ fn displacedNormal(position : vec3<f32>, original : vec3<f32>) -> vec3<f32> {
   return select(original, unit * select(-1.0, 1.0, dot(unit, original) >= 0.0), lengthSquared > 1e-30);
 }
 
+#endif
+
+#ifdef PARALLAX_HEIGHT_FRAGMENT_AVAILABLE
 fn parallaxHeight(heightMap : texture_2d<f32>, heightSampler : sampler, uv : vec2<f32>,
   uvDx : vec2<f32>, uvDy : vec2<f32>, scale : f32, bias : f32) -> f32 {
   return clamp(textureSampleGrad(heightMap, heightSampler, uv, uvDx, uvDy).r, 0.0, 1.0) * scale + bias;
@@ -100,3 +104,69 @@ fn parallaxSourceUvOffset(heightMap : texture_2d<f32>, heightSampler : sampler, 
     slotOffset.y * rotation.x - slotOffset.x * rotation.y) / dot(rotation.xy, rotation.xy);
   return unrotated / transform.zw;
 }
+
+#endif
+
+// Vertex displacement owns its authored map. Parallax borrows a distinct
+// fragment-visible pair selected by the renderer and shader compiler.
+fn standardDisplacesVertices() -> bool {
+#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
+  return standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement();
+#else
+  return false;
+#endif
+}
+
+fn evaluateStandardVertexPosition(position : vec3<f32>, normal : vec3<f32>,
+    coordinates : array<vec2<f32>, 8>) -> vec3<f32> {
+#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
+  if (standardDisplacesVertices()) {
+    return displaceVertex(position, normal, displacementTexture, displacementTexture_sampler,
+      material.displacementScale, material.displacementBias,
+      material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata,
+      material.displacementTextureCoordinatesRotation, coordinates);
+  }
+#endif
+  return position;
+}
+
+fn standardDisplacementTriangleNormal(position : vec3<f32>, original : vec3<f32>) -> vec3<f32> {
+#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
+  return displacedNormal(position, original);
+#else
+  return original;
+#endif
+}
+
+fn standardDisplacementSurfaceNormal(original : vec3<f32>, triangle : vec3<f32>) -> vec3<f32> {
+#ifdef DISPLACEMENT_TEXTURE_AVAILABLE
+  if (standardDisplacesVertices() &&
+      (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
+    return triangle;
+  }
+#endif
+  return original;
+}
+
+#ifdef PARALLAX_HEIGHT_FRAGMENT_AVAILABLE
+fn evaluateStandardParallax(source : array<vec4<f32>, 4>, uvDx : array<vec4<f32>, 4>,
+    uvDy : array<vec4<f32>, 4>, positionDx : vec3<f32>, positionDy : vec3<f32>,
+    normal : vec3<f32>, tangent : vec4<f32>, viewDirection : vec3<f32>,
+    objectToWorld : mat3x3<f32>) -> array<vec4<f32>, 4> {
+  var pairs = source;
+  if (standardUsesDisplacementTexture() && standardUsesParallaxDisplacement()) {
+    let uvSet = u32(clamp(material.displacementTextureCoordinatesMetadata.x, 0.0, 7.0));
+    let pairIndex = uvSet / 2u;
+    let upper = (uvSet & 1u) != 0u;
+    let delta = parallaxSourceUvOffset(parallaxHeightTexture, parallaxHeightTexture_sampler,
+      material.displacementScale, material.displacementBias,
+      material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata,
+      material.displacementTextureCoordinatesRotation,
+      select(pairs[pairIndex].xy, pairs[pairIndex].zw, upper), select(uvDx[pairIndex].xy, uvDx[pairIndex].zw, upper),
+      select(uvDy[pairIndex].xy, uvDy[pairIndex].zw, upper), positionDx, positionDy,
+      normal, tangent, viewDirection, objectToWorld);
+    pairs[pairIndex] += select(vec4<f32>(delta, 0.0, 0.0), vec4<f32>(0.0, 0.0, delta), upper);
+  }
+  return pairs;
+}
+#endif

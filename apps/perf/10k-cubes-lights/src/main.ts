@@ -15,6 +15,7 @@ import {
   MeshFilter,
   MeshRenderer,
   PointLight,
+  type Renderer,
   perspective,
   SpotLight,
   TONEMAP_ACES_FILMIC,
@@ -110,6 +111,11 @@ export interface PerfEvidence {
   profileSummary: unknown;
   profileOverhead: { readonly profilerEventObjectAllocations: number };
   rendererInspection: unknown;
+  shadowProjection?: {
+    readonly requested: 'screen';
+    observed: ReturnType<Renderer['inspect']>['directionalShadow']['forwardReceiver'];
+    timings: unknown[];
+  };
 }
 
 declare global {
@@ -132,8 +138,68 @@ if (!parsed.ok) {
   void bootstrap(canvas, parsed.value);
 }
 
+function projectionConfig(query: URLSearchParams) {
+  const projection: 'screen' | undefined = query.get('shadowProjection') === 'screen' ? 'screen' : undefined;
+  const projectedSun = projection !== undefined && query.get('shadowedSun') === '1';
+  return {
+    projection,
+    projectedSun,
+    rendererConfig: {
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        lightCount: 32,
+        ...(projection === undefined ? {} : { renderPath: 'forward' as const }),
+        ...(projection === 'screen'
+          ? {
+              ...(query.get('shadowFade') === '1' ? { forwardShadowViewFade: true as const } : {}),
+              ...(query.get('shadowGather') === '1' ? { forwardShadowSpotFilter: 'gather' as const } : {}),
+            }
+          : {}),
+      },
+      ...(projection === undefined ? {} : { gpuPassTiming: { maxFramesInFlight: 8 } }),
+    },
+    sunConfig: {
+      castShadow: projectedSun || DIRECTIONAL_LIGHT_CAST_SHADOW,
+      ...(projectedSun ? { mapSize: 256, cascadeCount: 2, shadowDistance: 64 } : {}),
+    },
+    spotConfig: (index: number) => ({
+      castShadow: projection !== undefined && index < 3,
+      ...(projection === undefined ? {} : { mapSize: 256 }),
+    }),
+  };
+}
+
+function observeShadowProjection(
+  renderer: Renderer,
+  evidence: PerfEvidence,
+  projection: 'screen' | undefined,
+) {
+  if (projection === undefined) return;
+  const shadowProjection: NonNullable<PerfEvidence['shadowProjection']> = {
+    requested: projection,
+    observed: undefined,
+    timings: [],
+  };
+  evidence.shadowProjection = shadowProjection;
+  renderer.subscribe((event) => {
+    if (event.kind !== 'frame-submitted' || event.receipt.presentation !== 'ready') return;
+    const progress = evidence.frameProgress;
+    if (progress <= 60 || progress > 300) return;
+    const sample = { progress, timing: { status: 'pending' } as unknown };
+    shadowProjection.timings.push(sample);
+    void renderer.observe(event.receipt, { include: ['timings'] }).then((observed) => {
+      sample.timing = observed.ok ? observed.value.timings : { status: 'missing' };
+    });
+    if (shadowProjection.observed === undefined) {
+      shadowProjection.observed =
+        renderer.inspect({ fields: ['directionalShadow'] }).directionalShadow.forwardReceiver;
+    }
+  });
+}
+
 async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): Promise<void> {
   const bootstrapStart = performance.now();
+  const { projection, projectedSun, rendererConfig, sunConfig, spotConfig } = projectionConfig(params);
   const profilerAllocations = { profilerEventObjectAllocations: 0 };
   const profilingEnabled = params.get('profile') !== '0';
   const profiler = profilingEnabled
@@ -143,10 +209,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     target,
     {
       ...(profiler === undefined ? {} : { profiler }),
-      standardProfile: {
-        ...DEFAULT_STANDARD_PROFILE,
-        lightCount: 32,
-      },
+      ...rendererConfig,
       time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.1 },
     },
     forgeaxBundlerAdapter(),
@@ -207,7 +270,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
         direction: [...DIRECTIONAL_LIGHT_DIRECTION],
         color: [...DIRECTIONAL_LIGHT_COLOR],
         intensity: DIRECTIONAL_LIGHT_INTENSITY,
-        castShadow: DIRECTIONAL_LIGHT_CAST_SHADOW,
+        ...sunConfig,
       },
     })
     .unwrap();
@@ -256,7 +319,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
             range: 16,
             innerConeDeg: 20,
             outerConeDeg: 40,
-            castShadow: false,
+            ...spotConfig(index),
           },
         },
       )
@@ -282,7 +345,9 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const evidence: PerfEvidence = {
     backend: 'webgpu',
     bootstrapMs: performance.now() - bootstrapStart,
-    workloadFingerprint: workloadFingerprint(options),
+    workloadFingerprint:
+      workloadFingerprint(options) +
+      (projection === undefined ? '' : `|projectionSpotShadows=3|projectionSun=${Number(projectedSun)}`),
     seed: PERF_WORKLOAD_SEED,
     requestedCounts: options,
     postSpawn,
@@ -299,6 +364,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     rendererInspection: null,
   };
   Object.assign(globalThis, { __forgeaxPerf: evidence });
+  observeShadowProjection(app.renderer, evidence, projection);
   const capture = profiler?.startCapture({
     frameLimit: profileFrameLimit,
     eventLimit: PROFILE_EVENT_LIMIT,

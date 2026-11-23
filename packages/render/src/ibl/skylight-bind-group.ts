@@ -3,8 +3,8 @@ import {
   directDfgLutBytes,
   STANDARD_PHYSICAL_BINDING_START,
 } from '@forgeax/engine-shader';
-import { materialLightingInputBindings } from '@forgeax/engine-types';
 import { PLANAR_REFLECTION_UNIFORM_SIZE } from '../record/view-ubo';
+import { constantSkySh, SKY_SH_BYTES } from './sky-sh';
 
 // Skylight resources share the Standard material bind group. Solid environments
 // use constant radiance cubes and the same GGX DFG data as Three.js r184;
@@ -146,7 +146,7 @@ interface SkylightQueue {
     buffer: Buffer,
     bufferOffset: number,
     data: ArrayBufferView,
-  ): Result<void, RhiError> | unknown;
+  ): Result<void, RhiError> | void;
 }
 
 // ─── Public types ───────────────────────────────────────────────────────────
@@ -157,12 +157,10 @@ interface SkylightQueue {
  * fallback set is the 1x1 zero identity bundle below.
  */
 export interface SkylightBindGroupResources {
-  readonly irradianceView: TextureView;
-  /** Shared by diffuse irradiance and the BRDF lookup table. */
+  readonly skySh: Buffer;
+  /** Linear sampler for the environment BRDF lookup table. */
   readonly irradianceSampler: Sampler;
   readonly prefilterView: TextureView;
-  /** Present only when the per-draw prefilter slot was replaced by a local probe. */
-  readonly skylightPrefilterView?: TextureView;
   readonly prefilterSampler: Sampler;
   readonly brdfLutView: TextureView;
   readonly intensityBuffer: Buffer;
@@ -182,6 +180,7 @@ export interface SkylightBindGroupResources {
 export interface SkylightFallback {
   readonly irradianceTexture: Texture;
   readonly irradianceView: TextureView;
+  readonly skySh: Buffer;
   readonly prefilterTexture: Texture;
   readonly prefilterView: TextureView;
   readonly brdfLutTexture: Texture;
@@ -197,10 +196,10 @@ export interface SkylightFallback {
  */
 export function skylightBindGroupResources(
   fallback: SkylightFallback,
-  views?: { readonly irr: TextureView; readonly pref: TextureView; readonly brdf: TextureView },
+  views?: { readonly skySh: Buffer; readonly pref: TextureView; readonly brdf: TextureView },
 ): SkylightBindGroupResources {
   return {
-    irradianceView: views?.irr ?? fallback.irradianceView,
+    skySh: views?.skySh ?? fallback.skySh,
     irradianceSampler: fallback.sampler,
     prefilterView: views?.pref ?? fallback.prefilterView,
     prefilterSampler: fallback.sampler,
@@ -381,13 +380,6 @@ export function assembleMaterialWithSkylightEntries(
       },
     );
   }
-  result.push({
-    binding: 47,
-    resource: {
-      kind: 'textureView',
-      value: skylight.skylightPrefilterView ?? skylight.prefilterView,
-    },
-  });
   return result;
 }
 
@@ -403,9 +395,8 @@ export function createSkylightFallback(
   device: SkylightDevice,
   queue: SkylightQueue,
 ): SkylightFallback {
-  // Diffuse IBL and the BRDF LUT share one binding; prefilter remains a
-  // separate binding so per-draw reflection probes can replace it. Both
-  // bindings use this linear-clamp sampler for the global environment.
+  // BRDF lookup and the default PMREM use this linear-clamp sampler.
+  // A per-draw reflection probe may replace the PMREM sampler.
   const samplerResult = device.createSampler({
     label: 'skylight-fallback-sampler',
     magFilter: 'linear',
@@ -466,8 +457,7 @@ export function createSkylightFallback(
   );
   if (!written.ok) throw written.error;
 
-  // Cube views over the depthOrArrayLayers=6 textures so the @group(1)
-  // @binding(7,9) texture_cube bindings can sample them.
+  // The 1x1 cube serves background and custom cube fallback consumers.
   const irradianceViewResult = device.createTextureView(irradianceTexture, {
     label: 'skylight-fallback-irradiance-cube-view',
     dimension: 'cube',
@@ -501,9 +491,19 @@ export function createSkylightFallback(
   const intensityBuffer = intensityBufResult.value;
   queue.writeBuffer(intensityBuffer, 0, new Float32Array([0, 0, 0, 0, 0, 0, 0, 1]));
 
+  const skyShResult = device.createBuffer({
+    label: 'skylight-fallback-sh',
+    size: SKY_SH_BYTES,
+    usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_UNIFORM,
+  });
+  if (!skyShResult.ok) throw skyShResult.error;
+  const skySh = skyShResult.value;
+  const uploaded = queue.writeBuffer(skySh, 0, constantSkySh([1, 1, 1]));
+  if (uploaded?.ok === false) throw uploaded.error;
   return {
     irradianceTexture,
     irradianceView,
+    skySh,
     prefilterTexture,
     prefilterView,
     brdfLutTexture,
@@ -520,7 +520,7 @@ function materialSkylightEntries(
   return [
     {
       binding: iblStart,
-      resource: { kind: 'textureView', value: skylight.irradianceView },
+      resource: { kind: 'buffer', value: { buffer: skylight.skySh, size: SKY_SH_BYTES } },
     },
     {
       binding: iblStart + 1,
@@ -550,16 +550,5 @@ export function assembleLitMaterialEntries(
   skylight: SkylightBindGroupResources,
   userRegionBindingEnd: number,
 ): BindGroupEntry[] {
-  const slots = materialLightingInputBindings(userRegionBindingEnd);
-  return [
-    ...materialEntries,
-    ...materialSkylightEntries(userRegionBindingEnd, skylight),
-    {
-      binding: slots.skylightPrefilterMap,
-      resource: {
-        kind: 'textureView',
-        value: skylight.skylightPrefilterView ?? skylight.prefilterView,
-      },
-    },
-  ];
+  return [...materialEntries, ...materialSkylightEntries(userRegionBindingEnd, skylight)];
 }

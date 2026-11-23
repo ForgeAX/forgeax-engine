@@ -19,6 +19,7 @@ export interface SortedPhaseWork {
 }
 
 const INITIAL_CAPACITY = 64;
+const movementBudget = (count: number) => 8 * count + 1024;
 // Interleaved member facts: key, layer, value, material, tie.
 const STRIDE = 5;
 const KEY = 0;
@@ -31,18 +32,12 @@ const TIE = 4;
  * A view-private retained sorted phase: the members of one sorted draw list,
  * kept in order across frames and keyed by a stable non-negative row key.
  *
- * Consumers feed diffs (`enter` / `update` / `leave`). With the order valid,
- * each diff is applied at once: O(log n) comparisons to locate it plus the
- * native shift of its displacement, so a frame with a static camera costs
- * O(changes). When every value changes (camera move) or ties are reassigned,
- * `invalidate` defers ordering; `commit` then repairs the retained array with
- * a near-sorted insertion sort, O(n + inversions), falling back to a full
- * sort only when displacement exceeds a linear budget. NaN values have no
- * order; while one is a member the phase reports `ordered === false` and the
- * caller owns that frame's order.
- *
- * Ties must be unique among members to make the order strict; the key breaks
- * any remaining tie so every position is addressable by binary search.
+ * Each changed key costs O(log n) comparisons and shifts only the crossed interval.
+ * After a linear budget of element moves, remaining changes write their facts in
+ * place. Commit repairs near-sorted order within a second linear movement budget
+ * and sorts the full active range for larger permutations. Camera-wide formula
+ * changes can enter this deferred mode immediately. A NaN makes the order
+ * undefined until that value changes or leaves; callers use their stable sort.
  */
 export class SortedPhase {
   private readonly ids = new Map<number, number>();
@@ -57,6 +52,7 @@ export class SortedPhase {
   private deferred = false;
   private pendingDead = 0;
   private dirty = false;
+  private shiftedSinceCommit = 0;
   private orderKind: SortedPhaseOrder;
   /** Advances once per commit that changed membership or order. */
   revision = 0;
@@ -64,6 +60,25 @@ export class SortedPhase {
 
   constructor(order: SortedPhaseOrder) {
     this.orderKind = order;
+  }
+
+  /** Release retired ids and large backing stores. Small empty phases can be populated again in place. */
+  clear(): void {
+    this.ids.clear();
+    this.freeIds.length = 0;
+    this.count = 0;
+    this.nextId = 0;
+    this.nan = 0;
+    this.pendingDead = 0;
+    this.shiftedSinceCommit = 0;
+    this.dirty = false;
+    this.deferred = false;
+    if (this.dead.length > INITIAL_CAPACITY) {
+      this.facts = new Float64Array(INITIAL_CAPACITY * STRIDE);
+      this.dead = new Uint8Array(INITIAL_CAPACITY);
+    }
+    if (this.orderIds.length > INITIAL_CAPACITY) this.orderIds = new Int32Array(INITIAL_CAPACITY);
+    this.revision++;
   }
 
   get order(): SortedPhaseOrder {
@@ -135,13 +150,13 @@ export class SortedPhase {
       this.deferred = true;
     }
     if (this.count === this.orderIds.length) this.orderIds = grow(this.orderIds);
-    if (this.deferred) {
+    const position = this.deferred ? this.count : this.lowerBound(id);
+    if (this.deferred || this.deferExpensiveShift(this.count - position)) {
       this.orderIds[this.count++] = id;
-      return id;
+    } else {
+      this.shiftRight(position);
+      this.orderIds[position] = id;
     }
-    const position = this.upperBound(id);
-    this.shiftRight(position);
-    this.orderIds[position] = id;
     return id;
   }
 
@@ -169,20 +184,19 @@ export class SortedPhase {
     const order = this.orderIds;
     const previous = from > 0 ? (order[from - 1] as number) : -1;
     const next = from + 1 < this.count ? (order[from + 1] as number) : -1;
-    if (
-      (previous < 0 || this.compare(previous, id) < 0) &&
-      (next < 0 || this.compare(id, next) < 0)
-    )
-      return;
+    let to: number;
+    if (previous >= 0 && this.compare(previous, id) > 0) to = this.lowerBound(id, 0, from);
+    else if (next >= 0 && this.compare(id, next) > 0)
+      to = this.lowerBound(id, from + 1, this.count) - 1;
+    else return;
+
+    const displacement = Math.abs(to - from);
+    if (this.deferExpensiveShift(displacement)) return;
     this.dirty = true;
-    // Remove, then insert into the remaining strictly ordered array.
-    order.copyWithin(from, from + 1, this.count);
-    this.count -= 1;
-    const to = this.upperBound(id);
-    order.copyWithin(to + 1, to, this.count);
+    if (to < from) order.copyWithin(to + 1, to, from);
+    else order.copyWithin(from, from + 1, to + 1);
     order[to] = id;
-    this.count += 1;
-    this.work.moved += Math.abs(to - from);
+    this.work.moved += displacement;
   }
 
   leave(id: number): void {
@@ -196,12 +210,12 @@ export class SortedPhase {
       this.nan -= 1;
       this.deferred = true;
     }
-    if (this.deferred) {
+    const position = this.deferred ? this.count : this.positionOf(id);
+    if (this.deferred || this.deferExpensiveShift(this.count - position - 1)) {
       this.dead[id] = 1;
       this.pendingDead += 1;
       return;
     }
-    const position = this.positionOf(id);
     this.orderIds.copyWithin(position, position + 1, this.count);
     this.count -= 1;
     this.work.moved += this.count - position;
@@ -210,6 +224,7 @@ export class SortedPhase {
 
   /** Apply deferred removals and repairs. True when membership or order changed. */
   commit(): boolean {
+    this.shiftedSinceCommit = 0;
     if (this.deferred) {
       if (this.pendingDead > 0) this.compact();
       if (this.nan === 0) {
@@ -259,6 +274,14 @@ export class SortedPhase {
     return (facts[x + KEY] as number) - (facts[y + KEY] as number);
   }
 
+  /** Bound cumulative ordered-array movement even when each diff arrives independently. */
+  private deferExpensiveShift(count: number): boolean {
+    this.shiftedSinceCommit += count;
+    if (this.shiftedSinceCommit <= movementBudget(this.count)) return false;
+    this.invalidate();
+    return true;
+  }
+
   private assign(id: number, layer: number, value: number, material: number, tie: number): void {
     const facts = this.facts;
     const at = id * STRIDE;
@@ -279,10 +302,8 @@ export class SortedPhase {
     return id;
   }
 
-  /** First position whose member orders after `id`; `id` itself is not in the range. */
-  private upperBound(id: number): number {
-    let low = 0;
-    let high = this.count;
+  /** Position of the first member at or after the supplied key in this ordered range. */
+  private lowerBound(id: number, low = 0, high = this.count): number {
     const order = this.orderIds;
     while (low < high) {
       const middle = (low + high) >>> 1;
@@ -293,7 +314,7 @@ export class SortedPhase {
   }
 
   private positionOf(id: number): number {
-    const position = this.upperBound(id);
+    const position = this.lowerBound(id);
     if (this.orderIds[position] !== id) throw new Error('SortedPhase lost its retained order');
     return position;
   }
@@ -324,7 +345,7 @@ export class SortedPhase {
     this.work.repairs += 1;
     const order = this.orderIds;
     const n = this.count;
-    const budget = 8 * n + 1024;
+    const budget = movementBudget(n);
     let moved = 0;
     for (let index = 1; index < n; index++) {
       const id = order[index] as number;

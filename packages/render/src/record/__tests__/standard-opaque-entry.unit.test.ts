@@ -86,6 +86,9 @@ it('keeps the opaque screen-data entry explicit and falls back for unlit or olde
   expect(declaredFragmentEntry(entry, '@fragment fn fs_forward_screen() {}')).toBe(entry);
   expect(declaredFragmentEntry(entry, '@fragment fn fs_main() {}')).toBeUndefined();
   expect(declaredFragmentEntry('fs_custom', '@fragment fn fs_main() {}')).toBe('fs_custom');
+  const shadowEntry = 'fs_forward_sun_shadow';
+  expect(declaredFragmentEntry(shadowEntry, '@fragment fn fs_main() {}')).toBeUndefined();
+  expect(declaredFragmentEntry(shadowEntry, `@fragment fn ${shadowEntry}() {}`)).toBe(shadowEntry);
 });
 
 it('keeps authored fragment entries when admitting the Standard screen receiver', () => {

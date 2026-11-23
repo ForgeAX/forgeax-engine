@@ -24,6 +24,7 @@ interface PostProcessParamsCandidate {
 export function createPostProcessParamsOwner(
   internals: Pick<RenderSystemInternals, 'device' | 'errorRegistry'>,
   invalidate: (id: string, moduleLabel: string | undefined) => void,
+  afterSubmission?: (device: RhiDevice, release: () => void) => void,
 ) {
   // CPU post-process declarations are owned by the feature host and remain live
   // across recovery. Only device-bound buffers and pipelines are rebuilt here.
@@ -36,11 +37,55 @@ export function createPostProcessParamsOwner(
   let activeFeaturePostProcessEntries: ReadonlyMap<string, PostProcessShaderEntry> = new Map();
   const lookupPostProcess = (id: string): PostProcessShaderEntry | undefined =>
     builtinPostProcessEntries.get(id) ?? activeFeaturePostProcessEntries.get(id);
-  // feat-20260621 M-A2 / w8: expose the eager-created per-id params UBO through
-  // the narrow runtime surface so dispatchFullscreenPass can writeBuffer the
-  // per-frame snapshot + bind it at group(1) binding(2).
-  const getPostProcessParamsBuffer = (id: string): Buffer | undefined =>
-    postProcessParamsBuffers.get(id);
+  // Queue writes issued before a submit are visible to every command in that
+  // submit. Each overlapping draw needs its own physical uniform contents.
+  const writtenIn = new WeakMap<Buffer, number>();
+  const repeated = new Map<Buffer, { slots: Buffer[]; used: number }>();
+  let sequence = 0;
+  let recording = false;
+  const getPostProcessParamsBuffer = (id: string, access?: 'write'): Buffer | undefined => {
+    const base = postProcessParamsBuffers.get(id);
+    if (base === undefined || access !== 'write' || !recording) return base;
+    if (writtenIn.get(base) !== sequence) {
+      writtenIn.set(base, sequence);
+      return base;
+    }
+    let row = repeated.get(base);
+    if (row === undefined) {
+      row = { slots: [], used: 0 };
+      repeated.set(base, row);
+    }
+    let buffer = row.slots[row.used];
+    if (buffer === undefined) {
+      const params = lookupPostProcess(id)?.params;
+      if (params === undefined) return base;
+      buffer = postProcessParamsDevice
+        .createBuffer({
+          label: `post-process-params-${id}-draw-${row.used + 2}`,
+          size: params.byteSize,
+          usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+        })
+        .unwrap();
+      row.slots.push(buffer);
+    }
+    row.used++;
+    return buffer;
+  };
+  const finishRecording = (): void => {
+    if (!recording) return;
+    recording = false;
+    if (repeated.size === 0) return;
+    for (const [base, row] of repeated) {
+      if (row.used < row.slots.length) retirePostProcessParams(row.slots.splice(row.used));
+      if (row.used === 0) repeated.delete(base);
+      row.used = 0;
+    }
+  };
+  const releaseRepeated = (): void => {
+    for (const row of repeated.values()) retirePostProcessParams(row.slots);
+    repeated.clear();
+    recording = false;
+  };
   const postProcessDeclarations = (): readonly (readonly [string, PostProcessShaderEntry])[] => [
     ...builtinPostProcessEntries.entries(),
     ...activeFeaturePostProcessEntries.entries(),
@@ -98,6 +143,7 @@ export function createPostProcessParamsOwner(
   };
   const publishRecoveryPostProcessResources = (candidate: RecoveryPostProcessResources): void => {
     if (candidate.paramsBuffers === postProcessParamsBuffers) return;
+    releaseRepeated();
     const previous = { device: postProcessParamsDevice, paramsBuffers: postProcessParamsBuffers };
     postProcessParamsDevice = candidate.device;
     postProcessParamsBuffers = candidate.paramsBuffers;
@@ -105,6 +151,7 @@ export function createPostProcessParamsOwner(
   };
   const discardRecoveryPostProcessResources = (candidate: RecoveryPostProcessResources): void => {
     if (candidate.paramsBuffers === postProcessParamsBuffers) {
+      releaseRepeated();
       postProcessParamsBuffers = new Map();
       disposePostProcessResources(candidate);
       return;
@@ -113,13 +160,17 @@ export function createPostProcessParamsOwner(
   };
   const postProcessParamsByteSize = (entry: PostProcessShaderEntry): number =>
     entry.params?.byteSize ?? (entryHasDepthRead(entry) ? DEPTH_MIN_PARAMS_BYTE_SIZE : 0);
-  const destroyPostProcessParams = (buffers: readonly Buffer[]): void => {
+  const destroyPostProcessParams = (
+    buffers: readonly Buffer[],
+    device = postProcessParamsDevice,
+  ): void => {
     for (const buffer of buffers) {
-      const destroyed = internals.device.destroyBuffer(buffer);
+      const destroyed = device.destroyBuffer(buffer);
       if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
     }
   };
   const disposeActivePostProcessResources = (): void => {
+    releaseRepeated();
     const resources = { device: postProcessParamsDevice, paramsBuffers: postProcessParamsBuffers };
     postProcessParamsBuffers = new Map();
     disposePostProcessResources(resources);
@@ -215,9 +266,14 @@ export function createPostProcessParamsOwner(
   };
   const retirePostProcessParams = (buffers: readonly Buffer[]): void => {
     if (buffers.length === 0) return;
-    const release = (): void => destroyPostProcessParams(buffers);
+    const device = postProcessParamsDevice;
+    const release = (): void => destroyPostProcessParams(buffers, device);
+    if (afterSubmission !== undefined) {
+      afterSubmission(device, release);
+      return;
+    }
     try {
-      void internals.device.queue.onSubmittedWorkDone().then(release, release);
+      void device.queue.onSubmittedWorkDone().then(release, release);
     } catch {
       release();
     }
@@ -252,6 +308,12 @@ export function createPostProcessParamsOwner(
     },
     lookup: lookupPostProcess,
     getBuffer: getPostProcessParamsBuffer,
+    beginRecording(): void {
+      finishRecording();
+      recording = true;
+      sequence++;
+    },
+    finishRecording,
     prepare: preparePostProcessParamsResources,
     accept: acceptPostProcessParamsCandidate,
     discard: discardPostProcessParamsCandidate,
@@ -304,13 +366,19 @@ export function createPostProcessParamsOwner(
         const registeredModuleLabel = isDeferredPostProcessEntry(entry)
           ? undefined
           : postProcessShaderModuleLabel(entry);
+        let registered = true;
         return () => {
-          if (builtinPostProcessEntries.get(id) === entry) {
-            builtinPostProcessEntries.delete(id);
-          }
+          if (!registered) return;
+          registered = false;
+          if (builtinPostProcessEntries.get(id) !== entry) return;
+          builtinPostProcessEntries.delete(id);
           const current = postProcessParamsBuffers.get(id);
           if (current !== undefined) {
-            internals.device.destroyBuffer(current);
+            const duplicates = repeated.get(current);
+            if (duplicates !== undefined) repeated.delete(current);
+            retirePostProcessParams(
+              duplicates === undefined ? [current] : [current, ...duplicates.slots],
+            );
             postProcessParamsBuffers = new Map(postProcessParamsBuffers);
             postProcessParamsBuffers.delete(id);
           }

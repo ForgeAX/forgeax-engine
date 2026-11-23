@@ -1,6 +1,5 @@
 // @perf-budget-skip: this single integration assertion includes a cold Vite build setup.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gltfImporter, parseGltf, toAssetPack } from '@forgeax/engine-gltf';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
@@ -8,6 +7,7 @@ import { encodePng } from '@forgeax/engine-image/png';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { build as viteBuild } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { pluginPack } from '../index.js';
 
 const REPEAT = 10497;
@@ -39,11 +39,9 @@ const solid = (r: number, g: number, b: number) =>
     Uint8Array.from({ length: 16 }, (_, i) => [r, g, b, 255][i % 4] ?? 255),
   );
 
-const roots: string[] = [];
+const scratch = temporaryDirectories();
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
 
 async function writeGltf(
   assets: string,
@@ -68,8 +66,7 @@ async function writeGltf(
 
 describe('content-identified textures in a production build', () => {
   it('publishes one row for shared bytes and keeps colour and data uses apart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-vpp-texture-content-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-vpp-texture-content-');
     const assets = join(root, 'assets');
     const dist = join(root, 'dist');
     await mkdir(assets, { recursive: true });

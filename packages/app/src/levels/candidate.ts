@@ -98,6 +98,8 @@ export interface LevelCandidateStatus {
   readonly pending?: Promise<void> | undefined;
   readonly renderSelection?: LevelRenderSelection;
   readonly current: boolean;
+  readonly reusableSource: boolean;
+  readonly collisionAccepted?: boolean;
   readonly needsStop: boolean;
   readonly phase: LevelCandidatePhase;
   readonly members: number;
@@ -108,6 +110,12 @@ type LevelCandidateWorkStatus = Pick<
   LevelCandidateStatus,
   'phase' | 'pending' | 'render' | 'failure' | 'cleanupFailure'
 >;
+export interface VisualLevelChange {
+  apply(): void | Promise<LevelRenderSelection>;
+  commit(receipt: LevelRenderSelection | undefined): void;
+  restoreSource(cause: unknown): void;
+}
+
 export interface LevelCandidate {
   readonly phase: LevelCandidatePhase;
   readonly needsStop: boolean;
@@ -116,6 +124,7 @@ export interface LevelCandidate {
   step(): Result<LevelCandidateStatus, LevelCandidateError>;
   /** Internal: App owns the legal fixed or stopped participation boundary. */
   accept(active: boolean): Result<LevelCandidateStatus, LevelCandidateError>;
+  visualChange(active: boolean): Result<VisualLevelChange, LevelCandidateError>;
   retireStep(canContinue?: () => boolean): Result<LevelCandidateStatus, LevelCandidateError>;
   /** Scheduling state without asking the domain owners to requalify readiness. */
   workStatus(): LevelCandidateWorkStatus;
@@ -167,13 +176,19 @@ export function createLevelCandidate(options: {
       cleanupFailure,
     };
   };
-  const inspect = (): LevelCandidateStatus => ({
-    ...workStatus(),
-    needsStop: domains?.needsStop === true,
-    members: members.length,
-    ...(renderSelection === undefined ? {} : { renderSelection }),
-    current: (phase === 'prepared' || phase === 'active') && domains?.isCurrent() === true,
-  });
+  const inspect = (): LevelCandidateStatus => {
+    const reusableSource =
+      (phase === 'prepared' || phase === 'active') && domains?.canReprepare() === true;
+    return {
+      ...workStatus(),
+      needsStop: domains?.needsStop === true,
+      collisionAccepted: domains?.collisionAccepted === true,
+      members: members.length,
+      ...(renderSelection === undefined ? {} : { renderSelection }),
+      reusableSource,
+      current: reusableSource && domains?.viewsCurrent() === true,
+    };
+  };
   const error = (cause: unknown) =>
     cause instanceof LevelCandidateError
       ? cause
@@ -418,6 +433,28 @@ export function createLevelCandidate(options: {
     workStatus,
     viewsCurrent: () => domains?.viewsCurrent() === true,
     inspect,
+    visualChange(active) {
+      const prepared = domains;
+      if (
+        busy ||
+        retirementStarted ||
+        failure !== undefined ||
+        phase !== (active ? 'prepared' : 'active') ||
+        prepared?.canExchangeVisual !== true
+      )
+        return err(new LevelCandidateError({ reason: 'native-preparation-incomplete', phase }));
+      return ok({
+        apply: () => prepared.accept(active, true),
+        commit(receipt) {
+          renderSelection = receipt;
+          phase = active ? 'active' : 'prepared';
+        },
+        restoreSource(cause) {
+          prepared.restoreVisualSource(!active);
+          if (active && cause instanceof LevelViewObsoleteError) prepared.invalidateViews();
+        },
+      });
+    },
     accept(active) {
       if (busy) return err(new LevelCandidateError({ reason: 'busy', phase }));
       if (failure !== undefined && active) return err(failure);

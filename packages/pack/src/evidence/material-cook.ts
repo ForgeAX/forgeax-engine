@@ -26,10 +26,9 @@ import {
   isStandardRootModule,
   MATERIAL_TEXTURE_SLOTS,
   ok,
+  sha256Bytes,
   standardMaterialParameterEnabled,
 } from '@forgeax/engine-types';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 import { AssetGuid } from '../guid.js';
 
 export type {
@@ -270,7 +269,7 @@ export function collectMaterialCookRefs(material: Partial<MaterialAsset>): Mater
 }
 
 export function createMaterialArtifactDigest(bytes: Uint8Array): string {
-  return `sha256:${bytesToHex(sha256(bytes))}`;
+  return `sha256:${sha256Bytes(bytes)}`;
 }
 
 // Publication identity crosses runtimes without a shared locale or ICU version.

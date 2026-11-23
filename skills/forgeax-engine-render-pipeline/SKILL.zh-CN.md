@@ -170,7 +170,7 @@ pending readback ticket 保留 format/mip extent/layer/device generation。resiz
 <a id="directional-shadow-entry"></a>
 ## 方向阴影入口
 
-先 DirectionalLight.castShadow:true，裸光默认关；shadowFilter 为 ECS enum，赋 DirectionalShadowFilterValue.pcfVogel/pcf1/pcf3/pcf5/pcfSoft/variance/pcssMedium/pcssHigh 数字常量，不用字符串。有效 label 同名，pcfSoft 对 Three PCFSoftShadowMap，variance 对 VSMShadowMap，默认 pcfVogel；不造数字/兼容 alias。PCSS shadowAngularRadius 弧度默认0.00465、[0.0001,0.05]；maxPenumbraTexels 默认32、有限整数[1,64]。其他 CSM 字段/单位/默认读 [Render](../../packages/render/README.md) 的质量表，不复制 schema。
+先 DirectionalLight.castShadow:true，裸光默认关；shadowFilter 为 ECS enum，赋 DirectionalShadowFilterValue.pcfVogel/pcf1/pcf3/pcf5/pcfSoft/pcssMedium/pcssHigh 数字常量，不用字符串。有效 label 同名，pcfSoft 对 Three PCFSoftShadowMap，默认 pcfVogel；不造数字/兼容 alias。PCSS shadowAngularRadius 弧度默认0.00465、[0.0001,0.05]；maxPenumbraTexels 默认32、有限整数[1,64]。其他 CSM 字段/单位/默认读 [Render](../../packages/render/README.md) 的质量表，不复制 schema。
 
 阴影脱离先查实际帧再增 bias。native CSM 共 bounded caster/receiver budget、单侧 per-texel receiver correction；normalBias 可选世界偏移，可能把 query 移到小 caster 上方，默认/单位看 owner README。auto CSM 接受上游 blocker，在共 caster VS pancake near depth；显式 shadow matrix/point/spot 保留 clipping。接触阴影测试关闭 screen contact 后也要通过。CSM Browser capture 同时验 caster header 的 active near-clamp policy/cascade，policy lane 非 padding。完整 cube/plane matrix 共 renderer/World，每 case despawnAll；contact/curved Browser singleton/exclusive，调度修改保全部 case/pixel threshold。Dawn 两者在 shadow-quality，见 CI guide。
 

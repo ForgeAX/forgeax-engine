@@ -8,9 +8,9 @@ import type {
 export const PREDEPTH_FRAGMENT_ENTRY = 'fs_depth_masked';
 
 type DepthProgram = {
-  readonly receipt?: Pick<MaterialProgramAbi, 'positionBounds' | 'sceneDepth'>;
-  readonly program: { readonly entryPoints?: readonly ShaderEntryPointReads[] };
-  readonly fragmentEntry?: string;
+  readonly receipt?: Pick<MaterialProgramAbi, 'positionBounds' | 'sceneDepth'> | undefined;
+  readonly program: { readonly entryPoints?: readonly ShaderEntryPointReads[] | undefined };
+  readonly fragmentEntry?: string | undefined;
 };
 
 export function predepthFragmentEntry(artifact: DepthProgram): string {
@@ -42,21 +42,26 @@ export function predepthCoversMaterial(
   )
     return false;
   const entries = artifact.program.entryPoints;
-  const pureCoverage = (name: string) => {
-    const effects = entries?.find(
-      (entry) => entry.stage === 'fragment' && entry.name === name,
-    )?.effects;
-    return (
+  if (entries === undefined) return false;
+  const mainEntry = artifact.fragmentEntry ?? 'fs_main';
+  let masked: boolean | undefined;
+  let main: boolean | undefined;
+  let ao: boolean | undefined;
+  let declaresAo = false;
+  for (const entry of entries) {
+    if (entry.name === 'fs_ao_input') declaresAo = true;
+    if (entry.stage !== 'fragment') continue;
+    const { name, effects } = entry;
+    if (name !== mainEntry && name !== PREDEPTH_FRAGMENT_ENTRY && name !== 'fs_ao_input') continue;
+    const pure =
       effects !== undefined &&
       !effects.writesDepth &&
       !effects.writesSampleMask &&
-      !effects.writesStorage
-    );
-  };
-  return (
-    pureCoverage(predepthFragmentEntry(artifact)) &&
-    pureCoverage(artifact.fragmentEntry ?? 'fs_main') &&
-    // A normal-demanding single-sample primary uses this same Surface entry.
-    (!entries?.some((entry) => entry.name === 'fs_ao_input') || pureCoverage('fs_ao_input'))
-  );
+      !effects.writesStorage;
+    if (name === PREDEPTH_FRAGMENT_ENTRY) masked ??= pure;
+    if (name === mainEntry) main ??= pure;
+    if (name === 'fs_ao_input') ao ??= pure;
+  }
+  // Legacy depth templates use AO coverage. An admitted normal producer also consumes it.
+  return main === true && (masked ?? ao) === true && (!declaresAo || ao === true);
 }

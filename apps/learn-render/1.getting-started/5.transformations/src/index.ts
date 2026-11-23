@@ -22,7 +22,7 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //   `// 1. engine usage`            -> public engine API consumed.
 //   `// 2. example-specific glue`   -> the LO §1.5 cube + wood texture
 //                                       + sin-pulse animation system
-//                                       descriptor + GUID literals.
+//                                       descriptor + material binding.
 //   `// 3. bootstrap`               -> entry point that wires (1)+(2).
 //
 // charter mapping:
@@ -35,7 +35,7 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //     formations.png) is verification only.
 //   - P1 (progressive disclosure):  the README top callout points at
 //     this file; AI users read the 3 sections + the system descriptor
-//     + the GUID literals and have the full LO §1.5 -> forgeax picture
+//     + the material binding and have the full LO §1.5 -> forgeax picture
 //     in one directory.
 //   - P3 (explicit failure):  `EngineEnvironmentError` surfaces the
 //     "no usable backend" path; loadByGuid Err arms switch on
@@ -52,9 +52,7 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //
 // AC-15 (c) regression: the example must NOT import the build-time
 // decode helper from @forgeax/engine-image and must NOT call any
-// AssetRegistry low-level upload entry directly -- the call stack is
-// loadByGuid-only (3 entries: loadByGuid<TextureAsset> +
-// loadByGuid<MeshAsset> + loadByGuid<MaterialAsset>).
+// AssetRegistry low-level upload entry directly. The catalog resolves the texture.
 
 // 1. engine usage - the public createApp + ECS World facade + Asset
 // Registry namespace + AssetGuid parser + MaterialAsset / TextureAsset /
@@ -83,47 +81,12 @@ import { computeTransformAt } from './transform-animation';
 // 1. engine usage marker (inline anchor for AC-06 grep gate; the
 // expanded prose block sits above the import group).
 
-// 2. example-specific glue - LO §1.5 cube + container texture + per-
-// frame system fn. Three GUID literals form the disk-schema -> runtime
-// bridge (AI users grep them via `rg "WOOD_TEXTURE_GUID" apps/`):
-//
-//   WOOD_TEXTURE_GUID  -> forgeax-engine-assets/learn-opengl/textures/
-//                          container.jpg.meta.json subAssets[0].guid
-//                          (sRGB JPG decoded by @forgeax/engine-image
-//                          at build time / runtime fetch).
-//   CUBE_MESH_GUID     -> forgeax-engine-assets/learn-opengl/meshes/
-//                          cube-mesh.stub.meta.json subAssets[0].guid
-//                          (engine-builtin procedural cube; the GUID is
-//                          the disk identifier, the runtime aliases
-//                          the same logical mesh as HANDLE_CUBE).
-//   CUBE_MATERIAL_GUID -> assets/material-wood.pack.json assets[0].guid
-//                          (UnlitMaterialAsset whose baseColorTexture
-//                          slot references WOOD_TEXTURE_GUID -- the LO
-//                          §1.4 sampler2D bind point in WGSL terms).
-const WOOD_TEXTURE_GUID = '019e3969-1d46-773e-988c-a10e305ff2a4';
-const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e4906-23d4-72f8-bca5-7f18f5465e9a';
+// 2. example-specific glue - the authored material references container.jpg by GUID.
+const materialValues = materialPackJson.assets['material/material-wood'].payload.values;
 // Dev uses the binding's scoped catalog route; build emits the static
 // `/pack-index.json` file. `configureRuntimeAssetCatalog` selects the route
 // for the current Vite mode.
 
-
-interface MaterialPackEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly payload: {
-    readonly kind: string;
-    readonly passes: ReadonlyArray<{ readonly name: string; readonly program: { readonly module: string } }>;
-    readonly values: {
-      readonly baseColor: readonly [number, number, number, number];
-      readonly baseColorTexture?: string;
-    };
-  };
-}
-
-interface MaterialPackFile {
-  readonly assets: ReadonlyArray<MaterialPackEntry>;
-}
 
 // 3. bootstrap - locate the canvas, hand it to createApp (engine-app
 // shell wires the rAF frame-loop + Time resource + auto input attach),
@@ -174,25 +137,14 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
   if (assets === undefined) throw new Error('[learn-render 1.5 transformations] asset host is unavailable');
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  // Parse the 3 GUID literals once (charter F1 single-grep entry).
-  const woodGuidRes = AssetGuid.parse(WOOD_TEXTURE_GUID);
-  const cubeGuidRes = AssetGuid.parse(CUBE_MESH_GUID);
-  const matGuidRes = AssetGuid.parse(CUBE_MATERIAL_GUID);
-  if (!woodGuidRes.ok || !cubeGuidRes.ok || !matGuidRes.ok) {
-    console.error(
-      '[learn-render 1.5 transformations] GUID parse failed for one of the 3 fixtures',
-    );
+  const woodGuidRes = AssetGuid.parse(materialValues.baseColorTexture);
+  if (!woodGuidRes.ok) {
+    console.error('[learn-render 1.5 transformations] invalid baseColorTexture GUID:', woodGuidRes.error);
     return;
   }
 
-  // The texture handle resolves through the production fetch chain
-  // (catalog configuration -> container.jpg -> parseImage -> uploadTexture)
-  // on the ordinary app path. The onerror gate skips that expensive fixture;
-  // the dedicated Dawn smoke exercises the complete production chain. The
-  // cube handle resolves through the
-  // Map fast-path seeded by registerWithGuid below (alias to engine-
-  // builtin HANDLE_CUBE); the material handle resolves through the
-  // same Map fast-path after we register the reconstructed POD.
+  // The ordinary app loads the authored texture. The onerror gate exercises
+  // startup without loading that fixture.
   let woodTextureHandle: number | undefined;
   if (!browserOnerrorGate) {
     markLearnRenderTestBootstrapStage(target, 'load-required-wood');
@@ -214,22 +166,11 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
     return;
   }
 
-
-  const matPack = materialPackJson as unknown as MaterialPackFile;
-  const matEntry = matPack.assets.find((a) => a.kind === 'material');
-  if (matEntry === undefined) {
-    console.error(
-      '[learn-render 1.5 transformations] material-wood.pack.json missing material entry',
-    );
-    return;
-  }
-  // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
-  // handle so the baseColorTexture slot carries a resolved numeric Handle.
   const cubeMaterial: MaterialAsset = {
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
     values: {
-      baseColor: matEntry.payload.values.baseColor,
+      baseColor: materialValues.baseColor,
       ...(woodTextureHandle === undefined ? {} : { baseColorTexture: woodTextureHandle }),
     },
   };

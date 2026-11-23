@@ -7,17 +7,15 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
-  BindGroupLayout,
   Buffer,
   Result,
   RhiDevice,
   RhiRenderPassEncoder,
-  RenderPipeline as RhiRenderPipeline,
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import type { MaterialDynamicInputLayout, MaterialRenderState } from '@forgeax/engine-types';
+import type { MaterialDynamicInputLayout } from '@forgeax/engine-types';
 import { isStripTopology } from '@forgeax/engine-types';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -36,24 +34,25 @@ import type {
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
 import { clippingCapRenderState } from '../material-render-state';
+import { standardSurfaceDiscardMask } from '../material-stage-constants';
 import {
-  applySurfaceDiscardAxis,
-  materialAbiRasterConstants,
-  standardSurfaceDiscardMask,
-} from '../material-stage-constants';
-import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
+  isCanonicalStandardPbrMaterialShader,
+  isStandardPbrMaterialShader,
+  materialLayoutIndexFromKey,
+  materialSlotFromLayoutKey,
+  standardPipelineMaterialLayoutIndex,
+} from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { PREDEPTH_FRAGMENT_ENTRY, predepthCoversMaterial } from '../predepth-coverage';
-import type { ClusterMeshBindingPreparation } from '../record/cluster-mesh-binding-preparation';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { GpuDrawSummary } from '../record/gpu-draw-receipts';
 import type { MaterialTableBindingPreparation } from '../record/material-bg-assembly-cache';
 import {
   type PipelineState,
   type RecordProfileRunner,
-  type RenderSystemInternals,
   runRecordProfilePhase,
 } from '../record/render-context';
+import { primitiveForPipeline } from '../reflection/primitive-bindings';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   GpuDrivenDrawPhase,
@@ -61,11 +60,11 @@ import type {
   RenderPipelineFrame,
   RenderPipelineGpuDrivenFilter,
   RenderPipelineGpuDrivenProjection,
+  RenderPipelineGpuDrivenTarget,
 } from '../render-pipeline';
-import type { MaterialSnapshot } from '../render-system-extract';
+import type { FrameSet } from '../scene/frame-set';
 import type { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
-import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
 import {
   admitSingleLayerMediumSubmission,
   type SurfaceGpuSubmissionAdmission,
@@ -84,7 +83,7 @@ import {
   type SubmissionPlan,
 } from './batch-topology';
 import { mainLayerSuppression } from './camera-layer-suppression';
-import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './draw-selection';
+import { EMPTY_GPU_DRAW_SELECTION } from './draw-selection';
 import { FilteredPlanContributionOwner } from './filtered-plan-contributions';
 import { hasCapturedTaskMembership } from './fixed-task-plan';
 import {
@@ -97,7 +96,6 @@ import {
 import { type LiveRasterBatch, type LiveRasterCache, projectLiveRaster } from './live-raster';
 import type { BatchExecutions } from './material-artifacts';
 import {
-  type PreparedRasterBundleCache,
   type PreparedRasterCounters,
   type PreparedRasterPass,
   PreparedRasterPassCache,
@@ -126,13 +124,23 @@ import {
   rasterPipelineShapeKey,
   selectRasterPipeline,
 } from './production-raster-classes';
+import type {
+  CurrentCameraRaster,
+  FilteredFrame,
+  GpuDrivenGraphProjection,
+  GpuDrivenPrepareInput,
+  PreparedGpuDrivenFrame,
+  ShadowViewRequest,
+} from './production-raster-contract';
 import {
   bindMaterialSlot,
+  captureFixedRasterInputs,
   IndirectPassBindings,
   observeSurfaceDraw,
   observesSurfaceDraws,
   type RasterEncodeCall,
   type RetainedEncode,
+  recordRetainedMaterialPipelineBinding,
   requireLateRegion,
   retainedRasterIdentities,
   retainedRunEnd,
@@ -165,7 +173,6 @@ import {
 } from './production-raster-lod';
 import {
   MaterialAbiRasterAdapter,
-  resolveGpuDrivenMeshGroup,
   SurfaceFrameProjectionOwner,
   surfaceVisibleRows,
 } from './production-raster-material';
@@ -186,6 +193,7 @@ import {
 import {
   captureShadowBatchFacts,
   createShadowBatchProjection,
+  type GpuDrivenShadowBatchProjection,
   preparedShadowRows,
   publishedShadowProjections,
   restrictShadowCasterChannels,
@@ -207,16 +215,15 @@ import {
   shadowMeshesChanged,
 } from './production-raster-shadow';
 import {
-  hasSurfaceArtifact,
   isSkinPreparedBatch,
   mainPlanPhase,
   observeShadowArtifacts,
   preparationFailureInspection,
   rasterSampleCount,
   rebindRaster,
+  requiresGpuSurfacePreparation,
   runPipelinePreparations,
   type ShadowArtifactObservations,
-  sceneTransformBytes,
   shadowDirectRequired,
   shadowPlanPhase,
   shadowViewPass,
@@ -243,7 +250,6 @@ import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-project
 import { staticShadowViewIdentity } from './shadow-view-identity';
 import {
   type ShadowCameraCullDilation,
-  type ShadowViewGraphProjection,
   type ShadowViewIdentity,
   ShadowViewStatePool,
   type ShadowViewUpdate,
@@ -254,12 +260,12 @@ import { rasterPassKey } from './source-raster-bundles';
 import {
   type NativeMainGraphPreparation,
   prepareNativeMainGraph,
+  prospectiveMainRaster,
   SourceRasterPreparations,
 } from './source-raster-preparation';
 import { type SubmissionAdmission, submissionAdmission } from './submission-admission';
 import {
   type GpuDrivenLodSelectionInspection,
-  type GpuDrivenLodSubmitIdentity,
   type GpuDrivenShadowCameraCull,
   GpuDrivenView,
   type GpuDrivenViewGraphResources,
@@ -267,196 +273,14 @@ import {
 } from './view-gpu';
 import type { GpuViewInputPreparation } from './view-input-bindings';
 
-export interface GpuDrivenShadowBatchProjection {
-  /** Batch-owned command closure; retained projection edits validate its physical inputs. */
-  readonly bundles: PreparedRasterBundleCache;
-  readonly mesh: MeshGpuHandles;
-  readonly meshContentEpoch: number;
-  readonly meshBindGroup: BindGroup;
-  /** One visible-segment window per LOD level command, in level order. */
-  readonly visibleBindGroups: readonly BindGroup[];
-  readonly deformation: 'rigid' | 'skin';
-  /** Actual producer-selected shadow-pass artifact for this batch. */
-  readonly shadowArtifact: MaterialShaderArtifact;
-  /** Pass entry points selected by the authored ShadowCaster dispatch. */
-  readonly shadowVertexEntry?: string;
-  readonly shadowFragmentEntry?: string;
-  readonly shadowRenderState?: MaterialRenderState;
-  /** Material snapshot used to assemble the receipt-owned alpha-mask BG. */
-  readonly material: MaterialSnapshot;
-  /** Geometry-owned COLOR_0 fact shared by main and shadow ABI variants. */
-  readonly vertexColorAvailable: boolean;
-}
-
-/**
- * A shadow view the frame asks for. Its camera cull names only the receiver
- * dilation; the main camera it tests against is the one the pyramid was built
- * from, attached here so the two cannot diverge.
- */
-export type ShadowViewRequest = Omit<
-  ShadowViewUpdateInput,
-  'sourcePlan' | 'scene' | 'cameraCull' | 'inputReads' | 'skin' | 'capsuleDirectional'
-> & {
-  readonly cameraCull?: ShadowCameraCullDilation;
-  /**
-   * `false` projects a final view once with every caster and retains no
-   * static layer for it. Absent keeps the cached static layer.
-   */
-  readonly staticLayer?: false;
-};
+export type { GpuDrivenShadowBatchProjection } from './production-raster-shadow';
 
 type ShadowViewUpdateStorage = {
   -readonly [Key in keyof ShadowViewUpdateInput]: ShadowViewUpdateInput[Key];
 };
-type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
-/** The GPU-driven bridge to the existing four-group Standard PBR pipeline. */
-
-export interface GpuDrivenMaterialBinding {
-  readonly material: import('../material-resource').MaterialResource;
-  readonly resourceClass: string;
-}
-
+const NO_CAMERA_BATCHES: readonly LiveRasterBatch[] = Object.freeze([]);
 const DIRECT_TOPOLOGY_SIGNATURE = () => 'direct';
-
-export interface PreparedGpuDrivenFrame {
-  /** Shared resource requirements from the accepted geometry/probe partitions. */
-  readonly materialBindings: readonly GpuDrivenMaterialBinding[];
-  readonly shadowDirectRequired: boolean;
-  /** Read after current shadow preparation; this is not a captured signature value. */
-  readonly topologySignature: () => string;
-  /** @internal Private stock-recorder identity; borrowed graph projections keep topologySignature. */
-  readonly _recordingTopologySignature?: () => string;
-  /** Shared execution queried by each actual draw consumer. */
-  readonly selection: GpuDrawSelection;
-  /** Actual GPU Shadow executions; direct residual casters do not erase this coverage. */
-  readonly shadowSelection?: GpuDrawSelection | undefined;
-  readonly standardPbrFrameResources: GpuDrivenStandardPbrFrameResources;
-  /** Published Surface admission and its pass lane decision. */
-  readonly surfaceSubmission?: SurfaceGpuSubmissionAdmission;
-  /** @internal Pins physical work independently of accepted frame publication. */
-  readonly _trackSubmittedWork: (completed: Promise<void>) => void;
-  /** @internal Close actual main/shadow demands before independent submission. */
-  readonly _sealResourceReads: () => Result<void, RhiError>;
-  /** @internal Commits a replacement generation only after graph promotion. */
-  readonly _commitResourceReplacement: (submittedGraphGeneration?: number) => void;
-  /** @internal Retires superseded view buffers when graph compilation promotes them. */
-  readonly _commitGpuResourceReplacement?: () => void;
-  /** @internal Discards staged shadow cache publication after a failed frame. */
-  readonly _abortResourceReplacement?: () => void;
-  /** @internal Marks validated dynamic ranges consumed only after queue submit. */
-  readonly _consumeSurfaceDynamicInput?: (frameNumber: number) => Result<void, RhiError>;
-  /** `cameraPyramid` is the main camera's late HZB; eligible views cull against it. */
-  readonly projectShadow?: (
-    graph: RenderGraphBuilder<RenderPipelineFrame>,
-    identity: ShadowViewIdentity,
-    forceCompute?: boolean,
-    cameraPyramid?: GraphTextureView,
-  ) => Result<ShadowViewGraphProjection | undefined, RenderGraphError>;
-  readonly updateShadowViews?: (
-    views: readonly ShadowViewRequest[],
-    /** @internal Transfer fresh recorder requests; borrowed callers omit this. */
-    ownedRequests?: true,
-  ) => Result<void, RhiError>;
-  readonly shadowViewPool?: ShadowViewStatePool;
-  readonly shadowBatchProjections?: () => ReadonlyMap<
-    string,
-    ReadonlyMap<number, GpuDrivenShadowBatchProjection>
-  >;
-  project(
-    graph: RenderGraphBuilder<RenderPipelineFrame>,
-    format: TextureFormat,
-    sampleCount: 1 | 4,
-    surfaceSubmissionObservation?: () => SurfaceSubmissionCandidate | undefined,
-    additionalColorFormats?: readonly TextureFormat[],
-    lateOcclusion?: boolean,
-    /** @internal Only the private stock Renderer recording closure supplies this. */
-    rendererRecording?: boolean,
-  ): Result<RenderPipelineGpuDrivenProjection, RenderGraphError | RhiError>;
-}
-
-/** Graph construction consumes physical owners and demand, never a frame read lease. */
-export type GpuDrivenGraphProjection = Pick<
-  PreparedGpuDrivenFrame,
-  | 'topologySignature'
-  | '_recordingTopologySignature'
-  | 'project'
-  | 'projectShadow'
-  | 'shadowViewPool'
->;
-
-export interface GpuDrivenPrepareInput {
-  readonly materialArtifactResolver?: RenderSystemInternals['getMaterialShaderArtifact'];
-  readonly materialShaderRegistry?: RenderSystemInternals['shaderRegistry'];
-  readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
-  readonly shadowMaterials?: ShadowMaterialContent;
-  readonly shadowViews?: boolean;
-  readonly scene: PersistentGpuDrivenState | undefined;
-  readonly batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
-  /** The already selected frame lane; Surface still shares its retained resource owner. */
-  readonly geometryLane?: 'automatic' | 'direct';
-  readonly gbufferBatchOrderDiagnostic?: GBufferOrderDiagnosticConfig | undefined;
-  readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
-  readonly camera: CameraSnapshot;
-  /** Shared mesh residency, independent of the number of bound scene members. */
-  readonly meshByBinding: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
-  readonly viewBindGroupLayout: BindGroupLayout;
-  /** Optional for legacy Standard callers; omitted means non-HDRP. */
-  readonly hdrp?: boolean;
-  /** Explicit Standard topology; cluster resources are bound by main-pass. */
-  readonly clustered?: boolean;
-  readonly materialBindingClasses?: ReadonlyMap<string, string>;
-  /** Cooked producer artifact selected from the frame material catalog. */
-  readonly materialArtifact?: MaterialShaderArtifact;
-  /** Cooked producer artifact for the GPU skinning variant. */
-  readonly materialSkinArtifact?: MaterialShaderArtifact;
-  /** Per-draw producer artifacts keyed by prepared identity and receipt. */
-  readonly materialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
-  /** Per-draw shadow-pass artifacts keyed by the same prepared identity. */
-  readonly shadowMaterialArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
-  /** Retained ProbeBlend record page; slot N is addressed at aligned lane N+1. */
-  readonly probeBlendRecordBuffer?: Buffer;
-  readonly materialPipelineState?: PipelineState;
-  /** Existing renderer owner that builds the selected artifact PSO/BGL. */
-  readonly materialPipelineFactory?: MaterialPipelineFactory;
-  readonly materialPipelinePreparationFactory?: MaterialPipelineFactory;
-  /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
-  readonly capsuleShadowDirectional?: boolean;
-  /** One-cascade Vogel receiver: forward colour pipelines take the simple Standard variant. */
-  readonly directionalShadowSimple?: boolean;
-  readonly leanLighting?: boolean;
-  /** Entity keys admitted by the persistent visibility facet for this view. */
-  readonly activeEntityKeys?: ReadonlySet<number>;
-  /** Collision-free renderer-owned revision for the active visibility set. */
-  readonly activeEntityRevision?: number;
-  /** Total extracted candidates, including facet-suppressed rows. */
-  readonly telemetryCandidateCount?: number;
-  /** Public receipt identity for the GPU telemetry copy encoded this frame. */
-  readonly telemetrySubmit?: GpuDrivenLodSubmitIdentity;
-  /** Per-frame deltas from the existing RenderScene/GPU Scene/palette owners. */
-  readonly structureMetrics?: GpuDrivenStructureMetrics;
-  /** World/App frame-time snapshot consumed by authored Surface code. */
-  readonly frameTime?: number;
-  /** Current RHI device generation used for Surface admission. */
-  readonly deviceGeneration?: number;
-  /** Renderer-owned generic read-only Surface page and instance ranges. */
-  readonly surfaceDynamicInput?: SurfaceDynamicInputFrame;
-  /** Direct GPU-vertex draws borrowing the same renderer-owned Surface page. */
-  readonly directSurface?: {
-    readonly artifact: MaterialShaderArtifact;
-    readonly ranges: NonNullable<SurfaceDynamicInputFrame['ranges']>;
-  };
-  /** Optional profiler seam for the `record/gpu-driven-prepare/*` phases. */
-  readonly profilePhase?: RecordProfileRunner;
-}
-
-/** The main and shadow filtered plans of one prepared plan, with their admission. */
-interface FilteredFrame {
-  readonly preparedPlan: PreparedProductionPlan;
-  readonly filtered: FilteredProductionPlan;
-  readonly admission: SubmissionAdmission;
-  readonly shadowFiltered: FilteredProductionPlan | undefined;
-}
 
 /**
  * Candidate order is the same address carried in rigid visibleItems.z. The
@@ -488,6 +312,7 @@ export class GpuDrivenProduction {
     commands: 0,
     evictions: 0,
   };
+  private preparedBundleFixedHits = 0;
   private geometryCapture: GpuGeometryCapture | undefined;
   beginGeometryObservation(source: GpuGeometryCapture['source'] | undefined): void {
     this.geometryCapture = source === undefined ? undefined : { commands: [], members: 0, source };
@@ -513,7 +338,7 @@ export class GpuDrivenProduction {
   /** The frame whose live batches are current; stock graphs project new classes from it. */
   private currentRasterFrame: PreparedRasterFrame | undefined;
   /** Stock raster classes projected after their graph compiled. */
-  readonly lateRasterClasses = { projected: 0, failed: 0 };
+  readonly lateRasterClasses = { projected: 0, failed: 0, retired: 0 };
   private readonly preparations = {
     forward: new BatchPreparation(),
     shadow: new BatchPreparation(),
@@ -723,7 +548,7 @@ export class GpuDrivenProduction {
     const sealed = resources.seal();
     if (!sealed.ok) return sealed;
     return ok({
-      main: filtered.filtered.plan,
+      main: prospectiveMainRaster(input, filtered.filtered).plan,
       ...(filtered.shadowFiltered === undefined ? {} : { shadow: filtered.shadowFiltered.plan }),
     });
   }
@@ -751,6 +576,7 @@ export class GpuDrivenProduction {
         }
       },
       signatures: (frame) => this.graphProjectionSignatures(frame, true),
+      projectCamera: (frame, target) => this.projectCameraRaster(target, () => frame, true),
       project: (frame, args) => {
         const [graph, format, samples, surface, additional, late, recording] = args;
         return this.projectGraph(
@@ -793,40 +619,45 @@ export class GpuDrivenProduction {
           hint: 'reprepare the current Source',
         }),
       );
+    const main = prospectiveMainRaster(input, filtered.filtered);
     const raster = this.ensureMaterialRaster(
       input,
       pipeline,
-      filtered.filtered,
+      main,
       filtered.shadowFiltered,
       visible,
     );
     if (!raster.ok) return raster;
+    const skinRaster = this.ensureSkinRaster(
+      input,
+      pipeline,
+      main,
+      filtered.shadowFiltered,
+      visible,
+      raster.value,
+    );
+    if (!skinRaster.ok) return skinRaster;
     bindSceneTables(raster.value, scene, view);
-    const pool =
-      this.shadowViews ??
-      ShadowViewStatePool.create({
-        device: this.device,
-        shaderModuleFactory: this.shaderModuleFactory,
-      }).unwrap();
-    this.shadowViews = pool;
+    if (skinRaster.value !== undefined) bindSceneTables(skinRaster.value, scene, view);
+    const pool = this.sourceShadowPool();
     resources.seal().unwrap();
     return ok({
       input,
       scene,
       materialPipelineState: pipeline,
-      filtered: filtered.filtered,
+      filtered: main,
       shadowFiltered: filtered.shadowFiltered,
       liveRasterBatches: projectLiveRaster(
         undefined,
-        filtered.filtered,
+        main,
         visible,
         raster.value.visibleBindingIdentity,
-        undefined,
+        skinRaster.value?.visibleBindingIdentity,
       ).value,
       view,
       shadowViewPool: pool,
       materialRaster: raster.value,
-      skinRaster: undefined,
+      skinRaster: skinRaster.value,
       viewClipping: shadowViewClipping(input.camera),
       viewClippingLive: (input.camera.clipping?.planes.length ?? 0) > 0,
     });
@@ -837,19 +668,21 @@ export class GpuDrivenProduction {
     return this.initialViews.prepare(...args);
   }
 
+  sourceShadowPool(): ShadowViewStatePool {
+    this.shadowViews ??= ShadowViewStatePool.create({
+      device: this.device,
+      shaderModuleFactory: this.shaderModuleFactory,
+    }).unwrap();
+    return this.shadowViews;
+  }
+
   prepareSourceShadowStorage(
     identity: ShadowViewIdentity,
     plan: SubmissionPlan,
     scene: GpuScene,
     current: () => boolean,
   ) {
-    const pool =
-      this.shadowViews ??
-      ShadowViewStatePool.create({
-        device: this.device,
-        shaderModuleFactory: this.shaderModuleFactory,
-      }).unwrap();
-    this.shadowViews = pool;
+    const pool = this.sourceShadowPool();
     return pool.prepareSourceView(identity, plan, scene, current, (storage) =>
       prepareProductionStorageInputs(
         scene,
@@ -865,18 +698,34 @@ export class GpuDrivenProduction {
   prepareSourceShadowLayers(input: GpuDrivenPrepareInput, requests: readonly ShadowViewRequest[]) {
     const scene = input.scene;
     if (scene === undefined) throw new Error('Source shadow layers require their original Scene');
-    const classes = this.shadowCasterClasses.preview(scene, scene.scene);
-    const current = this.shadowCasterClasses.preparationCurrent(classes);
-    const layers = requests.flatMap((requested) => {
-      const layers = shadowLayerRequests(
-        restrictShadowCasterChannels(requested, this.shadowChannelSlots, {
+    let classes: ReturnType<ShadowCasterClassifier['preview']> | undefined;
+    const layers: ShadowViewRequest[] = [];
+    const channelRoots = new Map<number, FrameSet>();
+    for (const request of requests) {
+      const captured = { ...request };
+      const mask = captured.casterChannels ?? 0xffffffff;
+      const single = captured.staticLayer === false;
+      if (!single) classes ??= this.shadowCasterClasses.preview(scene, scene.scene);
+      if ((single || mask !== 0xffffffff) && !channelRoots.has(mask))
+        channelRoots.set(mask, this.shadowChannelSlots.select(mask, scene, scene.scene));
+      const selected = shadowLayerRequests(
+        restrictShadowCasterChannels(captured, this.shadowChannelSlots, {
           scene,
           shadowScene: scene.scene,
         }),
-        classes,
+        single ? undefined : classes,
       );
-      return layers.static === undefined ? [layers.final] : [layers.static, layers.final];
-    });
+      if (selected.static !== undefined) layers.push(selected.static);
+      layers.push(selected.final);
+    }
+    const layoutCurrent =
+      classes === undefined ? undefined : this.shadowCasterClasses.preparationCurrent(classes);
+    const current = () => {
+      if (layoutCurrent?.() === false) return false;
+      for (const [mask, slots] of channelRoots)
+        if (this.shadowChannelSlots.select(mask, scene, scene.scene) !== slots) return false;
+      return true;
+    };
     return { layers, current };
   }
 
@@ -896,7 +745,6 @@ export class GpuDrivenProduction {
     input: GpuSceneInputPreparation,
     current?: () => boolean,
     tables?: GpuSceneTableBindingTarget,
-    clusters?: ClusterMeshBindingPreparation,
     materialTables?: MaterialTableBindingPreparation,
   ): Result<GpuViewInputPreparation, RhiError> {
     if (
@@ -932,7 +780,6 @@ export class GpuDrivenProduction {
         () => this.rasterInputState(),
         (main, shadows) => this.acceptRasterInputs(main, shadows),
         tables,
-        clusters,
         materialTables,
       );
       if (created.ok) this.inputBindingPreparation = created.value;
@@ -1176,6 +1023,7 @@ export class GpuDrivenProduction {
       selectGpuLodLane(this.device.caps) === 'cpu'
     ) {
       this.gpuOwnedEntityCount = 0;
+      this.releaseCameraRoster();
       return ok(undefined);
     }
     const recovered = this.recoverFromOverflow();
@@ -1209,7 +1057,7 @@ export class GpuDrivenProduction {
       return rebuilt;
     }
     const preparedPlan = rebuilt.value;
-    if (input.geometryLane === 'direct' && !hasSurfaceArtifact(input))
+    if (input.geometryLane === 'direct' && !requiresGpuSurfacePreparation(input))
       return this.prepareDirectFrame(scene, materials, preparedPlan);
     const filterStage = runRecordProfilePhase(
       input.profilePhase,
@@ -1217,10 +1065,17 @@ export class GpuDrivenProduction {
       () => this.filterFrame(input, scene, materials, preparedPlan),
     );
     if (filterStage === undefined) {
+      this.releaseCameraRoster();
       this.laneReason = 'unsupported';
       return ok(undefined);
     }
     return this.prepareGpuFrame(input, scene, materials, materialPipelineState, filterStage);
+  }
+
+  private releaseCameraRoster(): void {
+    this.liveRasterCache = undefined;
+    this.liveRasterBatches = NO_CAMERA_BATCHES;
+    this.currentRasterFrame = undefined;
   }
 
   /** Per-frame observation restarts before any lane decision. */
@@ -1338,11 +1193,10 @@ export class GpuDrivenProduction {
     this.laneReason = 'unsupported';
     // Main grouping has no shadow claim filter: every admitted draw has
     // a candidate group. Preserve its empty/CPU-only resource fallback.
+    this.releaseCameraRoster();
     if (!preparedPlan.batchRows.some((row) => row.fact !== undefined)) return ok(undefined);
     this.shadowSource = undefined;
     this.shadowScene = undefined;
-    this.liveRasterBatches = [];
-    this.currentRasterFrame = undefined;
     this.disableShadowViews();
     const view = this.view;
     const shadowViews = this.shadowViews;
@@ -1819,6 +1673,7 @@ export class GpuDrivenProduction {
       layout,
       deviceGeneration,
       ranges,
+      projection.value.addresses,
     );
     if (!surfaceInput.ok) return surfaceInput;
     if (skinRaster !== undefined) {
@@ -1829,6 +1684,7 @@ export class GpuDrivenProduction {
         layout,
         deviceGeneration,
         ranges,
+        projection.value.addresses,
       );
       if (!skinSurfaceInput.ok) return skinSurfaceInput;
     }
@@ -1892,7 +1748,10 @@ export class GpuDrivenProduction {
   private graphProjectionSignatures(
     frame: RasterProjectionFrame,
     source = false,
-  ): Pick<GpuDrivenGraphProjection, 'topologySignature' | '_recordingTopologySignature'> {
+  ): Pick<
+    GpuDrivenGraphProjection,
+    'topologySignature' | '_recordingTopologySignature' | 'cameraRasterIdentity'
+  > {
     const { input, scene, filtered, view, materialRaster, skinRaster } = frame;
     // The graph imports scene and view buffers live, so neither a replaced
     // material table nor grown view storage is a graph dependency: key the
@@ -1914,6 +1773,7 @@ export class GpuDrivenProduction {
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 
     return {
+      cameraRasterIdentity: recordingSignature,
       topologySignature: () => {
         const shadow = source
           ? frame.shadowViewPool.sourceTopologySignature(scene.scene)
@@ -1941,6 +1801,15 @@ export class GpuDrivenProduction {
     return {
       materialBindings: filtered.materialBindings,
       ...this.graphProjectionSignatures(frame),
+      // Shadow-only geometry still has a live production frame. It needs no camera
+      // selection, depth pyramid or camera telemetry allocation.
+      ...(input.geometryLane !== 'direct' &&
+      (this.indirectDrawCount > 0 ||
+        filtered.plan.batches.some((batch) => (batch.lod?.coverages.length ?? 0) > 0))
+        ? { cameraView: view }
+        : {}),
+      captureCameraMeshes: () => this.liveRasterCache?.meshBindings.capture(),
+      projectCamera: (target) => this.projectCameraRaster(target, () => this.currentRasterFrame),
       selection: filtered.selection,
       shadowSelection: frame.shadowFiltered?.selection,
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
@@ -2058,6 +1927,88 @@ export class GpuDrivenProduction {
     );
   }
 
+  /** Native camera passes share device-owned scene/indirect buffers with selection.
+   * Only attachment formats and the material ABI are needed to declare their raster state. */
+  private projectCameraRaster(
+    target: RenderPipelineGpuDrivenTarget,
+    readFrame: () => RasterProjectionFrame | undefined,
+    prospective = false,
+  ): Result<CurrentCameraRaster, RenderGraphError | RhiError> {
+    const frame = readFrame();
+    if (frame === undefined)
+      return err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'an active GPU camera frame',
+          hint: 'stage the current view before its physical draw',
+        }),
+      );
+    const formats = [target.format, ...(target.additionalColorFormats ?? [])];
+    const view = frame.view;
+    const projected: ProjectedRasterGraph = {
+      get frame() {
+        const live = readFrame();
+        if (live === undefined || live.view !== view)
+          throw new RhiError({
+            code: 'internal-error',
+            expected: 'the active camera GPU scene when encoding a raster projection',
+            hint: 'stage the current view before its physical draw',
+          });
+        return live;
+      },
+      target: {
+        format: target.format,
+        sampleCount: target.sampleCount,
+        rendererRecording: true,
+        colorFormats: formats,
+        colorFormatKey: formats.join(','),
+      },
+      indirect: undefined,
+      rasterClasses: new Map(),
+      lateRegion: target.lateOcclusion
+        ? {
+            get indirectByteOffset() {
+              return view.cameraLateIndirectOffset;
+            },
+            get visibleBase() {
+              return view.cameraLateVisibleBase;
+            },
+          }
+        : undefined,
+    };
+    const classes = this.projectRasterClasses(projected, undefined, []);
+    if (!classes.ok) return classes;
+    const raster = this.rasterProjection(projected, [], {});
+    if (prospective) return ok(raster);
+    let roster = frame.liveRasterBatches;
+    const inspection = this.lateRasterClasses;
+    let visit = true;
+    return ok({
+      ...raster,
+      stageCameraClasses() {
+        const current = projected.frame.liveRasterBatches;
+        if (current === roster) return;
+        roster = current;
+        const classes = projected.rasterClasses;
+        let kept = 0;
+        for (const row of current) {
+          const cls = classes.get(row.recordingClassKey);
+          if (cls !== undefined && cls.cameraVisit !== visit) {
+            cls.cameraVisit = visit;
+            kept++;
+          }
+        }
+        if (kept < classes.size) {
+          inspection.retired += classes.size - kept;
+          classes.forEach((cls, key) => {
+            if (cls.cameraVisit !== visit) classes.delete(key);
+          });
+        }
+        visit = !visit;
+      },
+    });
+  }
+
   /** Graph-time projection: import buffers, compile raster classes, expose encode. */
   private projectGraph(
     frame: RasterProjectionFrame,
@@ -2139,7 +2090,7 @@ export class GpuDrivenProduction {
    */
   private projectRasterClasses(
     projected: ProjectedRasterGraph,
-    graph: RenderGraphBuilder<RenderPipelineFrame>,
+    graph: RenderGraphBuilder<RenderPipelineFrame> | undefined,
     accesses: GraphAccess[],
   ): Result<void, RenderGraphError | RhiError> {
     const { frame, target, rasterClasses } = projected;
@@ -2167,7 +2118,8 @@ export class GpuDrivenProduction {
       if (!target.rendererRecording && live !== undefined && !rasterClasses.has(live.classKey))
         rasterClasses.set(live.classKey, projectedClass.value);
     }
-    if (target.rendererRecording) this.rasterGraphIdentity.built(rasterClasses.keys());
+    if (target.rendererRecording && graph !== undefined)
+      this.rasterGraphIdentity.built(rasterClasses.keys());
     if (rasterClasses.size === 0 && frame.filtered.batches.length > 0) {
       return err(
         new RhiError({
@@ -2219,8 +2171,13 @@ export class GpuDrivenProduction {
     live: LiveRasterBatch,
     frame: RasterProjectionFrame | undefined = this.currentRasterFrame,
   ): boolean {
-    const index = frame?.liveRasterBatches.indexOf(live) ?? -1;
-    const prepared = index < 0 ? undefined : frame?.filtered.batches[index];
+    // Live rows carry their accepted preparation. Manually supplied rows still
+    // resolve through their original matching frame index.
+    const prepared =
+      live.prepared ??
+      (frame === undefined
+        ? undefined
+        : frame.filtered.batches[frame.liveRasterBatches.indexOf(live)]);
     if (frame === undefined || prepared === undefined) {
       this.lateRasterClasses.failed += 1;
       return false;
@@ -2265,11 +2222,7 @@ export class GpuDrivenProduction {
     // Mesh rows are the shared GPU Scene transform table: visible.x names the
     // scene instance row and the vertex stage resolves the primitive root and
     // instance-local transforms itself.
-    const meshBindGroup = raster.sceneMeshBindGroup(
-      frame.scene.scene.transformBuffer,
-      sceneTransformBytes(frame.scene),
-      frame.view.skinTaskBinding(),
-    );
+    const meshBindGroup = raster.primitiveBindGroup(frame.view.skinTaskBinding());
     if (!meshBindGroup.ok) return meshBindGroup;
     let buffers = meshBuffers?.get(prepared.mesh);
     if (meshBuffers !== undefined && buffers === undefined && graph !== undefined) {
@@ -2299,7 +2252,7 @@ export class GpuDrivenProduction {
       predepthCovered: shape.predepthCovered,
       renderState: prepared.renderState,
       artifact,
-      mesh: prepared.mesh,
+      ...(target.rendererRecording ? {} : { mesh: prepared.mesh }),
       ...buffers,
       pipelines,
       meshBindGroup: meshBindGroup.value,
@@ -2329,18 +2282,15 @@ export class GpuDrivenProduction {
       frame.input.materialArtifactResolver?.(artifact.material, {
         deformation,
         address: 'scene-index',
-        variantSet:
-          applySurfaceDiscardAxis(
-            artifact.variantSet,
-            materialAbiRasterConstants(undefined, discardMask),
-          ).variantSet ?? '',
+        ...(artifact.variantSet === undefined ? {} : { variantSet: artifact.variantSet }),
+        surfaceDiscards: discardMask,
         vertexColorAvailable:
           artifact.receipt?.vertexInputs.some((input) => input.semantic === 'color') === true,
       }) ?? (discardMask === 0 ? artifact : undefined);
     return {
       predepthCovered: predepthCoversMaterial(proofArtifact, prepared.renderState),
       raster,
-      prepared,
+      prepared: recording ? undefined : prepared,
       artifact,
       deformation,
       format: target.format,
@@ -2376,7 +2326,7 @@ export class GpuDrivenProduction {
   private rasterProjection(
     projected: ProjectedRasterGraph,
     accesses: readonly GraphAccess[],
-    outputs: GpuDrivenViewGraphResources,
+    outputs: Pick<GpuDrivenViewGraphResources, 'addLateOcclusion'>,
   ): RenderPipelineGpuDrivenProjection {
     const preparationFactory = projected.frame.input.materialPipelinePreparationFactory;
     const preparationJobs = new Map<string, PipelinePreparationJob>();
@@ -2523,28 +2473,26 @@ export class GpuDrivenProduction {
     if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [viewOffset, 0]);
     const colorFormats = frameResources.colorFormats ?? target.colorFormats;
     const sampleCount = rasterSampleCount(
-      frameResources.bundleDescriptor?.sampleCount ?? target.sampleCount,
+      frameResources.sampleCount ??
+        frameResources.bundleDescriptor?.sampleCount ??
+        target.sampleCount,
     );
-    const createRasterEncodeCall = () => {
-      const call: RasterEncodeCall = {
-        resources,
-        frameResources,
-        filter,
-        fragmentEntryPoint,
-        coverageOnly,
-        seededDepth,
-        phase,
-        colorFormats,
-        sampleCount,
-        // Stock recording owns the attachments for this encode. Raw callers
-        // retain per-selected-batch format observations.
-        formatKey: target.rendererRecording ? colorFormats.join(',') : undefined,
-        regionOffset: region === undefined ? 0 : region.indirectByteOffset,
-        visibleRegionBase: region === undefined ? 0 : region.visibleBase,
-      };
-      return call;
+    const call: RasterEncodeCall = {
+      resources,
+      frameResources,
+      filter,
+      fragmentEntryPoint,
+      coverageOnly,
+      seededDepth,
+      phase,
+      colorFormats,
+      sampleCount,
+      // Stock recording owns the attachments for this encode. Raw callers
+      // retain per-selected-batch format observations.
+      formatKey: target.rendererRecording ? colorFormats.join(',') : undefined,
+      regionOffset: region === undefined ? 0 : region.indirectByteOffset,
+      visibleRegionBase: region === undefined ? 0 : region.visibleBase,
     };
-    const call = createRasterEncodeCall();
     const ordered = this.orderGBufferEncode(projected, call);
     const lives = ordered ?? this.liveRasterBatches;
     const retained =
@@ -2556,7 +2504,24 @@ export class GpuDrivenProduction {
     else this.encodeRetainedRuns(projected, call, bindings, lives, retained);
     bindings.finish();
     if (retained !== undefined)
-      this.retainedEncodes.finish(retained.key, retained.identities, retained.runs);
+      this.retainedEncodes.finish(
+        retained.key,
+        retained.identities,
+        retained.runs,
+        retained.lateClassesFailed === this.lateRasterClasses.failed ? retained.fixed : undefined,
+      );
+  }
+
+  private rasterIndirect(projected: ProjectedRasterGraph, resources: GraphResourceResolver) {
+    if (projected.indirect !== undefined) return resources.buffer(projected.indirect);
+    const buffer = projected.frame.view.indirectBuffer;
+    if (buffer === undefined)
+      throw new RhiError({
+        code: 'internal-error',
+        expected: 'a current physical indirect buffer for camera raster work',
+        hint: 'prepare the GPU view before recording its draw commands',
+      });
+    return ok(buffer);
   }
 
   /**
@@ -2587,7 +2552,7 @@ export class GpuDrivenProduction {
       this.geometryCapture !== undefined
     )
       return undefined;
-    const indirect = call.resources.buffer(projected.indirect);
+    const indirect = this.rasterIndirect(projected, call.resources);
     const slotsByBinding = frameResources.materialSlotIndicesByBinding;
     const identities = retainedRasterIdentities(
       projected,
@@ -2595,10 +2560,19 @@ export class GpuDrivenProduction {
       viewBindGroup,
       indirect.ok ? indirect.value : undefined,
     );
+    const fixed = captureFixedRasterInputs(this.liveRasterCache, projected, call);
     const runs = this.retainedEncodes.begin(
       bundlePass,
       identities,
-      (slot) => materialOwner(frameResources.prepareMaterialBinding(slot)),
+      (key, program) =>
+        materialOwner(
+          frameResources.prepareMaterialBinding(
+            materialSlotFromLayoutKey(key),
+            materialLayoutIndexFromKey(key),
+            program,
+          ),
+          program,
+        ),
       (cls) => {
         const batch = cls as ProjectedRasterClass;
         const pipelineFor = selectRasterPipeline(
@@ -2614,9 +2588,10 @@ export class GpuDrivenProduction {
           call.sampleCount,
           frameResources.opaqueDepthPrimed,
         );
-        const mesh = this.resolveMeshGroup(projected, call, bindings, batch);
+        const mesh = this.meshGroupFor(projected, batch);
         return classOwner(pipeline, mesh);
       },
+      fixed,
     );
     const facts = runFacts(
       (live) =>
@@ -2630,7 +2605,14 @@ export class GpuDrivenProduction {
       slotsByBinding,
       frameResources.selectedMaterialSlots,
     );
-    return { key: bundlePass, identities, runs, facts };
+    return {
+      key: bundlePass,
+      identities,
+      runs,
+      facts,
+      fixed,
+      lateClassesFailed: this.lateRasterClasses.failed,
+    };
   }
 
   /**
@@ -2647,12 +2629,14 @@ export class GpuDrivenProduction {
   ): void {
     let start = 0;
     while (start < lives.length) {
-      const end = retainedRunEnd(lives, start);
+      const fixedLength = retained.runs.fixedRunLength(lives, start);
+      const end = fixedLength === 0 ? retainedRunEnd(lives, start) : start + fixedLength;
       bindings.startRun();
       const reused = retained.runs.reuse(lives, start, end, retained.facts);
       if (reused !== undefined) {
         bindings.replayRun(reused, this.preparedBundleCounters);
         this.encodedIndirectDraws += reused.draws;
+        if (fixedLength !== 0 && reused.bundle !== undefined) this.preparedBundleFixedHits++;
         if (reused.bundle !== undefined && reused.draws > 0)
           this.observeRetainedMaterialPipelineBindings(projected, call, reused, lives, start, end);
       } else {
@@ -2756,17 +2740,38 @@ export class GpuDrivenProduction {
       call.seededDepth,
     )(call.colorFormats, call.formatKey, false, call.sampleCount, frameResources.opaqueDepthPrimed);
     if (!selectedPipeline.ok) throw selectedPipeline.error;
-    bindings.bindPipeline(selectedPipeline.value);
-    const material = bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
-    const group2 = this.meshGroupFor(projected, call, bindings, batch);
-    bindings.observeRunClass(batch, selectedPipeline.value, group2);
+    bindings.bindPipeline(selectedPipeline.value, this.device);
+    const material = bindMaterialSlot(
+      bindings,
+      batch,
+      frameResources,
+      globalMaterialSlot,
+      standardPipelineMaterialLayoutIndex(selectedPipeline.value),
+    );
+    const mesh = this.meshGroupFor(projected, batch);
+    const group2 = primitiveForPipeline(
+      this.device,
+      selectedPipeline.value,
+      mesh,
+      material.reflection,
+    );
+    bindings.observeRunClass(batch, selectedPipeline.value, mesh);
     bindings.bindMesh(group2, batch.deformation, frame.view);
     if (target.rendererRecording)
       bindings.bindRecordedGeometry(live.meshBinding, live.mesh.indexFormat);
-    else
-      bindings.bindGraphGeometry(batch.vertex, batch.index, batch.mesh.indexFormat, call.resources);
+    else {
+      if (batch.mesh === undefined)
+        throw new Error('A raw raster graph must import its compiled mesh');
+      bindings.bindGraphGeometry(
+        batch.vertex,
+        batch.index,
+        batch.mesh.indexFormat,
+        call.resources,
+        batch.mesh.vertexStreams,
+      );
+    }
     if (!bindings.hasIndirect) {
-      const indirect = call.resources.buffer(projected.indirect);
+      const indirect = this.rasterIndirect(projected, call.resources);
       if (!indirect.ok) throw indirect.error;
       bindings.indirect = indirect.value;
     }
@@ -2806,75 +2811,17 @@ export class GpuDrivenProduction {
       );
       const slot = selectedMaterialSlot(live, call.frameResources);
       if (batch === undefined || slot === undefined) continue;
-      const material = reused.materials.get(slot);
-      const rasterClass = reused.classes.get(batch);
-      if (material !== undefined && rasterClass !== undefined)
-        call.frameResources.recordMaterialPipelineBinding?.(
-          slot,
-          rasterClass.pipeline as RhiRenderPipeline,
-          material.group as BindGroup,
-        );
+      recordRetainedMaterialPipelineBinding(reused, batch, slot, call.frameResources);
     }
   }
 
-  /**
-   * Every rigid cluster draw reads this projection's whole scene table and
-   * this encode's lighting. Stock recording resolves it on first use; skin
-   * palettes and pipeline-transition rebinding stay separate.
-   */
-  private meshGroupFor(
-    projected: ProjectedRasterGraph,
-    call: RasterEncodeCall,
-    bindings: IndirectPassBindings,
-    batch: ProjectedRasterClass,
-  ): BindGroup {
-    const group2 = this.resolveMeshGroup(projected, call, bindings, batch);
-    if (group2 === undefined) {
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'clustered Standard group(2) BindGroup for GPU-driven batch',
-        hint: 'publish the frame-owned cluster lighting resources before indirect encode',
-      });
-    }
-    return group2;
-  }
-
-  private resolveMeshGroup(
-    projected: ProjectedRasterGraph,
-    call: RasterEncodeCall,
-    bindings: IndirectPassBindings,
-    batch: ProjectedRasterClass,
-  ): BindGroup | undefined {
-    const { scene, view } = projected.frame;
-    const transformBytes = sceneTransformBytes(scene);
-    if (projected.target.rendererRecording && batch.clustered && batch.deformation === 'rigid') {
-      bindings.rigidClusterGroup ??= call.frameResources.clusterBindGroupForMesh?.(
-        scene.scene.transformBuffer,
-        transformBytes,
-      );
-      return bindings.rigidClusterGroup;
-    }
-    // The compiled class keeps its first mesh group; the Skin task buffers it
-    // binds belong to the view and may have grown since, so resolve the
-    // current group (cached per physical buffer set) for every encode.
-    const raster =
-      batch.deformation === 'skin' ? projected.frame.skinRaster : projected.frame.materialRaster;
-    const current = batch.clustered
-      ? undefined
-      : raster?.sceneMeshBindGroup(
-          scene.scene.transformBuffer,
-          transformBytes,
-          view.skinTaskBinding(),
-        );
-    return resolveGpuDrivenMeshGroup({
-      clustered: batch.clustered,
-      deformation: batch.deformation,
-      meshBindGroup: current?.ok === true ? current.value : batch.meshBindGroup,
-      sceneTransformBuffer: scene.scene.transformBuffer,
-      sceneTransformBytes: transformBytes,
-      frameResources: call.frameResources,
-      skinTaskBinding: view.skinTaskBinding(),
-    });
+  private meshGroupFor(projected: ProjectedRasterGraph, batch: ProjectedRasterClass): BindGroup {
+    // A Skin task belongs to the selected View and may have changed since the
+    // class was compiled. Rigid classes share their original Primitive.
+    if (batch.deformation === 'rigid') return batch.meshBindGroup;
+    const raster = projected.frame.skinRaster;
+    if (raster === undefined) throw new Error('Missing scene-index Skin raster owner');
+    return raster.primitiveBindGroup(projected.frame.view.skinTaskBinding()).unwrap();
   }
 
   /** One indirect command per LOD level slot; the GPU cull compacts members per level. */
@@ -3082,10 +3029,7 @@ export class GpuDrivenProduction {
       );
     }
     const diffs = new ShadowProjectionDiffs(filtered, batchExecutions);
-    const meshBinding = materialRaster.sceneMeshBindGroup(
-      scene.scene.transformBuffer,
-      sceneTransformBytes(scene),
-    );
+    const meshBinding = materialRaster.primitiveBindGroup();
     if (!meshBinding.ok) return meshBinding;
     const pass: ShadowProjectionPass = {
       filtered,
@@ -3112,19 +3056,30 @@ export class GpuDrivenProduction {
       preparedByBatch: undefined,
       next: new Map(),
     };
-    const classes =
-      profilePhase === undefined
-        ? this.shadowCasterClasses.update(scene, shadowScene)
-        : runRecordProfilePhase(
-            profilePhase,
-            'record/gpu-driven-prepare/shadow-views/caster-classes',
-            () => this.shadowCasterClasses.update(scene, shadowScene),
-          );
+    let classes: ReturnType<ShadowCasterClassifier['update']> | undefined;
     const retained: ShadowViewIdentity[] = [];
     for (const requested of views) {
-      const projected = this.projectRequestedShadowView(pass, requested, classes, retained);
+      const captured = ownedRequests ? requested : { ...requested };
+      const single = captured.staticLayer === false;
+      if (!single && classes === undefined) {
+        classes =
+          profilePhase === undefined
+            ? this.shadowCasterClasses.update(scene, shadowScene)
+            : runRecordProfilePhase(
+                profilePhase,
+                'record/gpu-driven-prepare/shadow-views/caster-classes',
+                () => this.shadowCasterClasses.update(scene, shadowScene),
+              );
+      }
+      const projected = this.projectRequestedShadowView(
+        pass,
+        captured,
+        single ? undefined : classes,
+        retained,
+      );
       if (!projected.ok) return projected;
     }
+    if (classes === undefined) this.shadowCasterClasses.release();
     this.shadowChannelSlots.retainRequested();
     shadowViews.retain(retained);
     this.shadowBatchProjections = publishReadonlyMap(pass.next);
@@ -3135,14 +3090,10 @@ export class GpuDrivenProduction {
   private projectRequestedShadowView(
     pass: ShadowProjectionPass,
     requested: ShadowViewRequest,
-    classes: ReturnType<ShadowCasterClassifier['update']>,
+    classes: ReturnType<ShadowCasterClassifier['update']> | undefined,
     retained: ShadowViewIdentity[],
   ): Result<void, RhiError> {
-    const input = restrictShadowCasterChannels(
-      pass.ownedRequests ? requested : { ...requested },
-      this.shadowChannelSlots,
-      pass,
-    );
+    const input = restrictShadowCasterChannels(requested, this.shadowChannelSlots, pass);
     retained.push(input.identity);
     const layers = shadowLayerRequests(input, classes);
     const staticIdentity = staticShadowViewIdentity(input.identity);
@@ -3231,7 +3182,7 @@ export class GpuDrivenProduction {
         }),
       );
     }
-    const skinMeshBinding = this.shadowSkinMeshBinding(pass, submission.view);
+    const skinMeshBinding = this.shadowSkinMeshBinding(submission.view);
     if (skinMeshBinding !== undefined && !skinMeshBinding.ok) return skinMeshBinding;
     const viewBindings: ShadowViewBindings = {
       visibleBuffer,
@@ -3385,17 +3336,10 @@ export class GpuDrivenProduction {
     return update;
   }
 
-  private shadowSkinMeshBinding(
-    pass: ShadowProjectionPass,
-    view: GpuDrivenView,
-  ): Result<BindGroup, RhiError> | undefined {
+  private shadowSkinMeshBinding(view: GpuDrivenView): Result<BindGroup, RhiError> | undefined {
     const skinTask = view.skinTaskBinding();
     if (skinTask === undefined) return undefined;
-    return this.skinRaster?.sceneMeshBindGroup(
-      pass.scene.scene.transformBuffer,
-      sceneTransformBytes(pass.scene),
-      skinTask,
-    );
+    return this.skinRaster?.primitiveBindGroup(skinTask);
   }
 
   /**
@@ -3512,7 +3456,7 @@ export class GpuDrivenProduction {
               batch,
               facts.value,
               viewBindings.visibleBuffer,
-              previousProjection,
+              previousProjection?.bundles,
             )
           : ok(borrowed);
       if (!created.ok) return created;
@@ -3548,6 +3492,7 @@ export class GpuDrivenProduction {
   }
 
   private disableShadowViews(): Result<void, RhiError> {
+    this.shadowCasterClasses.release();
     this.shadowViews?.retain([]);
     this.shadowBatchProjections = publishReadonlyMap(new Map());
     return ok(undefined);
@@ -3602,6 +3547,7 @@ export class GpuDrivenProduction {
     });
     this.shadowSource = undefined;
     this.shadowScene = undefined;
+    this.shadowCasterClasses.release();
     this.shadowBatchProjections = publishReadonlyMap(new Map());
     this.committedViewClipping = '';
     this.preparationFailure = undefined;
@@ -3624,6 +3570,7 @@ export class GpuDrivenProduction {
     this.settleDrawSummary();
     const view = this.view?.inspect();
     const filtered = this.filteredCache?.value;
+    const classification = this.shadowCasterClasses.inspect();
     const resourceAllocation = combineGpuResourceAllocationInspections([
       ...(view === undefined ? [] : [view.resourceAllocation]),
       ...(this.materialRaster === undefined ? [] : [this.materialRaster.resourceAllocation]),
@@ -3656,10 +3603,10 @@ export class GpuDrivenProduction {
       planRebuildBatches: this.planRebuildBatches,
       preparedAssemblyHits: this.preparedAssemblyHits,
       planRebuildCandidates: this.planRebuildCandidates,
-      shadowCasterFlips: this.shadowCasterClasses.inspect().flips,
-      shadowCasterClassification: this.shadowCasterClasses.inspect(),
+      shadowCasterFlips: classification.flips,
+      shadowCasterClassification: classification,
       shadowViews: this.shadowViews?.inspect() ?? [],
-      shadowCasterPendingPromotions: this.shadowCasterClasses.inspect().pendingPromotions,
+      shadowCasterPendingPromotions: classification.pendingPromotions,
       gpuOwnedEntityCount: this.gpuOwnedEntityCount,
       ...this.viewUploadInspection(view),
       batchBindGroupCreates: this.batchBindGroupCreates,
@@ -3685,6 +3632,7 @@ export class GpuDrivenProduction {
       indirectDrawCount: this.indirectDrawCount,
       encodedIndirectDraws: this.encodedIndirectDraws,
       preparedBundleHits: this.preparedBundleCounters.hits,
+      preparedBundleFixedHits: this.preparedBundleFixedHits,
       preparedBundleBuilds: this.preparedBundleCounters.builds,
       preparedBundleCommands: this.preparedBundleCounters.commands,
       preparedBundleEvictions: this.preparedBundleCounters.evictions,
@@ -3897,6 +3845,7 @@ export class GpuDrivenProduction {
     const sourceFrame = this.preparations.forward.cached;
     const telemetryCandidateCount = this.telemetryCandidateCount;
     if (view === undefined) return Promise.resolve(undefined);
+    const surfaceMemberId = this.surfaceFrames.capturedMemberId();
     return view.readLodSelection().then((selection) => {
       // The observer is asynchronous and prepare() may have published a new
       // filtered plan while mapAsync was pending. Do not attach old counters to
@@ -4030,7 +3979,7 @@ export class GpuDrivenProduction {
             const slot = sourceFrame?.slotAt(member.primitiveIndex);
             // A slot reused after the copy was encoded is another row.
             if (slot === undefined || slot.generation !== member.generation) return [];
-            const memberId = this.surfaceFrames.memberId(
+            const memberId = surfaceMemberId(
               slot.entityKey,
               member.drawItemIndex,
               member.instanceOrdinal,
@@ -4068,3 +4017,12 @@ export class GpuDrivenProduction {
       this.cpuDeformationReasons.set(reason, count);
   }
 }
+
+export type {
+  CurrentCameraRaster,
+  GpuDrivenGraphProjection,
+  GpuDrivenMaterialBinding,
+  GpuDrivenPrepareInput,
+  PreparedGpuDrivenFrame,
+  ShadowViewRequest,
+} from './production-raster-contract';

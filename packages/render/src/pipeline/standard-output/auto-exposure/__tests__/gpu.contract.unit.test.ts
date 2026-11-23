@@ -89,6 +89,8 @@ describe('auto exposure GPU pass contract', () => {
   it('routes the same-frame GPU candidate into the exposure consumer', () => {
     const passes: Array<{ name: string; descriptor: { accesses: readonly unknown[] } }> = [];
     const graph = {
+      createBuffer: () => ok({}),
+      addCopyPass: () => ok(undefined),
       addRasterPass: (name: string, descriptor: { accesses: readonly unknown[] }) => {
         passes.push({ name, descriptor });
         return ok(undefined);
@@ -108,6 +110,7 @@ describe('auto exposure GPU pass contract', () => {
         accesses: [
           { resource: {}, usage: 'sampled-read' },
           { resource: {}, usage: 'storage-read' },
+          { resource: {}, usage: 'uniform-read' },
           { resource: {}, usage: 'color-attachment' },
         ],
       },
@@ -115,15 +118,13 @@ describe('auto exposure GPU pass contract', () => {
   });
 
   it('keeps Bradford white balance in the sole linear-HDR consumer and preserves alpha', () => {
-    const withCandidate = createAutoExposureApplyWgsl({ temperature: 5000, tint: 0.2 }, true);
+    const withCandidate = createAutoExposureApplyWgsl(true);
     expect(withCandidate).toContain('@group(1) @binding(0) var<storage, read> candidate');
-    expect(withCandidate).toContain('mul_bradford');
-    expect(withCandidate).toContain('blackbody_white_point');
-    expect(withCandidate).toContain('WB_TEMPERATURE: f32 = 5000.00000000');
-    expect(withCandidate).toContain('WB_TINT: f32 = 0.20000000');
+    expect(withCandidate).toContain('@group(0) @binding(2) var<uniform> whiteBalance');
+    expect(withCandidate).toContain('dot(whiteBalance[2].xyz, exposed)');
     expect(withCandidate).toContain('color.a');
 
-    const manual = createAutoExposureApplyWgsl({ temperature: 6504, tint: 0 }, false);
+    const manual = createAutoExposureApplyWgsl(false);
     expect(manual).not.toContain('var<storage, read> candidate');
     expect(manual).toContain('let exposed = color.rgb * 1.0');
   });

@@ -20,6 +20,8 @@ import { World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import {
   Camera,
+  ClippingPlanes,
+  clippingPlanesData,
   DirectionalLight,
   Instances,
   MeshFilter,
@@ -223,26 +225,28 @@ function spawnScene(
     },
     { component: MeshRenderer, data: { materials: [fm] } },
   );
-  world.spawn(
-    {
-      component: Transform,
-      data: {
-        pos: [0, 8, 16],
-        quat: [0, 0, 0, 1],
-        scale: [1, 1, 1],
+  const camera = world
+    .spawn(
+      {
+        component: Transform,
+        data: {
+          pos: [0, 8, 16],
+          quat: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+        },
       },
-    },
-    {
-      component: Camera,
-      data: {
-        fov: (45 * Math.PI) / 180,
-        aspect: 1,
-        near: 0.1,
-        far: 100,
-        clearColor: [0.05, 0.05, 0.08, 1],
+      {
+        component: Camera,
+        data: {
+          fov: (45 * Math.PI) / 180,
+          aspect: 1,
+          near: 0.1,
+          far: 100,
+          clearColor: [0.05, 0.05, 0.08, 1],
+        },
       },
-    },
-  );
+    )
+    .unwrap();
   world.spawn({
     component: DirectionalLight,
     data: {
@@ -281,6 +285,7 @@ function spawnScene(
     { component: MeshRenderer, data: { materials: [cm] } },
     { component: Instances, data: { transforms: buildTranslationGrid() } },
   );
+  return camera;
 }
 
 function diff(a: Uint8Array, b: Uint8Array): { diff: number; maxChanDelta: number } {
@@ -319,7 +324,7 @@ async function renderConfig(
   depthBias: number,
   normalBias: number,
   pcf: number,
-  mapSize?: number,
+  options?: { readonly mapSize?: number; readonly clipOutsideScene?: true },
 ): Promise<Uint8Array> {
   let sd: GPUDevice | undefined;
   let rt: GPUTexture | undefined;
@@ -386,7 +391,13 @@ async function renderConfig(
     const dev = sd;
 
     const w = new World();
-    spawnScene(w, castShadow, depthBias, normalBias, pcf, mapSize);
+    const camera = spawnScene(w, castShadow, depthBias, normalBias, pcf, options?.mapSize);
+    if (options?.clipOutsideScene) {
+      w.addComponent(camera, {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 100]] }),
+      }).unwrap();
+    }
     let de = 0;
     for (let i = 0; i < SHADOW_FIELDS_RENDER_FRAMES; i++) {
       const r = await drawPublished(renderer, w);
@@ -397,6 +408,11 @@ async function renderConfig(
       if (i % 16 === 15) await dev.queue.onSubmittedWorkDone();
     }
     if (de > 0) throw new Error(`draw errors: ${de}`);
+    if (options?.clipOutsideScene) {
+      expect(
+        renderer.inspect({ fields: ['directionalShadow'] }).directionalShadow.forwardReceiver,
+      ).toEqual({ mode: 'raw', reason: 'coverage' });
+    }
     // rt is created lazily by the canvas configure()/getCurrentTexture path during
     // the first draw, so it is only guaranteed present after the draw loop.
     if (rt === undefined) throw new Error('render target not initialized');
@@ -626,8 +642,12 @@ describe('M6 shadow fields observability', () => {
     'pixel A/B: mapSize half vs twice the shared budget',
     async () => {
       if (typeof globalThis.navigator?.gpu?.requestAdapter !== 'function') return;
-      const pxA = await renderConfig(true, 0.005, 0.05, 3, testQuality.shadowMapSize / 2);
-      const pxB = await renderConfig(true, 0.005, 0.05, 3, testQuality.shadowMapSize * 2);
+      const pxA = await renderConfig(true, 0.005, 0.05, 3, {
+        mapSize: testQuality.shadowMapSize / 2,
+      });
+      const pxB = await renderConfig(true, 0.005, 0.05, 3, {
+        mapSize: testQuality.shadowMapSize * 2,
+      });
       const d = diff(pxA, pxB);
       expect(d.diff).toBeGreaterThan(0);
     },
@@ -676,16 +696,18 @@ describe('M6 shadow fields observability', () => {
   );
 
   it(
-    'falsification: normalBias varied differs, held does not',
+    'falsification: normalBias varied differs, held does not on the native receiver',
     async () => {
       if (typeof globalThis.navigator?.gpu?.requestAdapter !== 'function') return;
+      // An off-scene plane exercises the existing native receiver fallback.
+      const nativeReceiver = { clipOutsideScene: true } as const;
       const varied = diff(
-        await renderConfig(true, 0.005, 0.0, 3),
-        await renderConfig(true, 0.005, 0.5, 3),
+        await renderConfig(true, 0.005, 0.0, 3, nativeReceiver),
+        await renderConfig(true, 0.005, 0.5, 3, nativeReceiver),
       );
       const held = diff(
-        await renderConfig(true, 0.005, 0.0, 3),
-        await renderConfig(true, 0.005, 0.0, 3),
+        await renderConfig(true, 0.005, 0.0, 3, nativeReceiver),
+        await renderConfig(true, 0.005, 0.0, 3, nativeReceiver),
       );
       expect(varied.diff).toBeGreaterThan(0);
       expect(held.diff).toBe(0);

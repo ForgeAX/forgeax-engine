@@ -1,9 +1,17 @@
-import type { EngineWorkspaceProjectPreparation } from '@forgeax/engine-app';
+import type {
+  EngineWorkspaceProjectHandle,
+  EngineWorkspaceProjectPreparation,
+} from '@forgeax/engine-app';
 import type {
   PluginPackProgress,
   PluginPackSourceProgress,
 } from '@forgeax/engine-vite-plugin-pack';
 import type { ShaderPreparationProgress } from '@forgeax/engine-vite-plugin-shader';
+
+export function runningWorkspaceTarget(project: EngineWorkspaceProjectHandle | undefined) {
+  const status = project?.status;
+  return status?.phase === 'running' ? status.target : undefined;
+}
 
 /** Bounded presentation projection, not a producer queue or readiness authority. */
 export function createWorkspacePreparation(changed: () => void) {

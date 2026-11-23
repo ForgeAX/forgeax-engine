@@ -32,6 +32,8 @@ export function rasterInputCurrent(
 }
 
 export interface RasterSceneTables {
+  readonly transformBuffer: Buffer;
+  readonly transformBytes: number;
   readonly instanceBuffer: Buffer;
   readonly instanceBytes: number;
   readonly primitiveBuffer: Buffer;
@@ -53,7 +55,6 @@ export interface GpuRasterInputPreparation {
   isCurrent(): boolean;
   bindingIdentity(): object | undefined;
   replacement(window: BindGroup): BindGroup | undefined;
-  prepareMesh(previous: BindGroup): Result<BindGroup | undefined, RhiError>;
   publish(): Result<void, RhiError>;
   release(): void;
 }
@@ -83,9 +84,7 @@ export interface PreparingRasterInputBindings {
   nextTables: RasterSceneTables | undefined;
   nextVisible: Buffer | undefined;
   nextInstances: BindGroup | undefined;
-  meshCurrent?: (() => boolean) | undefined;
-  publishMesh?: (() => void) | undefined;
-  prepareMesh?: ((previous: BindGroup) => Result<BindGroup | undefined, RhiError>) | undefined;
+  sceneTablesCurrent?: (() => boolean) | undefined;
   ready: boolean;
   closeOwner: (() => void) | undefined;
 }
@@ -128,6 +127,7 @@ export function createRasterWindowBinding(
       { binding: 6, resource: binding(tables.primitiveBuffer, 0, tables.primitiveBytes) },
       { binding: 7, resource: binding(tables.visibleSurfaceRows ?? visible) },
       { binding: 8, resource: binding(tables.sceneInputs ?? visible) },
+      { binding: 9, resource: binding(tables.transformBuffer, 0, tables.transformBytes) },
     ],
   });
 }

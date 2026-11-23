@@ -135,6 +135,7 @@ export interface RenderPublication extends RenderPublicationIdentity {
   }[];
   /** Current source page, or empty/absent after explicit withdrawal. */
   readonly surfaceDynamicInputs?: readonly import('../surface/frame-source').PublishedSurfaceDynamicInput[];
+  readonly drawParameters?: import('./draw-parameters').PublishedDrawParameters | undefined;
   readonly programs: readonly (
     | {
         readonly key: string;
@@ -220,6 +221,8 @@ export type RenderPublicationRows = Pick<
 
 export interface PublishedRenderFrameInput {
   readonly publication: import('./record').RenderPublicationMessage;
+  /** Host-visible display identity for this publication's draw turn. */
+  readonly displayFrameId?: number;
   /** Apply a realm-local selection before this accepted revision captures its Scene and Views. */
   readonly onPublicationAccepted?: (
     accepted: RenderPublicationIdentity & { readonly revision: number },

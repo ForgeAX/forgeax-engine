@@ -70,27 +70,34 @@ export interface RenderPipelineAsset {
     readonly ambientOcclusion?: {
       readonly enabled: boolean;
       /** Screen-space AO method; defaults to SSAO. */
-      readonly method?: 'ssao' | 'gtao' | 'spiral-ssao' | undefined;
-      /** Apply AO to lighting (default) or the completed linear HDR scene before temporal/post. */
-      readonly application?: 'lighting' | 'scene-color' | undefined;
-      /** Scene-color visibility strength in [0, 1]; default 0.95. */
-      readonly sceneColorStrength?: number | undefined;
-      /** Explicit estimator budget, integer 1..64; otherwise derived from method and quality. */
-      readonly sampleCount?: number | undefined;
-      /** Fraction of screen-space AO applied to direct light, in [0, 1]; default 0. */
-      readonly directLightingStrength?: number | undefined;
+      readonly method?: 'ssao' | 'gtao' | undefined;
       readonly radius?: number | undefined;
       readonly bias?: number | undefined;
       readonly intensity?: number | undefined;
-      /** GTAO view-space depth rejection; default 1 world unit. */
-      readonly thickness?: number | undefined;
-      /** GTAO radial distribution exponent; default 1 (linear). */
-      readonly distanceExponent?: number | undefined;
-      /** GTAO horizon update falloff in [0, 1]; default 1. */
-      readonly distanceFallOff?: number | undefined;
-      /** AO extent relative to internal scene color, in [0.25, 1]; default 1. */
-      readonly resolutionScale?: number | undefined;
-      readonly quality?: 'low' | 'medium' | 'high' | undefined;
+      /** UE screen-space AO quality, before application of the project quality ceiling. */
+      readonly quality?: number | 'low' | 'medium' | 'high' | undefined;
+      readonly levels?: 0 | 1 | 2 | 3 | undefined;
+      readonly maxQuality?: number | undefined;
+      readonly power?: number | undefined;
+      readonly fadeDistance?: number | undefined;
+      readonly fadeRadius?: number | undefined;
+      readonly radiusInWorldSpace?: boolean | undefined;
+      readonly mipBlend?: number | undefined;
+      readonly mipScale?: number | undefined;
+      readonly mipThreshold?: number | undefined;
+      readonly gtao?:
+        | {
+            readonly useNormals?: boolean;
+            readonly downsample?: boolean;
+            readonly spatialFilter?: boolean;
+            readonly temporalFilter?: boolean;
+            readonly filterWidth?: 4 | 5;
+            readonly numAngles?: number;
+            readonly thicknessBlend?: number;
+            readonly falloffEnd?: number;
+            readonly temporalBlendWeight?: number;
+          }
+        | undefined;
     };
     /** Final display-encoded RGBA8 dither; defaults to true when omitted. */
     readonly outputDither?: boolean;

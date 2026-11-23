@@ -1,7 +1,7 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import { type ClusterOccupancyReport, measureClusterOccupancy } from '../../cluster-binner';
-import { getSsaoParameters } from '../../ssao-config';
+import { getSsaoParameters, resolveSsaoQuality, ssaoUsesLighting } from '../../ssao-config';
 import type { StandardTopologyInputValue } from './topology';
 import type { StandardClusterTransport } from './transport';
 
@@ -12,8 +12,12 @@ type AmbientOcclusionConfig = NonNullable<
 export interface StandardAmbientOcclusionInspection {
   readonly requested: boolean;
   readonly status: 'off' | 'active' | 'requested-unavailable';
-  readonly algorithm: 'ssao' | 'gtao' | 'spiral-ssao';
-  readonly application: 'lighting' | 'scene-color';
+  readonly algorithm: 'ssao' | 'gtao';
+  readonly requestedMethod: StandardAmbientOcclusionInspection['algorithm'];
+  readonly effectiveMethod: StandardAmbientOcclusionInspection['algorithm'];
+  readonly methodFallback?: 'forward-only-ssao';
+  readonly levels: number;
+  readonly historyFrames?: number | undefined;
   readonly execution: 'none' | 'fragment' | 'compute';
   readonly reason?: 'disabled' | 'requested-passes-not-in-active-graph';
   readonly producerId: 'forgeax::standard::surface-data';
@@ -47,12 +51,10 @@ export interface StandardAmbientOcclusionInspection {
     readonly distanceExponent: number;
     readonly distanceFallOff: number;
     readonly resolutionScale: number;
-    readonly quality: 'low' | 'medium' | 'high';
+    readonly quality: number | 'low' | 'medium' | 'high';
     readonly sampleBudget: number;
-    readonly sceneColorStrength: number;
-    readonly directLightingStrength: number;
-    readonly rawIntensityApplication: 'once-before-filter';
-    readonly filter: '5x5-depth-normal-bilateral' | '7+7-depth-bilateral';
+    readonly rawIntensityApplication: 'ssao-output' | 'gtao-spatial' | 'none';
+    readonly filter: 'quad-normal' | 'gtao-depth-plane' | 'none';
   };
   readonly output: {
     readonly rawFormat: 'rgba8unorm' | 'r8unorm';
@@ -136,97 +138,152 @@ export type StandardLightingInspection =
   | StandardClusterTransportInspection
   | StandardNoLocalLightingInspection;
 
+type SubmittedAmbientOcclusion = {
+  readonly config: AmbientOcclusionConfig | undefined;
+  readonly graph: CompiledRenderGraphInfo | undefined;
+  readonly installedGraphGeneration?: number | undefined;
+  readonly deviceGeneration: number;
+  readonly gtaoHistoryFrames?: number | undefined;
+};
+
+type TransportInspection = Omit<StandardClusterTransportInspection, 'ambientOcclusion'>;
+type PreparedLighting = StandardTopologyInputValue['prepared'];
+
+function captureClusterInspection(
+  transport: StandardClusterTransport,
+  prepared: PreparedLighting,
+): () => TransportInspection;
+function captureClusterInspection(
+  transport: StandardClusterTransport,
+  prepared: PreparedLighting,
+  readAO: () => StandardAmbientOcclusionInspection,
+): () => StandardClusterTransportInspection;
+function captureClusterInspection(
+  transport: StandardClusterTransport,
+  prepared: PreparedLighting,
+  readAO?: () => StandardAmbientOcclusionInspection,
+): () => TransportInspection {
+  const {
+    kind,
+    producer,
+    requestedLightCount,
+    admittedLightCount,
+    membershipEntryCount,
+    occupiedClusterCount,
+    clusterGridBytes,
+    lightIndexListBytes,
+    lightDataBytes,
+    lightBoundsBytes,
+  } = transport;
+  const { x, y, z } = transport.layout.grid;
+  const {
+    renderPath,
+    maxLights,
+    clusterEntryCapK,
+    droppedClusterEntries,
+    boundsColumn,
+    membershipLightCount,
+  } = prepared;
+  const detached = boundsColumn === undefined ? prepared.lightBounds : undefined;
+  const near = prepared.camera?.near,
+    far = prepared.camera?.far;
+  let shadowed = 0;
+  for (const light of prepared.local) if (light.shadowed === true) shadowed++;
+  let inspection: TransportInspection | undefined;
+  return () => {
+    if (inspection !== undefined) return inspection;
+    const grid = Object.freeze({ x, y, z });
+    const facts: TransportInspection = {
+      renderPath,
+      transport: kind,
+      producer,
+      requested: requestedLightCount,
+      admitted: admittedLightCount,
+      droppedLocalLights: requestedLightCount - admittedLightCount,
+      clusterEntryCapK: clusterEntryCapK ?? null,
+      droppedClusterEntries,
+      shadowed,
+      maxLights,
+      indexCount: membershipEntryCount,
+      occupied: occupiedClusterCount,
+      clusterGridBytes,
+      lightIndexListBytes,
+      lightDataBytes,
+      lightBoundsBytes,
+      grid,
+    };
+    if (near !== undefined && far !== undefined) {
+      let occupancy: ClusterOccupancyReport | undefined;
+      Object.defineProperty(facts, 'lightsPerCluster', {
+        enumerable: true,
+        get: () =>
+          (occupancy ??= measureClusterOccupancy(
+            membershipLightCount,
+            boundsColumn?.materialize() ?? (detached as Int32Array),
+            grid,
+            near,
+            far,
+          )),
+      });
+    }
+    if (readAO !== undefined)
+      Object.defineProperty(facts, 'ambientOcclusion', { enumerable: true, get: readAO });
+    inspection = Object.freeze(facts);
+    return inspection;
+  };
+}
+
 export function inspectStandardClusterTransport(
   transport: StandardClusterTransport,
-  prepared: StandardTopologyInputValue['prepared'],
-): Omit<StandardClusterTransportInspection, 'ambientOcclusion'> {
-  const base = Object.freeze({
-    renderPath: prepared.renderPath,
-    transport: transport.kind,
-    producer: transport.producer,
-    requested: transport.requestedLightCount,
-    admitted: transport.admittedLightCount,
-    droppedLocalLights: transport.requestedLightCount - transport.admittedLightCount,
-    clusterEntryCapK: prepared.clusterEntryCapK ?? null,
-    droppedClusterEntries: prepared.droppedClusterEntries,
-    shadowed: prepared.local.filter((light) => light.shadowed === true).length,
-    maxLights: prepared.maxLights,
-    indexCount: transport.membershipEntryCount,
-    occupied: transport.occupiedClusterCount,
-    clusterGridBytes: transport.clusterGridBytes,
-    lightIndexListBytes: transport.lightIndexListBytes,
-    lightDataBytes: transport.lightDataBytes,
-    lightBoundsBytes: transport.lightBoundsBytes,
-    // The inspection boundary is JSON-safe and detached from the mutable
-    // layout object carried by a per-frame prepared result.
-    grid: Object.freeze({ ...transport.layout.grid }),
-  });
-  const camera = prepared.camera;
-  if (camera === undefined) return base;
-  // Inspection is assembled for every submitted frame; the occupancy walk
-  // only runs when a reader asks for it (memoized enumerable getter, so
-  // JSON serialization still includes it).
-  let report: ClusterOccupancyReport | undefined;
-  return Object.freeze(
-    Object.defineProperty({ ...base }, 'lightsPerCluster', {
-      enumerable: true,
-      get: () =>
-        (report ??= measureClusterOccupancy(
-          prepared.local.length,
-          prepared.lightBounds,
-          transport.layout.grid,
-          camera.near,
-          camera.far,
-        )),
-    }),
-  );
+  prepared: PreparedLighting,
+): TransportInspection {
+  return captureClusterInspection(transport, prepared)();
+}
+
+/** Keep only submitted scalars and the owned producer bounds. Inspector reads can outlive
+ * camera reuse or scene unload without retaining a frame's lights, CPU runs or scratch. */
+export function captureStandardLighting(
+  input: StandardTopologyInputValue,
+  ao: SubmittedAmbientOcclusion = { config: undefined, graph: undefined, deviceGeneration: 0 },
+): () => StandardLightingInspection {
+  const { renderPath, maxLights } = input.prepared;
+  let ambientOcclusion: StandardAmbientOcclusionInspection | undefined;
+  const readAO = () =>
+    (ambientOcclusion ??= inspectStandardAmbientOcclusion({ renderPath, ...ao }));
+  if (input.kind === 'clustered')
+    return captureClusterInspection(input.transport, input.prepared, readAO);
+  const { x, y, z } = input.prepared.layout.grid;
+  let inspection: StandardNoLocalLightingInspection | undefined;
+  return () =>
+    (inspection ??= Object.freeze({
+      renderPath,
+      transport: 'not-required',
+      producer: 'none',
+      requested: 0,
+      admitted: 0,
+      droppedLocalLights: 0,
+      clusterEntryCapK: null,
+      droppedClusterEntries: 0,
+      shadowed: 0,
+      maxLights,
+      indexCount: 0,
+      occupied: 0,
+      clusterGridBytes: 0,
+      lightIndexListBytes: 0,
+      lightDataBytes: 0,
+      lightBoundsBytes: 0,
+      grid: Object.freeze({ x, y, z }),
+      get ambientOcclusion() {
+        return readAO();
+      },
+    }));
 }
 
 export function inspectStandardLighting(
   input: StandardTopologyInputValue,
-  ao: {
-    readonly config: AmbientOcclusionConfig | undefined;
-    readonly graph: CompiledRenderGraphInfo | undefined;
-    readonly installedGraphGeneration?: number | undefined;
-    readonly deviceGeneration: number;
-    readonly clusterAoExtent?: { readonly width: number; readonly height: number } | undefined;
-  } = { config: undefined, graph: undefined, deviceGeneration: 0 },
+  ao?: SubmittedAmbientOcclusion,
 ): StandardLightingInspection {
-  const ambientOcclusion = inspectStandardAmbientOcclusion({
-    renderPath: input.prepared.renderPath,
-    ...ao,
-  });
-  if (input.kind === 'no-local-lights') {
-    return Object.freeze({
-      renderPath: input.prepared.renderPath,
-      transport: 'not-required' as const,
-      producer: 'none' as const,
-      requested: 0 as const,
-      admitted: 0 as const,
-      droppedLocalLights: 0 as const,
-      clusterEntryCapK: null,
-      droppedClusterEntries: 0 as const,
-      shadowed: 0 as const,
-      maxLights: input.prepared.maxLights,
-      indexCount: 0 as const,
-      occupied: 0 as const,
-      clusterGridBytes: 0 as const,
-      lightIndexListBytes: 0 as const,
-      lightDataBytes: 0 as const,
-      lightBoundsBytes: 0 as const,
-      grid: Object.freeze({ ...input.prepared.layout.grid }),
-      ambientOcclusion,
-    });
-  }
-  // Copy descriptors, not values: spreading would evaluate the lazy
-  // lightsPerCluster getter on every submitted frame.
-  const transport = inspectStandardClusterTransport(input.transport, input.prepared);
-  return Object.freeze(
-    Object.defineProperties(
-      { ambientOcclusion },
-      Object.getOwnPropertyDescriptors(transport),
-    ) as StandardClusterTransportInspection,
-  );
+  return captureStandardLighting(input, ao)();
 }
 
 function graphResource(
@@ -252,61 +309,83 @@ function sumKnownBytes(
   return present.reduce((sum, resource) => sum + (resource.byteSize ?? 0), 0);
 }
 
-function collectAmbientOcclusionFacts(input: {
-  readonly config: AmbientOcclusionConfig | undefined;
-  readonly graph: CompiledRenderGraphInfo | undefined;
-  readonly renderPath: 'forward' | 'deferred';
-  readonly clusterAoExtent?: { readonly width: number; readonly height: number } | undefined;
-}) {
-  const requested = input.config?.enabled === true;
-  const parameters = getSsaoParameters(requested ? input.config : undefined);
-  const calc = input.graph?.passes.find(
-    (pass) => pass.name === 'ssao-calc' || pass.name === 'gtao-calc-compute',
+function ambientOcclusionGraphResources(graph: CompiledRenderGraphInfo | undefined) {
+  const calc = graph?.passes.find((pass) =>
+    ['ssao-calc', 'gtao-calc', 'gtao-calc-compute'].includes(pass.name),
   );
-  const blur = input.graph?.passes.find((pass) => pass.name === 'ssao-blur');
-  const active = requested && calc !== undefined && blur !== undefined;
+  const blur = graph?.passes.find(
+    (pass) => pass.name === 'gtao-resolve' || pass.name === 'ssao-blur',
+  );
   const sampled = calc?.accesses.filter((access) => access.usage === 'sampled-read') ?? [];
-  const normalName = sampled.length === 1 ? undefined : sampled[0]?.resource;
-  const depthName = sampled[sampled.length === 1 ? 0 : 1]?.resource;
+  const sampledResources = sampled.map((access) => graphResource(graph, access.resource));
+  const normal = sampledResources.find(
+    (resource) => resource?.format === 'r32uint' || resource?.format === 'rg32uint',
+  );
+  const depth = sampledResources.find((resource) => resource?.format?.startsWith('depth') === true);
   const rawName = calc?.accesses.find(
     (access) => access.usage === 'storage-write' || access.usage === 'color-attachment',
   )?.resource;
   const filteredName = blur?.accesses.find(
     (access) => access.usage === 'color-attachment',
   )?.resource;
-  const normal = graphResource(input.graph, normalName);
-  const depth = graphResource(input.graph, depthName);
-  const raw = graphResource(input.graph, rawName);
-  const filtered = graphResource(input.graph, filteredName);
-  const horizontal = graphResource(input.graph, 'ssao-horizontal');
-  const inputExtent = normal?.extent ?? depth?.extent;
-  const outputExtent = raw?.extent;
-  const rawPixels = (outputExtent?.width ?? 0) * (outputExtent?.height ?? 0);
-  const sampleBudget = parameters.sampleCount;
-  // Match the production GTAO adapter: three slices below 30 samples, five
-  // at 30+, with two depth candidates per radial step.
-  const slices = sampleBudget >= 30 ? 5 : 3;
+  const raw = graphResource(graph, rawName);
+  const filtered = graphResource(graph, filteredName) ?? raw;
+  const horizontal = graphResource(graph, 'ssao-horizontal');
+  return { calc, normal, depth, raw, filtered, horizontal };
+}
+
+function ambientOcclusionWorkBudget(
+  effective: ReturnType<typeof getSsaoParameters>['method'],
+  parameters: ReturnType<typeof getSsaoParameters>,
+  config: AmbientOcclusionConfig | undefined,
+) {
+  const { permutation } = resolveSsaoQuality(config);
+  const sampleBudget =
+    effective === 'gtao'
+      ? ([4, 6, 8, 12, 20][permutation] ?? 8)
+      : (permutation === 4 ? 6 : 3) * Math.max(1, Math.min(3, permutation));
   const depthCandidatesPerPixel =
-    parameters.method === 'gtao' ? slices * Math.ceil(sampleBudget / slices) * 2 : sampleBudget;
-  // Forward keeps the surface-data prepass to seed `main` with AO off; it is
-  // AO work only when AO is requested.
+    sampleBudget * 2 * (effective === 'gtao' ? parameters.gtao.numAngles : 1);
+  const filterTaps =
+    effective === 'gtao'
+      ? parameters.gtao.spatialFilter
+        ? parameters.gtao.filterWidth ** 2
+        : 0
+      : permutation === 1 || permutation === 2
+        ? 3
+        : 0;
+  return { sampleBudget, depthCandidatesPerPixel, filterTaps };
+}
+
+function collectAmbientOcclusionFacts(input: {
+  readonly config: AmbientOcclusionConfig | undefined;
+  readonly graph: CompiledRenderGraphInfo | undefined;
+  readonly renderPath: 'forward' | 'deferred';
+}) {
+  const requested = input.config?.enabled === true;
+  const parameters = getSsaoParameters(requested ? input.config : undefined);
+  const { calc, normal, depth, raw, filtered, horizontal } = ambientOcclusionGraphResources(
+    input.graph,
+  );
+  const effective =
+    input.renderPath === 'forward' && parameters.method === 'gtao' ? 'ssao' : parameters.method;
+  const active = ssaoUsesLighting(input.config) && calc !== undefined;
+  const inputExtent = normal?.extent ?? depth?.extent;
+  const outputExtent = filtered?.extent;
+  const rawPixels = (raw?.extent?.width ?? 0) * (raw?.extent?.height ?? 0);
+  const { sampleBudget, depthCandidatesPerPixel, filterTaps } = ambientOcclusionWorkBudget(
+    effective,
+    parameters,
+    input.config,
+  );
   const passNames = (input.graph?.passes ?? [])
-    .filter(
-      (pass) =>
-        (requested && pass.name === 'standard-scene-surface-data') ||
-        [
-          'ssao-parameters',
-          'ssao-linear-depth',
-          'ssao-scene-color',
-          'ssao-calc',
-          'gtao-calc-compute',
-          'ssao-blur-horizontal',
-          'ssao-blur',
-          'ssao-cluster-pack',
-        ].includes(pass.name),
-    )
-    .map((pass) => pass.name);
-  const status: StandardAmbientOcclusionInspection['status'] = !requested
+    .filter(({ name }) => name.startsWith('ssao-') || name.startsWith('gtao-'))
+    .map(({ name }) => name);
+  const levels =
+    active && effective === 'ssao'
+      ? 1 + Number(passNames.includes('ssao-half')) + Number(passNames.includes('ssao-quarter'))
+      : Number(active);
+  const status: StandardAmbientOcclusionInspection['status'] = !ssaoUsesLighting(input.config)
     ? 'off'
     : active
       ? 'active'
@@ -314,14 +393,13 @@ function collectAmbientOcclusionFacts(input: {
   const unavailable = status === 'requested-unavailable';
   const normalDepthBytes = sumKnownBytes(normal === undefined ? [depth] : [normal, depth]);
   const additionalInputBytes = input.renderPath === 'forward' ? normalDepthBytes : 0;
-  const clusterRegionBytes =
-    !active || input.clusterAoExtent === undefined
-      ? 0
-      : Math.ceil(input.clusterAoExtent.width / 4) * input.clusterAoExtent.height * 16;
   return {
     input,
     requested,
     parameters,
+    effective,
+    levels,
+    filterTaps,
     calc,
     active,
     normal,
@@ -338,7 +416,6 @@ function collectAmbientOcclusionFacts(input: {
     unavailable,
     normalDepthBytes,
     additionalInputBytes,
-    clusterRegionBytes,
   };
 }
 
@@ -393,8 +470,7 @@ function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbient
 
 function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
   return Object.freeze({
-    rawFormat:
-      facts.parameters.method === 'spiral-ssao' ? ('r8unorm' as const) : ('rgba8unorm' as const),
+    rawFormat: facts.raw?.format === 'rgba8unorm' ? ('rgba8unorm' as const) : ('r8unorm' as const),
     filteredFormat: 'r8unorm' as const,
     ...(facts.outputExtent === undefined
       ? {}
@@ -409,7 +485,7 @@ function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbien
     ...(facts.horizontal?.byteSize === undefined
       ? {}
       : { horizontalBytes: facts.horizontal.byteSize }),
-    clusterRegionBytes: facts.clusterRegionBytes,
+    clusterRegionBytes: 0,
   });
 }
 
@@ -418,16 +494,24 @@ function inspectStandardAmbientOcclusion(input: {
   readonly graph: CompiledRenderGraphInfo | undefined;
   readonly installedGraphGeneration?: number | undefined;
   readonly renderPath: 'forward' | 'deferred';
+  readonly gtaoHistoryFrames?: number | undefined;
   readonly deviceGeneration: number;
-  readonly clusterAoExtent?: { readonly width: number; readonly height: number } | undefined;
 }): StandardAmbientOcclusionInspection {
   const facts = collectAmbientOcclusionFacts(input);
   const { parameters, requested, status, active, calc, sampleBudget, unavailable } = facts;
   return Object.freeze({
     requested,
     status,
-    algorithm: parameters.method,
-    application: parameters.application,
+    algorithm: facts.effective,
+    requestedMethod: parameters.method,
+    effectiveMethod: facts.effective,
+    ...(facts.effective !== parameters.method
+      ? { methodFallback: 'forward-only-ssao' as const }
+      : {}),
+    levels: facts.levels,
+    ...(facts.passNames.includes('gtao-temporal')
+      ? { historyFrames: input.gtaoHistoryFrames ?? 0 }
+      : {}),
     execution: !active ? 'none' : calc?.name === 'gtao-calc-compute' ? 'compute' : 'fragment',
     ...(!requested
       ? { reason: 'disabled' as const }
@@ -446,20 +530,23 @@ function inspectStandardAmbientOcclusion(input: {
       resolutionScale: parameters.resolutionScale,
       quality: parameters.quality,
       sampleBudget,
-      sceneColorStrength: parameters.sceneColorStrength,
-      directLightingStrength: parameters.directLightingStrength,
-      rawIntensityApplication: 'once-before-filter' as const,
+      rawIntensityApplication:
+        facts.effective === 'gtao'
+          ? parameters.gtao.spatialFilter
+            ? ('gtao-spatial' as const)
+            : ('none' as const)
+          : ('ssao-output' as const),
       filter:
-        parameters.method === 'spiral-ssao'
-          ? ('7+7-depth-bilateral' as const)
-          : ('5x5-depth-normal-bilateral' as const),
+        facts.filterTaps === 0
+          ? ('none' as const)
+          : facts.effective === 'gtao'
+            ? ('gtao-depth-plane' as const)
+            : ('quad-normal' as const),
     }),
     output: ambientOcclusionOutputInspection(facts),
     work: Object.freeze({
       rawPixels: active ? facts.rawPixels : 0,
-      filterTapBudget: active
-        ? facts.rawPixels * (parameters.method === 'spiral-ssao' ? 14 : 25)
-        : 0,
+      filterTapBudget: active ? facts.rawPixels * facts.filterTaps : 0,
       depthCandidateBudget: active ? facts.rawPixels * facts.depthCandidatesPerPixel : 0,
     }),
     passes: Object.freeze(facts.passNames),

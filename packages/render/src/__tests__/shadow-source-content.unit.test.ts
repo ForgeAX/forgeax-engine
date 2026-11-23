@@ -5,6 +5,11 @@ import { shadowDirtyRects } from '../gpu-driven/shadow-views';
 import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { shadowSourceFixture, shadowSourceSnapshot } from './shadow-source-content.fixture';
 
+function dynamicCaster(entity: number, x: number) {
+  const { mobility: _static, ...source } = shadowSourceSnapshot(entity, x);
+  return source;
+}
+
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -146,7 +151,7 @@ it.each([
   try {
     frame();
     const spawned = f.update({
-      ...shadowSourceSnapshot(3, 0),
+      ...dynamicCaster(3, 0),
       ...(kind === 'rigid'
         ? {}
         : {
@@ -196,11 +201,11 @@ it.each([
   };
   try {
     frame();
-    const created = f.update(shadowSourceSnapshot(3, 0)).createdSlots[0];
+    const created = f.update(dynamicCaster(3, 0)).createdSlots[0];
     if (created === undefined) throw Error('expected dynamic caster');
     expect(frame().view.cache).toBe('hit');
     const replacement = {
-      ...shadowSourceSnapshot(4, 0),
+      ...dynamicCaster(4, 0),
       ...(declaredStatic ? { mobility: 'static' as const } : {}),
     };
     const delta = f.apply([
@@ -228,7 +233,7 @@ it('clears a removed static footprint when its slot is reused by a dynamic caste
     f.pool._commitResourceReplacement();
     const old = f.projection.slotsSnapshot().find((slot) => slot.entityKey === 1);
     if (old === undefined) throw Error('expected static caster');
-    const replacement = shadowSourceSnapshot(3, 0);
+    const replacement = dynamicCaster(3, 0);
     const delta = f.apply([
       { kind: 'remove', entityKey: 1 },
       { kind: 'update', entityKey: 3, snapshot: replacement },
@@ -251,7 +256,7 @@ it('adds a dynamic caster to static depth when it gains the static declaration',
   try {
     updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
-    const source = shadowSourceSnapshot(3, 0);
+    const source = dynamicCaster(3, 0);
     f.update(source);
     expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('hit');
     f.pool._commitResourceReplacement();
@@ -306,8 +311,7 @@ it('redraws fully when scene buffers grow even if every added caster is ignored'
     updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const transform = f.scene.transformBuffer;
-    for (let entityKey = 3; entityKey <= 9; entityKey++)
-      f.update(shadowSourceSnapshot(entityKey, 20));
+    for (let entityKey = 3; entityKey <= 9; entityKey++) f.update(dynamicCaster(entityKey, 20));
     const next = f.input();
     expect(next.candidatePrimitiveIndices.size).toBe(2);
     expect(next.ignoredChangeSlots.size).toBe(7);

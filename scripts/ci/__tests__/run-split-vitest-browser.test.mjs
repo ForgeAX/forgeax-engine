@@ -10,6 +10,7 @@ import { parse } from 'yaml';
 import { runGroups } from '../../lib/run-bounded-groups.mjs';
 import hostFiles from '../browser-host-files.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../browser-process-cache.mjs';
+import { createBrowserProcessPool } from '../browser-process-pool.mjs';
 import {
   assignBrowserGroupsToShards,
   browserConfigForGroup,
@@ -19,10 +20,72 @@ import {
   browserGroupWeight,
   browserProducerReadiness,
   browserTestFiles,
+  canReuseBrowserProcess,
   ciBrowserShardTailSeconds,
   parseArgs,
   planBrowserGroups,
+  verifyScopedBrowserFiles,
 } from '../run-split-vitest-browser.mjs';
+
+test('browser slots reuse one carrier while isolated and failed groups leave no shared carrier', async () => {
+  const closed = [];
+  let launched = 0;
+  const pool = createBrowserProcessPool(2, async () => {
+    const id = ++launched;
+    return {
+      wsEndpoint: () => String(id),
+      close: async () => closed.push(id),
+    };
+  });
+  const endpoints = [];
+  const visit = (endpoint) => endpoints.push(endpoint);
+  await runGroups({
+    groups: [0, 1, 2, 3],
+    concurrency: 2,
+    isExclusive: (group) => group === 2,
+    runGroupImpl: async (_group, _index, slot) => {
+      if (slot === undefined) {
+        await pool.close();
+        assert.equal(closed.length, 2);
+        return;
+      }
+      await pool.run(slot, visit);
+    },
+  });
+  await pool.run(0, visit);
+  assert.equal(endpoints.at(-1), '3');
+  await assert.rejects(
+    pool.run(0, () => Promise.reject(new Error('case failed'))),
+    /case failed/,
+  );
+  assert.deepEqual(closed, [1, 2, 3]);
+  await pool.close();
+  assert.equal(
+    canReuseBrowserProcess(['packages/runtime/src/__tests__/new-owner.browser.test.ts']),
+    true,
+  );
+  assert.equal(
+    canReuseBrowserProcess(['packages/app/__tests__/worker-policy.browser.test.ts']),
+    false,
+  );
+  assert.equal(
+    canReuseBrowserProcess(['packages/runtime/src/__tests__/compatibility-scene.browser.test.ts']),
+    false,
+  );
+});
+
+test('a scoped Browser invocation verifies that the changed test still owns its admitted lane', () => {
+  const groups = [['first.ts'], ['changed.ts']];
+  verifyScopedBrowserFiles({ 'changed.ts': 2 }, groups, [0, 2]);
+  assert.throws(
+    () => verifyScopedBrowserFiles({ 'changed.ts': 3 }, groups, [0, 2]),
+    /scope changed/,
+  );
+  assert.throws(
+    () => verifyScopedBrowserFiles({ 'missing.ts': 3 }, groups, [0, 2]),
+    /scope changed/,
+  );
+});
 
 test('local failure collection is explicit and retains four balanced complete shards', () => {
   assert.equal(parseArgs([]).continueOnFailure, false);
@@ -138,6 +201,13 @@ test('each Three Node input and material instance journey owns its 300-second pr
     files.map((file) => browserGroupWeight([file], undefined, {})),
     [225, 120],
   );
+  const project = readFileSync('config/vitest-browser-project.ts', 'utf8');
+  assert.equal(project.match(/include\.includes\(\s*'([^']+)'/)?.[1], files[0]);
+  assert.match(
+    project,
+    /async configureServer\(\) \{[^}]*await threeNodeInputCommands\.prepareThreeNodeInputMaterials\(\)/,
+  );
+  assert.match(project, /commands: \{[^}]*\.\.\.threeNodeInputCommands/);
 });
 
 test('Three flat-shading materials retain independent Browser and Dawn deadlines', () => {
@@ -539,6 +609,7 @@ test('lighting-channel sources and writers conserve both paths in bounded batche
 
 test('short renderer deadlines own an exclusive runner without serializing ordinary groups', () => {
   for (const file of [
+    'packages/three/src/__tests__/features-1.browser.test.ts',
     'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
     'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
     'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
@@ -628,10 +699,9 @@ test('dense Renderer owners retain singleton groups with exclusive runner admiss
     'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
     'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
     'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
-    'packages/app/__tests__/render-worker-environment.browser.test.ts',
     'packages/app/__tests__/render-worker-tiles.browser.test.ts',
     'packages/app/__tests__/render-worker-deformation.browser.test.ts',
-    'packages/app/__tests__/render-worker-multi-camera.browser.test.ts',
+    'packages/app/__tests__/render-worker-contract.browser.test.ts',
   ]) {
     const owners = groups.filter((group) => group.includes(file));
     assert.deepEqual(owners, [[file]], 'retain the complete existing owner exactly once');
@@ -906,7 +976,7 @@ for (const target of [
 }
 
 test('real multi-camera Worker capture and replacement owns a bounded browser process', () => {
-  const target = 'packages/app/__tests__/render-worker-multi-camera.browser.test.ts';
+  const target = 'packages/app/__tests__/render-worker-contract.browser.test.ts';
   const groups = dryRunGroups();
   assert.deepEqual(
     groups.filter((group) => group.includes(target)),
@@ -1210,9 +1280,9 @@ test('Render Worker recovery and pressure keep separate complete owners', () => 
   }
 });
 
-test('Render Worker content owners retain every case in separate complete processes', () => {
+test('Render Worker content and recovery keep bounded dedicated processes', () => {
   const groups = dryRunGroups();
-  for (const name of ['deformation', 'geometry', 'media', 'tiles', 'environment']) {
+  for (const name of ['contract', 'deformation', 'media', 'tiles']) {
     const target = `packages/app/__tests__/render-worker-${name}.browser.test.ts`;
     assert.deepEqual(
       groups.filter((group) => group.includes(target)),
@@ -1233,8 +1303,9 @@ test('VFX mesh local lighting and native publication retain independent complete
   }
 });
 
-test('two host-loss recovery cycles own a fresh complete process', () => {
+test('two host-loss recovery cycles own a fresh process with no concurrent browser group', () => {
   const target = 'packages/runtime/src/__tests__/wave1-rendering-recovery.browser.test.ts';
+  assert.equal(browserGroupRequiresExclusiveRunner([target]), true);
   assert.deepEqual(
     dryRunGroups().filter((group) => group.includes(target)),
     [[target]],
@@ -1333,7 +1404,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a env FORGEAX_BROWSER_HEADLESS=0\s+node scripts\/ci\/run-split-vitest-browser\.mjs/,
   );
   assert.match(job, /--shard-count=4\n/);
-  assert.match(job, /shard: \[0, 1, 2, 3\]/);
+  assert.match(job, /shard: \$\{\{ fromJSON\(needs\.core-build\.outputs\.browser_shards\) \}\}/);
   const steps = parse(ci).jobs['vitest-browser-shard'].steps;
   const condition = (name) => steps.find((step) => step.name === name)?.if;
   assert.equal(
@@ -1434,9 +1505,18 @@ test('matching core Browser groups use complete child costs without changing gro
     FORGEAX_BROWSER_FIXED_SMOKE: '1',
   };
   const full = { FORGEAX_CI_CORE_VALIDATION: '0' };
+  const latest = JSON.parse(
+    readFileSync('scripts/ci/browser-timing-snapshots/44905218358.json', 'utf8'),
+  );
+  const latestCosts = new Map(
+    latest.groups.map((group) => [group.files.join('\n'), group.processSeconds]),
+  );
   for (const group of receipt.groups) {
     assert.ok(group.processSeconds >= group.reportedTestSeconds);
-    assert.equal(browserGroupWeight(group.files, undefined, core), group.processSeconds);
+    assert.equal(
+      browserGroupWeight(group.files, undefined, core),
+      Math.max(group.processSeconds, latestCosts.get(group.files.join('\n')) ?? 0),
+    );
     assert.equal(
       browserGroupWeight(group.files, undefined, full),
       group.files.reduce((sum, file) => sum + browserGroupWeight([file], undefined, full), 0),
@@ -1460,19 +1540,31 @@ test('matching core Browser groups use complete child costs without changing gro
     ),
   );
   const fileWeight = (file) => shares.get(file);
+  // This measured cohort predates exclusive admission for the Three skin replay.
+  const exclusiveGroup = (group) => {
+    if (
+      group.length === 1 &&
+      group[0] === 'packages/three/src/__tests__/features-1.browser.test.ts'
+    )
+      return false;
+    return browserGroupRequiresExclusiveRunner(group);
+  };
   const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
     tailSeconds: ciBrowserShardTailSeconds,
     concurrency: 2,
     fileWeight,
+    exclusiveGroup,
   });
   const loads = Array.from({ length: 4 }, (_, shard) => {
     const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
     const slots = [0, 0];
-    for (const position of browserGroupRunOrder(groups, selected, 2, { fileWeight })) {
+    for (const position of browserGroupRunOrder(groups, selected, 2, {
+      fileWeight,
+      exclusiveGroup,
+    })) {
       const index = selected[position];
       const seconds = receipt.groups[index].processSeconds;
-      if (browserGroupRequiresExclusiveRunner(groups[index]))
-        slots.fill(Math.max(...slots) + seconds);
+      if (exclusiveGroup(groups[index])) slots.fill(Math.max(...slots) + seconds);
       else slots[slots[0] <= slots[1] ? 0 : 1] += seconds;
     }
     return Math.max(...slots) + ciBrowserShardTailSeconds[shard];
@@ -1480,6 +1572,50 @@ test('matching core Browser groups use complete child costs without changing gro
   assert.ok(
     loads.every((seconds) => seconds <= 1680),
     `complete cohort exceeds 28-minute dispatch target: ${loads}`,
+  );
+});
+
+test('current complete Browser cohort is balanced across all four physical jobs', () => {
+  const receipt = JSON.parse(
+    readFileSync('scripts/ci/browser-timing-snapshots/44905218358.json', 'utf8'),
+  );
+  assert.equal(receipt.head, '44667b7b427d7bc983f71db34c741840bafb2753');
+  assert.equal(receipt.completeChildren, 151);
+  assert.equal(receipt.groups.length, receipt.completeChildren);
+  const files = receipt.groups.flatMap((group) => group.files);
+  assert.equal(files.length, 434);
+  assert.equal(new Set(files).size, receipt.fileCount);
+  assert.equal(new Set(receipt.groups.map((group) => group.jobId)).size, 4);
+  const environment = {
+    FORGEAX_CI_CORE_VALIDATION: '1',
+    FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1',
+    FORGEAX_BROWSER_FIXED_SMOKE: '1',
+  };
+  const groups = receipt.groups.map((group) => group.files);
+  const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
+    tailSeconds: ciBrowserShardTailSeconds,
+    concurrency: 2,
+    environment,
+  });
+  const loads = ciBrowserShardTailSeconds.map((tail, shard) => {
+    const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
+    const slots = [0, 0];
+    for (const position of browserGroupRunOrder(groups, selected, 2, { environment })) {
+      const index = selected[position];
+      const group = receipt.groups[index];
+      assert.ok(group.processSeconds >= group.reportedTestSeconds);
+      assert.ok(browserGroupWeight(group.files, undefined, environment) >= group.processSeconds);
+      if (browserGroupRequiresExclusiveRunner(groups[index])) {
+        slots.fill(Math.max(...slots) + group.processSeconds);
+      } else {
+        slots[slots[0] <= slots[1] ? 0 : 1] += group.processSeconds;
+      }
+    }
+    return Math.max(...slots) + tail;
+  });
+  assert.ok(
+    loads.every((seconds) => seconds <= 2160),
+    `unbalanced complete cohort: ${loads}`,
   );
 });
 
@@ -1818,4 +1954,16 @@ test('Morph cold SSR admission keeps its original process and drains neighboring
   const groups = dryRunGroups(8).filter((group) => group.includes(file));
   assert.deepEqual(groups, [[file]]);
   assert.equal(browserGroupRequiresExclusiveRunner(groups[0]), true);
+});
+
+test('Level and editor App journeys have separate admitted Browser processes', () => {
+  const editor = 'packages/app/__tests__/editor-assistance.browser.test.ts';
+  const level = 'packages/app/__tests__/level-runtime-split.browser.test.ts';
+  const groups = dryRunGroups(8);
+  for (const group of [[editor], [level]]) {
+    const owners = groups.filter((files) => files.includes(group[0]));
+    assert.deepEqual(owners, [group]);
+    assert.ok(browserGroupWeight(group) >= 150);
+  }
+  assert.equal(browserGroupRequiresExclusiveRunner([editor]), true);
 });

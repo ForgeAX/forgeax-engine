@@ -1,8 +1,9 @@
-import { createHash } from 'node:crypto';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { posix, resolve } from 'node:path';
+import { sha256 } from '@forgeax/engine-types';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import type { BuildOptions, CommandResult, ProjectFacts } from './types.js';
+import { failCommand } from './types.js';
 
 export interface DistArtifact {
   readonly path: string;
@@ -50,13 +51,29 @@ export function mediaType(path: string): string {
   return 'application/octet-stream';
 }
 
-async function filesUnder(root: string, directory = root): Promise<string[]> {
+export const DIST_MANIFEST_FILE = 'forgeax-dist.json';
+
+export function matchesArtifactBytes(
+  bytes: Uint8Array,
+  artifact: Pick<DistArtifact, 'bytes' | 'sha256'>,
+): boolean {
+  return bytes.byteLength === artifact.bytes && sha256(bytes) === artifact.sha256;
+}
+
+export function withDistBytes(
+  artifact: Pick<DistArtifact, 'path' | 'mediaType'>,
+  bytes: Uint8Array,
+): DistArtifact {
+  return { ...artifact, bytes: bytes.byteLength, sha256: sha256(bytes) };
+}
+
+async function filesUnder(root: string, prefix = ''): Promise<string[]> {
   const result: string[] = [];
-  for (const name of (await readdir(directory)).sort()) {
-    const path = resolve(directory, name);
-    const info = await stat(path);
+  for (const name of (await readdir(resolve(root, prefix))).sort()) {
+    const path = posix.join(prefix, name);
+    const info = await stat(resolve(root, path));
     if (info.isDirectory()) result.push(...(await filesUnder(root, path)));
-    else if (info.isFile() && name !== 'forgeax-dist.json') result.push(path);
+    else if (info.isFile() && name !== DIST_MANIFEST_FILE) result.push(path);
   }
   return result;
 }
@@ -71,15 +88,14 @@ export async function collectDistArtifacts(rootInput: string): Promise<DistArtif
   for (let offset = 0; offset < paths.length; offset += 32) {
     artifacts.push(
       ...(await Promise.all(
-        paths.slice(offset, offset + 32).map(async (path): Promise<DistArtifact> => {
-          const bytes = await readFile(path);
-          return {
-            path: relative(root, path).split(sep).join('/'),
-            mediaType: mediaType(path),
-            bytes: bytes.byteLength,
-            sha256: createHash('sha256').update(bytes).digest('hex'),
-          };
-        }),
+        paths
+          .slice(offset, offset + 32)
+          .map(async (path) =>
+            withDistBytes(
+              { path, mediaType: mediaType(path) },
+              await readFile(resolve(root, path)),
+            ),
+          ),
       )),
     );
   }
@@ -94,31 +110,78 @@ export async function writeDistManifest(
   materialProfile?: BuildOptions['materialProfile'],
 ): Promise<DistManifest> {
   const root = resolve(rootInput);
-  const artifacts = await collectDistArtifacts(root);
-  const manifest: DistManifest = {
+  const manifest = await collectDistManifest(
+    facts,
+    base,
+    root,
+    target,
+    'packaged',
+    materialProfile,
+  );
+  await publishDistManifest(root, manifest);
+  return manifest;
+}
+
+export function publishDistManifest(root: string, manifest: DistManifest): Promise<void> {
+  return writeFile(resolve(root, DIST_MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+const DIST_LAYOUTS = {
+  browser: { entries: ['index.html'], root: '', codec: '' },
+  native: { entries: ['game.mjs'], root: '', codec: '' },
+  tauri: { entries: ['web/index.html', 'src-tauri/tauri.conf.json'], root: 'web/', codec: '' },
+  wechat: {
+    entries: ['game.js', 'game.json', 'project.config.json', 'payload/game.js'],
+    root: 'payload/',
+    codec: '.br',
+  },
+} satisfies Record<
+  NonNullable<DistManifest['target']>,
+  { entries: string[]; root: string; codec: string }
+>;
+
+function supportsDistTarget(target: unknown): boolean {
+  return typeof target === 'string' && Object.hasOwn(DIST_LAYOUTS, target);
+}
+
+/** Build an unsealed manifest for a compiled tree before target-specific packaging. */
+export async function collectDistManifest(
+  facts: Pick<ProjectFacts, 'id' | 'name'>,
+  base: string,
+  root: string,
+  target: NonNullable<BuildOptions['target']>,
+  placement: 'compiled' | 'packaged',
+  materialProfile?: BuildOptions['materialProfile'],
+): Promise<DistManifest> {
+  const { root: packRoot, codec } =
+    DIST_LAYOUTS[placement === 'compiled' && target === 'wechat' ? 'browser' : target];
+  return {
     schemaVersion: '1.0.0',
     target,
     ...(materialProfile === undefined ? {} : { materialProfile }),
     project: { id: facts.id, name: facts.name },
     base,
     runtime: {
-      packIndexUrl:
-        target === 'wechat'
-          ? 'payload/pack-index.json.br'
-          : target === 'tauri'
-            ? 'web/pack-index.json'
-            : 'pack-index.json',
-      shaderManifestUrl:
-        target === 'wechat'
-          ? 'payload/shaders/manifest.json.br'
-          : target === 'tauri'
-            ? 'web/shaders/manifest.json'
-            : 'shaders/manifest.json',
+      packIndexUrl: `${packRoot}pack-index.json${codec}`,
+      shaderManifestUrl: `${packRoot}shaders/manifest.json${codec}`,
     },
-    artifacts,
+    artifacts: await collectDistArtifacts(root),
   };
-  await writeFile(resolve(root, 'forgeax-dist.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  return manifest;
+}
+
+async function invalidDistArtifact(path: string, artifact: DistManifest['artifacts'][number]) {
+  const bytes = await readFile(path).catch(() => undefined);
+  const missing = bytes === undefined;
+  if (missing || !matchesArtifactBytes(bytes, artifact))
+    return failCommand(
+      missing ? 'dist-artifact-missing' : 'dist-artifact-mismatch',
+      missing
+        ? 'every declared dist artifact to exist'
+        : 'artifact bytes and SHA-256 to match forgeax-dist.json',
+      'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
+      { path: artifact.path },
+    );
+  return undefined;
 }
 
 export async function verifyDist(rootInput: string): Promise<CommandResult<DistManifest>> {
@@ -126,120 +189,75 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
   let manifest: DistManifest;
   try {
     manifest = JSON.parse(
-      await readFile(resolve(root, 'forgeax-dist.json'), 'utf8'),
+      await readFile(resolve(root, DIST_MANIFEST_FILE), 'utf8'),
     ) as DistManifest;
   } catch (cause) {
-    return {
-      ok: false,
-      error: {
-        code: 'dist-manifest-unreadable',
-        expected: 'a readable dist/forgeax-dist.json',
-        hint: 'Run forgeax project build and do not edit its derived manifest.',
-        detail: { root, reason: cause instanceof Error ? cause.message : String(cause) },
-      },
-    };
+    return failCommand(
+      'dist-manifest-unreadable',
+      'a readable dist/forgeax-dist.json',
+      'Run forgeax project build and do not edit its derived manifest.',
+      { root, reason: cause instanceof Error ? cause.message : String(cause) },
+    );
   }
+  const { target = 'browser' } = manifest;
   if (
     manifest.schemaVersion !== '1.0.0' ||
     !Array.isArray(manifest.artifacts) ||
     (manifest.materialProfile !== undefined && manifest.materialProfile !== 'webgpu-storage') ||
     (manifest.materialProfile !== undefined && manifest.target === 'wechat') ||
-    (manifest.target !== undefined && !['browser', 'wechat', 'tauri'].includes(manifest.target))
+    !supportsDistTarget(target)
   ) {
-    return {
-      ok: false,
-      error: {
-        code: 'dist-manifest-invalid',
-        expected: 'forgeax-dist schema 1.0.0',
-        hint: 'Rebuild the game with a compatible ForgeAX DevKit.',
-        detail: { root },
-      },
-    };
+    return failCommand(
+      'dist-manifest-invalid',
+      'forgeax-dist schema 1.0.0',
+      'Rebuild the game with a compatible ForgeAX DevKit.',
+      { root },
+    );
   }
   const declaredPaths = new Set(manifest.artifacts.map((artifact) => artifact.path));
   if (declaredPaths.size !== manifest.artifacts.length) {
-    return {
-      ok: false,
-      error: {
-        code: 'dist-artifact-duplicate',
-        expected: 'every dist artifact path to be declared exactly once',
-        hint: 'Rebuild the derived dist manifest.',
-        detail: { root },
-      },
-    };
+    return failCommand(
+      'dist-artifact-duplicate',
+      'every dist artifact path to be declared exactly once',
+      'Rebuild the derived dist manifest.',
+      { root },
+    );
   }
   for (const artifact of manifest.artifacts) {
     const path = resolve(root, artifact.path);
     if (!isFilesystemPathWithin(root, path)) {
-      return {
-        ok: false,
-        error: {
-          code: 'dist-path-escape',
-          expected: 'every artifact path to remain inside dist',
-          hint: 'Rebuild the derived dist manifest.',
-          detail: { path: artifact.path },
-        },
-      };
+      return failCommand(
+        'dist-path-escape',
+        'every artifact path to remain inside dist',
+        'Rebuild the derived dist manifest.',
+        { path: artifact.path },
+      );
     }
-    try {
-      const bytes = await readFile(path);
-      const digest = createHash('sha256').update(bytes).digest('hex');
-      if (bytes.byteLength !== artifact.bytes || digest !== artifact.sha256) {
-        return {
-          ok: false,
-          error: {
-            code: 'dist-artifact-mismatch',
-            expected: 'artifact bytes and SHA-256 to match forgeax-dist.json',
-            hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
-            detail: { path: artifact.path },
-          },
-        };
-      }
-    } catch {
-      return {
-        ok: false,
-        error: {
-          code: 'dist-artifact-missing',
-          expected: 'every declared dist artifact to exist',
-          hint: 'Rebuild the complete dist; include platform HTML with build --html-head before sealing instead of modifying output.',
-          detail: { path: artifact.path },
-        },
-      };
-    }
+    const invalid = await invalidDistArtifact(path, artifact);
+    if (invalid !== undefined) return invalid;
   }
   for (const required of [
-    ...(manifest.target === 'wechat'
-      ? ['game.js', 'game.json', 'project.config.json', 'payload/game.js']
-      : manifest.target === 'tauri'
-        ? ['web/index.html', 'src-tauri/tauri.conf.json']
-        : ['index.html']),
+    ...DIST_LAYOUTS[target].entries,
     manifest.runtime.packIndexUrl,
     manifest.runtime.shaderManifestUrl,
   ]) {
-    if (!manifest.artifacts.some((artifact) => artifact.path === required)) {
-      return {
-        ok: false,
-        error: {
-          code: 'dist-required-artifact-missing',
-          expected: 'target entry, Pack index, and Shader manifest in the dist closure',
-          hint: 'Rebuild after repairing the owning producer.',
-          detail: { path: required },
-        },
-      };
+    if (!declaredPaths.has(required)) {
+      return failCommand(
+        'dist-required-artifact-missing',
+        'target entry, Pack index, and Shader manifest in the dist closure',
+        'Rebuild after repairing the owning producer.',
+        { path: required },
+      );
     }
   }
-  for (const path of await filesUnder(root)) {
-    const artifactPath = relative(root, path).split(sep).join('/');
+  for (const artifactPath of await filesUnder(root)) {
     if (!declaredPaths.has(artifactPath)) {
-      return {
-        ok: false,
-        error: {
-          code: 'dist-artifact-undeclared',
-          expected: 'every file in dist to be covered by forgeax-dist.json',
-          hint: 'Remove the foreign file or rebuild the complete dist.',
-          detail: { path: artifactPath },
-        },
-      };
+      return failCommand(
+        'dist-artifact-undeclared',
+        'every file in dist to be covered by forgeax-dist.json',
+        'Remove the foreign file or rebuild the complete dist.',
+        { path: artifactPath },
+      );
     }
   }
   return { ok: true, value: manifest };

@@ -1,31 +1,48 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "7a0e0000-0000-7000-8000-000000000002",
+  "schemaVersion": "3.0.0",
+  "packageId": "2b8a9a48-6ff0-5e2a-9948-1ab2db8af6dd",
+  "assets": {
+    "material/surface-water-splash-material": {
       "kind": "material",
       "payload": {
         "passes": [
           {
             "name": "forward",
-            "program": { "module": "forgeax::default-unlit" },
+            "program": {
+              "module": "forgeax::default-unlit"
+            },
             "renderState": {
-              "tags": { "LightMode": "Forward" },
+              "tags": {
+                "LightMode": "Forward"
+              },
               "queue": 3000,
               "depthCompare": "always",
               "blend": {
-                "color": { "srcFactor": "one", "dstFactor": "one", "operation": "add" },
-                "alpha": { "srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add" }
+                "color": {
+                  "srcFactor": "one",
+                  "dstFactor": "one",
+                  "operation": "add"
+                },
+                "alpha": {
+                  "srcFactor": "one",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                }
               },
               "depthWriteEnabled": false
             }
           }
         ],
-        "values": { "baseColor": [0.06, 0.62, 1, 0.92] }
+        "values": {
+          "baseColor": [
+            0.06,
+            0.62,
+            1,
+            0.92
+          ]
+        }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

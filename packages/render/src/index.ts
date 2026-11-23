@@ -131,13 +131,10 @@ export {
   projectCloudShadowUv,
 } from './cloud/lighting/shadow.js';
 export {
-  AMBIENT_OCCLUSION_APPLICATIONS,
-  AMBIENT_OCCLUSION_LIGHTING,
-  AMBIENT_OCCLUSION_QUALITIES,
+  AMBIENT_OCCLUSION_INHERIT,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
-  AMBIENT_OCCLUSION_SCENE_COLOR,
   AmbientOcclusion,
   type AmbientOcclusionData,
   ambientOcclusionParameters,
@@ -270,6 +267,7 @@ export {
   lineCapFromU32,
   lineWidthUnitsFromU32,
 } from './components/lines.js';
+export { MeshDrawParameters } from './components/mesh-draw-parameters';
 export * from './components/mesh-filter.js';
 export * from './components/mesh-renderer.js';
 export { MotionBlur } from './components/motion-blur.js';
@@ -312,8 +310,6 @@ export { SceneInstance } from './components/scene-instance.js';
 export {
   ScreenSpaceReflection,
   type ScreenSpaceReflectionData,
-  type WaterSsrTemporal,
-  WaterSsrTemporalValue,
 } from './components/screen-space-reflection';
 export { ShadowParticipation } from './components/shadow-participation.js';
 export {
@@ -774,6 +770,7 @@ export {
   type RenderPublicationSide,
   renderPublicationAssetTransfers,
   renderPublicationBytes,
+  renderPublicationSendTransfers,
   renderPublicationTransfers,
 } from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
@@ -936,6 +933,7 @@ export {
   ShadowAtlas,
 } from './shadow-atlas.js';
 export type { AmbientOcclusionSettings } from './ssao-config.js';
+export { migrateSavedAmbientOcclusion } from './ssao-config.js';
 export type {
   SsrAdmissionBudget,
   SsrAdmissionFailure,
@@ -1092,6 +1090,7 @@ export {
   type SingleLayerMediumCoefficients,
   type SingleLayerMediumOptics,
 } from './transmission/single-layer-medium.js';
+export type { ViewportHitRequest, ViewportHitResult } from './viewport-hit';
 export {
   hasVolumetricFogCapability,
   type IntegratedVolumeResource,

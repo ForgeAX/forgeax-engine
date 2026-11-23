@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import {
   captureMaterialSnapshot,
   MaterialResource,
@@ -16,9 +17,11 @@ import type { FrameList } from '../scene/frame-list';
 import type { DispatchList } from '../scene/material-dispatch';
 import type { StandardSceneSurfaceAdmission } from '../temporal/scene-data';
 import {
+  CurrentSceneSurfaceInput,
   createStandardSceneSurfaceAdmission,
   ProducedStandardSceneDataAdmissionInput,
   standardSceneDataContributorForDispatch,
+  standardSceneGBufferWriters,
   standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
 
@@ -154,6 +157,70 @@ function projectionAdmissionInput(
   return produced;
 }
 
+it('retains the active view writer roster while thousands of other graph admissions are issued', () => {
+  const material = new MaterialResource(source());
+  const initialInput = projectionAdmissionInput(projectionInput([material]));
+  const held = createStandardSceneSurfaceAdmission(initialInput);
+  const original = standardSceneSurfaceContributorBaseline(held);
+  expect(original).toHaveLength(1);
+  for (let view = 0; view < 2300; view++) {
+    createStandardSceneSurfaceAdmission(input([]));
+  }
+  expect(standardSceneSurfaceContributorBaseline(held)).toBe(original);
+  expect(createStandardSceneSurfaceAdmission(initialInput, held)).toBe(held);
+  expect(standardSceneSurfaceContributorBaseline({ ...held })).toBeUndefined();
+});
+
+it('admits Default GBuffer attachments from the actual material and receiver fields of this view', () => {
+  const material = new MaterialResource(
+    captureMaterialSnapshot({
+      ...source(),
+      passes: [
+        {
+          name: 'deferred',
+          program: { module: 'forgeax_material::standard' },
+          renderState: { tags: { LightMode: 'Deferred' } },
+        },
+      ],
+      materialProgramKeys: { deferred: 'cooked:gbuffer' },
+      materialProgramInputs: {
+        deferred: { entryPoints: [{ name: 'fs_gbuffer', stage: 'fragment', bindings: [] }] },
+      },
+    }),
+  );
+  const pass = {
+    materialHandle: 31,
+    materialShaderId: 'cooked:gbuffer',
+    tags: { LightMode: 'Deferred' },
+    passIndex: 0,
+  };
+  const { contributors: _, ...header } = input([]);
+  let previous: StandardSceneSurfaceAdmission | undefined;
+  for (let frame = 0; frame < 60; frame++) {
+    const writer = new CurrentSceneSurfaceInput({ ...header, renderPath: 'deferred' }, previous);
+    const contextual = frame % 3 === 1;
+    const channels = frame % 3 === 2;
+    for (let entityKey = 0; entityKey < 32; entityKey++) {
+      const row = {
+        entityKey,
+        material,
+        materials: [material],
+        shadowReceiver: !contextual || entityKey !== 31,
+        lightingChannels: channels && entityKey === 31 ? 4 : LIGHTING_CHANNELS_DEFAULT,
+      } as RenderableSnapshot;
+      writer.append(
+        standardSceneDataContributorForDispatch(row, pass, 'deferred', writer.previousRow),
+      );
+    }
+    previous = createStandardSceneSurfaceAdmission(writer, previous);
+    expect(standardSceneGBufferWriters(previous)).toEqual({
+      incompatibleWriter: undefined,
+      receiverContext: contextual,
+      lightingChannels: channels,
+    });
+  }
+});
+
 function directProjectionAdmission(candidate: ReturnType<typeof projectionInput>) {
   return createStandardSceneSurfaceAdmission(projectionAdmissionInput(candidate));
 }
@@ -222,6 +289,44 @@ it('keeps borrowed and proxy program reads live even with immutable value claims
   contributor(proxyMaterial);
   expect(reads.mock.calls.length).toBeGreaterThan(count);
   expect(programIdentity(proxyMaterial)).toBeUndefined();
+});
+
+it('publishes the exact current surface rows through partial changes without rewriting an earlier frame', () => {
+  const { contributors: _, ...header } = input([]);
+  const material = new MaterialResource(captureMaterialSnapshot(source()));
+  const head = contributor(material, 1);
+  const tail = contributor(material, 2);
+  const rejected = contributor(material, 3, 'skin');
+  const turns = [
+    [head, tail],
+    [head, tail],
+    [head, rejected],
+    [rejected, head],
+    [rejected],
+    [],
+    [tail],
+  ];
+  let previous: StandardSceneSurfaceAdmission | undefined;
+  for (let frame = 0; frame < 60; frame++) {
+    const current = turns[frame % turns.length] ?? [];
+    const before = standardSceneSurfaceContributorBaseline(previous);
+    const oldContents = before?.slice();
+    const writer = new CurrentSceneSurfaceInput(header, previous);
+    for (const row of current) {
+      writer.append(undefined);
+      writer.append(row);
+    }
+    const result = createStandardSceneSurfaceAdmission(writer, previous);
+    const rows = writer.contributors;
+    expect(result).toEqual(createStandardSceneSurfaceAdmission(input(current)));
+    expect(rows).toEqual(current);
+    expect(Object.isFrozen(rows)).toBe(true);
+    expect(standardSceneSurfaceContributorBaseline(result)).toBe(rows);
+    if (frame % turns.length === 1) expect(rows).toBe(before);
+    expect(before).toEqual(oldContents);
+    expect(() => writer.append(tail)).toThrow('already sealed');
+    previous = result;
+  }
 });
 
 it('retains complete admission only for unchanged captured contributors and view facts', () => {

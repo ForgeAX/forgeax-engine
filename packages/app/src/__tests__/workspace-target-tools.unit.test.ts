@@ -13,6 +13,7 @@ import {
   Outline,
   readEditorAssistance,
   setActiveCamera,
+  type ViewportHitResult,
   VolumetricCloudLayer,
 } from '@forgeax/engine-render';
 import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -215,6 +216,7 @@ describe('workspace target tools plugin', () => {
   });
   it('picks submitted frames without ActiveCamera and rejects reset, old World and resized extents', async () => {
     const world = new World();
+    const entity = world.spawn().unwrap();
     const canvas = Object.assign(new EventTarget(), {
       width: 100,
       height: 100,
@@ -228,22 +230,62 @@ describe('workspace target tools plugin', () => {
         projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
       },
     };
-    const publish = (worldIdentity = world.identity) =>
+    const publish = (worldIdentity = world.identity, deviceGeneration = 1) =>
       publishBrowserFrameSubmitted(canvas, {
         frameId: 1,
-        deviceGeneration: 1,
+        deviceGeneration,
         worldIdentity,
         barrelDistortion: mapping,
       });
     publish();
     const context = await createWorldContext(world);
     contexts.push(context);
+    let resolveHit: ((result: ViewportHitResult) => void) | undefined;
+    const requestViewportHit = vi.fn(
+      () =>
+        new Promise<ViewportHitResult>((resolve) => {
+          resolveHit = resolve;
+        }),
+    );
     await context.plugin(engineWorkspaceTargetToolsPlugin, {
       targetId: 'target',
-      display: { canvas, app: {} as never },
+      display: { canvas, app: { renderer: { requestViewportHit } } as never },
     });
     const pick = () => context.engineWorkspaceTargetTools?.pick?.({ x: 50, y: 50 });
     expect(pick()).toMatchObject({ frameId: 1, entityId: null });
+
+    const controller = new AbortController();
+    const pickVisible = () =>
+      context.engineWorkspaceTargetTools?.pick?.({
+        x: 50,
+        y: 50,
+        granularity: 'visible-entity',
+        signal: controller.signal,
+      });
+    const current = pickVisible();
+    expect(requestViewportHit).toHaveBeenLastCalledWith(
+      {
+        x: 50,
+        y: 50,
+        width: 100,
+        height: 100,
+        afterFrameId: 1,
+        deviceGeneration: 1,
+        worldIdentity: world.identity,
+      },
+      controller.signal,
+    );
+    resolveHit?.({ kind: 'hit', entity, frameId: 2 });
+    await expect(current).resolves.toMatchObject({
+      frameId: 2,
+      entityId: `target:${world.identity}:${entity}`,
+      granularity: 'visible-entity',
+    });
+    const stale = pickVisible();
+    publish(world.identity, 2);
+    resolveHit?.({ kind: 'miss', entity: null, frameId: 2 });
+    await expect(stale).rejects.toMatchObject({ code: 'engine-workspace-frame-unavailable' });
+    publish();
     canvas.width = 200;
     expect(pick).toThrow(
       expect.objectContaining({ detail: expect.objectContaining({ reason: 'extent-mismatch' }) }),

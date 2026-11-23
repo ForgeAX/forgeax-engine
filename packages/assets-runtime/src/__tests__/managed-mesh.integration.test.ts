@@ -10,7 +10,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
-import { runtimeAssets } from '../internal/runtime-assets';
+import { adoptWithMeshRanges, runtimeAssets } from '../internal/runtime-assets';
 import type { MeshRange } from '../runtime-mesh';
 import { publishRuntimeAssets } from './fixtures/runtime-publication';
 
@@ -406,4 +406,48 @@ it('commits interleaved rows, indices and attribute ranges of one mesh at one re
   expect(records.version(handle).unwrap()).toBe(before + 1);
   observer.dispose();
   assets.dispose();
+});
+
+it('adopts mesh ranges at the same boundary as other prepared assets', () => {
+  const assets = new AssetRegistry({ limits: { maxRanges: 2 } });
+  const original = createBoxGeometry(2, 2, 2).unwrap();
+  const first = assets.create(original).unwrap();
+  const second = assets.create(original).unwrap();
+  const observer = assets.observe().unwrap();
+  const before = runtimeAssets(assets).currentRevision;
+  const apply = (secondPosition: number) =>
+    adoptWithMeshRanges(
+      assets,
+      () => assets.create(original),
+      () => [
+        {
+          handle: first,
+          input: [{ attribute: 'position', first: 0, values: Float32Array.of(3, 4, 5) }],
+        },
+        {
+          handle: second,
+          input: [
+            { attribute: 'position', first: 0, values: Float32Array.of(secondPosition, 0, 0) },
+          ],
+        },
+      ],
+    );
+  try {
+    expect(apply(NaN).ok).toBe(false);
+    expect(runtimeAssets(assets).currentRevision).toBe(before);
+    expect(assets.read(first).unwrap().vertices).toEqual(original.vertices);
+    expect(observer.read().unwrap().changes).toEqual([]);
+
+    const third = apply(6).unwrap();
+    const changes = observer.read().unwrap().changes;
+    expect(changes.map((change) => change.handle)).toEqual(
+      expect.arrayContaining([first, second, third]),
+    );
+    expect(new Set(changes.map((change) => change.revision)).size).toBe(1);
+    expect(copyMeshAttribute(assets.read(first).unwrap(), 'position')?.[0]).toBe(3);
+    expect(copyMeshAttribute(assets.read(second).unwrap(), 'position')?.[0]).toBe(6);
+  } finally {
+    observer.dispose();
+    assets.dispose();
+  }
 });

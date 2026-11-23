@@ -11,6 +11,9 @@ import {
 const RENDER_PHASES: readonly RenderPhase[] = [
   'extract',
   'extract/resource-frame',
+  'extract/follow-adoption',
+  'extract/derive-view',
+  'extract/derive-view/cull',
   'extract-schedule',
   'stage-inputs',
   'post-prepare',
@@ -28,9 +31,11 @@ const RENDER_PHASES: readonly RenderPhase[] = [
   'submission/finish',
   'submission/submit',
   'submission/receipt-issue',
+  'capture/prepare',
   'graph/key-match',
   'graph/build',
   'graph/compile',
+  'graph/bind-ordered-resources',
   'finally-cleanup',
   ...RENDER_RECORD_PHASE_CATALOG,
 ];

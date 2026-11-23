@@ -54,7 +54,7 @@ import type {
   RenderProfile,
   RenderResult,
 } from '../render-contract';
-import { resolveSsaoParameters } from '../ssao-config';
+import { hasStandardAoKeys, resolveSsaoParameters } from '../ssao-config';
 import { captureTargetEnvironment } from '../targets/capture-environment';
 import type { RendererHostImplementation } from './host-contract';
 import { bindLevelSourceAccess } from './level-source-access';
@@ -470,6 +470,9 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         ? { ...snapshot, state: lifecycle.state() }
         : snapshot;
     },
+    requestViewportHit: (request, signal) =>
+      renderer.requestViewportHit?.(request, signal) ??
+      Promise.resolve({ kind: 'unavailable', reason: 'backend' }),
     observeGeometry: (receipt) =>
       renderer.observeGeometry?.(receipt) ??
       Promise.resolve(
@@ -680,7 +683,11 @@ const RENDER_PROFILE_KEYS = new Set([
   'lightCount',
   'renderPath',
   'gbufferFormat',
+  'atmosphere',
   'deferredDirectionalShadowReceiver',
+  'forwardDirectionalShadowReceiver',
+  'forwardShadowViewFade',
+  'forwardShadowSpotFilter',
   'subsurfaceQuality',
   'visibleSurface',
   'diffuseGi',
@@ -718,6 +725,8 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   const configurationFailure = validateConfigurationProfile(profile);
   if (configurationFailure !== undefined) return configurationFailure;
   let failure = validateStandardPipelineSelection(profile);
+  if (failure !== undefined) return failure;
+  failure = validateAtmosphereProfile(profile.atmosphere);
   if (failure !== undefined) return failure;
   failure = validateVolumetricFogProfile(profile.volumetricFog);
   if (failure !== undefined) return failure;
@@ -768,6 +777,15 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
   )
     return "RenderProfile.gbufferFormat must be 'default' with renderPath 'deferred'";
   if (
+    profile.forwardDirectionalShadowReceiver !== undefined &&
+    profile.forwardDirectionalShadowReceiver !== 'screen'
+  )
+    return 'RenderProfile.forwardDirectionalShadowReceiver must be screen when specified';
+  if (profile.forwardShadowViewFade !== undefined && profile.forwardShadowViewFade !== true)
+    return 'RenderProfile.forwardShadowViewFade must be true when specified';
+  if (profile.forwardShadowSpotFilter !== undefined && profile.forwardShadowSpotFilter !== 'gather')
+    return 'RenderProfile.forwardShadowSpotFilter must be gather when specified';
+  if (
     profile.deferredDirectionalShadowReceiver !== undefined &&
     profile.deferredDirectionalShadowReceiver !== 'projected'
   )
@@ -779,6 +797,42 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
   )
     return 'RenderProfile.subsurfaceQuality must be low or high';
   return undefined;
+}
+
+function validateAtmosphereProfile(atmosphere: RenderProfile['atmosphere']): string | undefined {
+  if (atmosphere === undefined) return;
+  if (typeof atmosphere !== 'object' || atmosphere === null)
+    return 'RenderProfile.atmosphere must be an object';
+  for (const [key, value] of Object.entries(atmosphere)) {
+    if (!validAtmosphereSetting(key, value))
+      return `RenderProfile.atmosphere contains an invalid '${key}'`;
+  }
+  return undefined;
+}
+
+function validAtmosphereSetting(key: string, value: unknown): boolean {
+  switch (key) {
+    case 'aerialPerspectiveQuality':
+      return value === undefined || value === 'fast' || value === 'rgb';
+    case 'skyAtmosphereAffectsHeightFog':
+      return value === undefined || typeof value === 'boolean';
+    case 'aerialPerspectiveStartM':
+      return validAtmosphereNumber(value, 0, 1e8);
+    case 'aerialPerspectiveRangeM':
+      return validAtmosphereNumber(value, 1, 1e8);
+    case 'traceSampleCountScale':
+      return validAtmosphereNumber(value, 0, 32);
+    case 'sampleCountMaxPerSlice':
+      return (
+        value === undefined || (Number.isInteger(value) && validAtmosphereNumber(value, 1, 64))
+      );
+    default:
+      return false;
+  }
+}
+
+function validAtmosphereNumber(value: unknown, min: number, max: number): boolean {
+  return value === undefined || (typeof value === 'number' && value >= min && value <= max);
 }
 
 function validateVolumetricFogProfile(volume: RenderProfile['volumetricFog']): string | undefined {
@@ -908,8 +962,7 @@ function validateDiffuseGiProfile(profile: RenderProfile): string | undefined {
   if (profile.diffuseGi === undefined) return undefined;
   const gi = validateDiffuseGi(profile.diffuseGi);
   if (!gi.ok) return gi.error.detail.cause;
-  if (profile.renderPath !== 'deferred' || profile.ibl || !profile.pbr)
-    return 'Diffuse GI requires deferred PBR with IBL disabled';
+  if (profile.renderPath !== 'deferred' || !profile.pbr) return 'Diffuse GI requires deferred PBR';
   return undefined;
 }
 
@@ -922,6 +975,8 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
     typeof settings.enabled !== 'boolean'
   )
     return 'RenderProfile.ambientOcclusion requires a boolean enabled field';
+  if (!hasStandardAoKeys(settings))
+    return 'Use Standard SSAO or GTAO on indirect lighting; remove legacy AO parameters';
   const resolved = resolveSsaoParameters(settings);
   if (!resolved.ok) return resolved.error.hint;
   if (Object.keys(settings).some((key) => key !== 'enabled' && !Object.hasOwn(resolved.value, key)))
@@ -932,6 +987,9 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
 export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
   return Object.freeze({
     ...profile,
+    ...(profile.atmosphere === undefined
+      ? {}
+      : { atmosphere: Object.freeze({ ...profile.atmosphere }) }),
     ...(profile.quality === undefined
       ? {}
       : {
@@ -983,7 +1041,12 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
           ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
           diffuseGi: freezeDiffuseGi(profile.diffuseGi),
         }),
-    ambientOcclusion: Object.freeze({ ...profile.ambientOcclusion }),
+    ambientOcclusion: Object.freeze({
+      ...profile.ambientOcclusion,
+      ...(profile.ambientOcclusion.gtao === undefined
+        ? {}
+        : { gtao: Object.freeze({ ...profile.ambientOcclusion.gtao }) }),
+    }),
     ...(profile.volumetricFog === undefined
       ? {}
       : { volumetricFog: Object.freeze({ ...profile.volumetricFog }) }),

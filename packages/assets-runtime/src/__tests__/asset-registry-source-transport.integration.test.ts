@@ -3,7 +3,6 @@ import {
   createBoxGeometry,
   meshAssetContribution,
 } from '@forgeax/engine-geometry';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogDelta,
   type CatalogEntry,
@@ -14,9 +13,11 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { normaliseForPack } from '../../../import/src/import-runner.js';
 import { meshAssetOutputProducer } from '../../../import/src/scriptable-pack-output-producers.js';
+import { packAssetFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { AssetRegistry } from '../asset-registry.js';
 import type { CatalogSource } from '../catalog-source.js';
 import { defined } from './assert-defined.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const guid = '01900000-0000-7000-8000-000000000041';
 const other = '01900000-0000-7000-8000-000000000042';
@@ -33,32 +34,27 @@ describe('explicit producer source and content transport', () => {
     const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(body.bytes));
     const digest = `sha256:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     const packageUrl = 'https://runtime.invalid/mesh/pack.json';
-    const { pack, publication } = createRuntimePackPublication({
-      pack: {
-        assets: [
-          {
-            guid,
-            kind: 'mesh',
-            payload: normaliseForPack(product.payload),
-            refs: [],
-            artifacts: {
-              body: {
-                path: 'mesh.bin',
-                contentEncoding: 'identity',
-                mediaType: body.mediaType,
-                assetCodec: body.assetCodec,
-                byteLength: body.bytes.byteLength,
-                integrity: { algorithm: 'sha256', digest },
-              },
+    const { pack, publication } = catalogPack(
+      [
+        {
+          guid,
+          kind: 'mesh',
+          payload: normaliseForPack(product.payload),
+          refs: [],
+          artifacts: {
+            body: {
+              path: 'mesh.bin',
+              contentEncoding: 'identity',
+              mediaType: body.mediaType,
+              assetCodec: body.assetCodec,
+              byteLength: body.bytes.byteLength,
+              integrity: { algorithm: 'sha256', digest },
             },
           },
-        ],
-      },
-      scopeId: 'runtime-fixture',
-      sourcePath: 'mesh',
-      sourceRevision: 'mesh',
-      packageUrl,
-    });
+        },
+      ],
+      { scopeId: 'runtime-fixture', sourcePath: 'mesh', sourceRevision: 'mesh', packageUrl },
+    );
     const fetcher = vi.fn<typeof fetch>(async (input) =>
       String(input) === packageUrl
         ? new Response(JSON.stringify(pack))
@@ -108,23 +104,21 @@ describe('explicit producer source and content transport', () => {
     expect((await registry.enumerateCatalog()).unwrap()).toEqual([]);
     const publish = (id: string, generation: number) => {
       const packageUrl = `https://runtime.invalid/${id}/${generation}/pack.json`;
-      const publication = createRuntimePackPublication({
-        scopeId: 'runtime-fixture',
-        sourcePath: `runtime/${id}`,
-        sourceRevision: String(generation),
-        packageUrl,
-        pack: {
-          assets: [
-            {
-              guid: id,
-              kind: 'plugin',
-              payload: { kind: 'plugin', program: `runtime:${id}`, config: { generation } },
-              refs: [],
-              artifacts: {},
-            },
-          ],
+      const publication = catalogPack(
+        [
+          packAssetFixture(id, 'plugin', {
+            kind: 'plugin',
+            program: `runtime:${id}`,
+            config: { generation },
+          }),
+        ],
+        {
+          scopeId: 'runtime-fixture',
+          sourcePath: `runtime/${id}`,
+          sourceRevision: String(generation),
+          packageUrl,
         },
-      });
+      );
       const row = {
         guid: id,
         kind: 'plugin',

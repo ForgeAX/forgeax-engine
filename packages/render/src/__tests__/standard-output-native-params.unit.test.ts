@@ -1,28 +1,26 @@
 import { expect, it } from 'vitest';
-import { chromaticAberrationScales } from '../features/lens-effects';
 import { applyStandardWhiteBalance } from '../pipeline/standard-output/color-transform';
-import {
-  createStandardOutputV2ParameterWriter,
-  type StandardOutputV2Parameters,
-} from '../pipeline/standard-output/native-params';
+import { createStandardOutputV2ParameterWriter } from '../pipeline/standard-output/native-params';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 
-function input(): StandardOutputV2Parameters {
+const policy = { bloom: false, sharpen: 0.3, finishInGrade: false };
+
+function input() {
+  const camera = makeZeroCameraFallbackSnapshot();
   return {
-    camera: { exposure: 0.75, whitePoint: 3, tonemap: 'aces-filmic' },
-    outputGamut: 1,
-    lutStrength: 0.8,
-    sharpen: 0.3,
-    elapsedSeconds: 12.5,
-    dither: true,
-    finishInGrade: false,
+    ...camera,
+    exposure: 0.75,
+    whitePoint: 3,
+    tonemap: 'aces-filmic' as typeof camera.tonemap,
+    temporal: { sampleTimeSeconds: 12.5 },
   };
 }
 
 it('packs native camera values without a legacy uniform conversion or camera mutation', () => {
-  const write = createStandardOutputV2ParameterWriter(),
+  const write = createStandardOutputV2ParameterWriter(policy),
     args = input(),
-    before = { ...args.camera };
-  const bytes = write(args),
+    before = { ...args };
+  const bytes = write(args, 1, 0.8, true),
     floats = new Float32Array(bytes.buffer),
     words = new Uint32Array(bytes.buffer);
   expect(bytes.byteLength).toBe(160);
@@ -32,16 +30,16 @@ it('packs native camera values without a legacy uniform conversion or camera mut
   expect(Array.from(words.slice(36))).toEqual([1, 0, 1, 0]);
   expect(floats[34]).toBeCloseTo(0.3);
   expect(floats[35]).toBe(12.5);
-  expect(args.camera).toEqual(before);
+  expect(args).toEqual(before);
   const saved = bytes.slice();
-  expect(write(args)).toBe(bytes);
+  expect(write(args, 1, 0.8, true)).toBe(bytes);
   expect(bytes).toEqual(saved);
-  const other = createStandardOutputV2ParameterWriter()(args);
+  const other = createStandardOutputV2ParameterWriter(policy)(args, 1, 0.8, true);
   expect(other.buffer).not.toBe(bytes.buffer);
 });
 
 it('projects continuous white balance as the existing linear transform without source variants', () => {
-  const write = createStandardOutputV2ParameterWriter(),
+  const write = createStandardOutputV2ParameterWriter(policy),
     args = input();
   const color = [0.18, 0.07, 0.31] as const;
   for (const [temperature, tint] of [
@@ -51,7 +49,7 @@ it('projects continuous white balance as the existing linear transform without s
   ]) {
     if (temperature === undefined || tint === undefined)
       throw Error('Missing fixture white balance');
-    const bytes = write({ ...args, whiteBalance: { temperature, tint } });
+    const bytes = write({ ...args, output: { temperature, tint } }, 1, 0.8, true);
     const rows = new Float32Array(bytes.buffer),
       expected = applyStandardWhiteBalance(color, temperature, tint);
     for (let row = 0; row < 3; row++) {
@@ -65,34 +63,34 @@ it('projects continuous white balance as the existing linear transform without s
 });
 
 it('observes changed native camera values and the negotiated output gamut', () => {
-  const write = createStandardOutputV2ParameterWriter(),
+  const write = createStandardOutputV2ParameterWriter(policy),
     args = input(),
-    camera = { ...args.camera },
-    bytes = write({ ...args, camera });
+    camera = { ...args },
+    bytes = write(camera, 1, 0.8, true);
   camera.exposure = 1.25;
   camera.whitePoint = 2;
   camera.tonemap = 'linear';
-  expect(write({ ...args, camera, outputGamut: 0 })).toBe(bytes);
+  expect(write(camera, 0, 0.8, true)).toBe(bytes);
   expect(Array.from(new Float32Array(bytes.buffer).slice(0, 4))).toEqual([1, 1.25, 2, 2]);
   expect(new Uint32Array(bytes.buffer)[36]).toBe(0);
 });
 
 it('retains the last upload scratch when native camera admission fails', () => {
-  const write = createStandardOutputV2ParameterWriter(),
+  const write = createStandardOutputV2ParameterWriter(policy),
     args = input(),
-    bytes = write(args),
+    bytes = write(args, 1, 0.8, true),
     before = bytes.slice();
-  const camera = { ...args.camera };
+  const camera = { ...args };
   Reflect.set(camera, 'tonemap', 'invalid');
-  expect(() => write({ ...args, camera, whiteBalance: { temperature: 4200, tint: 0.2 } })).toThrow(
-    /camera-tonemap-invalid/,
-  );
+  expect(() =>
+    write({ ...camera, output: { temperature: 4200, tint: 0.2 } }, 1, 0.8, true),
+  ).toThrow(/camera-tonemap-invalid/);
   expect(bytes).toEqual(before);
-  expect(write(args)).toEqual(before);
+  expect(write(args, 1, 0.8, true)).toEqual(before);
 });
 
 it('observes continuous lens controls on a reused snapshot and restores neutral fringe', () => {
-  const write = createStandardOutputV2ParameterWriter(),
+  const write = createStandardOutputV2ParameterWriter(policy),
     args = input();
   const lens = {
     vignetteIntensity: 0.4,
@@ -104,15 +102,15 @@ it('observes continuous lens controls on a reused snapshot and restores neutral 
     grainIntensity: 0.02,
     grainSize: 2,
   };
-  const bytes = write({ ...args, lens }),
+  const bytes = write({ ...args, lensEffects: lens }, 1, 0.8, true),
     values = new Float32Array(bytes.buffer);
-  const [red, green] = chromaticAberrationScales(0.4, 0.25);
-  expect(values[16]).toBeCloseTo(red, 7);
-  expect(values[17]).toBeCloseTo(green, 7);
+  const offset = 0.004 / 0.75;
+  expect(values[16]).toBeCloseTo(offset * 0.007 * (611.3 - 464.3), 7);
+  expect(values[17]).toBeCloseTo(offset * 0.007 * (549.1 - 464.3), 7);
   expect(values[32]).toBeCloseTo(0.02);
   expect(values[33]).toBe(2);
   lens.chromaticAberration = 0;
-  expect(write({ ...args, lens })).toBe(bytes);
+  expect(write({ ...args, lensEffects: lens }, 1, 0.8, true)).toBe(bytes);
   expect(values[16]).toBe(0);
   expect(values[17]).toBe(0);
   expect(values[24]).toBeCloseTo(0.4);
@@ -130,12 +128,12 @@ it('selects a linear Grade seam and suppresses already-applied fringe without re
       chromaticAberration: 0.1,
       chromaticAberrationStartOffset: 0.35,
     };
-  const bytes = createStandardOutputV2ParameterWriter()({
-    ...base,
-    lens,
+  const write = createStandardOutputV2ParameterWriter({
+    ...policy,
     linearGrade: true,
     chromaticAberration: false,
   });
+  const bytes = write({ ...base, lensEffects: lens }, 1, 0.8, true);
   const values = new Float32Array(bytes.buffer);
   expect(new Uint32Array(bytes.buffer)[37]).toBe(1);
   expect(values[16]).toBe(0);

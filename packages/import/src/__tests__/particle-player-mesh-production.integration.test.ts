@@ -1,15 +1,18 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS } from '@forgeax/engine-pack/build';
+import {
+  buildCatalogProjection,
+  STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
+} from '@forgeax/engine-pack/build';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { type ArtifactDescriptor, ok, type ParticleEffectAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { type BuildProductionFile, produceBuildAssets } from '../build-production.js';
-import { buildCatalogResult } from '../catalog-inventory.js';
+import { catalogImporterPolicyFor } from '../catalog-importer-policy.js';
 import { ImporterRegistry } from '../importer-registry.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -79,14 +82,11 @@ export default definePack({
 }
 
 describe('Player mesh effects through ordinary Pack build production', () => {
-  const roots: string[] = [];
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  const scratch = temporaryDirectories();
+  afterEach(scratch.clear);
 
   async function production(invalidMesh?: unknown) {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-player-mesh-production-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-player-mesh-production-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     await mkdir(join(root, 'node_modules', '@forgeax'), { recursive: true });
@@ -100,20 +100,18 @@ describe('Player mesh effects through ordinary Pack build production', () => {
     await writeFile(join(assets, 'throwable-fx.pack.ts'), packSource(invalidMesh));
     const sourceSnapshot = createScriptablePackSourceSnapshot();
     const sourceIdentityFor = (path: string) => relative(root, path).replaceAll('\\', '/');
-    const inventory = await buildCatalogResult(
-      [assets],
-      '/',
-      new Set(),
-      {
+    const inventory = await buildCatalogProjection([assets], {
+      importerPolicy: catalogImporterPolicyFor(),
+      scanOptions: {
         scriptablePack: {
           ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
           metadataOnly: true,
           sourceSnapshot,
         },
       },
-      () => true,
+      visibility: () => true,
       sourceIdentityFor,
-    );
+    });
     expect(inventory.diagnostics).toEqual([]);
     expect(inventory.authority).toBe('authoritative');
     const emitted = new Map<string, BuildProductionFile['source']>();
@@ -127,7 +125,6 @@ describe('Player mesh effects through ordinary Pack build production', () => {
       importerRegistry: new ImporterRegistry(),
       fsForImport: { readSource: async (path) => ok(await readFile(path)), sourceIdentityFor },
       cookedCurrentProjection: {},
-      directCurrentProjection: {},
       authoredCookedCurrentProjection: {},
       sink: {
         emitFile(file) {
@@ -149,7 +146,7 @@ describe('Player mesh effects through ordinary Pack build production', () => {
     const catalog = await result;
     expect(catalog).toHaveLength(6);
     expect(new Set(catalog.map((asset) => asset.packageUrl)).size).toBe(1);
-    const packBytes = emitted.get(`assets/${packageIdText}.pack.json`);
+    const packBytes = emitted.get(`assets/${packageIdText}.runtime-pack.json`);
     if (packBytes === undefined) throw new Error('production did not emit the Pack');
     const pack = JSON.parse(
       typeof packBytes === 'string' ? packBytes : new TextDecoder().decode(packBytes),

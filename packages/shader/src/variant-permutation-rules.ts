@@ -24,6 +24,28 @@ export interface VariantPermutationRule {
 
 const STORAGE_REQUIRED = 'needs storage buffers';
 
+// The Standard coverage entries read current geometry and alpha. WaterInfo's
+// format still participates in the host layout key when the pass needs it.
+// Shared transmission may borrow the Alpha slot only when the original
+// material mask says the slot is absent, so coverage has no transmission axis.
+const STANDARD_COVERAGE_UNUSED_AXES = [
+  'ATMOSPHERE_AVAILABLE',
+  'CLUSTER_FORWARD_AVAILABLE',
+  'EXTENDED_LIGHTING_AVAILABLE',
+  'PROBE_BLEND_AVAILABLE',
+  'PROJECTOR_AVAILABLE',
+  'REFLECTION_FALLBACK_AVAILABLE',
+  'TRANSMISSION_AVAILABLE',
+  'VISIBLE_SURFACE_AVAILABLE',
+  'WATER_INFO_RGBA16',
+] as const;
+
+export function projectStandardCoverageDefines(defines: Record<string, boolean>): void {
+  if (defines.COVERAGE_ONLY !== true) return;
+  for (const axis of STANDARD_COVERAGE_UNUSED_AXES)
+    if (Object.hasOwn(defines, axis)) defines[axis] = false;
+}
+
 export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
   {
     axis: 'WATER_WAVES_AVAILABLE',
@@ -93,7 +115,7 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     axis: 'GPU_SCENE_DIRECT',
     value: false,
     when: { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: true },
-    reason: 'clustered group(2) carries the light tables, not the scene transforms',
+    reason: 'storage-cluster draws select Standard mesh or indexed Scene inputs',
   },
   {
     axis: 'EXTENDED_LIGHTING_AVAILABLE',
@@ -105,8 +127,27 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     axis: 'ALPHA_MASK',
     value: false,
     when: { COVERAGE_ONLY: true },
-    reason: 'temporal coverage never alpha-tests; it runs in the opaque lane only',
+    reason: 'coverage applies its own alpha and hash gates',
   },
+  // Both stock Standard roots declare reflection fallback and view clipping.
+  // Terrain fixes the clipping define outside its inherited variant matrix.
+  ...[false, true].flatMap((clipping) =>
+    STANDARD_COVERAGE_UNUSED_AXES.map(
+      (axis): VariantPermutationRule => ({
+        axis,
+        value: false,
+        when:
+          axis === 'REFLECTION_FALLBACK_AVAILABLE'
+            ? { COVERAGE_ONLY: true, CLIPPING_PLANES: clipping }
+            : {
+                COVERAGE_ONLY: true,
+                CLIPPING_PLANES: clipping,
+                REFLECTION_FALLBACK_AVAILABLE: false,
+              },
+        reason: 'Standard coverage reads neither lighting nor WaterInfo format-specific inputs',
+      }),
+    ),
+  ),
   // CPU-direct visible-surface draws have no LOD source. They come only
   // from the deferred G-buffer
   // lane, which runs clustered on storage backends with opaque, non-vertex-

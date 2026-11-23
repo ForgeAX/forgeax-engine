@@ -17,11 +17,13 @@ import {
   prepareRayMaterialPublication,
 } from './ray-material-publication.commands';
 
-let preparedFixture: ReturnType<typeof buildRayPathFixture> | undefined;
+type RayPublication = ReturnType<typeof prepareRayMaterialPublication>;
+export type RayPublicationMaterialName = keyof ReturnType<typeof rayMaterialAssets>;
 
-/** Reuse immutable cooked inputs, never mutable World/device/test state. */
-async function readPreparedRayPathFixture() {
-  preparedFixture ??= buildRayPathFixture();
+let preparedFixture: ReturnType<typeof buildRayPathInputs> | undefined;
+
+async function readPreparedRayPathInputs() {
+  preparedFixture ??= buildRayPathInputs();
   const pending = preparedFixture;
   try {
     return await pending;
@@ -31,19 +33,27 @@ async function readPreparedRayPathFixture() {
   }
 }
 
-/** Ordinary GPU probes receive selected ray programs, not unused publication artifacts. */
-export async function prepareRayPathFixture() {
-  const { materials, ...programs } = await readPreparedRayPathFixture();
-  return structuredClone({
-    ...programs,
-    materials: materials.map((material) => ({
-      ...material,
-      cookedPublication: material.name === 'emission' ? material.cookedPublication : undefined,
-    })),
-  });
+/** Each probe clones its inputs; only immutable cook results are shared. */
+export async function prepareRayPathFixture(names?: readonly RayPublicationMaterialName[]) {
+  const { assets, cooker, preparedMaterials, programs } = await readPreparedRayPathInputs();
+  const required = names ?? (Object.keys(assets) as RayPublicationMaterialName[]);
+  const materials = await Promise.all(
+    required.map(async (name) => {
+      let pending = preparedMaterials.get(name);
+      if (pending === undefined) {
+        pending = prepareRayMaterialPublication(name, assets[name], cooker, name === 'emission');
+        preparedMaterials.set(name, pending);
+      }
+      try {
+        return await pending;
+      } catch (error) {
+        if (preparedMaterials.get(name) === pending) preparedMaterials.delete(name);
+        throw error;
+      }
+    }),
+  );
+  return structuredClone({ ...programs, materials });
 }
-
-export type RayPublicationMaterialName = keyof ReturnType<typeof rayMaterialAssets>;
 
 /** Renderer publication fixtures request the complete records they actually load. */
 export async function prepareRayPublicationSet(names: RayPublicationMaterialName[]) {
@@ -174,17 +184,10 @@ export async function prepareRayRecordingFixture(directMultiscattering: 'fit' | 
   return { kernel, material, ...(kernelLut === undefined ? {} : { kernelLut }) };
 }
 
-async function buildRayPathFixture() {
+async function buildRayPathInputs() {
   const { directory, sources, imports, kernel } = await buildRayKernelFixture();
   const assets = rayMaterialAssets();
   const cooker = createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' });
-  const materials = await Promise.all(
-    // Every material keeps its real cook, wire roundtrip and loader admission.
-    // Only the retained emission consumer needs another serialized publication.
-    Object.entries(assets).map(([id, asset]) =>
-      prepareRayMaterialPublication(id, asset, cooker, id === 'emission'),
-    ),
-  );
   const raster = (
     await cookRayMaterial({ material: 'textured', table: assets, sources, context: 'raster-probe' })
   ).unwrap();
@@ -202,7 +205,12 @@ async function buildRayPathFixture() {
       context: 'raster-probe',
     })
   ).unwrap();
-  return { kernel, materials, raster, normalRaster, bsdf };
+  return {
+    assets,
+    cooker,
+    preparedMaterials: new Map<RayPublicationMaterialName, RayPublication>(),
+    programs: { kernel, raster, normalRaster, bsdf },
+  };
 }
 export type RayPathFixture = Awaited<ReturnType<typeof prepareRayPathFixture>>;
 export type RayPublicationFixture = Awaited<ReturnType<typeof prepareRayPublicationFixture>>;
@@ -215,7 +223,7 @@ declare module 'vitest/browser' {
   }
 }
 export const rayPathCommands = {
-  prepareRayPathFixture,
+  prepareRayPathFixture: () => prepareRayPathFixture(),
   prepareRayPublicationSet: (_context: unknown, names: RayPublicationMaterialName[]) =>
     prepareRayPublicationSet(names),
   prepareRayPublicationFixture: (_context: unknown, name: RayPublicationMaterialName) =>

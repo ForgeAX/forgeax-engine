@@ -28,7 +28,7 @@ import { isExternalTextureSource } from '../../textures/external-texture';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../record';
-import { RenderPublicationTargetOwner, RenderPublicationTargetReceiver } from '../targets';
+import { RenderPublicationTargetOwner } from '../targets';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -93,10 +93,9 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
   const world = new World({ assets });
   const source = new RenderPublicationTargetOwner();
   const host = createRenderTargetHost();
-  const projection = new RenderPublicationTargetReceiver(host);
   const identity = { source: 'target-publication', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity, undefined, [], source);
-  const receiver = new RenderPublicationReceiver(identity);
+  const receiver = new RenderPublicationReceiver(identity, host);
   const first = unwrap(source.authoring.createRenderTarget(descriptor));
   const second = unwrap(source.authoring.createRenderTarget(descriptor));
   const cube = unwrap(source.authoring.createRenderTarget({ ...descriptor, shape: 'cube' }));
@@ -149,7 +148,7 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);
     candidate.accept();
-    const result = projection.apply(receiver.accept(encodeRenderPublication(packet)).unwrap());
+    const result = receiver.accept(encodeRenderPublication(packet)).unwrap();
     publisher
       .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
       .unwrap();

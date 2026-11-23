@@ -61,14 +61,6 @@ it('reuses Standard storage raster and ray programs across Play cookers while pu
         },
       },
       {
-        name: 'deferred',
-        program: {
-          module: 'forgeax_material::standard',
-          fragmentEntry: 'fs_gbuffer',
-          moduleSlots: { surface: DEFAULT_STANDARD_SURFACE_MODULE },
-        },
-      },
-      {
         name: 'shadow-caster',
         program: {
           module: 'forgeax::default-shadow-caster',
@@ -83,6 +75,11 @@ it('reuses Standard storage raster and ray programs across Play cookers while pu
   const firstRecord = validateCookedMaterialRecord(
     (first.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expect(
+    firstRecord.programs.some((program) =>
+      program.selections.some((selection) => selection.pass === 'forward'),
+    ),
+  ).toBe(true);
   // A color Surface also owns shadow coverage. Derivative pruning must not
   // drop the colored shadow ABI beside the four independent view/LOD states.
   for (const viewClipping of [false, true])

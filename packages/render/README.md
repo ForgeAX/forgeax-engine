@@ -3,6 +3,24 @@
 
 # `@forgeax/engine-render`
 
+## Direct mesh draw parameters
+
+Attach `MeshDrawParameters` to selected mesh entities. The render components
+plugin registers it for Scene loading. A standalone World can register it directly.
+The eight finite floats populate `meshes[0].drawParameters` and
+`meshes[0].drawParametersExtra` in a custom direct mesh vertex shader. Pass the
+values through flat varyings when the fragment stage needs them. This contract
+uses one row per renderable entity, shared by its submeshes and draw instances.
+Use a direct mesh shader whose draw membership, depth and bounds are independent
+of these values.
+
+Ordinary ECS writes feed a separate change projection. A source publication
+keeps the final value of each changed entity and omits identical values. Values
+survive updates to sort order because the recorder addresses them by entity.
+The render worker applies these rows with the scene publication and reuses the
+direct mesh buffer and its dirty-slot upload. Render creates the projection
+after the first ECS mutation of this component.
+
 ## Quality budgets
 
 App selects presets/device recommendations; Render owns their budget projection
@@ -15,7 +33,7 @@ writes back to scene components.
 | Resolution | Display CameraView scale, composed by minimum with author scale; UI and explicit targets retain their own extent |
 | Shadows | Directional/Spot/Point map ceilings and directional cascades before fitting/allocation |
 | Ambient occlusion | Quality and scale after camera AO authoring |
-| Reflections | Opaque SSR trace density, HiZ/linear iteration and refine limits; full-resolution reconstruction/history |
+| Reflections | Opaque SSR quality, trace density, Hi-Z iteration and refine limits |
 | Global illumination | Budgets within the authored gather route; exact remains exact |
 | Volumetrics | Fog depth/tile/kernel and cloud view/shadow sample ceilings |
 | Textures | Eligible GPU mip residency at construction; source downloads and CPU bytes are unchanged |
@@ -24,8 +42,8 @@ writes back to scene components.
 High preserves the author upper bound. Low/medium are bounded work policies,
 not measured device recommendations. Water SSR and probe update policies keep
 their independent contracts. Precise `RenderQualityLimits` can tighten a tier.
-Full-resolution SSR history/resolve storage remains in the memory estimate even
-when trace density halves; trace/reactivity descriptors and dispatch really shrink.
+Halving spatial trace density reduces the radiance and hit-reactivity descriptors
+and dispatch. The view depth hierarchy retains its size.
 `FrameReceipt.configurationRevision` is captured from the submitted compiled
 scene graph, and is absent on UI-only output.
 
@@ -188,7 +206,9 @@ The original Scene/storage/source guards and native failure responsibility remai
 Before Data publication, Source drives actual Camera/Production View address
 preparation. Private batches/counters and compute groups grow to the Source table
 envelope; the exclusive final quantum copies latest history/order/Skin state and
-patches moving offsets while retaining raster storage and graph topology. View
+patches moving offsets while retaining raster storage and graph topology.
+Ordinary frames can update the accepted plan during this preparation while
+the View's physical storage and binding facts remain current. View
 retirement journals exact native receipts, destroys one buffer per turn after its
 fence, and retains unknown failures. Source waits for the captured cohort before
 releasing Input/Capacity custody, including without future frames.
@@ -429,31 +449,11 @@ discard the staged table publication.
 
 ### Native screen-space AO
 
-The Standard profile selects the AO method and the camera's `AmbientOcclusion`
-component overrides view parameters. The optional `method: 'spiral-ssao'`
-selects a depth-only estimator with Low 8,
-Medium/High 12 candidates (or explicit `sampleCount`). Its scalar R8 estimator
-and two seven-tap filters share one R16F linear half-depth target and view-owned
-parameters. No full-depth reconstruction runs again in either filter.
-On storage-capable MSAA Forward, the spiral producer and scene-color composite
-read nearest covered samples directly from the primary depth attachment; no
-full-resolution resolved depth image is needed for AO. Scene-color AO runs after
-the scene's final writer, so its half-depth and composite read the same completed
-scene depth. Lighting AO remains a pre-lighting dependency. Consumers requiring
-exact single-sample center coverage retain their separate semantic producer.
-
-| Application | Configuration | Consumer |
-|:--|:--|:--|
-| Lighting (default) | Omit `application` | Existing indirect/direct-light AO contract |
-| Scene color | `application: 'scene-color'`, `sceneColorStrength: 0.95` | Four-neighbor depth-aware HDR composite before temporal, Meter and post |
-
-Scene-color application disables lighting AO to avoid double darkening. It
-attenuates bright regions using the accepted previous GPU exposure (manual or
-initial fallback otherwise), preserves coverage alpha and excludes sky. The
-Camera component uses `AMBIENT_OCCLUSION_SCENE_COLOR` for the application.
-The project profile selects the spiral method. Pipeline JSON uses the string fields above.
-Scene-color AO follows ordinary scene depth participation. Whole-game visual and
-performance acceptance remain independent.
+Standard builds SSAO before the lighting reader. Forward shares its depth
+prepass, and MSAA uses a single-sample depth source. Deferred reads its current
+depth and normal inputs without growing the Standard GBuffer. See the
+[screen-space AO contract](#screen-space-ambient-occlusion) for method selection,
+per-view history, and diagnostics.
 
 ### Native output core
 
@@ -499,6 +499,10 @@ transparent sort layers and shadow participation. Scene snapshots and Worker
 publications preserve them. Each native direct or GPU main view applies its own
 mask without changing shared scene membership or another camera's visibility.
 Render features receive the same mask in `selectedView.cullMask`.
+Set `MeshRenderer.frustumCulled` to false when the mesh bounds cannot establish
+view visibility, for example with procedural vertex displacement. Direct and
+GPU views skip the bounds/frustum test. Geometry layers, shadow participation,
+LOD and occlusion retain their own policies.
 
 ### Editor assistance
 
@@ -1918,7 +1922,9 @@ Boot module aliases and fallback module lookup compare complete source bytes
 through the Shader owner's admitted fragments. Matching does not materialize
 every unselected capability variant; byte-identical aliases retain their labels.
 Point-shadow lane inspection reads complete WGSL temporarily without retaining
-unselected variants in the Shader decode cache.
+unselected variants in the Shader decode cache. The Forward projection utility
+contributes point-shadow availability through the submitted receiver's point
+channel.
 Prepared material and View-only depth programs share one View/scene-depth ABI
 descriptor in `assembly/material-shader-policy`. Renderer derives its admitted
 Atmosphere flag and retains ownership of native layouts and generation caches.
@@ -3898,6 +3904,39 @@ bit-identical to before. Not ported: Unreal's soft source radius and the
 anisotropic X/Y terms. Direct lighting also floors roughness at 0.02 (Unreal
 `View.MinRoughness`, SceneView.cpp:2921); environment lobes are unaffected.
 
+### Forward shadow receivers
+
+The screen shadow projection is sampled at group 0 binding 25. It shares the
+view and pass lifetime across receivers. Forward AO and other screen-surface
+data use group 0 binding 29 and the View linear sampler at binding 17.
+The stock shadow-only entry reflects the mask alone. The coexistence entry
+reflects both textures. Group 2 contains mesh and clustered light data.
+The closest-depth hierarchy is bound at group 0 binding 27 for inline
+reflection tracing. Group 0 binding 28 supplies the reflection hit color.
+
+Eligible Standard Forward views use the screen-space shadow mask by default.
+Inspect `directionalShadow.forwardReceiver` for the selected route and the
+reason a view uses the existing direct-sampling fallback.
+Authored directional shadow matrices and constant-bias policies use the
+native receiver that preserves their projection and comparison contract.
+
+The screen-mask directional PCF resolves the default `pcfVogel` selection to
+a fixed 5×5 Gather filter. Camera-depth derivatives estimate the receiver
+plane in shadow space so each tap compares against the depth of that plane.
+Depth discontinuities and large projected corrections check one-sided
+scene-depth differences. When the adjacent differences disagree, samples
+two pixels away help choose the consistent side. Fixed PCF clamps the
+comparison so the estimate cannot darken a tap relative to its center-depth
+comparison.
+The filter uses the existing half-texel constant caster bias for the comparison
+transition and squares the filtered visibility before blending cascades.
+Explicit `pcf5` and `pcf3` with a non-default radius use the shared radius-based
+filter in the projection pass. Both use the camera-depth receiver plane.
+Fixed Gather PCF uses `depthBias` as a reverse-Z far-depth floor. Radius-based
+comparisons and the native surface receiver use it as a normalized offset. The
+screen-space gradient also feeds the existing PCSS blocker search and filter,
+and the Soft PCF tap comparisons, using depth per shadow texel.
+
 ### Directional shadow quality: author → inspect → recover
 
 Set `DirectionalLight.castShadow: true` to enable the following shadow path.
@@ -3922,8 +3961,8 @@ world.spawn({ component: DirectionalLight, data: {
 
 | Author field | Valid values / units | Default | Effective meaning |
 |:--|:--|:--|:--|
-| `shadowFilter` | `pcfVogel`, `pcf1`, `pcf3`, `pcf5`, `pcfSoft`, `variance`, `pcssMedium`, `pcssHigh` | `pcfVogel` | Requested directional filter profile |
-| `shadowRadius` | Nonnegative shadow texels | `1` | Native PCF3/5 and Vogel footprint; variance blur radius |
+| `shadowFilter` | `pcfVogel`, `pcf1`, `pcf3`, `pcf5`, `pcfSoft`, `pcssMedium`, `pcssHigh` | `pcfVogel` | Requested directional filter profile |
+| `shadowRadius` | Nonnegative shadow texels | `1` | Explicit PCF3/5 and native Vogel footprint |
 | `shadowAngularRadius` | Radians, finite range `[0.0001, 0.05]` | `0.00465` | PCSS light angular radius |
 | `maxPenumbraTexels` | Texels, finite integer range `[1, 64]` | `32` | PCSS penumbra ceiling |
 
@@ -3931,8 +3970,9 @@ The remaining CSM fields keep these public units and defaults: `cascadeCount`
 is an integer in `[1, 4]` (default `3`), `splitLambda` is `[0, 1]` (default
 `0.5`), `cascadeBlend` is `[0, 0.5]` (default `0.2`), `mapSize` is a positive
 map resolution (default `2048`), `depthBias` is a depth value (default
-`0.00001`, applied toward the light in normalized receiver depth), `normalBias` offsets the
-surface receiver position along its world-space normal before projection (default `0`), and
+`0.00001`, a normalized depth floor in screen PCF and an offset in native
+surface comparison), `normalBias` offsets the native surface receiver along
+its world-space normal before projection (default `0`), and
 `shadowDistance` is a positive world-unit cap (default `200`); coverage ends at
 `min(camera.far, shadowDistance)`. Camera far still defaults to `2000`, so distant
 visibility does not implicitly spread the default shadow maps across that whole
@@ -3946,8 +3986,9 @@ and normalized by each cascade's depth span. The caster VS uses its vertex
 normal and a bounded slope term; the receiver uses the actual raster triangle
 normal. Surface normal maps never move this geometric shadow test.
 
-`normalBias` remains an optional authored world offset, default zero: a fixed
-0.05-unit offset can lift a query above an entire centimeter-scale caster.
+The screen mask estimates its receiving plane from camera depth. The native
+surface receiver takes the optional authored world-space `normalBias` offset.
+A fixed 0.05-unit offset can lift a query above an entire centimeter-scale caster.
 An authored offset overlaps the automatic caster separation; the surface
 receiver compensates that overlap instead of adding both budgets. The authored
 normalized `depthBias` floor remains `0.00001`. Volume samples have no surface
@@ -3966,12 +4007,7 @@ Native PCF3 and PCF5 change sample density within the same authored
 PCF1 retains one bilinear footprint. PCFSoft retains its compact weighted grid.
 PCSS quality changes blocker/filter sample counts while angular radius and the
 penumbra ceiling own softness. Explicit constant-bias cameras preserve the
-Three adapter's original kernels. Directional variance shadows keep native Reverse-Z mean
-and standard deviation through both RG16F passes: converting small depths to
-values near one loses useful half-float precision. The comparison reverses its
-inequality with that encoding; moments require extended-lighting texture capacity.
-Perspective spots and constant-bias cameras retain their existing forward-depth encoding and
-comparison, including explicit Three.js parity. Where the existing raw-depth
+Three adapter's original kernels. Where the existing raw-depth
 capability is available, native point comparisons load one depth per texel
 instead of issuing a bilinear hardware comparison at every texel center.
 The caster budget is `min(0.1, (0.5 + 2 * min(tan(theta), 2.875)) * worldTexel / depthSpan)`.
@@ -4205,31 +4241,17 @@ Shadow views stay cached under ordinary motion:
   conservative cap: for every main level it is no coarser than the former
   `mainLevel + 1` bound. Far casters can therefore use finer geometry than
   before; record their GPU work separately from the removed CPU projection.
-- Caster classification consumes the scene's object-change journal and direct slot
-  lookup; asset-only revisions do not enumerate objects. Initial attachment and
-  explicit history loss rebuild the roster. Each settling caster owns one
-  cancellable deadline, removed on replacement or removal, so quiet frames do not
-  scan pending movers. Only due transitions rebuild class membership snapshots.
-  One classifier marks each caster
-  static or dynamic once per frame, and every directional, spot, and point-face
-  view uses that same classification. Skinned and sprite casters are always
-  dynamic. A caster whose entity declares `Mobility` static is static from its
-  first frame (creation or gaining the declaration) with no observation window.
-  Every other caster present at the renderer's first frame is the level and
-  starts static. A caster created later starts dynamic and, if it has not
-  changed since creation, becomes static after one 16-frame window, so
-  short-lived spawns never touch the static layer; a caster that changed
-  becomes static after 100 unchanged frames. Settled
-  casters are promoted together on 16-frame windows so a static layer pays at
-  most one membership refresh per window. A caster that changes again within its threshold of a promotion is
-  a periodic mover: its threshold doubles (100, 200, 400, ... up to 1600) and
-  halves back for every threshold it then stays static, so periodic movers stop
-  flipping the static layer. A declared static caster that changes anyway is
-  classified by the same observation (dynamic, then re-settled), so a violated
-  declaration stays correct; `scenePlugin` reports it as `mobility-static-moved`.
-  Undeclared spawns therefore never touch a static layer. `gpuDriven` inspection
-  reports `shadowCasterFlips` (class changes of existing casters in the last
-  frame) and `shadowCasterPendingPromotions`.
+- A light uses one depth layer by default. Its caster-channel selection includes visible
+  and off-camera casters on the light's layers. Opting into a static shadow layer
+  admits explicitly declared `Mobility` static rigid casters. Skin, morph, instance
+  and feature-produced vertex streams use the dynamic layer. A depth-relevant
+  source edit demotes a previously declared caster immediately. A new mobility
+  declaration or slot generation admits it again. Time spent stationary never
+  changes its class. A journal gap demotes surviving casters whose history cannot
+  be proved. Preparation projects the touched membership pages without advancing
+  the submitted classification. Disabling the layered path releases its slot data.
+  Inspection counts actual population and class changes. The existing
+  `shadowCasterPendingPromotions` field is always zero.
 - Each layer draws per-batch subsets of the fixed source's member roots. A
   frame re-judges only slots whose class or caster-channel membership changed
   and the member paths of edited batches; a batch absent from the source keeps
@@ -4239,7 +4261,7 @@ Shadow views stay cached under ordinary motion:
   topology, so a successor re-encodes only changed paths. View preparation
   counters report `layerSlotVisits`, `layerBatchSelections` and
   `layerBatchPatches` (subsets holding a changed slot). Each view keeps a
-  `layer: 'static'` companion identity for its settled casters. The final view
+  `layer: 'static'` companion identity for its declared static casters. The final view
   copies the static layer and re-rasters only dynamic casters;
   `static-layer-changed` marks a final miss caused by its static layer. A view
   whose selected task draws skinned casters redraws as `skin-task-demand`;
@@ -5279,29 +5301,17 @@ When SSR needs them, the resolve also writes the exact environment fallback and
 unit-radiance specular response. SSR applies one fullscreen additive delta:
 `confidence * (filteredRadiance * specularResponse - fallback)`. Equal-depth
 receiver overlap therefore cannot subtract the fallback more than once.
-Resolved radiance has a confidence-weighted mip chain; composition samples
-`roughness² * (mipCount - 1)` with trilinear reconstruction. Receiver admission
-uses the current lighting coverage, compatible full-resolution normals, and
-the shared View's enable/roughness cutoff. It does not clip the rough lobe to
-the central mirror ray's hit confidence. Material roughness changes the
-reflection's filter footprint, not just its opacity; confidence remains bounded
-by the current receiver's roughness fade. Coarse mips are spatial approximations,
-not separate roughness-dependent ray traces.
-
-With DynamicResolution, the closest-depth hierarchy and all SSR trace,
-resolved, radiance-history and surface-history textures follow the submitted
-internal extent. Their full-resolution lattice matches the internal size;
-TAAU color history and presentation retain output size. An internal-size change
-resizes and resets the SSR history through its existing fence retirement path.
+Composition samples the spatial trace. Current lighting coverage, the View's
+roughness cutoff, and the trace confidence determine the replacement weight.
+With DynamicResolution, the depth hierarchy and trace follow the submitted
+internal extent. TAAU color history and presentation retain the output size.
 
 > [!IMPORTANT]
 > SSR M0 is a consumer-only admission boundary. It reads detached producer,
 > r32float format, and optional prior temporal receipts with one four-field
 > integration identity. Missing required, stale, structural-only, or mismatched receipts stay
-> `fallback-only` and emits zero SSR work. An admitted Standard frame then
-> projects the renderer-owned M1 spatial chain and M2 history through
-> `renderer.inspect().ssr`; paired Browser/Dawn pixel evidence is still the
-> gate for calling the result SSR v1.
+> `fallback-only` and emit zero SSR work. An admitted Standard frame exposes
+> its spatial pass roster through `renderer.inspect().ssr`.
 
 ```mermaid
 flowchart LR
@@ -5358,53 +5368,19 @@ switch (spatial.status) {
 | `structural-only` | Spatial admission and graph topology exist, but no executable shader source is bound | Topology only |
 | `admitted` | Standard spatial path and shader manifest are bound | Inspect `history`, `passRoster`, `fallbackSource`, and coverage |
 
-`history.state`, `history.bytes`, `history.resetCount`, `passRoster`, and
-`fallbackSource` are bounded POD facts. They are evidence about the current
-owner state, not an acceptance claim: M1/M2 remain an implementation checkpoint
-until the paired Browser/Dawn 60-frame carrier, readback, falsifiers, and
-performance gates are present.
+The SSR inspection reports the spatial pass roster and fallback source.
+Its history fields report `not-owned`. The View owns the accepted scene color
+used by reflection traces and the main temporal AA history.
 
-SSR defaults are maxDistance `1`, thickness `0.1`, maxRoughness `1`, and full
-internal resolution. Descriptor admission allows 320 MiB. The native 1080p estimate with five
-completion-fenced history slots is 190,769,492 bytes. Portable raster scratch
-and Forward SceneData/response allocations are additional graph resources. Trace validation, confidence, roughness
-filtering and temporal rejection retain their own contracts.
+| `ScreenSpaceReflection` field | Default | Meaning |
+|:--|--:|:--|
+| `maxDistance` | `1` | Ray distance in world units |
+| `thickness` | `0.1` | Hit tolerance in view-space distance |
+| `maxRoughness` | `0.6` | Roughness at which SSR reaches zero |
 
-SSR temporal feedback and presentation use distinct coordinates without another
-allocation. The persistent color/depth and oct-normal/confidence lanes use fixed,
-unjittered full-resolution centers (`p + 0.5` in internal pixels).
-Current trace samples are reconstructed onto that grid once; history reprojection
-uses unjittered motion and validates depth/normal before interpolation. The
-previous receiver depth uses perspective clip W or reconstructed orthographic
-view distance; orthographic clip W is one and cannot validate history depth.
-An empty receiver depth retires radiance and confidence without reconstructing
-world position or sampling incompatible current/history footprints. The
-separate resolved output stays on the current jittered raster grid for composition
-and reflection mip generation. Never feed that presentation reconstruction back
-into history: repeated jitter filtering loses reflected texture contrast.
-
-Current trace confidence also controls history survival. A single miss keeps
-at most 0.9 history weight so alternating thin coverage preserves its integrated
-energy. Consecutive misses use at most 0.4 weight and retire unsupported confidence
-within eight frames. A hit recovering from a miss interpolates that ceiling up to
-0.9; ordinary fractional coverage retains the existing ceiling. The sign of the stored
-history depth records the prior miss; rejection compares its absolute depth.
-This bounded state uses the existing history alpha, with no depth precision loss.
-Trace-owned source reactivity rejects invalid moving hits and reactive misses
-independently of radiance confidence. When a reactive hit vanishes, the accepted
-surface history propagates its last reactivity through the first miss; zero
-current radiance cannot erase that producer evidence. Consecutive static misses
-retire confidence within SSR; they do not reset TAA's stationary age.
-
-The four-byte surface history stores presentation reactivity in R, canonical
-GBuffer octahedral normal coordinates in GB (seven/eight bits), and fixed-grid
-confidence in A. G's low bit retains the trace's fixed-grid source-reactive flag;
-the presentation response is never fed back as a source flag. The current write
-slot carries reconstructed source reactivity to the existing TAA secondary input.
-Sampling loss and source motion remain distinct: a confidence-loss mask would
-reset TAA's age at static silhouettes even when it carries only one UNORM code.
-The accepted read slot stays intact on an aborted submission.
-No texture, binding, history slot or pass is added.
+Opaque and water receivers keep full SSR roughness weight through half of
+`maxRoughness` (`0.30` by default), then fade linearly to zero at
+`maxRoughness`. Spatial descriptor admission allows 320 MiB.
 
 Use `inspect -> owner recovery -> matching submit -> reinspect` as the complete
 AI route. No returned field is a device, graph node, texture, buffer, encoder,
@@ -5461,37 +5437,25 @@ the overlapping odd-boundary footprint. Consumers name their binding
 `occlusion-depth-pyramid-seed` / `-reduce-chain` keep the farthest linear
 distance per texel, and any uncovered sample makes the texel empty, so a texel
 only hides geometry behind every surface it covers. It is a graph transient
-sized to the view's internal depth extent. GPU occlusion consumes that bound;
-the independent Single Layer Water SSR path builds its own furthest hierarchy
-from the opaque depth resolve before the Water prepass. Water receiver depth
-and normal come from the Water prepass. The trace reads opaque depth and
-motion directly only when reprojecting hit color into the preceding scene.
-Its active cast samples four
-linear positions per batch with roughness-dependent explicit mips and
-adjacent-depth-difference interpolation; it does not enter the opaque
-closest-depth rescue or binary-refinement path.
+sized to the view's internal depth extent. GPU occlusion consumes that bound. Deferred Water SSR also uses a furthest
+hierarchy, seeded from opaque depth before the Water visibility pass. Its
+receiver comes from that pass. The trace defaults to one mirror ray with 16
+steps and uses fixed sampling when the view has no temporal AA. It can use
+accepted main AA scene color as hit radiance and falls back to current no-water
+HDR. The main AA resolves the composed image for both opaque and Water.
 
-Water hit color samples the current scene after the inner Water output and
-velocity resolve, before reflection composition. When valid, the existing
-renderer-owned temporal color history supplies prior hit radiance, using its
-actual viewport/reference extent, device generation and exposure domain.
-Main TAA retains its resolved color. Without TAA, admitted SSR retains two
-color-only textures and snapshots HDR after DoF, before Motion Blur and Bloom.
-Both shapes use the same accepted-submit and retirement fences.
-`ScreenSpaceReflection.waterTemporal` uses `WaterSsrTemporalValue.auto`
-(own resolve only without main TAA), `.always` or `.off`. Opaque SSR retains its
-ordinary temporal policy. The independent Water history retains reflected RGBA, including fallback-suppression alpha,
-and reprojects with current depth/velocity. It maps a retained previous
-viewport across resize and retires replaced allocations after their last
-consuming submission; no previous depth/normal history is bound for Water.
+On the native Forward path opaque Standard materials trace inside their color
+draw using current opaque Hi-Z and the accepted View HDR of the preceding
+frame. Water draws after the opaque scene and resolves screen hits against
+its paired current no-water color and Hi-Z. It writes the final Water color
+with coverage blending. The visibility pass keeps nearest depth, coverage,
+and motion. Forward Water skips SSR when underwater translucency could make
+the color and opaque depth refer to different surfaces.
 
-Water with MSAA uses the existing Forward 4x opaque producer. One nearest
-Reverse-Z sample ID selects raw depth and legal 1x hardware depth. Standard
-temporal demand adds opaque motion to that same resolve and controls its
-geometry pass and both motion allocations. Underwater translucency may update
-4x color before a later gather reads the frozen sample ID. The display
-average and selected refraction backdrop stay separate. Full SLW and Water SSR
-raster remain 1x; this is not whole-pipeline 4x Water or Deferred.
+With Forward MSAA, one nearest Reverse-Z sample ID selects raw depth and legal
+1x hardware depth. Standard temporal demand can add opaque motion to that
+resolve. The selected refraction backdrop comes from the nearest sample,
+while the final Water draw blends into the averaged display resolve.
 
 After-tonemap depth consumers under TAA use a full-output, single-sample
 geometry depth pass and the matching unjittered View. Its coverage uses the
@@ -5504,229 +5468,43 @@ velocity passes. Every consumer declares its sampled read of that one producer.
 
 ## Screen-space ambient occlusion
 
-Set `settings.rendering.ambientOcclusion` in the engine configuration, or set
-`ambientOcclusion` in the Standard profile used at creation or by
-`renderer.setProfile()`. AO is opt-in. Set `{ enabled: true }` to use the default
-SSAO method, or add `method: 'gtao'` to select GTAO. AO can run through Forward
-or Deferred on an eligible device. Forward input uses the selected Standard
-material's evaluated normal,
-or rigid built-in Unlit's transformed mesh normal, with the same coverage as
-color. Standard Skin uses its posed surface normal. Unlit surfaces occlude
-their surroundings while their own color remains unlit. No normal texture is
-required; Standard's flat tangent-space default preserves its mesh normal.
-AO demand alone does not switch the profile to Deferred. An incompatible
-material input, format, or complete
-resource budget returns a structured error.
+Standard enables SSAO by default. Set `settings.rendering.ambientOcclusion` on
+the project, or use the corresponding Standard profile field. The project
+selects `ssao` or `gtao`; each camera can override `enabled`, intensity, power,
+quality, radius, bias and fade range with `AmbientOcclusion`. Omitted numeric
+camera fields inherit the project. Set `enabled: false` to disable AO.
 
-Add the `AmbientOcclusion` component to override the project enable state and
-parameters for one camera. The method stays project scoped. The quality field
-uses the exported constants.
+| Route | Input and execution | Filtering and output |
+| :-- | :-- | :-- |
+| Forward SSAO | Single-sample depth, a reduced furthest HZB, one raster estimator | In-pass normal-aware quad filter in quality permutations 1 and 2, full-size R8 visibility |
+| Deferred SSAO | GBuffer normals and depth, one to three resolution levels, R16G16B16A16 setup where needed | Depth and normal weighted coarse-to-fine reconstruction, full-size R8 visibility |
+| Deferred GTAO | Furthest HZB, default depth reconstruction, native compute raw estimator on storage devices | 5x5 spatial filter, independent per-view history, four-sample full-resolution resolve |
 
-```ts
-import {
-  AmbientOcclusion,
-  AMBIENT_OCCLUSION_QUALITY_HIGH,
-} from '@forgeax/engine/render';
+Forward uses SSAO for a GTAO request. WebGL2 runs Forward SSAO as fragment work
+and packs its R8 visibility into the existing Cluster integer texture. GTAO's
+camera reprojection can use available object velocity. The renderer advances
+its history on accepted frames, including when the main AA is off.
 
-world.addComponent(camera, {
-  component: AmbientOcclusion,
-  data: {
-    enabled: true,
-    quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
-    directLightingStrength: 0.25,
-  },
-}).unwrap();
-// Restore project defaults for this camera.
-world.removeComponent(camera, AmbientOcclusion).unwrap();
-```
+Defaults follow desktop UE conventions. `quality` is on a 0-100 scale (50
+default), `intensity` is 0.5, `power` is 2, and visibility fades from 30 m to
+80 m. SSAO defaults to radius 2 m in view-relative mode; use
+`radiusInWorldSpace: true` for a fixed world radius. `levels: 0` disables AO.
+GTAO supports `gtao.downsample`, `gtao.useNormals`, and independent spatial and
+temporal options.
 
-The `wgpu-WebGL2` route executes SSAO and GTAO with fragment passes. It places
-visibility in a disjoint `rgba32uint` region of the existing Cluster texture,
-so AO does not take another material sampled-texture slot. Admission checks the
-complete selected program, texture extent, and render/sample usages; unsupported
-formats or capacity fail explicitly rather than changing the requested AO
-algorithm. WebGPU retains its production raster path, with an internal
-acceptance override exercising the same prepared graph through compute.
+Standard combines material and screen AO for indirect diffuse and applies
+specular occlusion to environment reflection. Direct radiance, emissive, and
+screen-space hit radiance keep their respective lighting inputs. The old
+`spiral-ssao`, scene-color application and direct-light strength are retired.
+Saved legacy pipeline settings migrate at decode. Retune estimator-specific
+radius, bias, intensity and sample settings in authored configurations.
 
-`AmbientOcclusion` is an opt-in camera companion. On a device with storage
-buffers and enough deferred color attachments, an already selected Deferred
-view can reuse its compatible depth/normal input. Otherwise a compatible
-Forward input pass runs before AO. The renderer's author profile remains
-unchanged. Each view owns its effective configuration; removing the companion
-restores the installed configuration, and display-only companions are omitted
-from capture-only views. Invalid AO returns a structured `ssao-*` error without
-blocking an independently authored SSR request. SSR retains its independent
-Deferred admission policy.
-
-The profile sets `method` to `'ssao'`, `'gtao'`, or `'spiral-ssao'`. Camera
-quality indexes `['low', 'medium', 'high']`. Radius, bias and intensity share
-the existing SSAO validator. `directLightingStrength` is a finite value in
-`[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to direct
-light in both Forward and Deferred, independently of material and environment
-occlusion. Environment visibility is applied once to the indirect/reflection
-fallback contribution. Emissive, exposure, and output transforms are not
-globally darkened. This camera fact travels in the ordinary extracted POD
-across Worker boundaries.
-
-The early SSAO upload and graph pass pack the same sampled camera projection,
-its inverse and AO parameters. Camera jitter uses the same clip-space transform
-as temporal projection and the View UBO, including stereo and capture lenses.
-An early upload failure retains the required-upload frame abort.
-
-The default Vite shader producer includes AO programs. An AO request against a
-stripped manifest reports `post-process-not-found`.
-
-```ts
-const configured = renderer.setProfile({
-  ...renderer.inspect().profile,
-  renderPath: 'deferred',
-  ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high', radius: 0.25 },
-});
-if (!configured.ok) throw configured.error;
-// Remove the requested AO passes and their per-frame upload work:
-const profile = renderer.inspect().profile;
-const disabled = renderer.setProfile({
-  ...profile,
-  ambientOcclusion: { ...profile.ambientOcclusion, enabled: false },
-});
-if (!disabled.ok) throw disabled.error;
-```
-
-| Parameter | Contract |
-|:--|:--|
-| `enabled` | Project switch defaults to false. The camera component can enable or disable AO for its view. |
-| `method` | Hemisphere `ssao` (default), `gtao`, or depth-only `spiral-ssao`. The spiral estimator uses horizontal and vertical seven-tap filters. |
-| `quality` | Default `high`. Hemisphere SSAO: 16 / 32 / 64 samples. GTAO: 3 slices with 2 / 4 / 6 steps per side = 12 / 24 / 36 depth candidates; high maps Three samples=16 to actual search work. Spiral SSAO uses 8 / 12 / 12 candidates; explicit 16 opts into a larger budget. |
-| `sampleCount` | Optional explicit integer estimator budget in `[1,64]`; otherwise derived from algorithm/quality. GTAO expands its radial budget into slices and both sides; inspect actual depth-candidate work. Component value `0` selects the derived budget. |
-| `radius` | Positive finite view-space distance; default `0.25` |
-| `bias` | Non-negative finite view-space bias (GTAO rejects samples within this normal-plane distance); default `0` |
-| `intensity` | Non-negative finite raw-visibility exponent, applied once before denoising (Three r184 `GTAONode.scale`); lighting multiplies the filtered visibility without reapplying it; default `1`; zero preserves the unoccluded image |
-| `thickness` | GTAO view-space Z rejection distance, independent of normal-plane bias; default `1` |
-| `distanceExponent` | GTAO radial sample distribution; non-negative finite, default `1` (linear) |
-| `distanceFallOff` | GTAO horizon update attenuation in `[0,1]`, default `1`; candidate j uses mix(1, 2/(j+2), falloff) |
-| `resolutionScale` | AO dimensions relative to internal scene size, `[0.25,1]`, default `1`; `0.5` opts into half resolution |
-
-The camera component and profile use the same validation owner. Invalid enum or
-numeric values return the structured `ssao-parameter-invalid`,
-`ssao-radius-non-positive`, or `ssao-bias-negative` errors. Their hints identify
-the offending field and show both recovery routes: correct
-`AmbientOcclusion.<field>` or `ambientOcclusion.<field>`. Set `enabled: false`
-at the project or camera scope to disable AO there.
-
-For the original-style spiral estimator, configure the native profile directly:
-
-```ts
-ambientOcclusion: {
-  enabled: true, method: 'spiral-ssao', quality: 'high',
-  resolutionScale: 0.5, radius: 0.9, intensity: 1.6,
-}
-```
-
-Its three single-sample `r8unorm` targets retain raw visibility, horizontal and
-vertical results. It reconstructs normals from depth and does not bind the
-GBuffer normal, hemisphere kernel or random-noise texture in its selected entries.
-The spiral and depth attenuation, 70–140 metre fade and seven-tap depth weights
-are independent of GTAO. Its three pipelines prepare lazily on first selection.
-Both render paths keep the existing lighting application; matching the original
-scene-color composition is a separate requirement. `renderer.inspect()` reports
-actual estimator budget, fourteen filter taps per output pixel, scalar storage
-and reconstructed-normal input, rather than reporting the GTAO 5x5 contract.
-
-AO runs at full resolution by default with a symmetric depth/normal-aware blur.
-Compared with `resolutionScale: 0.5`, this allocates four times as many AO texels
-and runs four times as many raw/filter pixels. The nominal sample setting is
-not a performance equivalence claim; choose an explicit scale for the scene budget. The raw
-AO target (`rgba8unorm`) carries visibility beside the center
-octahedral world normal, so the 5x5 filter reads each tap's normal from that
-texel instead of the full-resolution G-buffer; the blurred output stays
-single-channel. Sampling
-uses the raster projection, including camera jitter. Static, skinned, and
-custom Standard surfaces multiply ambient illumination and the corresponding
-SSR fallback by the same environment-visibility factor. Direct-light AO is an
-independent mix controlled by `directLightingStrength` in both Forward and
-Deferred. Material occlusion is applied once. AO is reconstructed every frame
-and owns no temporal history, so moved geometry cannot leave a retained AO image.
-
-`renderer.inspect().standardLighting.ambientOcclusion` reports the accepted
-view's requested state, algorithm, selected fragment/compute execution, input
-producer and SceneData schemas, numerical settings, known input/output bytes,
-raw/filter work budgets, actual AO graph passes, and graph/device generations.
-When a request is missing its calculation or filter pass, `status` is
-`requested-unavailable`; `failure` identifies the active-graph stage and gives
-the retry/rebuild recovery. The byte fields are omitted when the compiled graph
-cannot determine them. A disabled request reports no AO passes, work, Cluster AO
-region, history, or per-frame AO upload.
-
-The current-view input contract extends SceneData without changing
-`forgeax::scene-data::temporal-v1`: `standard-surface-normal-v1` is the packed
-world-space material normal (`r32uint`, octahedral X/Y plus roughness), and
-`standard-surface-depth-v1` is camera device depth (`depth32float-stencil8`,
-RHI zero-to-one, reconstructed with the current inverse projection). Both
-describe opaque and Alpha Mask coverage at render resolution. The Standard
-surface producer is admitted only for material routes that publish these same
-normal and coverage semantics; an unsupported route is a named input failure,
-not a depth-reconstructed-normal substitution.
-
-> [!NOTE]
-> AO is a local screen-space approximation. Offscreen occluders are absent,
-> and silhouettes can retain sampling artifacts, especially at reduced resolution. Use
-> the plane-plus-cube example at `apps/learn-render/5.advanced-lighting/9.ssao`
-> to compare contact, lift, quality, radius, and disabled behavior. GPU timings
-> are opt-in via `gpuPassTiming` and receipt-bound `observe(..., { include: ['timings'] })`.
-
-### GTAO references and accuracy boundary
-
-| Primary reference | Used contract |
-|:--|:--|
-| [Jimenez et al., Practical Real-Time Strategies for Accurate Indirect Occlusion](https://research.activision.com/publications/archives/practical-real-time-strategies-for-accurate-indirect-occlusion) | Bidirectional horizon search and analytic cosine-weighted slice integration, including projected-normal length |
-| [Three.js r184 GTAOShader](https://github.com/mrdoob/three.js/blob/r184/examples/jsm/shaders/GTAOShader.js) and [GTAONode](https://github.com/mrdoob/three.js/blob/r184/examples/jsm/tsl/display/GTAONode.js) | View-space sampling, independent quality/radius, spatial filtering without mandatory temporal history |
-
-GTAO computes visibility from each slice's two horizons using the original
-analytic integral of the blocked arcs, subtracting from the exact unoccluded
-hemisphere value of one. Azimuth is uniform around the view ray, including
-off-axis pixels. This avoids numerical baseline darkening on open slopes.
-The normal projection retains its length; normalizing it
-away biases sloped surfaces. Position reconstruction uses texel-centered native
-`[0,1]` depth with top-left UVs, the current jittered projection, and parallel
-view rays for orthographic cameras. Samples outside the viewport, background,
-normal-plane bias, or thickness do not occlude. With default zero bias, the
-normal-plane test also accounts for the bounded angular uncertainty of the
-12-bit octahedral normal. Coplanar samples cannot become false occluders solely
-because of normal quantization; authored bias remains unchanged. The radius places samples;
-it is no longer an additional spherical rejection bound. Radial distribution,
-Z thickness rejection, step-dependent horizon updates and the default 5x5
-magic-square rotation (including RGBA8 quantization) follow Three r184. Static spatial noise introduces
-no AO history or additional temporal reprojection owner.
-
-The raw intensity exponent follows Three r184. The engine deliberately retains
-its projected-length/open-integral correction, orthographic
-rays, texel-centered reconstruction, viewport rejection and 5x5 depth/normal
-filter. Three GPU returns raw AO and leaves denoising/composition to the caller;
-Three GL GTAOPass installs a different Poisson denoiser. Neither is pixel-equivalent
-to this filter. Unreal temporal filtering, bent normals and multibounce compensation
-are not implemented by this AO path. It returns
-scalar local visibility into the existing ambient-light route, not a full-image
-multiply. The example accepts `?algorithm=gtao` and its algorithm selector
-allows a live comparison with hemisphere SSAO at fixed lights and exposure.
-
-Reproduce from a built contributor checkout (use the prepared shared-input
-manifest when available):
-
-```bash
-pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-9-ssao smoke:gtao
-export FORGEAX_SHARED_APP_INPUTS_MANIFEST="$PWD/shared-build-inputs/manifest.json"
-node apps/learn-render/5.advanced-lighting/9.ssao/scripts/smoke-gtao-browser.mjs
-node apps/learn-render/5.advanced-lighting/9.ssao/scripts/smoke-gtao-browser.mjs --lifted
-node apps/learn-render/5.advanced-lighting/9.ssao/scripts/smoke-gtao-browser.mjs --room
-```
-
-The browser checks publish a `.rhitape`, live/replay comparison, raw/filtered AO
-PNGs and `gtao-verification.json`. They verify the recorded selector, current-frame
-depth/normal producers, AO-to-filter-to-lighting bindings, fresh-device pixels,
-and reversible scene changes. The lifted fixture requires exact white visibility
-in both AO attachments. Production-shader Dawn tests independently check the
-analytic integral against numerical quadrature and exercise perspective,
-orthographic, jittered and odd-sized surfaces.
+Check `renderer.inspect().standardLighting.ambientOcclusion` after submission
+for requested and effective methods, physical passes, levels and accepted
+history. Use linear HDR paired pixels and a direct-only and emissive-only
+control to verify composition. The
+UE alignment design
+records sampling parameters and desktop renderer comparisons.
 
 ## Target and probe lifecycle index
 
@@ -5940,7 +5718,13 @@ device-generation completions cannot publish. A moving probe uses Skylight fallb
 is ready. Each face sees the retained authored scene, including objects outside
 the display camera; authored hidden objects stay excluded. Probe specular keeps
 the global Skylight diffuse color, intensity, and rotation. Shared materials
-still select probes independently for each object.
+select probes independently for each object. CPU receiver selection binds one
+ready local capture or the default reflection environment from Skylight.
+Both use the same specular prefilter slot, also used by clearcoat. The sky SH
+continues to supply diffuse lighting. Receivers crossing a probe volume boundary
+change environment at the next CPU selection. Box projection applies inside
+the selected box. Deferred stores the selected receiver address in the GBuffer
+and groups local captures into resident PMREM arrays or overflow draws.
 
 Raw atmosphere faces evaluate the shared spherical transport kernel at the probe
 centre, with a retained medium/solar generation. Their own camera and frozen sun
@@ -6016,9 +5800,9 @@ their unused FOV sentinel.
 
 ### Auto exposure and 3D LUT authoring
 
-Exposure is a Camera-owned closed union. Manual exposure is a positive
-multiplier; auto exposure carries a fallback, EV compensation, bounded EV
-range, and non-negative adaptation rates. The renderer owns the GPU receipt,
+Exposure is a Camera-owned closed union. Manual exposure is a finite
+non-negative multiplier. Auto exposure carries a positive fallback, EV
+compensation, bounded EV range, and non-negative adaptation rates. The renderer owns the GPU receipt,
 but the author owns the Camera input. `perspective()` / `orthographic()` project
 the exposure union into the Camera's numeric SoA columns; `world.set` consumes
 that POD, not the authoring union directly.
@@ -8174,6 +7958,8 @@ Browser, Dawn and 60-frame hello/learn smoke gates.
 
 ## GPU-driven PBR / shadow / skin navigation
 
+Static shadow depth is an opt-in resource per view. `staticShadowBudgetBytes` defaults to 64 MiB and accepts zero. Half is available for the current depth arrays so the previous generation can retire during replacement. Admission accounts for actual depth32 layer spans, including six faces per cube, sparse atlas slots and the two-layer minimum for array sampling. Directional cascades have priority, followed by point and spot lights in atlas-slot order. Lights outside the allowance draw their casters together at their requested shadow resolution.
+
 The shortest public declaration uses the same `Materials.standard` producer as
 the runtime and imported-skin carriers. `alphaCutoff` is the Alpha Mask
 contract, and the factory always publishes the matching ShadowCaster pass;
@@ -9447,7 +9233,9 @@ The normal token resolves the packed world-space material normal and roughness;
 the depth token resolves camera device depth for the same view, frame plan, and
 generation. Standard Forward/Deferred admission derives availability from the
 selected camera/profile and the visible material, geometry, and deformation
-contributors. Do not seed producer flags in a manually created catalog or
+contributors. A view with no eligible producer reports `producer-missing` from its
+view and device identity. Only an eligible producer reads the current geometry
+and material rows to establish its coverage. Do not seed producer flags in a manually created catalog or
 replace a missing material normal with a depth-reconstructed normal. A consumer
 that needs both tokens should request both and let the graph bind their exact
 schema owners.
@@ -9566,13 +9354,13 @@ the preserved full-mode limits and background-only scope.
 |:--|:--|:--|
 | Auto exposure | GPU fragment classification, integer histogram reductions and adaptation | HDR/integer render attachments and the bounded fragment exposure extent; no CPU metering |
 | SSR | GPU fragment depth pyramid, trace, temporal resolve and composition | Single-sampled Forward with complete built-in Standard material inputs and admitted format/texture budgets |
-| SSAO / GTAO | GPU fragment surface input, AO, bilateral filter and Cluster packing | Opaque/Alpha Mask Standard and Unlit input coverage; Unlit contributes geometry without receiving lighting attenuation |
+| SSAO | GPU depth input, one AO raster pass and Cluster packing | Opaque/Alpha Mask Standard and Unlit input coverage; Unlit contributes geometry without receiving lighting attenuation |
 | Physical sky background | GPU raster medium/Sky View tables and background | Explicit `backgroundOnly: true`; optional Skylight IBL; no AP, surface solar attenuation or auxiliary captures |
 | Full `Atmosphere` (`backgroundOnly: false`) | Unavailable | Its compute, storage texture, 3D and full material binding requirements remain mandatory |
 | Cooked GPU VFX | Unavailable | The VFX owner still requires compute and indirect drawing; `Points` is the separate CPU-updated raster route |
 
 The public World/Camera Browser gate `standard-effects-webgl2.browser.test.ts`
-checks auto exposure, SSR and their GTAO combination through 60 completed frames,
+checks auto exposure, SSR and their SSAO combination through 60 completed frames,
 records the actual fragment entry points and pixels, then disables the effects
 and requires the original output to return. Kernel qualification additionally
 compares every histogram bin and depth level with independent references. The
@@ -9589,7 +9377,7 @@ identity; publishing one plan must never replace another plan's entry.
 | Consumer | Compute plan | Fragment plan | Admission boundary |
 |:--|:--|:--|:--|
 | Depth pyramid | Existing seed and ordered mip dispatches | Independent R32F attachments and copies into the complete sampled mip chain | Real raster/sample/copy/readback profile; single-sampled input |
-| SSR | Trace, temporal and reflection mip dispatches | Two-output trace, three-output temporal MRT and separate reflection mip attachments | Standard inputs, HDR/MRT/texture limits and the actual depth format receipt |
+| SSR | Spatial trace dispatch and composition | Spatial trace raster and composition | Standard inputs, HDR/MRT/texture limits and the actual depth format receipt |
 | Auto exposure V1 | Fixed atomic histogram cohort and adaptation | One classification, 16x16 integer tile counts, bounded reductions and adaptation | Integer/float attachment and copy support; dimensions <=4096 and <=8,847,360 pixels |
 
 Nearest and furthest Hi-Z preserve positive view-distance units, normalized odd
@@ -9599,30 +9387,20 @@ Fragment code never requires `textureNumLevels`: the full depth chain derives it
 level count from level-zero extent; composition receives its actual reflection
 mip count, including the one-mip spatial-only case, through graph-owned metadata.
 
-Forward SSR uses the existing Standard surface producer with actual roughness,
-and writes fallback plus unit-radiance response at the same material callsite.
-The selected main MRT, GPU-driven projection and downstream composition share
-those exact attachments. Forward SSR currently requires single sampling and
-built-in Standard materials; Deferred retains its existing producer contract.
-Missing inputs remain an explicit admission failure. No material texture is
-removed to admit an effect.
+Portable Forward SSR writes the environment fallback and unit-radiance
+response in the built-in Standard material pass. Spatial composition reads
+those attachments with the current scene surface data. Native Forward can
+trace inside the color draw when the extended-lighting bindings are admitted.
+Both routes require single-sampling and retain the material textures.
 
-SSR reserves one accepted history plus four in-flight candidates. History reuse
-also requires the exact shared previous TemporalView identity; backlog uses
-current-only resolve instead of reprojecting an older view with one-step motion.
-Exposure leases
-up to nine buffer slots in its existing per-view GPU owner, covering previous
-reads and writes of four in-flight frames. Camera, graph extent/topology and
-device identities fence completion; scalar parameter updates preserve history. Accepted submission does
-not publish either history: queue completion promotes the exact candidate, while
-reset, failed submission and a retired device generation fence older candidates.
-Buffers/textures are never read and attached for writing in the same raster pass.
-The native exposure meter also treats previous state as read-only.
+The spatial descriptor estimate counts the depth hierarchy, trace outputs,
+fallback inputs, and any portable scratch and Forward surface inputs before
+aliasing.
 
-The SSR budget counts all five history slots, shared depth levels, reflection
-mips, fragment scratch and conservative Forward surface/response inputs before
-aliasing. The portable Forward 1080p sum is 273,711,768 bytes (261 MiB); 4K
-exceeds the 320 MiB cap and is rejected before history allocation.
+Exposure leases up to nine buffer slots in its per-view GPU owner for one
+accepted result and four in-flight reads and writes. Queue completion promotes
+the matching candidate under the camera, graph and device identities. Reset,
+failed submission and device retirement fence older candidates.
 
 The portable exposure plan preserves V1's 4x4 block-center sampling, center weights,
 256 log bins, 5/95 percentiles, EV bounds and adaptation. Counts use `u32` attachments
@@ -10229,7 +10007,7 @@ after the receiver's FrameReceipt completes. The asset transfers own independent
 copies, including aliased attribute buffers; these stay with receiver asset residency
 and never return with frame storage. ECS and original asset storage remain owned by
 the source. `renderPublicationBytes(message)` reports `{ columns, assets }`: the
-record's logical bytes and the transferred asset buffers. The Render Worker attaches it
+record and draw-parameter columns' logical bytes and the transferred asset buffers. The publisher packs changed draw parameters into one owned backing and transfers it with the record. Its accepted ECS rows have independent lifetimes. Worker sends also charge cooked shader artifacts to the transfer budget. Each received program owns its exact byte range even when the sender stored it in a shared library backing. The Render Worker attaches it
 to every `frame-submitted` as `publicationBytes`. SharedArrayBuffer is deliberately not
 used: Engine and Render Workers do not require cross-origin isolation, and one
 transferred record per slot measures within noise of a SAB ring (see
@@ -11062,6 +10840,12 @@ display.update();
 // display.dispose();
 // Release the material asset after removing its consumers.
 ```
+
+Use `new CanvasTexture(canvas, { snapshot: true })` when each update must seal
+the painted pixels before recording or device recovery. The producer owns one
+native `VideoFrame` snapshot and closes it on replacement or disposal. This mode
+requires a browser with `VideoFrame` and a drawable Canvas at creation and on
+each update. A rejected snapshot leaves the previous version in place.
 
 The same source works in `Materials.standard` texture values and named 2D
 texture fields of cooked custom materials. Samplers and UV transforms use the

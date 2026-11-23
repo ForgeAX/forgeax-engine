@@ -1,5 +1,4 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
 import { sourcePackageError } from '@forgeax/engine-import';
 import { validateProducerOutputs } from '@forgeax/engine-pack/build';
 import type {
@@ -126,32 +125,5 @@ describe('public AI recovery path', () => {
     expect(assets.catalogSnapshot()).toMatchObject({ stale: false, entries: [catalogEntry()] });
     stop();
     assets.dispose();
-  });
-
-  it('does not promote a failed candidate and atomically restores it on retry', async () => {
-    const store = createAcceptedPublicationStore();
-    const first = publication(1);
-    const second = publication(2);
-    expect(store.stage(first.sourcePath, { envelope: first }).ok).toBe(true);
-    expect((await store.commit(first.sourcePath, { envelope: first }, () => undefined)).ok).toBe(
-      true,
-    );
-
-    expect(store.stage(second.sourcePath, { envelope: second }).ok).toBe(true);
-    const failed = await store.commit(second.sourcePath, { envelope: second }, () => {
-      throw new Error('fixture route unavailable');
-    });
-    expect(failed).toMatchObject({
-      ok: false,
-      error: { code: 'asset-publication-route-failed', recovery: { preserveCurrent: true } },
-    });
-    expect(store.observe(first.sourcePath)).toMatchObject({ current: { generation: 1 } });
-
-    expect(store.stage(second.sourcePath, { envelope: second }).ok).toBe(true);
-    const recovered = await store.commit(second.sourcePath, { envelope: second }, () => undefined);
-    expect(recovered).toMatchObject({
-      ok: true,
-      value: { current: { generation: 2 }, lastKnownGood: { generation: 1 } },
-    });
   });
 });

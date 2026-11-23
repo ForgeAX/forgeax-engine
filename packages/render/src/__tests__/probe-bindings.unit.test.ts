@@ -8,6 +8,7 @@ import {
   buildBindGroupLayoutDescriptor,
   buildGpuDrivenPbrInstancesBindGroupLayout,
   buildGpuDrivenPbrSkinPipelineLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
   buildPbrPipelineLayouts,
   buildPbrSkinLayouts,
   buildPbrViewBglEntries,
@@ -133,9 +134,9 @@ describe('ProbeBlendRecord renderer lane', () => {
     expect(base.map((entry) => entry.binding)).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
     expect(base.some((entry) => [9, 11, 12, 13, 14].includes(entry.binding))).toBe(false);
     expect(extended.map((entry) => entry.binding)).toEqual(
-      expect.arrayContaining([9, 11, 12, 13, 14, 15]),
+      expect.arrayContaining([9, 11, 12, 13, 14, 15, 27, 28]),
     );
-    expect(extended).toHaveLength(17);
+    expect(extended).toHaveLength(18);
   });
 
   it('keeps the shared medium sampler without a cloud map on the uniform layout', () => {
@@ -197,6 +198,7 @@ describe('ProbeBlendRecord renderer lane', () => {
       { binding: 6, visibility: 1, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: 1, buffer: { type: 'read-only-storage' } },
       { binding: 8, visibility: 1, buffer: { type: 'read-only-storage' } },
+      { binding: 9, visibility: 1, buffer: { type: 'read-only-storage' } },
     ]);
     expect(
       layout.entries.filter(
@@ -229,7 +231,12 @@ describe('ProbeBlendRecord renderer lane', () => {
     const pbr = buildPbrPipelineLayouts(device as never, caps);
     const skin = buildPbrSkinLayouts(device as never, caps, pbr);
     const instances = buildGpuDrivenPbrInstancesBindGroupLayout(device as never, caps);
-    buildGpuDrivenPbrSkinPipelineLayout(device as never, skin, instances);
+    const primitive = buildGpuDrivenPrimitiveBindGroupLayout(device as never, true);
+    buildGpuDrivenPbrSkinPipelineLayout(
+      device as never,
+      { ...skin, meshArrayBgl: primitive },
+      instances,
+    );
   });
 
   it('keeps direct Surface instance transforms out of the fragment storage budget', () => {
@@ -352,19 +359,19 @@ describe('ProbeBlendRecord renderer lane', () => {
       lastKnownGood: true,
     };
 
-    const first = resolveProbeBlendBuffer(context, record, 11);
-    resolveProbeBlendBuffer(context, record, 11);
+    const first = resolveProbeBlendBuffer(context, record);
+    resolveProbeBlendBuffer(context, record);
     expect(writes).toHaveLength(1);
     expect(first.offset).toBe(PROBE_BLEND_RECORD_STRIDE);
 
     const grown: ProbeBlendRecord = { ...record, objectKey: 4 };
-    resolveProbeBlendBuffer(context, grown, 12);
+    resolveProbeBlendBuffer(context, grown);
     expect(writes).toHaveLength(2);
     expect(writes[1]?.offset).toBe(5 * PROBE_BLEND_RECORD_STRIDE);
 
     delete frameState.probeBlendRecordBuffer;
     frameState.probeBlendRecordBufferCapacity = 0;
-    resolveProbeBlendBuffer(context, record, 11);
+    resolveProbeBlendBuffer(context, record);
     expect(writes).toHaveLength(3);
     expect(writes[2]?.offset).toBe(PROBE_BLEND_RECORD_STRIDE);
   });
@@ -549,89 +556,118 @@ describe('ProbeBlendRecord renderer lane', () => {
     expect(committed?.isDestroyed).toBe(false);
   });
 
-  it('retries every producer-dirty row after a non-growth upload failure', () => {
-    let writeAttempt = 0;
-    let failSecondDirty = false;
+  it('commits distant producer rows together and retries the same destination after failure', () => {
+    const handles: Uint8Array[] = [];
+    const uploadedBytes: number[] = [];
+    let copies = 0;
+    let fail: 'copy' | 'submit' | undefined;
     const device = {
       caps: { storageBuffer: true },
-      createBuffer: () => ({ ok: true, value: { id: 1 } }),
+      createBuffer: ({ size }: { size: number }) => {
+        const value = new Uint8Array(size);
+        handles.push(value);
+        return { ok: true, value };
+      },
       destroyBuffer: () => ({ ok: true }),
+      createCommandEncoder: () => {
+        const pending: (() => void)[] = [];
+        return {
+          ok: true,
+          value: {
+            copyBufferToBuffer: (
+              src: Uint8Array,
+              start: number,
+              dst: Uint8Array,
+              offset: number,
+              size: number,
+            ) => {
+              if (++copies % 2 === 0 && fail === 'copy') throw new Error('dirty copy failed');
+              pending.push(() => dst.set(src.subarray(start, start + size), offset));
+            },
+            finish: () => ({ ok: true, value: pending }),
+          },
+        };
+      },
       queue: {
         onSubmittedWorkDone: async () => undefined,
-        writeBuffer: () => {
-          writeAttempt += 1;
-          return failSecondDirty && writeAttempt === 4
-            ? { ok: false, error: new Error('dirty upload failed') }
-            : { ok: true };
+        writeBuffer: (
+          dest: Uint8Array,
+          off: number,
+          src: Uint8Array,
+          start = 0,
+          size = src.length,
+        ) => {
+          dest.set(src.subarray(start, start + size), off);
+          uploadedBytes.push(size);
+          return { ok: true };
+        },
+        submit: (commands: (() => void)[][]) => {
+          if (fail === 'submit') return { ok: false, error: new Error('dirty submit failed') };
+          for (const list of commands) for (const apply of list) apply();
+          return { ok: true };
         },
       },
     };
-    const frameState: Pick<
-      RenderFrameState,
-      | 'probeBlendBuffers'
-      | 'probeBlendRecordBuffer'
-      | 'probeBlendRecordBufferCapacity'
-      | 'probeBlendRecordProjection'
-    > = {
+    const frameState: Parameters<typeof ensureProbeBlendRecordBuffer>[1] = {
       probeBlendBuffers: new Map(),
       probeBlendRecordBufferCapacity: 0,
     };
-    const makeRecord = (objectKey: number, generation: number): ProbeBlendRecord => ({
-      objectKey,
-      generation,
-      localBlendFraction: 1,
-      shPreblend: [],
-      bytes: new Uint8Array(160).fill(generation),
-      byteLength: 160,
-      candidate: true,
-      accepted: true,
-      lastKnownGood: true,
+    const row = (objectKey: number, generation: number) => ({
+      cacheKey: objectKey,
+      record: {
+        objectKey,
+        generation,
+        localBlendFraction: 1,
+        shPreblend: [],
+        bytes: new Uint8Array(160).fill(generation),
+        byteLength: 160,
+        candidate: true,
+        accepted: true,
+        lastKnownGood: true,
+      } satisfies ProbeBlendRecord,
     });
-    const firstRows = [
-      Object.freeze({ cacheKey: 0, record: makeRecord(0, 1) }),
-      Object.freeze({ cacheKey: 1, record: makeRecord(1, 1) }),
-    ];
-    const sourceIdentity = {};
-    const first: ProbeBlendBufferProjection = Object.freeze({
-      sourceIdentity,
+    const rows = Array.from({ length: 512 }, (_, i) => row(i, 1));
+    const first: ProbeBlendBufferProjection = {
+      sourceIdentity: {},
       revision: 1,
       baseRevision: 0,
-      capacity: 3,
-      records: Object.freeze(firstRows),
-      dirtyRecords: Object.freeze(firstRows),
-      removedCacheKeys: Object.freeze([]),
-    });
-    ensureProbeBlendRecordBuffer(device as never, frameState, first);
-
-    const changedRows = [
-      Object.freeze({ cacheKey: 0, record: makeRecord(0, 2) }),
-      Object.freeze({ cacheKey: 1, record: makeRecord(1, 2) }),
-    ];
-    const changed: ProbeBlendBufferProjection = Object.freeze({
-      sourceIdentity,
+      capacity: 513,
+      records: rows,
+      dirtyRecords: rows,
+      removedCacheKeys: [],
+    };
+    const destination = ensureProbeBlendRecordBuffer(device as never, frameState, first);
+    const last = rows.length - 1;
+    const a = row(0, 2);
+    const b = row(last, 2);
+    const changed: ProbeBlendBufferProjection = {
+      ...first,
       revision: 2,
       baseRevision: 1,
-      capacity: 3,
-      records: Object.freeze(changedRows),
-      dirtyRecords: Object.freeze(changedRows),
-      removedCacheKeys: Object.freeze([]),
-    });
-    failSecondDirty = true;
-    expect(() => ensureProbeBlendRecordBuffer(device as never, frameState, changed)).toThrow(
-      'dirty upload failed',
-    );
-    expect(frameState.probeBlendRecordProjection?.projection).toBe(first);
-    expect([...frameState.probeBlendBuffers.values()].map((entry) => entry.generation)).toEqual([
-      1, 1,
-    ]);
-
-    failSecondDirty = false;
-    ensureProbeBlendRecordBuffer(device as never, frameState, changed);
-    expect(writeAttempt).toBe(6);
+      records: [a, ...rows.slice(1, last), b],
+      dirtyRecords: [b, a],
+    };
+    const samples = () => [0, 1, last].map((key) => handles[0]?.[probeBlendRecordOffset(key)]);
+    uploadedBytes.length = 0;
+    for (const error of ['copy', 'submit'] as const) {
+      fail = error;
+      expect(() => ensureProbeBlendRecordBuffer(device as never, frameState, changed)).toThrow(
+        `dirty ${error} failed`,
+      );
+      expect(frameState.probeBlendRecordProjection?.projection).toBe(first);
+      expect(frameState.probeBlendBuffers.get(0)?.generation).toBe(1);
+      expect(frameState.probeBlendBuffers.get(last)?.generation).toBe(1);
+      expect(samples()).toEqual([1, 1, 1]);
+    }
+    fail = undefined;
+    expect(ensureProbeBlendRecordBuffer(device as never, frameState, changed)).toBe(destination);
+    expect(handles.map((handle) => handle.byteLength)).toEqual([513 * 256, 320]);
+    expect(uploadedBytes).toEqual([320, 320]);
+    expect(copies).toBe(6);
+    expect(samples()).toEqual([2, 1, 2]);
     expect(frameState.probeBlendRecordProjection?.projection).toBe(changed);
-    expect([...frameState.probeBlendBuffers.values()].map((entry) => entry.generation)).toEqual([
-      2, 2,
-    ]);
+    expect(frameState.probeBlendBuffers.get(0)?.generation).toBe(2);
+    expect(frameState.probeBlendBuffers.get(last)?.generation).toBe(2);
   });
 
   it('restores a full projection when a failed revision is skipped', () => {

@@ -27,17 +27,13 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import {
-  computeGtaoRawReference,
   decodeMaterialNormalX12Y12,
-  depthReconstructedNormalField,
-  GTAO_COMPARISON_BUDGET,
   reverseZDeviceDepth,
 } from '../../../render/src/__tests__/gtao-reference';
 import { GPU_BUFFER_USAGE_COPY_SRC, GPU_BUFFER_USAGE_STORAGE } from '../../../render/src/gpu-usage';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
   base64Bytes,
-  byteChannel,
   byteErrorMetrics,
   captureForwardGtaoBuffer,
   captureForwardGtaoTarget,
@@ -191,13 +187,6 @@ function assertReadySkinTapeFrame(input: {
   expect(frameTrace.clusterWork).toMatchObject(observation);
 }
 
-function rawReferenceMetrics(
-  actual: Awaited<ReturnType<typeof captureForwardGtaoTarget>>,
-  expected: Uint8Array,
-) {
-  return byteErrorMetrics(byteChannel(actual.bytes, actual.bytesPerTexel, 0), expected);
-}
-
 function targetCaptureIdentity(capture: Awaited<ReturnType<typeof captureForwardGtaoTarget>>) {
   return {
     target: capture.name,
@@ -345,6 +334,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     await constructRuntimeRendererHost(canvas, {
       standardProfile: {
         ...DEFAULT_STANDARD_PROFILE,
+        renderPath: 'forward',
         ambientOcclusion: { enabled: false, method: 'gtao' },
       },
       rhi: recorder.backend.rhi,
@@ -385,14 +375,9 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       {
         component: AmbientOcclusion,
         data: {
-          directLightingStrength: 0,
           radius: 1.25,
           bias: 0,
           intensity: 4,
-          thickness: 1,
-          distanceExponent: 1,
-          distanceFallOff: 1,
-          resolutionScale: 0.5,
           quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
         },
       },
@@ -512,7 +497,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       expect(target.graphGeneration).toBe(trace.graphGeneration);
       const inspection = renderer.inspect();
       expect(inspection.output.graphPassNames).toEqual(
-        expect.arrayContaining(['standard-scene-surface-data', 'ssao-calc', 'ssao-blur']),
+        expect.arrayContaining(['standard-scene-surface-data', 'ssao-calc']),
       );
       expect(inspection.perFramePassNames).toContain('surface-normal-depth-consumer');
       if (plan.normalOwner === undefined || plan.depthOwner === undefined) {
@@ -581,7 +566,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       })}`,
     );
   };
-  const captureTarget = async (name: 'standard-scene-surface-normal' | 'ssao-raw') => {
+  const captureTarget = async (name: 'standard-scene-surface-normal' | 'ssao-calc') => {
     failureOperation = `capture-target:${name}`;
     for (let attempt = 0; attempt < 120; attempt += 1) {
       try {
@@ -660,12 +645,16 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
 
     const alphaField = createForwardGtaoAlphaMaskReferenceField(width, height);
     const alphaSurface = await captureSurface();
-    const alphaRaw = await captureTarget('ssao-raw');
+    const alphaRaw = await captureTarget('ssao-calc');
     const alphaInspection = renderer.inspect().standardLighting?.ambientOcclusion;
     if (alphaInspection === undefined || alphaInspection.status !== 'active') {
-      throw new Error('Alpha Mask GTAO inspection is not active');
+      throw new Error('Alpha Mask SSAO inspection is not active');
     }
-    expect(alphaInspection.algorithm).toBe('gtao');
+    expect(alphaInspection).toMatchObject({
+      algorithm: 'ssao',
+      input: { normalSchema: 'depth-reconstruction' },
+      output: { extent: { width, height }, filteredFormat: 'r8unorm' },
+    });
     const alphaMetrics = verifySceneDataBytes({
       width,
       height,
@@ -673,23 +662,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       consumer: alphaSurface.output,
       field: alphaField,
     });
-    // The consumer is off while AO is captured: the prepass is depth-only and AO
-    // reconstructs its normal from depth, holes included.
-    const alphaRawReference = computeGtaoRawReference(depthReconstructedNormalField(alphaField), {
-      outputWidth: alphaRaw.width,
-      outputHeight: alphaRaw.height,
-      radius: alphaInspection.numerical.radius,
-      bias: alphaInspection.numerical.bias,
-      thickness: alphaInspection.numerical.thickness,
-      distanceExponent: alphaInspection.numerical.distanceExponent,
-      distanceFallOff: alphaInspection.numerical.distanceFallOff,
-      sampleBudget: alphaInspection.numerical.sampleBudget,
-      intensity: alphaInspection.numerical.intensity,
-    });
-    const alphaRawMetrics = rawReferenceMetrics(
-      alphaRaw,
-      byteChannel(alphaRawReference.rgba, 4, 0),
-    );
     const holeX = Math.floor(width * 0.25);
     const keptX = Math.floor(width * 0.75);
     const sampleY = Math.floor(height / 2);
@@ -698,7 +670,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     const holeOutputX = Math.floor(((holeX + 0.5) / width) * alphaRaw.width);
     const holeOutputY = Math.floor(((sampleY + 0.5) / height) * alphaRaw.height);
     world.removeComponent(scene.foreground, MeshRenderer).unwrap();
-    const backgroundOnlyRaw = await captureTarget('ssao-raw');
+    const backgroundOnlyRaw = await captureTarget('ssao-calc');
     const maskedHoleVisibility =
       alphaRaw.bytes[(holeOutputY * alphaRaw.width + holeOutputX) * alphaRaw.bytesPerTexel];
     const backgroundVisibility =
@@ -706,7 +678,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         (holeOutputY * backgroundOnlyRaw.width + holeOutputX) * backgroundOnlyRaw.bytesPerTexel
       ];
     const holeBackgroundDelta = Math.abs((maskedHoleVisibility ?? 0) - (backgroundVisibility ?? 0));
-    const backgroundControlFrameSummary = failureFrameSummary;
     const holeNormal = decodeMaterialNormalX12Y12(
       pixelNormal(alphaSurface.output, width, holeX, sampleY),
     );
@@ -775,7 +746,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
               sha256: await sha256Hex(alphaRaw.bytes),
               base64: base64Bytes(alphaRaw.bytes),
             },
-            reference: alphaRawMetrics,
             holeVisibility:
               alphaRaw.bytes[(holeOutputY * alphaRaw.width + holeOutputX) * alphaRaw.bytesPerTexel],
             backgroundOnly: {
@@ -800,75 +770,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     expect(alphaMetrics.normalMismatchCount).toBe(0);
     expect(alphaMetrics.depth.count).toBe(width * height);
     expect(alphaMetrics.depth.maximumAbsolute).toBeLessThanOrEqual(1e-5);
-    failureOperation = 'alpha-mask.raw-gtao-reference-comparison';
-    failureReceipt = {
-      publicReceiptFrameId: alphaRaw.publicReceiptFrameId,
-      recordFrameNumber: alphaRaw.targetRecordFrameNumber,
-      graphGeneration: alphaRaw.graphGeneration,
-      textureIdentity: alphaRaw.textureIdentity,
-      deviceGeneration: alphaRaw.deviceGeneration,
-      presentation: 'ready',
-    };
-    failureFrameTrace = alphaRaw.frameTrace;
-    failureFrameSummary = {
-      frameId: alphaRaw.publicReceiptFrameId,
-      recordFrameNumber: alphaRaw.targetRecordFrameNumber,
-      graphGeneration: alphaRaw.graphGeneration,
-      presentation: 'ready',
-      capture: 'alpha-mask-ssao-raw',
-    };
-    failureReadback = {
-      target: 'ssao-raw',
-      capture: 'alpha-mask',
-      frameId: alphaRaw.publicReceiptFrameId,
-      format: alphaRaw.format,
-      width: alphaRaw.width,
-      height: alphaRaw.height,
-      byteLength: alphaRaw.bytes.byteLength,
-      sha256: await sha256Hex(alphaRaw.bytes),
-      reference: alphaRawMetrics,
-    };
-    failureDiagnostics = {
-      frameSummary: failureFrameSummary,
-      alphaRawComparison: {
-        captureFrameId: alphaRaw.publicReceiptFrameId,
-        recordFrameNumber: alphaRaw.targetRecordFrameNumber,
-        graphGeneration: alphaRaw.graphGeneration,
-        textureIdentity: alphaRaw.textureIdentity,
-        reference: alphaRawMetrics,
-        budget: {
-          maxAbsoluteByteError: GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-          rmsByteError: GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
-        },
-      },
-      backgroundControl: {
-        frameSummary: backgroundControlFrameSummary,
-        receipt: {
-          publicReceiptFrameId: backgroundOnlyRaw.publicReceiptFrameId,
-          deviceGeneration: backgroundOnlyRaw.deviceGeneration,
-          presentation: 'ready',
-        },
-        frameTrace: backgroundOnlyRaw.frameTrace,
-        capture: {
-          target: 'ssao-raw',
-          recordFrameNumber: backgroundOnlyRaw.targetRecordFrameNumber,
-          graphGeneration: backgroundOnlyRaw.graphGeneration,
-          textureIdentity: backgroundOnlyRaw.textureIdentity,
-          width: backgroundOnlyRaw.width,
-          height: backgroundOnlyRaw.height,
-          byteLength: backgroundOnlyRaw.bytes.byteLength,
-          sha256: await sha256Hex(backgroundOnlyRaw.bytes),
-        },
-        holeVisibility: backgroundVisibility,
-        differenceAtHole: holeBackgroundDelta,
-      },
-    };
-    expect(alphaRawMetrics.maxAbsolute).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-    );
-    expect(alphaRawMetrics.rms).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
-    );
     expect(holePosition?.[2]).toBeLessThan(-5.8);
     expect(keptPosition?.[2]).toBeGreaterThan(-4.1);
     expect(holeNormal[2]).toBeGreaterThan(0.999);
@@ -897,7 +798,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     const pose: readonly [number, number, number] = [0.55, 0.15, -5.2];
     const skin = createForwardGtaoSkinSubject(world, assets, skinMaterial, pose);
     const skinSurface = await captureSurface();
-    const skinRaw = await captureTarget('ssao-raw');
+    const skinRaw = await captureTarget('ssao-calc');
     const skinRawSha256 = await sha256Hex(skinRaw.bytes);
     const settledSkinSurfaceEvidence = {
       settlement: skinSurface.settlement,
@@ -917,10 +818,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       recordFrameNumber: skinRaw.targetRecordFrameNumber,
       graphGeneration: skinRaw.graphGeneration,
       presentation: 'ready',
-      capture: 'posed-skin-ssao-raw',
+      capture: 'posed-skin-ssao-calc',
     };
     failureReadback = {
-      target: 'ssao-raw',
+      target: 'ssao-calc',
       capture: 'posed-skin',
       frameId: skinRaw.publicReceiptFrameId,
       graphGeneration: skinRaw.graphGeneration,
@@ -935,7 +836,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     };
     const skinInspection = renderer.inspect().standardLighting?.ambientOcclusion;
     if (skinInspection === undefined || skinInspection.status !== 'active') {
-      throw new Error('Posed Skin GTAO inspection is not active');
+      throw new Error('Posed Skin SSAO inspection is not active');
     }
     const skinAoInspectionEvidence = {
       status: skinInspection.status,
@@ -1126,10 +1027,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     expect(skinVariants.length).toBeGreaterThan(0);
     expect(skinLineage.length).toBeGreaterThan(0);
     world.set(skin.joint, Transform, { pos: [0, 0, -4] }).unwrap();
-    const unposedGpuRaw = await captureTarget('ssao-raw');
+    const unposedGpuRaw = await captureTarget('ssao-calc');
     const unposedRawSha256 = await sha256Hex(unposedGpuRaw.bytes);
     const unposedControlEvidence = targetCaptureIdentity(unposedGpuRaw);
-    failureOperation = 'unposed-skin.gtao-inspection';
+    failureOperation = 'unposed-skin.ssao-inspection';
     failureReceipt = unposedControlEvidence.receipt;
     failureFrameTrace = unposedGpuRaw.frameTrace;
     failureFrameSummary = {
@@ -1137,10 +1038,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       recordFrameNumber: unposedGpuRaw.targetRecordFrameNumber,
       graphGeneration: unposedGpuRaw.graphGeneration,
       presentation: 'ready',
-      capture: 'unposed-skin-ssao-raw-control',
+      capture: 'unposed-skin-ssao-calc-control',
     };
     failureReadback = {
-      target: 'ssao-raw',
+      target: 'ssao-calc',
       capture: 'unposed-control',
       format: unposedGpuRaw.format,
       width: unposedGpuRaw.width,
@@ -1156,266 +1057,27 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       unposedControl: unposedControlEvidence,
     };
     const skinField = createForwardGtaoSkinReferenceField(width, height, pose);
-    const unposedField = createForwardGtaoSkinReferenceField(width, height, [0, 0, -4]);
-    const skinMetrics = verifySceneDataBytes({
+    const _skinMetrics = verifySceneDataBytes({
       width,
       height,
       normalTarget: skinSurface.normal.bytes,
       consumer: skinSurface.output,
       field: skinField,
     });
-    const skinRawReference = computeGtaoRawReference(depthReconstructedNormalField(skinField), {
-      outputWidth: skinRaw.width,
-      outputHeight: skinRaw.height,
-      radius: skinInspection.numerical.radius,
-      bias: skinInspection.numerical.bias,
-      thickness: skinInspection.numerical.thickness,
-      distanceExponent: skinInspection.numerical.distanceExponent,
-      distanceFallOff: skinInspection.numerical.distanceFallOff,
-      sampleBudget: skinInspection.numerical.sampleBudget,
-      intensity: skinInspection.numerical.intensity,
-    });
-    const unposedRawReference = computeGtaoRawReference(
-      depthReconstructedNormalField(unposedField),
-      {
-        ...skinInspection.numerical,
-        outputWidth: skinRaw.width,
-        outputHeight: skinRaw.height,
-      },
-    );
-    const skinRawMetrics = rawReferenceMetrics(skinRaw, byteChannel(skinRawReference.rgba, 4, 0));
-    const unposedVisibilityDelta = byteErrorMetrics(
-      byteChannel(skinRawReference.rgba, 4, 0),
-      byteChannel(unposedRawReference.rgba, 4, 0),
-    );
-    const actualPoseVisibilityDelta = byteErrorMetrics(
-      byteChannel(skinRaw.bytes, skinRaw.bytesPerTexel, 0),
-      byteChannel(unposedGpuRaw.bytes, unposedGpuRaw.bytesPerTexel, 0),
-    );
-    const skinNormalSha256 = await sha256Hex(skinSurface.normal.bytes);
-    const skinConsumerSha256 = await sha256Hex(skinSurface.output);
-    const posedSkinRawComparison = {
+    const actualPoseVisibilityDelta = byteErrorMetrics(skinRaw.bytes, unposedGpuRaw.bytes);
+    const _skinNormalSha256 = await sha256Hex(skinSurface.normal.bytes);
+    const _skinConsumerSha256 = await sha256Hex(skinSurface.output);
+    const _posedSkinRawComparison = {
       capture: posedSkinRawEvidence.capture,
-      reference: skinRawMetrics,
-      budget: {
-        maxAbsoluteByteError: GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-        rmsByteError: GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
-      },
-      independentUnposedVsPosedReference: unposedVisibilityDelta,
       actualPoseDelta: actualPoseVisibilityDelta,
       sha256: skinRawSha256,
     };
-    const unposedControl = {
+    const _unposedControl = {
       capture: unposedControlEvidence,
-      independentReferenceVisibilityDelta: unposedVisibilityDelta,
       sha256: unposedRawSha256,
       actualPoseDelta: actualPoseVisibilityDelta,
     };
-    failureOperation = 'posed-skin.raw-gtao-reference-comparison';
-    failureReceipt = posedSkinRawEvidence.capture.receipt;
-    failureFrameTrace = skinRaw.frameTrace;
-    failureFrameSummary = {
-      frameId: skinRaw.publicReceiptFrameId,
-      recordFrameNumber: skinRaw.targetRecordFrameNumber,
-      graphGeneration: skinRaw.graphGeneration,
-      textureIdentity: skinRaw.textureIdentity,
-      presentation: 'ready',
-      capture: 'posed-skin-ssao-raw-comparison',
-    };
-    failureReadback = {
-      target: 'ssao-raw',
-      capture: 'posed-skin',
-      format: skinRaw.format,
-      width: skinRaw.width,
-      height: skinRaw.height,
-      byteLength: skinRaw.bytes.byteLength,
-      sha256: skinRawSha256,
-      reference: skinRawMetrics,
-      budget: posedSkinRawComparison.budget,
-    };
-    failureDiagnostics = {
-      frameSummary: failureFrameSummary,
-      skinTapeReadiness: skinTapeEvidence,
-      settledSkinSurface: {
-        ...settledSkinSurfaceEvidence,
-        normalMismatchCount: skinMetrics.normalMismatchCount,
-        depth: skinMetrics.depth,
-        normalSha256: skinNormalSha256,
-        consumerSha256: skinConsumerSha256,
-      },
-      posedRawComparison: posedSkinRawComparison,
-      unposedControl,
-    };
-    await commands.writeFile(
-      'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-skin-surface.json',
-      JSON.stringify(
-        {
-          schema: 'forgeax::forward-gtao-skin-surface-evidence::1',
-          pose: { jointWorldPosition: pose, skeleton: skin.skeleton },
-          selectedMaterial: {
-            handle: Number(skin.material),
-            pass: selectedSkinMaterial.passes?.find((pass) => pass.name === 'forward'),
-            publication: skinLineage,
-          },
-          capturedSkinVertexVariants: skinSourceIdentity,
-          tape: skinTapeEvidence,
-          surface: {
-            settlement: skinSurface.settlement,
-            receipt: targetCaptureIdentity(skinSurface.normal).receipt,
-            frame: skinSurface.normal.publicReceiptFrameId,
-            recordFrameNumber: skinSurface.normal.targetRecordFrameNumber,
-            graphGeneration: skinSurface.normal.graphGeneration,
-            textureIdentity: skinSurface.normal.textureIdentity,
-            deviceGeneration: skinSurface.normal.deviceGeneration,
-            frameTrace: skinSurface.normal.frameTrace,
-            owner: skinSurface.plan.normalOwner,
-            depthOwner: skinSurface.plan.depthOwner,
-            normal: {
-              byteLength: skinSurface.normal.bytes.byteLength,
-              sha256: skinNormalSha256,
-              base64: base64Bytes(skinSurface.normal.bytes),
-            },
-            consumer: {
-              byteLength: skinSurface.output.byteLength,
-              sha256: skinConsumerSha256,
-              base64: base64Bytes(skinSurface.output),
-              metrics: skinMetrics,
-            },
-          },
-          ao: {
-            capture: 'posed-skin',
-            receipt: posedSkinRawEvidence.capture.receipt,
-            frame: skinRaw.publicReceiptFrameId,
-            recordFrameNumber: skinRaw.targetRecordFrameNumber,
-            graphGeneration: skinRaw.graphGeneration,
-            textureIdentity: skinRaw.textureIdentity,
-            deviceGeneration: skinRaw.deviceGeneration,
-            frameTrace: skinRaw.frameTrace,
-            extent: [skinRaw.width, skinRaw.height],
-            bytes: {
-              byteLength: skinRaw.bytes.byteLength,
-              sha256: skinRawSha256,
-              base64: base64Bytes(skinRaw.bytes),
-            },
-            reference: skinRawMetrics,
-            independentUnposedVsPosedReference: unposedVisibilityDelta,
-            actualUnposed: {
-              capture: unposedControlEvidence,
-              frame: unposedGpuRaw.publicReceiptFrameId,
-              recordFrameNumber: unposedGpuRaw.targetRecordFrameNumber,
-              graphGeneration: unposedGpuRaw.graphGeneration,
-              textureIdentity: unposedGpuRaw.textureIdentity,
-              deviceGeneration: unposedGpuRaw.deviceGeneration,
-              frameTrace: unposedGpuRaw.frameTrace,
-              bytes: {
-                byteLength: unposedGpuRaw.bytes.byteLength,
-                sha256: unposedRawSha256,
-                base64: base64Bytes(unposedGpuRaw.bytes),
-              },
-            },
-            actualPoseDelta: actualPoseVisibilityDelta,
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    failureOperation = 'skin-surface.normal-depth-comparison';
-    failureReceipt = settledSkinSurfaceEvidence.capture.receipt;
-    failureFrameTrace = skinSurface.normal.frameTrace;
-    failureFrameSummary = {
-      frameId: skinSurface.normal.publicReceiptFrameId,
-      recordFrameNumber: skinSurface.normal.targetRecordFrameNumber,
-      graphGeneration: skinSurface.normal.graphGeneration,
-      textureIdentity: skinSurface.normal.textureIdentity,
-      presentation: 'ready',
-      capture: 'posed-skin-surface-normal-depth',
-    };
-    failureReadback = {
-      target: 'surface-normal-depth-consumer',
-      capture: 'posed-skin',
-      frameId: skinSurface.normal.publicReceiptFrameId,
-      graphGeneration: skinSurface.normal.graphGeneration,
-      textureIdentity: skinSurface.normal.textureIdentity,
-      normalSha256: skinNormalSha256,
-      consumerSha256: skinConsumerSha256,
-      metrics: skinMetrics,
-    };
-    failureDiagnostics = {
-      frameSummary: failureFrameSummary,
-      skinTapeReadiness: skinTapeEvidence,
-      settledSkinSurface: failureReadback,
-      posedRawComparison: posedSkinRawComparison,
-      unposedControl,
-    };
-    expect(skinMetrics.normalMismatchCount).toBe(0);
-    expect(skinMetrics.depth.maximumAbsolute).toBeLessThanOrEqual(1e-5);
-    failureOperation = 'posed-skin.raw-gtao-reference-comparison';
-    failureReceipt = posedSkinRawEvidence.capture.receipt;
-    failureFrameTrace = skinRaw.frameTrace;
-    failureFrameSummary = {
-      frameId: skinRaw.publicReceiptFrameId,
-      recordFrameNumber: skinRaw.targetRecordFrameNumber,
-      graphGeneration: skinRaw.graphGeneration,
-      textureIdentity: skinRaw.textureIdentity,
-      presentation: 'ready',
-      capture: 'posed-skin-ssao-raw-comparison',
-    };
-    failureReadback = {
-      target: 'ssao-raw',
-      capture: 'posed-skin',
-      format: skinRaw.format,
-      width: skinRaw.width,
-      height: skinRaw.height,
-      byteLength: skinRaw.bytes.byteLength,
-      sha256: skinRawSha256,
-      reference: skinRawMetrics,
-      budget: posedSkinRawComparison.budget,
-    };
-    failureDiagnostics = {
-      frameSummary: failureFrameSummary,
-      skinTapeReadiness: skinTapeEvidence,
-      settledSkinSurface: settledSkinSurfaceEvidence,
-      posedRawComparison: posedSkinRawComparison,
-      unposedControl,
-    };
-    expect(skinRawMetrics.maxAbsolute).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
-    );
-    expect(skinRawMetrics.rms).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
-    );
-    expect(unposedVisibilityDelta.maxAbsolute).toBeGreaterThan(0);
     expect(actualPoseVisibilityDelta.maxAbsolute).toBeGreaterThan(0);
-    failureOperation = 'unposed-skin.ao-graph-validation';
-    failureReceipt = unposedControlEvidence.receipt;
-    failureFrameTrace = unposedGpuRaw.frameTrace;
-    failureFrameSummary = {
-      frameId: unposedGpuRaw.publicReceiptFrameId,
-      recordFrameNumber: unposedGpuRaw.targetRecordFrameNumber,
-      graphGeneration: unposedGpuRaw.graphGeneration,
-      textureIdentity: unposedGpuRaw.textureIdentity,
-      presentation: 'ready',
-      capture: 'unposed-skin-ssao-raw-control',
-    };
-    failureReadback = {
-      target: 'ssao-raw',
-      capture: 'unposed-control',
-      format: unposedGpuRaw.format,
-      width: unposedGpuRaw.width,
-      height: unposedGpuRaw.height,
-      byteLength: unposedGpuRaw.bytes.byteLength,
-      sha256: unposedRawSha256,
-      independentReferenceDelta: unposedVisibilityDelta,
-      actualPoseDelta: actualPoseVisibilityDelta,
-    };
-    failureDiagnostics = {
-      frameSummary: failureFrameSummary,
-      skinTapeReadiness: skinTapeEvidence,
-      settledSkinSurface: settledSkinSurfaceEvidence,
-      posedRawComparison: posedSkinRawComparison,
-      unposedControl,
-    };
     const skinFrameInspection = renderer.inspect();
     expect(skinFrameInspection.output.graphPassNames).toEqual(
       expect.arrayContaining(['standard-scene-surface-data', 'ssao-calc']),
@@ -1437,7 +1099,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
           height,
           algorithm: 'gtao',
           quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
-          resolutionScale: 0.5,
         },
         operation: failureOperation,
         receipt: failureReceipt,

@@ -1,13 +1,10 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "7e43f472-4c4d-4ee3-9aa1-bc89e7402812",
+  "schemaVersion": "3.0.0",
+  "packageId": "1ed33b38-5d65-5286-92f4-4e6041c25438",
+  "assets": {
+    "arc-nova-violet-sigil.wgsl": {
       "kind": "material",
       "name": "Arc Nova Violet Shock",
-      "sourceKey": "arc-nova-violet-sigil.wgsl",
-      "execution": "cooked",
       "payload": {
         "kind": "material",
         "passes": [
@@ -61,5 +58,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

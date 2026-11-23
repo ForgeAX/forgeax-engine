@@ -1,16 +1,15 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { defineSystem } from "@forgeax/engine-ecs";
 import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn-node smoke for Bevy's text2d mapping.
 //
-// The browser app and this smoke both call src/text2d.ts. Dawn cannot fetch a
-// Vite pack-index, so this script registers the same baked DejaVu MSDF payload
-// inline and then drives the public World + renderer path for deterministic
-// readback.
+// Both the browser app and this smoke load the built DejaVu Font through the
+// asset catalog. The smoke drives the renderer and reads pixels back on Dawn.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -91,6 +90,7 @@ const {
   stepText2d,
 } = await import(resolve(here, '..', 'src', 'text2d.ts'));
 const m34RecoveryMode = process.argv.includes('--m34-recovery');
+const dist = resolve(here, '..', 'dist');
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = processShaderManifestUrl(manifestPath);
 
@@ -124,7 +124,8 @@ if (assets === undefined) {
   process.exit(1);
 }
 
-const fontHandle = await registerBakedFont(app.world, assets);
+useBuiltAssetSource(assets, dist);
+const fontHandle = (await assets.load('0172daac-227f-5a3b-b6ae-313f9fd52081', 'font')).unwrap();
 if (m34RecoveryMode) {
   const fontPayload = assets.read(fontHandle).unwrap();
   assets.release(fontHandle).unwrap();
@@ -197,27 +198,6 @@ if (failures.length > 0) {
 console.log(`[smoke] PASS - ${frames} frames, 4 native GlyphText labels, ${visiblePixels} visible pixels, rhiErrors=0`);
 await app.dispose();
 delete globalThis.navigator.gpu;
-
-async function registerBakedFont(world, assets) {
-  const repoRoot = resolve(here, '..', '..', '..', '..');
-  const fontDir = resolve(repoRoot, 'forgeax-engine-assets', 'dejavu-fonts');
-  const atlasBytes = readFileSync(resolve(fontDir, 'DejaVuSansMono.atlas.png'));
-  const pack = JSON.parse(readFileSync(resolve(fontDir, 'DejaVuSansMono.font.pack.json'), 'utf8'));
-  const { parseImage } = await import('@forgeax/engine-image/parse-image');
-  const result = parseImage(atlasBytes, 'image/png', { colorSpace: 'linear', mipmap: false });
-  if (!result.ok) throw result.error;
-  const decoded = result.value;
-  const payload = pack.assets[0].payload;
-  const atlas = assets.create({
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: decoded.width, height: decoded.height } },
-    format: 'rgba8unorm', data: decoded.bytes, colorSpace: 'linear', mips: { kind: 'none' },
-  }).unwrap();
-  const samplerPayload = pack.assets.find((asset) => asset.kind === 'sampler')?.payload;
-  if (samplerPayload === undefined) throw new Error('Font Pack has no sampler');
-  const sampler = assets.create({ kind: 'sampler', ...samplerPayload }).unwrap();
-  return assets.create({ kind: 'font', atlas, sampler, glyphs: payload.glyphs, common: payload.common }).unwrap();
-}
 
 async function readback(device) {
   if (!device || !renderTarget) throw new Error('render target unavailable for readback');

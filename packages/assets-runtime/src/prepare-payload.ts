@@ -1,3 +1,4 @@
+import { withMeshAabb } from '@forgeax/engine-geometry';
 import { isBrowserResolvableVideoUrl } from '@forgeax/engine-graphics-extras';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { copyPackData, packArrayStorage } from '@forgeax/engine-pack/runtime';
@@ -14,7 +15,6 @@ import {
   type Result,
 } from '@forgeax/engine-types';
 import { validateWaterRuntimeAsset } from '@forgeax/engine-water';
-import { withMeshAabb } from './aabb.js';
 import { prepareRuntimeIesProfile } from './loaders/ies-profile';
 import {
   inferAtlasExtent,

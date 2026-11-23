@@ -25,12 +25,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, isAbsolute, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { IMAGE_ERROR_EXPECTED, IMAGE_ERROR_HINTS } from '@forgeax/engine-types';
-import {
-  type AtlasImageInput,
-  type AtlasRegion,
-  type ShelfPackOutcome,
-  shelfPack,
-} from './shelf-pack.js';
+import { type AtlasImageInput, type AtlasRegion, shelfPack } from './shelf-pack.js';
 
 interface AssetCtx {
   readonly stdoutWrite: (line: string) => void;
@@ -43,18 +38,6 @@ interface ErrorEnvelope {
   readonly expected: string;
   readonly hint: string;
   readonly detail: Record<string, unknown>;
-}
-
-function emitError(ctx: AssetCtx, env: ErrorEnvelope): number {
-  ctx.stderrWrite(
-    JSON.stringify({
-      code: env.code,
-      expected: env.expected,
-      hint: env.hint,
-      detail: env.detail,
-    }),
-  );
-  return 1;
 }
 
 interface UpngDecoded {
@@ -84,54 +67,52 @@ interface AtlasArgs {
   readonly maxAtlasSize: number;
 }
 
-function parseAtlasArgs(
-  rest: string[],
-  cwd: string,
-):
-  | { ok: true; value: AtlasArgs }
-  | {
-      ok: false;
-      message: string;
-    } {
-  let parsed:
-    | {
-        values: {
-          input?: string;
-          name?: string;
-          output?: string;
-          'max-atlas-size'?: string;
-        };
-      }
-    | undefined;
+type AtlasRequest = Pick<AtlasArgs, 'input' | 'name'> &
+  Partial<Pick<AtlasArgs, 'output' | 'maxAtlasSize'>>;
+
+const atlasOptions = {
+  input: { type: 'string' },
+  name: { type: 'string' },
+  output: { type: 'string' },
+  'max-atlas-size': { type: 'string' },
+} as const;
+
+function parseAtlasArgs(rest: string[] | AtlasRequest, cwd: string) {
   try {
-    parsed = parseArgs({
-      args: rest,
-      allowPositionals: false,
-      strict: true,
-      options: {
-        input: { type: 'string' },
-        name: { type: 'string' },
-        output: { type: 'string' },
-        'max-atlas-size': { type: 'string' },
-      },
-    });
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    const parse = (args: string[]) =>
+      parseArgs({ args, allowPositionals: false, strict: true, options: atlasOptions }).values;
+    if (Array.isArray(rest)) {
+      const { 'max-atlas-size': size, ...args } = parse(rest);
+      return validateAtlasArgs(args, size, cwd);
+    }
+    const size = rest.maxAtlasSize === undefined ? undefined : String(rest.maxAtlasSize);
+    // Preserve the existing command diagnostic for values interpreted as flags.
+    for (const [flag, value] of Object.entries({
+      input: rest.input,
+      name: rest.name,
+      output: rest.output,
+      'max-atlas-size': size,
+    })) {
+      if (value !== undefined && value.length > 1 && value.startsWith('-'))
+        parse([`--${flag}`, value]);
+    }
+    return validateAtlasArgs(rest, size, cwd);
+  } catch (cause) {
+    return { ok: false as const, message: cause instanceof Error ? cause.message : String(cause) };
   }
-  const input = parsed.values.input;
-  const name = parsed.values.name;
-  if (typeof input !== 'string' || input.length === 0) {
-    return { ok: false, message: 'missing required --input <glob>' };
-  }
-  if (typeof name !== 'string' || name.length === 0) {
-    return { ok: false, message: 'missing required --name <prefix>' };
-  }
-  const output = typeof parsed.values.output === 'string' ? parsed.values.output : cwd;
-  const maxRaw = parsed.values['max-atlas-size'];
-  const maxAtlasSize = typeof maxRaw === 'string' ? Number.parseInt(maxRaw, 10) : 4096;
-  if (!Number.isFinite(maxAtlasSize) || maxAtlasSize <= 0) {
+}
+
+function validateAtlasArgs(
+  args: { readonly input?: string; readonly name?: string; readonly output?: string },
+  size: string | undefined,
+  cwd: string,
+): { ok: true; value: AtlasArgs } | { ok: false; message: string } {
+  const { input, name, output = cwd } = args;
+  if (!input) return { ok: false, message: 'missing required --input <glob>' };
+  if (!name) return { ok: false, message: 'missing required --name <prefix>' };
+  const maxAtlasSize = size === undefined ? 4096 : Number.parseInt(size, 10);
+  if (!Number.isFinite(maxAtlasSize) || maxAtlasSize <= 0)
     return { ok: false, message: '--max-atlas-size must be a positive integer' };
-  }
   return { ok: true, value: { input, name, output, maxAtlasSize } };
 }
 
@@ -180,61 +161,11 @@ function blitAtlas(
   return out;
 }
 
-function emitSizeExceeded(
-  ctx: AssetCtx,
-  detail: { name: string; width: number; height: number; maxAtlasSize: number },
-): number {
-  return emitError(ctx, {
-    code: 'atlas-size-exceeded',
-    expected: IMAGE_ERROR_EXPECTED['atlas-size-exceeded'],
-    hint: IMAGE_ERROR_HINTS['atlas-size-exceeded'],
-    detail,
-  });
-}
-
-function emitEmptyInput(ctx: AssetCtx, receivedCount: number): number {
-  return emitError(ctx, {
-    code: 'atlas-empty-input',
-    expected: IMAGE_ERROR_EXPECTED['atlas-empty-input'],
-    hint: IMAGE_ERROR_HINTS['atlas-empty-input'],
-    detail: { receivedCount },
-  });
-}
-
-function enforceMaxSize(
-  images: ReadonlyArray<AtlasImageInput>,
-  maxAtlasSize: number,
-  ctx: AssetCtx,
-): number | null {
-  for (const img of images) {
-    if (img.width > maxAtlasSize || img.height > maxAtlasSize) {
-      return emitSizeExceeded(ctx, {
-        name: img.name,
-        width: img.width,
-        height: img.height,
-        maxAtlasSize,
-      });
-    }
-  }
-  return null;
-}
-
-type ShelfPackErrorValue = Extract<ShelfPackOutcome, { ok: false }>['error'];
-
-function emitFromShelfPackError(
-  error: ShelfPackErrorValue,
-  fallbackMax: number,
-  ctx: AssetCtx,
-): number {
-  if (error.code === 'atlas-empty-input') {
-    return emitEmptyInput(ctx, error.detail.receivedCount ?? 0);
-  }
-  return emitSizeExceeded(ctx, {
-    name: error.detail.name ?? '',
-    width: error.detail.width ?? 0,
-    height: error.detail.height ?? 0,
-    maxAtlasSize: error.detail.maxAtlasSize ?? fallbackMax,
-  });
+function atlasFailure(code: ErrorEnvelope['code'], detail: ErrorEnvelope['detail']) {
+  return {
+    ok: false as const,
+    error: { code, expected: IMAGE_ERROR_EXPECTED[code], hint: IMAGE_ERROR_HINTS[code], detail },
+  };
 }
 
 function enforceRegionsFit(
@@ -242,23 +173,17 @@ function enforceRegionsFit(
   atlasWidth: number,
   atlasHeight: number,
   fallbackName: string,
-  ctx: AssetCtx,
-): number | null {
+) {
   let regionsTotalPixels = 0;
   for (const r of regions) regionsTotalPixels += r.w * r.h;
   const atlasPixels = atlasWidth * atlasHeight;
   if (regionsTotalPixels <= atlasPixels) return null;
   const offender =
     regions.find((r) => r.x + r.w > atlasWidth || r.y + r.h > atlasHeight) ?? regions[0];
-  return emitError(ctx, {
-    code: 'atlas-region-mismatch',
-    expected: IMAGE_ERROR_EXPECTED['atlas-region-mismatch'],
-    hint: IMAGE_ERROR_HINTS['atlas-region-mismatch'],
-    detail: {
-      name: offender?.name ?? fallbackName,
-      regionsTotalPixels,
-      atlasPixels,
-    },
+  return atlasFailure('atlas-region-mismatch', {
+    name: offender?.name ?? fallbackName,
+    regionsTotalPixels,
+    atlasPixels,
   });
 }
 
@@ -268,7 +193,7 @@ async function writeAtlasArtifacts(
   images: ReadonlyArray<AtlasImageInput>,
   upng: UpngModule,
   packed: { atlasWidth: number; atlasHeight: number; regions: ReadonlyArray<AtlasRegion> },
-): Promise<void> {
+) {
   const { atlasWidth, atlasHeight, regions } = packed;
   const imgByName = new Map<string, AtlasImageInput>();
   for (const img of images) imgByName.set(img.name, img);
@@ -276,7 +201,9 @@ async function writeAtlasArtifacts(
   const atlasPng = upng.encode([atlasRgba.buffer as ArrayBuffer], atlasWidth, atlasHeight, 0);
   const outputAbs = isAbsolute(args.output) ? args.output : resolve(cwd, args.output);
   await mkdir(outputAbs, { recursive: true });
-  await writeFile(resolve(outputAbs, `${args.name}.atlas.png`), Buffer.from(atlasPng));
+  const image = `${args.name}.atlas.png`;
+  const metadata = `${args.name}.atlas.meta.json`;
+  await writeFile(resolve(outputAbs, image), Buffer.from(atlasPng));
   const sidecar = {
     name: args.name,
     atlasWidth,
@@ -289,24 +216,24 @@ async function writeAtlasArtifacts(
       vH: r.h / atlasHeight,
     })),
   };
-  await writeFile(
-    resolve(outputAbs, `${args.name}.atlas.meta.json`),
-    `${JSON.stringify(sidecar, null, 2)}\n`,
-    'utf-8',
-  );
+  await writeFile(resolve(outputAbs, metadata), `${JSON.stringify(sidecar, null, 2)}\n`, 'utf-8');
+  return [image, metadata];
 }
 
-export async function runAtlas(rest: string[], ctx: AssetCtx): Promise<number> {
-  const cwd = ctx.cwd ?? process.cwd();
+/** Execute the atlas producer for callers that already own command output. */
+export async function runAtlasCommand(rest: string[] | AtlasRequest, cwd: string) {
   const argsOutcome = parseAtlasArgs(rest, cwd);
   if (!argsOutcome.ok) {
-    return emitError(ctx, {
-      code: 'atlas-empty-input',
-      expected:
-        'forgeax asset atlas --input <glob> --name <prefix> [--output <dir>] [--max-atlas-size <n>]',
-      hint: argsOutcome.message,
-      detail: { receivedCount: 0 },
-    });
+    return {
+      ok: false as const,
+      error: {
+        code: 'atlas-empty-input' as const,
+        expected:
+          'forgeax asset atlas --input <glob> --name <prefix> [--output <dir>] [--max-atlas-size <n>]',
+        hint: argsOutcome.message,
+        detail: { receivedCount: 0 },
+      },
+    };
   }
   const args = argsOutcome.value;
 
@@ -315,20 +242,24 @@ export async function runAtlas(rest: string[], ctx: AssetCtx): Promise<number> {
   // Glob patterns use forward slashes, including on Windows.
   const inputGlob = sep === '/' ? inputAbs : inputAbs.replaceAll(sep, '/');
   const matched = await glob(inputGlob, { absolute: true, nodir: true, follow: true });
-  if (matched.length === 0) return emitEmptyInput(ctx, 0);
+  if (matched.length === 0) return atlasFailure('atlas-empty-input', { receivedCount: 0 });
 
   const upng = await loadUpng();
   const images = await decodePngs(matched, upng);
-  const sizeErr = enforceMaxSize(images, args.maxAtlasSize, ctx);
-  if (sizeErr !== null) return sizeErr;
-
   const outcome = shelfPack(images, { maxAtlasSize: args.maxAtlasSize });
-  if (!outcome.ok) return emitFromShelfPackError(outcome.error, args.maxAtlasSize, ctx);
+  if (!outcome.ok) return atlasFailure(outcome.error.code, outcome.error.detail);
 
   const { atlasWidth, atlasHeight, regions } = outcome.value;
-  const regionErr = enforceRegionsFit(regions, atlasWidth, atlasHeight, args.name, ctx);
+  const regionErr = enforceRegionsFit(regions, atlasWidth, atlasHeight, args.name);
   if (regionErr !== null) return regionErr;
 
-  await writeAtlasArtifacts(args, cwd, images, upng, { atlasWidth, atlasHeight, regions });
-  return 0;
+  const artifacts = await writeAtlasArtifacts(args, cwd, images, upng, outcome.value);
+  return { ok: true as const, value: { name: args.name, output: args.output, artifacts } };
+}
+
+export async function runAtlas(rest: string[], ctx: AssetCtx): Promise<number> {
+  const result = await runAtlasCommand(rest, ctx.cwd ?? process.cwd());
+  if (result.ok) return 0;
+  ctx.stderrWrite(JSON.stringify(result.error));
+  return 1;
 }

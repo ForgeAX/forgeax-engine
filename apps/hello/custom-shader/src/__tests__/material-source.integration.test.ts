@@ -8,15 +8,15 @@ import { expect, it } from 'vitest';
 
 it('loads the authored Material and Texture closure through its ordinary Catalog source',async()=>{
   const packageUrl='https://custom.invalid/pulse.pack.json';
-  const source=JSON.parse(readFileSync(new URL('../../assets/pulse-material.pack.json',import.meta.url),'utf8'));
+  const source=JSON.parse(readFileSync(new URL('../../fixtures/pulse-material.runtime-pack.json',import.meta.url),'utf8'));
   const {pack,publication}=createRuntimePackPublication({scopeId:'custom-material',sourcePath:'pulse.pack.json',sourceRevision:'1',packageUrl,pack:source});
   const assets=new AssetRegistry({scopeId:'custom-material'});
   assets.installDecoder(textureContribution.kind,textureContribution.decoder);
   assets.installDecoder(materialContribution.kind,materialContribution.decoder);
   assets.setCatalogSource(createCatalogSource({entries:pack.assets.map(({guid,kind})=>({guid,kind,packageUrl,sourcePath:'pulse.pack.json',publication}))}),async()=>new Response(JSON.stringify(pack)));
   try {
-    const root=(await assets.load('01935b00-7d8c-7c4e-9f12-345678abcd02','material')).unwrap();
-    const child=(await assets.load('01935b00-7d8c-7c4e-9f12-345678abcd03','material')).unwrap();
+    const root=(await assets.load('330a8d22-5e43-5aab-8cd4-5d920045f7a8','material')).unwrap();
+    const child=(await assets.load('3cb62ea4-3628-5912-83b0-d4f2ee2ae351','material')).unwrap();
     const value=assets.read(root).unwrap();
     const base=value.values?.baseColorTexture;
     const normal=value.values?.normalTexture;

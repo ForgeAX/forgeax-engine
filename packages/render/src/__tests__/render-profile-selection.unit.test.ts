@@ -5,7 +5,6 @@ import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-p
 import { createRenderProfileSelection } from '../pipeline/render-profile-selection';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import type { RenderProfile } from '../render-contract';
-import { getSsaoParameters } from '../ssao-config';
 import { DEFERRED_ATTACHMENT_BYTES } from '../standard-attachments';
 
 const profile: RenderProfile = Object.freeze({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'auto' });
@@ -27,14 +26,14 @@ describe('device-owned automatic Standard path', () => {
     ).toContain('gbufferFormat');
   });
   it('admits the native AO parameter vocabulary through the public profile boundary', () => {
-    const ssao = getSsaoParameters({ method: 'spiral-ssao', application: 'scene-color' });
+    const ssao = { method: 'ssao', radius: 2, quality: 50 } as const;
     expect(
       validateRenderProfile({ ...profile, ambientOcclusion: { enabled: true, ...ssao } }),
     ).toBeUndefined();
     expect(
       validateRenderProfile({
         ...profile,
-        ambientOcclusion: { enabled: true, ...ssao, resolutionScale: 0.1 },
+        ambientOcclusion: { enabled: true, ...ssao, quality: 101 },
       }),
     ).toBeDefined();
     expect(
@@ -42,7 +41,7 @@ describe('device-owned automatic Standard path', () => {
         ...profile,
         ambientOcclusion: { enabled: true, ...ssao, misspelledRadius: 1 },
       } as unknown as RenderProfile),
-    ).toContain('unsupported parameter');
+    ).toContain('remove legacy AO parameters');
   });
   it.each([
     [true, 8, 64, 'deferred'],

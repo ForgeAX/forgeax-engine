@@ -209,7 +209,7 @@ async function main() {
       },
       {
         component: ScreenSpaceReflection,
-        data: { maxDistance: 100, thickness: 0.25, maxRoughness: 0.65, waterTemporal: 1 },
+        data: { maxDistance: 100, thickness: 0.25, maxRoughness: 0.65 },
       },
     )
     .unwrap();

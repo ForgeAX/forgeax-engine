@@ -12,7 +12,8 @@ import {
 import type { RenderSystemRuntime } from './render-context';
 
 type VariantEntries = Map<GraphBindingViews | undefined, MaterialBgAssemblyCacheEntry>;
-type ProbeEntries = Map<number | undefined, VariantEntries>;
+type LayoutEntries = Map<number, VariantEntries>;
+type ProbeEntries = Map<number | undefined, LayoutEntries>;
 type ShaderEntries = Map<string, ProbeEntries>;
 
 export interface MaterialTableBindingPreparation extends GpuViewInputPreparation {
@@ -38,6 +39,7 @@ export class MaterialBgAssemblyCache {
     shaderId: string | undefined,
     probeIndex?: number,
     graphViews?: GraphBindingViews,
+    standardMaterialLayoutIndex = 0,
   ): MaterialBgAssemblyCacheEntry | undefined {
     if (
       sourceIdentity === undefined ||
@@ -48,7 +50,8 @@ export class MaterialBgAssemblyCache {
     const variants = this.materials
       .get(materialHandle)
       ?.get(shaderId ?? '')
-      ?.get(probeIndex);
+      ?.get(probeIndex)
+      ?.get(standardMaterialLayoutIndex);
     if (variants !== undefined)
       for (const entry of variants.values())
         if (sameGraphBindingViews(entry.graphViews, graphViews)) return entry;
@@ -61,6 +64,7 @@ export class MaterialBgAssemblyCache {
     shaderId: string | undefined,
     probeIndex: number | undefined,
     entry: MaterialBgAssemblyCacheEntry,
+    standardMaterialLayoutIndex = 0,
   ): void {
     if (entry.graphViews !== undefined && !graphBindingViewsCurrent(entry.graphViews))
       throw stale();
@@ -82,10 +86,15 @@ export class MaterialBgAssemblyCache {
       probes = new Map();
       shaders.set(shader, probes);
     }
-    let variants = probes.get(probeIndex);
+    let layouts = probes.get(probeIndex);
+    if (layouts === undefined) {
+      layouts = new Map();
+      probes.set(probeIndex, layouts);
+    }
+    let variants = layouts.get(standardMaterialLayoutIndex);
     if (variants === undefined) {
       variants = new Map();
-      probes.set(probeIndex, variants);
+      layouts.set(standardMaterialLayoutIndex, variants);
     }
     for (const key of variants.keys())
       if (sameGraphBindingViews(key, entry.graphViews)) {
@@ -98,7 +107,8 @@ export class MaterialBgAssemblyCache {
   *values(): IterableIterator<MaterialBgAssemblyCacheEntry> {
     for (const shaders of this.materials.values())
       for (const probes of shaders.values())
-        for (const variants of probes.values()) yield* variants.values();
+        for (const layouts of probes.values())
+          for (const variants of layouts.values()) yield* variants.values();
   }
 
   /** Capture the actual issued leaf once; later currency checks do not scan or allocate. */
@@ -106,14 +116,16 @@ export class MaterialBgAssemblyCache {
     const source = this.sourceIdentity;
     for (const [material, shaders] of this.materials)
       for (const [shader, probes] of shaders)
-        for (const [probe, variants] of probes)
-          for (const [key, entry] of variants) {
-            if (entry.bindGroup !== group) continue;
-            return () =>
-              this.sourceIdentity === source &&
-              this.materials.get(material)?.get(shader)?.get(probe) === variants &&
-              variants.get(key) === entry &&
-              entry.bindingsCurrent();
+        for (const [probe, layouts] of probes)
+          for (const [kind, variants] of layouts) {
+            for (const [key, entry] of variants) {
+              if (entry.bindGroup !== group) continue;
+              return () =>
+                this.sourceIdentity === source &&
+                this.materials.get(material)?.get(shader)?.get(probe)?.get(kind) === variants &&
+                variants.get(key) === entry &&
+                entry.bindingsCurrent();
+            }
           }
     return undefined;
   }
@@ -247,10 +259,13 @@ export class MaterialBgAssemblyCache {
   ): void {
     for (const [material, shaders] of this.materials) {
       for (const [shader, probes] of shaders) {
-        for (const [probe, variants] of probes) {
-          for (const [key, entry] of variants)
-            if (discard(entry, variants, key)) variants.delete(key);
-          if (variants.size === 0) probes.delete(probe);
+        for (const [probe, layouts] of probes) {
+          for (const [kind, variants] of layouts) {
+            for (const [key, entry] of variants)
+              if (discard(entry, variants, key)) variants.delete(key);
+            if (variants.size === 0) layouts.delete(kind);
+          }
+          if (layouts.size === 0) probes.delete(probe);
         }
         if (probes.size === 0) shaders.delete(shader);
       }

@@ -34,6 +34,11 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export const SIZE = 32;
 
+export const IRRADIANCE_FIELD_CARD_PASSES = [
+  'irradiance-field.card-surface',
+  'irradiance-field.card-lighting',
+] as const;
+
 /** Every probe and Card tile updates each frame so convergence is frame-exact
  * unless `cardBudget` slices the Card capture across frames. */
 export const irradianceFieldGi = (
@@ -328,10 +333,16 @@ export async function createIrradianceFieldHarness(options: {
     return gi;
   };
   /** Ready, submitted, then `frames` further full-field updates. */
-  const settle = async (frames = 12) => {
+  const settle = async (frames = 12, submittedPasses?: Set<string>) => {
+    const drawAndObserve = async () => {
+      await draw();
+      if (submittedPasses === undefined) return;
+      const frame = renderer.inspect({ fields: ['perFramePassNames'] });
+      for (const pass of frame.perFramePassNames) submittedPasses.add(pass);
+    };
     const started = performance.now();
     for (;;) {
-      await draw();
+      await drawAndObserve();
       const state = renderer.inspect().diffuseGi;
       if (state?.state === 'failed') throw new Error(JSON.stringify({ state, errors }));
       if (state?.state === 'ready' && state.submittedFrames > 0) {
@@ -342,7 +353,7 @@ export async function createIrradianceFieldHarness(options: {
         throw new Error(`irradiance field did not settle: ${JSON.stringify({ state, errors })}`);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    for (let i = 0; i < frames; i++) await draw();
+    for (let i = 0; i < frames; i++) await drawAndObserve();
   };
   const image = async (): Promise<FieldImage> => {
     advanceWorld();

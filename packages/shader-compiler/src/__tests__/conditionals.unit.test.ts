@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { projectShaderConditionals } from '../conditionals';
+import { filterImportsByDefines, prepareEngineShaderImportScanner } from '../engine-program';
 
 describe('shader conditional projection', () => {
   const source = '#ifdef A\nactive\n#else\ninactive\n#endif';
@@ -43,4 +44,30 @@ describe('shader conditional projection', () => {
       ),
     ).toBe('second\nthird');
   });
+});
+
+it('reuses import projection across variants without losing conditional edges', () => {
+  const source = '#import surface';
+  const imports = {
+    surface: '#if ENABLED == true\n#import x\n#else\n#import y\n#endif',
+    x: '#ifndef OPTIONAL\n#import leaf\n#endif',
+    y: '// #import leaf',
+    leaf: '',
+  };
+  const scan = prepareEngineShaderImportScanner(imports);
+  const variants: Record<string, boolean>[] = [
+    {},
+    { ENABLED: false },
+    { ENABLED: true },
+    { ENABLED: true, UNUSED: true },
+    { ENABLED: true, OPTIONAL: true },
+    { ENABLED: true, OPTIONAL: false },
+    { ENABLED: true },
+  ];
+  for (const defines of variants) {
+    const axes = Object.keys(defines);
+    expect(filterImportsByDefines(imports, source, defines, axes, scan)).toEqual(
+      filterImportsByDefines(imports, source, defines, axes),
+    );
+  }
 });

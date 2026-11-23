@@ -2,7 +2,7 @@ import type { GraphBuffer } from '@forgeax/engine-render-graph';
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { GpuSceneResourceFrame } from '../gpu-scene';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { DrawRows } from '../record/frame-snapshot';
 import type { PipelineState } from '../record/render-context';
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
@@ -47,14 +47,14 @@ export interface RasterGraphTarget {
 export interface ProjectedRasterGraph {
   readonly frame: RasterProjectionFrame;
   readonly target: RasterGraphTarget;
-  readonly indirect: GraphBuffer;
+  readonly indirect: GraphBuffer | undefined;
   readonly rasterClasses: Map<string, ProjectedRasterClass>;
   lateRegion: { readonly indirectByteOffset: number; readonly visibleBase: number } | undefined;
 }
 
 export interface PipelinePreparationJob {
   prepare(
-    entries: readonly ValidatedRenderable[],
+    entries: DrawRows,
     artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
     onPending?: (reason: FramePresentationPendingReason) => void,
     materials?: import('../scene/material-dispatch').MaterialFrame,

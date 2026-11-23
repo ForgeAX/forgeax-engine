@@ -11,8 +11,6 @@ import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
 import { type CapsuleShadowSnapshot, WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import {
   restrictShadowCasterClasses,
-  SHADOW_CASTER_PROMOTE_WINDOW,
-  SHADOW_CASTER_SETTLE_FRAMES,
   ShadowCasterClassifier,
 } from '../gpu-driven/shadow-caster-classes';
 import { MaterialResource } from '../material-resource';
@@ -44,19 +42,15 @@ describe('ShadowCasterClassifier source membership', () => {
     changedSlotsSince: () => [],
   };
   const slots = [
-    { slot: 0, snapshot: {} },
+    { slot: 0, snapshot: { mobility: 'static' as const } },
     { slot: 1, snapshot: { skinBinding: {}, capsuleShadowRequested: true } },
     { slot: 2, snapshot: { skinBinding: {}, capsuleShadowRequested: true } },
     { slot: 3, snapshot: { skinBinding: {} } },
   ];
-  // Run past every promotion window so the classifier is quiescent.
+  // Exercise repeated decisions with explicit caster roles.
   const settled = (): ShadowCasterClassifier => {
     const classifier = new ShadowCasterClassifier();
-    for (
-      let frame = 0;
-      frame < SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW;
-      frame++
-    ) {
+    for (let frame = 0; frame < 116; frame++) {
       classifier.update({ slots, slotAt: (slot) => slots[slot] }, scene);
     }
     return classifier;

@@ -1,18 +1,17 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { type CatalogDelta, type CatalogEntry, ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { type CatalogListener, createCatalogSource } from '../catalog-source';
+import { defined } from './assert-defined';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const kind = defineAssetKind<{ revision: number }>('catalog-cache-fixture');
 function gate() {
-  let release = () => {};
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise, resolve: release } = testGate();
   return { promise, release };
 }
 function fixture() {
@@ -44,21 +43,12 @@ function fixture() {
   });
   const publish = (guid: string, revision: number, notify = true, refs: string[] = []) => {
     const packageUrl = `https://catalog.invalid/${guid}/${revision}.pack.json`;
-    const produced = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath: guid,
-      sourceRevision: String(revision),
-      packageUrl,
-      pack: { assets: [{ guid, kind: kind.kind, payload: { revision }, refs, artifacts: {} }] },
-    });
+    const produced = catalogPack(
+      [{ guid, kind: kind.kind, payload: { revision }, refs, artifacts: {} }],
+      { sourcePath: guid, sourceRevision: String(revision), packageUrl },
+    );
     packages.set(packageUrl, produced.pack);
-    const row: CatalogEntry = {
-      guid,
-      kind: kind.kind,
-      sourcePath: guid,
-      packageUrl,
-      publication: produced.publication,
-    };
+    const row = defined(produced.rows[0]);
     const existed = rows.some((entry) => entry.guid === guid);
     rows = [...rows.filter((entry) => entry.guid !== guid), row];
     if (notify)
@@ -87,49 +77,43 @@ function fixture() {
 
 it('shares one Catalog authority between concurrent navigation and loading, then retains gameplay edits', async () => {
   const f = fixture();
-  try {
-    f.publish(A, 1);
-    const [navigation, first, second] = await Promise.all([
-      f.assets.enumerateCatalog(),
-      f.assets.load(A, kind),
-      f.assets.load(A, kind),
-    ]);
-    expect(navigation.unwrap().map((row) => row.guid)).toEqual([A]);
-    expect(first.unwrap()).toBe(second.unwrap());
-    expect(f.enumerate).toHaveBeenCalledTimes(1);
-    expect(f.fetcher).toHaveBeenCalledTimes(1);
-    f.assets.update(first.unwrap(), { revision: 9 }).unwrap();
-    f.publish(A, 2);
-    const again = (await f.assets.load(A, kind)).unwrap();
-    expect(again).toBe(first.unwrap());
-    expect(f.assets.read(again).unwrap().revision).toBe(9);
-    expect(f.fetcher).toHaveBeenCalledTimes(1);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  f.publish(A, 1);
+  const [navigation, first, second] = await Promise.all([
+    f.assets.enumerateCatalog(),
+    f.assets.load(A, kind),
+    f.assets.load(A, kind),
+  ]);
+  expect(navigation.unwrap().map((row) => row.guid)).toEqual([A]);
+  expect(first.unwrap()).toBe(second.unwrap());
+  expect(f.enumerate).toHaveBeenCalledTimes(1);
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
+  f.assets.update(first.unwrap(), { revision: 9 }).unwrap();
+  f.publish(A, 2);
+  const again = (await f.assets.load(A, kind)).unwrap();
+  expect(again).toBe(first.unwrap());
+  expect(f.assets.read(again).unwrap().revision).toBe(9);
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
 });
 
 it('reconciles missed source changes and removals without rewriting live runtime content', async () => {
   const f = fixture();
-  try {
-    f.publish(A, 1);
-    f.publish(B, 1);
-    const a = (await f.assets.load(A, kind)).unwrap();
-    const b = (await f.assets.load(B, kind)).unwrap();
-    f.publish(A, 2, false);
-    f.remove(B);
-    (await f.assets.reconcileCatalog()).unwrap();
-    expect(f.assets.catalogEntry(B)).toBeUndefined();
-    expect(f.assets.read(a).unwrap().revision).toBe(1);
-    expect(f.assets.read(b).unwrap().revision).toBe(1);
-    (await f.assets.reload(a, { conflict: 'reject' })).unwrap();
-    expect(f.assets.read(a).unwrap().revision).toBe(2);
-    expect((await f.assets.reload(b, { conflict: 'reject' })).ok).toBe(false);
-    expect(f.assets.read(b).unwrap().revision).toBe(1);
-    expect(f.fetcher).toHaveBeenCalledTimes(3);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  f.publish(A, 1);
+  f.publish(B, 1);
+  const a = (await f.assets.load(A, kind)).unwrap();
+  const b = (await f.assets.load(B, kind)).unwrap();
+  f.publish(A, 2, false);
+  f.remove(B);
+  (await f.assets.reconcileCatalog()).unwrap();
+  expect(f.assets.catalogEntry(B)).toBeUndefined();
+  expect(f.assets.read(a).unwrap().revision).toBe(1);
+  expect(f.assets.read(b).unwrap().revision).toBe(1);
+  (await f.assets.reload(a, { conflict: 'reject' })).unwrap();
+  expect(f.assets.read(a).unwrap().revision).toBe(2);
+  expect((await f.assets.reload(b, { conflict: 'reject' })).ok).toBe(false);
+  expect(f.assets.read(b).unwrap().revision).toBe(1);
+  expect(f.fetcher).toHaveBeenCalledTimes(3);
 });
 
 it('preserves an unrelated pending load and fences changed content across reconciliation', async () => {
@@ -160,39 +144,30 @@ it('preserves an unrelated pending load and fences changed content across reconc
 
 it('rejects incomplete eager closures before exposing their root and admits the repaired source', async () => {
   const f = fixture();
-  try {
-    f.publish(A, 1, true, [B]);
-    expect((await f.assets.load(A, kind)).ok).toBe(false);
-    expect(f.assets.inspect().assets).toEqual([]);
-    f.publish(B, 1);
-    const root = (await f.assets.load(A, kind)).unwrap();
-    expect(f.assets.read(root).unwrap().revision).toBe(1);
-    expect(f.assets.inspectSource()?.ready).toEqual([A, B]);
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  f.publish(A, 1, true, [B]);
+  expect((await f.assets.load(A, kind)).ok).toBe(false);
+  expect(f.assets.inspect().assets).toEqual([]);
+  f.publish(B, 1);
+  const root = (await f.assets.load(A, kind)).unwrap();
+  expect(f.assets.read(root).unwrap().revision).toBe(1);
+  expect(f.assets.inspectSource()?.ready).toEqual([A, B]);
 });
 
 it('uses only the explicitly installed source when another configured URL was replaced', async () => {
   const f = fixture();
-  try {
-    f.publish(A, 1);
-    const first = (await f.assets.load(A, kind)).unwrap();
-    const other = fixture();
-    try {
-      other.publish(B, 2);
-      f.assets.setCatalogSource(other.source);
-      expect((await f.assets.enumerateCatalog()).unwrap().map((entry) => entry.guid)).toEqual([B]);
-      expect(f.assets.read((await f.assets.load(B, kind)).unwrap()).unwrap().revision).toBe(2);
-      expect(f.assets.read(first).unwrap().revision).toBe(1);
-      expect((await f.assets.reload(first, { conflict: 'reject' })).ok).toBe(false);
-      expect(f.fetcher).toHaveBeenCalledTimes(1);
-    } finally {
-      other.assets.dispose();
-    }
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  f.publish(A, 1);
+  const first = (await f.assets.load(A, kind)).unwrap();
+  const other = fixture();
+  onTestFinished(() => other.assets.dispose());
+  other.publish(B, 2);
+  f.assets.setCatalogSource(other.source);
+  expect((await f.assets.enumerateCatalog()).unwrap().map((entry) => entry.guid)).toEqual([B]);
+  expect(f.assets.read((await f.assets.load(B, kind)).unwrap()).unwrap().revision).toBe(2);
+  expect(f.assets.read(first).unwrap().revision).toBe(1);
+  expect((await f.assets.reload(first, { conflict: 'reject' })).ok).toBe(false);
+  expect(f.fetcher).toHaveBeenCalledTimes(1);
 });
 
 it.each([
@@ -200,36 +175,33 @@ it.each([
   'revision',
 ] as const)('does not reuse a formerly accepted URL catalog across a new %s constraint', async (constraint) => {
   const f = fixture();
-  try {
-    const row = f.publish(A, 1);
-    const first = (await f.assets.load(A, kind)).unwrap();
-    const revision = { rootId: 'root', digest: 'sha256:first', observedAt: 1 };
-    const fetcher = vi.fn(async () =>
-      Response.json({
-        schemaVersion: 'runtime-catalog-snapshot-v1',
-        scopeId: 'first',
-        generation: 1,
-        authority: 'authoritative',
-        entries: [{ ...row, revision }],
-        diagnostics: [],
-      }),
-    );
-    f.assets.setCatalogSource(
-      createCatalogSource({
-        url: 'https://catalog.invalid/catalog.json',
-        fetch: fetcher,
-        ...(constraint === 'scope'
-          ? { expectedScope: { scopeId: 'second', generation: 1 } }
-          : { expectedRevision: { ...revision, digest: 'sha256:second', observedAt: 2 } }),
-      }),
-    );
-    expect((await f.assets.enumerateCatalog()).ok).toBe(false);
-    expect((await f.assets.reload(first, { conflict: 'reject' })).ok).toBe(false);
-    expect(f.assets.read(first).unwrap().revision).toBe(1);
-    expect(fetcher).toHaveBeenCalled();
-  } finally {
-    f.assets.dispose();
-  }
+  onTestFinished(() => f.assets.dispose());
+  const row = f.publish(A, 1);
+  const first = (await f.assets.load(A, kind)).unwrap();
+  const revision = { rootId: 'root', digest: 'sha256:first', observedAt: 1 };
+  const fetcher = vi.fn(async () =>
+    Response.json({
+      schemaVersion: 'runtime-catalog-snapshot-v1',
+      scopeId: 'first',
+      generation: 1,
+      authority: 'authoritative',
+      entries: [{ ...row, revision }],
+      diagnostics: [],
+    }),
+  );
+  f.assets.setCatalogSource(
+    createCatalogSource({
+      url: 'https://catalog.invalid/catalog.json',
+      fetch: fetcher,
+      ...(constraint === 'scope'
+        ? { expectedScope: { scopeId: 'second', generation: 1 } }
+        : { expectedRevision: { ...revision, digest: 'sha256:second', observedAt: 2 } }),
+    }),
+  );
+  expect((await f.assets.enumerateCatalog()).ok).toBe(false);
+  expect((await f.assets.reload(first, { conflict: 'reject' })).ok).toBe(false);
+  expect(f.assets.read(first).unwrap().revision).toBe(1);
+  expect(fetcher).toHaveBeenCalled();
 });
 
 it('rejects a delayed enumeration from a retired source and retains the current Catalog', async () => {

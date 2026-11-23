@@ -43,7 +43,9 @@ export async function verifySsaoScene(
       throw new Error('Disabled AO executed work');
     const on = await sample({ enabled: true, quality: 'high', radius: 0.5, intensity: 1 });
     const onPasses = app.renderer.inspect().perFramePassNames;
-    for (const pass of ['ssao-calc', 'ssao-blur'])
+    const effective = app.renderer.inspect().standardLighting?.ambientOcclusion.effectiveMethod;
+    const requiredPasses = effective === 'gtao' ? ['gtao-spatial', 'gtao-temporal', 'gtao-resolve'] : ['ssao-half', 'ssao-calc'];
+    for (const pass of requiredPasses)
       if (!onPasses.includes(pass)) throw new Error(`Missing ${pass}`);
     const enabled = delta(off, on);
     if (enabled.changed < 100 || enabled.meanChangedRgbDelta < 0.01)

@@ -1,6 +1,11 @@
 import { gltfImporter, sourceKeyForGltfOutput } from '@forgeax/engine/gltf';
 import { imageImporter } from '@forgeax/engine/image/image-importer';
-import { ImporterRegistry, type ImportRunnerFs, runImport } from '@forgeax/engine/import';
+import {
+  ImporterRegistry,
+  type ImportRunnerFs,
+  projectImportPack,
+  runImport,
+} from '@forgeax/engine/import';
 import type { ImportContext } from '@forgeax/engine/types';
 import type { ImportSubAsset } from '@forgeax/engine-types';
 import { cubeGltf } from '../../features/asset-formats/fixtures/gltf-source';
@@ -51,10 +56,10 @@ export async function importGltf(
     gltfFs(new TextEncoder().encode(JSON.stringify(json))),
   );
   if (!result.ok) return { ok: false, code: errorCode(result.error) };
-  const pack = (
-    result.value as { readonly pack?: { readonly assets: readonly ImportedPackAsset[] } }
-  ).pack;
-  return { ok: true, assets: pack?.assets ?? [] };
+  return {
+    ok: true,
+    assets: 'skipped' in result.value ? [] : projectImportPack(result.value.product).assets,
+  };
 }
 
 const refGuids = (asset: ImportedPackAsset | undefined): readonly (string | undefined)[] =>

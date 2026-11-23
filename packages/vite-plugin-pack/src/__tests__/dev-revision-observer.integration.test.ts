@@ -1,8 +1,8 @@
 import { watch as fsWatch, writeFileSync } from 'node:fs';
-import { lstat, mkdir, mkdtemp, rename, rm, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { lstat, mkdir, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { createRevisionObserver, type DevWatchListener } from '../dev/revision-observer.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -12,15 +12,12 @@ function silentNativeWatch(root: string, _listener: DevWatchListener) {
 }
 
 describe('revision observer real filesystem contract', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  afterEach(scratch.clear);
 
   it('reconciles real stat mutations when native hints are silent', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-observer-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-observer-');
     const assets = join(root, 'assets');
     await mkdir(assets);
     const existing = join(assets, 'hero.bin');
@@ -62,8 +59,7 @@ describe('revision observer real filesystem contract', () => {
   });
 
   it('deduplicates an absolute path within one revision and rebuilds directories', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-observer-dedup-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-observer-dedup-');
     const first = join(root, 'first');
     const second = join(root, 'second');
     await mkdir(first);
@@ -96,8 +92,7 @@ describe('revision observer real filesystem contract', () => {
   });
 
   it('keeps a declared file root live through atomic replacement without admitting a sibling', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-observer-file-root-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-observer-file-root-');
     const source = join(root, 'asset.pack.json');
     const sibling = join(root, 'unrelated.pack.json');
     const replacement = join(root, '.asset.pack.next.json');
@@ -166,8 +161,7 @@ describe('revision observer real filesystem contract', () => {
   });
 
   it('closes the startup snapshot race before reporting ready', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-observer-ready-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-revision-observer-ready-');
     let installed = false;
     const late = join(root, 'late.pack.json');
     const batches: string[][] = [];

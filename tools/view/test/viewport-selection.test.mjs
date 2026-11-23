@@ -35,6 +35,23 @@ it('selects and clears through the same request path with exact target identity'
   assert.equal(calls.at(-1)[1].entityId, undefined);
 });
 
+it('honors an explicit GPU pick and preserves selection when the renderer cannot sample it', async () => {
+  let unavailable = false;
+  const { broker, calls } = fixture((id, args) => {
+    if (id !== 'engine.target.pick') return { entityId: args.entityId };
+    if (unavailable) throw { code: 'engine-workspace-capability-unavailable', expected: 'A GPU sample' };
+    return { entityId: 'gpu-mesh', frameId: 42, granularity: 'visible-entity' };
+  });
+  const click = { ...identity, x: 32, y: 64, granularity: 'visible-entity' };
+  await broker.pickSceneEntity(click);
+  assert.equal(calls[0][1].granularity, 'visible-entity');
+  assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'gpu-mesh');
+  unavailable = true;
+  await assert.rejects(broker.pickSceneEntity(click), /capability-unavailable/);
+  assert.equal(calls.at(-1)[1].granularity, 'visible-entity');
+  assert.equal(broker.snapshot().sceneSelection.primary.entityId, 'gpu-mesh');
+});
+
 it('fails closed when the paired Engine does not honor exact triangle picking', async () => {
   const { broker, calls } = fixture((id, args) => id === 'engine.target.pick'
     ? { entityId: 'bounds-only-entity', granularity: 'bounds' }

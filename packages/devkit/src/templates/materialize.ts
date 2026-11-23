@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { failCommand } from '../types.js';
 import {
   type TemplateDescriptor,
   type TemplateValidation,
@@ -135,15 +136,12 @@ export async function readTemplateDescriptor(templateRoot: string): Promise<Temp
     ) as unknown;
     return validateTemplateDescriptor(parsed);
   } catch {
-    return {
-      ok: false,
-      error: {
-        code: 'template-invalid',
-        expected: 'template.json to contain valid JSON and a complete descriptor',
-        hint: 'Repair the selected template descriptor before creating a project.',
-        detail: {},
-      },
-    };
+    return failCommand(
+      'template-invalid',
+      'template.json to contain valid JSON and a complete descriptor',
+      'Repair the selected template descriptor before creating a project.',
+      {},
+    );
   }
 }
 

@@ -220,6 +220,13 @@ function assertSnapshotRoot(input: object): void {
  * author objects need no reserved tags. Use copyPackData before encoding caller data.
  */
 export function encodePackData<T extends object>(input: T): T & { binary?: PackBinary } {
+  const { data, buffers, views } = capturePackData(input);
+  return views.length
+    ? { ...data, binary: { byteOrder: 'little-endian', buffers: buffers.map(encodeBase64), views } }
+    : data;
+}
+
+function capturePackData<T extends object>(input: T, maxBytes = Infinity) {
   assertSnapshotRoot(input);
   if (Object.hasOwn(input, 'binary'))
     throw new TypeError('snapshot root reserves the binary field');
@@ -227,6 +234,7 @@ export function encodePackData<T extends object>(input: T): T & { binary?: PackB
   const ids = new Map<ArrayBuffer, number>();
   const buffers: Uint8Array<ArrayBuffer>[] = [];
   const views: BinaryView[] = [];
+  let capturedBytes = 0;
   const visit = (value: unknown, path: string[]): unknown => {
     if (ArrayBuffer.isView(value)) {
       const kind = packArrayKind(value);
@@ -234,9 +242,12 @@ export function encodePackData<T extends object>(input: T): T & { binary?: PackB
       const storage = packArrayStorage(value);
       let buffer = ids.get(storage.buffer);
       if (buffer === undefined) {
+        const length = packBufferLength(storage.buffer);
+        capturedBytes += length;
+        if (capturedBytes > maxBytes) throw new RangeError('Pack binary data exceeds its budget');
         buffer = buffers.length;
         ids.set(storage.buffer, buffer);
-        buffers.push(new Uint8Array(packBufferLength(storage.buffer)));
+        buffers.push(new Uint8Array(length));
       }
       // Preserve aliasing and offsets without exporting unrelated backing bytes.
       const target = buffers[buffer];
@@ -262,13 +273,73 @@ export function encodePackData<T extends object>(input: T): T & { binary?: PackB
       );
     return value;
   };
-  const result = visit(input, []) as T;
-  return views.length
-    ? {
-        ...result,
-        binary: { byteOrder: 'little-endian', buffers: buffers.map(encodeBase64), views },
-      }
-    : result;
+  return { data: visit(input, []) as T, buffers, views };
+}
+
+const recordHeaderBytes = 12;
+const recordMagic = 0x46585044; // FXPD
+const recordVersion = 1;
+
+/** Store a privately owned Pack data graph with raw binary blocks. */
+export function encodePackDataRecord(input: object, maxBytes: number): Uint8Array<ArrayBuffer> {
+  const { data, buffers, views } = capturePackData(input, maxBytes);
+  const lengths = buffers.map((buffer) => buffer.byteLength);
+  const metadata = new TextEncoder().encode(JSON.stringify({ data, lengths, views }));
+  const size =
+    recordHeaderBytes + metadata.byteLength + lengths.reduce((sum, length) => sum + length, 0);
+  if (size > maxBytes) throw new RangeError('Pack data record exceeds its budget');
+  const record = new Uint8Array(size);
+  const header = new DataView(record.buffer);
+  header.setUint32(0, recordMagic);
+  header.setUint32(4, recordVersion, true);
+  header.setUint32(8, metadata.byteLength, true);
+  record.set(metadata, recordHeaderBytes);
+  let offset = recordHeaderBytes + metadata.byteLength;
+  for (const buffer of buffers) {
+    record.set(buffer, offset);
+    offset += buffer.byteLength;
+  }
+  return record;
+}
+
+export function decodePackDataRecord(record: Uint8Array, maxBytes: number): object {
+  if (!littleEndian || record.byteLength < recordHeaderBytes || record.byteLength > maxBytes)
+    throw new TypeError('invalid Pack data record size or byte order');
+  const header = new DataView(record.buffer, record.byteOffset, recordHeaderBytes);
+  if (header.getUint32(0) !== recordMagic || header.getUint32(4, true) !== recordVersion)
+    throw new TypeError('unsupported Pack data record');
+  const start = recordHeaderBytes + header.getUint32(8, true);
+  if (start > record.byteLength) throw new TypeError('invalid Pack data metadata range');
+  const metadata: unknown = JSON.parse(
+    new TextDecoder('utf-8', { fatal: true }).decode(record.subarray(recordHeaderBytes, start)),
+  );
+  if (
+    !metadata ||
+    typeof metadata !== 'object' ||
+    !('data' in metadata) ||
+    !('lengths' in metadata) ||
+    !Array.isArray(metadata.lengths) ||
+    !('views' in metadata) ||
+    !Array.isArray(metadata.views)
+  )
+    throw new TypeError('invalid Pack data record metadata');
+  const data = metadata.data as object;
+  assertSnapshotRoot(data);
+  let offset = start;
+  const buffers = (metadata.lengths as unknown[]).map((length) => {
+    if (
+      typeof length !== 'number' ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > record.byteLength - offset
+    )
+      throw new TypeError('invalid Pack data block range');
+    const block = new Uint8Array(record.subarray(offset, offset + length)).buffer;
+    offset += length;
+    return block;
+  });
+  if (offset !== record.byteLength) throw new TypeError('unreferenced Pack data record bytes');
+  return restorePackViews(data, buffers, metadata.views);
 }
 
 /** Decode a plain-object snapshot already captured without invoking accessors. */
@@ -293,27 +364,18 @@ export function decodePackData(input: object): object {
     if (typeof value !== 'string') throw new TypeError('expected encoded snapshot bytes');
     return decodePackBlob(value).buffer;
   });
+  return restorePackViews(data, buffers, binary.views);
+}
+
+function restorePackViews(
+  data: object,
+  buffers: readonly ArrayBuffer[],
+  views: readonly unknown[],
+) {
   const paths = new Set<string>();
   const used = new Set<number>();
-  for (const raw of binary.views as unknown[]) {
-    if (!raw || typeof raw !== 'object') throw new TypeError('invalid snapshot binary view');
-    const view = raw as BinaryView;
-    if (
-      !Array.isArray(view.path) ||
-      view.path.length === 0 ||
-      view.path.some((key: unknown) => typeof key !== 'string') ||
-      !Object.hasOwn(arrays, view.kind) ||
-      Object.keys(view).some(
-        (key) => !['path', 'kind', 'buffer', 'offset', 'length'].includes(key),
-      ) ||
-      !Number.isSafeInteger(view.buffer) ||
-      !Number.isSafeInteger(view.offset) ||
-      !Number.isSafeInteger(view.length) ||
-      view.buffer < 0 ||
-      view.offset < 0 ||
-      view.length < 0
-    )
-      throw new TypeError('invalid snapshot binary view');
+  for (const raw of views) {
+    const view = checkedPackView(raw);
     const key = JSON.stringify(view.path);
     if (paths.has(key)) throw new TypeError('duplicate snapshot binary view');
     paths.add(key);
@@ -328,34 +390,60 @@ export function decodePackData(input: object): object {
     )
       throw new TypeError('snapshot binary view exceeds its buffer');
     used.add(view.buffer);
-    let parent: unknown = data;
-    for (const part of view.path.slice(0, -1)) {
-      if (
-        parent === null ||
-        typeof parent !== 'object' ||
-        ArrayBuffer.isView(parent) ||
-        !Object.hasOwn(parent, part)
-      )
-        throw new TypeError('missing snapshot binary path');
-      parent = (parent as Record<string, unknown>)[part];
-    }
-    const last = view.path.at(-1);
-    if (last === undefined) throw new TypeError('missing snapshot binary slot');
+    installPackView(data, view.path, new Constructor(storage, view.offset, view.length));
+  }
+  if (used.size !== buffers.length) throw new TypeError('unreferenced snapshot binary buffer');
+  return data;
+}
+
+function checkedPackView(raw: unknown): BinaryView {
+  if (!raw || typeof raw !== 'object') throw new TypeError('invalid snapshot binary view');
+  const view = raw as BinaryView;
+  if (
+    !Array.isArray(view.path) ||
+    view.path.length === 0 ||
+    view.path.some((key: unknown) => typeof key !== 'string') ||
+    !Object.hasOwn(arrays, view.kind) ||
+    Object.keys(view).some(
+      (key) => !['path', 'kind', 'buffer', 'offset', 'length'].includes(key),
+    ) ||
+    !Number.isSafeInteger(view.buffer) ||
+    !Number.isSafeInteger(view.offset) ||
+    !Number.isSafeInteger(view.length) ||
+    view.buffer < 0 ||
+    view.offset < 0 ||
+    view.length < 0
+  )
+    throw new TypeError('invalid snapshot binary view');
+  return view;
+}
+
+function installPackView(data: object, path: readonly string[], value: ArrayBufferView): void {
+  let parent: unknown = data;
+  for (const part of path.slice(0, -1)) {
     if (
       parent === null ||
       typeof parent !== 'object' ||
       ArrayBuffer.isView(parent) ||
-      !Object.hasOwn(parent, last) ||
-      (parent as Record<string, unknown>)[last] !== null
+      !Object.hasOwn(parent, part)
     )
-      throw new TypeError('snapshot binary view must replace its own null slot');
-    Object.defineProperty(parent, last, {
-      value: new Constructor(storage, view.offset, view.length),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
+      throw new TypeError('missing snapshot binary path');
+    parent = (parent as Record<string, unknown>)[part];
   }
-  if (used.size !== buffers.length) throw new TypeError('unreferenced snapshot binary buffer');
-  return data;
+  const last = path.at(-1);
+  if (last === undefined) throw new TypeError('missing snapshot binary slot');
+  if (
+    parent === null ||
+    typeof parent !== 'object' ||
+    ArrayBuffer.isView(parent) ||
+    !Object.hasOwn(parent, last) ||
+    (parent as Record<string, unknown>)[last] !== null
+  )
+    throw new TypeError('snapshot binary view must replace its own null slot');
+  Object.defineProperty(parent, last, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
 }

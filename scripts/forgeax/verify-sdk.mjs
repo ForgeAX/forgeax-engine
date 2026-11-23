@@ -573,15 +573,14 @@ if (selected('project')) {
   ) {
     throw new Error('sdk-empty-source-layout-manifest');
   }
-  const emptyScenePackage = JSON.parse(
-    await readFile(resolve(project, 'assets', 'world', 'world.scene.pack.json'), 'utf8'),
+  const emptyScenePackage = await readSdkProjectDocument(
+    execFileAsync,
+    project,
+    resolve(project, 'assets', 'world', 'world.scene.pack.json'),
+    'direct-pack',
   );
-  const emptySceneAsset = Array.isArray(emptyScenePackage.assets)
-    ? emptyScenePackage.assets.find(
-        (asset) => asset?.guid === defaultSceneGuid && asset?.kind === 'scene',
-      )
-    : undefined;
-  const emptySceneEntities = emptyScenePackage.assets?.[0]?.payload?.entities;
+  const emptySceneAsset = emptyScenePackage.assets[0];
+  const emptySceneEntities = emptySceneAsset?.payload?.entities;
   const emptySceneEntityValues =
     emptySceneEntities !== null &&
     typeof emptySceneEntities === 'object' &&
@@ -589,9 +588,9 @@ if (selected('project')) {
       ? Object.values(emptySceneEntities)
       : [];
   if (
-    !Array.isArray(emptyScenePackage.assets) ||
     emptyScenePackage.assets.length !== 1 ||
-    emptySceneAsset === undefined ||
+    emptySceneAsset?.guid !== defaultSceneGuid ||
+    emptySceneAsset.kind !== 'scene' ||
     emptySceneAsset.refs?.length !== 0 ||
     emptySceneEntities === null ||
     typeof emptySceneEntities !== 'object' ||
@@ -1900,7 +1899,10 @@ if (selected('source') && expandedArchive) {
   }
 }
 
-if (selected('project') && expandedArchive) {
+// PRs prove a real clean source template launch and a packaged View consumer.
+// The independent full CLI lifecycle belongs to release verification.
+const ownsIndependentRun = !prPreflight && selected('project');
+if (ownsIndependentRun && expandedArchive) {
   await sdkGpuStage('verifyIndependentRun', () =>
     execFileAsync(
       process.execPath,
@@ -1922,6 +1924,9 @@ if (selected('project') && expandedArchive) {
       return result;
     }),
   );
+}
+
+if (selected('project') && expandedArchive) {
   // Partitioned release gates retain installed diagnostics with npm. The ZIP
   // checks both installed View languages and reopens a saved JavaScript publication.
   // A standalone, unpartitioned archive verification keeps full diagnostics.

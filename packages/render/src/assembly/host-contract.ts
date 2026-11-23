@@ -78,6 +78,7 @@ export interface RendererHostImplementation
     | 'bounds'
     | 'currentDeviceGeneration'
     | 'inspect'
+    | 'requestViewportHit'
     | 'observeGeometry'
     | 'observe'
   > {

@@ -17,16 +17,10 @@ import {
   selectMaterialPassProgram,
 } from '../material/runtime-shader.js';
 
-const context: MaterialCookProgramContext = {
-  backend: 'webgpu',
-  capability: 'storage-buffer',
-  pipeline: 'forward',
-  geometry: 'mesh',
-  pass: 'forward',
-  profile: 'forgeax-material-wgsl-v1',
-  toolchain: 'naga-oil',
-  instrumentation: 'none',
-};
+import {
+  MATERIAL_CONTEXT as context,
+  materialRecordFixture,
+} from './fixtures/material-publication.js';
 
 const submissionAbi = {
   directEntry: 'vs_main',
@@ -64,51 +58,36 @@ function fixture() {
       selections: pair(name, context),
     };
   });
-  const artifactDigest = createMaterialProgramSetDigest(programs, passes);
-  const record: CookedMaterialRecord = {
-    schemaVersion: 'material-cook/5',
+  const record = materialRecordFixture({
     guid: 'material',
-    materialGuid: 'material',
-    publicationGeneration: 1,
     specializationKey: 'publication',
-    artifactDigest,
-    sourceClosure: ['material.json'],
-    parameterContract: { parameters: [], values: {} },
-    resolved: { passes, parameters: [], values: {} },
-    refs: { parent: [], textures: [], samplers: [], modules: [] },
+    generation: 1,
+    passes,
     programs,
-    receipt: {
-      schemaVersion: 'material-cook/5',
-      sourceClosure: ['material.json'],
-      profile: 'webgpu/v1',
-      compilerVersion: 'test',
-      identity: {
-        materialContractDigest: 'contract',
-        sourceRevision: 'source',
-        sourceClosureDigest: 'closure',
-        layoutIdentity: 'layout',
-        programIdentity: 'program',
-        pipelineIdentity: 'pipeline',
-        materialPublicationIdentity: 'publication',
-        cookIdentity: 'cook',
-        compilerFingerprint: 'compiler',
-        wasm: { sourceContentKey: 'source', artifactSha256: 'artifact', glueSha256: 'glue' },
-        artifactDigest,
-        valueGeneration: 1,
-        dependencyGeneration: 1,
-        cookGeneration: 1,
-      },
-      derivedInterface: { layoutIdentity: 'layout' },
-    },
+    sourceClosure: ['material.json'],
+  });
+  return { record, ...materialPublication(record, programs) };
+}
+
+function materialPublication(
+  record: CookedMaterialRecord,
+  programs: readonly MaterialCookProgram[],
+) {
+  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
+  const complete = {
+    ...record,
+    programs,
+    artifactDigest,
+    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
   };
   const artifacts = Object.fromEntries(
     programs.map(({ artifact }) => [
       artifact.path,
-      { bytes: new Uint8Array(artifact.bytes), digest: artifact.digest },
+      { bytes: artifact.bytes.slice(), digest: artifact.digest },
     ]),
   );
-  const publication: MaterialPublication = { guid: 'material', record, artifacts };
-  return { record, artifacts, publication };
+  const publication: MaterialPublication = { guid: record.guid, record: complete, artifacts };
+  return { artifacts, publication };
 }
 const request = { guid: 'material', specializationKey: 'publication' };
 const load = (publication: MaterialPublication) =>
@@ -504,24 +483,7 @@ it('loads and selects both Surface derivatives atomically through the same compl
     },
     selections: [{ pass: 'Forward', context: cardContext, entry: 'vs_card' }],
   };
-  const programs: MaterialCookProgram[] = [...record.programs, ray, card];
-  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
-  const complete = {
-    ...record,
-    programs,
-    artifactDigest,
-    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
-  };
-  const artifacts = Object.fromEntries(
-    programs.map(({ artifact }) => [
-      artifact.path,
-      {
-        bytes: artifact.bytes.slice(),
-        digest: artifact.digest,
-      },
-    ]),
-  );
-  const publication: MaterialPublication = { guid: 'material', record: complete, artifacts };
+  const { artifacts, publication } = materialPublication(record, [...record.programs, ray, card]);
   const ready = await load(publication);
   expect(ready.status).toBe('Ready');
   if (ready.status !== 'Ready') throw new Error('shared publication did not load');
@@ -559,22 +521,6 @@ it('loads and selects both Surface derivatives atomically through the same compl
   expect(() =>
     selectMaterialPassProgram(projection, 'Forward', cardContext, 'scene-index'),
   ).toThrow(/no unique published program/);
-  const retainedCard = artifacts['card.wgsl'];
-  delete artifacts['card.wgsl'];
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-missing', detail: { field: 'card.wgsl' } },
-  });
-  artifacts['card.wgsl'] = {
-    bytes: new TextEncoder().encode('corrupt Card'),
-    digest: createMaterialArtifactDigest(new TextEncoder().encode('corrupt Card')),
-  };
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'card.wgsl' } },
-  });
-  if (!retainedCard) throw new Error('missing Card artifact');
-  artifacts['card.wgsl'] = retainedCard;
   expect(selectMaterialPassProgram(projection, 'Forward', rayContext)).toMatchObject({
     specializationKey: 'ray-surface',
     entry: 'cs_surface',
@@ -593,135 +539,63 @@ it('loads and selects both Surface derivatives atomically through the same compl
     selectMaterialPassProgram(projectMaterialRecord(record), 'Forward', rayContext),
   ).toThrow(/no unique published program/);
 
-  delete artifacts['ray.wgsl'];
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: {
-      code: 'asset-artifact-missing',
-      detail: { field: 'ray.wgsl' },
-    },
-  });
-  const failed = await load(publication);
-  if (failed.status !== 'Error') throw new Error('missing artifact must fail');
-  const retained = inspectMaterialRuntime({ status: 'LastKnownGood', ready, failure: failed });
-  expect(retained).toMatchObject({
-    readiness: 'last-known-good',
-    preparationFailure: { code: 'asset-artifact-missing', detail: { field: 'ray.wgsl' } },
-    lastKnownGood: {
-      publicationGeneration: ready.record.publicationGeneration,
-      programs: inspected.programs,
-    },
-  });
-  artifacts['ray.wgsl'] = {
-    bytes: new TextEncoder().encode('stale ray source'),
-    digest: createMaterialArtifactDigest(new TextEncoder().encode('stale ray source')),
-  };
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: {
-      code: 'asset-artifact-integrity-mismatch',
-      detail: { field: 'ray.wgsl' },
-    },
-  });
-});
-
-it('loads view-clipping programs and installs one lazy family per ordinary pass context', async () => {
-  const { record } = fixture();
-  const base = record.programs[0];
-  if (base === undefined) throw Error('Missing base program');
-  const bytes = new TextEncoder().encode('clipped Forward');
-  const clipped: MaterialCookProgram = {
-    ...base,
-    specializationKey: 'Forward.clipped',
-    artifact: {
-      ...base.artifact,
-      path: 'clipped.wgsl',
-      bytes,
-      digest: createMaterialArtifactDigest(bytes),
-    },
-    selections: pair('Forward', { ...context, viewClipping: true }),
-  };
-  const programs = [...record.programs, clipped];
-  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
-  const complete = {
-    ...record,
-    programs,
-    artifactDigest,
-    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
-  };
-  const artifacts = Object.fromEntries(
-    programs.map(({ artifact }) => [
-      artifact.path,
-      { bytes: artifact.bytes.slice(), digest: artifact.digest },
-    ]),
-  );
-  const ready = await load({ guid: 'material', record: complete, artifacts });
-  expect(ready.status).toBe('Ready');
-  if (ready.status !== 'Ready') throw Error(JSON.stringify(ready));
-  const shaders = new ShaderRegistry({ manifestUrl: undefined });
-  const projection = installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
-  expect(selectMaterialPassProgram(projection, 'Forward', context).specializationKey).toBe(
-    'Forward',
-  );
-  expect(
-    selectMaterialPassProgram(projection, 'Forward', { ...context, viewClipping: true })
-      .specializationKey,
-  ).toBe('Forward.clipped');
-  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
-  try {
-    const family = shaders.materialShaderManifestEntry('Forward');
-    expect(family?.variants.map((variant) => variant.defines)).toEqual([
-      { CLIPPING_PLANES: false },
-      { CLIPPING_PLANES: true },
-    ]);
-    expect(decode).not.toHaveBeenCalled();
-    expect(shaders.materialShaderManifestEntry('Overlay')).toBeUndefined();
-    installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
-    expect(shaders.materialShaderManifestEntry('Forward')).toBe(family);
-  } finally {
-    decode.mockRestore();
+  for (const path of ['card.wgsl', 'ray.wgsl']) {
+    const original = artifacts[path];
+    if (original === undefined) throw new Error(`missing fixture artifact ${path}`);
+    delete artifacts[path];
+    const failed = await load(publication);
+    const preparationFailure = { code: 'asset-artifact-missing', detail: { field: path } };
+    expect(failed).toMatchObject({ status: 'Error', error: preparationFailure });
+    if (failed.status !== 'Error') throw new Error('missing artifact must fail');
+    expect(
+      inspectMaterialRuntime({ status: 'LastKnownGood', ready, failure: failed }),
+    ).toMatchObject({
+      readiness: 'last-known-good',
+      preparationFailure,
+      lastKnownGood: {
+        publicationGeneration: ready.record.publicationGeneration,
+        programs: inspected.programs,
+      },
+    });
+    const bytes = new TextEncoder().encode(`stale ${path}`);
+    artifacts[path] = { bytes, digest: createMaterialArtifactDigest(bytes) };
+    expect(await load(publication)).toMatchObject({
+      status: 'Error',
+      error: { code: 'asset-artifact-integrity-mismatch', detail: { field: path } },
+    });
+    artifacts[path] = original;
   }
 });
 
-it('publishes four lazy coverage states without mixing ordinary pass contexts', async () => {
+it.each([
+  ['clipping', [0, 2]],
+  ['coverage and clipping', [0, 1, 2, 3]],
+] as const)('loads a lazy %s family without mixing ordinary pass contexts', async (_name, masks) => {
   const { record } = fixture();
   const base = record.programs[0];
   if (base === undefined) throw Error('Missing base program');
-  const states = [1, 2, 3].map((mask): MaterialCookProgram => {
+  const variant = (mask: number) => ({
+    ...context,
+    ...((mask & 1) !== 0 ? { lodCoverage: true as const } : {}),
+    ...((mask & 2) !== 0 ? { viewClipping: true as const } : {}),
+  });
+  const key = (mask: number) => (mask === 0 ? 'Forward' : `Forward.coverage-${mask}`);
+  const additions = masks.filter(Boolean).map((mask): MaterialCookProgram => {
     const bytes = new TextEncoder().encode(`Forward coverage ${mask}`);
     return {
       ...base,
-      specializationKey: `Forward.coverage-${mask}`,
+      specializationKey: key(mask),
       artifact: {
         ...base.artifact,
         path: `coverage-${mask}.wgsl`,
         bytes,
         digest: createMaterialArtifactDigest(bytes),
       },
-      selections: pair('Forward', {
-        ...context,
-        ...((mask & 1) !== 0 ? { lodCoverage: true as const } : {}),
-        ...((mask & 2) !== 0 ? { viewClipping: true as const } : {}),
-      }),
+      selections: pair('Forward', variant(mask)),
     };
   });
-  const programs = [...record.programs, ...states];
-  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
-  const ready = await load({
-    guid: 'material',
-    record: {
-      ...record,
-      programs,
-      artifactDigest,
-      receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
-    },
-    artifacts: Object.fromEntries(
-      programs.map(({ artifact }) => [
-        artifact.path,
-        { bytes: artifact.bytes.slice(), digest: artifact.digest },
-      ]),
-    ),
-  });
+  const { publication } = materialPublication(record, [...record.programs, ...additions]);
+  const ready = await load(publication);
   if (ready.status !== 'Ready') throw Error(JSON.stringify(ready));
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
   const projection = installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
@@ -729,21 +603,19 @@ it('publishes four lazy coverage states without mixing ordinary pass contexts', 
   try {
     const family = shaders.materialShaderManifestEntry('Forward');
     expect(family?.variants.map((variant) => variant.defines)).toEqual(
-      [0, 1, 2, 3].map((mask) => ({
+      masks.map((mask) => ({
         CLIPPING_PLANES: (mask & 2) !== 0,
-        LOD_DITHER: (mask & 1) !== 0,
+        ...(masks.length === 4 ? { LOD_DITHER: (mask & 1) !== 0 } : {}),
       })),
     );
     expect(decode).not.toHaveBeenCalled();
     expect(shaders.materialShaderManifestEntry('Overlay')).toBeUndefined();
-    for (const mask of [0, 1, 2, 3]) {
-      const selected = selectMaterialPassProgram(projection, 'Forward', {
-        ...context,
-        ...((mask & 1) !== 0 ? { lodCoverage: true as const } : {}),
-        ...((mask & 2) !== 0 ? { viewClipping: true as const } : {}),
-      });
-      expect(selected.specializationKey).toBe(mask === 0 ? 'Forward' : `Forward.coverage-${mask}`);
-    }
+    for (const mask of masks)
+      expect(
+        selectMaterialPassProgram(projection, 'Forward', variant(mask)).specializationKey,
+      ).toBe(key(mask));
+    installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
+    expect(shaders.materialShaderManifestEntry('Forward')).toBe(family);
   } finally {
     decode.mockRestore();
   }

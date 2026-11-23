@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
+  chmod,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -9,18 +10,31 @@ import {
   realpath,
   rename,
   rm,
+  stat,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, resolve } from 'node:path';
 import { execFileCommand } from './child-process.js';
-import { isFilesystemPathWithin } from './filesystem-path.js';
+import { matchesArtifactBytes } from './dist.js';
+import {
+  directoryOccupancy,
+  isFilesystemPathWithin,
+  publishPreparedDirectory,
+} from './filesystem-path.js';
 import { commandError } from './project.js';
 import type { SdkManifest } from './sdk.js';
 import type { CommandResult } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 export interface SdkInstallOptions {
   readonly root: string;
   readonly version?: string;
+}
+
+function carrierArtifactPath(root: string, path: string): string {
+  const absolute = resolve(root, path);
+  if (!isFilesystemPathWithin(root, absolute, false)) throw new Error('sdk-carrier-artifact-path');
+  return absolute;
 }
 
 async function materializeEngineArtifacts(
@@ -39,19 +53,9 @@ async function materializeEngineArtifacts(
   if (identity.name !== '@forgeax/engine' || identity.version !== manifest.sdkVersion)
     throw new Error('sdk-carrier-engine-version-mismatch');
   for (const entry of reused) {
-    const source = resolve(engine, entry.enginePath ?? '');
-    const target = resolve(root, entry.path);
-    if (
-      !isFilesystemPathWithin(engine, source, false) ||
-      !isFilesystemPathWithin(root, target, false)
-    )
-      throw new Error('sdk-carrier-artifact-path');
-    const bytes = await readFile(source);
-    if (
-      bytes.length !== entry.bytes ||
-      createHash('sha256').update(bytes).digest('hex') !== entry.sha256
-    )
-      throw new Error(`sdk-carrier-artifact-mismatch: ${entry.path}`);
+    const source = carrierArtifactPath(engine, entry.enginePath ?? '');
+    const target = carrierArtifactPath(root, entry.path);
+    assertCarrierArtifact(await readFile(source), entry);
     await mkdir(dirname(target), { recursive: true });
     // Source builds own writable outputs. Never link them to the installed Engine.
     await copyFile(source, target, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
@@ -62,8 +66,7 @@ async function restoreNpmGitIgnores(root: string, manifest: SdkManifest): Promis
   const paths = new Set(manifest.artifacts.map((entry) => entry.path));
   for (const entry of manifest.artifacts) {
     if (basename(entry.path) !== '.gitignore') continue;
-    const target = resolve(root, entry.path);
-    if (!isFilesystemPathWithin(root, target, false)) throw new Error('sdk-carrier-artifact-path');
+    const target = carrierArtifactPath(root, entry.path);
     try {
       await readFile(target);
       continue;
@@ -74,12 +77,7 @@ async function restoreNpmGitIgnores(root: string, manifest: SdkManifest): Promis
     // SDK promised, without consuming a separately authored .npmignore.
     const renamed = entry.path.replace(/\.gitignore$/, '.npmignore');
     if (paths.has(renamed)) throw new Error(`sdk-carrier-ignore-collision: ${entry.path}`);
-    const bytes = await readFile(resolve(root, renamed));
-    if (
-      bytes.length !== entry.bytes ||
-      createHash('sha256').update(bytes).digest('hex') !== entry.sha256
-    )
-      throw new Error(`sdk-carrier-artifact-mismatch: ${entry.path}`);
+    assertCarrierArtifact(await readFile(resolve(root, renamed)), entry);
     await rename(resolve(root, renamed), target);
   }
 }
@@ -96,41 +94,24 @@ export async function sdkInstallCommand(
   options: SdkInstallOptions,
 ): Promise<CommandResult<unknown>> {
   const root = resolve(options.root);
-  let targetExists = true;
-  let entries: string[];
-  try {
-    entries = await readdir(root);
-  } catch (cause) {
-    if (
-      cause === null ||
-      typeof cause !== 'object' ||
-      !('code' in cause) ||
-      cause.code !== 'ENOENT'
-    ) {
-      return { ok: false, error: commandError(cause, 'sdk-install-failed') };
-    }
-    targetExists = false;
-    entries = [];
-  }
-  if (entries.length > 0) {
-    return {
-      ok: false,
-      error: {
-        code: 'sdk-target-not-empty',
-        expected: 'the SDK install target to be absent or empty',
-        hint: 'Choose an empty versioned SDK directory so existing files cannot be overwritten.',
-        detail: { root },
-      },
-    };
+  const occupancy = await directoryOccupancy(root).catch((cause) =>
+    commandError(cause, 'sdk-install-failed'),
+  );
+  if (typeof occupancy !== 'string') return { ok: false, error: occupancy };
+  if (occupancy === 'occupied') {
+    return failCommand(
+      'sdk-target-not-empty',
+      'the SDK install target to be absent or empty',
+      'Choose an empty versioned SDK directory so existing files cannot be overwritten.',
+      { root },
+    );
   }
 
   const version = options.version ?? (await packageVersion());
   const parent = dirname(root);
   await mkdir(parent, { recursive: true });
-  let staging: string | undefined;
   let download: string | undefined;
   try {
-    staging = await mkdtemp(resolve(parent, `.${basename(root)}.forgeax-sdk-staging-`));
     download = await mkdtemp(resolve(parent, `.${basename(root)}.forgeax-sdk-download-`));
     await execFileCommand(
       process.env.FORGEAX_NPM_CLIENT ?? 'npm',
@@ -160,32 +141,31 @@ export async function sdkInstallCommand(
       ),
     );
     await restoreNpmGitIgnores(carrier, manifest);
-    // Download and staging are private siblings on the target filesystem.
-    // Adopt the extracted bytes without another full SDK copy or link rewrite.
-    for (const name of await readdir(carrier)) {
-      await rename(resolve(carrier, name), resolve(staging, name));
+    // A physical carrier already lives on the destination filesystem. A
+    // custom installer can expose it through a link, which must stay private.
+    let prepared = carrier;
+    if (!(await lstat(carrier)).isDirectory()) {
+      prepared = await mkdtemp(resolve(download, 'prepared-'));
+      for (const name of await readdir(carrier))
+        await rename(resolve(carrier, name), resolve(prepared, name));
     }
-    if (!targetExists) {
-      await rename(staging, root);
-      staging = undefined;
-    } else {
-      for (const name of await readdir(staging)) {
-        await rename(resolve(staging, name), resolve(root, name));
-      }
-    }
-    return {
-      ok: true,
-      value: {
+    if (occupancy === 'absent') await chmod(prepared, (await stat(download)).mode & 0o777);
+    return await publishPreparedDirectory(prepared, root, occupancy, async () =>
+      completeCommand({
         root,
         sdkVersion: version,
         source: '@forgeax/engine-sdk',
         next: { cwd: root, argv: ['node', './bin/forgeax.mjs', 'project', 'init'] },
-      },
-    };
+      }),
+    );
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'sdk-install-failed') };
   } finally {
-    if (staging !== undefined) await rm(staging, { recursive: true, force: true });
     if (download !== undefined) await rm(download, { recursive: true, force: true });
   }
+}
+
+function assertCarrierArtifact(bytes: Buffer, entry: SdkManifest['artifacts'][number]): void {
+  if (matchesArtifactBytes(bytes, entry)) return;
+  throw new Error(`sdk-carrier-artifact-mismatch: ${entry.path}`);
 }

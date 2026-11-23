@@ -175,7 +175,7 @@ assets.configurePackIndex('/pack-index.json');
 const attached = await host.attachWorld({ world, assets });
 if (!attached.ok) throw new Error(`VFX host attach failed: ${attached.error.hint}`);
 
-const materialGuid = assets.parseGuid('019e9c00-0000-7000-8000-000000000002');
+const materialGuid = assets.parseGuid('96b5ec1b-841a-5dc5-be0f-2171aacd75bc');
 const material = await assets.load(materialGuid, 'material');
 if (!material.ok) throw new Error(`strike material load failed: ${material.error.hint}`);
 const strikeMaterial = material.value;
@@ -194,7 +194,7 @@ world.spawn(
   { component: MeshRenderer, data: { materials: [strikeMaterial] } },
 ).unwrap();
 
-const loaded = await loadVfxGpuEffect(assets, '019e9c00-0000-7000-8000-000000000000');
+const loaded = await loadVfxGpuEffect(assets, 'c76202f1-8caa-5873-a899-a372ea0b5cfc');
 if (!loaded.ok) throw new Error(`particle effect load failed: ${loaded.error.code}: ${loaded.error.hint}`);
 let effectAsset = assets.read(loaded.value).unwrap();
 let benchmarkAllocatedCapacity = 0;

@@ -12,7 +12,11 @@ import {
   publishCanonicalKit,
 } from '../packages/preview/scripts/build-canonical-kit.mjs';
 import { readPnpmVersion } from './forgeax/pnpm-version.mjs';
-import { sdkCoreBuildRoot, seedSdkDeclarations } from './forgeax/sdk-shader-inputs.mjs';
+import {
+  sdkCoreBuildRoot,
+  seedSdkDeclarations,
+  seedSdkPackageBuilds,
+} from './forgeax/sdk-shader-inputs.mjs';
 import { runnerResources, shaderProducerHeapSize } from './lib/runner-resources.mjs';
 
 const root = resolve('.');
@@ -181,6 +185,7 @@ const reuseSdkBuild = process.argv.includes('--reuse-core-build');
 if (reuseSdkBuild && (mode !== 'engine' || !coreBuildInput))
   throw new Error('--reuse-core-build requires the admitted PR Core archive and the Engine build');
 const sdkCore = reuseSdkBuild ? sdkCoreBuildRoot(root, coreBuildInput) : null;
+if (sdkCore !== null) seedSdkPackageBuilds(root, sdkCore);
 await runStage(
   'packages',
   process.execPath,

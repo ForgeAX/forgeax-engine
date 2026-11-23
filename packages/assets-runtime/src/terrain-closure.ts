@@ -13,7 +13,7 @@ import type { AssetRecords } from './internal/asset-records';
 /** Validate the actual runtime closure once during admission, after material linking. */
 export function prepareRuntimeTerrain(
   root: TerrainAsset,
-  records: Pick<AssetRecords, 'validate' | 'borrowClosure'>,
+  records: Pick<AssetRecords, 'validate' | 'borrowClosure' | 'kind'>,
   resolve: (guid: string) => AssetHandle | undefined,
 ): Result<{ value: TerrainAsset; dependencies: readonly number[] }, AssetError> {
   const invalid = () =>
@@ -35,8 +35,17 @@ export function prepareRuntimeTerrain(
   };
   try {
     // Source references are linked once. Runtime roots never query the Catalog.
+    const detail = root.weightDetail;
     const checked: TerrainAsset = {
       ...root,
+      ...(detail === undefined
+        ? {}
+        : {
+            weightDetail: {
+              ...detail,
+              texture: linkTerrainWeightDetail(detail.texture, records, resolve, direct, invalid),
+            },
+          }),
       grids: root.grids.map((value) => reference(value, 'mesh')),
       layers: root.layers.map((layer) =>
         layer.blend === 'height'
@@ -64,4 +73,24 @@ export function prepareRuntimeTerrain(
     if (cause instanceof AssetError) return err(cause);
     throw cause;
   }
+}
+
+export function linkTerrainWeightDetail(
+  texture: NonNullable<TerrainAsset['weightDetail']>['texture'],
+  records: Pick<AssetRecords, 'kind'>,
+  resolve: (guid: string) => AssetHandle | undefined,
+  dependencies: Set<number>,
+  invalid: () => AssetError,
+): AssetHandle<'texture' | 'gpu-texture'> {
+  const handle =
+    typeof texture === 'number'
+      ? texture
+      : typeof texture === 'string'
+        ? resolve(texture.toLowerCase())
+        : undefined;
+  if (handle === undefined || handle === 0) throw invalid();
+  const kind = records.kind(handle);
+  if (!kind.ok || (kind.value !== 'texture' && kind.value !== 'gpu-texture')) throw invalid();
+  dependencies.add(handle);
+  return handle as AssetHandle<'texture' | 'gpu-texture'>;
 }

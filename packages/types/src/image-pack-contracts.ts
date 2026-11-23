@@ -343,7 +343,7 @@ export type PackErrorDetail =
   | {
       /** Absolute or relative path to the malformed .pack.json file. */
       readonly path: string;
-      /** ajv validation errors produced by validatePack(). */
+      /** Validation errors for the source document. */
       readonly ajvErrors: readonly PackSchemaDiagnostic[];
       /**
        * Optional human-readable reason category. Set to a fixed literal for

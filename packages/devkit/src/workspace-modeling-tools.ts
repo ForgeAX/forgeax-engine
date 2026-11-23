@@ -21,10 +21,8 @@ export const WORKSPACE_MODELING_OPERATIONS = [
   'model.render',
 ] as const;
 
-function contributions(projectRoot: string): readonly ToolContribution[] {
-  return [...createModelingTools({ projectRoot }), createModelRenderTool(projectRoot)].filter(
-    (tool) => (WORKSPACE_MODELING_OPERATIONS as readonly string[]).includes(tool.descriptor.id),
-  );
+export function modelingContributions(projectRoot: string): readonly ToolContribution[] {
+  return [...createModelingTools({ projectRoot }), createModelRenderTool(projectRoot)];
 }
 
 /**
@@ -36,8 +34,10 @@ export function createWorkspaceModelingTools(
   rootOf: (context: ToolExecutionContext) => string | undefined,
 ): ReadonlyMap<ToolRealm, readonly ToolContribution[]> {
   const byRealm = new Map<ToolRealm, ToolContribution[]>();
-  for (const template of contributions('/')) {
+  const exposed: ReadonlySet<string> = new Set(WORKSPACE_MODELING_OPERATIONS);
+  for (const template of modelingContributions('/')) {
     const id = template.descriptor.id;
+    if (!exposed.has(id)) continue;
     const tool: ToolContribution = {
       descriptor: template.descriptor,
       async execute(args, context) {
@@ -52,7 +52,9 @@ export function createWorkspaceModelingTools(
             },
           };
         }
-        const owner = contributions(root).find((candidate) => candidate.descriptor.id === id);
+        const owner = modelingContributions(root).find(
+          (candidate) => candidate.descriptor.id === id,
+        );
         if (owner === undefined) throw new Error(`modeling operation ${id} is unavailable`);
         return owner.execute(args, context);
       },

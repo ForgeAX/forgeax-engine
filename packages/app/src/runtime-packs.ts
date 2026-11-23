@@ -205,6 +205,9 @@ export function assembleRuntimePacks(
         },
       );
     },
+    isPreparationCurrent: (state) =>
+      state.publication === undefined ||
+      assembly.registry.isPreparedPublicationCurrent(state.publication.pack),
     onCommit(state) {
       if (state.status !== 'withdrawn') {
         const conflict = validateBase(state.rows.map((row) => row.guid));
@@ -401,8 +404,7 @@ export function assembleRuntimePacks(
     async get(guid) {
       const pending = authored.get(guid);
       if (pending) return pending;
-      const key = guid.toLowerCase();
-      const published = producer.rows().find((entry) => entry.guid.toLowerCase() === key);
+      const published = producer.catalogRow(guid);
       if (published !== undefined) return ok([published]);
       const current = await baseReplica.require(guid);
       return current.ok

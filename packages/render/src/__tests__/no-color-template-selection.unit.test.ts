@@ -252,6 +252,10 @@ it('selects a native GPU scene-index boot lane without allocating unrelated vari
     'ALPHA_MASK',
     'COVERAGE_ONLY',
     'PROJECTOR_AVAILABLE',
+    'CLIPPING_PLANES',
+    'LOD_DITHER',
+    'WATER_WAVES_AVAILABLE',
+    'WATER_INFO_RGBA16',
     'CUSTOM_A',
     'CUSTOM_B',
     'CUSTOM_C',
@@ -277,9 +281,13 @@ it('selects a native GPU scene-index boot lane without allocating unrelated vari
     ALPHA_MASK: false,
     COVERAGE_ONLY: false,
     PROJECTOR_AVAILABLE: true,
-    CUSTOM_A: true,
-    CUSTOM_B: true,
-    CUSTOM_C: true,
+    CLIPPING_PLANES: false,
+    LOD_DITHER: false,
+    WATER_WAVES_AVAILABLE: false,
+    WATER_INFO_RGBA16: false,
+    CUSTOM_A: false,
+    CUSTOM_B: false,
+    CUSTOM_C: false,
   });
   expect(compile).not.toHaveBeenCalled();
 });

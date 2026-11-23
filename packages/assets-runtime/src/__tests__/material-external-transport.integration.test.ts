@@ -194,24 +194,27 @@ it('retains complete inline bytes when the production source has no external des
 });
 
 it('hydrates distinct programs sharing one artifact with a single external read', async () => {
-  const original = materialRecordFixture({
-    contexts: [MATERIAL_CONTEXT, { ...MATERIAL_CONTEXT, geometry: 'skinned' }],
+  const fixture = await publication(true, (guid) => {
+    const original = materialRecordFixture({
+      guid,
+      contexts: [MATERIAL_CONTEXT, { ...MATERIAL_CONTEXT, geometry: 'skinned' }],
+    });
+    const programs = original.programs.map((program, index) => ({
+      ...program,
+      specializationKey: `${program.specializationKey}/${index}`,
+    }));
+    const artifactDigest = createMaterialProgramSetDigest(programs, original.resolved.passes);
+    return {
+      ...original,
+      programs,
+      artifactDigest,
+      receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
+    };
   });
-  const programs = original.programs.map((program, index) => ({
-    ...program,
-    specializationKey: `${program.specializationKey}/${index}`,
-  }));
-  const artifactDigest = createMaterialProgramSetDigest(programs, original.resolved.passes);
-  const record = {
-    ...original,
-    programs,
-    artifactDigest,
-    receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
-  };
-  const fixture = await publication(true, record);
+  const { record } = fixture;
   await withPublication(fixture, async (registry, _shaders, fetcher) => {
     const ready = await registry.load(record.guid, 'material');
-    expect(ready).toMatchObject({ ok: true });
+    expect(ready, JSON.stringify(ready)).toMatchObject({ ok: true });
     for (const program of record.programs)
       expect(registry.getMaterialArtifact(program.specializationKey)?.bytes).toEqual(
         fixture.firstProgram.artifact.bytes,

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { createStandaloneRuntimeAssetBinding, type Importer, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 it('reuses the existing Meta product DDC across dev owners and invalidates producer inputs', async () => {
@@ -86,14 +87,9 @@ it('reuses the existing Meta product DDC across dev owners and invalidates produ
     await writeFile(source, new Uint8Array([1]));
     await writeFile(
       `${source}.meta.json`,
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'fixture',
-        source: 'paint.scene',
-        importSettings: {},
-        subAssets: [{ guid, sourceIndex: 0, sourceKey: 'paint', kind: 'material' }],
-      }),
+      metaFixture('paint.scene', 'fixture', [
+        { guid, sourceIndex: 0, sourceKey: 'paint', kind: 'material' },
+      ]),
     );
     process.chdir(root);
     const first = await serve('cold');

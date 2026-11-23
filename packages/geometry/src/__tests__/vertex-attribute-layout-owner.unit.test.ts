@@ -7,6 +7,7 @@ import {
   deriveVertexLayoutProjection,
   deriveVertexLayoutProjectionFromMask,
   packInterleavedVertexAttributes,
+  prepareStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
 } from '@forgeax/engine-geometry';
 import type { VertexAttributeMap } from '@forgeax/engine-types';
@@ -93,6 +94,40 @@ describe('vertex attribute layout owner', () => {
     expect(colored.arrayStride).toBe(first.arrayStride + 16);
     delete edited.color;
     expect(deriveVertexLayoutProjection(edited)).toBe(first);
+  });
+
+  it('transposes static streams without changing packed bits or UV alias offsets', () => {
+    const attributes: VertexAttributeMap = {
+      position: new Float32Array([1, 2, 3, 4, 5, 6]),
+      tangentFrame: new Uint32Array([0x7fc12345, 0xffffffff]),
+      uv: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+      uv1: new Float32Array([0.5, 0.6, 0.7, 0.8]),
+      color: new Float32Array([1, 0, 0, 1, 0, 1, 0, 1]),
+    };
+    const source = packInterleavedVertexAttributes(attributes, 2).unwrap();
+    const carrier = new Uint8Array(source.vertices.byteLength + 8);
+    carrier.set(new Uint8Array(source.vertices.buffer), 4);
+    const vertices = new Float32Array(carrier.buffer, 4, source.vertices.length);
+    const packed = prepareStaticMeshVertexStreams(vertices, source.projection);
+    if (packed === undefined) throw new Error('Missing static streams');
+    const bytes = packed.pack();
+    expect(bytes.byteLength).toBe(source.vertices.byteLength);
+    expect(packed.ranges).toEqual([
+      { offset: 0, size: 24 },
+      { offset: 24, size: 8 },
+      { offset: 32, size: 32 },
+      { offset: 64, size: 32 },
+    ]);
+    expect([...bytes.slice(6, 8)]).toEqual([0x7fc12345, 0xffffffff]);
+    expect([...new Float32Array(bytes.buffer, 0, 6)]).toEqual([1, 2, 3, 4, 5, 6]);
+    const layouts = deriveVertexBufferLayoutFromProjection(packed.layout, { shaderUvSetCount: 3 });
+    expect(layouts.map((layout) => layout.arrayStride)).toEqual([12, 4, 16, 16]);
+    expect(layouts[2]?.attributes).toContainEqual({
+      shaderLocation: 7,
+      offset: 8,
+      format: 'float32x2',
+    });
+    expect(layouts[3]?.attributes.map(({ shaderLocation }) => shaderLocation)).toEqual([13]);
   });
 
   it('publishes the ordinary and skinned maps from the same geometry owner', () => {
@@ -198,7 +233,11 @@ describe('vertex attribute layout owner', () => {
     expect(empty.ok).toBe(false);
     if (!empty.ok) expect(empty.error.detail.reason).toBe('empty');
 
-    const unknown = deriveVertexLayoutProjectionFromMask(1 << 15);
+    const invalidFormat = deriveVertexLayoutProjectionFromMask(1 << 15);
+    expect(invalidFormat.ok).toBe(false);
+    if (!invalidFormat.ok) expect(invalidFormat.error.detail.reason).toBe('invalid-format');
+
+    const unknown = deriveVertexLayoutProjectionFromMask(1 << 30);
     expect(unknown.ok).toBe(false);
     if (!unknown.ok) expect(unknown.error.detail.reason).toBe('unknown-bits');
   });

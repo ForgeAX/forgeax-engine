@@ -314,19 +314,18 @@ function fxaaEdgeEvidence(
   }
   const samples = [
     rgbaAt(pixels, x, y),
-    rgbaAt(pixels, x, y + 1),
-    rgbaAt(pixels, x, y - 1),
-    rgbaAt(pixels, x - 1, y),
-    rgbaAt(pixels, x + 1, y),
+    rgbaAt(pixels, x - 1, y - 1),
+    rgbaAt(pixels, x + 1, y - 1),
+    rgbaAt(pixels, x - 1, y + 1),
+    rgbaAt(pixels, x + 1, y + 1),
   ];
-  const lumas = samples.map(([red, green, blue]) =>
-    Math.sqrt(Math.max(0, 0.299 * red + 0.587 * green + 0.114 * blue)),
-  );
+  // Final reads display-encoded RGB and tests the four diagonal neighbors.
+  const lumas = samples.map(([red, green, blue]) => 0.299 * red + 0.587 * green + 0.114 * blue);
   const lumaMin = Math.min(...lumas);
   const lumaMax = Math.max(...lumas);
   return {
     lumaRange: lumaMax - lumaMin,
-    threshold: Math.max(0.0312, lumaMax * 0.125),
+    threshold: Math.max(0.0312, lumaMax * 0.1),
   };
 }
 
@@ -558,17 +557,22 @@ describe('barrel distortion real output on Dawn', () => {
         status: 'active',
         outputExtent: { width: BARREL_GPU_WIDTH, height: BARREL_GPU_HEIGHT },
       });
-      const passes = inspection.output.graphPassNames;
-      const barrelIndex = passes.indexOf('barrel-distortion');
-      const fxaaIndex = passes.indexOf('fxaa');
-      const encodingIndex = passes.indexOf('standard-output-encoding');
-      expect(passes).toEqual(
-        expect.arrayContaining(['dof-coc', 'dof-composite', 'barrel-distortion', 'fxaa']),
+      const outputOrder = [
+        'dof-coc',
+        'dof-composite',
+        'standard-grade',
+        'barrel-distortion',
+        'standard-encode',
+        'standard-final',
+      ];
+      expect(inspection.perFramePassNames.filter((name) => outputOrder.includes(name))).toEqual(
+        outputOrder,
       );
-      expect(barrelIndex).toBeGreaterThan(passes.indexOf('dof-composite'));
-      expect(fxaaIndex).toBeGreaterThan(barrelIndex);
-      expect(encodingIndex).toBeGreaterThan(fxaaIndex);
       expect(inspection.output.capability).toBe('rgba16float-renderable');
+      expect(inspection.output.standardOutputColor).toMatchObject({
+        format: 'rgba16float',
+        domain: 'display-encoded',
+      });
       const distinctRgb = new Set<string>();
       for (let offset = 0; offset < pixels.length; offset += 4) {
         distinctRgb.add(
@@ -821,34 +825,30 @@ describe('barrel distortion real output on Dawn', () => {
 
       const enabled = await drawFrame();
       const enabledInspection = fixture.renderer.inspect();
-      const enabledPasses = enabledInspection.output.graphPassNames;
-      const lutIndex = enabledPasses.indexOf('standard-color-lut');
-      const barrelIndex = enabledPasses.indexOf('barrel-distortion');
-      const fxaaIndex = enabledPasses.indexOf('fxaa');
-      const encodingIndices = enabledPasses.flatMap((name, index) =>
-        name === 'standard-output-encoding' ? [index] : [],
-      );
+      const outputOrder = [
+        'standard-grade',
+        'barrel-distortion',
+        'standard-encode',
+        'standard-final',
+      ];
       expect(enabled.receipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       expect(enabledInspection.output.displayEncoded).toBe(true);
       const lutSourceKey = enabledInspection.output.standardLut?.sourceKey;
       expect(lutSourceKey).toBeTruthy();
-      expect(lutIndex).toBeGreaterThan(enabledPasses.indexOf('standard-tone'));
-      expect(barrelIndex).toBeGreaterThan(lutIndex);
-      expect(fxaaIndex).toBeGreaterThan(barrelIndex);
-      expect(encodingIndices).toHaveLength(1);
-      expect(encodingIndices[0]).toBeGreaterThan(fxaaIndex);
+      expect(
+        enabledInspection.perFramePassNames.filter((name) => outputOrder.includes(name)),
+      ).toEqual(outputOrder);
       const centerOffset = pixelOffset(BARREL_GPU_WIDTH >> 1, BARREL_GPU_HEIGHT >> 1);
       expect(enabled.pixels[centerOffset + 3]).toBe(128);
 
       world.set(camera, Camera, { colorLut: 0 as never, colorLutStrength: 0 }).unwrap();
       const disabled = await drawFrame();
       const disabledInspection = fixture.renderer.inspect();
-      const disabledPasses = disabledInspection.output.graphPassNames;
-      // Explicitly disabling the LUT removes its active source and graph pass;
-      // the pixel checks below still prove one unchanged final encoding writer.
+      // The LUT changes the Grade variant while the output stages keep their order.
       expect(disabledInspection.output.standardLut?.sourceKey).toBeNull();
-      expect(disabledPasses).not.toContain('standard-color-lut');
-      expect(disabledPasses.filter((name) => name === 'standard-output-encoding')).toHaveLength(1);
+      expect(
+        disabledInspection.perFramePassNames.filter((name) => outputOrder.includes(name)),
+      ).toEqual(outputOrder);
       expect(disabled.receipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       expect(disabled.pixels[centerOffset + 3]).toBe(128);
 
@@ -885,10 +885,12 @@ describe('barrel distortion real output on Dawn', () => {
       world.set(camera, BarrelDistortion, { strength: 0 }).unwrap();
       world.set(camera, Camera, { antialias: ANTIALIAS_NONE }).unwrap();
       const fused = await drawFrame();
-      expect(fixture.renderer.inspect().output.graphPassNames).toContain(
-        'standard-tone-lut-output',
-      );
-      const fusedGeneration = fixture.renderer.inspect().recoveryEvidence.graph.generation;
+      const fusedInspection = fixture.renderer.inspect();
+      expect(
+        fusedInspection.perFramePassNames.filter((name) => outputOrder.includes(name)),
+      ).toEqual(['standard-grade']);
+      expect(fusedInspection.output.standardLut?.sourceKey).toBe(lutSourceKey);
+      const fusedGeneration = fusedInspection.recoveryEvidence.graph.generation;
       fixture.assets.update(lutHandle, { data: new Uint8Array(lut.data.byteLength) }).unwrap();
       const fusedEdited = await drawFrame();
       expect(rgbAt(fusedEdited.pixels, BARREL_GPU_WIDTH >> 1, BARREL_GPU_HEIGHT >> 1)).toEqual([
@@ -931,6 +933,10 @@ describe('barrel distortion real output on Dawn', () => {
       });
       await drawWithLinearObservation(noFxaaWorld);
       const noFxaa = await readBarrelPixels(fixture.device, fixture.renderTarget);
+      const outputOrder = ['standard-grade', 'standard-encode', 'standard-final'];
+      expect(
+        fixture.renderer.inspect().perFramePassNames.filter((name) => outputOrder.includes(name)),
+      ).toEqual(['standard-grade', 'standard-encode']);
 
       const fxaaAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
       const fxaaWorld = new World({ assets: fxaaAssets });
@@ -944,12 +950,11 @@ describe('barrel distortion real output on Dawn', () => {
       await drawWithLinearObservation(fxaaWorld);
       const fxaa = await readBarrelPixels(fixture.device, fixture.renderTarget);
       const inspection = fixture.renderer.inspect();
-      const passes = inspection.output.graphPassNames;
-      // Observation adds a tone-only readback; the ordinary FXAA route still
-      // samples the single output transform's display-encoded intermediate.
-      expect(passes.filter((name) => name === 'output-transform')).toHaveLength(1);
-      expect(passes.indexOf('fxaa')).toBeGreaterThan(passes.indexOf('output-transform'));
-      expect(passes).not.toContain('standard-output-encoding');
+      // Linear-LDR readback keeps the encode seam explicit. Final FXAA samples
+      // the display-encoded result and preserves the authored alpha.
+      expect(inspection.perFramePassNames.filter((name) => outputOrder.includes(name))).toEqual(
+        outputOrder,
+      );
       expect(inspection.output.displayEncoded).toBe(true);
       expect(inspection.output.standardOutputColor?.domain).toBe('display-encoded');
 
@@ -986,7 +991,7 @@ describe('barrel distortion real output on Dawn', () => {
           if (Math.abs(source[3] - 0.5) > 0.02) continue;
           halfAlphaCount += 1;
           const edge = fxaaEdgeEvidence(noFxaa, x, y);
-          if (edge === undefined || edge.lumaRange < edge.threshold) continue;
+          if (edge === undefined || edge.lumaRange <= edge.threshold) continue;
           edgeCount += 1;
           const noFxaaPixel = rgbaAt(noFxaa, x, y);
           const fxaaPixel = rgbaAt(fxaa, x, y);
@@ -1051,7 +1056,7 @@ describe('barrel distortion real output on Dawn', () => {
       if (matched === undefined) {
         throw new Error('Dawn FXAA edge did not retain half-alpha RGB difference');
       }
-      expect(matched.lumaRange).toBeGreaterThanOrEqual(matched.threshold);
+      expect(matched.lumaRange).toBeGreaterThan(matched.threshold);
       expect(matched.sourceAlphaByte).toBeGreaterThanOrEqual(126);
       expect(matched.sourceAlphaByte).toBeLessThanOrEqual(130);
       expect(matched.fxaaAlphaByte).toBeGreaterThanOrEqual(126);

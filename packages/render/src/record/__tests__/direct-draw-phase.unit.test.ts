@@ -103,7 +103,7 @@ function directDrawRows(
     mesh: MeshGpuHandles,
     material: import('../../render-system-extract').MaterialSnapshot,
   ) => MeshGpuHandles,
-): readonly ValidatedRenderable[] {
+): FrameList<ValidatedRenderable> {
   return drawn(new DirectDrawPhase(), {
     scene,
     selection: [],
@@ -183,10 +183,82 @@ it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances',
     unbatched,
   );
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.source.entityKey).toBe(count);
-  expect(rows[0]?.submeshIndices).toEqual([2, 1]);
+  expect(rows.at(0)?.source.entityKey).toBe(count);
+  expect(rows.at(0)?.submeshIndices).toEqual([2, 1]);
   expect(slotAt).toHaveBeenCalledTimes(1);
   expect(unbatched).not.toHaveBeenCalled();
+});
+
+it('keeps the ordered submesh roster with its live bindings while every pose moves', () => {
+  const sources = [source(7, [2, 1]), source(9, [1])];
+  const f = setup(sources);
+  const phase = new DirectDrawPhase();
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
+  for (const batch of plan.batches) {
+    assert(batch.binding);
+    f.meshes.set(batch.binding, mesh);
+  }
+  const excluded = new Set<number>();
+  let selection = 0;
+  const input = (): DirectDrawInput => ({
+    scene: {
+      plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: f.topology.unbatchedSlots,
+    },
+    selection: [selection],
+    select: (binding) =>
+      excluded.has(binding.drawItemIndex) ? undefined : binding.material.snapshot,
+    meshes: f.meshes,
+    sourceScope,
+    shadow: false,
+    materials: undefined,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+  });
+  const rows = (output: ReturnType<DirectDrawPhase['emit']>) =>
+    new Map(Array.from(output.rows, (row) => [row.source.entityKey, row] as const));
+  const held = rows(drawn(phase, input()));
+  expect(held.get(7)?.submeshIndices).toEqual([2, 1]);
+  for (let frame = 1; frame <= 18; frame++) {
+    const world = mat4.identity(mat4.create());
+    world[12] = frame;
+    f.scene.apply(
+      [],
+      [
+        {
+          entities: Uint32Array.of(7, 9),
+          worlds: Float32Array.of(...world, ...world),
+        },
+      ],
+    );
+    const current = rows(drawn(phase, input()));
+    for (const value of sources) {
+      const draw = current.get(value.entityKey);
+      expect(draw?.source.transform.world[12]).toBe(frame);
+      expect(draw?.submeshIndices).toBe(held.get(value.entityKey)?.submeshIndices);
+    }
+  }
+  excluded.add(2);
+  selection++;
+  const shrunk = rows(drawn(phase, input()));
+  expect(shrunk.get(9)?.submeshIndices).toBe(held.get(9)?.submeshIndices);
+  expect(shrunk.get(7)?.submeshIndices).toEqual([1]);
+  expect(held.get(7)?.source.transform.world[12]).toBe(0);
+  expect(held.get(7)?.submeshIndices).toEqual([2, 1]);
+  excluded.clear();
+  selection++;
+  const restored = rows(drawn(phase, input()));
+  expect(restored.get(7)?.submeshIndices).toEqual([1, 2]);
+  expect(shrunk.get(7)?.submeshIndices).toEqual([1]);
+  const mixed = new Map(f.meshes);
+  for (const [binding, value] of mixed)
+    if (binding.drawItemIndex === 2) mixed.set(binding, { ...value });
+  expect(() => drawn(phase, { ...input(), meshes: mixed })).toThrow('one resident geometry');
+  const repaired = rows(drawn(phase, input()));
+  expect(repaired.get(7)?.submeshIndices).toEqual([1, 2]);
+  expect(repaired.get(7)?.mesh).toBe(mesh);
 });
 
 it('uses fixed executions, preserves source instances and rejects recycled slots', () => {
@@ -200,7 +272,7 @@ it('uses fixed executions, preserves source instances and rejects recycled slots
   };
   material.adopt({ ...material.snapshot, passes: [] });
   expect(
-    directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => [])[0]?.source,
+    directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => []).at(0)?.source,
   ).toBe(f.scene.slot(7)?.snapshot);
   f.scene.apply([
     { kind: 'remove', entityKey: 7 },
@@ -328,7 +400,7 @@ it.each([
     sourceScope,
     'shadow',
     () => [],
-  )[0];
+  ).at(0);
   assert(shadow);
   const mainSource = f.scene
     .materializeTemporal({ hits: 0, misses: 0 }, new MaterialFrame(undefined).with(first.material))
@@ -448,7 +520,10 @@ it('records native view geometry without re-admitting its non-drawing source roo
   expect(prepare).toHaveBeenCalledWith([draw]);
 });
 
-it('reprojects retained instance LOD runs when the camera moves without changing geometry bins', () => {
+it.each([
+  'external',
+  'native',
+] as const)('reprojects %s instance LOD runs as the camera changes', (mode) => {
   const snapshot = source(7);
   const transforms = new Float32Array(32);
   transforms.set(mat4.identity(mat4.create()));
@@ -476,8 +551,9 @@ it('reprojects retained instance LOD runs when the camera moves without changing
     drawSnapshotAt: f.scene.drawSnapshotAt,
     unbatchedSlots: f.topology.unbatchedSlots,
   };
-  const query = (z: number) =>
-    drawn(phase, {
+  const query = (z: number) => {
+    const camera = { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, z) };
+    return drawn(phase, {
       scene: state,
       selection: [],
       select: f.select,
@@ -488,19 +564,19 @@ it('reprojects retained instance LOD runs when the camera moves without changing
       prepareUnbatched: () => [],
       viewDraws: [],
       lodCamera: [z],
-      lod: (rows) =>
-        selectCpuLodRows(rows, {
-          ...makeZeroCameraFallbackSnapshot(),
-          position: vec3.create(0, 0, z),
-        }),
+      lod: mode === 'native' ? camera : (rows) => selectCpuLodRows(rows, camera),
     });
+  };
   const near = query(5);
-  expect(near.rows[0]?.cpuInstanceLods).toEqual([
+  expect(near.rows.at(0)?.cpuInstanceLods).toEqual([
     { first: 0, count: 1, level: 0 },
     { first: 1, count: 1, level: 1 },
   ]);
+  if (mode === 'native') {
+    for (let frame = 1; frame <= 60; frame++) expect(query(5 + frame / 1000)).toBe(near);
+  }
   const far = query(40);
-  expect(far.rows[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 2, level: 1 }]);
-  expect(far.rows[0]?.mesh).toBe(near.rows[0]?.mesh);
-  expect(query(5).rows[0]?.cpuInstanceLods).toEqual(near.rows[0]?.cpuInstanceLods);
+  expect(far.rows.at(0)?.cpuInstanceLods).toEqual([{ first: 0, count: 2, level: 1 }]);
+  expect(far.rows.at(0)?.mesh).toBe(near.rows.at(0)?.mesh);
+  expect(query(5).rows.at(0)?.cpuInstanceLods).toEqual(near.rows.at(0)?.cpuInstanceLods);
 });

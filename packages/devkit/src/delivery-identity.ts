@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { type CommandResult, failCommand } from './types.js';
 
 const exec = promisify(execFile);
 
@@ -27,15 +28,15 @@ export async function readDeliverySource(root: string): Promise<DeliverySource> 
   const git = async (...args: string[]) =>
     (await exec('git', ['-C', root, ...args], { maxBuffer: 64 * 1024 * 1024 })).stdout;
   let repository: string;
-  let commit: string;
-  let tree: string;
+  let revision: string;
   try {
     repository = (await git('rev-parse', '--show-toplevel')).trim();
-    commit = (await git('rev-parse', 'HEAD')).trim();
-    tree = (await git('rev-parse', 'HEAD^{tree}')).trim();
+    revision = await git('rev-parse', 'HEAD', 'HEAD^{tree}');
   } catch {
     return { kind: 'unversioned' as const };
   }
+  const [commit, tree] = revision.trim().split(/\r?\n/);
+  if (!commit || !tree) return { kind: 'unversioned' };
   const ignored = await git('check-ignore', '-q', '.').then(
     () => true,
     () => false,
@@ -84,4 +85,20 @@ export async function readDeliverySource(root: string): Promise<DeliverySource> 
     workingTreeSha256: digest.digest('hex'),
     submodules,
   };
+}
+
+/** Verify that the same source tree still owns the completed delivery. */
+export async function verifyDeliverySource(
+  root: string,
+  before: DeliverySource,
+): Promise<CommandResult<DeliverySource>> {
+  const after = await readDeliverySource(root);
+  return JSON.stringify(before) === JSON.stringify(after)
+    ? { ok: true, value: before }
+    : failCommand(
+        'package-source-changed',
+        'the source identity to remain fixed during packaging',
+        'Finish source edits and rerun packaging from one stable source tree.',
+        { before, after },
+      );
 }

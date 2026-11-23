@@ -1,3 +1,4 @@
+import type { MeshVertexStreamRange } from '@forgeax/engine-geometry';
 import type {
   BindGroup,
   Buffer,
@@ -8,6 +9,7 @@ import type {
   RhiRenderCommands,
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import { bindMeshVertexStreams } from '../device/mesh-vertex-streams';
 
 export interface PreparedRasterWindowPreparation {
   isCurrent(): boolean;
@@ -38,6 +40,7 @@ export interface PreparedRasterBindings {
   readonly mesh: BindGroup;
   readonly meshOffsets: readonly number[];
   readonly vertex: Buffer;
+  readonly vertexStreams?: readonly MeshVertexStreamRange[] | undefined;
   readonly index?: Buffer | undefined;
   readonly indexFormat: GPUIndexFormat;
   readonly indirect: Buffer;
@@ -63,6 +66,13 @@ export function prepareRasterWindows(windows: readonly BindGroup[]): readonly Bi
   return snapshot;
 }
 
+function sameVertexBinding(
+  previous: PreparedRasterBindings | undefined,
+  next: PreparedRasterBindings,
+): boolean {
+  return previous?.vertex === next.vertex && previous.vertexStreams === next.vertexStreams;
+}
+
 function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
   if (
     a.pipeline !== b.pipeline ||
@@ -71,7 +81,7 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
     a.material !== b.material ||
     a.materialOffset !== b.materialOffset ||
     a.mesh !== b.mesh ||
-    a.vertex !== b.vertex ||
+    !sameVertexBinding(a, b) ||
     a.index !== b.index ||
     a.indexFormat !== b.indexFormat ||
     a.indirect !== b.indirect ||
@@ -102,61 +112,79 @@ export function recordPreparedRasters(
   let previous: PreparedRasterBindings | undefined;
   let count = 0;
   for (const b of batches) {
-    const pipelineChanged = previous?.pipeline !== b.pipeline;
-    if (pipelineChanged) {
-      commands.setPipeline(b.pipeline);
-      assertCurrent(current);
-      count++;
-    }
-    if (pipelineChanged || previous?.view !== b.view || previous.viewOffset !== b.viewOffset) {
-      commands.setBindGroup(0, b.view, [b.viewOffset, 0]);
-      assertCurrent(current);
-      count++;
-    }
-    if (
-      pipelineChanged ||
-      previous?.material !== b.material ||
-      previous.materialOffset !== b.materialOffset
-    ) {
-      commands.setBindGroup(1, b.material, [b.materialOffset]);
-      assertCurrent(current);
-      count++;
-    }
-    if (
-      pipelineChanged ||
-      previous?.mesh !== b.mesh ||
-      previous.meshOffsets.length !== b.meshOffsets.length ||
-      previous.meshOffsets.some((value, index) => value !== b.meshOffsets[index])
-    ) {
-      commands.setBindGroup(2, b.mesh, b.meshOffsets);
-      assertCurrent(current);
-      count++;
-    }
-    if (previous?.vertex !== b.vertex) {
-      commands.setVertexBuffer(0, b.vertex);
-      assertCurrent(current);
-      count++;
-    }
-    if (
-      b.index !== undefined &&
-      (previous?.index !== b.index || previous.indexFormat !== b.indexFormat)
-    ) {
-      commands.setIndexBuffer(b.index, b.indexFormat);
-      assertCurrent(current);
-      count++;
-    }
-    for (let level = 0; level < b.windows.length; level++) {
-      const window = b.windows[level];
-      if (window === undefined) throw new Error('missing prepared raster LOD window');
-      commands.setBindGroup(3, window);
-      assertCurrent(current);
-      const offset = b.indirectOffset + level * 20;
-      if (b.indexed) commands.drawIndexedIndirect(b.indirect, offset);
-      else commands.drawIndirect(b.indirect, offset);
-      assertCurrent(current);
-      count += 2;
-    }
+    count += recordPreparedRasterAfter(commands, b, previous, current);
     previous = b;
+  }
+  return count;
+}
+
+const ZERO_VIEW_OFFSETS = Object.freeze([0, 0]);
+const ZERO_MATERIAL_OFFSET = Object.freeze([0]);
+
+/** Encode a single row while preserving physical state across consecutive draws. */
+export function recordPreparedRasterAfter(
+  commands: RhiRenderCommands,
+  b: PreparedRasterBindings,
+  previous?: PreparedRasterBindings,
+  current?: () => boolean,
+): number {
+  let count = 0;
+  const pipelineChanged = previous?.pipeline !== b.pipeline;
+  if (pipelineChanged) {
+    commands.setPipeline(b.pipeline);
+    assertCurrent(current);
+    count++;
+  }
+  if (pipelineChanged || previous?.view !== b.view || previous.viewOffset !== b.viewOffset) {
+    commands.setBindGroup(0, b.view, b.viewOffset === 0 ? ZERO_VIEW_OFFSETS : [b.viewOffset, 0]);
+    assertCurrent(current);
+    count++;
+  }
+  if (
+    pipelineChanged ||
+    previous?.material !== b.material ||
+    previous.materialOffset !== b.materialOffset
+  ) {
+    commands.setBindGroup(
+      1,
+      b.material,
+      b.materialOffset === 0 ? ZERO_MATERIAL_OFFSET : [b.materialOffset],
+    );
+    assertCurrent(current);
+    count++;
+  }
+  if (
+    pipelineChanged ||
+    previous?.mesh !== b.mesh ||
+    previous.meshOffsets.length !== b.meshOffsets.length ||
+    previous.meshOffsets.some((value, index) => value !== b.meshOffsets[index])
+  ) {
+    commands.setBindGroup(2, b.mesh, b.meshOffsets);
+    assertCurrent(current);
+    count++;
+  }
+  if (!sameVertexBinding(previous, b)) {
+    count += bindMeshVertexStreams(commands, b.vertex, b.vertexStreams);
+    assertCurrent(current);
+  }
+  if (
+    b.index !== undefined &&
+    (previous?.index !== b.index || previous.indexFormat !== b.indexFormat)
+  ) {
+    commands.setIndexBuffer(b.index, b.indexFormat);
+    assertCurrent(current);
+    count++;
+  }
+  for (let level = 0; level < b.windows.length; level++) {
+    const window = b.windows[level];
+    if (window === undefined) throw new Error('missing prepared raster LOD window');
+    commands.setBindGroup(3, window);
+    assertCurrent(current);
+    const offset = b.indirectOffset + level * 20;
+    if (b.indexed) commands.drawIndexedIndirect(b.indirect, offset);
+    else commands.drawIndirect(b.indirect, offset);
+    assertCurrent(current);
+    count += 2;
   }
   return count;
 }
@@ -165,7 +193,7 @@ export function recordPreparedRaster(
   commands: RhiRenderCommands,
   bindings: PreparedRasterBindings,
 ): void {
-  recordPreparedRasters(commands, [bindings]);
+  recordPreparedRasterAfter(commands, bindings);
 }
 
 type RasterFormats = readonly (GPUTextureFormat | null | undefined)[];
@@ -353,6 +381,13 @@ class PreparedRasterRecording {
 export class PreparedRasterBundleCache {
   readonly #entries = new Map<PreparedRasterPass, PreparedRasterEntry>();
   #preparingWindows: PreparedRasterWindowPreparation | undefined;
+
+  /** Share immutable commands without sharing the mutable pass slots. */
+  fork(): PreparedRasterBundleCache {
+    const fork = new PreparedRasterBundleCache();
+    for (const [pass, entry] of this.#entries) fork.#entries.set(pass, entry);
+    return fork;
+  }
 
   captureCurrent(pass: PreparedRasterPass): (() => boolean) | undefined {
     const entry = this.#entries.get(pass);

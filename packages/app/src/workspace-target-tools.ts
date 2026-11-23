@@ -22,6 +22,42 @@ type WorkspaceGameObservation = {
   readonly value: GameProjectionValue;
 };
 
+function requirePickDisplayFrame(canvas: HTMLCanvasElement, worldIdentity: string) {
+  const frame = readBrowserFrameSubmitted(canvas);
+  const reason = !frame
+    ? 'missing-frame'
+    : frame.worldIdentity !== worldIdentity
+      ? 'world-mismatch'
+      : !frame.barrelDistortion?.camera
+        ? 'missing-mapping'
+        : frame.barrelDistortion.width !== canvas.width ||
+            frame.barrelDistortion.height !== canvas.height
+          ? 'extent-mismatch'
+          : undefined;
+  if (reason || !frame?.barrelDistortion?.camera)
+    throw new EngineWorkspaceError(
+      'engine-workspace-frame-unavailable',
+      'A current submitted display frame from this World',
+      'Wait for the current surface to submit a frame before picking.',
+      {
+        reason,
+        worldIdentity: worldIdentity,
+        frameWorldIdentity: frame?.worldIdentity,
+        frameId: frame?.frameId,
+        deviceGeneration: frame?.deviceGeneration,
+        frameExtent:
+          frame?.barrelDistortion === undefined
+            ? undefined
+            : {
+                width: frame.barrelDistortion.width,
+                height: frame.barrelDistortion.height,
+              },
+        canvasExtent: { width: canvas.width, height: canvas.height },
+      },
+    );
+  return frame;
+}
+
 const MAX_GAME_OBSERVATION_BYTES = 128 * 1024;
 
 function inspectGameReads(
@@ -72,7 +108,7 @@ export type EngineWorkspaceEntityInspection = ReturnType<Inspection['inspect']> 
     readonly cloudLayer?: RenderInspection['cloudLayer'];
   };
 };
-export type EngineWorkspacePickGranularity = 'bounds' | 'triangle';
+export type EngineWorkspacePickGranularity = 'bounds' | 'triangle' | 'visible-entity';
 export interface EngineWorkspaceEntitySource {
   readonly guid: string;
   readonly sourcePath: string;
@@ -103,6 +139,7 @@ export interface EngineWorkspaceTargetTools {
     frameId?: number;
     deviceGeneration?: number;
     viewIdentity?: string;
+    signal?: AbortSignal;
   }) => unknown | Promise<unknown>;
   assistance?: (input: EngineWorkspaceAssistanceRequest) => unknown | Promise<unknown>;
   highlight?: (input: { entityId?: string }) => unknown | Promise<unknown>;
@@ -183,6 +220,7 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
               x,
               y,
               granularity = 'bounds',
+              signal,
               ...submitted
             }: {
               x: number;
@@ -191,43 +229,18 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
               frameId?: number;
               deviceGeneration?: number;
               viewIdentity?: string;
+              signal?: AbortSignal;
             }) {
               assertAvailable();
-              if (granularity !== 'bounds' && granularity !== 'triangle')
-                throw new TypeError('Pick granularity must be bounds or triangle');
+              if (
+                granularity !== 'bounds' &&
+                granularity !== 'triangle' &&
+                granularity !== 'visible-entity'
+              )
+                throw new TypeError('Unsupported pick granularity');
+              signal?.throwIfAborted();
               const canvas = display.canvas;
-              const frame = readBrowserFrameSubmitted(canvas);
-              const reason = !frame
-                ? 'missing-frame'
-                : frame.worldIdentity !== ctx.world.identity
-                  ? 'world-mismatch'
-                  : !frame.barrelDistortion?.camera
-                    ? 'missing-mapping'
-                    : frame.barrelDistortion.width !== canvas.width ||
-                        frame.barrelDistortion.height !== canvas.height
-                      ? 'extent-mismatch'
-                      : undefined;
-              if (reason || !frame?.barrelDistortion?.camera)
-                throw new EngineWorkspaceError(
-                  'engine-workspace-frame-unavailable',
-                  'A current submitted display frame from this World',
-                  'Wait for the current surface to submit a frame before picking.',
-                  {
-                    reason,
-                    worldIdentity: ctx.world.identity,
-                    frameWorldIdentity: frame?.worldIdentity,
-                    frameId: frame?.frameId,
-                    deviceGeneration: frame?.deviceGeneration,
-                    frameExtent:
-                      frame?.barrelDistortion === undefined
-                        ? undefined
-                        : {
-                            width: frame.barrelDistortion.width,
-                            height: frame.barrelDistortion.height,
-                          },
-                    canvasExtent: { width: canvas.width, height: canvas.height },
-                  },
-                );
+              const frame = requirePickDisplayFrame(canvas, ctx.world.identity);
               const helper = editor?.pick({ x, y, ...submitted });
               if (helper?.action !== undefined)
                 return {
@@ -238,18 +251,76 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                   helper: helper.action.kind,
                 };
               const matched = helper?.frame ?? frame;
-              if (matched.barrelDistortion?.camera === undefined)
+              const mapping = matched.barrelDistortion;
+              if (mapping?.camera === undefined)
                 throw new EngineWorkspaceError(
                   'engine-workspace-frame-unavailable',
                   'A submitted camera mapping',
                 );
+              if (granularity === 'visible-entity') {
+                const unavailable = (reason: string) =>
+                  new EngineWorkspaceError(
+                    'engine-workspace-capability-unavailable',
+                    'GPU picking for the submitted view',
+                    'Wait for an eligible frame or explicitly request geometry picking.',
+                    { reason },
+                  );
+                const request = display.app.renderer.requestViewportHit?.(
+                  {
+                    x,
+                    y,
+                    width: canvas.width,
+                    height: canvas.height,
+                    afterFrameId: matched.frameId,
+                    worldIdentity: ctx.world.identity,
+                    deviceGeneration: matched.deviceGeneration,
+                  },
+                  signal,
+                );
+                if (request === undefined) throw unavailable('renderer');
+                return request.then((result) => {
+                  assertAvailable();
+                  signal?.throwIfAborted();
+                  const current = readBrowserFrameSubmitted(canvas);
+                  const currentMapping = current?.barrelDistortion;
+                  if (
+                    result.kind === 'stale' ||
+                    current?.worldIdentity !== matched.worldIdentity ||
+                    current?.deviceGeneration !== matched.deviceGeneration ||
+                    current.configurationRevision !== matched.configurationRevision ||
+                    canvas.width !== mapping.width ||
+                    canvas.height !== mapping.height ||
+                    currentMapping?.strength !== mapping.strength ||
+                    currentMapping.centerX !== mapping.centerX ||
+                    currentMapping.centerY !== mapping.centerY
+                  )
+                    throw new EngineWorkspaceError(
+                      'engine-workspace-frame-unavailable',
+                      'The same view, World and device throughout GPU picking',
+                      'Wait for a current frame and pick again.',
+                      { reason: result.kind === 'stale' ? result.reason : 'frame-identity' },
+                    );
+                  if (result.kind === 'unavailable') throw unavailable(result.reason);
+                  const entityId =
+                    result.entity === null
+                      ? null
+                      : `${options.targetId}:${ctx.world.identity}:${result.entity}`;
+                  if (entityId !== null) observationEntity(ctx.world, entityId, options.targetId);
+                  return {
+                    targetId: options.targetId,
+                    frameId: result.frameId,
+                    entityId,
+                    granularity,
+                  };
+                });
+              }
               let entityId: string | null;
               if (granularity === 'triangle') {
                 const result = pickTriangleDisplay(
                   ctx.world,
                   x,
                   y,
-                  matched.barrelDistortion,
+                  mapping,
                   canvas.width,
                   canvas.height,
                 );
@@ -265,14 +336,7 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                     ? `${options.targetId}:${ctx.world.identity}:${result.hit.entity}`
                     : null;
               } else {
-                const result = pickDisplay(
-                  ctx.world,
-                  x,
-                  y,
-                  matched.barrelDistortion,
-                  canvas.width,
-                  canvas.height,
-                );
+                const result = pickDisplay(ctx.world, x, y, mapping, canvas.width, canvas.height);
                 entityId = result
                   ? `${options.targetId}:${ctx.world.identity}:${result.entity}`
                   : null;

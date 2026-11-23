@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { AssetGuid, parsePackSourceJson } from '@forgeax/engine-pack/source';
 import { GameProjectSchema, PluginRealmSchema } from '@forgeax/engine-project';
 import { discoverPluginAssets } from './build/plugin-assets.js';
-import { isFilesystemPathWithin } from './filesystem-path.js';
+import { isFilesystemPathWithin, writeFileAtomic } from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
 import type {
   CommandResult,
@@ -12,6 +12,7 @@ import type {
   PluginInspectOptions,
   PluginRootOptions,
 } from './types.js';
+import { completeCommand } from './types.js';
 
 export async function pluginCreateCommand(
   options: PluginCreateOptions,
@@ -112,23 +113,20 @@ export async function pluginInspectCommand(
     const facts = await readProjectFacts(options.root);
     if (!facts.ok) return facts;
     const inventory = await discoverPluginAssets(facts.value);
-    return {
-      ok: true,
-      value: {
-        roots: facts.value.roots,
-        deferred: inventory.deferred,
-        assets: [...inventory.assets.values()]
-          .filter((record) => !options.guid || record.definition.guid === options.guid)
-          .map((record) => ({
-            ...record.definition,
-            sourcePath: record.sourcePath,
-            sourceKey: record.sourceKey,
-            refs: record.refs,
-            lifecycle: 'definition',
-            execution: 'not-observed',
-          })),
-      },
-    };
+    return completeCommand({
+      roots: facts.value.roots,
+      deferred: inventory.deferred,
+      assets: [...inventory.assets.values()]
+        .filter((record) => !options.guid || record.definition.guid === options.guid)
+        .map((record) => ({
+          ...record.definition,
+          sourcePath: record.sourcePath,
+          sourceKey: record.sourceKey,
+          refs: record.refs,
+          lifecycle: 'definition',
+          execution: 'not-observed',
+        })),
+    });
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'plugin-asset-inspect-failed') };
   }
@@ -141,7 +139,6 @@ export async function pluginRootCommand(
   const root = resolve(options.root ?? process.cwd());
   const path = resolve(root, 'forge.json');
   const lock = `${path}.lock`;
-  const temporary = `${path}.${randomUUID()}.tmp`;
   let locked = false;
   try {
     if (!PluginRealmSchema.safeParse(options.realm).success)
@@ -163,14 +160,12 @@ export async function pluginRootCommand(
       locked = true;
       if ((await readFile(path, 'utf8')) !== raw)
         throw new Error('project changed during root validation');
-      await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
-      await rename(temporary, path);
+      await writeFileAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
     }
     return { ok: true, value: { manifest, dryRun: options.dryRun === true } };
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'plugin-root-update-failed') };
   } finally {
-    await rm(temporary, { force: true });
     if (locked) await rm(lock, { recursive: true });
   }
 }

@@ -415,6 +415,8 @@ export interface RenderFeaturePlanContext {
   readonly createNativePlan?: () => RenderFeatureNativePlanBuilder;
   /** Resolve an exact asset in the corresponding source World or accepted publication. */
   readonly resolveAsset?: (handle: number, revision?: number) => Result<Asset, unknown>;
+  /** Resolve a published material and its realm-bound compiler recipe at the accepted revision. */
+  readonly resolveMaterialTemplate?: import('../publication/resource-scope').RenderResourceScope['resolveMaterialTemplate'];
   /** Resolve an exact resident texture view through the Renderer asset/residency owner. */
   readonly resolveResidentTextureView?: (
     sourceWorldIndex: number,

@@ -255,7 +255,7 @@ describe('independent geometry and material capacity', () => {
     const plan = buildDispatchPlan(ceiling(3, 1), rows.slice(0, 2), [], [], rows);
     expect(plan.validatedOrdered).toEqual(rows.slice(0, 2));
     expect(plan.shadowValidatedOrdered.map((entry) => entry.source)).toEqual([rows[0]?.source]);
-    expect(plan.shadowValidatedOrdered[0]?.meshSlot).toBe(2);
+    expect(plan.shadowValidatedOrdered.at(0)?.meshSlot).toBe(2);
     expect(plan.materialSlotIndices).toEqual([[0], [0], [0]]);
     expect(plan.materialSlotCount).toBe(1);
   });

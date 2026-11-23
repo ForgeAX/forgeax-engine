@@ -20,6 +20,7 @@ import {
   materialShaderSource,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
+  projectStandardCoverageDefines,
   type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
   type ShaderCatalogDevice,
@@ -42,7 +43,10 @@ import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
 import { materialVertexConstants } from '../material-stage-constants';
-import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
+import {
+  buildPbrMaterialUserRegionEntries,
+  isCanonicalStandardPbrMaterialShader,
+} from '../pbr-pipeline';
 import { colorFormatsForPassKind, type PipelineSpec, passKindPolicyTable } from '../pipeline-spec';
 import {
   deriveExtendedLightingCapability,
@@ -1104,13 +1108,11 @@ function sceneTablePipelineLayout(
 ): PipelineLayout | null | undefined {
   switch (layoutKind) {
     case 'gpu-driven-pbr':
+    case 'gpu-driven-cluster-pbr':
       return state.gpuDrivenPbrPipelineLayout ?? null;
     case 'gpu-driven-skin':
-      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
-    case 'gpu-driven-cluster-pbr':
-      return state.gpuDrivenClusterPbrPipelineLayout ?? null;
     case 'gpu-driven-cluster-skin':
-      return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
+      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
     case 'scene-direct-unlit':
       return state.sceneDirectPipelineLayout ?? null;
     case 'scene-direct-cluster-unlit':
@@ -1125,8 +1127,6 @@ interface SceneTablePipelineLayouts {
   readonly sceneDirectPipelineLayout?: PipelineLayout | null;
   readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
   readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
-  readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
-  readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
 }
 
 export function selectPipelineLayoutForVariant(
@@ -1141,8 +1141,6 @@ export function selectPipelineLayoutForVariant(
     readonly sceneDirectPipelineLayout?: PipelineLayout | null;
     readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
-    readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
-    readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
     readonly hdrpSkinPipelineLayout?: PipelineLayout | null;
     readonly hdrpSkinProbePipelineLayout?: PipelineLayout | null;
   } | null,
@@ -1322,6 +1320,18 @@ function parseMaterialVariantSelection(
   return requested;
 }
 
+function formatMaterialVariantSelection(
+  filtered: Readonly<Record<string, boolean>>,
+  requestedVariantSet: string | undefined,
+): string | undefined {
+  const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return sorted.every(([, value]) => value)
+    ? requestedVariantSet === undefined
+      ? undefined
+      : ''
+    : sorted.map(([name, value]) => `${name}=${value}`).join('+');
+}
+
 /**
  * Resolve a requested material variant against the actual backend capabilities.
  * Record callers use the native-capability request; the backend-owned axes
@@ -1398,13 +1408,10 @@ export function resolveMaterialShaderVariantSet(
                                 // Only Engine-owned admission axes default to disabled.
                                 (requested[axis] ?? true);
   }
+  if ('identifier' in variants && isCanonicalStandardPbrMaterialShader(variants.identifier))
+    projectStandardCoverageDefines(filtered);
   resolveRuleGatedOptIns(filtered, requested, variants);
-  const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return sorted.every(([, value]) => value)
-    ? requestedVariantSet === undefined
-      ? undefined
-      : ''
-    : sorted.map(([name, value]) => `${name}=${value}`).join('+');
+  return formatMaterialVariantSelection(filtered, requestedVariantSet);
 }
 
 /**

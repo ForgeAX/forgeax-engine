@@ -1,8 +1,10 @@
 import {
+  commitImportPublication,
   ImporterRegistry,
-  publishImportPublication,
+  projectImportPack,
   type RunImportMeta,
   runImport,
+  stageImportPublication,
 } from '@forgeax/engine-import';
 import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -199,7 +201,8 @@ describe('real FBX LodGroup importer closure', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    const meshes = result.value.pack.assets.filter((asset) => asset.kind === 'mesh');
+    const pack = projectImportPack(result.value.product);
+    const meshes = pack.assets.filter((asset) => asset.kind === 'mesh');
     expect(meshes).toHaveLength(2);
     const root = meshes.find((asset) => asset.guid.endsWith('000000000001'));
     if (!root) throw new Error('missing root Mesh');
@@ -208,46 +211,43 @@ describe('real FBX LodGroup importer closure', () => {
     expect(rootLod === undefined ? undefined : AssetGuid.format(rootLod.mesh as never)).toBe(
       '00000000-0000-7000-8000-000000000002',
     );
-    const byGuid = new Map(result.value.pack.assets.map((asset) => [asset.guid, asset]));
-    for (const asset of result.value.pack.assets) {
+    const byGuid = new Map(pack.assets.map((asset) => [asset.guid, asset]));
+    for (const asset of pack.assets) {
       for (const ref of asset.refs) expect(byGuid.has(ref)).toBe(true);
     }
 
     const publicationRoot = await createPublicationRoot();
     try {
       const rootGuid = root?.guid ?? '';
-      const catalog = result.value.pack.assets.map((asset) => ({
+      const catalog = pack.assets.map((asset) => ({
         guid: asset.guid,
         packageUrl: `${asset.guid}.pack.json`,
         kind: asset.kind,
         sourcePath: 'lod-group.fbx',
       }));
       const finalized = await finalizePackageTransportSource(
-        { assets: result.value.pack.assets },
+        { assets: pack.assets },
         {
           base: '/',
           packagePath: `${rootGuid}.pack.json`,
           artifactPath: (assetGuid, key) => `${assetGuid}-${key}.bin`,
         },
       );
-      const publication = await publishImportPublication({
+      const staged = await stageImportPublication({
         root: publicationRoot.root,
         guid: rootGuid,
         desiredKey: 'b'.repeat(64),
         pack: finalized.pack,
         previousCatalog: [],
         nextCatalog: catalog,
-        publishedGuids: result.value.pack.assets.map((asset) => asset.guid),
-        transport: {
-          path: `${publicationRoot.root}/${rootGuid}.pack.json`,
-          body: JSON.stringify(finalized.pack),
-          artifacts: finalized.artifacts.map(({ path, mediaType, bytes }) => ({
-            path,
-            mediaType,
-            bytes,
-          })),
-        },
+        publishedGuids: pack.assets.map((asset) => asset.guid),
+        artifacts: finalized.artifacts.map(({ path, mediaType, bytes }) => ({
+          path,
+          mediaType,
+          bytes,
+        })),
       });
+      const publication = staged.ok ? await commitImportPublication(staged.candidate) : staged;
       expect(publication).toMatchObject({ ok: true, head: { state: 'current' } });
       if (publication.ok) {
         expect(publication.catalog).toHaveLength(catalog.length);
@@ -281,9 +281,10 @@ describe('real FBX LodGroup importer closure', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack.assets.some((asset) => asset.kind === 'mesh')).toBe(true);
-    expect(result.value.pack.assets.some((asset) => asset.kind === 'scene')).toBe(true);
-    const skeleton = result.value.pack.assets.find((asset) => asset.kind === 'skeleton');
+    const pack = projectImportPack(result.value.product);
+    expect(pack.assets.some((asset) => asset.kind === 'mesh')).toBe(true);
+    expect(pack.assets.some((asset) => asset.kind === 'scene')).toBe(true);
+    const skeleton = pack.assets.find((asset) => asset.kind === 'skeleton');
     const bounds = (skeleton?.payload as { readonly bounds?: Float32Array })?.bounds;
     expect(bounds).toBeDefined();
     expect(Array.from(bounds ?? []).every(Number.isFinite)).toBe(true);
@@ -297,8 +298,8 @@ describe('real FBX LodGroup importer closure', () => {
       skeletonPayload.jointCount,
     );
     expect(capsules?.joints.length).toBeGreaterThan(8);
-    const byGuid = new Map(result.value.pack.assets.map((asset) => [asset.guid, asset]));
-    for (const asset of result.value.pack.assets) {
+    const byGuid = new Map(pack.assets.map((asset) => [asset.guid, asset]));
+    for (const asset of pack.assets) {
       for (const ref of asset.refs) expect(byGuid.has(ref)).toBe(true);
     }
   }, 30_000);

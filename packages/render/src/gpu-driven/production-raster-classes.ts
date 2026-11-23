@@ -22,6 +22,7 @@ import { requireStandardGBufferReceipt } from '../material-program-inputs';
 import { seededDepthRenderState } from '../material-render-state';
 import { rasterColorFormat } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
+import { isForwardShadowColorEntry } from '../pipeline/forward-shadow-admission';
 import { PREDEPTH_FRAGMENT_ENTRY, predepthFragmentEntry } from '../predepth-coverage';
 import {
   geometryRenderStateForPass,
@@ -84,7 +85,9 @@ export interface ProjectedRasterClass {
   renderState: MaterialRenderState | undefined;
   diagnosticSourceDigest?: string;
   readonly artifact: MaterialShaderArtifact;
-  readonly mesh: MeshGpuHandles;
+  /** Raw authored graphs import this mesh. A stock command binds its live draw row. */
+  readonly mesh?: MeshGpuHandles;
+  cameraVisit?: boolean;
   readonly vertex?: GraphBuffer;
   readonly index?: GraphBuffer;
   readonly meshBindGroup: BindGroup;
@@ -103,7 +106,7 @@ export interface ProjectedRasterClass {
 export interface RasterPipelineShape {
   readonly predepthCovered: boolean;
   readonly raster: MaterialAbiRasterAdapter;
-  readonly prepared: PreparedBatch;
+  readonly prepared: PreparedBatch | undefined;
   readonly artifact: MaterialShaderArtifact;
   readonly deformation: 'rigid' | 'skin';
   readonly format: TextureFormat;
@@ -229,7 +232,8 @@ function pipelineForFragment(
   forwardColorPass = false,
   seededDepth = false,
 ): RasterPipelineFor {
-  let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
+  // At most four variants per actual attachment tuple (samples x primed depth).
+  let projectedPipelines: Map<string, (ResultOk<RenderPipeline> | undefined)[]> | undefined;
   let generalArtifact: MaterialShaderArtifact | undefined;
   let selectedArtifact: MaterialShaderArtifact | undefined;
   let renderState: MaterialRenderState | undefined;
@@ -239,19 +243,22 @@ function pipelineForFragment(
     preparation: boolean,
     sampleCount: 1 | 4,
   ) => {
-    const { prepared } = shape;
+    const layout = shape.layoutProjection ?? shape.prepared?.mesh.layoutProjection;
+    const topology = shape.topology ?? shape.prepared?.batch.key.topology;
+    if (layout === undefined || topology === undefined)
+      throw new Error('A raster pipeline needs its admitted vertex layout and topology');
     return shape.raster.pipeline(
       rasterColorFormat(formats, shape.format),
       sampleCount,
-      shape.layoutProjection ?? prepared.mesh.layoutProjection,
+      layout,
       // The producer receipt owns the selected shader's UV ABI.
       shape.shaderUvSetCount,
-      shape.topology ?? prepared.batch.key.topology,
+      topology,
       shape.stripIndexFormat,
       renderState,
       artifact,
       formats.slice(1),
-      shape.rendererRecording ? shape.standardTextureMask : prepared.standardTextureMask,
+      shape.rendererRecording ? shape.standardTextureMask : shape.prepared?.standardTextureMask,
       forwardColorPass,
       preparation ? shape.preparationFactory : undefined,
       shape.standardSurfaceDiscards,
@@ -264,8 +271,10 @@ function pipelineForFragment(
     sampleCount = shape.sampleCount,
     opaqueDepthPrimed = false,
   ) => {
-    const key = `${formatKey ?? formats.join(',')}|${sampleCount}|${opaqueDepthPrimed ? 1 : 0}`;
-    const projected = projectedPipelines?.get(key);
+    const key = formatKey ?? formats.join(',');
+    const variant = (sampleCount === 4 ? 2 : 0) + Number(opaqueDepthPrimed);
+    let variants = projectedPipelines?.get(key);
+    const projected = variants?.[variant];
     if (projected !== undefined) return shape.rendererRecording ? projected : ok(projected.value);
     // Unused G-buffer, temporal and coverage entries need no artifact copy.
     if (generalArtifact === undefined) {
@@ -300,7 +309,11 @@ function pipelineForFragment(
     if (selected.ok) {
       projectedPipelines ??= new Map();
       // Retain an owned result; an RHI result may observe value reads.
-      projectedPipelines.set(key, ok(selected.value));
+      if (variants === undefined) {
+        variants = [];
+        projectedPipelines.set(key, variants);
+      }
+      variants[variant] = ok(selected.value);
     }
     return selected;
   };
@@ -330,7 +343,8 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
     const entry =
       templateEntry &&
       (fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
-        fragmentEntryPoint === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY)
+        fragmentEntryPoint === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY ||
+        isForwardShadowColorEntry(fragmentEntryPoint))
         ? fragmentEntryPoint
         : undefined;
     let pipeline = seeded.get(entry);

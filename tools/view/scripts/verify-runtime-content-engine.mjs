@@ -13,9 +13,10 @@ import {
   runUnifiedCli,
 } from '@forgeax/engine/devkit';
 import { prepareRuntimePackProgram } from '@forgeax/engine/devkit/plugin-build';
-import { preparePackProgram } from '@forgeax/engine/pack/runtime';
-import { prepareRuntimePackContent } from '@forgeax/engine/import';
-import { createBoxGeometry } from '@forgeax/engine/geometry';
+import * as PackRuntime from '@forgeax/engine/pack/runtime';
+const { preparePackProgram } = PackRuntime;
+import { normaliseForPack, prepareRuntimePackContent } from '@forgeax/engine/import';
+import { copyMeshAttribute, createBoxGeometry } from '@forgeax/engine/geometry';
 import { AssetGuid, definePackageId, projectScriptablePackSceneComponents } from '@forgeax/engine/pack/source';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Name, Transform } from '@forgeax/engine/scene';
@@ -153,18 +154,20 @@ try {
   });
   if (process.env.FORGEAX_RUNTIME_PACK_DIRECT === '1') {
     // Test observation of the live App reader, without adding a product API.
-    await page.route('**/main.ts', async route => {
+    await page.route(url => url.pathname === '/main.ts', async route => {
       const response = await route.fetch();
       const source = await response.text();
-      const marker = 'function exposeGameInspection(app) {';
-      assert.ok(source.includes(marker), 'direct proof must instrument the actual App owner');
-      await route.fulfill({ response, body: source.replace(marker, `${marker}
+      const marker = /function exposeGameInspection\(app(?:, isLive = \(\) => true)?\) \{/;
+      assert.match(source, marker, 'direct proof must instrument the actual App owner');
+      await route.fulfill({ response, body: source.replace(marker, declaration => `${declaration}
         globalThis.__runtimePackReadDirect = async guid => {
           const handle = (await app.assets.load(app.assets.parseGuid(guid), 'mesh')).unwrap();
-          const mesh = app.assets.read(handle).unwrap();
-          app.assets.release(handle).unwrap();
-          return { typed: mesh.attributes.position instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
-            positions: Array.from(mesh.attributes.position), indices: Array.from(mesh.indices) };
+          try {
+            const { attributeStorage, attributes, vertices, indices } = app.assets.read(handle).unwrap();
+            return structuredClone({ attributeStorage, attributes, vertices, indices });
+          } finally {
+            app.assets.release(handle).unwrap();
+          }
         };
       `) });
     });
@@ -455,7 +458,7 @@ try {
       phase = 'direct-cold-restore';
       bytes = await readFile(resolve(coldPath));
       const saved = JSON.parse(bytes);
-      assert.equal(saved.schemaVersion, 'runtime-pack-source/2');
+      assert.match(saved.schemaVersion, /^runtime-pack-source\/[23]$/);
       assert.deepEqual(saved.instances, []);
       assert.equal(saved.packs.length, 1);
       assert.equal(saved.packs[0].source.packageId, packageId);
@@ -474,7 +477,7 @@ try {
         } } } },
       }, { sceneComponents: projectScriptablePackSceneComponents([Name, Transform, MeshFilter, MeshRenderer]) })).unwrap();
       assert.equal(content.programs, undefined);
-      bytes = Buffer.from(JSON.stringify(content));
+      bytes = Buffer.from(JSON.stringify(normaliseForPack(content)));
     }
     await openRuntimeContent(page);
     const panel = page.getByTestId('runtime-content');
@@ -486,7 +489,11 @@ try {
     assert.deepEqual(admitted.executions, []);
     const rows = await client.listAssets(state.project.id, { targetId: state.projectTarget.targetId });
     assert.ok(rows.assets.some(asset => asset.guid === guid('box') && asset.kind === 'mesh'));
-    const loaded = await game.evaluate(guid => globalThis.__runtimePackReadDirect(guid), guid('box'));
+    const mesh = await game.evaluate(guid => globalThis.__runtimePackReadDirect(guid), guid('box'));
+    const positions = copyMeshAttribute(mesh, 'position');
+    assert.ok(positions instanceof Float32Array);
+    const loaded = { typed: mesh.vertices instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
+      positions: Array.from(positions), indices: Array.from(mesh.indices) };
     assert.deepEqual(loaded, expected, 'the live browser AssetRegistry must restore every position and index as typed data');
     await writeFile(join(evidence, 'direct-expected.json'), JSON.stringify(expected));
     await writeFile(join(evidence, 'direct-loaded.json'), JSON.stringify(loaded));
@@ -504,14 +511,18 @@ try {
     const download = await saveRuntimeContent(page, panel);
     await download.saveAs(join(evidence, 'saved-content.json'));
     const snapshot = JSON.parse(await readFile(join(evidence, 'saved-content.json'), 'utf8'));
-    assert.equal(snapshot.schemaVersion, 'runtime-pack-source/2');
+    assert.match(snapshot.schemaVersion, /^runtime-pack-source\/[23]$/);
     assert.deepEqual(snapshot.instances, []);
     assert.equal(snapshot.packs.length, 1);
     assert.equal(snapshot.packs[0].programs, undefined);
     assert.deepEqual(snapshot.packs[0].source.assets.scene.refs, [guid('box')]);
     // Includes the serialized typed buffers, not only GUIDs or matching bounds.
-    const originalPack = coldPath ? JSON.parse(bytes).packs[0] : JSON.parse(bytes);
-    assert.deepEqual(snapshot.packs[0], originalPack);
+    const unpackSnapshot = value => value.schemaVersion === 'runtime-pack-source/3'
+      ? PackRuntime.decodePackData(value) : value;
+    const originalPack = coldPath ? unpackSnapshot(JSON.parse(bytes)).packs[0] : JSON.parse(bytes);
+    const restoredPack = unpackSnapshot(snapshot).packs[0];
+    assert.deepEqual(normaliseForPack(restoredPack), normaliseForPack(originalPack));
+
     const scene = await verifyScene(guid('scene'));
     const resourceCycles = await verifyResourceCycles(guid('box'));
     evidenceResult = { mode: 'direct', cold: !!coldPath, target, admitted, rows, binding, capture, loaded, resourceCycles, ...scene, errors,
@@ -522,7 +533,7 @@ try {
     phase = 'cold-restore';
     const bytes = await readFile(resolve(process.env.FORGEAX_RUNTIME_PACK_SNAPSHOT));
     const snapshot = JSON.parse(bytes);
-    assert.equal(snapshot.schemaVersion, 'runtime-pack-source/2');
+    assert.match(snapshot.schemaVersion, /^runtime-pack-source\/[23]$/);
     assert.equal(snapshot.instances.length, 1);
     const instance = snapshot.instances[0];
     const guid = key => AssetGuid.format(AssetGuid.derive(definePackageId(instance.packageId), key));
@@ -666,7 +677,7 @@ try {
     await download.saveAs(join(evidence, 'saved-content.json'));
     const persistedBytes = await readFile(join(evidence, 'saved-content.json'));
     const snapshot = JSON.parse(persistedBytes);
-    assert.equal(snapshot.schemaVersion, 'runtime-pack-source/2');
+    assert.match(snapshot.schemaVersion, /^runtime-pack-source\/[23]$/);
     assert.equal(snapshot.instances.length, 1);
     assert.equal(snapshot.instances[0].packageId, instanceId);
     assert.equal(snapshot.instances[0].values.width, 4);

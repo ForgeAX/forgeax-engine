@@ -1,5 +1,4 @@
 import { decodeDocumentText } from '@forgeax/engine-codec';
-import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 
 // Capture optional platform methods without consulting function.call.
 // The fast path assumes standard platform Body semantics, not arbitrary polyfills.
@@ -25,10 +24,7 @@ const platformReadArrayBuffer =
  * zstd-stored delivery document decodes here; custom readers own their body and
  * its encoding and keep their original json result.
  */
-async function readDocument(
-  response: Pick<Response, 'json'>,
-  parse: (text: string) => unknown,
-): Promise<unknown> {
+export async function readDocumentJson(response: Pick<Response, 'json'>): Promise<unknown> {
   const readJson = response.json;
   if (
     typeof platformReadJson !== 'function' ||
@@ -46,19 +42,5 @@ async function readDocument(
   const bytes: ArrayBuffer = await Reflect.apply(platformReadArrayBuffer, response, []);
   const text = await decodeDocumentText(new Uint8Array(bytes));
   if (!text.ok) throw new SyntaxError(`document decode failed: ${text.error.code}`);
-  return parse(text.value);
-}
-
-/** Read a catalog or other JSON document body. */
-export const readDocumentJson = (response: Pick<Response, 'json'>): Promise<unknown> =>
-  readDocument(response, JSON.parse);
-
-/** Read a Pack body and decode its material program table once, at the read boundary. */
-export const readPackJson = (response: Pick<Response, 'json'>): Promise<unknown> =>
-  readDocument(response, parsePackJson);
-
-export function parsePackJson(text: string): unknown {
-  const decoded = decodeMaterialProgramWire(JSON.parse(text));
-  if (!decoded.ok) throw new SyntaxError('Invalid package material program table');
-  return decoded.value;
+  return JSON.parse(text.value);
 }

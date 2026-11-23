@@ -1,4 +1,4 @@
-import type { Mat4Like } from '@forgeax/engine-math';
+import { type Mat4Like, mat4 } from '@forgeax/engine-math';
 import { isFiniteBounds3 } from '@forgeax/engine-types';
 
 // `fingerprintNumericArray` runs on every bounds-cache lookup. Keep the bit
@@ -46,54 +46,10 @@ export function fingerprintNumericArray(values: ArrayLike<number>): number {
   return hash >>> 0;
 }
 
-function finiteMatrix(matrix: ArrayLike<number>): matrix is Mat4Like {
-  if (matrix.length < 16) return false;
+function finiteMatrix(matrix: ArrayLike<number>, offset = 0): matrix is Mat4Like {
+  if (matrix.length - offset < 16) return false;
   for (let index = 0; index < 16; index += 1) {
-    if (!Number.isFinite(matrix[index] as number)) return false;
-  }
-  return true;
-}
-
-function multiplyMat4(
-  out: Float32Array,
-  left: ArrayLike<number>,
-  right: ArrayLike<number>,
-  rightOffset = 0,
-): void {
-  for (let column = 0; column < 4; column += 1) {
-    const rightColumn = rightOffset + column * 4;
-    const right0 = Number(right[rightColumn] ?? 0);
-    const right1 = Number(right[rightColumn + 1] ?? 0);
-    const right2 = Number(right[rightColumn + 2] ?? 0);
-    const right3 = Number(right[rightColumn + 3] ?? 0);
-    const outOffset = column * 4;
-    out[outOffset] =
-      Number(left[0] ?? 0) * right0 +
-      Number(left[4] ?? 0) * right1 +
-      Number(left[8] ?? 0) * right2 +
-      Number(left[12] ?? 0) * right3;
-    out[outOffset + 1] =
-      Number(left[1] ?? 0) * right0 +
-      Number(left[5] ?? 0) * right1 +
-      Number(left[9] ?? 0) * right2 +
-      Number(left[13] ?? 0) * right3;
-    out[outOffset + 2] =
-      Number(left[2] ?? 0) * right0 +
-      Number(left[6] ?? 0) * right1 +
-      Number(left[10] ?? 0) * right2 +
-      Number(left[14] ?? 0) * right3;
-    out[outOffset + 3] =
-      Number(left[3] ?? 0) * right0 +
-      Number(left[7] ?? 0) * right1 +
-      Number(left[11] ?? 0) * right2 +
-      Number(left[15] ?? 0) * right3;
-  }
-}
-
-function finiteMatrixAt(values: ArrayLike<number>, offset: number): boolean {
-  if (values.length - offset < 16) return false;
-  for (let index = 0; index < 16; index += 1) {
-    if (!Number.isFinite(values[offset + index] as number)) return false;
+    if (!Number.isFinite(matrix[offset + index] as number)) return false;
   }
   return true;
 }
@@ -268,7 +224,7 @@ function transformAabb(
   return isFiniteBounds3(out);
 }
 
-const composedScratch = new Float32Array(16);
+const composedScratch = mat4.create();
 const transformedScratch = new Float32Array(6);
 
 /**
@@ -292,8 +248,8 @@ export function deriveInstancesUnionBounds(
   const transformed = transformedScratch;
   let initialized = false;
   for (let offset = 0; offset < transforms.length; offset += 16) {
-    if (!finiteMatrixAt(transforms, offset)) return undefined;
-    multiplyMat4(composed, entityWorld, transforms, offset);
+    if (!finiteMatrix(transforms, offset)) return undefined;
+    mat4.multiply(composed, entityWorld, transforms, offset);
     if (!finiteMatrix(composed) || !transformAabb(transformed, local, composed)) return undefined;
     initialized = includeBox(union, transformed, initialized);
   }

@@ -11,11 +11,18 @@ const surface = readFileSync(
   'utf8',
 );
 
+const surfaceMaps = readFileSync(
+  fileURLToPath(new URL('../material/standard-surface-maps.wgsl', import.meta.url)),
+  'utf8',
+);
+
 describe('standard PBR MASK alpha contract', () => {
   it('multiplies factor alpha by sampled texture alpha before discard', () => {
-    expect(surface).toContain(
-      'clamp(materialValue.baseColor.a * baseSample.a * vertexColor.a * alpha, 0.0, 1.0)',
+    expect(surface).toMatch(
+      /resolveStandardCoverage\(\s*sampledStandardOpacity\(materialValue\.baseColor\.a, vertexColor\.a, baseSample\.a, alpha\)/,
     );
+    expect(surfaceMaps).toContain('return materialAlpha * baseAlpha * vertexAlpha * alpha;');
+    expect(surfaceMaps).toContain('let sampledAlpha = clamp(rawAlpha, 0.0, 1.0);');
     expect(surface).toContain('return evaluate_standard_surface(input, material)');
   });
 

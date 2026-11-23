@@ -1,31 +1,29 @@
-import { createHash } from 'node:crypto';
-import {
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, relative, resolve, sep } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { type DefaultTreeAdapterTypes, parse } from 'parse5';
+import { sha256 } from '@forgeax/engine-types';
+import { type DefaultTreeAdapterTypes, defaultTreeAdapter, parse } from 'parse5';
 import ts from 'typescript';
 import { type ESTree, type Plugin, parseAst, Visitor, build as viteBuild } from 'vite';
+import { publishChecksummedFile } from './archive.js';
 import { staticPackEntryUrlPrefix } from './build/execution-workers.js';
-import { type DistArtifact, type DistManifest, mediaType } from './dist.js';
+import { DIST_MANIFEST_FILE, type DistArtifact, type DistManifest, mediaType } from './dist.js';
 import { createEngineWorkspaceResolverForProject } from './host.js';
-import { linkSingleHtmlModules, singleHtmlModuleLoaderSource } from './single-html-module-links.js';
+import {
+  GENERATED_PREFIX,
+  isImportMetaUrl,
+  linkSingleHtmlModules,
+  singleHtmlModuleLoaderSource,
+} from './single-html-module-links.js';
 import { prepareSingleHtmlStorage } from './single-html-storage.js';
 import type { CommandError, CommandResult } from './types.js';
+import { completeCommand } from './types.js';
 
 const SINGLE_HTML_FORMAT = 'forgeax-single-html-game' as const;
-const GENERATED_PREFIX = '__forgeax-bundle/';
 const ENTRY_RESOURCE_PATH = `${GENERATED_PREFIX}entry.mjs`;
+const RESOURCE_ELEMENTS = new Set(['img', 'source', 'video', 'audio', 'link']);
+const RESOURCE_ATTRIBUTES = new Set(['src', 'poster', 'href']);
 
 export interface SingleHtmlBundleArtifact {
   readonly path: string;
@@ -122,10 +120,6 @@ function safeScriptText(value: string): string {
   return value.replace(/<\/script/gi, '<\\/script');
 }
 
-function hashBytes(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
 function contentTypeForDataUri(value: string): string {
   const semicolon = value.indexOf(';');
   return semicolon < 0 ? value : value.slice(0, semicolon);
@@ -133,19 +127,6 @@ function contentTypeForDataUri(value: string): string {
 
 function dataUri(bytes: Uint8Array, type: string): string {
   return `data:${contentTypeForDataUri(type)};base64,${Buffer.from(bytes).toString('base64')}`;
-}
-
-interface HtmlElement {
-  readonly name: string;
-  readonly start: number;
-  readonly openEnd: number;
-  readonly end: number;
-  readonly contentStart?: number;
-  readonly contentEnd?: number;
-  readonly attributes: readonly { readonly name: string; readonly value: string }[];
-  readonly attributeLocations: Readonly<
-    Record<string, { readonly startOffset: number; readonly endOffset: number }>
-  >;
 }
 
 interface Replacement {
@@ -156,6 +137,12 @@ interface Replacement {
 
 type ParsedElement = DefaultTreeAdapterTypes.Element;
 type ParsedNode = DefaultTreeAdapterTypes.Node;
+type ElementLocation = NonNullable<ParsedElement['sourceCodeLocation']>;
+type LocatedElement = ParsedElement & {
+  sourceCodeLocation: ElementLocation & {
+    startTag: NonNullable<ElementLocation['startTag']>;
+  };
+};
 
 function attributeValueRange(
   source: string,
@@ -180,101 +167,54 @@ function attributeValueRange(
   };
 }
 
-function scanHtmlElements(source: string): readonly HtmlElement[] {
-  const document = parse(source, { sourceCodeLocationInfo: true });
-  const elements: HtmlElement[] = [];
-  const visit = (node: ParsedNode): void => {
-    if (node.nodeName === '#document' || node.nodeName === '#document-fragment') {
-      for (const child of node.childNodes) visit(child);
-      return;
-    }
-    if (
-      node.nodeName === '#text' ||
-      node.nodeName === '#comment' ||
-      node.nodeName === '#documentType'
-    ) {
-      return;
-    }
-    const element = node as ParsedElement;
-    const location = element.sourceCodeLocation;
-    if (location?.startTag === undefined) {
-      for (const child of element.childNodes) visit(child);
-      return;
-    }
-    const name = element.tagName.toLowerCase();
-    const attributes = element.attrs.map(({ name: attributeName, value }) => ({
-      name: attributeName.toLowerCase(),
-      value,
-    }));
-    const attributeLocations: Record<
-      string,
-      { readonly startOffset: number; readonly endOffset: number }
-    > = {};
-    for (const attribute of attributes) {
-      const attributeLocation = location.attrs?.[attribute.name];
-      if (attributeLocation !== undefined) attributeLocations[attribute.name] = attributeLocation;
-    }
-    elements.push({
-      name,
-      start: location.startTag.startOffset,
-      openEnd: location.startTag.endOffset,
-      end: location.endTag?.endOffset ?? location.startTag.endOffset,
-      ...(name === 'script' || name === 'style'
-        ? {
-            contentStart: location.startTag.endOffset,
-            contentEnd: location.endTag?.startOffset ?? location.startTag.endOffset,
-          }
-        : {}),
-      attributes,
-      attributeLocations,
-    });
-    for (const child of element.childNodes) visit(child);
-  };
-  visit(document);
+function hasSourceTag(node: ParsedNode): node is LocatedElement {
+  return defaultTreeAdapter.isElementNode(node) && node.sourceCodeLocation?.startTag !== undefined;
+}
+
+function locatedElements(source: string): readonly LocatedElement[] {
+  const elements: LocatedElement[] = [];
+  function visit(node: ParsedNode): void {
+    if (hasSourceTag(node)) elements.push(node);
+    if ('childNodes' in node) for (const child of node.childNodes) visit(child);
+  }
+  visit(parse(source, { sourceCodeLocationInfo: true }));
   return elements;
 }
 
-function attribute(
-  element: HtmlElement,
-  name: string,
-): { readonly name: string; readonly value: string } | undefined {
-  return element.attributes.find((candidate) => candidate.name === name);
+function attributeValue(element: ParsedElement, name: string): string | undefined {
+  return element.attrs.find((candidate) => candidate.name.toLowerCase() === name)?.value;
 }
 
-function attributeValue(element: HtmlElement, name: string): string | undefined {
-  return attribute(element, name)?.value;
-}
-
-function isModuleScript(element: HtmlElement): boolean {
-  return element.name === 'script' && attributeValue(element, 'type')?.toLowerCase() === 'module';
-}
-
-function isStylesheet(element: HtmlElement): boolean {
+function isModuleScript(element: ParsedElement): boolean {
   return (
-    element.name === 'link' &&
-    attributeValue(element, 'rel')?.toLowerCase().split(/\s+/).includes('stylesheet') === true
+    element.tagName.toLowerCase() === 'script' &&
+    attributeValue(element, 'type')?.toLowerCase() === 'module'
   );
 }
 
-function isModulePreload(element: HtmlElement): boolean {
+function hasLinkRel(element: ParsedElement, rel: 'stylesheet' | 'modulepreload'): boolean {
   return (
-    element.name === 'link' &&
-    attributeValue(element, 'rel')?.toLowerCase().split(/\s+/).includes('modulepreload') === true
+    element.tagName.toLowerCase() === 'link' &&
+    attributeValue(element, 'rel')?.toLowerCase().split(/\s+/).includes(rel) === true
   );
 }
 
 function resourceForPath(
-  path: string,
+  path: string | undefined,
   resources: ReadonlyMap<string, SingleHtmlBundleArtifact>,
 ): SingleHtmlBundleArtifact | undefined {
-  const normalized = normalizePath(path);
-  if (normalized === undefined) return undefined;
-  const direct = resources.get(normalized);
+  const lookup = path === undefined ? undefined : normalizePath(path);
+  if (lookup === undefined) return undefined;
+  const direct = resources.get(lookup);
   if (direct !== undefined) return direct;
-  const suffix = [...resources.entries()].filter(([candidate]) =>
-    candidate.endsWith(`/${normalized}`),
-  );
-  return suffix.length === 1 ? suffix[0]?.[1] : undefined;
+  const suffix = `/${lookup}`;
+  let match: SingleHtmlBundleArtifact | undefined;
+  for (const [candidate, resource] of resources) {
+    if (!candidate.endsWith(suffix)) continue;
+    if (match !== undefined) return undefined;
+    match = resource;
+  }
+  return match;
 }
 
 function resourcePath(reference: string, basePath: string): string | undefined {
@@ -337,7 +277,7 @@ function inlineCss(
       );
     }
     const path = resourcePath(reference, cssPath);
-    const resource = path === undefined ? undefined : resourceForPath(path, resources);
+    const resource = resourceForPath(path, resources);
     if (resource === undefined) {
       return errorResult(
         'single-html-css-asset-missing',
@@ -355,8 +295,9 @@ function inlineCss(
   return { ok: true, value: applyReplacements(css, replacements) };
 }
 
-function collectEntrySource(html: string, distRoot: string): CommandResult<string> {
-  const entries = scanHtmlElements(html).filter((element) => isModuleScript(element));
+type SingleHtmlEntry = { readonly kind: 'source' | 'file'; readonly value: string };
+function collectEntrySource(html: string, distRoot: string): CommandResult<SingleHtmlEntry> {
+  const entries = locatedElements(html).filter(isModuleScript);
   const external = entries.filter((element) => attributeValue(element, 'src') !== undefined);
   const inline = entries.filter((element) => attributeValue(element, 'src') === undefined);
   if (external.length === 0 && inline.length === 0) {
@@ -393,20 +334,20 @@ function collectEntrySource(html: string, distRoot: string): CommandResult<strin
       imports.push(`import ${JSON.stringify(resolve(distRoot, path))};`);
     }
     // A single module graph preserves document order and evaluates shared dependencies once.
-    return { ok: true, value: imports.join('\n') };
+    return { ok: true, value: { kind: 'source', value: imports.join('\n') } };
   }
   const element = external[0] ?? inline[0];
   if (element === undefined) throw new Error('single-html entry selection was unexpectedly empty');
   const src = attributeValue(element, 'src');
-  if (src === undefined && element.contentStart !== undefined && element.contentEnd !== undefined) {
-    return { ok: true, value: html.slice(element.contentStart, element.contentEnd) };
-  }
   if (src === undefined) {
-    return errorResult(
-      'single-html-entry-missing',
-      'a module entry source',
-      'Add a module entry to index.html.',
-    );
+    const { startTag, endTag } = element.sourceCodeLocation;
+    return {
+      ok: true,
+      value: {
+        kind: 'source',
+        value: html.slice(startTag.endOffset, endTag?.startOffset ?? startTag.endOffset),
+      },
+    };
   }
   if (/^(?:https?:|file:|data:|blob:)/i.test(src)) {
     return errorResult(
@@ -416,18 +357,49 @@ function collectEntrySource(html: string, distRoot: string): CommandResult<strin
       { src },
     );
   }
-  return { ok: true, value: src };
+  return { ok: true, value: { kind: 'file', value: src } };
 }
 
-async function filesUnder(root: string, directory = root): Promise<string[]> {
-  const result: string[] = [];
-  for (const name of (await readdir(directory)).sort()) {
-    const path = resolve(directory, name);
-    const info = await stat(path);
-    if (info.isDirectory()) result.push(...(await filesUnder(root, path)));
-    else if (info.isFile()) result.push(path);
+const singleHtmlViteOptions = {
+  configFile: false,
+  base: './',
+  logLevel: 'error',
+  worker: { format: 'es' },
+  build: {
+    write: false,
+    target: 'esnext',
+    minify: true,
+    assetsInlineLimit: 0,
+    rolldownOptions: {
+      preserveEntrySignatures: 'strict',
+    },
+  },
+} as const;
+
+function bundleFiles(output: Awaited<ReturnType<typeof viteBuild>>): Map<string, Uint8Array> {
+  const files = new Map<string, Uint8Array>();
+  for (const result of Array.isArray(output) ? output : [output]) {
+    if (!('output' in result)) throw new TypeError('single-html requires a completed Vite build');
+    for (const file of result.output) {
+      const source = file.type === 'chunk' ? file.code : file.source;
+      files.set(file.fileName, typeof source === 'string' ? Buffer.from(source) : source);
+    }
   }
-  return result;
+  return files;
+}
+
+/** Vite copies public inputs before writing emitted files, outside its bundle output. */
+async function includePublicFiles(directory: string, files: Map<string, Uint8Array>, prefix = '') {
+  const names = await readdir(directory).catch((cause: NodeJS.ErrnoException) => {
+    if (!prefix && (cause.code === 'ENOENT' || cause.code === 'ENOTDIR')) return [];
+    throw cause;
+  });
+  for (const name of names.sort()) {
+    const path = resolve(directory, name);
+    const output = prefix + name;
+    if ((await stat(path)).isDirectory()) await includePublicFiles(path, files, `${output}/`);
+    else if (!files.has(output)) files.set(output, await readFile(path));
+  }
 }
 
 function isPreloadHelperSource(value: unknown): value is string {
@@ -471,34 +443,6 @@ function isStaticImportSource(source: unknown): source is StaticImportSource {
 }
 
 type SingleHtmlProgram = ReturnType<typeof parseAst>;
-
-interface SingleHtmlMagicString {
-  overwrite(start: number, end: number, content: string): SingleHtmlMagicString;
-  hasChanged(): boolean;
-}
-
-interface SingleHtmlTransformMeta {
-  readonly ast?: SingleHtmlProgram;
-  readonly magicString?: SingleHtmlMagicString;
-}
-
-interface SingleHtmlPluginContext {
-  error(message: string): never;
-}
-
-interface SingleHtmlOutputChunk {
-  type: 'chunk';
-  fileName: string;
-  code: string;
-}
-
-interface SingleHtmlOutputAsset {
-  type: 'asset';
-  fileName: string;
-  source?: string | Uint8Array;
-}
-
-type SingleHtmlOutputBundle = Record<string, SingleHtmlOutputChunk | SingleHtmlOutputAsset>;
 
 function preloadDependencyReplacements(code: string): Replacement[] {
   const fileName = resolve('forgeax-single-html-input.js');
@@ -547,45 +491,36 @@ function preloadDependencyReplacements(code: string): Replacement[] {
   return replacements;
 }
 
+function runtimeImport(start: number): Replacement {
+  return { start, end: start + 'import'.length, value: 'globalThis.__forgeaxImport' };
+}
+
+function dynamicImportReplacements(
+  program: SingleHtmlProgram,
+  beforeBundling: boolean,
+  replacements: Replacement[] = [],
+): readonly Replacement[] {
+  new Visitor({
+    ImportExpression(node) {
+      // Keep local chunk imports until the bundler has linked them.
+      if (!beforeBundling || !isLocalChunkImport(node.source))
+        replacements.push(runtimeImport(node.start));
+    },
+  }).visit(program);
+  return replacements;
+}
+
 function programReplacements(program: SingleHtmlProgram, code: string): readonly Replacement[] {
   const hasPreloadImport = program.body.some(
     (node) => node.type === 'ImportDeclaration' && isPreloadHelperSource(node.source.value),
   );
   // Minified imports can share a name with unrelated nested functions. Resolve
   // their lexical symbols instead of rewriting every same-spelled call.
-  const replacements = hasPreloadImport ? preloadDependencyReplacements(code) : [];
-  new Visitor({
-    ImportExpression(node) {
-      // Production already resolved package imports. Residual bare specifiers are
-      // optional runtime requests, subject to the same closed resource lookup as computed imports.
-      if (isLocalChunkImport(node.source)) return;
-      replacements.push({
-        start: node.start,
-        end: node.start + 'import'.length,
-        value: 'globalThis.__forgeaxImport',
-      });
-    },
-  }).visit(program);
-  return replacements;
-}
-
-function outputReplacements(program: SingleHtmlProgram): readonly Replacement[] {
-  const replacements: Replacement[] = [];
-  new Visitor({
-    ImportExpression(node) {
-      replacements.push({
-        start: node.start,
-        end: node.start + 'import'.length,
-        value: 'globalThis.__forgeaxImport',
-      });
-    },
-  }).visit(program);
-  return replacements;
-}
-
-function rewriteOutputJavaScript(code: string): string {
-  const program = parseAst(code);
-  return applyReplacements(code, outputReplacements(program));
+  return dynamicImportReplacements(
+    program,
+    true,
+    hasPreloadImport ? preloadDependencyReplacements(code) : [],
+  );
 }
 
 function residualImportStart(code: string): number | undefined {
@@ -627,36 +562,32 @@ function hasStaticJavaScriptImports(code: string): boolean {
   return found;
 }
 
+const GENERATED_GRAPH_DIRECTORY = 'generated/';
+
 type StaticGraphNamespace = 'raw' | 'generated';
 
-interface StaticGraphArtifactIndex {
-  readonly raw: Set<string>;
-  readonly generated: Set<string>;
+type StaticGraphArtifactIndex = ReadonlyMap<string, SingleHtmlBundleArtifact>;
+type StaticGraphAddress = { readonly namespace: StaticGraphNamespace; readonly path: string };
+
+function graphAddress(path: string): StaticGraphAddress {
+  return path.startsWith(GENERATED_PREFIX)
+    ? { namespace: 'generated', path: path.slice(GENERATED_PREFIX.length) }
+    : { namespace: 'raw', path };
 }
 
-function staticGraphNamespace(path: string): StaticGraphNamespace {
-  return path.startsWith(GENERATED_PREFIX) ? 'generated' : 'raw';
+function graphEntry(path: string): string {
+  const address = graphAddress(path);
+  return `${address.namespace}/${address.path}`;
 }
 
-function staticGraphCanonicalPath(path: string): string {
-  return path.startsWith(GENERATED_PREFIX) ? path.slice(GENERATED_PREFIX.length) : path;
-}
-
-function staticGraphNamespaceForId(
-  graphRoot: string,
-  id: string,
-): StaticGraphNamespace | undefined {
-  const path = relative(graphRoot, id).split(sep).join('/');
-  if (path.startsWith('raw/')) return 'raw';
-  if (path.startsWith('generated/')) return 'generated';
-  return undefined;
-}
-
-function staticGraphCanonicalPathForId(graphRoot: string, id: string): string | undefined {
-  const path = relative(graphRoot, id).split(sep).join('/');
-  if (path.startsWith('raw/')) return path.slice('raw/'.length);
-  if (path.startsWith('generated/')) return path.slice('generated/'.length);
-  return undefined;
+function graphAddressFromId(root: string, id: string): StaticGraphAddress | undefined {
+  const relativeId = relative(root, id).split(sep).join('/');
+  const split = relativeId.indexOf('/');
+  if (split < 0) return undefined;
+  const namespace = relativeId.slice(0, split);
+  return namespace === 'raw' || namespace === 'generated'
+    ? { namespace, path: relativeId.slice(split + 1) }
+    : undefined;
 }
 
 function resolveStaticGraphImport(
@@ -664,29 +595,24 @@ function resolveStaticGraphImport(
   importerNamespace: StaticGraphNamespace,
   importerPath: string,
   index: StaticGraphArtifactIndex,
-): { readonly namespace: StaticGraphNamespace; readonly path: string } | undefined {
+): StaticGraphAddress | undefined {
   if (!/^(?:\.\/|\.\.\/)/.test(source)) return undefined;
   const path = resourcePath(source, importerPath);
   if (path === undefined) return undefined;
-  const sameNamespace =
-    index[importerNamespace].has(path) === true
-      ? { namespace: importerNamespace, path }
-      : undefined;
-  if (sameNamespace !== undefined) return sameNamespace;
+  if (path.startsWith(GENERATED_PREFIX) && importerNamespace === 'raw') return undefined;
+  const sameNamespace = { namespace: importerNamespace, path };
+  if (index.has(embeddedStaticGraphPath(sameNamespace))) return sameNamespace;
   // A generated bootstrap is emitted in the generated namespace, but its
   // project-relative loader can remain a raw dist artifact. Resolve that
   // cross-namespace edge by canonical path only; never fall back to a
   // basename or suffix match.
-  if (importerNamespace === 'generated' && index.raw.has(path)) {
+  if (importerNamespace === 'generated' && !path.startsWith(GENERATED_PREFIX) && index.has(path)) {
     return { namespace: 'raw', path };
   }
   return undefined;
 }
 
-function embeddedStaticGraphPath(target: {
-  readonly namespace: StaticGraphNamespace;
-  readonly path: string;
-}): string {
+function embeddedStaticGraphPath(target: StaticGraphAddress): string {
   return target.namespace === 'generated' ? `${GENERATED_PREFIX}${target.path}` : target.path;
 }
 
@@ -696,14 +622,24 @@ function staticGraphResolverPlugin(graphRoot: string, index: StaticGraphArtifact
     enforce: 'pre',
     resolveId(source, importer) {
       if (importer === undefined) return null;
-      const namespace = staticGraphNamespaceForId(graphRoot, importer);
-      const importerPath = staticGraphCanonicalPathForId(graphRoot, importer);
-      if (namespace === undefined || importerPath === undefined) return null;
-      const target = resolveStaticGraphImport(source, namespace, importerPath, index);
+      const address = graphAddressFromId(graphRoot, importer);
+      if (address === undefined) return null;
+      const target = resolveStaticGraphImport(source, address.namespace, address.path, index);
       if (target === undefined) return null;
       return resolve(graphRoot, target.namespace, target.path);
     },
   };
+}
+
+function isEmbeddedImportCall(callee: ESTree.CallExpression['callee']): boolean {
+  return (
+    callee.type === 'MemberExpression' &&
+    !callee.computed &&
+    callee.object.type === 'Identifier' &&
+    callee.object.name === 'globalThis' &&
+    callee.property.type === 'Identifier' &&
+    callee.property.name === '__forgeaxImport'
+  );
 }
 
 function staticGraphImporterPlugin(graphRoot: string, index: StaticGraphArtifactIndex): Plugin {
@@ -712,9 +648,8 @@ function staticGraphImporterPlugin(graphRoot: string, index: StaticGraphArtifact
     enforce: 'pre',
     transform(code, id) {
       const sourcePath = id.split(/[?#]/, 1)[0] ?? id;
-      const importerNamespace = staticGraphNamespaceForId(graphRoot, sourcePath);
-      const importer = staticGraphCanonicalPathForId(graphRoot, sourcePath);
-      if (importerNamespace === undefined || importer === undefined) return null;
+      const address = graphAddressFromId(graphRoot, sourcePath);
+      if (address === undefined) return null;
       let program: SingleHtmlProgram;
       try {
         program = parseAst(code);
@@ -722,51 +657,30 @@ function staticGraphImporterPlugin(graphRoot: string, index: StaticGraphArtifact
         return null;
       }
       const replacements: Replacement[] = [];
+      const replacementFor = (source: unknown): Replacement | undefined => {
+        if (!isStaticImportSource(source) || typeof source.value !== 'string') return undefined;
+        const target = resolveStaticGraphImport(
+          source.value,
+          address.namespace,
+          address.path,
+          index,
+        );
+        if (target === undefined) return undefined;
+        return {
+          start: source.start,
+          end: source.end,
+          value: JSON.stringify(embeddedStaticGraphPath(target)),
+        };
+      };
       new Visitor({
         ImportExpression(node) {
-          const source = node.source;
-          if (!isStaticImportSource(source)) return;
-          const staticSource = source as StaticImportSource;
-          const specifier = staticSource.value;
-          if (typeof specifier !== 'string') return;
-          const target = resolveStaticGraphImport(specifier, importerNamespace, importer, index);
-          if (target === undefined) return;
-          replacements.push(
-            {
-              start: node.start,
-              end: node.start + 'import'.length,
-              value: 'globalThis.__forgeaxImport',
-            },
-            {
-              start: staticSource.start,
-              end: staticSource.end,
-              value: JSON.stringify(embeddedStaticGraphPath(target)),
-            },
-          );
+          const replacement = replacementFor(node.source);
+          if (replacement !== undefined) replacements.push(runtimeImport(node.start), replacement);
         },
         CallExpression(node) {
-          const callee = node.callee;
-          if (
-            callee.type !== 'MemberExpression' ||
-            callee.computed ||
-            callee.object.type !== 'Identifier' ||
-            callee.object.name !== 'globalThis' ||
-            callee.property.type !== 'Identifier' ||
-            callee.property.name !== '__forgeaxImport'
-          ) {
-            return;
-          }
-          const source = node.arguments[0];
-          if (!isStaticImportSource(source)) return;
-          const specifier = source.value;
-          if (typeof specifier !== 'string' || !/^(?:\.\/|\.\.\/)/.test(specifier)) return;
-          const target = resolveStaticGraphImport(specifier, importerNamespace, importer, index);
-          if (target === undefined) return;
-          replacements.push({
-            start: source.start,
-            end: source.end,
-            value: JSON.stringify(embeddedStaticGraphPath(target)),
-          });
+          if (!isEmbeddedImportCall(node.callee)) return;
+          const replacement = replacementFor(node.arguments[0]);
+          if (replacement !== undefined) replacements.push(replacement);
         },
       }).visit(program);
       return replacements.length === 0 ? null : applyReplacements(code, replacements);
@@ -774,114 +688,93 @@ function staticGraphImporterPlugin(graphRoot: string, index: StaticGraphArtifact
   };
 }
 
+function duplicateResource(path: string) {
+  return errorResult(
+    'single-html-asset-duplicate',
+    'embedded resource paths to be unique',
+    'Repair the generated bundle path collision before packaging.',
+    { path },
+  );
+}
+
 async function closeStaticJavaScriptGraphs(
   temporaryRoot: string,
   initial: readonly SingleHtmlBundleArtifact[],
-): Promise<CommandResult<SingleHtmlBundleArtifact[]>> {
+): Promise<CommandResult<Map<string, SingleHtmlBundleArtifact>>> {
   const artifacts = new Map<string, SingleHtmlBundleArtifact>();
   for (const artifact of initial) {
-    if (artifacts.has(artifact.path)) {
-      return errorResult(
-        'single-html-asset-duplicate',
-        'embedded resource paths to be unique',
-        'Repair the generated bundle path collision before packaging.',
-        { path: artifact.path },
-      );
-    }
+    if (artifacts.has(artifact.path)) return duplicateResource(artifact.path);
     artifacts.set(artifact.path, artifact);
   }
-  const artifactIndex: StaticGraphArtifactIndex = {
-    raw: new Set(
-      [...artifacts.keys()]
-        .filter((path) => staticGraphNamespace(path) === 'raw')
-        .map(staticGraphCanonicalPath),
-    ),
-    generated: new Set(
-      [...artifacts.keys()]
-        .filter((path) => staticGraphNamespace(path) === 'generated')
-        .map(staticGraphCanonicalPath),
-    ),
-  };
   const candidates = [...artifacts.values()].filter(
     (artifact) =>
-      isJavaScriptOutputAsset(artifact.path) && staticGraphNamespace(artifact.path) === 'generated',
+      isJavaScriptOutputAsset(artifact.path) && artifact.path.startsWith(GENERATED_PREFIX),
   );
+  const candidate = candidates[0];
   if (
+    candidate === undefined ||
     !candidates.some((artifact) =>
       hasStaticJavaScriptImports(Buffer.from(artifact.bytes).toString('utf8')),
     )
   )
-    return { ok: true, value: [...artifacts.values()] };
-  const candidate = candidates[0];
-  if (candidate === undefined) return { ok: true, value: [...artifacts.values()] };
+    return { ok: true, value: artifacts };
+
   {
     const graphRoot = resolve(temporaryRoot, 'static-graph');
     const outputRoot = resolve(graphRoot, 'out');
     await mkdir(graphRoot, { recursive: true });
     for (const artifact of artifacts.values()) {
-      const namespace = staticGraphNamespace(artifact.path);
-      const relativePath = staticGraphCanonicalPath(artifact.path);
-      const destination = resolve(graphRoot, namespace, relativePath);
+      const destination = resolve(graphRoot, graphEntry(artifact.path));
       await mkdir(dirname(destination), { recursive: true });
       await writeFile(destination, artifact.bytes);
     }
-    const candidateNamespace = staticGraphNamespace(candidate.path);
-    const candidatePath = staticGraphCanonicalPath(candidate.path);
     const entryNames = new Map(
-      candidates.map((artifact) => [
-        resolve(
-          graphRoot,
-          staticGraphNamespace(artifact.path),
-          staticGraphCanonicalPath(artifact.path),
-        ),
-        `${staticGraphNamespace(artifact.path)}/${staticGraphCanonicalPath(artifact.path)}`,
-      ]),
+      candidates.map((artifact) => {
+        const entry = graphEntry(artifact.path);
+        return [resolve(graphRoot, entry), entry];
+      }),
     );
+    let output: Map<string, Uint8Array>;
     try {
-      await viteBuild({
-        configFile: false,
-        root: graphRoot,
-        base: './',
-        logLevel: 'error',
-        plugins: [
-          ...(['raw', 'generated'] as const).map((namespace) =>
-            prebuiltWorkerPlugin(
-              resolve(graphRoot, namespace),
-              (path) => {
-                if (!artifactIndex.generated.has(path))
-                  throw new Error(
-                    `single-html Worker entry is outside the prepared closure: ${path}`,
-                  );
-                return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
-              },
-              false,
+      output = bundleFiles(
+        await viteBuild({
+          ...singleHtmlViteOptions,
+          root: graphRoot,
+          plugins: [
+            ...(['raw', 'generated'] as const).map((namespace) =>
+              prebuiltWorkerPlugin(
+                resolve(graphRoot, namespace),
+                (path) => {
+                  if (!artifacts.has(`${GENERATED_PREFIX}${path}`))
+                    throw new Error(
+                      `single-html Worker entry is outside the prepared closure: ${path}`,
+                    );
+                  return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
+                },
+                false,
+              ),
             ),
-          ),
-          staticGraphResolverPlugin(graphRoot, artifactIndex),
-          staticGraphImporterPlugin(graphRoot, artifactIndex),
-          singleHtmlBundlePlugin(candidateNamespace),
-        ],
-        worker: { format: 'es' },
-        build: {
-          outDir: outputRoot,
-          emptyOutDir: true,
-          target: 'esnext',
-          minify: true,
-          assetsInlineLimit: 0,
-          rolldownOptions: {
-            input: [...entryNames.keys()],
-            preserveEntrySignatures: 'strict',
-            output: {
-              entryFileNames: (chunk) =>
-                entryNames.get(chunk.facadeModuleId ?? '') ??
-                `${candidateNamespace}/assets/[name]-[hash].mjs`,
-              chunkFileNames: `${candidateNamespace}/assets/[name]-[hash].mjs`,
-              assetFileNames: `${candidateNamespace}/assets/[name]-[hash][extname]`,
+            staticGraphResolverPlugin(graphRoot, artifacts),
+            staticGraphImporterPlugin(graphRoot, artifacts),
+            singleHtmlBundlePlugin(GENERATED_GRAPH_DIRECTORY),
+          ],
+          build: {
+            ...singleHtmlViteOptions.build,
+            outDir: outputRoot,
+            rolldownOptions: {
+              ...singleHtmlViteOptions.build.rolldownOptions,
+              input: [...entryNames.keys()],
+              output: {
+                entryFileNames: (chunk) =>
+                  entryNames.get(chunk.facadeModuleId ?? '') ??
+                  `${GENERATED_GRAPH_DIRECTORY}assets/[name]-[hash].mjs`,
+                chunkFileNames: `${GENERATED_GRAPH_DIRECTORY}assets/[name]-[hash].mjs`,
+                assetFileNames: `${GENERATED_GRAPH_DIRECTORY}assets/[name]-[hash][extname]`,
+              },
             },
-            experimental: { nativeMagicString: true },
           },
-        },
-      });
+        }),
+      );
     } catch (cause) {
       return toErrorResult(
         cause,
@@ -891,14 +784,8 @@ async function closeStaticJavaScriptGraphs(
       );
     }
 
-    const outputPaths = await filesUnder(outputRoot);
-    const outputRelativePaths = outputPaths.map((path) =>
-      relative(outputRoot, path).split(sep).join('/'),
-    );
-    const outputEntry = outputRelativePaths.find(
-      (path) => path === `${candidateNamespace}/${candidatePath}`,
-    );
-    if (outputEntry === undefined) {
+    const outputRelativePaths = [...output.keys()].sort();
+    if (!output.has(graphEntry(candidate.path))) {
       return errorResult(
         'single-html-static-graph-entry-missing',
         'the static graph bundler to emit the original artifact path',
@@ -906,8 +793,8 @@ async function closeStaticJavaScriptGraphs(
         { path: candidate.path, outputPaths: outputRelativePaths },
       );
     }
-    for (const outputPath of outputRelativePaths) {
-      if (!outputPath.startsWith(`${candidateNamespace}/`)) {
+    for (const [outputPath, bytes] of output) {
+      if (!outputPath.startsWith(GENERATED_GRAPH_DIRECTORY)) {
         return errorResult(
           'single-html-static-graph-namespace-missing',
           'static graph output paths to retain their source namespace',
@@ -915,93 +802,69 @@ async function closeStaticJavaScriptGraphs(
           { path: candidate.path, outputPath },
         );
       }
-      const namespace = candidateNamespace;
-      const canonicalOutputPath = outputPath.slice(`${namespace}/`.length);
-      const embeddedPath =
-        namespace === 'generated'
-          ? `${GENERATED_PREFIX}${canonicalOutputPath}`
-          : canonicalOutputPath;
-      const bytes = await readFile(resolve(outputRoot, outputPath));
+      const canonicalOutputPath = outputPath.slice(GENERATED_GRAPH_DIRECTORY.length);
+      const embeddedPath = `${GENERATED_PREFIX}${canonicalOutputPath}`;
       const previous = artifacts.get(embeddedPath);
       artifacts.set(embeddedPath, {
         path: embeddedPath,
         bytes,
         mediaType: previous?.mediaType ?? mediaType(canonicalOutputPath),
       });
-      artifactIndex[namespace].add(canonicalOutputPath);
     }
-    return { ok: true, value: [...artifacts.values()] };
+    return { ok: true, value: artifacts };
   }
 }
 
-function singleHtmlBundlePlugin(namespace?: StaticGraphNamespace): Plugin {
-  const plugin = {
+function singleHtmlBundlePlugin(outputPrefix = ''): Plugin {
+  return {
     name: 'forgeax-single-html-bundle-runtime',
     enforce: 'post',
     transform: {
       order: 'post',
-      handler(
-        this: SingleHtmlPluginContext,
-        code: string,
-        _id: string,
-        meta?: SingleHtmlTransformMeta,
-      ) {
-        let program = meta?.ast;
-        if (program === undefined) {
-          try {
-            program = parseAst(code);
-          } catch {
-            return null;
-          }
+      handler(code) {
+        let program: SingleHtmlProgram;
+        try {
+          program = parseAst(code);
+        } catch {
+          return null;
         }
         const replacements = programReplacements(program, code);
-        if (replacements.length === 0) return null;
-        if (meta?.magicString !== undefined) {
-          for (const replacement of replacements) {
-            meta.magicString.overwrite(replacement.start, replacement.end, replacement.value);
-          }
-          return meta.magicString.hasChanged() ? meta.magicString : null;
-        }
-        return applyReplacements(code, replacements);
+        return replacements.length === 0 ? null : applyReplacements(code, replacements);
       },
     },
-    generateBundle(
-      this: SingleHtmlPluginContext,
-      _outputOptions: unknown,
-      bundle: SingleHtmlOutputBundle,
-    ) {
+    generateBundle(_outputOptions, bundle) {
       for (const output of Object.values(bundle)) {
-        if (output.type === 'chunk') {
-          output.code = rewriteOutputJavaScript(output.code);
-        } else if (isJavaScriptOutputAsset(output.fileName) && output.source !== undefined) {
-          const source =
-            typeof output.source === 'string'
-              ? output.source
-              : Buffer.from(output.source).toString('utf8');
-          output.source = rewriteOutputJavaScript(source);
-        } else {
+        if (
+          output.type === 'asset' &&
+          (!isJavaScriptOutputAsset(output.fileName) || output.source === undefined)
+        )
           continue;
-        }
-        const code = output.type === 'chunk' ? output.code : String(output.source);
-        const residualStart = residualImportStart(code);
-        if (residualStart !== undefined) {
+        const source = output.type === 'chunk' ? output.code : output.source;
+        const code = typeof source === 'string' ? source : Buffer.from(source).toString('utf8');
+        const rewritten = applyReplacements(code, dynamicImportReplacements(parseAst(code), false));
+        if (output.type === 'chunk') output.code = rewritten;
+        else output.source = rewritten;
+        const residualStart = residualImportStart(rewritten);
+        if (residualStart !== undefined)
           this.error(
             `single-html bundle left a native dynamic import in ${output.fileName} at ${residualStart}`,
           );
-        }
       }
     },
-    resolveFileUrl: ({ fileName }: { readonly fileName: string }) => {
-      const canonicalPath =
-        namespace !== undefined && fileName.startsWith(`${namespace}/`)
-          ? fileName.slice(`${namespace}/`.length)
-          : fileName;
-      return JSON.stringify(
-        namespace === 'raw' ? canonicalPath : `${GENERATED_PREFIX}${canonicalPath}`,
-      );
+    resolveFileUrl: ({ fileName }) => {
+      const path = fileName.startsWith(outputPrefix)
+        ? fileName.slice(outputPrefix.length)
+        : fileName;
+      return JSON.stringify(`${GENERATED_PREFIX}${path}`);
     },
-  } as unknown as Plugin;
-  return plugin;
+  };
+}
+
+function staticSpecifier(source: ESTree.Expression | ESTree.SpreadElement | undefined) {
+  if (source?.type === 'Literal') return source.value;
+  if (source?.type === 'TemplateLiteral' && source.expressions.length === 0)
+    return source.quasis[0]?.value.cooked;
+  return undefined;
 }
 
 function localModuleUrl(argument: ESTree.Expression | ESTree.SpreadElement, importer: string) {
@@ -1009,24 +872,10 @@ function localModuleUrl(argument: ESTree.Expression | ESTree.SpreadElement, impo
   if (url === undefined) return undefined;
   const source = url.arguments[0],
     base = url.arguments[1];
-  const specifier =
-    source?.type === 'TemplateLiteral' && source.expressions.length === 0
-      ? source.quasis[0]?.value.cooked
-      : source?.type === 'Literal'
-        ? source.value
-        : undefined;
+  const specifier = staticSpecifier(source);
   if (typeof specifier !== 'string' || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(specifier))
     return undefined;
-  if (
-    base?.type !== 'MemberExpression' ||
-    base.computed ||
-    base.property.type !== 'Identifier' ||
-    base.property.name !== 'url' ||
-    base.object.type !== 'MetaProperty' ||
-    base.object.meta.name !== 'import' ||
-    base.object.property.name !== 'meta'
-  )
-    return undefined;
+  if (!isImportMetaUrl(base)) return undefined;
   const path = resourcePath(specifier, importer);
   return path === undefined || source === undefined ? undefined : { url, source, path };
 }
@@ -1059,12 +908,7 @@ function prebuiltWorkerPlugin(
       const rewritePackEntry = (
         node: Extract<ESTree.Expression, { type: 'Literal' | 'TemplateLiteral' }>,
       ) => {
-        const specifier =
-          node.type === 'Literal'
-            ? node.value
-            : node.expressions.length === 0
-              ? node.quasis[0]?.value.cooked
-              : undefined;
+        const specifier = staticSpecifier(node);
         if (typeof specifier !== 'string' || !specifier.startsWith(staticPackEntryUrlPrefix))
           return;
         const path = normalizePath(specifier.slice(staticPackEntryUrlPrefix.length));
@@ -1080,23 +924,9 @@ function prebuiltWorkerPlugin(
         TemplateLiteral: rewritePackEntry,
         CallExpression(node) {
           if (!rewriteImports) return;
-          const callee = node.callee;
-          if (
-            callee.type !== 'MemberExpression' ||
-            callee.computed ||
-            callee.object.type !== 'Identifier' ||
-            callee.object.name !== 'globalThis' ||
-            callee.property.type !== 'Identifier' ||
-            callee.property.name !== '__forgeaxImport'
-          )
-            return;
+          if (!isEmbeddedImportCall(node.callee)) return;
           const source = node.arguments[0];
-          const specifier =
-            source?.type === 'Literal'
-              ? source.value
-              : source?.type === 'TemplateLiteral' && source.expressions.length === 0
-                ? source.quasis[0]?.value.cooked
-                : undefined;
+          const specifier = staticSpecifier(source);
           if (typeof specifier !== 'string' || !/^(?:\.\/|\.\.\/)/.test(specifier)) return;
           const path = resourcePath(specifier, importer);
           if (path !== undefined && source !== undefined)
@@ -1138,8 +968,8 @@ export async function bundleSingleHtmlEntry(
   const distRoot = await realpath(resolve(distRootInput));
   const selected = collectEntrySource(indexHtml, distRoot);
   if (!selected.ok) return selected;
-  const source = selected.value;
-  const entryPath = normalizePath(source);
+  const { kind, value: source } = selected.value;
+  const entryPath = kind === 'file' ? normalizePath(source) : undefined;
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-bundle-'));
   try {
     let inputPath: string | undefined;
@@ -1164,77 +994,62 @@ export async function bundleSingleHtmlEntry(
         : await createEngineWorkspaceResolverForProject(projectRoot);
     const workers = new Set<string>();
     inputPath = await realpath(inputPath);
-    await viteBuild({
-      configFile: false,
-      root: distRoot,
-      base: './',
-      logLevel: 'error',
-      plugins: [
-        prebuiltWorkerPlugin(distRoot, (path, emit) => {
-          if (!workers.has(path)) {
-            workers.add(path);
-            emit(resolve(distRoot, path), path);
-          }
-          return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
-        }),
-        singleHtmlBundlePlugin(),
-        ...(resolver === undefined ? [] : [resolver]),
-      ],
-      // Worker entries that import shared chunks cannot bundle as the default IIFE.
-      worker: { format: 'es' },
-      experimental: {
-        renderBuiltUrl: (filename: string) => `forgeax-resource:///${GENERATED_PREFIX}${filename}`,
-      },
-      build: {
-        outDir: outputRoot,
-        emptyOutDir: true,
-        target: 'esnext',
-        minify: true,
-        sourcemap: false,
-        assetsInlineLimit: 0,
-        modulePreload: false,
-        rolldownOptions: {
-          input: inputPath,
-          preserveEntrySignatures: 'strict',
-          output: {
-            entryFileNames: 'entry.mjs',
-            chunkFileNames: 'assets/[name]-[hash].mjs',
-            assetFileNames: 'assets/[name]-[hash][extname]',
-          },
-          experimental: { nativeMagicString: true },
+    const output = bundleFiles(
+      await viteBuild({
+        ...singleHtmlViteOptions,
+        root: distRoot,
+        plugins: [
+          prebuiltWorkerPlugin(distRoot, (path, emit) => {
+            if (!workers.has(path)) {
+              workers.add(path);
+              emit(resolve(distRoot, path), path);
+            }
+            return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
+          }),
+          singleHtmlBundlePlugin(),
+          ...(resolver === undefined ? [] : [resolver]),
+        ],
+        experimental: {
+          renderBuiltUrl: (filename: string) =>
+            `forgeax-resource:///${GENERATED_PREFIX}${filename}`,
         },
-      },
-    });
-    const paths = (await filesUnder(outputRoot)).map((path) =>
-      relative(outputRoot, path).split(sep).join('/'),
+        build: {
+          ...singleHtmlViteOptions.build,
+          outDir: outputRoot,
+          sourcemap: false,
+          modulePreload: false,
+          rolldownOptions: {
+            ...singleHtmlViteOptions.build.rolldownOptions,
+            input: inputPath,
+            output: {
+              entryFileNames: 'entry.mjs',
+              chunkFileNames: 'assets/[name]-[hash].mjs',
+              assetFileNames: 'assets/[name]-[hash][extname]',
+            },
+          },
+        },
+      }),
     );
-    const entry = paths.find((path) => path === 'entry.mjs');
-    if (entry === undefined) {
+    const entry = 'entry.mjs';
+    const entryBytes = output.get(entry);
+    if (entryBytes === undefined) {
       return errorResult(
         'single-html-bundle-entry-missing',
         'Vite to emit exactly one entry.mjs',
         'Inspect the production entry and the single-html bundler output.',
-        { outputRoot, paths },
+        { outputRoot, paths: [...output.keys()].sort() },
       );
     }
-    const generatedPaths = paths.filter((path) => path !== entry);
-    const artifacts: SingleHtmlBundleArtifact[] = [];
-    for (const path of generatedPaths) {
-      const bytes = await readFile(resolve(outputRoot, path));
-      artifacts.push({
+    await includePublicFiles(resolve(distRoot, 'public'), output);
+    output.delete(entry);
+    return completeCommand({
+      entrySource: Buffer.from(entryBytes).toString('utf8'),
+      artifacts: [...output].map(([path, bytes]) => ({
         path: `${GENERATED_PREFIX}${path}`,
         bytes,
         mediaType: mediaType(path),
-      });
-    }
-    const entryBytes = await readFile(resolve(outputRoot, entry));
-    return {
-      ok: true,
-      value: {
-        entrySource: entryBytes.toString('utf8'),
-        artifacts,
-      },
-    };
+      })),
+    });
   } catch (cause) {
     return toErrorResult(
       cause,
@@ -1392,7 +1207,7 @@ function distResources(
 ): Promise<SingleHtmlBundleArtifact[]> {
   const rows: readonly (DistArtifact | { readonly path: string })[] = [
     ...manifest.artifacts,
-    { path: 'forgeax-dist.json' },
+    { path: DIST_MANIFEST_FILE },
   ];
   return Promise.all(
     rows
@@ -1407,34 +1222,26 @@ function distResources(
 
 async function buildHtml(
   indexHtml: string,
-  distArtifacts: readonly SingleHtmlBundleArtifact[],
-  bundle: SingleHtmlBundle,
+  resources: Map<string, SingleHtmlBundleArtifact>,
+  entrySource: string,
 ): Promise<CommandResult<{ readonly html: string; readonly embeddedAssets: number }>> {
-  const resources = new Map<string, SingleHtmlBundleArtifact>();
-  const entryResource: SingleHtmlBundleArtifact = {
+  if (resources.has(ENTRY_RESOURCE_PATH)) return duplicateResource(ENTRY_RESOURCE_PATH);
+  resources.set(ENTRY_RESOURCE_PATH, {
     path: ENTRY_RESOURCE_PATH,
-    bytes: Buffer.from(bundle.entrySource),
+    bytes: Buffer.from(entrySource),
     mediaType: 'text/javascript',
-  };
-  for (const resource of [...distArtifacts, ...bundle.artifacts, entryResource]) {
-    if (resources.has(resource.path)) {
-      return errorResult(
-        'single-html-asset-duplicate',
-        'embedded resource paths to be unique',
-        'Repair the generated bundle path collision before packaging.',
-        { path: resource.path },
-      );
-    }
-    resources.set(resource.path, resource);
-  }
+  });
 
   const replacements: Replacement[] = [];
-  for (const element of scanHtmlElements(indexHtml)) {
-    if (isModuleScript(element) || isModulePreload(element)) {
-      replacements.push({ start: element.start, end: element.end, value: '' });
+  for (const element of locatedElements(indexHtml)) {
+    const name = element.tagName.toLowerCase();
+    const { startTag, endTag, attrs } = element.sourceCodeLocation;
+    const range = { start: startTag.startOffset, end: (endTag ?? startTag).endOffset };
+    if (isModuleScript(element) || hasLinkRel(element, 'modulepreload')) {
+      replacements.push({ ...range, value: '' });
       continue;
     }
-    if (isStylesheet(element)) {
+    if (hasLinkRel(element, 'stylesheet')) {
       const href = attributeValue(element, 'href');
       if (href === undefined) {
         return errorResult(
@@ -1444,7 +1251,7 @@ async function buildHtml(
         );
       }
       const path = resourcePath(href, 'index.html');
-      const stylesheet = path === undefined ? undefined : resourceForPath(path, resources);
+      const stylesheet = resourceForPath(path, resources);
       if (stylesheet === undefined) {
         return errorResult(
           'single-html-css-asset-missing',
@@ -1460,38 +1267,24 @@ async function buildHtml(
       );
       if (!css.ok) return css;
       replacements.push({
-        start: element.start,
-        end: element.end,
+        ...range,
         value: `<style data-forgeax-inline-css>${css.value}</style>`,
       });
       continue;
     }
-    if (
-      element.name === 'style' &&
-      element.contentStart !== undefined &&
-      element.contentEnd !== undefined
-    ) {
-      const css = inlineCss(
-        indexHtml.slice(element.contentStart, element.contentEnd),
-        'index.html',
-        resources,
-      );
+    if (name === 'style') {
+      const start = startTag.endOffset;
+      const end = endTag?.startOffset ?? start;
+      const css = inlineCss(indexHtml.slice(start, end), 'index.html', resources);
       if (!css.ok) return css;
-      replacements.push({ start: element.contentStart, end: element.contentEnd, value: css.value });
+      replacements.push({ start, end, value: css.value });
       continue;
     }
-    const resourceAttribute =
-      element.name === 'img' ||
-      element.name === 'source' ||
-      element.name === 'video' ||
-      element.name === 'audio' ||
-      element.name === 'link'
-        ? element.attributes.find((candidate) => ['src', 'poster', 'href'].includes(candidate.name))
-        : undefined;
+    const resourceAttribute = RESOURCE_ELEMENTS.has(name)
+      ? element.attrs.find((candidate) => RESOURCE_ATTRIBUTES.has(candidate.name.toLowerCase()))
+      : undefined;
     const resourceAttributeLocation =
-      resourceAttribute === undefined
-        ? undefined
-        : element.attributeLocations[resourceAttribute.name];
+      resourceAttribute === undefined ? undefined : attrs?.[resourceAttribute.name.toLowerCase()];
     const resourceAttributeRange =
       resourceAttribute === undefined || resourceAttributeLocation === undefined
         ? undefined
@@ -1502,7 +1295,7 @@ async function buildHtml(
       !/^(?:data:|blob:|#)/i.test(resourceAttribute.value)
     ) {
       const path = resourcePath(resourceAttribute.value, 'index.html');
-      const embedded = path === undefined ? undefined : resourceForPath(path, resources);
+      const embedded = resourceForPath(path, resources);
       if (embedded === undefined) {
         return errorResult(
           'single-html-asset-missing',
@@ -1518,7 +1311,7 @@ async function buildHtml(
       });
       continue;
     }
-    if (element.name === 'script' && attributeValue(element, 'src') !== undefined) {
+    if (name === 'script' && attributeValue(element, 'src') !== undefined) {
       return errorResult(
         'single-html-script-external',
         'non-module script sources to be absent from the generated host',
@@ -1531,10 +1324,7 @@ async function buildHtml(
   const orderedResources = [...resources.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  const storage = await prepareSingleHtmlStorage(
-    linkSingleHtmlModules(orderedResources),
-    hashBytes,
-  );
+  const storage = await prepareSingleHtmlStorage(linkSingleHtmlModules(orderedResources), sha256);
   const assetManifestSource = JSON.stringify(storage.entries);
   const assetManifestNode = `<script type="application/json" id="forgeax-asset-payload" data-forgeax-asset-payload>${safeScriptText(assetManifestSource)}</script>`;
   const assetDataNodes = storage.bodies
@@ -1559,9 +1349,6 @@ export async function writeSingleHtml(
 ): Promise<CommandResult<SingleHtmlPackageResult>> {
   const distRoot = resolve(options.distRoot);
   const output = resolve(options.output);
-  const checksumPath = `${output}.sha256`;
-  const temporary = `${output}.partial-${process.pid}`;
-  const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let staticGraphRoot: string | undefined;
   try {
     staticGraphRoot = await realpath(
@@ -1574,37 +1361,26 @@ export async function writeSingleHtml(
       ...options.bundle.artifacts,
     ]);
     if (!closed.ok) return closed;
-    const built = await buildHtml(indexHtml, closed.value, {
-      entrySource: options.bundle.entrySource,
-      artifacts: [],
-    });
+    const built = await buildHtml(indexHtml, closed.value, options.bundle.entrySource);
     if (!built.ok) return built;
     const bytes = Buffer.from(built.value.html, 'utf8');
-    const sha256 = hashBytes(bytes);
-    const manifestBytes = await readFile(resolve(distRoot, 'forgeax-dist.json'));
-    await mkdir(dirname(output), { recursive: true });
-    await writeFile(temporary, bytes);
-    await writeFile(temporaryChecksum, `${sha256}  ${basename(output)}\n`, 'utf8');
-    await rename(temporaryChecksum, checksumPath);
-    await rename(temporary, output);
-    return {
-      ok: true,
-      value: {
-        schemaVersion: '1.0.0',
-        format: SINGLE_HTML_FORMAT,
-        target: 'file',
-        project: options.manifest.project,
-        base: options.manifest.base,
-        html: { path: output, bytes: bytes.byteLength, sha256 },
-        checksumPath,
-        distManifestSha256: hashBytes(manifestBytes),
-        embeddedAssets: built.value.embeddedAssets,
-        run: {
-          local: pathToFileURL(output).href,
-          shared: 'send the HTML file and open it in a desktop Chrome with WebGPU support',
-        },
+    const manifestBytes = await readFile(resolve(distRoot, DIST_MANIFEST_FILE));
+    const { checksumPath, ...html } = await publishChecksummedFile(output, bytes);
+    return completeCommand({
+      schemaVersion: '1.0.0',
+      format: SINGLE_HTML_FORMAT,
+      target: 'file',
+      project: options.manifest.project,
+      base: options.manifest.base,
+      html,
+      checksumPath,
+      distManifestSha256: sha256(manifestBytes),
+      embeddedAssets: built.value.embeddedAssets,
+      run: {
+        local: pathToFileURL(output).href,
+        shared: 'send the HTML file and open it in a desktop Chrome with WebGPU support',
       },
-    };
+    });
   } catch (cause) {
     return toErrorResult(
       cause,
@@ -1613,20 +1389,14 @@ export async function writeSingleHtml(
       'Repair the dist closure or output directory, then retry packaging.',
     );
   } finally {
-    await Promise.all([
-      rm(temporary, { force: true }),
-      rm(temporaryChecksum, { force: true }),
-      ...(staticGraphRoot === undefined
-        ? []
-        : [rm(staticGraphRoot, { recursive: true, force: true })]),
-    ]);
+    if (staticGraphRoot !== undefined) await rm(staticGraphRoot, { recursive: true, force: true });
   }
 }
 
 export function packageFormatError(format: string): CommandResult<never> {
   return errorResult(
     'package-format-unsupported',
-    'package format to be web-zip, single-html or tauri',
+    'package format to be web-zip, single-html, tauri or native',
     'Use web-zip for HTTPS hosting or single-html for a self-contained file:// delivery.',
     { format },
   );

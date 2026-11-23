@@ -6,12 +6,13 @@ import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { base64Bytes } from './helpers/forward-gtao-capture';
+import { createForwardGtaoSceneDataConsumer } from './helpers/forward-gtao-scene-data';
 import { UNLIT_AO_SIZE, verifyUnlitAo } from './helpers/unlit-ao';
 
 it.each([
   'webgpu',
   'wgpu-webgl2',
-] as const)('renders Unlit and PBR-Skin AO with exact rigid, masked and posed surface normals on %s', {
+] as const)('renders Unlit and PBR-Skin AO with rigid, masked and posed depth coverage on %s', {
   timeout: 180_000,
 }, async (backend) => {
   const canvas = document.createElement('canvas');
@@ -20,11 +21,16 @@ it.each([
   const saved = Object.getOwnPropertyDescriptor(navigator, 'gpu');
   if (backend === 'wgpu-webgl2')
     Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined });
+  const surface =
+    backend === 'webgpu'
+      ? createForwardGtaoSceneDataConsumer(UNLIT_AO_SIZE, UNLIT_AO_SIZE)
+      : undefined;
   const recorder = attachRecorder(backend === 'webgpu' ? webgpu : wgpu).unwrap();
   let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>> | undefined;
   try {
     host = await constructRuntimeRendererHost(canvas, {
       rhi: recorder.backend.rhi,
+      features: surface === undefined ? [] : [surface.feature],
       rhiInstrumentation: {
         resolveSurfaceDevice: (device) =>
           ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
@@ -32,12 +38,17 @@ it.each([
     });
     if (!host.ok) throw host.error;
     expect(host.value.renderer.inspect().capabilities.backendKind).toBe(backend);
-    await verifyUnlitAo(host.value, recorder, async (lane, tape) => {
-      await commands.writeFile(
-        `artifacts/ao-validation/${backend}-skin-${lane}.json`,
-        JSON.stringify({ digest: tape.digest, bytesBase64: base64Bytes(tape.bytes) }),
-      );
-    });
+    await verifyUnlitAo(
+      host.value,
+      recorder,
+      async (lane, tape) => {
+        await commands.writeFile(
+          `artifacts/ao-validation/${backend}-skin-${lane}.json`,
+          JSON.stringify({ digest: tape.digest, bytesBase64: base64Bytes(tape.bytes) }),
+        );
+      },
+      surface,
+    );
   } finally {
     if (host?.ok) expect((await host.value.renderer.dispose()).ok).toBe(true);
     (await recorder.dispose()).unwrap();

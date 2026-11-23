@@ -655,6 +655,7 @@ export class SkinInputs {
     source: SkinInputSlot,
     skeleton: SkinInputSlot,
     joints: ArrayLike<number>,
+    affinePoint = false,
   ): void {
     this.healthy();
     u32(bindingSlot);
@@ -664,14 +665,15 @@ export class SkinInputs {
     // Whole-pose demand, not Binding admission, checks the current joint count.
     const count = joints.length;
     u32(count);
-    if (count === 0 || count > 0xffffffff - 3)
+    if (count === 0 || count > 0xffffffff - 4)
       throw invalid('a nonempty bounded ordered Skin binding');
     const previous = find(this.current, BINDINGS, bindingSlot);
     let equal =
       previous !== undefined &&
       this.inputs.readWord(previous.address) === count &&
       this.inputs.readWord(previous.address + 1) === namespace.id &&
-      this.inputs.readWord(previous.address + 2) === asset.id;
+      this.inputs.readWord(previous.address + 2) === asset.id &&
+      this.inputs.readWord(previous.address + 3) === Number(affinePoint);
     for (let index = 0; index < count; index++) {
       const entity = joints[index];
       if (entity === undefined) throw invalid('complete ordered joint identities');
@@ -679,7 +681,7 @@ export class SkinInputs {
       if (
         equal &&
         previous !== undefined &&
-        this.inputs.readWord(previous.address + 3 + index) !== entity
+        this.inputs.readWord(previous.address + 4 + index) !== entity
       )
         equal = false;
     }
@@ -692,18 +694,19 @@ export class SkinInputs {
       layout: -1,
       published: -1,
     };
-    const row = this.allocate(3 + count, 'binding', namespace, asset);
+    const row = this.allocate(4 + count, 'binding', namespace, asset);
     let data: DataView;
     try {
       data = new DataView(new ArrayBuffer(row.words * 4));
       data.setUint32(0, count, true);
       data.setUint32(4, namespace.id, true);
       data.setUint32(8, asset.id, true);
+      data.setUint32(12, Number(affinePoint), true);
       for (let index = 0; index < count; index++) {
         const entity = joints[index];
         if (entity === undefined) throw invalid('complete ordered joint identities');
         u32(entity);
-        data.setUint32((3 + index) * 4, entity, true);
+        data.setUint32((4 + index) * 4, entity, true);
       }
       if (joints.length !== count) throw invalid('stable ordered Skin binding extent');
     } catch (cause) {
@@ -791,8 +794,8 @@ export class SkinInputs {
           }
           row.holders++;
           const delta =
-            (row.kind === 'binding' ? row.words - 3 : 0) -
-            (previous?.kind === 'binding' ? previous.words - 3 : 0);
+            (row.kind === 'binding' ? row.words - 4 : 0) -
+            (previous?.kind === 'binding' ? previous.words - 4 : 0);
           if (delta !== 0) {
             let ancestor = this.current;
             while (ancestor !== undefined) {
@@ -832,7 +835,7 @@ export class SkinInputs {
       let jointCount = 0;
       entries.forEach((retained) => {
         retained.holders++;
-        if (retained.kind === 'binding') jointCount += retained.words - 3;
+        if (retained.kind === 'binding') jointCount += retained.words - 4;
       });
       page = { shift, entries, address: 0, holders: 1, jointCount };
     } else {
@@ -1025,6 +1028,8 @@ export class SkinInputFrame {
     out: Float32Array,
     matrix: Mat4,
     inverse: Mat4,
+    meshWorld?: ArrayLike<number>,
+    meshWorldOffset = 0,
   ): boolean {
     const inputs = this.live();
     u32(slot);
@@ -1056,7 +1061,27 @@ export class SkinInputFrame {
       this.#boundsMemo.set(slot, memo);
     }
     if (!memo.ok) return false;
-    out.set(memo.box);
+    if (meshWorld === undefined) out.set(memo.box);
+    else {
+      // Independent intervals for blended xyz and (1 - sum) * mesh translation.
+      const minSum = envelopes[0] as number;
+      const maxSum = envelopes[1] as number;
+      for (let axis = 0; axis < 3; axis++) {
+        const t = meshWorld[meshWorldOffset + 12 + axis] as number;
+        const first = (1 - minSum) * t;
+        const second = (1 - maxSum) * t;
+        const low = (memo.box[axis] as number) + Math.min(first, second);
+        const high = (memo.box[axis + 3] as number) + Math.max(first, second);
+        const padding =
+          2 ** -23 *
+            (64 * (1 + maxSum) * Math.abs(t) + 4 * Math.max(Math.abs(low), Math.abs(high))) +
+          64 * 2 ** -126;
+        matrix[axis] = low - padding;
+        matrix[axis + 3] = high + padding;
+        if (!Number.isFinite(matrix[axis]) || !Number.isFinite(matrix[axis + 3])) return false;
+      }
+      for (let lane = 0; lane < 6; lane++) out[lane] = matrix[lane] as number;
+    }
     return true;
   }
   #computeBounds(

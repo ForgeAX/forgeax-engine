@@ -527,6 +527,39 @@ async function directSurfaceFixture() {
 }
 
 describe('Surface direct-address projection reuse', () => {
+  it('joins interleaved draws and descending local ordinals without relying on candidate order', async () => {
+    const f = await directSurfaceFixture();
+    const frame = { page: page(21, 1), ranges: [], projectionRevision: 1, frameTime: 0 };
+    const row = (drawItemIndex: number, instanceOrdinal: number, frameIndex: number) => ({
+      frameIndex,
+      directMember: { entityKey: 8, drawItemIndex, instanceOrdinal },
+    });
+    const rows = [row(4, 2, 12), row(5, 0, 20), row(4, 1, 11), row(4, 0, 10)];
+    const draw = (drawItemIndex: number, firstInstanceOrdinal: number, instanceCount: number) =>
+      f.adapter.directSurfaceInstances({
+        entityKey: 8,
+        drawItemIndex,
+        firstInstanceOrdinal,
+        instanceCount,
+        instanceBuffer: f.instanceBuffer,
+      });
+    try {
+      f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 1, rows).unwrap();
+      f.adapter.commitSurfaceDynamicInput().unwrap();
+      expect(draw(4, 1, 2).unwrap().frameBase).toBe(11);
+      expect(draw(5, 0, 1).unwrap().frameBase).toBe(20);
+      expect(draw(4, 2, 2).ok).toBe(false);
+      const incomplete = [row(4, 2, 12), row(4, 0, 10)];
+      expect(
+        f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 1, incomplete).ok,
+      ).toBe(false);
+      expect(draw(4, 1, 2).unwrap().frameBase).toBe(11);
+    } finally {
+      f.adapter.dispose();
+      await f.queue.drain();
+    }
+  });
+
   it('keeps equal physical addresses through re-projection while uploading and consuming new content', async () => {
     const f = await directSurfaceFixture();
     const inputPage = page(21, 1);

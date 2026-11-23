@@ -9,6 +9,7 @@ import {
   dispatchPassWork,
   type MaterialFrame,
 } from '../scene/material-dispatch';
+import { sceneSkinSlotsOf } from '../scene/render-scene-view';
 import { FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { classifyOitDraw, type OitIneligibleReason } from './eligibility';
 
@@ -50,26 +51,6 @@ export interface TransparencyViewResolution {
  * renderable and blendable once `rgba16float` renders; WebGL2 enables both
  * with the same extension. `rgba16floatRenderable` is therefore the one fact.
  */
-/**
- * The classification is a pure function of its fixed inputs. Pose-only frames
- * keep the same culled dispatch, renderables and material frame; reuse it.
- */
-const resolvedViews = new WeakMap<
-  object,
-  {
-    readonly requested: Transparency;
-    readonly rgba16floatRenderable: boolean;
-    readonly renderables: object;
-    readonly materialFrame: MaterialFrame;
-    readonly value: TransparencyViewResolution;
-    /**
-     * The rows the classification read, flat in groups of four: renderable
-     * index, materials, material and skinned.
-     */
-    readonly rows: readonly unknown[];
-  }
->();
-
 export function resolveTransparencyView(input: {
   readonly requested: Transparency;
   readonly rgba16floatRenderable: boolean;
@@ -87,31 +68,9 @@ export function resolveTransparencyView(input: {
           ...emptyCounts(),
           sorted: sortedTransparentDraws(input.materialFrame, passWork),
         })
-      : resolveTransparencyPassWork(input, passWork.work);
+      : resolveTransparencyPassWork(input, passWork);
   }
-  // Only an immutable list can stand for its entries across frames.
-  const fixed = !Array.isArray(input.dispatch) || Object.isFrozen(input.dispatch);
-  const retained = fixed ? resolvedViews.get(input.dispatch) : undefined;
-  if (
-    retained !== undefined &&
-    retained.requested === input.requested &&
-    retained.rgba16floatRenderable === input.rgba16floatRenderable &&
-    retained.materialFrame === input.materialFrame &&
-    (retained.renderables === input.renderables || sameRows(retained.rows, input.renderables))
-  )
-    return retained.value;
-  const rows: unknown[] = [];
-  const value = resolveTransparencyViewUncached(input, rows);
-  if (fixed)
-    resolvedViews.set(input.dispatch, {
-      requested: input.requested,
-      rgba16floatRenderable: input.rgba16floatRenderable,
-      renderables: input.renderables,
-      materialFrame: input.materialFrame,
-      value,
-      rows,
-    });
-  return value;
+  return resolveTransparencyEntries(input);
 }
 
 interface SortedWork {
@@ -199,23 +158,6 @@ function sortedTransparentDraws(
   return index.sorted;
 }
 
-function sameRows(
-  rows: readonly unknown[],
-  renderables: FrameList<Pick<RenderableSnapshot, 'skinBinding' | 'materials' | 'material'>>,
-): boolean {
-  for (let index = 0; index < rows.length; index += 4) {
-    const row = renderables.at(rows[index] as number);
-    if (
-      row === undefined ||
-      row.materials !== rows[index + 1] ||
-      row.material !== rows[index + 2] ||
-      (row.skinBinding !== undefined) !== rows[index + 3]
-    )
-      return false;
-  }
-  return true;
-}
-
 /**
  * Transparency, Forward selection and OIT eligibility apart from skinning are
  * facts of one Pass and its resource, so a query result is classified per Pass:
@@ -225,29 +167,49 @@ function sameRows(
  */
 function resolveTransparencyPassWork(
   input: Parameters<typeof resolveTransparencyView>[0],
-  work: Iterable<import('../scene/material-dispatch').DispatchPassWork>,
+  query: NonNullable<ReturnType<typeof dispatchPassWork>>,
 ): TransparencyViewResolution {
-  const capabilityAbsent = input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
-  const resolved: Transparency = capabilityAbsent ? 'sorted' : input.requested;
   const counts = emptyCounts();
-  for (const { pass, resource, count, entries } of work) {
+  const skins = sceneSkinSlotsOf(input.renderables, query.source);
+  for (const work of query.work) {
+    const { pass, resource, count } = work;
     if (count === 0 || !matchPass(pass.tags, FORWARD_PASS_SELECTOR)) continue;
     const material = input.materialFrame.get(resource)?.snapshot;
     if (material === undefined)
       throw new Error('Transparency requires its accepted material frame');
     if (!isTransparentLaneMaterial(material)) continue;
-    if (resolved === 'sorted') {
-      counts.sorted += count;
+    if (skins === undefined || work.visitSlots === undefined) {
+      for (const entry of work.entries())
+        countDraw(
+          counts,
+          entry,
+          input.renderables.at(entry.renderableIndex)?.skinBinding !== undefined,
+        );
       continue;
     }
-    for (const entry of entries())
-      countDraw(
-        counts,
-        entry,
-        input.renderables.at(entry.renderableIndex)?.skinBinding !== undefined,
-      );
+    const rigid = classifyOitDraw({
+      materialShaderId: pass.materialShaderId,
+      renderState: pass.renderState,
+      fragmentEntry: pass.fragmentEntry,
+      skinned: false,
+    });
+    // A program without the accumulation ABI has the same outcome on every row.
+    // Other reasons differ for skins, whose program is chosen before blend/depth tests.
+    let skinned = 0;
+    if (skins.size > 0 && (rigid.eligible || rigid.reason !== 'program-without-oit-output'))
+      work.visitSlots((slot) => {
+        if (skins.has(slot)) skinned++;
+      });
+    counts.ineligible['program-without-oit-output'] += skinned;
+    counts.sorted += skinned;
+    const ordinary = count - skinned;
+    if (rigid.eligible) counts.accumulated += ordinary;
+    else {
+      counts.sorted += ordinary;
+      counts.ineligible[rigid.reason] += ordinary;
+    }
   }
-  return transparencyResolution(input.requested, resolved, capabilityAbsent, counts);
+  return transparencyResolution(input.requested, 'weighted-blended', false, counts);
 }
 
 interface DrawCounts {
@@ -312,9 +274,8 @@ function transparencyResolution(
   };
 }
 
-function resolveTransparencyViewUncached(
+function resolveTransparencyEntries(
   input: Parameters<typeof resolveTransparencyView>[0],
-  rows: unknown[],
 ): TransparencyViewResolution {
   const capabilityAbsent = input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
   const resolved: Transparency = capabilityAbsent ? 'sorted' : input.requested;
@@ -323,7 +284,6 @@ function resolveTransparencyViewUncached(
     for (const entry of input.dispatch) {
       const row = input.renderables.at(entry.renderableIndex);
       if (row === undefined || !matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
-      rows.push(entry.renderableIndex, row.materials, row.material, row.skinBinding !== undefined);
       let resource = row.material;
       for (const candidate of row.materials)
         if (

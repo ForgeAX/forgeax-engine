@@ -9,6 +9,7 @@ import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-materi
 import { GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
 import {
   buildGpuDrivenPbrSkinPipelineLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
   buildPbrPipelineLayouts,
   buildPbrSkinLayouts,
 } from '../pbr-pipeline';
@@ -110,7 +111,10 @@ async function raster(useFactory = false, deformation: 'rigid' | 'skin' = 'rigid
       ...(skin === undefined
         ? {}
         : {
-            pbrSkinMeshBindGroupLayout: skin.meshArrayBgl,
+            gpuDrivenSkinPrimitiveBindGroupLayout: buildGpuDrivenPrimitiveBindGroupLayout(
+              device,
+              true,
+            ),
             gpuDrivenPbrSkinPipelineLayout: buildGpuDrivenPbrSkinPipelineLayout(
               device,
               skin,
@@ -267,15 +271,14 @@ describe('GPU-driven pipeline vertex layout ownership', () => {
   });
 });
 
-it('reuses owned Skin binding results by the existing three-buffer identity', async () => {
+it('reuses owned Skin binding results by the two Skin buffer identities', async () => {
   const owner = await raster(false, 'skin');
   const buffers = Array.from({ length: 5 }, () =>
     owner.device.createBuffer({ size: 256, usage: GPU_BUFFER_USAGE_STORAGE }).unwrap(),
   );
-  const transform = buffers[0];
   const data = buffers[1];
   const auxiliary = buffers[2];
-  if (!transform || !data || !auxiliary) throw new Error('missing buffers');
+  if (!data || !auxiliary) throw new Error('missing buffers');
   const task = {
     data,
     auxiliary,
@@ -286,26 +289,19 @@ it('reuses owned Skin binding results by the existing three-buffer identity', as
   };
   const create = vi.spyOn(owner.device, 'createBindGroup');
   try {
-    const first = owner.adapter.sceneMeshBindGroup(transform, 256, task).unwrap();
-    const hit = owner.adapter.sceneMeshBindGroup(transform, 256, task);
+    const first = owner.adapter.primitiveBindGroup(task).unwrap();
+    const hit = owner.adapter.primitiveBindGroup(task);
     expect(hit.unwrap()).toBe(first);
-    expect(Object.isFrozen(hit)).toBe(true);
-    for (let draw = 0; draw < 256; draw++)
-      expect(owner.adapter.sceneMeshBindGroup(transform, 256, task)).toBe(hit);
+    for (let draw = 0; draw < 256; draw++) expect(owner.adapter.primitiveBindGroup(task)).toBe(hit);
     expect(create).toHaveBeenCalledTimes(1);
     const nextData = buffers[3];
     const nextAuxiliary = buffers[4];
     if (!nextData || !nextAuxiliary) throw new Error('missing replacement buffers');
+    expect(owner.adapter.primitiveBindGroup({ ...task, data: nextData }).unwrap()).not.toBe(first);
     expect(
-      owner.adapter.sceneMeshBindGroup(transform, 256, { ...task, data: nextData }).unwrap(),
+      owner.adapter.primitiveBindGroup({ ...task, auxiliary: nextAuxiliary }).unwrap(),
     ).not.toBe(first);
-    expect(
-      owner.adapter
-        .sceneMeshBindGroup(transform, 256, { ...task, auxiliary: nextAuxiliary })
-        .unwrap(),
-    ).not.toBe(first);
-    expect(owner.adapter.sceneMeshBindGroup(nextData, 256, task).unwrap()).not.toBe(first);
-    expect(create).toHaveBeenCalledTimes(4);
+    expect(create).toHaveBeenCalledTimes(3);
     const reads: string[] = [];
     const borrowed = {
       ...task,
@@ -318,7 +314,7 @@ it('reuses owned Skin binding results by the existing three-buffer identity', as
         return auxiliary;
       },
     };
-    expect(owner.adapter.sceneMeshBindGroup(transform, 256, borrowed)).toBe(hit);
+    expect(owner.adapter.primitiveBindGroup(borrowed)).toBe(hit);
     expect(reads).toEqual(['data', 'auxiliary']);
   } finally {
     owner.adapter.dispose();
@@ -328,9 +324,6 @@ it('reuses owned Skin binding results by the existing three-buffer identity', as
 
 it('retries failed Skin creation and keeps misses and cache hits on the original getter boundary', async () => {
   const owner = await raster(false, 'skin');
-  const transform = owner.device
-    .createBuffer({ size: 256, usage: GPU_BUFFER_USAGE_STORAGE })
-    .unwrap();
   const data = owner.device.createBuffer({ size: 256, usage: GPU_BUFFER_USAGE_STORAGE }).unwrap();
   const auxiliary = owner.device
     .createBuffer({ size: 256, usage: GPU_BUFFER_USAGE_STORAGE })
@@ -358,40 +351,30 @@ it('retries failed Skin creation and keeps misses and cache hits on the original
   const failed = err(fault);
   const create = vi.spyOn(owner.device, 'createBindGroup').mockReturnValueOnce(failed);
   try {
-    expect(owner.adapter.sceneMeshBindGroup(transform, 256, task)).toBe(failed);
-    expect(reads).toEqual(['data', 'auxiliary', 'data', 'auxiliary']);
+    expect(owner.adapter.primitiveBindGroup(task)).toBe(failed);
+    expect(reads).toEqual(['data', 'auxiliary']);
     reads.length = 0;
-    expect(owner.adapter.sceneMeshBindGroup(transform, 256, task).ok).toBe(true);
-    expect(reads).toEqual(['data', 'auxiliary', 'data', 'auxiliary']);
-    const hit = owner.adapter.sceneMeshBindGroup(transform, 256, task);
-    expect(owner.adapter.sceneMeshBindGroup(transform, 256, task)).toBe(hit);
+    expect(owner.adapter.primitiveBindGroup(task).ok).toBe(true);
+    expect(reads).toEqual(['data', 'auxiliary']);
+    const hit = owner.adapter.primitiveBindGroup(task);
+    expect(owner.adapter.primitiveBindGroup(task)).toBe(hit);
     expect(create).toHaveBeenCalledTimes(2);
   } finally {
     owner.adapter.dispose();
-    owner.device.destroyBuffer(transform).unwrap();
     owner.device.destroyBuffer(data).unwrap();
     owner.device.destroyBuffer(auxiliary).unwrap();
   }
 });
 
-it('reuses rigid success carriers only while both transform buffer and byte range match', async () => {
+it('keeps a single rigid Primitive independent of Scene table allocations', async () => {
   const owner = await raster();
-  const transform = owner.device
-    .createBuffer({ size: 256, usage: GPU_BUFFER_USAGE_STORAGE })
-    .unwrap();
   const create = vi.spyOn(owner.device, 'createBindGroup');
   try {
-    const first = owner.adapter.sceneMeshBindGroup(transform, 64).unwrap();
-    const hit = owner.adapter.sceneMeshBindGroup(transform, 64);
-    expect(hit.unwrap()).toBe(first);
-    expect(owner.adapter.sceneMeshBindGroup(transform, 64)).toBe(hit);
-    const resized = owner.adapter.sceneMeshBindGroup(transform, 128).unwrap();
-    expect(resized).not.toBe(first);
-    const next = owner.adapter.sceneMeshBindGroup(transform, 128);
-    expect(owner.adapter.sceneMeshBindGroup(transform, 128)).toBe(next);
-    expect(create).toHaveBeenCalledTimes(2);
+    const first = owner.adapter.primitiveBindGroup().unwrap();
+    expect(owner.adapter.primitiveBindGroup().unwrap()).toBe(first);
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]?.[0].entries).toEqual([]);
   } finally {
     owner.adapter.dispose();
-    owner.device.destroyBuffer(transform).unwrap();
   }
 });

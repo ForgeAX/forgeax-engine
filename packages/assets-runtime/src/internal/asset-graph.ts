@@ -245,6 +245,25 @@ export class AssetGraph<
     this.publish();
   }
 
+  /** A completed closure may take an output when it is the sole borrower. */
+  canTakeReady(root: string, guid: string, entry: P): boolean {
+    const closure = this.closures.get(root);
+    return (
+      this.ready.get(guid) === entry &&
+      closure?.holders === 1 &&
+      closure.guids.has(guid) &&
+      this.borrowers.get(guid) === 1 &&
+      !this.reads.has(guid)
+    );
+  }
+
+  /** Remove an exclusively borrowed decoded value before returning control to another caller. */
+  takeReady(guid: string): void {
+    this.pendingDiscards.delete(guid);
+    this.evictDecoded(guid);
+    this.currentSnapshot = undefined;
+  }
+
   lookup(guid: string): P['value'] | undefined {
     return this.ready.get(guid.toLowerCase())?.value;
   }

@@ -1,6 +1,7 @@
 import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { validateSolverIterations } from '@forgeax/engine-physics';
 import {
+  migrateSavedAmbientOcclusion,
   RENDERING_REQUIREMENT_KEYS,
   renderingRequirementsOf,
   renderProfileForRequirements,
@@ -39,6 +40,7 @@ const settings: Rule = {
     },
     taskWorkers: 'integer',
     renderPipelineCapacity: [2, 3, 4],
+    renderPublicationTransferBudgetBytes: 'integer',
   },
   assets: { assetBudgetBytes: 'integer' },
   audio: {
@@ -63,6 +65,7 @@ const settings: Rule = {
     renderBackend: ['auto', 'webgpu', 'webgl2'],
     resources: {
       dynamicGeometryMeshBudgetBytes: 'integer',
+      staticShadowBudgetBytes: 'unsigned',
       featureTextureReadbackBudgetBytes: 'integer',
     },
   },
@@ -184,6 +187,10 @@ function validateDomainSettings(
     const reason = validateRenderQualityLimits(limits);
     if (reason !== undefined) invalid('settings.rendering.qualityLimits', reason);
   }
+  if (settings.rendering?.ambientOcclusion !== undefined) {
+    const writable = settings.rendering as unknown as Record<string, unknown>;
+    writable.ambientOcclusion = migrateSavedAmbientOcclusion(writable.ambientOcclusion);
+  }
   const legacy = settings.rendering?.profile;
   const requirements = renderingRequirementsOf(settings.rendering ?? {});
   if (legacy !== undefined && Object.keys(requirements).length > 0)
@@ -202,8 +209,11 @@ function validateDomainSettings(
 }
 
 function migrateSavedProfileAo(profile: object): void {
-  if (!Object.hasOwn(profile, 'ssao')) return;
   const owned = profile as Record<string, unknown>;
+  if (!Object.hasOwn(profile, 'ssao')) {
+    owned.ambientOcclusion = migrateSavedAmbientOcclusion(owned.ambientOcclusion);
+    return;
+  }
   const path = 'settings.rendering.profile';
   if (Object.hasOwn(owned, 'ambientOcclusion'))
     invalid(path, 'multiple ambient occlusion settings');
@@ -215,7 +225,10 @@ function migrateSavedProfileAo(profile: object): void {
       invalid(path, 'invalid saved ssao settings');
     const { algorithm, ...parameters } = legacy as Record<string, unknown>;
     if (Object.hasOwn(parameters, 'method')) invalid(path, 'invalid saved ssao method');
-    owned.ambientOcclusion = { ...parameters, enabled: true, method: algorithm ?? 'gtao' };
+    owned.ambientOcclusion = migrateSavedAmbientOcclusion(
+      { ...parameters, enabled: true, method: algorithm ?? 'gtao' },
+      true,
+    );
   }
   delete owned.ssao;
 }

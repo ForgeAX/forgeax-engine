@@ -27,7 +27,6 @@ it.each([
     seed: 'depth-pyramid-seed',
     reduce: 'depth-pyramid-reduce',
     trace: 'ssr-trace',
-    temporal: 'ssr-temporal',
     compose: 'ssr-compose',
   })) {
     const text = source(name);

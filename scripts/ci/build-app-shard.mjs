@@ -272,7 +272,10 @@ function copyShardArtifacts(root, outputDir, report, sharedShaderManifest) {
 }
 
 function completeDdcEntry(path) {
-  return existsSync(join(path, 'receipt.json')) && existsSync(join(path, 'integrity.json'));
+  return (
+    existsSync(join(path, 'entry.json')) ||
+    (existsSync(join(path, 'receipt.json')) && existsSync(join(path, 'integrity.json')))
+  );
 }
 
 function mergeDdcSnapshots(options) {

@@ -1,7 +1,10 @@
+import {
+  type CatalogHotChannel,
+  createCatalogHotSubscription,
+  createCatalogSource,
+} from '@forgeax/engine-assets-runtime';
 import type { CatalogEntry } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import type { CatalogHotChannel } from '../catalog-client.js';
-import { createCatalogClient } from '../catalog-client.js';
 
 const GUID = '019ffa97-3000-7000-8000-000000000901';
 const SOURCE_KEY = 'color-grading/neutral';
@@ -41,12 +44,8 @@ describe('cube texture dev transport', () => {
   it('preserves ordinary texture identity through JSON stringify/fetch/parse', async () => {
     const sourceRows = [row(3)];
     const response = new Response(JSON.stringify(sourceRows));
-    const client = createCatalogClient(
-      async () => JSON.parse(await response.text()) as CatalogEntry[],
-      undefined,
-    );
-
-    const received = await client.enumerate();
+    const source = createCatalogSource({ url: '/catalog.json', fetch: async () => response });
+    const received = (await source.enumerate()).unwrap();
     expect(received).toEqual(sourceRows);
     expect(received[0]).toMatchObject({
       guid: GUID,
@@ -67,13 +66,14 @@ describe('cube texture dev transport', () => {
         listener = undefined;
       },
     };
-    const client = createCatalogClient(
-      async () => JSON.parse(JSON.stringify([serve])) as CatalogEntry[],
-      hot,
-    );
+    const source = createCatalogSource({
+      url: '/catalog.json',
+      fetch: async () => Response.json([serve]),
+      subscribe: createCatalogHotSubscription(hot),
+    });
     const updates: unknown[] = [];
-    const stop = client.subscribe((delta) => updates.push(delta));
-    expect(await client.enumerate()).toEqual([row(1)]);
+    const stop = source.subscribe((delta) => updates.push(delta));
+    expect((await source.enumerate()).unwrap()).toEqual([row(1)]);
 
     serve = row(2);
     listener?.({ added: [], changed: [row(2)], removed: [], generation: 2, scopeId: 'demo' });

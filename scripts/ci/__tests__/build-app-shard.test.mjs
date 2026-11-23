@@ -492,9 +492,9 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
     'bbb7fc40-a40d-58e2-a6e6-209dc256e911',
   ];
   const particleMaterial = 'd58f993a-290f-59f7-9297-950c29ea5d08';
-  const bossEffect = '019e9c00-0000-7000-8000-000000000000';
-  const bossMaterial = '019e9c00-0000-7000-8000-000000000002';
-  const bossShader = '7e43f472-4c4d-4ee3-9aa1-bc89e7402811';
+  const bossEffect = 'c76202f1-8caa-5873-a899-a372ea0b5cfc';
+  const bossMaterial = '96b5ec1b-841a-5dc5-be0f-2171aacd75bc';
+  const bossShader = 'c71041d7-6193-5423-834f-bfe8de29884c';
   const fieldEffect = '8cf2368a-0ae3-579a-a479-b0df2b5f392a';
   const fieldTexture = '9207c1b4-c292-5c11-8cc0-abea04a8ed63';
   const fieldMaterial = 'd7e37f40-18a2-5541-98d2-ed9efc339891';
@@ -779,8 +779,10 @@ test('m2: DDC snapshot merge copies complete entries and excludes staging and le
   mkdirSync(join(snapshots, '0', 'entries', 'aaaa'), { recursive: true });
   mkdirSync(join(snapshots, '0', 'staging', 'attempt'), { recursive: true });
   mkdirSync(join(snapshots, '0', 'lease'), { recursive: true });
-  writeFileSync(join(snapshots, '0', 'entries', 'aaaa', 'integrity.json'), 'complete');
-  writeFileSync(join(snapshots, '0', 'entries', 'aaaa', 'receipt.json'), 'receipt');
+  writeFileSync(
+    join(snapshots, '0', 'entries', 'aaaa', 'entry.json'),
+    JSON.stringify({ schemaVersion: 'forgeax-ddc-entry/2' }),
+  );
   writeFileSync(join(snapshots, '0', 'staging', 'attempt', 'payload.bin'), 'partial');
   writeFileSync(join(snapshots, '0', 'lease', 'lock'), 'lease');
   try {
@@ -796,7 +798,7 @@ test('m2: DDC snapshot merge copies complete entries and excludes staging and le
       output,
     ]);
     assert.equal(result.exitCode, 0, result.stderr || result.stdout);
-    assert.equal(existsSync(join(output, 'entries', 'aaaa', 'integrity.json')), true);
+    assert.equal(existsSync(join(output, 'entries', 'aaaa', 'entry.json')), true);
     assert.equal(existsSync(join(output, 'staging')), false);
     assert.equal(existsSync(join(output, 'lease')), false);
     const second = runPlanner(root, [

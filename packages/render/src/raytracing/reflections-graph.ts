@@ -5,7 +5,11 @@ import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { ExactRayDiffuseTargets, RayDiffuseTargets } from './diffuse-graph';
 import { RAY_PATH_STRIDE } from './path-tracer';
-import { addRayReconstructionPasses, type RayGraphShared } from './ray-graph-shared';
+import {
+  addRayReconstructionPasses,
+  type RayGraphShared,
+  snapshotRayReflectionFallback,
+} from './ray-graph-shared';
 import type { PreparedRayReflections } from './reflections-prepare';
 
 /** Receiver rays -> world radiance -> optional denoise -> additive specular into scene
@@ -85,6 +89,12 @@ export function addRayReflectionPasses(
     if (!added.ok) return added;
     reconstructed = added.value;
   }
+  const previous = snapshotRayReflectionFallback(
+    graph,
+    'ray-reflection.previous-fallback',
+    reflection.fallback,
+  );
+  if (!previous.ok) return previous;
   return graph.addRasterPass('ray-reflection.composite', {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
@@ -96,6 +106,7 @@ export function addRayReflectionPasses(
       { resource: target.depth, usage: 'sampled-read' },
       { resource: target.normal.view, usage: 'sampled-read' },
       { resource: reflection.response.view, usage: 'sampled-read' },
+      { resource: previous.value, usage: 'sampled-read' },
     ],
     colorAttachments: [
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
@@ -113,6 +124,7 @@ export function addRayReflectionPasses(
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             response: resources.textureView(reflection.response.view).unwrap(),
+            previous: resources.textureView(previous.value).unwrap(),
           },
           pixelCount,
         )

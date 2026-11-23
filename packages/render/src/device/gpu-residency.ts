@@ -11,6 +11,7 @@ import { renderAssetRevision } from '../publication/resource-scope';
 import { type RecordProfileRunner, runRecordProfilePhase } from '../record/render-context';
 import { ImagePages } from './image-pages';
 import { MeshChanges, type MeshChangeToken } from './mesh-changes';
+import { type MeshGpuRange, packMeshLodGeometry } from './mesh-lod-geometry';
 import { type ResidencyLease, ResidencyLifetime } from './residency-lifetime';
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
 import { TextureDerivations } from './texture-derivation';
@@ -58,6 +59,11 @@ import {
 import {
   createPrimitiveMesh,
   deriveVertexCount,
+  deriveVertexLayoutProjectionFromMask,
+  interleavedMesh,
+  isStandaloneStaticMesh,
+  type MeshVertexStreamRange,
+  prepareStaticMeshVertexStreams,
   type VertexLayoutProjection,
 } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -130,6 +136,8 @@ import {
 } from '../render-data';
 import type { DeviceScope } from './device-scope';
 import { MorphGeometry } from './morph-geometry';
+
+export type { MeshGpuRange } from './mesh-lod-geometry';
 
 const FACE_COUNT = 6;
 
@@ -307,6 +315,7 @@ export interface TextureGpuEntry {
 /** A cold texture stays private until the caller submits its graph mip writers.
  * The caller also fences producer identity; current() checks only residency. */
 export interface GraphTextureResidencyPreparation {
+  readonly accepted?: Promise<boolean>;
   readonly entry: TextureGpuEntry;
   readonly needsMipmaps: boolean;
   readonly lease: ResidencyLease;
@@ -345,12 +354,6 @@ interface CubemapGpuEntry {
   failure?: AssetError | RhiError;
   ibl?: IblPrecomputeOutput;
   readonly generatedTexture?: GpuTexture;
-}
-
-interface PackedMeshLodGeometry {
-  readonly vertices: Float32Array;
-  readonly indices: Uint16Array | Uint32Array | undefined;
-  readonly lodRanges: readonly (readonly MeshGpuRange[])[] | undefined;
 }
 
 type CubemapProjectionSource = { readonly view: TextureView } | { readonly tex: TextureAsset };
@@ -402,148 +405,94 @@ function prepareEquirectProjection(
   );
 }
 
-function packMeshLodGeometry(
-  root: TypesMeshAsset,
-  rootData: MeshRenderData,
-  lowerMeshes: readonly (TypesMeshAsset | undefined)[],
-): Result<PackedMeshLodGeometry, RhiError> {
-  if (lowerMeshes.length === 0) {
-    return ok({ vertices: root.vertices, indices: root.indices, lodRanges: undefined });
-  }
-  const rootStride = rootData.layoutProjection.arrayStride;
-  const allMeshes = [root, ...lowerMeshes];
-  const lowerData: (MeshRenderData | undefined)[] = [];
-  for (const lower of lowerMeshes) {
-    if (lower === undefined) {
-      lowerData.push(undefined);
-      continue;
-    }
-    const projected = deriveRenderDataMesh(lower);
-    if (!projected.ok) {
-      return err(
-        new RhiError({
-          code: 'asset-not-registered',
-          expected: 'every MeshAsset LOD to project to a compatible GPU layout',
-          hint: 'repair the lower-detail MeshAsset attributes before drawing the LOD chain',
-        }),
-      );
-    }
-    lowerData.push(projected.value);
-  }
-  if (
-    deriveVertexCount(root.vertices, rootData.layoutProjection) === undefined ||
-    lowerMeshes.some((mesh, index) => {
-      if (mesh === undefined) return false;
-      const data = lowerData[index];
-      return (
-        data === undefined || deriveVertexCount(mesh.vertices, data.layoutProjection) === undefined
-      );
-    })
-  ) {
-    return err(
-      new RhiError({
-        code: 'asset-not-registered',
-        expected: 'every MeshAsset LOD vertex byte length to match its layout projection stride',
-        hint: 'reimport the LOD chain so interleaved vertex bytes match attributes',
-      }),
-    );
-  }
-  if (
-    lowerData.some(
-      (data) =>
-        data !== undefined &&
-        (data.layoutProjection.arrayStride !== rootStride ||
-          data.submeshes.length !== rootData.submeshes.length ||
-          data.indexFormat !== rootData.indexFormat),
-    )
-  ) {
-    return err(
-      new RhiError({
-        code: 'asset-not-registered',
-        expected: 'LOD meshes to share vertex/index layout and material-slot topology',
-        hint: 'reimport LOD meshes with matching attributes, index format, and submesh slots',
-      }),
-    );
-  }
-  if (
-    allMeshes.some(
-      (mesh) => mesh !== undefined && (mesh.indices === undefined) !== (root.indices === undefined),
-    )
-  ) {
-    return err(
-      new RhiError({
-        code: 'asset-not-registered',
-        expected: 'all LOD meshes to use the same indexed or non-indexed draw mode',
-        hint: 'reimport the LOD chain with consistent index data',
-      }),
-    );
-  }
-  const vertices = new Float32Array(
-    allMeshes.reduce((sum, mesh) => sum + (mesh?.vertices.length ?? 0), 0),
+function admitsStaticMeshUpload(
+  device: RhiDevice,
+  mesh: TypesMeshAsset,
+  lods: readonly (TypesMeshAsset | undefined)[],
+): boolean {
+  return (
+    (device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native') &&
+    isStandaloneStaticMesh(mesh) &&
+    lods.every((lod) => lod === undefined || isStandaloneStaticMesh(lod))
   );
-  const ranges: MeshGpuRange[][] = [];
-  let vertexCursor = 0;
-  let indexCursor = 0;
-  const indexed = root.indices !== undefined;
-  const sourceIndices: number[] = [];
-  let requiresUint32 = root.indices instanceof Uint32Array;
-  for (let level = 0; level < allMeshes.length; level += 1) {
-    const mesh = allMeshes[level];
-    const data = level === 0 ? rootData : lowerData[level - 1];
-    if (mesh === undefined || data === undefined) {
-      // Preserve the authored level index without allocating substitute geometry.
-      ranges.push([]);
-      continue;
-    }
-    vertices.set(mesh.vertices, vertexCursor);
-    const levelRanges: MeshGpuRange[] = [];
-    for (let submeshIndex = 0; submeshIndex < data.submeshes.length; submeshIndex += 1) {
-      const submesh = data.submeshes[submeshIndex];
-      const rootSubmesh = rootData.submeshes[submeshIndex];
-      if (
-        submesh === undefined ||
-        rootSubmesh === undefined ||
-        submesh.materialSlot !== rootSubmesh.materialSlot ||
-        submesh.topology !== rootSubmesh.topology
-      ) {
-        return err(
-          new RhiError({
-            code: 'asset-not-registered',
-            expected: 'LOD submeshes to preserve root material-slot and topology identity',
-            hint: 'repair LOD material slots and primitive topology before import',
-          }),
-        );
-      }
-      levelRanges.push(
-        indexed
-          ? { first: indexCursor + submesh.indexOffset, count: submesh.indexCount, baseVertex: 0 }
-          : { first: vertexCursor / (rootStride / 4), count: submesh.vertexCount, baseVertex: 0 },
-      );
-    }
-    ranges.push(levelRanges);
-    if (indexed) {
-      const indices = mesh.indices;
-      if (indices === undefined) continue;
-      // Rebase into the packed vertex buffer here instead of through draw
-      // baseVertex: WebGL2 has no base-vertex draw, and CPU-lane LOD draws
-      // each level through the ordinary drawIndexed(firstIndex) path.
-      const levelBase = vertexCursor / (rootStride / 4);
-      if (indices instanceof Uint32Array) requiresUint32 = true;
-      for (const value of indices) {
-        const absolute = value + levelBase;
-        sourceIndices.push(absolute);
-        if (absolute > 0xffff) requiresUint32 = true;
-      }
-      indexCursor += indices.length;
-    }
-    vertexCursor += mesh.vertices.length;
+}
+
+function writeAlignedMeshRange(
+  device: RhiDevice,
+  buffer: GpuBuffer,
+  source: Float32Array | Uint16Array | Uint32Array,
+  range: AssetChange['ranges'][number],
+): Result<void, RhiError> {
+  // WebGPU requires four-byte writes, including uint16 indices at an odd offset.
+  const first = Math.floor(range.byteOffset / 4) * 4;
+  const end = Math.ceil((range.byteOffset + range.byteLength) / 4) * 4;
+  const available = new Uint8Array(
+    source.buffer,
+    source.byteOffset + first,
+    Math.min(end, source.byteLength) - first,
+  );
+  const bytes = available.byteLength === end - first ? available : new Uint8Array(end - first);
+  if (bytes !== available) bytes.set(available);
+  return device.queue.writeBuffer(buffer.handle, first, bytes);
+}
+
+/** Patch only touched vertices, remapping their canonical CPU rows to GPU stream ranges. */
+function writeStaticVertexRows(
+  device: RhiDevice,
+  entry: MeshGpuHandles,
+  vertices: Float32Array,
+  range: AssetChange['ranges'][number],
+): Result<void, RhiError> {
+  const layout = deriveVertexLayoutProjectionFromMask(entry.layoutProjection.mask).unwrap();
+  const first = Math.floor(range.byteOffset / layout.arrayStride);
+  const end = Math.ceil((range.byteOffset + range.byteLength) / layout.arrayStride);
+  const strideWords = layout.arrayStride / Float32Array.BYTES_PER_ELEMENT;
+  const rows = vertices.subarray(first * strideWords, end * strideWords);
+  const patch = prepareStaticMeshVertexStreams(rows, layout);
+  const destination = entry.vertexStreams;
+  if (
+    patch === undefined ||
+    destination === undefined ||
+    patch.ranges.length !== destination.length
+  ) {
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a non-empty vertex edit in the resident static mesh layout',
+        hint: 'rebuild the mesh after a vertex layout or size change',
+      }),
+    );
   }
-  const indices = indexed
-    ? requiresUint32
-      ? Uint32Array.from(sourceIndices)
-      : Uint16Array.from(sourceIndices)
-    : undefined;
-  return ok({ vertices, indices, lodRanges: ranges });
+  const originalOffset = range.byteOffset % layout.arrayStride;
+  const rowBytes = range.byteStride === layout.arrayStride ? range.rowBytes : undefined;
+  const bytes = rowBytes === undefined ? patch.pack() : undefined;
+  for (const [slot, stream] of patch.ranges.entries()) {
+    const target = destination[slot];
+    const format = patch.layout.streams?.[slot];
+    if (target === undefined || format === undefined)
+      throw new Error('Missing resident static vertex stream');
+    // The registry can report a strided single-channel edit, such as moving
+    // positions across a range. Only the stream carrying that channel changes.
+    if (
+      rowBytes !== undefined &&
+      !format.attributes.some(({ key }) =>
+        layout.attributes.some(
+          (attribute) =>
+            attribute.key === key &&
+            attribute.offset < originalOffset + rowBytes &&
+            attribute.offset + attribute.byteLength > originalOffset,
+        ),
+      )
+    )
+      continue;
+    const written = device.queue.writeBuffer(
+      entry.vertexBuffer.handle,
+      target.offset + first * format.arrayStride,
+      bytes?.subarray(stream.offset / 4, (stream.offset + stream.size) / 4) ?? patch.pack(slot),
+    );
+    if (!written.ok) return written;
+  }
+  return ok(undefined);
 }
 
 /** Fixed physical candidate; commit publishes it, release retires its exact allocation. */
@@ -580,6 +529,8 @@ export interface MeshGpuHandles {
   readonly indexFormat: 'uint16' | 'uint32';
   /** Geometry-owned vertex layout projection used by every GPU consumer. */
   readonly layoutProjection: VertexLayoutProjection;
+  /** Disjoint ranges of the resident vertex buffer, ordered by vertex slot. */
+  readonly vertexStreams?: readonly MeshVertexStreamRange[];
   /**
    * Number of UV sets the interleaved buffer carries (1 = single `uv`, +1 per
    * `uv1..uv7`). feat-20260629-multi-uv-set-support: threaded to the record
@@ -602,12 +553,6 @@ export interface MeshGpuHandles {
   readonly submeshes: readonly import('@forgeax/engine-types').Submesh[];
   /** Packed root + lower-detail geometry ranges in the shared mesh buffers. */
   readonly lodRanges?: readonly (readonly MeshGpuRange[])[];
-}
-
-export interface MeshGpuRange {
-  readonly first: number;
-  readonly count: number;
-  readonly baseVertex: number;
 }
 
 /**
@@ -654,6 +599,18 @@ export class GpuResidencyCache {
   }
   private readonly generatedEntries = new WeakMap<object, TextureGpuEntry>();
   private readonly generatedAllocations = new WeakMap<GpuTexture, GeneratedAllocation>();
+  private readonly preparingGraphTextures = new Map<number, number>();
+
+  /** A hidden source can demand a texture before it has a device allocation to lease. */
+  holdGraphTexture(handle: number): () => void {
+    const holds = this.preparingGraphTextures;
+    holds.set(handle, (holds.get(handle) ?? 0) + 1);
+    return () => {
+      const remaining = (holds.get(handle) ?? 1) - 1;
+      if (remaining === 0) holds.delete(handle);
+      else holds.set(handle, remaining);
+    };
+  }
   private ensureGeneratedTexture(
     handle: AssetHandle<'texture' | 'gpu-texture'>,
     pod: GpuTextureAsset,
@@ -1553,6 +1510,7 @@ export class GpuResidencyCache {
     let freed = 0;
     const errors: RhiError[] = [];
     const generatedLive = new Set(liveSet);
+    for (const handle of this.preparingGraphTextures.keys()) generatedLive.add(handle);
     for (const [, resources] of this.textureGpuHandles.entries()) {
       for (const [key, entry] of resources)
         if (typeof key === 'number' && this.textureLifetimes.get(entry)?.inUse)
@@ -2022,6 +1980,7 @@ export class GpuResidencyCache {
     capture?: (prepared: PreparedMeshResidency) => void,
     /** Recheck ordinary/shared consumers when an explicit eviction actually executes. */
     canEvict?: () => boolean,
+    splitStaticStreams = true,
   ): Result<PreparedMeshResidency, RhiError | AssetError> {
     const key = handle;
     const namespace = this.sourceNamespace(scope);
@@ -2045,6 +2004,7 @@ export class GpuResidencyCache {
         EMPTY_LOD_MESHES,
         profilePhase,
         namespace,
+        splitStaticStreams,
       );
       if (!prepared.ok) return prepared;
       entry = this.meshGpuHandles.get(candidateKey, namespace);
@@ -2185,18 +2145,10 @@ export class GpuResidencyCache {
     try {
       for (const { range, buffer, source } of writes) {
         this.unshareMeshBuffer(buffer);
-        // WebGPU requires four-byte writes, including uint16 indices at an odd offset.
-        const first = Math.floor(range.byteOffset / 4) * 4;
-        const end = Math.ceil((range.byteOffset + range.byteLength) / 4) * 4;
-        const available = new Uint8Array(
-          source.buffer,
-          source.byteOffset + first,
-          Math.min(end, source.byteLength) - first,
-        );
-        const bytes =
-          available.byteLength === end - first ? available : new Uint8Array(end - first);
-        if (bytes !== available) bytes.set(available);
-        const written = device.queue.writeBuffer(buffer.handle, first, bytes);
+        const written =
+          range.path[0] === 'vertices' && entry.vertexStreams !== undefined
+            ? writeStaticVertexRows(device, entry, mesh.vertices, range)
+            : writeAlignedMeshRange(device, buffer, source, range);
         if (!written.ok) {
           this.retireMeshEntry(key, entry, namespace);
           return written;
@@ -2241,6 +2193,22 @@ export class GpuResidencyCache {
       this.retireMeshEntry(key, entry, namespace);
       return ok(undefined);
     }
+    const vertices =
+      entry.vertexStreams === undefined
+        ? mesh.attributeStorage === 'static-streams'
+          ? interleavedMesh(mesh).vertices
+          : mesh.vertices
+        : mesh.attributeStorage === 'static-streams'
+          ? mesh.vertices
+          : prepareStaticMeshVertexStreams(
+              mesh.vertices,
+              deriveVertexLayoutProjectionFromMask(entry.layoutProjection.mask).unwrap(),
+            )?.pack();
+    if (vertices === undefined) {
+      this.meshChangeCounters.retired++;
+      this.retireMeshEntry(key, entry, namespace);
+      return ok(undefined);
+    }
     this.meshChanges.preflight();
     const created: Buffer[] = [];
     const fail = (error: RhiError): Result<void, RhiError> => {
@@ -2256,7 +2224,7 @@ export class GpuResidencyCache {
     });
     if (!vbo.ok) return fail(vbo.error);
     created.push(vbo.value);
-    const vertexWrite = device.queue.writeBuffer(vbo.value, 0, mesh.vertices);
+    const vertexWrite = device.queue.writeBuffer(vbo.value, 0, vertices);
     if (!vertexWrite.ok) return fail(vertexWrite.error);
     let ibo: Buffer | null = null;
     if (indices !== undefined) {
@@ -2509,14 +2477,20 @@ export class GpuResidencyCache {
     if (pod.kind === 'gpu-texture') {
       const prepared = this.ensureGeneratedTexture(handle, pod, source);
       if (!prepared.ok) return prepared;
+      const allocation = this.generatedAllocations.get(prepared.value.texture);
+      if (allocation === undefined) throw Error('Missing generated texture allocation');
+      const namespace = this.sourceNamespace(source);
+      const accepted = this.textureGenerators.acceptance(handle, namespace, allocation.generation);
+      if (!accepted.ok) return accepted;
       return this.captureGraphTexture(
         Number(handle),
-        this.sourceNamespace(source),
+        namespace,
         prepared.value,
         true,
         false,
         capture,
         canEvict,
+        accepted.value,
       );
     }
     const key = Number(handle);
@@ -2575,6 +2549,7 @@ export class GpuResidencyCache {
     needsMipmaps: boolean,
     capture?: (prepared: GraphTextureResidencyPreparation) => void,
     canEvict?: () => boolean,
+    accepted?: Promise<boolean>,
   ): Result<GraphTextureResidencyPreparation, RhiError | AssetError | ImageError> {
     const epoch = this.deviceEpoch;
     let published = alreadyPublished;
@@ -2591,6 +2566,7 @@ export class GpuResidencyCache {
     const prepared: GraphTextureResidencyPreparation = {
       entry: captured,
       needsMipmaps,
+      ...(accepted === undefined ? {} : { accepted }),
       current,
       commit: () => {
         if (!current()) return false;
@@ -2669,12 +2645,14 @@ export class GpuResidencyCache {
           // resident levels when another caller has no payload for them yet.
           if (lodMeshes.length === 0) return this.meshLifetime(existing).result;
           const previousLodAssets = this.meshLodAssets.get(existing);
-          lodMeshes = lodMeshes.map((asset, index) => asset ?? previousLodAssets?.[index]);
           const sameLodChain =
             previousLodAssets !== undefined &&
             previousLodAssets.length === lodMeshes.length &&
-            previousLodAssets.every((asset, index) => asset === lodMeshes[index]);
+            lodMeshes.every(
+              (asset, index) => asset === undefined || asset === previousLodAssets[index],
+            );
           if (sameLodChain) return this.meshLifetime(existing).result;
+          lodMeshes = lodMeshes.map((asset, index) => asset ?? previousLodAssets?.[index]);
 
           const projected = runRecordProfilePhase(
             profilePhase,
@@ -2689,8 +2667,12 @@ export class GpuResidencyCache {
             lodMeshes,
             profilePhase,
             namespace,
+            true,
           );
           if (!upgraded.ok) return upgraded;
+          const rootRevision = this.meshSourceRevisions.get(existing);
+          if (rootRevision !== undefined)
+            this.meshSourceRevisions.set(upgraded.value, rootRevision);
           // uploadMeshById publishes the new entry before this call so the
           // old allocation stays available to any already-recorded frame.
           this.retireMeshEntry(key, existing, namespace);
@@ -2702,7 +2684,15 @@ export class GpuResidencyCache {
           () => deriveRenderDataMesh(pod),
         );
         if (!projected.ok) return projected;
-        return this.uploadMeshById(key, pod, projected.value, lodMeshes, profilePhase, namespace);
+        return this.uploadMeshById(
+          key,
+          pod,
+          projected.value,
+          lodMeshes,
+          profilePhase,
+          namespace,
+          true,
+        );
       }
       case 'gpu-texture':
         return this.ensureGeneratedTexture(handle as AssetHandle<'gpu-texture'>, pod, source);
@@ -2753,6 +2743,7 @@ export class GpuResidencyCache {
       EMPTY_LOD_MESHES,
       undefined,
       namespace,
+      true,
     );
     return uploaded.ok ? ok({}) : uploaded;
   }
@@ -3662,6 +3653,46 @@ export class GpuResidencyCache {
     return ok(cubeHandle);
   }
 
+  private prepareMeshIndexUpload(
+    indices: TypesMeshAsset['indices'],
+    usage: MeshRenderData['indexUsage'],
+    profilePhase: RecordProfileRunner | undefined,
+  ) {
+    if (indices === undefined)
+      return { indexBytes: 0, indexWords: undefined, indexKey: undefined, sharedIndex: undefined };
+    const indexBytes = ((indices.byteLength + 3) >> 2) << 2;
+    const indexWords = runRecordProfilePhase(
+      profilePhase,
+      'record/validation/residency/index-pack',
+      () => {
+        if (
+          indices.byteLength === indexBytes &&
+          indices.byteOffset % 4 === 0 &&
+          publishedMeshBufferVersion(indices.buffer) !== undefined
+        )
+          return new Uint32Array(indices.buffer, indices.byteOffset, indexBytes / 4);
+        const words = new Uint32Array(indexBytes / 4);
+        new Uint8Array(words.buffer).set(
+          new Uint8Array(indices.buffer, indices.byteOffset, indices.byteLength),
+        );
+        return words;
+      },
+    );
+    const indexKey = runRecordProfilePhase(
+      profilePhase,
+      'record/validation/residency/index-key',
+      () =>
+        // Recorders retain one index format per physical index buffer.
+        `${indices instanceof Uint32Array ? 4 : 2}:${this.meshBufferKey(indexWords, usage)}`,
+    );
+    const sharedIndex = runRecordProfilePhase(
+      profilePhase,
+      'record/validation/residency/index-equality',
+      () => this.sharedMeshBuffer(indexKey, indexWords),
+    );
+    return { indexBytes, indexWords, indexKey, sharedIndex };
+  }
+
   /**
    * Upload `MeshAsset.vertices` + `MeshAsset.indices` to GPU buffers and cache
    * the handles under the asset id. Synchronous; mirrors the pre-extraction
@@ -3674,6 +3705,7 @@ export class GpuResidencyCache {
     lodMeshes: readonly (TypesMeshAsset | undefined)[] = EMPTY_LOD_MESHES,
     profilePhase: RecordProfileRunner | undefined = undefined,
     namespace: GpuResourceNamespace = 0,
+    splitStaticStreams = false,
   ): Result<MeshGpuHandles, RhiError> {
     const device = this.gpuDevice;
     if (device === undefined) {
@@ -3696,58 +3728,40 @@ export class GpuResidencyCache {
         }),
       );
     }
+    const split = splitStaticStreams && admitsStaticMeshUpload(device, mesh, lodMeshes);
     const packed = runRecordProfilePhase(profilePhase, 'record/validation/residency/pack', () =>
-      packMeshLodGeometry(mesh, renderData, lodMeshes),
+      packMeshLodGeometry(mesh, renderData, lodMeshes, split),
     );
     if (!packed.ok) return packed;
-    const { vertices, indices, lodRanges } = packed.value;
+    const { vertices, indices, lodRanges, staticStreams } = packed.value;
     this.meshChanges.preflight();
-    const indexBytesUnpadded = indices === undefined ? 0 : indices.byteLength;
-    const indexBytes = ((indexBytesUnpadded + 3) >> 2) << 2;
+    const transpose =
+      split && staticStreams === undefined
+        ? prepareStaticMeshVertexStreams(vertices, renderData.layoutProjection)
+        : undefined;
+    const streams = staticStreams ?? transpose;
     const vertexWords = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
 
     const vertexKey = runRecordProfilePhase(
       profilePhase,
       'record/validation/residency/vertex-key',
-      () => this.meshBufferKey(vertexWords, renderData.vertexUsage),
+      () => {
+        const sourceKey = this.meshBufferKey(vertexWords, renderData.vertexUsage);
+        return streams === undefined
+          ? sourceKey
+          : `static-streams/${staticStreams === undefined ? 'rows' : 'streams'}/${streams.layout.digest}/${sourceKey}`;
+      },
     );
     const shared = runRecordProfilePhase(
       profilePhase,
       'record/validation/residency/vertex-equality',
       () => this.sharedMeshBuffer(vertexKey, vertexWords),
     );
-    const indexWords =
-      indices === undefined
-        ? undefined
-        : runRecordProfilePhase(profilePhase, 'record/validation/residency/index-pack', () => {
-            if (
-              indices.byteLength === indexBytes &&
-              indices.byteOffset % 4 === 0 &&
-              publishedMeshBufferVersion(indices.buffer) !== undefined
-            )
-              return new Uint32Array(indices.buffer, indices.byteOffset, indexBytes / 4);
-            const words = new Uint32Array(indexBytes / 4);
-            new Uint8Array(words.buffer).set(
-              new Uint8Array(indices.buffer, indices.byteOffset, indexBytesUnpadded),
-            );
-            return words;
-          });
-    const indexKey =
-      indexWords === undefined || indices === undefined
-        ? undefined
-        : runRecordProfilePhase(
-            profilePhase,
-            'record/validation/residency/index-key',
-            () =>
-              // Recorders retain one index format per physical index buffer.
-              `${indices instanceof Uint32Array ? 4 : 2}:${this.meshBufferKey(indexWords, renderData.indexUsage)}`,
-          );
-    const sharedIndex =
-      indexWords === undefined || indexKey === undefined
-        ? undefined
-        : runRecordProfilePhase(profilePhase, 'record/validation/residency/index-equality', () =>
-            this.sharedMeshBuffer(indexKey, indexWords),
-          );
+    const { indexBytes, indexWords, indexKey, sharedIndex } = this.prepareMeshIndexUpload(
+      indices,
+      renderData.indexUsage,
+      profilePhase,
+    );
     const vboResult =
       shared === undefined
         ? runRecordProfilePhase(profilePhase, 'record/validation/residency/vertex-buffer', () =>
@@ -3788,7 +3802,7 @@ export class GpuResidencyCache {
     const vboWriteResult =
       shared === undefined
         ? runRecordProfilePhase(profilePhase, 'record/validation/residency/vertex-write', () =>
-            device.queue.writeBuffer(vbo, 0, vertices),
+            device.queue.writeBuffer(vbo, 0, transpose?.pack() ?? vertices),
           )
         : ok(undefined);
     if (!vboWriteResult.ok) {
@@ -3865,7 +3879,8 @@ export class GpuResidencyCache {
         iboBytes: indices === undefined ? 0 : indexBytes,
         indexCount: mesh.indices === undefined ? 0 : mesh.indices.length,
         indexFormat: indices instanceof Uint32Array ? 'uint32' : 'uint16',
-        layoutProjection: renderData.layoutProjection,
+        layoutProjection: streams?.layout ?? renderData.layoutProjection,
+        ...(streams === undefined ? {} : { vertexStreams: streams.ranges }),
         uvSetCount: 1 + extraUvSets,
         vertexCount,
         indexed: mesh.indices !== undefined,

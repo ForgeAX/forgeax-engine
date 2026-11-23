@@ -1,8 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { pnpmCommand } from '../lib/pnpm-command.mjs';
-import { comparedCiInputs, engineWithoutViewRequired } from './ci-input-changes.mjs';
+import {
+  comparedCiInputs,
+  engineWithoutViewRequired,
+  unchangedModuleEdges,
+} from './ci-input-changes.mjs';
 import { collectViewBackendDiagnostics } from './view-backend-diagnostics.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -110,10 +115,11 @@ for (const probe of probes) {
       ? 'plugin'
       : probe === 'verify-game3d-workspace.mjs'
         ? 'game3d'
-        : probe === 'verify-workspace-experience.mjs' ||
-            probe === 'verify-resource-preview-lifecycle.mjs'
+        : probe === 'verify-workspace-experience.mjs'
           ? 'workspace'
-          : 'lifecycle';
+          : probe === 'verify-resource-preview-lifecycle.mjs'
+            ? 'workspace-resources'
+            : 'lifecycle';
   steps.push([
     owner,
     'node',
@@ -151,16 +157,10 @@ const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner
 // Keep the long plugin journey away from both POINT browser tails. Modeling
 // is the last GPU owner on its lane.
 const shards = [
-  [
-    'contracts',
-    'engine-only',
-    'diagnostic-texture',
-    'diagnostic-pack-authoring',
-    'diagnostic-gpu-2d',
-  ],
+  ['contracts', 'engine-only', 'workspace-resources'],
   ['game3d', 'lifecycle', 'diagnostic-pack-save', 'diagnostic-gpu-array'],
   ['plugin', 'workspace', 'runtime-js'],
-  ['diagnostic-pages', 'runtime-ts', 'modeling'],
+  ['diagnostic-pages', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));
@@ -181,11 +181,15 @@ if (
   (!Number.isInteger(shard) || shards[shard] === undefined || group !== undefined)
 )
   throw new Error(`unknown-view-integration-shard:${process.argv[shardIndex + 1]}`);
-const selected = steps.filter(
-  ([owner]) =>
-    owner === 'prepare' ||
-    (shard !== undefined ? shards[shard].includes(owner) : group === undefined || owner === group),
-);
+const selected = steps.filter(([owner]) => {
+  if (owner === 'prepare') return true;
+  if (shard !== undefined) return shards[shard].includes(owner);
+  return (
+    group === undefined ||
+    owner === group ||
+    (group === 'workspace' && owner === 'workspace-resources')
+  );
+});
 if (shard !== undefined) {
   const ownerOrder = new Map(shards[shard].map((owner, index) => [owner, index]));
   selected.sort(([left], [right]) => (ownerOrder.get(left) ?? -1) - (ownerOrder.get(right) ?? -1));
@@ -194,17 +198,30 @@ if (process.argv.includes('--dry-run')) {
   console.log(JSON.stringify(selected));
   process.exit(0);
 }
+const cacheOwners = new Set(['game3d', 'plugin', 'workspace']);
+const sharedJobCache =
+  candidate && shard === 1 ? process.env.FORGEAX_VIEW_JOB_BUILD_CACHE : undefined;
+const localCache =
+  candidate &&
+  !sharedJobCache &&
+  !process.env.FORGEAX_BUILD_CACHE_DIR &&
+  selected.filter(([owner]) => cacheOwners.has(owner)).length > 1
+    ? mkdtempSync(resolve(tmpdir(), 'view-ci-build-cache-'))
+    : undefined;
+const cache = sharedJobCache ?? localCache;
+if (localCache !== undefined)
+  process.once('exit', () => rmSync(localCache, { recursive: true, force: true }));
+
+const comparison = candidate && shard !== undefined ? comparedCiInputs(root) : undefined;
 for (const [owner, file, args, env = {}] of selected) {
   if (
     owner === 'engine-only' &&
     candidate &&
     shard !== undefined &&
     process.env.FORGEAX_CI_CORE_VALIDATION === '1' &&
-    !engineWithoutViewRequired(comparedCiInputs(root))
+    !engineWithoutViewRequired(comparison, (path) => unchangedModuleEdges(root, comparison, path))
   ) {
-    console.log(
-      '[view] the paired View pin or documentation changed independently of Engine source',
-    );
+    console.log('[view] the change preserves the standalone Engine build boundary');
     continue;
   }
   const start = performance.now();
@@ -221,6 +238,9 @@ for (const [owner, file, args, env = {}] of selected) {
       env: {
         ...process.env,
         ...env,
+        ...(cache !== undefined && cacheOwners.has(owner)
+          ? { FORGEAX_BUILD_CACHE_DIR: cache }
+          : {}),
         FORGEAX_VIEW_ADDITIONAL_PAGES: '["rhi-debug","profiler"]',
         FORGEAX_SKIP_HARNESS_SYNC: '1',
       },

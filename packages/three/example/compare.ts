@@ -22,7 +22,7 @@ function populate(feature: string, reference: boolean) {
   const basic = new THREE.MeshBasicMaterial({ color: 0x70c4ae });
   camera.position.set(0, 0, 5); camera.lookAt(0, 0, 0);
   renderer.shadowMap.enabled = original.shadowMap.enabled = feature.startsWith('shadow');
-  renderer.shadowMap.type = original.shadowMap.type = feature === 'shadow-vsm' ? THREE.VSMShadowMap : THREE.PCFShadowMap;
+  renderer.shadowMap.type = original.shadowMap.type = THREE.PCFShadowMap;
   if (feature.startsWith('shadow')) {
     camera.position.set(5, 5, 7); camera.lookAt(0, 0.5, 0);
     const material = new THREE.MeshStandardMaterial({ color: 0xc0b090, roughness: 1 });

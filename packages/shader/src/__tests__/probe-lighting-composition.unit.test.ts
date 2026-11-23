@@ -21,7 +21,7 @@ describe('Probe diffuse shader composition', () => {
     expect(standard).toContain('let environment = evaluateStandardEnvironment(');
     expect(standard).toContain('probeShPreblend, probeLocalBlendFraction');
     expect(standard).not.toContain('fn composeProbeDiffuse(');
-    expect(lighting).toContain('evaluateProbeDiffuse(sh, localBlend');
+    expect(probe).toContain('mixProbeIrradiance(sh, localBlend');
     expect(probe).toContain('fn evaluateProbeDiffuse(');
     expect(skin).toContain('@group(3) @binding(1) var<storage, read> probeBlendRecords');
     expect(skin).toContain('u32(probeHeader.x) + 1u == in.materialAddress.y');
@@ -30,18 +30,35 @@ describe('Probe diffuse shader composition', () => {
     expect(skin).toContain('let probeBase = in.materialAddress.y * 16u');
   });
 
+  it('keeps the Forward no-probe body free of local SH data and branches', () => {
+    const brdf = lighting
+      .split('fn evaluateStandardEnvironment(')[1]
+      ?.split('struct StandardDirect')[0];
+    expect(brdf).toBeDefined();
+    expect(brdf).not.toMatch(/localBlend|mixProbeIrradiance|probeBlendRecords/);
+    for (const source of [standard, gpuStandard, skin]) {
+      expect(source).toContain('#else\n  let irradiance = skyIrradiance;\n#endif');
+      expect(source).toMatch(/#ifdef PROBE_BLEND_AVAILABLE\n {2}var probeShPreblend/);
+    }
+  });
+
   it('keeps Sky out of probe admission and preserves the existing specular owner', () => {
     expect(probe).not.toContain('q_sky');
     expect(probe).not.toContain('for (var probe');
-    expect(standard).toContain('sampleIblSpecular');
-    expect(skin).toContain('sampleIblSpecular');
+    for (const source of [gpuStandard, skin]) {
+      expect(source).toContain('@group(0) @binding(34) var<uniform> skySh');
+      expect(source).toContain('@group(0) @binding(35) var<uniform> viewSkylight');
+      expect(source).toContain('sampleStandardDiffuseIrradiance(viewSkylight,');
+      expect(source).toContain('evaluateStandardEnvironment(');
+    }
+    expect(lighting).toContain('sampleStandardReflectionRadiance(');
     expect(standard).not.toContain('sampleProbeSpecular');
     expect(skin).not.toContain('sampleProbeSpecular');
   });
 
   it('suppresses probe diffuse for metal while retaining Skylight IBL inputs', () => {
     expect(probe).toContain('(1.0 - metallic)');
-    expect(standard).toContain('sampleIblDiffuse');
-    expect(lighting).toContain('sampleIblDiffuse');
+    expect(standard).toContain('sampleStandardDiffuseIrradiance');
+    expect(lighting).toContain('evaluateSkyPolynomial');
   });
 });

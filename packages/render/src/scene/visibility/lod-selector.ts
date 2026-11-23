@@ -25,15 +25,31 @@ export interface LodSelection {
 }
 
 export function projectedHeight(input: ProjectedHeightInput): number {
-  if (!Number.isFinite(input.radius) || input.radius <= 0 || !Number.isFinite(input.depth)) {
+  return sphereProjectedHeight(
+    input.radius,
+    input.depth,
+    input.projection,
+    input.fov,
+    input.orthoHeight,
+  );
+}
+
+/** Scalar form for rendering many numeric bounds without allocating a descriptor per instance. */
+export function sphereProjectedHeight(
+  radius: number,
+  depth: number,
+  projection: CameraSnapshot['projection'],
+  fov: number | undefined,
+  orthoHeight: number | undefined,
+): number {
+  if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(depth)) return Number.NaN;
+  if (projection === 'perspective') {
+    if (fov === undefined || !Number.isFinite(fov) || fov <= 0 || depth <= 0) return Number.NaN;
+    return (2 * radius) / (depth * Math.tan(fov / 2));
+  }
+  if (orthoHeight === undefined || !Number.isFinite(orthoHeight) || orthoHeight <= 0)
     return Number.NaN;
-  }
-  if (input.projection === 'perspective') {
-    if (!Number.isFinite(input.fov) || (input.fov ?? 0) <= 0 || input.depth <= 0) return Number.NaN;
-    return (2 * input.radius) / (input.depth * Math.tan((input.fov ?? 0) / 2));
-  }
-  if (!Number.isFinite(input.orthoHeight) || (input.orthoHeight ?? 0) <= 0) return Number.NaN;
-  return (2 * input.radius) / (input.orthoHeight ?? 0);
+  return (2 * radius) / orthoHeight;
 }
 
 function rawLevel(levels: readonly Pick<MeshLodLevel, 'screenCoverage'>[], height: number): number {
@@ -44,26 +60,26 @@ function rawLevel(levels: readonly Pick<MeshLodLevel, 'screenCoverage'>[], heigh
   return levels.length;
 }
 
-function hysteresisLevel(input: LodSelectorInput, raw: number): number {
-  if (!input.historyValid || input.previousLevel < 0 || input.previousLevel > input.levels.length) {
-    return raw;
-  }
-  const previous = input.previousLevel;
+/** Project a single numeric LOD target. The resident mesh or view owns the fallback. */
+export function targetLodLevel(
+  levels: LodSelectorInput['levels'],
+  height: number,
+  previous: number | undefined,
+  hysteresis: number,
+): number {
+  if (!Number.isFinite(height) || height <= 0) return 0;
+  const raw = rawLevel(levels, height);
+  if (previous === undefined || previous < 0 || previous > levels.length) return raw;
   if (raw === previous) return previous;
-  const clampedHysteresis = Math.min(Math.max(input.hysteresis, 0), 0.99);
+  const clampedHysteresis = Math.min(Math.max(hysteresis, 0), 0.99);
   // A downgrade crosses the next lower-detail threshold; an upgrade crosses
   // the threshold that introduced the current level. These are adjacent
   // boundaries even when a frame jumps over several levels.
   const thresholdIndex =
-    raw > previous
-      ? Math.min(previous, input.levels.length - 1)
-      : Math.min(previous, input.levels.length) - 1;
+    raw > previous ? Math.min(previous, levels.length - 1) : Math.min(previous, levels.length) - 1;
   const threshold =
-    thresholdIndex < 0
-      ? input.levels[0]?.screenCoverage
-      : input.levels[thresholdIndex]?.screenCoverage;
+    thresholdIndex < 0 ? levels[0]?.screenCoverage : levels[thresholdIndex]?.screenCoverage;
   if (threshold === undefined || !Number.isFinite(threshold)) return raw;
-  const height = input.projectedHeight;
   if (raw > previous && height >= threshold * (1 - clampedHysteresis)) return previous;
   if (raw < previous && height < threshold * (1 + clampedHysteresis)) return previous;
   return raw;
@@ -74,8 +90,12 @@ export function selectLod(input: LodSelectorInput): LodSelection {
   if (!Number.isFinite(input.projectedHeight) || input.projectedHeight <= 0) {
     return { level: root, confidence: 1 };
   }
-  const raw = rawLevel(input.levels, input.projectedHeight);
-  const selected = Math.max(root, Math.min(input.levels.length, hysteresisLevel(input, raw)));
+  const selected = targetLodLevel(
+    input.levels,
+    input.projectedHeight,
+    input.historyValid ? input.previousLevel : undefined,
+    input.hysteresis,
+  );
   if (input.ready[selected] === true) return { level: selected, confidence: 1 };
   for (let level = selected - 1; level >= root; level -= 1) {
     if (input.ready[level] === true) return { level, confidence: 1 };

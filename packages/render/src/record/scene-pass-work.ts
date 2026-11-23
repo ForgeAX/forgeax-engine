@@ -1,4 +1,7 @@
-import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import {
+  allocateRenderPassGeneration,
+  type RenderGraphBuilder,
+} from '@forgeax/engine-render-graph';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { PassKind, PassSelector } from '@forgeax/engine-types';
 import { isTemporalAntialias } from '../components/camera';
@@ -16,7 +19,7 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
-import { type FrameList, FrameProjection } from '../scene/frame-list';
+import { type FrameList, FrameListBase, FrameProjection } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import {
@@ -24,16 +27,24 @@ import {
   DEFERRED_PASS_SELECTOR,
   FORWARD_PASS_SELECTOR,
 } from '../systems/pass-selector';
+import { TRANSPARENT_SORT_MODE_LAYER_Z } from '../systems/transparent-sort-config';
+import { viewDrawOrder } from '../systems/view-draw-order';
 import { standardTransmissionValue } from '../transmission/projection';
+import {
+  partitionWaterMaterialDraws,
+  type WaterMaterialAdmissionDrawClosure,
+} from '../water/mesh-source-admission';
 import { CaptureCull } from './capture-cull';
 import type {
   DirectDrawOutput,
   DirectDrawPhase,
   DirectDrawScene,
+  NativeMeshRowSpan,
   ViewDrawPhases,
 } from './direct-draw-phase';
+import { JoinedDrawRows } from './draw-row-pages';
 import type { buildDispatchPlan } from './fold-buckets';
-import type { ValidatedRenderable } from './frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
 import type { MaterialRelationFrame } from './material-binding-index';
 import type { PreparedGeometryMaterialPasses } from './material-pass-groups';
@@ -60,6 +71,14 @@ export interface ScenePassRequest {
   readonly gpuFilter: RenderPipelineGpuDrivenFilter | undefined;
   readonly late: boolean;
   readonly capture: boolean;
+  readonly currentTransparencyPass?:
+    | 'accumulate'
+    | 'residual'
+    | 'ordinary'
+    | 'backs'
+    | 'prefix'
+    | 'sorted-front'
+    | 'weighted-front';
   /** A live entity selection may split material-compatible fold buckets. */
   readonly selectsEntities?: boolean;
   readonly camera?: () => CameraSnapshot | undefined;
@@ -74,6 +93,22 @@ export class CaptureScenePasses {
   readonly opaque: ScenePassRequest;
   readonly transparent: ScenePassRequest;
   readonly probe: ScenePassRequest;
+  readonly probeRequests: readonly [ScenePassRequest];
+  private readonly opaqueOnly: readonly ScenePassRequest[];
+  private readonly color: readonly ScenePassRequest[];
+  private nativeGeneration = 0;
+  get physicalGeneration(): number {
+    if (this.nativeGeneration === 0) this.nativeGeneration = allocateRenderPassGeneration();
+    return this.nativeGeneration;
+  }
+
+  faceRequests(face: {
+    readonly sceneInput?: true;
+    readonly write?: { readonly clearOnly?: boolean };
+  }): readonly ScenePassRequest[] {
+    if (face.write?.clearOnly) return EMPTY_SCENE_PASSES;
+    return face.sceneInput ? this.opaqueOnly : this.color;
+  }
 
   constructor(public camera: CameraSnapshot) {
     const request = (
@@ -95,26 +130,81 @@ export class CaptureScenePasses {
     this.opaque = request('opaque', FORWARD_PASS_SELECTOR);
     this.transparent = request('transparent', FORWARD_PASS_SELECTOR);
     this.probe = request(undefined, undefined);
+    this.probeRequests = Object.freeze([this.probe]);
+    this.opaqueOnly = Object.freeze([this.opaque]);
+    this.color = Object.freeze([this.opaque, this.transparent]);
   }
 }
 
-const requestsByGraph = new WeakMap<object, readonly ScenePassRequest[]>();
+const EMPTY_SCENE_PASSES: readonly ScenePassRequest[] = Object.freeze([]);
+
+/** A graph declares draw selections once. Physical rasters can consume the same
+ * Standard opaque selection while retaining independent attachments and programs. */
+class ScenePassDeclarations {
+  private rows: ScenePassRequest[];
+  private forwardOpaque: (ScenePassRequest | undefined)[] | undefined;
+
+  constructor(existing?: readonly ScenePassRequest[]) {
+    this.rows = existing?.slice() ?? [];
+  }
+
+  declare(request: ScenePassRequest, standardOpaque: boolean): ScenePassRequest {
+    const share =
+      standardOpaque &&
+      request.selector === FORWARD_PASS_SELECTOR &&
+      request.recordMode === 'opaque' &&
+      request.passKind === 'forward' &&
+      request.gpuFilter === 'opaque' &&
+      request.excludeSelector === undefined &&
+      !request.capture &&
+      !request.selectsEntities &&
+      request.camera === undefined &&
+      request.captureCull === undefined &&
+      request.currentTransparencyPass === undefined;
+    // Direct/indirect and early/late geometry have independent ownership.
+    const slot = (request.gpu ? 2 : 0) + Number(request.late);
+    const existing = share ? this.forwardOpaque?.[slot] : undefined;
+    if (existing !== undefined) return existing;
+    const fixed = Object.freeze(request);
+    if (Object.isFrozen(this.rows)) this.rows = this.rows.slice();
+    this.rows.push(fixed);
+    if (share) {
+      this.forwardOpaque ??= [];
+      this.forwardOpaque[slot] = fixed;
+    }
+    return fixed;
+  }
+
+  snapshot(): readonly ScenePassRequest[] {
+    return Object.isFrozen(this.rows) ? this.rows : Object.freeze(this.rows);
+  }
+}
+
+const requestsByGraph = new WeakMap<object, ScenePassDeclarations | readonly ScenePassRequest[]>();
 
 export function registerScenePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   request: ScenePassRequest,
+  standardOpaque = false,
 ): ScenePassRequest {
-  const fixed = Object.freeze(request);
-  requestsByGraph.set(graph, [...(requestsByGraph.get(graph) ?? []), fixed]);
-  return fixed;
+  let owner = requestsByGraph.get(graph);
+  if (!(owner instanceof ScenePassDeclarations)) {
+    owner = new ScenePassDeclarations(owner);
+    requestsByGraph.set(graph, owner);
+  }
+  return owner.declare(request, standardOpaque);
+}
+
+/** Subsequent declarations preserve the already published roster and its order. */
+export function scenePassRequests(graph: object): readonly ScenePassRequest[] {
+  const owner = requestsByGraph.get(graph);
+  return owner instanceof ScenePassDeclarations ? owner.snapshot() : (owner ?? EMPTY_SCENE_PASSES);
 }
 
 export function installScenePasses(builder: object, compiled: object): void {
-  requestsByGraph.set(compiled, Object.freeze([...(requestsByGraph.get(builder) ?? [])]));
-}
-
-export function scenePassRequests(graph: object): readonly ScenePassRequest[] {
-  return requestsByGraph.get(graph) ?? [];
+  const requests = scenePassRequests(builder);
+  if (requests.length === 0) requestsByGraph.delete(compiled);
+  else requestsByGraph.set(compiled, requests);
 }
 
 /**
@@ -165,7 +255,11 @@ export function selectDirectPassMaterial(
 }
 
 export interface ScenePassDraws {
-  readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly materialSlots: _InternalRenderPipelineContext['materialSlots'];
+  /** Source addresses of this physical pass, before dispatch ordering and capacity clipping. */
+  readonly start: number;
+  readonly end: number;
+  readonly validatedOrdered: DrawRows;
   readonly dispatch: DispatchList;
   readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly foldDispatchPlan: FoldDispatchPlan | null;
@@ -187,7 +281,7 @@ function completeOwnedPassRequest(
 function preparedGeometryPasses(
   request: ScenePassRequest | undefined,
   candidate: { readonly dispatch: DispatchList; readonly output: DirectDrawOutput },
-  validatedOrdered: readonly ValidatedRenderable[],
+  validatedOrdered: DrawRows,
   ordered: boolean,
 ): PreparedGeometryMaterialPasses | undefined {
   const groups = candidate.output.materialPasses;
@@ -216,28 +310,97 @@ function stockGeometrySelector(selector: PassSelector | undefined): boolean {
   );
 }
 
-/** The existing submitted-position join also owns this request's order proof. */
-interface PassPositions {
-  readonly indices: number[];
-  readonly start: number;
-  ordered: boolean;
+/** Submitted rows normally occupy a single interval. Only an interleaved pass
+ * owns an explicit position for each of its rows. Published after the join. */
+class PassPositions extends FrameListBase<number> {
+  length = 0;
+  first = 0;
+  ordered = true;
+  private sparse: number[] | undefined;
+
+  constructor(
+    readonly start: number,
+    readonly end: number,
+  ) {
+    super();
+  }
+
+  append(sourceIndex: number, position: number): void {
+    this.ordered &&= sourceIndex === this.start + this.length;
+    if (this.length === 0) this.first = position;
+    if (this.sparse === undefined && position !== this.first + this.length) {
+      this.sparse = new Array<number>(this.length);
+      for (let i = 0; i < this.length; i++) this.sparse[i] = this.first + i;
+    }
+    this.sparse?.push(position);
+    this.length++;
+  }
+
+  position(local: number): number {
+    return this.sparse === undefined ? this.first + local : (this.sparse[local] as number);
+  }
+
+  at(index: number): number | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    return index < 0 || index >= this.length ? undefined : this.position(index);
+  }
+
+  *[Symbol.iterator](): IterableIterator<number> {
+    for (let i = 0; i < this.length; i++) yield this.position(i);
+  }
+
+  select<T>(rows: FrameList<T>): FrameList<T> {
+    if (this.length === rows.length) return rows;
+    if (this.sparse === undefined) return rows.slice(this.first, this.first + this.length);
+    return this.sparse.map((position) => rows.at(position) as T);
+  }
 }
 
-function appendPassPosition(
-  owner: PassPositions | undefined,
-  index: number,
-  position: number,
+/** Manually ordered or interleaved rows must be joined to their pass ranges by address. */
+function indexSubmittedPositions(
+  ranges: readonly PassPositions[],
+  submitted: DrawRows,
+  sourceLength: number,
 ): void {
-  if (owner === undefined) return;
-  owner.ordered &&= index === owner.start + owner.indices.length;
-  owner.indices.push(position);
+  let current = ranges[0];
+  let cursor = 0;
+  for (let position = 0; position < submitted.length; position++) {
+    const index = (submitted.at(position) as ValidatedRenderable).renderableIndex;
+    if (!Number.isInteger(index) || index < 0 || index >= sourceLength) continue;
+    if (current === undefined || index < current.start || index >= current.end) {
+      const next = ranges[cursor + 1];
+      cursor =
+        next !== undefined && index >= next.start && index < next.end
+          ? cursor + 1
+          : findSubmittedRange(ranges, index);
+      current = ranges[cursor];
+    }
+    current?.append(index, position);
+  }
+}
+
+/** Physical phase ranges are disjoint in preparation order, including empty ranges. */
+function findSubmittedRange(ranges: readonly { readonly end: number }[], index: number): number {
+  let low = 0;
+  let high = ranges.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((ranges[middle] as { readonly end: number }).end <= index) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 const emptyDrawRows: readonly ValidatedRenderable[] = Object.freeze([]);
 const emptyDispatch: DispatchList = Object.freeze([]);
 const emptyMaterialSlots: readonly MaterialSnapshot[] = Object.freeze([]);
+const emptySlotRow: readonly number[] = Object.freeze([]);
 const emptyMaterialIndices: readonly (readonly number[])[] = Object.freeze([]);
 const emptyScenePassDraws: ScenePassDraws = Object.freeze({
+  materialSlots: emptyMaterialSlots,
+  start: 0,
+  end: 0,
   validatedOrdered: emptyDrawRows,
   dispatch: emptyDispatch,
   materialSlotIndices: emptyMaterialIndices,
@@ -250,7 +413,37 @@ const emptyScenePassDraws: ScenePassDraws = Object.freeze({
   }),
 });
 
+type TransparencyTopology = import('../render-pipeline').RenderPipelineTopology['transparency'];
+
+export function isCurrentTransparencyPassActive(
+  request: ScenePassRequest,
+  topology: TransparencyTopology,
+  demand?: import('../transmission/projection').TransmissionDemand,
+): boolean {
+  const phase = request.currentTransparencyPass;
+  if (phase === undefined) return true;
+  const weighted = topology?.weightedBlended === true;
+  const active = (demand?.activeCount ?? 0) > 0;
+  switch (phase) {
+    case 'accumulate':
+      return weighted;
+    case 'residual':
+      return topology?.residual ?? true;
+    case 'ordinary':
+      return (!active || weighted) && (topology?.residual ?? true);
+    case 'backs':
+      return active && !weighted && demand?.needsBackPass === true;
+    case 'prefix':
+    case 'sorted-front':
+      return active && !weighted;
+    case 'weighted-front':
+      return active && weighted;
+  }
+}
+
 export interface ScenePassInputs {
+  readonly currentTransparency?: TransparencyTopology;
+  readonly currentTransmissionDemand?: import('../transmission/projection').TransmissionDemand;
   readonly retainMaterialBindings?: boolean | undefined;
   readonly scene: DirectDrawScene;
   readonly materials: MaterialFrame;
@@ -270,14 +463,17 @@ export interface ScenePassInputs {
     dispatch: DispatchList,
     rows: () => readonly FoldRenderableLike[],
   ) => readonly FoldBucket[];
-  readonly lod: (
-    rows: readonly ValidatedRenderable[],
-    request: ScenePassRequest,
-  ) => readonly ValidatedRenderable[];
+  readonly lod:
+    | 'cpu'
+    | 'gpu'
+    | ((rows: readonly ValidatedRenderable[], request: ScenePassRequest) => DrawRows);
   readonly world: RenderResourceScope;
   readonly camera: CameraSnapshot | undefined;
   /** The same accepted slot, Mesh, material and Skin roots used by Scene culling. */
   readonly boundsOf?: PersistentShadowCasterProjection['worldBoundsOf'];
+  readonly captureVisibility?:
+    | ((eye: CameraSnapshot, visible: ((row: RenderableSnapshot) => boolean) | undefined) => void)
+    | undefined;
   readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
   readonly cameraAdmission?: CameraAdmission | undefined;
   /** Resident geometry versions validation reads; see {@link DirectDrawInput.geometry}. */
@@ -318,9 +514,11 @@ interface RequestWork {
 }
 
 /** Combined graph-selected rows owned by one view's retained phases. */
-export interface ScenePassPreparation {
+export interface ScenePassPreparation extends NativeMeshRowSpan {
+  /** The producer has already laid these rows out in final dispatch order. */
+  readonly dispatchOrdered: boolean;
   readonly materialRows: readonly MaterialRelationFrame[] | undefined;
-  readonly rows: readonly ValidatedRenderable[];
+  readonly rows: DrawRows;
   readonly dispatch: DispatchList;
   readonly buckets: readonly FoldBucket[];
   finish(plan: ReturnType<typeof buildDispatchPlan>): ReadonlyMap<ScenePassRequest, ScenePassDraws>;
@@ -362,7 +560,7 @@ function transmissionSlice(
 
 /** Fold sources addressed by combined `renderableIndex`, without copying earlier requests. */
 function foldRows(
-  rows: readonly ValidatedRenderable[],
+  rows: DrawRows,
   offset: number,
   materials: MaterialFrame,
 ): readonly FoldRenderableLike[] {
@@ -370,6 +568,29 @@ function foldRows(
   sources.length = offset;
   for (const row of rows) sources.push(foldSource(row, materials));
   return sources;
+}
+
+function scenePassVisibility(
+  request: ScenePassRequest,
+  inputs: ScenePassInputs,
+  eye: CameraSnapshot | undefined,
+) {
+  const admitted = !(request.capture || isTemporalAntialias(eye?.antialias));
+  const capture =
+    request.capture && eye !== undefined && inputs.boundsOf !== undefined
+      ? request.captureCull?.prepare(eye, inputs.scene, inputs.materials, inputs.boundsOf)
+      : undefined;
+  if (request.capture && eye) inputs.captureVisibility?.(eye, capture?.visible);
+  const cameraVisible = capture?.visible ?? (admitted ? inputs.cameraVisible : undefined);
+  const visible =
+    request.recordMode === 'opaque-depth'
+      ? (source: RenderableSnapshot) =>
+          source.waterOwner === undefined && cameraVisible?.(source) !== false
+      : cameraVisible;
+  return {
+    visible,
+    admission: capture?.admission ?? (admitted ? inputs.cameraAdmission : undefined),
+  };
 }
 
 /**
@@ -383,9 +604,14 @@ function queueScenePass(
   request: ScenePassRequest,
   inputs: ScenePassInputs,
   offset: number,
+  previous: ScenePassPreparationMemo['queued'][number] | undefined,
 ): ScenePassPreparationMemo['queued'][number] {
   const { materials, gpu, world, camera } = inputs;
   const eye = request.camera?.() ?? camera;
+  const orderOpaque =
+    request.passKind !== 'shadow' &&
+    eye?.orderOpaqueByLayer === true &&
+    (request.recordMode === undefined || request.recordMode.startsWith('opaque'));
   const matches = (resource: MaterialResource) => {
     const accepted = materials.get(resource);
     if (accepted === undefined) {
@@ -401,21 +627,12 @@ function queueScenePass(
   const combinedTranslucency =
     request.recordMode === 'translucent' ||
     request.recordMode === 'translucent-before-transmission';
-  const admitted = !(request.capture || isTemporalAntialias(eye?.antialias));
-  const capture =
-    request.capture && eye !== undefined && inputs.boundsOf !== undefined
-      ? request.captureCull?.prepare(eye, inputs.scene, materials, inputs.boundsOf)
-      : undefined;
-  const cameraVisible = capture?.visible ?? (admitted ? inputs.cameraVisible : undefined);
-  const visible =
-    request.recordMode === 'opaque-depth'
-      ? (source: RenderableSnapshot) =>
-          source.waterOwner === undefined && cameraVisible?.(source) !== false
-      : cameraVisible;
+  const { visible, admission } = scenePassVisibility(request, inputs, eye);
   // The Record graph owner selected this request roster. Its per-pass row
   // cache queues only consumers of that compiled graph; frame-independent
   // phase sorting and pass plans were already produced in RenderQueue.
   const phase = inputs.phases.of(request);
+  const lod = inputs.lod;
   phase.queue({
     retainMaterialBindings: inputs.retainMaterialBindings,
     scene: inputs.scene,
@@ -432,16 +649,21 @@ function queueScenePass(
     prepareGeometry: inputs.prepareGeometry,
     visible,
     ...(request.passKind === 'shadow' ? {} : { cullMask: eye?.cullMask ?? 0xffffffff }),
-    admission: capture?.admission ?? (admitted ? inputs.cameraAdmission : undefined),
-    lod: (lodRows) => inputs.lod(lodRows, request),
+    admission,
+    lod: typeof lod === 'function' ? (rows) => lod(rows, request) : lod === 'cpu' ? eye : undefined,
     lodCamera: lodCameraTokens(eye),
     geometry: inputs.geometry,
     entries: { selector: request.selector, temporal: request.passKind === 'temporal' },
     sort: {
-      mode: world.transparentSort.mode,
+      sourceOrder:
+        request.passKind === 'shadow' || orderOpaque
+          ? undefined
+          : viewDrawOrder(world.world ?? inputs.sourceScope.world),
+      mode: orderOpaque ? TRANSPARENT_SORT_MODE_LAYER_Z : world.transparentSort.mode,
       yzAlpha: world.transparentSort.yzAlpha,
       camera: eye,
       all:
+        orderOpaque ||
         combinedTranslucency ||
         request.recordMode === 'transparent' ||
         request.recordMode === 'oit-residual',
@@ -451,7 +673,12 @@ function queueScenePass(
   const work = projectScenePassWork(request, inputs, phase, output, offset, combinedTranslucency);
   const end =
     combinedTranslucency && work.dispatch.length === 0 ? offset : offset + output.rows.length;
-  return { request, work, start: offset, end };
+  return previous?.request === request &&
+    previous.work === work &&
+    previous.start === offset &&
+    previous.end === end
+    ? previous
+    : { request, work, start: offset, end };
 }
 
 /** Value-dependent projections follow their own consumed material cursor. */
@@ -496,60 +723,122 @@ function projectScenePassWork(
   return work;
 }
 
+/** A pose publication changes row values independently of its immutable command sequence. */
+function combinedDispatch(
+  queued: ScenePassPreparationMemo['queued'],
+  previous: ScenePassPreparationMemo | undefined,
+): DispatchList {
+  let length = 0;
+  let only: DispatchList | undefined;
+  let populated = 0;
+  let same = previous !== undefined && previous.queued.length === queued.length;
+  let segment = 0;
+  for (const { work } of queued) {
+    const dispatch = work.dispatch;
+    if (dispatch.length > 0) {
+      only = dispatch;
+      populated++;
+      length += dispatch.length;
+    }
+    const before = previous?.queued[segment++]?.work.dispatch;
+    if (before !== dispatch && (dispatch.length !== 0 || before?.length !== 0)) same = false;
+  }
+  if (populated <= 1) return only ?? [];
+  if (same && previous !== undefined) return previous.value.dispatch;
+  const combined = new Array<DispatchEntry>(length);
+  let index = 0;
+  for (const { work } of queued) {
+    for (const entry of work.dispatch) combined[index++] = entry;
+  }
+  return combined;
+}
+
 export function prepareScenePasses(
-  requests: readonly ScenePassRequest[],
+  requests: Iterable<ScenePassRequest>,
   inputs: ScenePassInputs,
 ): ScenePassPreparation {
-  const queued: ScenePassPreparationMemo['queued'][number][] = [];
+  const previous = inputs.phases.scenePassWork;
+  let changed: ScenePassPreparationMemo['queued'][number][] | undefined;
+  let index = 0;
   let offset = 0;
-  for (const request of new Set(requests)) {
-    const entry = queueScenePass(request, inputs, offset);
-    queued.push(entry);
+  let onlyWork: RequestWork | undefined;
+  let populated = 0;
+  // Record supplies a unique declaration iterator or the union of actual captures.
+  // A direct caller can also supply an authored array containing repeated requests.
+  const ordered =
+    Array.isArray(requests) && requests.length > 1 ? new Set<ScenePassRequest>(requests) : requests;
+  for (const request of ordered) {
+    if (
+      !isCurrentTransparencyPassActive(
+        request,
+        inputs.currentTransparency,
+        inputs.currentTransmissionDemand,
+      )
+    )
+      continue;
+    const before = previous?.queued[index];
+    const entry = queueScenePass(request, inputs, offset, before);
+    if (entry !== before) changed ??= previous?.queued.slice(0, index) ?? [];
+    changed?.push(entry);
+    index++;
+    if (entry.end !== offset || entry.work.dispatch.length !== 0) {
+      onlyWork = entry.work;
+      populated++;
+    }
     offset = entry.end;
   }
-  const previous = inputs.phases.scenePassWork;
-  if (
-    previous !== undefined &&
-    previous.queued.length === queued.length &&
-    queued.every((entry, index) => {
-      const before = previous.queued[index];
-      return (
-        before?.request === entry.request &&
-        before.work === entry.work &&
-        before.start === entry.start &&
-        before.end === entry.end
-      );
-    })
-  )
+  if (changed === undefined && previous !== undefined && previous.queued.length === index)
     return previous.value;
-  const rows: ValidatedRenderable[] = [];
+  const queued = changed ?? previous?.queued.slice(0, index) ?? [];
+  // Empty depth, capture or transparent phases have a range but contribute no rows.
+  const single = populated === 1 ? onlyWork : undefined;
+  const ranges: { start: number; rows: DrawRows }[] = [];
   let materialRows: MaterialRelationFrame[] | undefined = [];
-  const dispatch: DispatchEntry[] = [];
   const buckets: FoldBucket[] = [];
   const prepared = new Map<ScenePassRequest, PreparedPassRange>();
+  let dispatchOrdered = true;
+  let nativeStart = 0;
+  let nativeEnd = 0;
+  let undispatchedTail = false;
   for (const { request, work, start, end } of queued) {
     const empty = start === end && work.dispatch.length === 0;
     if (!empty) {
+      if (work.output.nativeEnd > 0) {
+        if (nativeEnd === 0) nativeStart = start + work.output.nativeStart;
+        nativeEnd = start + work.output.nativeEnd;
+      }
+      const prefix = work.dispatch.length === 0 ? 0 : work.output.dispatchedPrefix;
+      if (
+        work.dispatch !== work.output.dispatch ||
+        prefix === undefined ||
+        (undispatchedTail && prefix > 0)
+      )
+        dispatchOrdered = false;
+      if (prefix !== work.output.rows.length) undispatchedTail = true;
       if (materialRows !== undefined) {
         if (work.output.materialRows === undefined) materialRows = undefined;
         else materialRows.push(work.output.materialRows);
       }
-      for (const row of work.output.rows) rows.push(row);
-      for (const entry of work.dispatch) dispatch.push(entry);
-      for (const bucket of work.buckets) buckets.push(bucket);
+      if (single === undefined) {
+        if (start !== end) ranges.push({ start, rows: work.output.rows });
+        for (const bucket of work.buckets) buckets.push(bucket);
+      }
     }
     prepared.set(request, {
       start,
       end,
-      dispatch: empty ? [] : work.dispatch,
+      dispatch: work.dispatch,
       output: work.output,
     });
   }
   const value = createScenePassPreparation(
+    dispatchOrdered,
+    nativeStart,
+    nativeEnd,
     materialRows,
-    rows,
-    dispatch,
-    buckets,
+    single?.output.rows ?? (ranges.length === 0 ? emptyDrawRows : new JoinedDrawRows(ranges)),
+    single?.dispatch ?? combinedDispatch(queued, previous),
+    single?.buckets ?? buckets,
     prepared,
     inputs.materials,
   );
@@ -558,6 +847,8 @@ export function prepareScenePasses(
 }
 
 /** A captured pass range; no link to the preparation that preceded it. */
+type AddressedPlan = ReturnType<typeof buildDispatchPlan>;
+
 interface PreparedPassRange {
   readonly start: number;
   readonly end: number;
@@ -567,14 +858,28 @@ interface PreparedPassRange {
 
 /** Isolate closure storage from the caller's previous memo and full frame inputs. */
 function createScenePassPreparation(
+  dispatchOrdered: boolean,
+  nativeStart: number,
+  nativeEnd: number,
   materialRows: readonly MaterialRelationFrame[] | undefined,
-  rows: readonly ValidatedRenderable[],
+  rows: DrawRows,
   dispatch: DispatchList,
   buckets: readonly FoldBucket[],
   prepared: ReadonlyMap<ScenePassRequest, PreparedPassRange>,
   materials: MaterialFrame,
 ): ScenePassPreparation {
+  let finished:
+    | {
+        readonly rows: AddressedPlan['validatedOrdered'];
+        readonly materialSlots: AddressedPlan['materialSlots'];
+        readonly slotIndices: AddressedPlan['materialSlotIndices'];
+        readonly work: ReadonlyMap<ScenePassRequest, ScenePassDraws>;
+      }
+    | undefined;
   return {
+    dispatchOrdered,
+    nativeStart,
+    nativeEnd,
     materialRows,
     rows,
     dispatch,
@@ -582,6 +887,20 @@ function createScenePassPreparation(
     finish(
       plan: ReturnType<typeof buildDispatchPlan>,
     ): ReadonlyMap<ScenePassRequest, ScenePassDraws> {
+      // Physical rows and material relations own their immutable publications.
+      // Compare distinct accepted materials, without revisiting their draw users.
+      const retain = materialRows !== undefined && plan.foldDispatchPlan === null;
+      if (
+        retain &&
+        finished?.rows === plan.validatedOrdered &&
+        finished.slotIndices === plan.materialSlotIndices &&
+        finished.materialSlots.length === plan.materialSlots.length
+      ) {
+        const accepted = finished.materialSlots;
+        if (plan.materialSlots.every((material, slot) => accepted[slot] === material))
+          return finished.work;
+      }
+      finished = undefined;
       const work = new Map<ScenePassRequest, ScenePassDraws>();
       if (rows.length === 0) {
         let empty = true;
@@ -591,96 +910,172 @@ function createScenePassPreparation(
           return work;
         }
       }
-      // Each combined row index belongs to one request's range; one ordered
-      // walk of the submitted plan yields every request's ascending positions.
-      const owners: (PassPositions | undefined)[] = new Array(rows.length);
-      const positionsByRequest = new Map<ScenePassRequest, PassPositions>();
-      for (const [request, candidate] of prepared) {
-        const positions: PassPositions = { indices: [], start: candidate.start, ordered: true };
-        positionsByRequest.set(request, positions);
-        owners.fill(positions, candidate.start, candidate.end);
-      }
+      const ranges: PassPositions[] = [];
       const submitted = plan.validatedOrdered;
-      for (let position = 0; position < submitted.length; position++) {
-        const index = (submitted[position] as ValidatedRenderable).renderableIndex;
-        if (index >= 0 && index < owners.length) appendPassPosition(owners[index], index, position);
+      const phaseOrder = dispatchOrdered && plan.phaseOrderedRows === submitted;
+      for (const candidate of prepared.values()) {
+        const positions = new PassPositions(candidate.start, candidate.end);
+        if (phaseOrder) {
+          positions.first = candidate.start;
+          positions.length = Math.max(
+            0,
+            Math.min(candidate.end, submitted.length) - candidate.start,
+          );
+        }
+        ranges.push(positions);
       }
-      const fold = plan.foldDispatchPlan;
+      if (!phaseOrder) indexSubmittedPositions(ranges, submitted, rows.length);
+      let rangeIndex = 0;
       for (const [request, candidate] of prepared) {
-        const positions = positionsByRequest.get(request) as PassPositions;
-        const indices = positions.indices;
-        const validatedOrdered = indices.map((index) => {
-          const row = submitted[index];
-          if (row === undefined) throw new Error('Missing submitted direct row');
-          return row;
-        });
-        let headBuckets: Map<number, FoldBucket> | undefined;
-        let skipIndices: Set<number> | undefined;
-        if (fold != null)
-          for (let local = 0; local < indices.length; local++) {
-            const global = indices[local] as number;
-            const head = fold.headBuckets.get(global);
-            if (head !== undefined) {
-              headBuckets ??= new Map();
-              headBuckets.set(local, head);
-            }
-            if (fold.skipIndices.has(global)) {
-              skipIndices ??= new Set();
-              skipIndices.add(local);
-            }
-          }
-        const roster = {
-          validatedOrdered,
-          dispatch: candidate.dispatch,
-          materialSlots: plan.materialSlots,
-          materialSlotIndices: Array.isArray(plan.materialSlotIndices)
-            ? indices.map((index) => plan.materialSlotIndices.at(index) ?? [])
-            : new FrameProjection(indices, (index) => plan.materialSlotIndices.at(index) ?? []),
-        };
-        const owned = completeOwnedPassRequest(
+        const positions = ranges[rangeIndex++] as PassPositions;
+        work.set(
           request,
-          materials,
-          indices.length,
-          candidate.end - candidate.start,
+          finishScenePassRequest(request, candidate, plan, positions, phaseOrder, materials),
         );
-        work.set(request, {
-          ...roster,
-          geometryMaterialPasses: preparedGeometryPasses(
-            owned,
-            candidate,
-            validatedOrdered,
-            positions.ordered,
-          ),
-          foldDispatchPlan:
-            headBuckets === undefined
-              ? null
-              : {
-                  headBuckets,
-                  skipIndices: skipIndices ?? new Set(),
-                  foldedBucketCount: headBuckets.size,
-                },
-          mainPassMaterialSelection: createMainPassMaterialSelectionOwner(roster, owned),
-        });
       }
+      if (retain)
+        finished = {
+          rows: plan.validatedOrdered,
+          materialSlots: plan.materialSlots,
+          slotIndices: plan.materialSlotIndices,
+          work,
+        };
       return work;
     },
   };
 }
 
-export function scenePassContext(
-  c: _InternalRenderPipelineContext,
+function projectPassFoldDispatch(
+  fold: FoldDispatchPlan | null,
+  positions: PassPositions,
+): FoldDispatchPlan | null {
+  let headBuckets: Map<number, FoldBucket> | undefined;
+  let skipIndices: Set<number> | undefined;
+  if (fold != null)
+    for (let local = 0; local < positions.length; local++) {
+      const global = positions.position(local);
+      const head = fold.headBuckets.get(global);
+      if (head !== undefined) {
+        headBuckets ??= new Map();
+        headBuckets.set(local, head);
+      }
+      if (fold.skipIndices.has(global)) {
+        skipIndices ??= new Set();
+        skipIndices.add(local);
+      }
+    }
+  return headBuckets === undefined
+    ? null
+    : {
+        headBuckets,
+        skipIndices: skipIndices ?? new Set(),
+        foldedBucketCount: headBuckets.size,
+      };
+}
+
+function finishScenePassRequest(
   request: ScenePassRequest,
-): _InternalRenderPipelineContext {
-  const work = c.scenePassWork?.get(request);
-  if (c.scenePassWork === undefined) return c;
+  candidate: PreparedPassRange,
+  plan: AddressedPlan,
+  positions: PassPositions,
+  phaseOrder: boolean,
+  materials: MaterialFrame,
+): ScenePassDraws {
+  const owned = completeOwnedPassRequest(
+    request,
+    materials,
+    positions.length,
+    candidate.end - candidate.start,
+  );
+  const slots = plan.materialSlotIndices;
+  // Every submitted position was appended exactly once in plan order. A
+  // request covering the entire plan already owns the required row/slot order.
+  const entirePlan = positions.length === plan.validatedOrdered.length;
+  const submitted = plan.validatedOrdered;
+  const phaseRows =
+    phaseOrder && submitted instanceof JoinedDrawRows
+      ? submitted.exactRange(positions.first, positions.length)
+      : undefined;
+  const validatedOrdered = phaseRows ?? positions.select(submitted);
+  const foldDispatchPlan = projectPassFoldDispatch(plan.foldDispatchPlan, positions);
+  const roster = {
+    validatedOrdered,
+    dispatch: candidate.dispatch,
+    materialSlots: plan.materialSlots,
+    materialSlotIndices: entirePlan
+      ? slots
+      : Array.isArray(slots) && slots.length === plan.validatedOrdered.length
+        ? positions.select<readonly number[]>(slots)
+        : new FrameProjection(positions, (index) => slots.at(index) ?? emptySlotRow),
+  };
+  const geometry = preparedGeometryPasses(owned, candidate, validatedOrdered, positions.ordered);
+  return {
+    ...roster,
+    start: candidate.start,
+    end: candidate.end,
+    geometryMaterialPasses: geometry,
+    foldDispatchPlan,
+    mainPassMaterialSelection: createMainPassMaterialSelectionOwner(
+      roster,
+      owned,
+      geometry?.groups,
+    ),
+  };
+}
+
+/** Join this frame's sparse water addresses to its physical pass ranges in submission order. */
+export function scenePassWaterDraws(
+  work: ReadonlyMap<ScenePassRequest, ScenePassDraws> | undefined,
+  water: WaterMaterialAdmissionDrawClosure | undefined,
+): ReadonlyMap<ScenePassDraws, WaterMaterialAdmissionDrawClosure> | undefined {
+  if (work === undefined || water === undefined || water.draws.length === 0) return undefined;
+  const ranges = Array.from(work.values());
+  return partitionWaterMaterialDraws(water, (address) => {
+    const range = ranges[findSubmittedRange(ranges, address)];
+    return range !== undefined && address >= range.start ? range : undefined;
+  });
+}
+
+function issuedScenePassDraws(c: _InternalRenderPipelineContext, request: ScenePassRequest) {
+  if (c.scenePassWork === undefined) return undefined;
+  const work = c.scenePassWork.get(request);
   if (work === undefined)
     throw new RhiError({
       code: 'internal-error',
       expected: 'prepared draw work for the executing Scene Pass',
       hint: 'prepare requests from the actual compiled graph before recording',
     });
+  return work;
+}
+
+/** Admission reads the same fixed rows and material slots that recording consumes.
+ * No lighting, GPU bindings, or other frame context is needed for that selection. */
+export function scenePassMaterialRows(
+  c: _InternalRenderPipelineContext,
+  request: ScenePassRequest,
+) {
+  return issuedScenePassDraws(c, request) ?? c;
+}
+
+export function scenePassContext(
+  c: _InternalRenderPipelineContext,
+  request: ScenePassRequest,
+): _InternalRenderPipelineContext {
+  const work = issuedScenePassDraws(c, request);
+  if (work === undefined) return c;
   // Ownership was consumed while preparing this pass's CPU rows. Keep the
   // complete detached frame shape and clear selection instead of rebuilding
   // every property through object-rest exclusion.
-  return { ...c, ...work, gpuDrivenSelection: undefined };
+  const waterOwner = c.waterMaterialRecordCache;
+  const scopedWater =
+    waterOwner !== undefined &&
+    waterOwner.validatedOrdered === c.validatedOrdered &&
+    waterOwner.passes === c.scenePassWork;
+  return {
+    ...c,
+    ...work,
+    materialSlots: c.materialSlots,
+    scenePassDraws: scopedWater ? work : undefined,
+    gpuDrivenSelection: undefined,
+  };
 }

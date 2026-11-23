@@ -1,15 +1,10 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { afterEach, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { PackReader } from '../internal/pack-reader.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const url = 'https://fixture.test/value.pack.json';
-const publication = createRuntimePackPublication({
-  scopeId: 'asset-runtime',
-  sourcePath: 'value.pack',
-  sourceRevision: '1',
-  packageUrl: url,
-  pack: { assets: [] },
-});
+const publication = catalogPack([], { sourcePath: 'value.pack', packageUrl: url });
 const readers: PackReader[] = [];
 
 afterEach(() => {
@@ -18,10 +13,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  let finish!: () => void;
-  const pending = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
+  const { promise: pending, resolve: finish } = testGate();
   const fetcher = vi.fn(async () => {
     await pending;
     return new Response(JSON.stringify(publication.pack));

@@ -24,7 +24,8 @@ const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const { fbxImporter } = await import('@forgeax/engine-fbx');
 const { gltfImporter } = await import('@forgeax/engine-gltf');
-const { ImporterRegistry, runImport } = await import('@forgeax/engine-import');
+const { copyMeshAttribute } = await import('@forgeax/engine-geometry');
+const { ImporterRegistry, projectImportPack, runImport } = await import('@forgeax/engine-import');
 const { createCatalogSource } = await import('@forgeax/engine-assets-runtime');
 const { createRuntimePackPublication } = await import('@forgeax/engine-pack/runtime');
 const { createShaderModule, rhi } = await import('@forgeax/engine-rhi-webgpu');
@@ -53,10 +54,10 @@ function boundsFor(positions) {
   return { min, max };
 }
 
-function publishImported(assets, imported, sourcePath) {
+function publishImported(assets, pack, sourcePath) {
   const packageUrl = `https://morph-source.invalid/${sourcePath}/pack.json`;
   const bodies = new Map();
-  const rows = imported.pack.assets.map((row) => ({ ...row, artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, body]) => {
+  const rows = pack.assets.map((row) => ({ ...row, artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, body]) => {
     const path = `${row.guid}-${key}.bin`;
     bodies.set(new URL(path, packageUrl).href, body.bytes);
     return [key, {path, mediaType: body.mediaType, ...(body.assetCodec === undefined ? {} : {assetCodec: body.assetCodec}), contentEncoding: 'identity', byteLength: body.bytes.byteLength, integrity: {algorithm: 'sha256', digest: `sha256:${sha256(body.bytes)}`}}];
@@ -94,18 +95,20 @@ async function loadImportedMorph(assets) {
   if (!imported.ok || 'skipped' in imported.value) {
     throw new Error(`gltf importer failed: ${JSON.stringify(imported.error ?? imported.value)}`);
   }
-  const meshEntry = imported.value.pack.assets.find((asset) => asset.guid === gltfMeta.subAssets[0].guid);
-  const animationEntry = imported.value.pack.assets.find((asset) => asset.guid === gltfMeta.subAssets[1].guid);
+  const gltfPack = projectImportPack(imported.value.product, gltfMeta);
+  const meshEntry = gltfPack.assets.find((asset) => asset.guid === gltfMeta.subAssets[0].guid);
+  const animationEntry = gltfPack.assets.find((asset) => asset.guid === gltfMeta.subAssets[1].guid);
   if (meshEntry === undefined || animationEntry === undefined) {
     throw new Error('gltf importer did not emit the declared morph assets');
   }
-  publishImported(assets, imported.value, 'gltf');
+  publishImported(assets, gltfPack, 'gltf');
   const meshHandle = (await assets.load(gltfMeta.subAssets[0].guid, 'mesh')).unwrap();
   const animationHandle = (await assets.load(gltfMeta.subAssets[1].guid, 'animation-clip')).unwrap();
   const loaded = assets.read(meshHandle).unwrap();
   const animation = assets.read(animationHandle).unwrap();
   const targetCount = loaded.morphTargets?.length ?? 0;
-  const basePositions = loaded.attributes.position;
+  const basePositions = copyMeshAttribute(loaded, 'position');
+  assert.ok(basePositions, 'admitted mesh must expose its position channel');
   const vertexCount = basePositions.length / 3;
   if (targetCount < 2 || loaded.morphWeights?.length !== targetCount) {
     throw new Error('imported morph target and weight cardinality mismatch');
@@ -138,9 +141,10 @@ async function loadImportedMorph(assets) {
   if (!importedFbx.ok || 'skipped' in importedFbx.value) {
     throw new Error(`fbx importer failed: ${JSON.stringify(importedFbx.error ?? importedFbx.value)}`);
   }
-  const fbxEntry = importedFbx.value.pack.assets[0];
+  const fbxPack = projectImportPack(importedFbx.value.product, fbxMeta);
+  const fbxEntry = fbxPack.assets[0];
   if (fbxEntry === undefined) throw new Error('fbx importer emitted no mesh asset');
-  publishImported(assets, importedFbx.value, 'fbx');
+  publishImported(assets, fbxPack, 'fbx');
   const fbxHandle = (await assets.load(fbxMeta.subAssets[0].guid, 'mesh')).unwrap();
   assert.equal(assets.read(fbxHandle).unwrap().kind, 'mesh');
 

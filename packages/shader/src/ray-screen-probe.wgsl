@@ -62,6 +62,7 @@ const RAY_REFINED = 256u;
 @group(0) @binding(3) var gbufferNormal: texture_2d<u32>;
 @group(0) @binding(4) var depthPyramid: texture_2d<f32>;
 @group(0) @binding(5) var sceneColor: texture_2d<f32>;
+@group(0) @binding(28) var directionalReflection: texture_2d<f32>;
 @group(0) @binding(6) var<storage, read_write> probes: array<ScreenProbe>;
 @group(0) @binding(7) var<storage, read> probesIn: array<ScreenProbe>;
 @group(0) @binding(8) var<storage, read_write> adaptiveCount: array<atomic<u32>>;
@@ -965,7 +966,8 @@ fn unpackNormal(p: u32) -> vec3f { return spOctDecode(unpack2x16snorm(p)); }
   let extent = extentSize();
   if (i >= extent.x * extent.y) { return; }
   if (any(textureDimensions(sceneColor) != extent)) { previousSceneOut[i] = vec2u(0u); return; }
-  let color = textureLoad(sceneColor, vec2i(vec2u(i % extent.x, i / extent.x)), 0);
-  let safe = select(vec3f(0.0), color.xyz, all(color.xyz >= vec3f(0.0)) && all(color.xyz < vec3f(65504.0)));
+  let pixel = vec2i(vec2u(i % extent.x, i / extent.x));
+  let color = max(textureLoad(sceneColor, pixel, 0).rgb - textureLoad(directionalReflection, pixel, 0).rgb, vec3f(0.0));
+  let safe = select(vec3f(0.0), color, all(color < vec3f(65504.0)));
   previousSceneOut[i] = vec2u(pack2x16float(safe.xy), pack2x16float(vec2f(safe.z, 1.0)));
 }

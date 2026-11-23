@@ -8,6 +8,13 @@ import type { MaterialSnapshot } from './render-system-extract';
 
 const displacementBit = standardTextureMask([{ name: 'displacementTexture', type: 'texture2d' }]);
 
+export function standardMaskDisplacesVertices(mask: number): boolean {
+  return (
+    standardMaskHasBit(mask, displacementBit) &&
+    !standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT)
+  );
+}
+
 const radii = new WeakMap<MaterialSnapshot, number>();
 
 /** One accepted material's vertex-displaced height interval, matching the vertex shader. */
@@ -21,8 +28,7 @@ export function materialDisplacementRadius(material: MaterialSnapshot): number {
       ? material.materialParamSchema?.some(
           (p) => p.name === 'displacementTexture' && p.type === 'texture2d',
         ) && material.paramSnapshot?.displacementMode !== STANDARD_DISPLACEMENT_MODES.parallax
-      : (mask & displacementBit) !== 0 &&
-        !standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT);
+      : standardMaskDisplacesVertices(mask);
   const scale = material.paramSnapshot?.displacementScale ?? 1;
   const bias = material.paramSnapshot?.displacementBias ?? 0;
   const radius = !present

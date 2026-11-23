@@ -41,11 +41,10 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //   `// 1. engine usage`            -> public engine API consumed.
 //   `// 2. example-specific glue`   -> the LO 7.3 cubePositions array
 //                                       + first-person tuning
-//                                       constants + GUID literals.
+//                                       constants + material binding.
 //   `// 3. bootstrap`               -> entry point that wires (1)+(2).
 //
-// AC-15 (c): cube + container texture enter the world via
-// `loadByGuid<MeshAsset>` / `loadByGuid<TextureAsset>` alone -- this
+// AC-15 (c): the catalog resolves the container texture by GUID. This
 // file does not import @forgeax/engine-image and does not call any
 // low-level decode / upload helper (charter P4 + P5).
 
@@ -78,23 +77,8 @@ import {
   createScrollFovAccumulator,
 } from './first-person-controls';
 
-// 2. example-specific glue - LO 7.3 cubePositions + first-person tuning
-// + GUID literals.
-//
-//   CONTAINER_TEXTURE_GUID -> forgeax-engine-assets/learn-opengl/textures/
-//                              container.jpg.meta.json subAssets[0].guid
-//                              (LO 7.3 wood crate sRGB texture).
-//   CUBE_MESH_GUID         -> forgeax-engine-assets/learn-opengl/meshes/cube
-//                              -mesh.stub.meta.json subAssets[0].guid
-//                              (engine-builtin procedural cube; the GUID is
-//                              the disk-side identifier, the runtime side
-//                              aliases the same logical mesh as HANDLE_CUBE).
-//   CUBE_MATERIAL_GUID     -> assets/material-container.pack.json
-//                              assets[0].guid (UnlitMaterialAsset whose
-//                              baseColorTexture references CONTAINER_TEXTURE_GUID).
-const CONTAINER_TEXTURE_GUID = '019e3969-1d46-773e-988c-a10e305ff2a4';
-const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e2cc7-3a01-7c22-8f70-501bd9e74206';
+// 2. example-specific glue - the authored material references container.jpg by GUID.
+const materialValues = materialPackJson.assets['material/material-container'].payload.values;
 
 
 // LO 7.3 cubePositions[] array (verbatim translation; the LO source
@@ -155,23 +139,6 @@ const PITCH_CLAMP_DEG = 89;
 const PITCH_CLAMP_RAD = (PITCH_CLAMP_DEG * Math.PI) / 180;
 const MOUSE_SENSITIVITY = 0.002; // radians per pixel
 
-interface MaterialPackEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly payload: {
-    readonly kind: string;
-    readonly passes: ReadonlyArray<{ readonly name: string; readonly program: { readonly module: string } }>;
-    readonly values: {
-      readonly baseColor: readonly [number, number, number, number];
-      readonly baseColorTexture?: string;
-    };
-  };
-}
-
-interface MaterialPackFile {
-  readonly assets: ReadonlyArray<MaterialPackEntry>;
-}
-
 // 3. bootstrap - locate the canvas the index.html document declares,
 // hand it to createApp, wire AssetRegistry through the shared catalog
 // configuration helper + loadByGuid, spawn 10 textured cubes + camera + first-person and
@@ -211,11 +178,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
-  const containerGuidRes = AssetGuid.parse(CONTAINER_TEXTURE_GUID);
-  const cubeGuidRes = AssetGuid.parse(CUBE_MESH_GUID);
-  const matGuidRes = AssetGuid.parse(CUBE_MATERIAL_GUID);
-  if (!containerGuidRes.ok || !cubeGuidRes.ok || !matGuidRes.ok) {
-    console.error('[learn-render 1.7 camera] GUID parse failed for container / cube / material');
+  const containerGuidRes = AssetGuid.parse(materialValues.baseColorTexture);
+  if (!containerGuidRes.ok) {
+    console.error('[learn-render 1.7 camera] invalid baseColorTexture GUID:', containerGuidRes.error);
     return;
   }
 
@@ -251,17 +216,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-
-  const matPack = materialPackJson as unknown as MaterialPackFile;
-  const matEntry = matPack.assets.find((a) => a.kind === 'material');
-  if (matEntry === undefined) {
-    console.error(
-      '[learn-render 1.7 camera] material-container.pack.json missing material entry',
-    );
-    return;
-  }
-  // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
-  // handle so the baseColorTexture slot carries a resolved numeric Handle.
   const containerTexHandle = containerHandleRes.ok
     ? Number(containerHandleRes.value)
     : undefined;
@@ -269,7 +223,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
     values: {
-      baseColor: matEntry.payload.values.baseColor,
+      baseColor: materialValues.baseColor,
       ...(containerTexHandle !== undefined ? { baseColorTexture: containerTexHandle } : {}),
     },
   };

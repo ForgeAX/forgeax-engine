@@ -1,5 +1,12 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  deriveVertexBufferLayoutFromProjection,
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
+  type GpuVertexBufferLayoutEntry,
+  projectStaticMeshVertexStreams,
+} from '@forgeax/engine-geometry';
 import {
   DirectionalLight,
   type FrameReceipt,
@@ -193,9 +200,28 @@ function pipelineVertexLayouts(work: WorkEntry): readonly unknown[] {
     : [];
 }
 
-function arrayStrideOf(layout: unknown): number | undefined {
-  const record = asRecord(layout);
-  return typeof record?.arrayStride === 'number' ? record.arrayStride : undefined;
+function expectBoundMeshStreams(work: WorkEntry, expected: readonly GpuVertexBufferLayoutEntry[]) {
+  const positions = work.vertexBuffers[0];
+  const positionLayout = expected[0];
+  if (positions?.size == null || positionLayout === undefined)
+    throw new Error('Missing recorded position stream range');
+  const vertexCount = positions.size / positionLayout.arrayStride;
+  expect(Number.isInteger(vertexCount) && vertexCount > 0).toBe(true);
+  expect(pipelineVertexLayouts(work)).toMatchObject(
+    expected.map(({ arrayStride, attributes }) => ({
+      arrayStride,
+      attributes: expect.arrayContaining(attributes),
+    })),
+  );
+  let offset = 0;
+  expect(work.vertexBuffers).toEqual(
+    expected.map(({ arrayStride }, slot) => {
+      const size = vertexCount * arrayStride;
+      const range = { slot, bufferHandleId: positions.bufferHandleId, offset, size };
+      offset += size;
+      return range;
+    }),
+  );
 }
 
 function sourceKind(work: WorkEntry): 'shadow' | 'forward' | 'unavailable' {
@@ -216,7 +242,10 @@ function sourceKind(work: WorkEntry): 'shadow' | 'forward' | 'unavailable' {
 function isStandardForwardWork(work: WorkEntry): boolean {
   if (work.pipeline.kind !== 'render' || work.pipeline.status !== 'available') return false;
   const entries = new Set(work.pipeline.shaders.map((shader) => shader.entryPoint));
-  return entries.has('vs_scene_index') && (entries.has('fs_main') || entries.has('fs_opaque'));
+  return (
+    entries.has('vs_scene_index') &&
+    (entries.has('fs_main') || entries.has('fs_opaque') || entries.has('fs_forward_sun_shadow'))
+  );
 }
 
 function workEvidence(model: FrameModel): readonly Record<string, unknown>[] {
@@ -543,15 +572,13 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
         pass.depthStencilViewHandleId !== null &&
         pass.colorAttachmentViewHandleIds.length === 0,
     );
-    const shadowWorks = model.works.filter((work) =>
+    const depthWorks = model.works.filter((work) =>
       shadowPasses.some((pass) => pass.workIndices.includes(work.workIndex)),
     );
-    const shadowStrides = shadowWorks.flatMap((work) =>
-      pipelineVertexLayouts(work).flatMap((layout) => {
-        const stride = arrayStrideOf(layout);
-        return stride === undefined ? [] : [stride];
-      }),
-    );
+    const shadowWorks = depthWorks.filter((work) => {
+      const label = asRecord(asRecord(work.pipeline.descriptor)?.desc)?.label;
+      return typeof label === 'string' && label.includes('default-shadow-caster');
+    });
     // Follow the actual caster streams into the color pass. Environment
     // cubemap generation also has color attachments and its own cube layout.
     const casterBuffers = new Set(
@@ -564,24 +591,23 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
         work.vertexBuffers.some((buffer) => casterBuffers.has(buffer.bufferHandleId)) &&
         (model.passes[work.passIndex]?.colorAttachmentViewHandleIds.length ?? 0) > 0,
     );
-    const forwardStrides = forwardWorks.flatMap((work) =>
-      pipelineVertexLayouts(work).flatMap((layout) => {
-        const stride = arrayStrideOf(layout);
-        return stride === undefined ? [] : [stride];
-      }),
-    );
-    // This is deliberately a red reproducer on the pre-fix source: the
-    // shadow graph advertises writer passes but records no caster work when
-    // the default caster pipeline is not built for the colored mesh layout.
-    // Once the owner fixes the pipeline, the same gate locks shadow and
-    // forward vertex strides to the recipe's 64-byte layout.
-    expect(
-      shadowWorks.length,
-      JSON.stringify({ shadowPasses, shadowStrides, forwardStrides, evidence }),
-    ).toBeGreaterThan(0);
-    expect(new Set(shadowStrides)).toEqual(new Set([coloredLayout.arrayStride]));
+    const sourceLayout = deriveVertexLayoutProjection(recipe.assets.wallClosed.attributes);
+    const vertexCount = deriveVertexCount(recipe.assets.wallClosed.vertices, sourceLayout);
+    const projected =
+      vertexCount === undefined
+        ? undefined
+        : projectStaticMeshVertexStreams(sourceLayout, vertexCount);
+    if (projected === undefined) throw new Error('Expected a split layout for the colored mesh');
+    const streams = deriveVertexBufferLayoutFromProjection(projected.layout);
+    expect(shadowWorks.length, JSON.stringify({ shadowPasses, evidence })).toBeGreaterThan(0);
+    for (const work of depthWorks) {
+      const preDepth = work.pipeline.shaders.some(
+        (shader) => shader.entryPoint === 'vs_position_only',
+      );
+      expectBoundMeshStreams(work, streams.slice(0, preDepth ? 1 : 2));
+    }
     expect(forwardWorks.length).toBeGreaterThan(0);
-    expect(new Set(forwardStrides)).toEqual(new Set([coloredLayout.arrayStride]));
+    for (const work of forwardWorks) expectBoundMeshStreams(work, streams);
     expect(full.pixels.width).toBeGreaterThan(0);
     expect(full.pixels.height).toBeGreaterThan(0);
     expect(pixelStats(full.pixels).nonBlackPixels).toBeGreaterThan(0);

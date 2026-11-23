@@ -1852,7 +1852,6 @@ export type {
   CatalogDeltaValidationError,
   CatalogEntry,
   CatalogEntry as PackIndexEntry,
-  CatalogEntryV2,
   CatalogRevisionPoint,
   CatalogRevisionWindow,
 } from './catalog';

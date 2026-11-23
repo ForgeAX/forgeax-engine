@@ -123,6 +123,8 @@ describe('typed shadow layers with partial per-view cache hits', () => {
 
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     const targets = addTypedShadowPasses(graph, topology()).unwrap();
+    const spot = targets.spot;
+    if (spot === undefined) throw new Error('Spot shadow target missing');
     const directional = targets.directional;
     if (directional === undefined) throw new Error('directional shadow target missing');
     const readTarget = async (
@@ -167,11 +169,11 @@ describe('typed shadow layers with partial per-view cache hits', () => {
       .addCopyPass('capture-shadow-textures', {
         accesses: [
           { resource: directional.view, usage: 'copy-src' },
-          { resource: targets.spot.view, usage: 'copy-src' },
+          { resource: spot.view, usage: 'copy-src' },
         ],
         encode: ({ resources }) => {
           captured.directional = resources.texture(directional.texture).unwrap() as ShadowTexture;
-          captured.spot = resources.texture(targets.spot.texture).unwrap() as ShadowTexture;
+          captured.spot = resources.texture(spot.texture).unwrap() as ShadowTexture;
         },
       })
       .unwrap();

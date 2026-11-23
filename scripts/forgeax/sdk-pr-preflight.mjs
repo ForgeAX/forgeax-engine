@@ -13,6 +13,15 @@ export const SDK_NPM_PARTITIONS = Object.freeze({
   diagnostics: Object.freeze(['diagnostics', 'game3d-installed']),
   js: Object.freeze(['runtime-js-live', 'runtime-js-cold']),
 });
+const sdkCompactNpmPartitions = Object.freeze({
+  game3d: Object.freeze(['game3d-installed']),
+});
+const npmPartitionsFor = (profile) =>
+  profile === 'pr-consumer' ? sdkCompactNpmPartitions : SDK_NPM_PARTITIONS;
+export const SDK_NPM_CONSUMER_PARTITIONS = Object.freeze({
+  ...SDK_NPM_PARTITIONS,
+  ...sdkCompactNpmPartitions,
+});
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 
 // The regular Engine build and required runtime checks own internal changes
@@ -28,7 +37,7 @@ export function sdkPrConsumerMatrix(profile) {
   return {
     include: [
       ...archiveGroups(profile).map((group) => ({ group })),
-      ...Object.keys(SDK_NPM_PARTITIONS).map((partition) => ({ group: 'npm', partition })),
+      ...Object.keys(npmPartitionsFor(profile)).map((partition) => ({ group: 'npm', partition })),
     ],
   };
 }
@@ -36,15 +45,18 @@ export function sdkPrConsumerMatrix(profile) {
 const sdkReferenceDocs = /^skills\/.+\.md$/;
 const testsOrWorkspaceImplementation =
   /^packages\/(?:[^/]+\/(?:src\/)?__tests__\/|devkit\/src\/workspace-[^/]+\.ts$)/;
+const isolatedTestSource =
+  /^packages\/[^/]+\/(?:[^/]+\/)*__tests__\/(?:[^/]+\/)*[^/]+\.(?:browser|dawn|unit|integration)\.test\.ts$/;
 const internalRuntimeSource =
-  /^packages\/(?:ecs|math|render|rhi|runtime|animation|audio|state|water)\/src\//;
+  /^packages\/(?:ecs|math|render|rhi|runtime|animation|audio|state|water)\/src\/(?!.*(?:index\.ts$|\.d\.ts$|facades?\/)).+\.ts$/;
 
-function compactArchivePath(path) {
+function compactArchivePath(path, status) {
   return (
     typeof path === 'string' &&
-    (internalRuntimeSource.test(path) ||
+    ((status === 'modified' && internalRuntimeSource.test(path)) ||
       sdkReferenceDocs.test(path) ||
-      testsOrWorkspaceImplementation.test(path))
+      testsOrWorkspaceImplementation.test(path) ||
+      isolatedTestSource.test(path))
   );
 }
 
@@ -56,8 +68,8 @@ export function sdkPrArchiveProfile(comparison) {
       file !== null &&
       typeof file === 'object' &&
       ['added', 'modified', 'removed', 'renamed'].includes(file.status) &&
-      compactArchivePath(file.filename) &&
-      (file.status !== 'renamed' || compactArchivePath(file.previous_filename)),
+      compactArchivePath(file.filename, file.status) &&
+      (file.status !== 'renamed' || compactArchivePath(file.previous_filename, file.status)),
   );
   return internalOnly ? 'pr-consumer' : 'pr-expanded';
 }
@@ -239,7 +251,8 @@ export function aggregateSdkConsumers(reports, expectedHead, version, repairSour
   if (sources !== undefined && version !== `0.0.0-pr.${expectedHead}`)
     throw new Error('sdk-pr-repair-current-identity');
   const npmReports = reports.filter((report) => report.group === 'npm');
-  const partitions = Object.keys(SDK_NPM_PARTITIONS);
+  const npmWorkloads = npmPartitionsFor(profile);
+  const partitions = Object.keys(npmWorkloads);
   if (
     !/^[0-9a-f]{40}$/.test(expectedHead) ||
     reports.length !== archive.length + partitions.length ||
@@ -252,7 +265,7 @@ export function aggregateSdkConsumers(reports, expectedHead, version, repairSour
       throw new Error(`sdk-pr-consumer-missing-or-duplicate:${group}`);
   }
   const packageCounts = new Set();
-  for (const [partition, workloads] of Object.entries(SDK_NPM_PARTITIONS)) {
+  for (const [partition, workloads] of Object.entries(npmWorkloads)) {
     const matches = npmReports.filter((report) => report.partition === partition);
     if (matches.length !== 1)
       throw new Error(`sdk-pr-npm-partition-missing-or-duplicate:${partition}`);
@@ -275,7 +288,7 @@ export function aggregateSdkConsumers(reports, expectedHead, version, repairSour
     ...(sources === undefined ? {} : { qualification: 'ci-repair', executions: repairSources }),
     npm: {
       partitions,
-      workloads: Object.values(SDK_NPM_PARTITIONS).flat(),
+      workloads: Object.values(npmWorkloads).flat(),
       packageCount: npmReports[0].packageCount,
     },
   };

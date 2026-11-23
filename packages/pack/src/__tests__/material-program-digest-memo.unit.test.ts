@@ -6,6 +6,7 @@ import {
   createMaterialProgramSetDigest,
   type MaterialCookProgram,
 } from '../evidence/material-cook.js';
+import { forwardRasterContext } from './support/material-raster-context.js';
 
 // The serialization this owner used before canonical text reuse; digests must not change.
 function compare(left: string, right: string): number {
@@ -52,16 +53,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-const context = {
-  backend: 'webgpu',
-  capability: 'storage-buffer',
-  pipeline: 'forward',
-  geometry: 'mesh',
-  pass: 'forward',
-  profile: 'forgeax-material-wgsl-v1',
-  toolchain: 'naga-oil',
-  instrumentation: 'none',
-};
+const context = forwardRasterContext;
 
 function abi(seed: number): Record<string, unknown> {
   return {

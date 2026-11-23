@@ -101,6 +101,28 @@ describe('single HTML delivery', () => {
     expect(await readFile(`${output}.sha256`, 'utf8')).toContain(result.value.html.sha256);
   });
 
+  it('retains standalone Vite public assets beside the emitted graph', async () => {
+    const { root, dist } = await fixture();
+    try {
+      const publicDir = resolve(dist, 'public', 'nested');
+      await mkdir(publicDir, { recursive: true });
+      const bytes = Buffer.from([1, 2, 3]);
+      await writeFile(resolve(publicDir, 'payload.bin'), bytes);
+      const result = await bundleSingleHtmlEntry(
+        dist,
+        await readFile(resolve(dist, 'index.html'), 'utf8'),
+      );
+      if (!result.ok) throw new Error(JSON.stringify(result.error));
+      expect(result.value.artifacts).toContainEqual({
+        path: '__forgeax-bundle/nested/payload.bin',
+        bytes,
+        mediaType: 'application/octet-stream',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('stores equal resource bytes once while retaining every path and media type', async () => {
     const { root, dist, manifest } = await fixture();
     const bytes = noise(16 * 1024, 27);
@@ -173,6 +195,21 @@ describe('single HTML delivery', () => {
     );
     expect(bundle.ok, bundle.ok ? undefined : JSON.stringify(bundle.error)).toBe(true);
     if (bundle.ok) expect(bundle.value.entrySource).toContain('dataset.inline');
+  });
+
+  it('keeps an inline module when its source matches an existing file name', async () => {
+    const { dist } = await fixture();
+    const inline = 'globalThis.forgeaxInlineEntry';
+    await writeFile(resolve(dist, inline), 'globalThis.forgeaxFileEntry = true;');
+    const bundle = await bundleSingleHtmlEntry(
+      dist,
+      `<html><body><script type="module">${inline}</script></body></html>`,
+    );
+    expect(bundle.ok, bundle.ok ? undefined : JSON.stringify(bundle.error)).toBe(true);
+    if (bundle.ok) {
+      expect(bundle.value.entrySource).toContain('forgeaxInlineEntry');
+      expect(bundle.value.entrySource).not.toContain('forgeaxFileEntry');
+    }
   });
 
   it('bundles ordered local module entries with one evaluation of their shared dependency', async () => {

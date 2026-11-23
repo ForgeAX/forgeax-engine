@@ -29,6 +29,7 @@ export class LightTable {
   private readonly sources: (DirectLightSnapshot | undefined)[] = [];
   private readonly projector: (boolean | undefined)[] = [];
   private readonly channelMappings: Uint32Array;
+  private readonly projectedShadows: Uint8Array;
   /** 1 where the GPU slot holds `words`; a fresh or failed slot is always written. */
   private readonly written: Uint8Array;
   /** CPU image of the written slots, compared bit-exactly before a write. */
@@ -45,6 +46,7 @@ export class LightTable {
   ) {
     this.written = new Uint8Array(layout.capacity);
     this.channelMappings = new Uint32Array(layout.capacity);
+    this.projectedShadows = new Uint8Array(layout.capacity);
     this.words = new Uint32Array(layout.capacity * layout.floatCount);
     this.floats = new Float32Array(this.words.buffer);
   }
@@ -53,6 +55,7 @@ export class LightTable {
     local: readonly { readonly source?: DirectLightSnapshot | undefined }[],
     projectorSlot: number | undefined,
     channelMapping = 0,
+    projectedShadows?: Uint8Array,
   ): Result<void, LightTableWriteFailure> {
     this.uploadedBytes = 0;
     this.packedSlots = 0;
@@ -60,12 +63,14 @@ export class LightTable {
     for (let slot = 0; slot < local.length; slot += 1) {
       const source = local[slot]?.source;
       const selected = projectorSlot === undefined ? undefined : projectorSlot === slot;
+      const projectedChannel = projectedShadows?.[slot] ?? 0;
       const dirty =
         source !== undefined &&
         (this.sources[slot] !== source ||
           this.projector[slot] !== selected ||
-          this.channelMappings[slot] !== channelMapping) &&
-        this.pack(slot, source, selected, channelMapping);
+          this.channelMappings[slot] !== channelMapping ||
+          this.projectedShadows[slot] !== projectedChannel) &&
+        this.pack(slot, source, selected, channelMapping, projectedChannel);
       if (dirty) {
         if (first < 0) first = slot;
         continue;
@@ -89,14 +94,17 @@ export class LightTable {
     source: DirectLightSnapshot,
     selected: boolean | undefined,
     channelMapping: number,
+    projectedChannel: number,
   ): boolean {
     this.packedSlots += 1;
     this.sources[slot] = source;
     this.projector[slot] = selected;
     this.channelMappings[slot] = channelMapping;
+    this.projectedShadows[slot] = projectedChannel;
     const packed = new Uint32Array(
       packDirectLightSlot(source, this.layout, selected, channelMapping).buffer,
     );
+    packed[this.layout.lightingChannelsByteOffset / 4 + 3] = projectedChannel;
     const floatCount = this.layout.floatCount;
     const offset = slot * floatCount;
     let changed = this.written[slot] !== 1;

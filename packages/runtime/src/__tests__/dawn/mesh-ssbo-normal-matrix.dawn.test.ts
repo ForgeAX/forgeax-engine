@@ -6,10 +6,12 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import type { ValidatedRenderable } from '../../../../render/src/record/frame-snapshot';
 import {
+  flushMeshDrawUploads,
   MESH_SSBO_BYTES,
   MESH_UBO_FULL_ARRAY_BYTES,
-  uploadMeshSsboBatch,
+  prepareMeshDraw,
 } from '../../../../render/src/record/mesh-ssbo';
+import type { _InternalRenderPipelineContext } from '../../../../render/src/record/render-context';
 
 it.each([
   true,
@@ -28,6 +30,8 @@ it.each([
   result[0] = vec4<f32>(normalize(transformNormal(row.worldFromLocal, vec3<f32>(0.3, 0.7, -0.2))), 1.0);
   ${storage ? 'result[1] = row.previousWorldFromLocal[3]; result[2] = row.temporal;' : 'result[1] = row.worldFromLocal[3];'}
   result[3] = vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(row.surface.z));
+  result[4] = row.drawParameters;
+  result[5] = row.drawParametersExtra;
 }`,
     {
       id: 'test::mesh-normal',
@@ -48,11 +52,11 @@ it.each([
     usage: GPUBufferUsage.COPY_DST | (storage ? GPUBufferUsage.STORAGE : GPUBufferUsage.UNIFORM),
   });
   const output = device.createBuffer({
-    size: 64,
+    size: 96,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
   const readback = device.createBuffer({
-    size: 64,
+    size: 96,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   try {
@@ -108,19 +112,28 @@ it.each([
           return ok(undefined);
         },
       } as unknown as RhiQueue;
-      uploadMeshSsboBatch(queue, { buffer: {} as Buffer }, [entry], null, [], undefined, storage);
+      const meshStorageBuffer = { buffer: {} as Buffer };
+      const parameters = [1, 0.25, 0, 0.5, 7, 0.75, 0, 0];
+      const context = {
+        runtime: { device: { caps: { storageBuffer: storage } } },
+        pipelineState: { meshStorageBuffer },
+        world: { drawParameters: () => parameters },
+      } as _InternalRenderPipelineContext;
+      prepareMeshDraw(context, entry);
+      flushMeshDrawUploads(queue, meshStorageBuffer);
       const encoder = device.createCommandEncoder();
       const pass = encoder.beginComputePass();
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, group);
       pass.dispatchWorkgroups(1);
       pass.end();
-      encoder.copyBufferToBuffer(output, 0, readback, 0, 64);
+      encoder.copyBufferToBuffer(output, 0, readback, 0, 96);
       device.queue.submit([encoder.finish()]);
       await readback.mapAsync(GPUMapMode.READ);
       const actual = new Float32Array(readback.getMappedRange().slice(0));
       readback.unmap();
       expect(new Uint32Array(actual.buffer)[15]).toBe(0x80000001);
+      expect(Array.from(actual.subarray(16))).toEqual(parameters);
       const n = mat3.normalMatrix(mat3.create(), world);
       const expected = [0, 1, 2].map(
         (i) => (n[i] as number) * 0.3 + (n[i + 3] as number) * 0.7 - (n[i + 6] as number) * 0.2,

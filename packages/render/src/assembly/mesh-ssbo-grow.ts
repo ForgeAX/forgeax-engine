@@ -86,7 +86,6 @@ export function meshSsboBuffer(
   return buffer;
 }
 
-/** Resolve the physical resource and dynamic offset from the same logical address. */
 /** The binding-relative offset of {@link meshSsboBufferBinding}, without a binding record. */
 export function meshSsboByteOffset(
   storage: Pick<MeshSsboBufferWrapper, 'pages'>,
@@ -98,19 +97,18 @@ export function meshSsboByteOffset(
     : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride;
 }
 
+/** Resolve the address, optionally writing into the encoder's synchronous scratch row. */
 export function meshSsboBufferBinding(
   storage: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
   byteOffset: number,
-): { readonly buffer: Buffer; readonly byteOffset: number } {
+  into?: { buffer: Buffer; byteOffset: number },
+): { buffer: Buffer; byteOffset: number } {
   const buffer = meshSsboBuffer(storage, byteOffset);
-  const pages = storage.pages;
-  return {
-    buffer,
-    byteOffset:
-      pages === undefined
-        ? byteOffset
-        : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride,
-  };
+  const offset = meshSsboByteOffset(storage, byteOffset);
+  if (into === undefined) return { buffer, byteOffset: offset };
+  into.buffer = buffer;
+  into.byteOffset = offset;
+  return into;
 }
 
 /**

@@ -18,7 +18,7 @@ import {
 
 import { prepareStandardSceneSources } from '../assembly/webgpu-ready-shaders';
 
-const ssrEntries = ['ssr_trace', 'ssr_temporal', 'vs_ssr_compose'].map(
+const ssrEntries = ['ssr_trace', 'vs_ssr_compose'].map(
   (entry) => ({ wgsl: `fn ${entry}() {}` }) as ManifestEntry,
 );
 it('leaves all Deferred source variants cold at boot and prepares only the selected variant', async () => {
@@ -161,7 +161,7 @@ describe('utility shader bundle preparation', () => {
     })) as ManifestEntry[];
     const compile = vi.fn(async () => ({}) as ShaderModule);
     expect(await prewarmSsr([unread, ...selected], compile, vi.fn())).toBeDefined();
-    expect(compile).toHaveBeenCalledTimes(3);
+    expect(compile).toHaveBeenCalledTimes(2);
   });
 
   it('does no compile or publication for an absent optional bundle', async () => {
@@ -176,7 +176,7 @@ describe('utility shader bundle preparation', () => {
   it('rejects an incomplete bundle before compilation', async () => {
     const compile = vi.fn(),
       seed = vi.fn();
-    await expect(prewarmSsr(ssrEntries.slice(0, 2), compile, seed)).rejects.toMatchObject({
+    await expect(prewarmSsr(ssrEntries.slice(0, 1), compile, seed)).rejects.toMatchObject({
       code: 'shader-compile-failed',
     });
     expect(compile).not.toHaveBeenCalled();
@@ -186,7 +186,7 @@ describe('utility shader bundle preparation', () => {
   it('never seeds a partial generation when a later module fails', async () => {
     const seed = vi.fn();
     const compile = vi.fn(async (label: string) => {
-      if (label === 'ssr_temporal') throw new Error('compile failed');
+      if (label === 'ssr_compose') throw new Error('compile failed');
       return {} as ShaderModule;
     });
     await expect(prewarmSsr(ssrEntries, compile, seed)).rejects.toThrow('compile failed');
@@ -207,10 +207,9 @@ describe('utility shader bundle preparation', () => {
       ),
     ).toEqual({
       trace: 'fn ssr_trace() {}',
-      temporal: 'fn ssr_temporal() {}',
       compose: 'fn vs_ssr_compose() {}',
     });
-    expect(seed).toHaveBeenCalledTimes(3);
+    expect(seed).toHaveBeenCalledTimes(2);
   });
 
   it('seeds depth pyramid modules under their manifest stage labels', async () => {
@@ -241,7 +240,9 @@ describe('utility shader bundle preparation', () => {
     await expect(prewarmSsrWithDepthPyramid(ssrEntries, compile, vi.fn())).rejects.toMatchObject({
       code: 'shader-compile-failed',
     });
-    expect(await prewarmSsrWithDepthPyramid(pyramidEntries, compile, vi.fn())).toBeUndefined();
+    expect(await prewarmSsrWithDepthPyramid(pyramidEntries, compile, vi.fn())).toEqual({
+      pyramid: { seed: expect.any(Object), reduce: expect.any(Object) },
+    });
     const both = await prewarmSsrWithDepthPyramid(
       [...pyramidEntries, ...ssrEntries],
       compile,

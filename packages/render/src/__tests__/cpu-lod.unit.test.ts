@@ -1,21 +1,24 @@
 import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
-import { vec3 } from '@forgeax/engine-math';
+import { mat4, vec3 } from '@forgeax/engine-math';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
 import { ShadowMeshReads } from '../device/mesh-changes';
+import { projectedHeightForSnapshot } from '../gpu-driven/batch-topology';
 import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_INDEX, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import {
   cpuInstanceLodDraws,
+  cpuInstanceLodRuns,
   cpuLodLevel,
   lodLevelHistogram,
   selectCpuLodRows,
 } from '../record/cpu-lod';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 
 const LOD_MESH_GUID = '00000000-0000-7000-8000-000000000001' as never;
 
@@ -100,6 +103,45 @@ function row(snapshot: RenderableSnapshot, handles: MeshGpuHandles): ValidatedRe
 }
 
 describe('CPU-lane LOD selection', () => {
+  it('reads packed root and instance poses at their own addresses on changing frames', () => {
+    const handles = mesh();
+    const original = source();
+    const base = original.transform.world;
+    const transforms = new Float32Array(3 * 16);
+    for (let ordinal = 0; ordinal < 3; ordinal++) {
+      transforms.set(base, ordinal * 16);
+      transforms[ordinal * 16 + 14] = ordinal * 5;
+    }
+    const instances = { transforms, instanceCount: 3, cacheKey: 1, archVersion: 0 };
+    const page = new Float32Array(7 * 16).fill(Number.NaN);
+    const scratch = mat4.create();
+    for (let frame = 0; frame < 60; frame++) {
+      const camera = cameraAt(3 + (frame % 11));
+      const offset = (1 + (frame % 6)) * 16;
+      const owned = new Float32Array(base);
+      owned[0] = frame % 2 === 0 ? -1.2 : 0.7;
+      owned[4] = 0.05 * frame;
+      owned[12] = frame % 8;
+      owned[14] = -(frame % 13);
+      page.set(owned, offset);
+      const transform = new CapturedSceneTransform(page, offset);
+      Object.defineProperty(transform, 'world', {
+        get() {
+          throw new Error('LOD opened a matrix window');
+        },
+      });
+      const packed = { ...original, transform };
+      const plain = { ...original, transform: { world: owned } };
+      expect(projectedHeightForSnapshot(packed, camera)).toBe(
+        projectedHeightForSnapshot(plain, camera),
+      );
+      expect(cpuLodLevel(packed, handles, camera)).toBe(cpuLodLevel(plain, handles, camera));
+      expect(
+        cpuInstanceLodRuns({ ...packed, instances }, handles, camera, undefined, scratch),
+      ).toEqual(cpuInstanceLodRuns({ ...plain, instances }, handles, camera));
+    }
+  });
+
   it('groups alternating opaque LOD ordinals within each resident page', () => {
     const entry = {
       ...row(source(), mesh()),
@@ -152,17 +194,17 @@ describe('CPU-lane LOD selection', () => {
     expect(selectCpuLodRows(rows, cameraAt(5))).toBe(rows);
     const far = selectCpuLodRows(rows, cameraAt(40));
     expect(far).not.toBe(rows);
-    expect(far[0]?.mesh.submeshes).toBe(handles.submeshes);
-    expect(far[0]?.mesh.lodRanges).toEqual([handles.lodRanges?.[1]]);
-    expect(far[0]?.mesh.indexCount).toBe(3);
-    expect(far[0]?.mesh.indexBuffer).toBe(handles.indexBuffer);
-    expect(selectCpuLodRows(rows, cameraAt(40))[0]?.mesh).toBe(far[0]?.mesh);
+    expect(far.at(0)?.mesh.submeshes).toBe(handles.submeshes);
+    expect(far.at(0)?.mesh.lodRanges).toEqual([handles.lodRanges?.[1]]);
+    expect(far.at(0)?.mesh.indexCount).toBe(3);
+    expect(far.at(0)?.mesh.indexBuffer).toBe(handles.indexBuffer);
+    expect(selectCpuLodRows(rows, cameraAt(40)).at(0)?.mesh).toBe(far.at(0)?.mesh);
     Object.assign(handles, { contentEpoch: handles.contentEpoch + 1 });
     const rewritten = selectCpuLodRows(rows, cameraAt(40));
-    expect(rewritten[0]?.mesh.contentEpoch).toBe(handles.contentEpoch);
-    expect(rewritten[0]?.mesh.indexBuffer).toBe(handles.indexBuffer);
-    expect(rewritten[0]?.mesh).not.toBe(far[0]?.mesh);
-    expect(selectCpuLodRows(rows, cameraAt(40))[0]?.mesh).toBe(rewritten[0]?.mesh);
+    expect(rewritten.at(0)?.mesh.contentEpoch).toBe(handles.contentEpoch);
+    expect(rewritten.at(0)?.mesh.indexBuffer).toBe(handles.indexBuffer);
+    expect(rewritten.at(0)?.mesh).not.toBe(far.at(0)?.mesh);
+    expect(selectCpuLodRows(rows, cameraAt(40)).at(0)?.mesh).toBe(rewritten.at(0)?.mesh);
   });
 
   it('selects each composed instance transform and preserves ordinal order', () => {
@@ -180,20 +222,63 @@ describe('CPU-lane LOD selection', () => {
       instances: { transforms, instanceCount: 4, cacheKey: 1, archVersion: 0 },
     });
     const selected = selectCpuLodRows([row(snapshot, mesh())], cameraAt(5));
-    expect(selected[0]?.cpuInstanceLods).toEqual([
+    expect(selected.at(0)?.cpuInstanceLods).toEqual([
       { first: 0, count: 1, level: 0 },
       { first: 1, count: 2, level: 1 },
       { first: 3, count: 1, level: 0 },
     ]);
-    expect(selected[0]?.source).toBe(snapshot);
+    expect(selected.at(0)?.source).toBe(snapshot);
     const unavailable = selectCpuLodRows([row(snapshot, mesh(false))], cameraAt(5));
-    expect(unavailable[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 4, level: 0 }]);
+    expect(unavailable.at(0)?.cpuInstanceLods).toEqual([{ first: 0, count: 4, level: 0 }]);
     transforms[16] = transforms[21] = transforms[26] = 10;
-    expect(selectCpuLodRows([row(snapshot, mesh())], cameraAt(5))[0]?.cpuInstanceLods).toEqual([
+    expect(selectCpuLodRows([row(snapshot, mesh())], cameraAt(5)).at(0)?.cpuInstanceLods).toEqual([
       { first: 0, count: 2, level: 0 },
       { first: 2, count: 1, level: 1 },
       { first: 3, count: 1, level: 0 },
     ]);
+  });
+
+  it('reads changing packed poses and records shadow LOD ranges without expanding each ordinal', () => {
+    const count = 4096;
+    const transforms = new Float32Array(count * 16);
+    const unit = mat4.identity(mat4.create());
+    for (let ordinal = 0; ordinal < count; ordinal++) transforms.set(unit, ordinal * 16);
+    const entry = row(
+      source({
+        instances: { transforms, instanceCount: count, cacheKey: 1, archVersion: 0 },
+      }),
+      mesh(),
+    );
+    const camera = cameraAt(5);
+    const selection = { values: [] as readonly number[], token: {} };
+    const backing = transforms.buffer;
+    let backingReads = 0;
+    Object.defineProperty(transforms, 'buffer', {
+      get() {
+        backingReads++;
+        return backing;
+      },
+    });
+    const near = selectCpuLodRows([entry], camera, selection);
+    expect(near.at(0)?.cpuInstanceLods).toEqual([{ first: 0, count, level: 0 }]);
+    const held = selection.values;
+    const token = selection.token;
+    expect(held.length).toBeLessThanOrEqual(3);
+    transforms[32 * 16 + 14] = -40;
+    const moved = selectCpuLodRows([entry], camera, selection);
+    expect(moved.at(0)?.cpuInstanceLods).toEqual([
+      { first: 0, count: 32, level: 0 },
+      { first: 32, count: 1, level: 1 },
+      { first: 33, count: count - 33, level: 0 },
+    ]);
+    expect(selection.token).not.toBe(token);
+    expect(selection.values.length).toBeLessThanOrEqual(9);
+    const changedToken = selection.token;
+    transforms[32 * 16 + 14] = -41;
+    selectCpuLodRows([entry], camera, selection);
+    expect(selection.token).toBe(changedToken);
+    expect(near.at(0)?.cpuInstanceLods).toEqual([{ first: 0, count, level: 0 }]);
+    expect(backingReads).toBe(0);
   });
 
   it('reports the selected levels as an ascending histogram', () => {
@@ -219,8 +304,8 @@ describe('actual Direct-shadow LOD query output', () => {
     const same = selectCpuLodRows(currentRows, cameraAt(40), selection);
     expect(selection.token).toBe(a);
     expect(selection.values).toBe(numbers);
-    expect(same[0]?.source).toBe(moved);
-    expect(same[0]?.source.transform.world[12]).toBe(1);
+    expect(same.at(0)?.source).toBe(moved);
+    expect(same.at(0)?.source.transform.world[12]).toBe(1);
     selectCpuLodRows(currentRows, cameraAt(5), selection);
     expect(selection.token).not.toBe(a);
     expect(selection.values).toEqual([1, 0]);

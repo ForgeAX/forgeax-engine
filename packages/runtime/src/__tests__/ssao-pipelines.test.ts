@@ -22,6 +22,7 @@ interface BindingDecl {
     | 'uniform'
     | 'storage'
     | 'texture_2d'
+    | 'texture_storage_2d'
     | 'texture_depth_2d'
     | 'texture_depth_multisampled_2d'
     | 'sampler'
@@ -46,6 +47,8 @@ function extractSssaoBindings(wgsl: string): BindingDecl[] {
       type = typeStr;
     } else if (typeStr?.startsWith('texture_2d')) {
       type = 'texture_2d';
+    } else if (typeStr === 'texture_storage_2d') {
+      type = typeStr;
     } else if (typeStr === 'sampler') {
       type = 'sampler';
     } else if (typeStr === 'sampler_comparison') {
@@ -87,9 +90,9 @@ describe('SSAO RenderPipeline PSO descriptor assertions (w24 — RED)', () => {
 
   // ── Base estimator and optional native entry bindings ──────────────────
 
-  it('(e) AO module declares the base estimator and native depth/composition resources', () => {
+  it('(e) AO module declares the base estimator and native screen AO resources', () => {
     const bindings = extractSssaoBindings(wgsl);
-    expect(bindings).toHaveLength(13);
+    expect(bindings).toHaveLength(18);
   });
 
   it('(f) binding 0 is uniform (SsaoUniform)', () => {
@@ -182,7 +185,7 @@ describe('SSAO RenderPipeline PSO descriptor assertions (w24 — RED)', () => {
     // Count only binding declarations (lines starting with @group, not comments)
     const groupDecls = wgsl.match(/^\s*@group\(\d+\)/gm) ?? [];
     const group0Count = groupDecls.filter((g) => g.includes('@group(0)')).length;
-    expect(group0Count).toBe(13);
+    expect(group0Count).toBe(18);
     expect(groupDecls).toHaveLength(group0Count);
   });
 
@@ -219,9 +222,9 @@ describe('SSAO RenderPipeline PSO descriptor assertions (w24 — RED)', () => {
 describe('SSAO dedicated BGL shape assertions (w42 — RED)', () => {
   const wgsl = readSssaoWgsl();
 
-  it('(q) module keeps exactly the declared estimator, composition and depth bindings', () => {
+  it('(q) module keeps exactly the declared estimator and screen AO bindings', () => {
     const bindings = extractSssaoBindings(wgsl);
-    expect(bindings).toHaveLength(13);
+    expect(bindings).toHaveLength(18);
   });
 
   it('(r) binding 0 = uniform (ssao_uniform — SsaoUniform UBO)', () => {
@@ -268,19 +271,24 @@ describe('SSAO dedicated BGL shape assertions (w42 — RED)', () => {
   it('(y) all BGL entries use @group(0)', () => {
     const groupDecls = wgsl.match(/^\s*@group\(\d+\)/gm) ?? [];
     const group0Count = groupDecls.filter((g) => g.includes('@group(0)')).length;
-    expect(group0Count).toBe(13);
+    expect(group0Count).toBe(18);
     expect(groupDecls).toHaveLength(group0Count);
   });
 
-  it('(z) file-scope binding ABI includes native composition and single/MSAA depth', () => {
+  it('(z) file-scope binding ABI includes screen AO, GTAO history and compute output', () => {
     const bindings = extractSssaoBindings(wgsl);
     const bindingNums = bindings.map((b) => b.binding).sort((a, b) => a - b);
-    expect(bindingNums).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13]);
-    expect(bindings.filter(({ binding }) => binding >= 10)).toEqual([
-      { binding: 10, type: 'texture_2d' },
-      { binding: 11, type: 'uniform' },
-      { binding: 12, type: 'texture_2d' },
-      { binding: 13, type: 'texture_depth_multisampled_2d' },
+    expect(bindingNums).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    expect(bindings.filter(({ binding }) => binding >= 14)).toEqual([
+      { binding: 14, type: 'uniform' },
+      { binding: 15, type: 'texture_2d' },
+      { binding: 16, type: 'texture_2d' },
+      { binding: 17, type: 'texture_2d' },
+      { binding: 18, type: 'texture_2d' },
+      { binding: 19, type: 'texture_2d' },
+      { binding: 20, type: 'texture_2d' },
+      { binding: 21, type: 'texture_2d' },
+      { binding: 22, type: 'texture_storage_2d' },
     ]);
   });
 });

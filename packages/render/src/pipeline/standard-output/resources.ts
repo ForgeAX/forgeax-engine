@@ -124,6 +124,7 @@ export function prepareStandardOutputResources(
       world,
       handle: output.colorLut as AssetHandle<'texture' | 'gpu-texture'>,
       strength: output.colorLutStrength,
+      previous: state.pendingStandardLutGpuResources ?? state.standardLutGpuResources,
       gpuStore: internals.gpuStore,
       device: internals.device,
     });
@@ -146,13 +147,7 @@ export function prepareStandardOutputResources(
       );
     }
     const accepted = state.standardLutGpuResources;
-    if (
-      accepted?.sourceKey !== lut.value.sourceKey ||
-      accepted.texture !== lut.value.texture ||
-      accepted.strength !== lut.value.strength
-    ) {
-      state.pendingStandardLutGpuResources = lut.value;
-    }
+    state.pendingStandardLutGpuResources = accepted === lut.value ? undefined : lut.value;
   } else {
     state.pendingStandardLutGpuResources = undefined;
     state.standardLutGpuResources = undefined;

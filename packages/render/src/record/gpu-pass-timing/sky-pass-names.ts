@@ -37,6 +37,13 @@ export const ATMOSPHERE_PREFILTER_SIZE = 64;
 export const ATMOSPHERE_SKY_FACES = 6;
 
 export const atmosphereSkyCubePass = (face: number) => `atmosphere-cube-${face}`;
-export const atmosphereIrradiancePass = (face: number) => `atmosphere-irradiance-${face}`;
+export const SkyShPass = {
+  prepare: 'sky-sh-prepare',
+  project: 'sky-sh-project',
+  computeReduce: 'sky-sh-reduce',
+  rasterReduce: 'sky-sh-reduce-0',
+  rasterFinalize: 'sky-sh-reduce-1',
+  publish: 'sky-sh-publish',
+} as const;
 export const atmospherePrefilterPass = (level: number) => `atmosphere-prefilter-${level}`;
 export const atmospherePrefilterCopyPass = (level: number) => `atmosphere-prefilter-copy-${level}`;

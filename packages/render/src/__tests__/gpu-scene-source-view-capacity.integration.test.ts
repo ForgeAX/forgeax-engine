@@ -233,19 +233,18 @@ function recordHdrpInputs(
   const query = vi
     .spyOn(hdrpBuffersModule, 'createHdrpUnifiedBindGroup')
     .mockImplementation((...args) => {
-      const hdrp = args[1],
-        capture = args[5];
+      const layout = args[1],
+        capture = args[4];
       const facts = {
         phase: phase(),
-        hdrp: getOpaqueResourceIdentity(hdrp),
-        layout: getOpaqueResourceIdentity(hdrp.unifiedBindGroupLayout),
+        layout: getOpaqueResourceIdentity(layout),
         requestedBuffer: getOpaqueResourceIdentity(args[2]),
-        requestedBytes: args[4],
+        requestedBytes: args[3],
         sceneTransform: getOpaqueResourceIdentity(f.scene.transformBuffer),
         sceneTransformBytes: f.scene.transformByteLength,
         stack: new Error('HDRP binding issue').stack,
       };
-      args[5] = (group, descriptor) => {
+      args[4] = (group, descriptor) => {
         records.push({
           ...facts,
           group: getOpaqueResourceIdentity(group),

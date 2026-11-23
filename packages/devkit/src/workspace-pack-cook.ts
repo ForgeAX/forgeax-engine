@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
 import {
+  assembleRuntimePackContent,
   buildScriptablePack,
   createStandardAssetOutputProducerRegistry,
   projectImportProductForBuild,
   type RuntimePackContent,
+  stageRuntimePackOutput,
 } from '@forgeax/engine-import';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import {
@@ -11,11 +12,10 @@ import {
   type DirectPackJson,
   definePackageId,
   type PackOutputMap,
-  parsePackSourceJson,
   projectScriptablePackSceneComponents,
   type ScriptablePackSceneComponentInput,
 } from '@forgeax/engine-pack/source';
-import { ok } from '@forgeax/engine-types';
+import { ok, sha256 } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 
 export interface WorkspacePackCookInput {
@@ -66,37 +66,21 @@ export function workspacePackCookPlugin(cookers: readonly NativeCooker[]): Works
         product.stagedOutputs.map((output) => [AssetGuid.format(output.guid), output.sourceKey]),
       );
       const assets: Record<string, DirectPackJson['assets'][string]> = {};
-      const blobs: Record<string, Uint8Array<ArrayBuffer>> = {};
+      const blobs: NonNullable<RuntimePackContent['blobs']> = {};
       for (const asset of projectImportProductForBuild(product.product).assets) {
         const sourceKey = keys.get(asset.guid);
         if (!sourceKey) throw new Error(`Missing prepared output identity: ${asset.guid}`);
-        const artifacts: Record<string, Record<string, unknown>> = {};
-        for (const [name, artifact] of Object.entries(asset.artifacts ?? {})) {
-          const path = `${asset.guid}/${name}`;
-          const bytes = new Uint8Array(artifact.bytes);
-          blobs[path] = bytes;
-          artifacts[name] = {
-            path,
-            byteLength: bytes.byteLength,
-            mediaType: artifact.mediaType,
-            contentEncoding: 'identity',
-            integrity: {
-              algorithm: 'sha256',
-              digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-            },
-            ...(artifact.assetCodec ? { assetCodec: artifact.assetCodec } : {}),
-          };
-        }
-        assets[sourceKey] = {
-          kind: asset.kind,
-          payload: asset.payload,
-          refs: asset.refs,
-          artifacts,
-        };
+        assets[sourceKey] = await stageRuntimePackOutput(
+          asset,
+          blobs,
+          false,
+          (bytes) => `sha256:${sha256(bytes)}`,
+        );
       }
-      const source = { schemaVersion: '3.0.0' as const, packageId: input.packageId, assets };
-      parsePackSourceJson(source).unwrap();
-      return { source, blobs, dependencies: input.dependencies };
+      input.signal.throwIfAborted();
+      return assembleRuntimePackContent(input.packageId, assets, blobs, {
+        dependencies: input.dependencies,
+      });
     },
   };
 }

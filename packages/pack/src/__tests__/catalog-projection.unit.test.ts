@@ -1,10 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  currentProjectionFor,
-  projectExternalCatalogEntries,
-  projectRuntimeCatalogRow,
-} from '../catalog-projection.js';
-import { projectRuntimePack } from '../runtime-projection.js';
+import { currentProjectionFor, projectExternalCatalogEntries } from '../catalog-projection.js';
 
 describe('catalog projection admission', () => {
   it('keeps operation descriptors only in the shared projection', () => {
@@ -28,19 +23,5 @@ describe('catalog projection admission', () => {
     );
     expect(nameFor).toHaveBeenCalledTimes(1);
     expect(rows[0]?.name).toBe('first');
-  });
-  it.each([
-    'scopeId',
-    'generation',
-    'digest',
-    'outputSetDigest',
-  ] as const)('refuses an incomplete %s in both runtime publication projections', (field) => {
-    const tuple = { scopeId: 'play', generation: 1, digest: 'pack', outputSetDigest: 'outputs' };
-    const incomplete = { ...tuple, [field]: field === 'generation' ? 0 : '' };
-    expect(projectRuntimePack({ ...incomplete, assets: [] }).ok).toBe(false);
-    expect(
-      projectRuntimeCatalogRow({ ...incomplete, guid: 'asset', kind: 'mesh', packageUrl: 'pack' })
-        .ok,
-    ).toBe(false);
   });
 });

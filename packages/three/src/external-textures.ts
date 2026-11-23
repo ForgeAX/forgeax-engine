@@ -13,6 +13,29 @@ export function isExternalTexture(texture: Texture): texture is ExternalTexture 
   return texture instanceof ExternalTexture || texture instanceof VideoTexture;
 }
 
+function validatedInput(texture: ExternalTexture | VideoTexture) {
+  if (texture.format === RedFormat)
+    return unsupported(
+      'External scalar textures require native sample swizzling',
+      texture.uuid,
+    ).unwrap();
+  const input =
+    texture instanceof ExternalTexture
+      ? (texture.sourceTexture as GPUTexture | null)
+      : texture.image;
+  if (input === null)
+    return unsupported('ExternalTexture.sourceTexture is required', texture.uuid).unwrap();
+  if (texture instanceof VideoTexture && (texture.colorSpace !== SRGBColorSpace || !texture.flipY))
+    return unsupported(
+      'Native video in ordinary material slots requires sRGB and flipY=true',
+      texture.uuid,
+    ).unwrap();
+  return input;
+}
+
+/** Collected by ordinary material admission before its asset transaction commits. */
+export type ExternalTextureDemand = Set<ExternalTexture | VideoTexture>;
+
 /** Async native import owns the device object; this map retains source leases only. */
 export class ExternalTextures {
   private readonly entries = new Map<
@@ -28,25 +51,7 @@ export class ExternalTextures {
   constructor(private readonly renderer: Renderer) {}
 
   async initialize(texture: ExternalTexture | VideoTexture): Promise<void> {
-    if (texture.format === RedFormat)
-      return unsupported(
-        'External scalar textures require native sample swizzling',
-        texture.uuid,
-      ).unwrap();
-    const input =
-      texture instanceof ExternalTexture
-        ? (texture.sourceTexture as GPUTexture | null)
-        : texture.image;
-    if (input === null)
-      return unsupported('ExternalTexture.sourceTexture is required', texture.uuid).unwrap();
-    if (
-      texture instanceof VideoTexture &&
-      (texture.colorSpace !== SRGBColorSpace || !texture.flipY)
-    )
-      return unsupported(
-        'Native video in ordinary material slots requires sRGB and flipY=true',
-        texture.uuid,
-      ).unwrap();
+    const input = validatedInput(texture);
     const previous = this.entries.get(texture);
     if (previous?.input === input) return previous.pending;
     if (previous !== undefined) this.retire(texture);
@@ -77,9 +82,15 @@ export class ExternalTextures {
     return entry.pending;
   }
 
+  hasCurrent(texture: ExternalTexture | VideoTexture): boolean {
+    const entry = this.entries.get(texture);
+    const input = validatedInput(texture);
+    return entry?.native !== undefined && entry.input === input;
+  }
+
   binding(texture: Texture): MaterialTextureValue {
     const entry = this.entries.get(texture);
-    const input = texture instanceof ExternalTexture ? texture.sourceTexture : texture.image;
+    const input = isExternalTexture(texture) ? validatedInput(texture) : texture.image;
     if (entry?.native === undefined || entry.input !== input)
       return unsupported(
         'External texture is not admitted; await renderer.initTextureAsync(texture) or renderer.renderAsync(scene, camera)',

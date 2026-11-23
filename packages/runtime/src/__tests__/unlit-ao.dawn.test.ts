@@ -5,6 +5,7 @@ import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-s
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { createForwardGtaoSceneDataConsumer } from './helpers/forward-gtao-scene-data';
 import { UNLIT_AO_SIZE, verifyUnlitAo } from './helpers/unlit-ao';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -12,10 +13,11 @@ it('renders Unlit and PBR-Skin AO with exact rigid, masked and posed surface nor
   timeout: 180_000,
 }, async () => {
   const target = offscreenCanvas(UNLIT_AO_SIZE);
+  const surface = createForwardGtaoSceneDataConsumer(UNLIT_AO_SIZE, UNLIT_AO_SIZE);
   const recorder = attachRecorder(webgpu).unwrap();
   const created = await constructRuntimeRendererHost(
     target.canvas,
-    { rhi: recorder.backend.rhi },
+    { rhi: recorder.backend.rhi, features: [surface.feature] },
     {
       shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
     },
@@ -23,10 +25,15 @@ it('renders Unlit and PBR-Skin AO with exact rigid, masked and posed surface nor
   if (!created.ok) throw created.error;
   const host = created.value;
   try {
-    await verifyUnlitAo(host, recorder, async (lane, tape) => {
-      mkdirSync('artifacts/ao-validation', { recursive: true });
-      writeFileSync(`artifacts/ao-validation/dawn-skin-${lane}.rhitape`, tape.bytes);
-    });
+    await verifyUnlitAo(
+      host,
+      recorder,
+      async (lane, tape) => {
+        mkdirSync('artifacts/ao-validation', { recursive: true });
+        writeFileSync(`artifacts/ao-validation/dawn-skin-${lane}.rhitape`, tape.bytes);
+      },
+      surface,
+    );
   } finally {
     const disposed = await host.renderer.dispose();
     expect(disposed.ok).toBe(true);

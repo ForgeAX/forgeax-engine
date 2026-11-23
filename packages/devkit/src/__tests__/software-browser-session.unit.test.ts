@@ -24,7 +24,13 @@ const browserMocks = vi.hoisted(() => {
     off: vi.fn(),
     goto: vi.fn(),
     waitForFunction: vi.fn(async (_predicate: unknown, value: unknown) => {
-      if (typeof value === 'string') captureReady = value;
+      if (
+        value &&
+        typeof value === 'object' &&
+        'checkpoint' in value &&
+        typeof value.checkpoint === 'string'
+      )
+        captureReady = value.checkpoint;
     }),
     waitForTimeout: vi.fn(),
     screenshot: vi.fn(async (options?: { readonly style?: string }) =>

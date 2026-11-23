@@ -137,10 +137,12 @@ export function requestMaterialPipeline<T extends object>(
   lookupOnly: boolean,
   build: () => T | null,
   preparedOwner: () => PendingPipelineOwner | undefined,
+  observePending = false,
 ): T | null {
   const cached = requests.get(facts);
   if (cached instanceof PendingMaterialPipelineRequest) {
-    if (cached.current || lookupOnly) return null;
+    // A preparation transaction must receive the original flight's completion.
+    if (lookupOnly || (cached.current && !observePending)) return null;
   } else if (cached !== undefined) return cached;
   else if (lookupOnly) return null;
   // A build may request another pipeline through the reused lookup storage.

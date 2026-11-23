@@ -3,7 +3,7 @@ import { box3 } from '@forgeax/engine-math';
 import { standardTextureMask } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, test, vi } from 'vitest';
-import { MaterialResource } from '../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
@@ -91,6 +91,70 @@ test('lazy draw callbacks retain identity, submitted pose and material versions 
   expect(retained.temporal?.previousTransform.world[12]).toBe(1);
   expect(retained.temporal?.reactiveReasons).not.toContain('displacement-source');
   expect(frame.lookup(8)).toBeUndefined();
+});
+
+test('temporal selection observes mutable material inputs while earlier draws keep their result', () => {
+  const params = { displacementScale: 0 };
+  const videos = new Map([['displacementTexture', 1 as AssetHandle<'video'>]]);
+  const material = new MaterialResource({
+    ...defaultMaterialSnapshot(),
+    paramSnapshot: params,
+    videoTextureFields: videos,
+  });
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  update(scene, source(1, 0, material));
+  const slot = required(scene.slot(1)).slot;
+  const read = scene.drawFrame(new MaterialFrame(undefined).with(material));
+  const first = required(read(slot));
+  for (let frame = 1; frame <= 60; frame++) {
+    params.displacementScale = frame % 2;
+    expect(read(slot)?.temporal?.reactiveReasons.includes('displacement-source')).toBe(
+      frame % 2 === 1,
+    );
+  }
+  expect(first.temporal?.reactiveReasons).not.toContain('displacement-source');
+});
+
+test('one accepted material supplies displacement to changing rows and historical frame readers', () => {
+  const videos = new Map([['displacementTexture', 1 as AssetHandle<'video'>]]);
+  const reads = vi.spyOn(videos, 'has');
+  try {
+    const material = new MaterialResource(
+      captureMaterialSnapshot({
+        ...defaultMaterialSnapshot(),
+        paramSnapshot: { displacementScale: 1 },
+        videoTextureFields: videos,
+      }),
+    );
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    update(scene, source(1, 0, material));
+    const slot = required(scene.slot(1)).slot;
+    const original = new MaterialFrame(undefined).with(material);
+    for (let frame = 1; frame <= 60; frame++) {
+      update(scene, source(1, frame, material));
+      const accepted = new MaterialFrame(undefined).with(material);
+      expect(scene.drawFrame(accepted)(slot)?.temporal?.reactiveReasons).toContain(
+        'displacement-source',
+      );
+    }
+    material.adopt(
+      captureMaterialSnapshot({
+        ...defaultMaterialSnapshot(),
+        paramSnapshot: { displacementScale: 0 },
+      }),
+    );
+    expect(scene.drawFrame(original)(slot)?.temporal?.reactiveReasons).toContain(
+      'displacement-source',
+    );
+    expect(
+      scene.drawFrame(new MaterialFrame(undefined).with(material))(slot)?.temporal?.reactiveReasons,
+    ).not.toContain('displacement-source');
+    expect(reads).toHaveBeenCalledTimes(1);
+  } finally {
+    reads.mockRestore();
+  }
 });
 
 test('primary material fallback uses only the accepted root and rejects missing versions', () => {
@@ -245,14 +309,18 @@ test('RenderBounds is a numeric slot column proven by row, geometry and material
   update(scene, source(1, 0, material));
   const row = required(scene.slot(1));
   const meshes = new MeshFrame().with(1, createBoxGeometry(2, 2, 2).unwrap());
-  const columns = (scene.sceneRows as unknown as { bounds: { radius: Float64Array } }).bounds;
-  expect(columns.radius).toBeInstanceOf(Float64Array);
+  const pages = (scene.sceneRows as unknown as { bounds: Map<number, { radius: Float64Array }> })
+    .bounds;
+  expect(pages.size).toBe(0);
   const out = box3.create();
   expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
+  const columns = required(pages.get(0));
+  expect(columns.radius).toBeInstanceOf(Float64Array);
   expect([...out]).toEqual([-1, -1, -1, 1, 1, 1]);
   update(scene, source(1, 5, material));
   const moved = required(scene.slot(1));
   expect(scene.writeCullingWorldBoundsAt(moved, out, meshes, materials)).toBe(true);
+  expect(pages.get(0)).toBe(columns);
   expect(out[0]).toBe(4);
   // The previous record still derives its own bounds without disturbing the row.
   expect(scene.cullingWorldBoundsAt(row, meshes, materials)?.min[0]).toBe(-1);

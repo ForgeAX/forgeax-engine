@@ -2,6 +2,10 @@ import { World } from '@forgeax/engine-ecs';
 import {
   createExtrusionGeometry,
   createProfileSweepGeometry,
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
+  interleaveStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
   type Vec2Point,
   type Vec3Point,
 } from '@forgeax/engine-geometry';
@@ -22,9 +26,12 @@ import {
   type RecorderAttachment,
   replayDeviceRequest,
   tapeDigest,
+  type V7Tape,
+  type WorkEntry,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -53,6 +60,54 @@ function floats(bytes: Uint8Array, width: number, height: number, stride: number
     ),
   );
 }
+function verifyCapturedMeshBytes(tape: V7Tape, geometry: WorkEntry, mesh: MeshAsset) {
+  expect(geometry.vertexBuffers.length).toBeGreaterThan(0);
+  expect(geometry.indexBuffer).not.toBeNull();
+  const vertexBuffer = geometry.vertexBuffers[0];
+  if (!vertexBuffer || !geometry.indexBuffer || !mesh.indices)
+    throw new Error('missing mesh buffers');
+  const streamedLayout =
+    geometry.vertexBuffers.length > 1 ? deriveVertexLayoutProjection(mesh.attributes) : undefined;
+  if (streamedLayout !== undefined) {
+    const count = deriveVertexCount(mesh.vertices, streamedLayout);
+    const streams =
+      count === undefined ? undefined : projectStaticMeshVertexStreams(streamedLayout, count);
+    if (streams === undefined) throw new Error('missing projected vertex streams');
+    expect(geometry.vertexBuffers).toMatchObject(
+      streams.ranges.map((range, slot) => ({
+        ...range,
+        slot,
+        bufferHandleId: vertexBuffer.bufferHandleId,
+      })),
+    );
+  }
+  const uploadedBuffers: unknown[] = [];
+  for (const [id, expected] of [
+    [vertexBuffer.bufferHandleId, mesh.vertices],
+    [geometry.indexBuffer.bufferHandleId, mesh.indices],
+  ] as const) {
+    const resource = tape.bootstrap.find((value) => value.handleId === id);
+    expect(resource?.initialData).toHaveLength(1);
+    const seed = resource?.initialData[0];
+    const blob = tape.blobs.find((value) => value.hash === seed?.hash);
+    if (!seed || !blob) throw new Error('missing captured mesh bytes');
+    const bytes = new Uint8Array(expected.buffer, expected.byteOffset, expected.byteLength);
+    const capturedBytes = blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength);
+    const sourceBytes =
+      id === vertexBuffer.bufferHandleId && streamedLayout !== undefined
+        ? new Uint8Array(
+            interleaveStaticMeshVertexStreams(
+              new Float32Array(capturedBytes.slice().buffer),
+              streamedLayout,
+            ).buffer,
+          )
+        : capturedBytes;
+    expect(equalBytes(sourceBytes, bytes)).toBe(true);
+    uploadedBuffers.push({ resourceId: id, bytes: bytes.byteLength, digest: seed.hash });
+  }
+  return uploadedBuffers;
+}
+
 export async function verifyAdvancedModeling(
   renderer: Renderer,
   recorder: RecorderAttachment,
@@ -251,37 +306,7 @@ export async function verifyAdvancedModeling(
         kind: 'drawIndexed',
         indexCount: item.mesh.indices?.length,
       });
-      expect(geometry.vertexBuffers.length).toBeGreaterThan(0);
-      expect(geometry.indexBuffer).not.toBeNull();
-      for (const id of [
-        ...geometry.vertexBuffers.map((v) => v.bufferHandleId),
-        geometry.indexBuffer?.bufferHandleId,
-      ]) {
-        const resource = tape.bootstrap.find((v) => v.handleId === id);
-        expect(resource?.initialData.length).toBeGreaterThan(0);
-      }
-      const vertexBuffer = geometry.vertexBuffers[0];
-      if (!vertexBuffer || !geometry.indexBuffer || !item.mesh.indices)
-        throw new Error('missing mesh buffers');
-      const uploadedBuffers: unknown[] = [];
-      for (const [id, expected] of [
-        [vertexBuffer.bufferHandleId, item.mesh.vertices],
-        [geometry.indexBuffer.bufferHandleId, item.mesh.indices],
-      ] as const) {
-        const resource = tape.bootstrap.find((value) => value.handleId === id);
-        expect(resource?.initialData).toHaveLength(1);
-        const seed = resource?.initialData[0];
-        const blob = tape.blobs.find((value) => value.hash === seed?.hash);
-        if (!seed || !blob) throw new Error('missing captured mesh bytes');
-        const bytes = new Uint8Array(expected.buffer, expected.byteOffset, expected.byteLength);
-        expect(
-          equalBytes(
-            blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength),
-            bytes,
-          ),
-        ).toBe(true);
-        uploadedBuffers.push({ resourceId: id, bytes: bytes.byteLength, digest: seed.hash });
-      }
+      const uploadedBuffers = verifyCapturedMeshBytes(tape, geometry, item.mesh);
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (
         await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))

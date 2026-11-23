@@ -1,13 +1,4 @@
-import type {
-  GraphAccess,
-  RenderGraphBuilder,
-  RenderGraphFrame,
-} from '@forgeax/engine-render-graph';
-import type {
-  BindGroup,
-  BindGroupLayout,
-  RenderPipeline as RhiRenderPipeline,
-} from '@forgeax/engine-rhi';
+import type { GraphAccess, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { err, ok } from '@forgeax/engine-types';
 import { atmosphereTextures } from '../environment/luts';
 import type { RenderError } from '../errors/render';
@@ -19,7 +10,6 @@ import type { RenderFeaturePlanExecution } from '../features/host';
 import type { createRenderFeatureProjectionState } from '../features/render-graph-contribution';
 import { projectTransientViewPlans } from '../features/transient-view-graph';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
-import { createStandardSurfaceLightingBindGroup } from '../hdrp-buffers';
 import type {
   RenderPipelineBuildContext,
   RenderPipelineFrame,
@@ -206,27 +196,6 @@ function resolveFeatureTargets(
   return { ok: true, resolveTarget, viewAccesses };
 }
 
-export function resolveLightingBinding(
-  frame: RenderGraphFrame,
-  pipeline: import('@forgeax/engine-rhi').RenderPipeline,
-): BindGroup | undefined {
-  const context = frame as import('./render-context')._InternalRenderPipelineContext;
-  if (context.standardLighting?.kind !== 'clustered') return undefined;
-  const layout = (
-    pipeline as RhiRenderPipeline & { getBindGroupLayout?: (index: number) => BindGroupLayout }
-  ).getBindGroupLayout?.(2);
-  if (layout === undefined) return undefined;
-  const binding = createStandardSurfaceLightingBindGroup(
-    context.runtime,
-    layout,
-    context.standardLighting.prepared.layout.grid,
-    context.hdrpSsaoBlurredView === undefined
-      ? { enabled: false }
-      : { enabled: true, ssaoBlurredView: context.hdrpSsaoBlurredView },
-  );
-  return binding ?? undefined;
-}
-
 function projectSelectedExecutions(
   context: StandardFeatureContributionContext,
   request: ContributionRequest,
@@ -256,7 +225,6 @@ function projectSelectedExecutions(
           request.waterInfoTargets,
           request.postProcessView,
         ),
-      resolveStandardLighting: resolveLightingBinding,
       reportError: context.reportError,
     },
     {

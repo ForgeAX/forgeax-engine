@@ -41,6 +41,7 @@ import {
 
 const capsRenderable: RhiCaps = {
   backendKind: 'webgpu',
+  compute: true,
   timestampQuery: false,
   timestampPeriodNanoseconds: null,
   storageBuffer: true,
@@ -72,17 +73,25 @@ const okShim = ok;
 // biome-ignore lint/suspicious/noExplicitAny: opaque mock GPU device surface
 function makeReadyDevice(probe: DeviceProbe): any {
   return {
+    caps: capsRenderable,
     limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
     createShaderModule: () => okShim({ __mock: 'shader' }),
     createSampler: () => okShim({ __mock: 'sampler' }),
     createBindGroupLayout: () => okShim({ __mock: 'bgl' }),
     createPipelineLayout: () => okShim({ __mock: 'layout' }),
     createRenderPipeline: () => okShim({ __mock: 'pipeline' }),
+    createComputePipeline: () => okShim({ __mock: 'compute-pipeline' }),
     createBindGroup: () => okShim({ __mock: 'bindGroup' }),
     createCommandEncoder: () =>
       okShim({
         __mock: 'encoder',
         copyTextureToTexture: () => undefined,
+        beginComputePass: () => ({
+          setPipeline: () => undefined,
+          setBindGroup: () => undefined,
+          dispatchWorkgroups: () => undefined,
+          end: () => undefined,
+        }),
         beginRenderPass: () => ({
           setPipeline: () => undefined,
           setBindGroup: () => undefined,
@@ -103,6 +112,8 @@ function makeReadyDevice(probe: DeviceProbe): any {
       });
     },
     createTextureView: () => okShim({ __mock: 'view' }),
+    destroyTexture: () => okShim(undefined),
+    destroyBuffer: () => okShim(undefined),
     queue: {
       onSubmittedWorkDone: async () => undefined,
       writeTexture: () => okShim(undefined),
@@ -147,8 +158,8 @@ function equirectPod(width = 4, height = 2): EquirectAsset {
   };
 }
 
-// Build a store wired to a device (no shader factory -> the optional async IBL
-// precompute render-pass block is skipped). The cube-projection entry remains
+// Build a store with an inert shader factory and native command probes. The
+// cube-projection entry remains
 // pending until the IBL queue completion fence resolves; the white-vs-real-IBL
 // binding decision is made by encodeMainPass off the global cache views (out of
 // scope for this unit test, covered by the dawn IBL readback test). This unit

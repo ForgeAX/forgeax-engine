@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { Materials, MeshRenderer, Skylight } from '@forgeax/engine-render';
 import {
   encodeIrradianceVolume,
   IRRADIANCE_VOLUME_ARTIFACT,
@@ -149,14 +150,49 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     expect(off.receipt.presentation).toBe('ready');
     expect(off.mean).toBe(0);
 
+    const gpu = h.native();
+    assert(gpu);
+    const buffers = vi.spyOn(gpu, 'createBuffer');
+    const pipelines = vi.spyOn(gpu, 'createComputePipeline');
+    const createdBuffers = (label: string) =>
+      buffers.mock.calls.filter(([desc]) => desc.label === label).length;
+    const fieldPipelines = () =>
+      pipelines.mock.calls.filter(([desc]) => desc.label?.startsWith('irradiance-field.')).length;
     h.setGi({ gather: 'baked', volume: DARK, resolution: 'half' });
     await h.settle(2);
     const dark = await h.image();
     expect(dark.receipt.presentation).toBe('ready');
     expect(equalBytes(dark.bytes, off.bytes)).toBe(true);
 
+    const display = (await h.draw()).graphGeneration;
+    assert(display !== undefined && display > 0);
     h.setGi({ gather: 'baked', volume: LIT, resolution: 'half' });
+    const loading = await h.draw();
+    expect(loading.graphGeneration).toBe(display);
+    expect(h.renderer.inspect().perFramePassNames).not.toContain('baked-field.gather');
     await h.settle(2);
+    expect((await h.draw()).graphGeneration).toBe(display);
+    expect(fieldPipelines()).toBe(2);
+    expect(createdBuffers('baked-field.irradiance')).toBe(2);
+    let previousView = h.inspection().generation;
+    for (let i = 0; i < 60; i++) {
+      const resolution = i % 2 === 0 ? 'full' : 'half';
+      h.setGi({ gather: 'baked', volume: LIT, resolution });
+      const changed = await h.draw();
+      expect(changed.graphGeneration).toBe(display);
+      const viewGeneration = h.inspection().generation;
+      expect(viewGeneration).toBeGreaterThan(previousView);
+      previousView = viewGeneration;
+      const names = h.renderer.inspect().perFramePassNames;
+      expect(names).toContain('baked-field.gather');
+      expect(names.includes('baked-field.upsample')).toBe(resolution === 'half');
+      expect(names).toContain('baked-field.composite');
+    }
+    expect(fieldPipelines()).toBe(2);
+    expect(createdBuffers('baked-field.irradiance')).toBe(2);
+    // Every resolution writes the same output. Only half resolution needs an intermediate.
+    expect(createdBuffers('baked-field.output')).toBe(1);
+    expect(createdBuffers('baked-field.gathered')).toBe(31);
     const lit = await h.image();
     expect(lit.receipt.presentation).toBe('ready');
     expect(h.errors).toEqual([]);
@@ -194,7 +230,8 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     const composite = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
-          shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_diffuse_reconstructed',
+          shader.stage === 'fragment' &&
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
       ),
     );
     assert(composite, 'frame contains the shared diffuse composite');
@@ -235,6 +272,34 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     const loads = fetched.filter((url) => url.endsWith(`${LIT}.fxiv`)).length;
     for (let i = 0; i < 4; i++) await h.draw();
     expect(fetched.filter((url) => url.endsWith(`${LIT}.fxiv`)).length).toBe(loads);
+
+    // A valid black volume replaces the shaded Sky SH. Directional IBL can
+    // remain visible through the same black volume when requested.
+    const reflectiveWall = await h.publish(
+      Materials.standard({ baseColor: [1, 1, 1, 1], roughness: 0.35, specular: 0.5 }),
+    );
+    h.world.set(h.wall, MeshRenderer, { materials: [reflectiveWall] }).unwrap();
+    h.world.spawn({ component: Skylight, data: { intensity: 1 } }).unwrap();
+    h.setGi(undefined);
+    await h.draw();
+    const skyOnly = await h.image();
+    expect(skyOnly.center).toBeGreaterThan(0.8);
+
+    const blackGi = { gather: 'baked', volume: DARK, resolution: 'half' } as const;
+    h.setGi(blackGi);
+    await h.settle(2);
+    const blackUnderSky = await h.image();
+    expect(Math.abs(blackUnderSky.center)).toBeLessThan(0.002);
+
+    h.renderer.setProfile({ ...h.base, ibl: true, diffuseGi: blackGi }).unwrap();
+    await h.settle(2);
+    const blackWithReflection = await h.image();
+    expect(blackWithReflection.center).toBeGreaterThan(0.015);
+    expect(blackWithReflection.center).toBeLessThan(0.15);
+
+    h.renderer.setProfile({ ...h.base, ibl: true }).unwrap();
+    await h.draw();
+    expect((await h.image()).center).toBeGreaterThan(0.8);
 
     h.setGi({ gather: 'baked', volume: MISSING, resolution: 'full' });
     const started = performance.now();

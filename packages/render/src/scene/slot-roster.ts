@@ -1,4 +1,4 @@
-import { type Node, nodes, put, range, remove } from './frame-tree';
+import { type Node, put, range, remove } from './frame-tree';
 
 const PAGE_MAX = 128;
 const PAGE_SPLIT = PAGE_MAX / 2;
@@ -92,6 +92,22 @@ export function rosterPut(root: Roster | undefined, key: number, value: number):
   const next = page(nextKeys, nextValues);
   // A smaller first key re-keys the first page.
   return index === 0 ? place(remove(root, 0, node.key), next) : place(root, next);
+}
+
+/** Number of entries whose entity identity is strictly smaller than the probe. */
+export function rosterRankBefore(root: Roster | undefined, key: number): number {
+  let base = 0;
+  while (root !== undefined) {
+    const pageStart = base + (root.left?.count ?? 0);
+    const keys = root.value.keys;
+    if (key <= root.key) root = root.left;
+    else if (key <= (keys[keys.length - 1] as number)) return pageStart + lowerBound(keys, key);
+    else {
+      base = pageStart + root.weight;
+      root = root.right;
+    }
+  }
+  return base;
 }
 
 /** The roster's greatest key, or -Infinity when empty. */
@@ -234,11 +250,34 @@ export function* rosterValues(
 export class RosterCursor {
   key = 0;
   value = 0;
-  private readonly pages: IterableIterator<Node<RosterPage>>;
+  private readonly pending: Roster[] = [];
   private current: RosterPage | undefined;
   private index = 0;
-  constructor(root: Roster | undefined) {
-    this.pages = nodes(root);
+
+  constructor(root: Roster | undefined, rank = 0) {
+    while (root !== undefined) {
+      const left = root.left?.count ?? 0;
+      if (rank < left) {
+        this.pending.push(root);
+        root = root.left;
+      } else if (rank >= left + root.weight) {
+        rank -= left + root.weight;
+        root = root.right;
+      } else {
+        this.open(root, rank - left);
+        return;
+      }
+    }
+  }
+
+  private open(node: Roster, index: number): void {
+    this.current = node.value;
+    this.index = index;
+    let next = node.right;
+    while (next !== undefined) {
+      this.pending.push(next);
+      next = next.left;
+    }
   }
   /** Advance to the next entry; false after the last one. */
   next(): boolean {
@@ -250,10 +289,9 @@ export class RosterCursor {
         this.index++;
         return true;
       }
-      const next = this.pages.next();
-      if (next.done === true) return false;
-      this.current = next.value.value;
-      this.index = 0;
+      const next = this.pending.pop();
+      if (next === undefined) return false;
+      this.open(next, 0);
     }
   }
 }

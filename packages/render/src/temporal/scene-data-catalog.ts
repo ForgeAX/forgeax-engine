@@ -235,19 +235,22 @@ function unavailableError(
 export function createSceneDataCatalog(options: SceneDataCatalogOptions): SceneDataCatalog {
   const state = availability(options, SCENE_DATA_TEMPORAL_V1_SCHEMA);
   const viewIdentity = options.viewIdentity ?? options.featureIdentity;
-  const owner = {
+  const surface = options.surfaceAdmission;
+  const owner: import('./scene-data').SceneDataCatalogIdentity = {
     featureIdentity: options.featureIdentity,
     viewIdentity,
     planIdentity: options.planIdentity,
     generation: options.generation,
     deviceGeneration: options.deviceGeneration ?? 0,
-    ...(options.surfaceAdmission?.identity === undefined
-      ? {}
-      : { surfaceAdmissionIdentity: options.surfaceAdmission.identity }),
     ...(options.surfaceAdmissionRevision === undefined
       ? {}
       : { surfaceAdmissionRevision: options.surfaceAdmissionRevision }),
   };
+  if (surface !== undefined)
+    Object.defineProperty(owner, 'surfaceAdmissionIdentity', {
+      enumerable: true,
+      get: () => surface.identity,
+    });
   const missing = [...(options.missingContributorIds ?? [])];
   const inspection = (schema: SceneDataSchemaId): SceneDataInspection => {
     const schemaState = availability(options, schema);
@@ -280,7 +283,9 @@ export function createSceneDataCatalog(options: SceneDataCatalogOptions): SceneD
     generation: options.generation,
     viewIdentity,
     deviceGeneration: options.deviceGeneration ?? 0,
-    surfaceAdmissionIdentity: options.surfaceAdmission?.identity,
+    get surfaceAdmissionIdentity() {
+      return owner.surfaceAdmissionIdentity;
+    },
     planIdentity: options.planIdentity,
     availability: state,
     require(schema) {

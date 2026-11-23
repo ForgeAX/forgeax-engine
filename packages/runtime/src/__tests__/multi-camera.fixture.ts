@@ -61,6 +61,11 @@ export async function verifyMultiCamera(
   },
   warmupFrames = 60,
 ) {
+  const originalProfile = {
+    ...renderer.inspect().profile,
+    ambientOcclusion: { enabled: false },
+  };
+  renderValue(renderer.setProfile(originalProfile));
   const world = new World(publication === undefined ? {} : { assets: publication.assets });
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
@@ -445,7 +450,6 @@ export async function verifyMultiCamera(
     expect(views.every((v) => v.frustum.culled > 0)).toBe(true);
     expect(views.map((view) => view.dynamicResolution?.status)).toEqual(['fixed', 'fixed']);
     expect(views.map((view) => view.dynamicResolution?.extent?.scale)).toEqual([0.75, 1]);
-    const originalProfile = renderer.inspect().profile;
     const originalMaterials = models.map((entity) => [
       ...world.get(entity, MeshRenderer).unwrap().materials,
     ]);

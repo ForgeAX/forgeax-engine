@@ -47,6 +47,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
   const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
   const filter = vi.spyOn(FilteredPlanContributionOwner.prototype, 'update');
   const viewCreate = vi.spyOn(GpuDrivenView, 'create');
+  const selectView = vi.spyOn(GpuDrivenView.prototype, 'recordViewSelection');
   const viewUpdate = vi.spyOn(GpuDrivenView.prototype, 'update');
   const rasterCreate = vi.spyOn(MaterialAbiRasterAdapter, 'create');
   const disposeView = vi.spyOn(GpuDrivenView.prototype, 'dispose');
@@ -55,6 +56,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
   const clearWork = () => {
     filter.mockClear();
     viewCreate.mockClear();
+    selectView.mockClear();
     viewUpdate.mockClear();
     rasterCreate.mockClear();
     directDraw.mockClear();
@@ -106,6 +108,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
     const assertDirect = () => {
       expect(filter).not.toHaveBeenCalled();
       expect(viewCreate).not.toHaveBeenCalled();
+      expect(selectView).not.toHaveBeenCalled();
       expect(viewUpdate).not.toHaveBeenCalled();
       expect(rasterCreate).not.toHaveBeenCalled();
       expect(indirectDraw).not.toHaveBeenCalled();
@@ -142,6 +145,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
     assertDirect();
     expect(draw('automatic').ok, JSON.stringify(errors)).toBe(true);
     expect(indirectDraw).toHaveBeenCalled();
+    expect(selectView).toHaveBeenCalled();
     const pool = preparedFrame().shadowViewPool;
     expect(pool?.inspect().length).toBeGreaterThan(0);
     clearWork();

@@ -24,6 +24,7 @@ import {
   buildMaterialSourceCatalog,
   type MaterialSourceCatalog,
   type MaterialSourceInput,
+  type MaterialSourceRecord,
 } from './source-catalog.js';
 import {
   SINGLE_LAYER_MEDIUM_SURFACE_MODULE,
@@ -862,17 +863,6 @@ function inlineSurfaceImplementationUncached(
   // Keep every remaining import in its original preprocessor context. Moving
   // guarded imports to the entry header would make optional cluster/projector
   // modules unconditional and would change the variant's binding contract.
-  const templateImports = removeCanonicalImports(
-    templateSource,
-    new Set(['forgeax_material::slot::surface', surfaceAbiModule, 'forgeax_material::parameters']),
-  );
-  const templateBody = rewriteBoundIdentifiers(
-    templateImports.source
-      .replace(/^\s*#pragma\s+material_slot\s+surface[^\n]*\n?/gm, '')
-      .replace(DEFINE_IMPORT_PATH_RE, ''),
-    new Map(),
-    templateImports.aliases,
-  );
   const selectedImports = removeCanonicalImports(
     selectedSource,
     new Set([
@@ -892,6 +882,17 @@ function inlineSurfaceImplementationUncached(
     }
     helperRenames.set(helper.moduleId, names);
   }
+  const templateImports = removeCanonicalImports(
+    rewriteInlineImports(templateSource, inlineHelperIds, helperRenames),
+    new Set(['forgeax_material::slot::surface', surfaceAbiModule, 'forgeax_material::parameters']),
+  );
+  const templateBody = rewriteBoundIdentifiers(
+    templateImports.source
+      .replace(/^\s*#pragma\s+material_slot\s+surface[^\n]*\n?/gm, '')
+      .replace(DEFINE_IMPORT_PATH_RE, ''),
+    new Map(),
+    templateImports.aliases,
+  );
   const selectedBodyWithoutInlineHelpers = rewriteInlineImports(
     selectedBody,
     inlineHelperIds,
@@ -1106,6 +1107,25 @@ export function prepareStandardSource(
     sourceClosure: composed.value.sourceClosure,
     sourceClosureDigest: composed.value.sourceClosureDigest,
   });
+}
+
+function inlineDependencyInSurface(
+  record: MaterialSourceRecord,
+  surfaceDependency: boolean,
+  surfaceAbiModule: string,
+): boolean {
+  const surfaceTypedHelper =
+    surfaceDependency &&
+    (importedModules(record.source).includes(surfaceAbiModule) ||
+      importedModules(record.source).includes('forgeax_material::surface_v1'));
+  const standardTemplateHelper =
+    !surfaceDependency &&
+    record.provenance === 'engine' &&
+    (record.moduleId === 'forgeax_material::standard_physical_inputs' ||
+      record.moduleId === 'forgeax_material::standard_surface_maps' ||
+      record.moduleId === 'forgeax_material::surface_sampling' ||
+      record.moduleId === 'forgeax_material::displacement');
+  return surfaceTypedHelper || standardTemplateHelper;
 }
 
 /** Resolve and validate the sole Standard Surface slot at build time. */
@@ -1380,16 +1400,10 @@ export function composeSurfaceSource(
           }
           if (visited.has(module)) return undefined;
           visited.add(module);
-          const surfaceTypedHelper =
-            next.surfaceDependency &&
-            (importedModules(record.value.source).includes(surfaceAbiModule) ||
-              importedModules(record.value.source).includes('forgeax_material::surface_v1'));
-          if (surfaceTypedHelper) {
-            // naga_oil cannot write back a composable function whose parameter is
-            // the Surface ABI (its numbered uv fields are treated as substitution
-            // identifiers). Inline that helper into the root entry, where it shares
-            // the canonical ABI declaration with the authored Surface. Its own
-            // non-ABI imports are hoisted by inlineSurfaceImplementation.
+          if (inlineDependencyInSurface(record.value, next.surfaceDependency, surfaceAbiModule)) {
+            // The lexical entry owns the selected material provider and mask.
+            // Keep Surface ABI helpers there too: naga_oil cannot write back
+            // the numbered UV fields on their composable arguments.
             inlineSurfaceHelpers.push({ moduleId: module, source: record.value.source });
           } else {
             imports[module] = record.value.source;

@@ -1,5 +1,12 @@
 import { expect, it, vi } from 'vitest';
-import { copyPackData, copyPackOutputData, decodePackData, encodePackData } from '../data.js';
+import {
+  copyPackData,
+  copyPackOutputData,
+  decodePackData,
+  decodePackDataRecord,
+  encodePackData,
+  encodePackDataRecord,
+} from '../data.js';
 
 it.each([
   [],
@@ -14,6 +21,27 @@ it('rejects reserved binary metadata before it can overwrite author data', () =>
   const source = { binary: { author: 'metadata' }, data: new Uint8Array([1, 2]) };
   expect(() => encodePackData(source)).toThrow('snapshot root reserves the binary field');
   expect(source.binary).toEqual({ author: 'metadata' });
+});
+
+it('round-trips a bounded binary record without widening its backing ranges', () => {
+  const backing = new ArrayBuffer(24);
+  new Uint8Array(backing).fill(0xff);
+  const floats = new Float32Array(backing, 8, 2);
+  floats.set([1.25, -0]);
+  const shorts = new Uint16Array(backing, 12, 2);
+  const entry = { key: 'candidate', floats, shorts };
+  const record = encodePackDataRecord(entry, 1024);
+  const restored = decodePackDataRecord(record, 1024) as typeof entry;
+  expect(restored).toEqual(entry);
+  expect(restored.floats.buffer).toBe(restored.shorts.buffer);
+  expect(restored.shorts.byteOffset).toBe(12);
+  expect(Object.is(restored.floats[1], -0)).toBe(true);
+  expect(new Uint8Array(restored.floats.buffer, 0, 8)).toEqual(new Uint8Array(8));
+  expect(() => encodePackDataRecord(entry, 8)).toThrow(RangeError);
+  expect(() => decodePackDataRecord(record.subarray(0, -1), 1024)).toThrow();
+  expect(() => decodePackDataRecord(record, record.byteLength - 1)).toThrow();
+  new DataView(record.buffer).setUint32(4, 0, true);
+  expect(() => decodePackDataRecord(record, 1024)).toThrow('unsupported Pack data record');
 });
 
 it('isolates one binary graph while preserving aliases and excluding unrelated backing bytes', () => {

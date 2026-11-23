@@ -175,6 +175,7 @@ export interface GpuSceneInputPreparation extends GpuInputPreparation {
   readonly byteLength: number;
   readonly resourceRoot: number;
   readonly privatePageBytes: number;
+  superseded(): boolean;
   retirement(): Result<{ readonly done: boolean; readonly pending?: Promise<void> }, RhiError>;
 }
 
@@ -1458,6 +1459,7 @@ export class GpuSceneInputs {
       get privatePageBytes() {
         return (role.resources?.pages.size ?? 0) * RESOURCE_PAGE_WORDS * 4;
       },
+      superseded: () => this.supersededSourceBuffer(role),
       retirement: () => {
         try {
           return this.preparationRetirement(role);
@@ -1473,6 +1475,23 @@ export class GpuSceneInputs {
       commitPrepared: () => this.commitPreparedBuffer(role),
       release: () => this.releasePreparedBuffer(role),
     });
+  }
+
+  private supersededSourceBuffer(role: PreparingInputBuffer): boolean {
+    const resources = role.resources;
+    return (
+      resources !== undefined &&
+      role.state !== 'committed' &&
+      !this.disposed &&
+      this.failure === undefined &&
+      this.arena.live &&
+      resources.failure === undefined &&
+      resources.current?.() === true &&
+      (role.parentBuffer !== this.buffer ||
+        role.parentUpload !== this.upload ||
+        resources.revision !== this.resourceRevision ||
+        this.arena.byteLength > role.bytes)
+    );
   }
 
   private preparationRetirement(

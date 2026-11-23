@@ -14,7 +14,7 @@ import {
   MeshStandardMaterial,
   Texture,
 } from 'three/src/Three.Core.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cookPhysicalMaterials, physicalTextureRecipe } from '../build/materials';
 import { ThreeCompatibilityError } from '../errors';
 import { materialTextures, materialValues, projectMaterial, validateMaterial } from '../material';
@@ -191,6 +191,37 @@ describe('Three material projection', () => {
     });
   });
 
+  it('installs only requested bundled programs and shares the admitted recipe across instances', async () => {
+    const assets = new AssetRegistry();
+    owners.push(assets);
+    const install = vi.spyOn(assets.materialArtifactRegistry, 'register');
+    const project = await prepareMaterialPrograms(assets);
+    const basic = projectMaterial(new MeshBasicMaterial(), {}).unwrap();
+    expect(project(basic)).toBe(basic);
+    expect(install).not.toHaveBeenCalled();
+    const physical = projectMaterial(new MeshPhysicalMaterial({ clearcoat: 0.5 }), {}).unwrap();
+    expect(project(physical).parameters?.length).toBeGreaterThan(0);
+    const installed = install.mock.calls.length;
+    expect(installed).toBeGreaterThan(0);
+    project(projectMaterial(new MeshPhysicalMaterial({ clearcoat: 0.8 }), {}).unwrap());
+    expect(install.mock.calls.length).toBe(installed);
+  });
+
+  it('loads and shares only the requested packaged Physical variant in its asset registry', async () => {
+    const assets = new AssetRegistry();
+    owners.push(assets);
+    const project = await prepareMaterialPrograms(assets);
+    const other = await prepareMaterialPrograms(assets);
+    expect(assets.materialArtifactRegistry.storageStats().artifacts).toBe(0);
+    const projected = projectMaterial(new MeshPhysicalMaterial({ clearcoat: 1 }), {}).unwrap();
+    expect(project(projected).values?.clearcoat).toBeDefined();
+    const first = assets.materialArtifactRegistry.storageStats();
+    expect(first.compressedArtifacts).toBeGreaterThan(0);
+    expect(first.compressedGroups).toBe(1);
+    other(projected);
+    expect(assets.materialArtifactRegistry.storageStats()).toEqual(first);
+  });
+
   it('admits an exact application-cooked texture combination and rejects a missing variant', {
     timeout: 120000,
   }, async () => {
@@ -245,21 +276,17 @@ describe('Three material projection', () => {
   });
 
   it.each([
-    [FrontSide, null, false, 'front'],
-    [BackSide, null, false, 'back'],
-    [DoubleSide, null, false, 'none'],
-    [FrontSide, null, true, 'back'],
-    [BackSide, null, true, 'front'],
-    [DoubleSide, null, true, 'none'],
-    [FrontSide, FrontSide, false, 'back'],
-    [FrontSide, BackSide, false, 'front'],
-    [BackSide, DoubleSide, false, 'none'],
-    [BackSide, FrontSide, true, 'back'],
-  ] as const)('owns Three shadow sidedness: side=%s override=%s VSM=%s', (side, shadowSide, variance, expected) => {
+    [FrontSide, null, 'front'],
+    [BackSide, null, 'back'],
+    [DoubleSide, null, 'none'],
+    [FrontSide, FrontSide, 'back'],
+    [FrontSide, BackSide, 'front'],
+    [BackSide, DoubleSide, 'none'],
+  ] as const)('owns Three shadow sidedness: side=%s override=%s', (side, shadowSide, expected) => {
     for (const Material of [MeshBasicMaterial, MeshStandardMaterial]) {
       const material = new Material({ side });
       material.shadowSide = shadowSide;
-      const asset = projectMaterial(material, {}, undefined, variance).unwrap();
+      const asset = projectMaterial(material, {}).unwrap();
       expect(
         asset.passes?.find((pass) => pass.name === 'shadow-caster')?.renderState?.cullMode,
       ).toBe(expected);

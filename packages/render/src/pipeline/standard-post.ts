@@ -35,6 +35,7 @@ import { addSmaaPasses } from '../features/smaa/graph';
 import { isSmaaPostProcess } from '../features/smaa/shaders';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type {
+  OutputDither,
   RenderPipelineBuildContext,
   RenderPipelineBuildError,
   RenderPipelineFrame,
@@ -46,7 +47,12 @@ import {
   type RenderPipelineTarget,
   resolveOutputDither,
 } from '../render-pipeline';
-import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import { addSsrColorMips } from '../ssr/color-mips';
+import {
+  SSR_SCENE_COLOR_HISTORY_PROGRAM,
+  ssrColorExtent,
+  ssrColorMipCount,
+} from '../ssr/scene-color-input';
 import type { SceneVelocityInputs } from '../temporal/default-gbuffer-velocity';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
@@ -65,13 +71,16 @@ import {
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
 import { renderExtentSize, renderInternalSize, temporalAnalysisCapacity } from './render-extent';
-import { addSsaoSceneColorPass, type SceneColorAo } from './ssao-scene-color';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 import {
   addAutoExposureExposurePass,
   addAutoExposureGraphPasses,
 } from './standard-output/auto-exposure/gpu';
-import { createStandardOutputPlan } from './standard-output/graph';
+import {
+  nativeGradeNeedsLinearImage,
+  nativeGradeOverlaysLinearImage,
+  usesNativeGrade,
+} from './standard-output/layout';
 import { addStandardColorLutPass } from './standard-output/lut-gpu';
 import { addNativeOutputParameters, addNativeOutputPass } from './standard-output/native-gpu';
 import { addStandardToneLutPass } from './standard-output/tone-lut';
@@ -486,6 +495,10 @@ export function contributeStandardSceneFeatures(
 }
 
 /** Output-route decisions derived once from the topology; every post stage reads the same facts. */
+type StandardPostContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
+  readonly readOutputDither?: (frame: RenderPipelineFrame) => boolean;
+};
+
 interface StandardPostRoute {
   readonly clearOnly: boolean;
   readonly features: StandardOutputPlan['features'];
@@ -495,7 +508,7 @@ interface StandardPostRoute {
   readonly linearLdr: boolean;
   readonly rawOnly: boolean;
   readonly motionBlur: boolean;
-  readonly outputDither: boolean;
+  readonly outputDither: OutputDither;
   readonly distanceOutlineFirstStep: number | undefined;
   readonly editorAssistance: boolean;
   readonly editorOutline: boolean;
@@ -514,7 +527,7 @@ type StandardFeatureTargets = Parameters<
 >[0]['targets'];
 
 function standardPostRoute(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  context: StandardPostContext,
   topology: RenderPipelineTopology,
 ): StandardPostRoute {
   const clearOnly = topology.clearOnly === true;
@@ -538,7 +551,7 @@ function standardPostRoute(
     linearLdr: !clearOnly && !hdr,
     rawOnly,
     motionBlur: postProcessing && topology.temporal?.motionBlur === true,
-    outputDither: resolveOutputDither(topology.config),
+    outputDither: context.readOutputDither ?? resolveOutputDither(topology.config),
     distanceOutlineFirstStep:
       postProcessing && typeof camera.outline === 'object' ? camera.outline.firstStep : undefined,
     editorAssistance: !clearOnly && camera.editorAssistance === true,
@@ -561,10 +574,7 @@ function standardOutputFeatures(
 ): StandardOutputPlan['features'] {
   const camera = topology.camera;
   const postProcessing = !clearOnly && camera.postProcessing !== false;
-  return createStandardOutputPlan({
-    ...(topology.config?.outputContract === undefined
-      ? {}
-      : { contract: topology.config.outputContract }),
+  return {
     temporal: postProcessing && isTemporalAntialias(camera.antialias),
     meter: postProcessing && topology.output?.autoExposure === true,
     bloom: postProcessing && standardBloomAdmitted(topology.camera),
@@ -579,7 +589,7 @@ function standardOutputFeatures(
     lensEffects: postProcessing && camera.lensEffects === true,
     fxaa: postProcessing && isFxaaAntialias(camera.antialias),
     smaa: postProcessing && camera.antialias === 'smaa',
-  }).features;
+  };
 }
 
 /** Standard stages whose feature plans consume named post-chain targets. */
@@ -1081,6 +1091,7 @@ function addChromaticAberrationStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const fringed = target(context, 'standard-chromatic-aberration', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: postInput.domain ?? 'linear-hdr',
@@ -1158,6 +1169,7 @@ function addExposureWhiteBalance(
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (!route.features.exposure && !route.features.whiteBalance) return ok(postInput);
   const exposureOutput = target(context, 'standard-exposure-white-balance', {
+    lifetime: 'pass-local',
     format: postInput.format === 'rgba32float' ? 'rgba32float' : 'rgba16float',
     size: 'surface',
     domain: 'linear-hdr',
@@ -1328,6 +1340,7 @@ function addToneStage(
   const observesLinearLdr = context.observationCaptureDomains?.includes('linear-ldr') === true;
   if (route.fusedToneLut || !(route.splitOutput || observesLinearLdr)) return ok(postInput);
   const toneOutput = target(context, 'standard-tone-output', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1374,6 +1387,7 @@ function addColorLutStage(
     return ok(finalPresent);
   }
   const lutOutput = target(context, 'standard-color-lut', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1390,6 +1404,7 @@ function addBarrelDistortionStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const barrelOutput = target(context, 'standard-barrel-distortion', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1474,7 +1489,7 @@ function addCombinedOutputTransform(
   const transformed =
     rawOnlyPostInput !== undefined
       ? addTypedOutputTransformPass(context.graph, postInput, rawOnlyPostInput, {
-          dither: outputDither && route.postEffects.length === 0,
+          dither: route.postEffects.length === 0 ? outputDither : false,
         })
       : addTypedOutputTransformPass(context.graph, postInput, finalPresent, {
           dither: outputDither,
@@ -1488,6 +1503,7 @@ function addLensEffectsStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const lensOutput = target(context, 'standard-lens-effects', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1608,21 +1624,6 @@ function addStandardPresentStages(
   return ok(undefined);
 }
 
-/** A real linear-LDR consumer retains its own seam; the ordinary core needs none. */
-function nativeOutputNeedsLinearLdr(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
-  route: StandardPostRoute,
-): boolean {
-  return (
-    route.features.outline ||
-    route.editorAssistance ||
-    route.editorOutline ||
-    route.features.barrelDistortion ||
-    route.features.smaa ||
-    context.observationCaptureDomains?.includes('linear-ldr') === true
-  );
-}
-
 /** Fused default core, with explicitly selected spatial extensions in linear LDR. */
 function addNativeStandardOutput(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
@@ -1655,10 +1656,13 @@ function addNativeStandardOutput(
         hint: 'prepare the selected Camera color LUT before compiling its output graph',
       }),
     );
-  const linearSeam = nativeOutputNeedsLinearLdr(context, route);
+  const linearSeam = nativeGradeNeedsLinearImage(
+    topology.camera,
+    context.observationCaptureDomains?.includes('linear-ldr') === true,
+  );
   const parameters = addNativeOutputParameters(context.graph, {
     bloom: fusedBloom,
-    lutStrength: route.features.lut ? (lut?.strength ?? 0) : 0,
+    lut: route.features.lut ? lut : undefined,
     sharpen: 0,
     dither: route.outputDither,
     finishInGrade: !route.features.fxaa,
@@ -1745,6 +1749,20 @@ function addNativeStandardOutput(
     : ok(undefined);
 }
 
+interface StandardPostInputs {
+  readonly sceneTemporal?: RenderPipelineTarget | undefined;
+  readonly secondaryReactivity?: TemporalSecondaryReactivity | undefined;
+  readonly coverage?: RenderPipelineTarget | undefined;
+  readonly coverageDepth?: RenderPipelineTarget | undefined;
+  readonly opaqueGuide?: RenderPipelineTarget | undefined;
+  readonly waterInfoTargets?: WaterInfoGraphTargets | undefined;
+  readonly gpuDriven?: RenderPipelineGpuDrivenProjection | undefined;
+  readonly waterFoamSimulation?: GraphTextureView | undefined;
+  readonly sceneVelocity?: SceneVelocityInputs | undefined;
+}
+
+const EMPTY_POST_INPUTS: StandardPostInputs = {};
+
 /**
  * Build the one Standard post chain shared by direct and clustered lighting.
  * Bloom is admitted before any Bloom target is declared, keeping the disabled
@@ -1752,22 +1770,24 @@ function addNativeStandardOutput(
  * horizontal/vertical Gaussian pyramid for the enabled path.
  */
 export function addStandardPost(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  context: StandardPostContext,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
   depth: RenderPipelineTarget,
   surface: StandardPostSurface,
-  sceneTemporal?: RenderPipelineTarget,
-  secondaryReactivity?: TemporalSecondaryReactivity,
-  coverage?: RenderPipelineTarget,
-  coverageDepth?: RenderPipelineTarget,
-  opaqueGuide?: RenderPipelineTarget,
-  waterInfoTargets?: WaterInfoGraphTargets,
-  gpuDriven?: RenderPipelineGpuDrivenProjection,
-  waterFoamSimulation?: GraphTextureView,
-  sceneAo?: SceneColorAo,
-  sceneVelocity?: SceneVelocityInputs,
+  inputs: StandardPostInputs = EMPTY_POST_INPUTS,
 ): Result<void, RenderPipelineBuildError> {
+  const {
+    sceneTemporal,
+    secondaryReactivity,
+    coverage,
+    coverageDepth,
+    opaqueGuide,
+    waterInfoTargets,
+    gpuDriven,
+    waterFoamSimulation,
+    sceneVelocity,
+  } = inputs;
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
   }
@@ -1800,39 +1820,11 @@ export function addStandardPost(
   const outputColor = declareOutputColor();
   if (!outputColor.ok) return outputColor;
   const finalPresent = outputColor.value;
-  const applySceneColorAo = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
-    if (
-      !route.clearOnly &&
-      topology.config?.ambientOcclusion?.enabled === true &&
-      topology.config.ambientOcclusion.application === 'scene-color'
-    ) {
-      if (sceneAo === undefined)
-        return err(
-          new RenderGraphError({
-            code: 'resource-resolution-failed',
-            expected: 'filtered visibility and matching depth for scene-color AO',
-            hint: 'project the selected AO producer into Standard post',
-          }),
-        );
-      const composed = addSsaoSceneColorPass(
-        context.graph,
-        topology,
-        scene,
-        sceneAo,
-        route.features.exposure ? context.standardOutput?.autoExposure?.state : undefined,
-      );
-      if (!composed.ok) return composed;
-      return composed;
-    }
-    return ok(scene);
-  };
-  const hdrScene = applySceneColorAo();
-  if (!hdrScene.ok) return hdrScene;
   const preTemporal = addPreTemporalEffects(
     context,
     topology,
     route.preTemporalEffects,
-    hdrScene.value,
+    scene,
     depth,
   );
   if (!preTemporal.ok) return preTemporal;
@@ -1884,6 +1876,7 @@ export function addStandardPost(
   postInput = focused.value;
   const captureSsrSceneColorHistory = () => {
     if (context.ssrSceneColorOutput !== undefined) {
+      const size = ssrColorExtent(topology.surface);
       const snapshot = addTypedFullscreenPass(context.graph, {
         name: 'ssr-scene-color-history',
         shader: SSR_SCENE_COLOR_HISTORY_PROGRAM.name,
@@ -1891,6 +1884,15 @@ export function addStandardPost(
         outputs: [context.ssrSceneColorOutput],
       });
       if (!snapshot.ok) return snapshot;
+      const mips = addSsrColorMips(
+        context,
+        topology,
+        context.ssrSceneColorOutput,
+        size,
+        'ssr-history-color',
+        ssrColorMipCount(size),
+      );
+      if (!mips.ok) return mips;
     }
     return undefined;
   };
@@ -1942,11 +1944,7 @@ export function addStandardPost(
     return addStandardPresentStages(context, selectedRoute, surface, present, observedOutput.value);
   };
   const addSelectedColorOutput = () => {
-    const nativeOutput =
-      topology.config?.outputContract === 'standard-output-v2' &&
-      !route.rawOnly &&
-      !route.clearOnly;
-    if (nativeOutput) {
+    if (usesNativeGrade(topology)) {
       const native = addNativeStandardOutput(
         context,
         topology,
@@ -1971,8 +1969,10 @@ export function addStandardPost(
       // V2's encoded debug overlay follows the shared feature/output publication.
       return publishStandardOutput({
         ...route,
-        debugOverlayBeforePost:
-          nativeOutputNeedsLinearLdr(context, route) && route.debugOverlayBeforePost,
+        debugOverlayBeforePost: nativeGradeOverlaysLinearImage(
+          topology.camera,
+          context.observationCaptureDomains?.includes('linear-ldr') === true,
+        ),
       });
     }
     const lensed = addHdrLensStages(context, topology, route, highlighted);

@@ -1,6 +1,10 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  createMeshBuilder,
+  packMeshTangentFrame32,
+} from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   BLOOM_DISABLED,
@@ -27,7 +31,11 @@ it.each([
   const releases: (() => void)[] = [];
   let hold = false;
   const isCandidate = (descriptor: GPURenderPipelineDescriptor) =>
-    Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64);
+    Array.from(descriptor.vertex.buffers ?? []).some((buffer) =>
+      Array.from(buffer?.attributes ?? []).some(
+        ({ shaderLocation, format }) => shaderLocation === 14 && format === 'uint32',
+      ),
+    );
   const pipelines = vi
     .spyOn(GPUDevice.prototype, 'createRenderPipelineAsync')
     .mockImplementation(function (this: GPUDevice, descriptor) {
@@ -87,7 +95,7 @@ it.each([
     const count = positions.length / 3;
     const color = new Float32Array(count * 4);
     for (let vertex = 0; vertex < count; vertex++) color.set([0.1, 0.55, 0.9, 1], vertex * 4);
-    const replacement = createMeshBuilder({
+    const colored = createMeshBuilder({
       attributes: { ...enlarged.attributes, color },
       indices: enlarged.indices,
       submeshes: enlarged.submeshes,
@@ -95,6 +103,9 @@ it.each([
     })
       .build()
       .unwrap();
+    // The shadow caster does not bind the color stream. Give the candidate a
+    // distinct tangent basis that both the color and shadow pipelines consume.
+    const replacement = packMeshTangentFrame32(colored).unwrap();
     const previous = assets.create(original).unwrap();
     const next = assets.create(replacement).unwrap();
     const material = assets

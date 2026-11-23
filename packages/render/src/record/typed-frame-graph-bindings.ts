@@ -25,6 +25,8 @@ import {
   type AtmosphereViews,
   atmosphereBindings,
   atmosphereMaterialVisibilityBindings,
+  pipelineViewLayout,
+  viewForPipeline,
 } from '../environment/bindings';
 import { atmosphereVolumeViews, type GraphAtmosphere } from '../environment/luts';
 import { CloudLayerResourceFailureError } from '../errors/cloud';
@@ -43,6 +45,7 @@ import {
   entryUsesPrimaryDepth,
   isTemporalFullscreenBinding,
 } from '../fullscreen-post-process-pass';
+import { getOrCreateHdrpBuffers } from '../hdrp-buffers';
 import { waterProgramEntryPoints } from '../material-program-inputs';
 import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import type { PreparedGraphicsResolvedResource } from '../prepare/prepared-graphics-resolver';
@@ -61,8 +64,8 @@ import {
 import {
   requireWaterMaterialBakedSources,
   waterMaterialBodyIndex,
-  waterMaterialFrameBindGroupEntries,
   waterMaterialFrameDynamicOffsets,
+  waterMaterialSystemBindGroup,
 } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
 import { buildPerFrameBindGroups, buildViewBindGroup } from './frame-lighting';
@@ -355,12 +358,7 @@ export function resolveTargetBindings(
         );
       requireWaterMaterialBakedSources(resources, [index.value], selected.programInputs);
       return {
-        handle: frame.runtime.device
-          .createBindGroup({
-            layout,
-            entries: waterMaterialFrameBindGroupEntries(resources, 16, entryPoints),
-          })
-          .unwrap(),
+        handle: waterMaterialSystemBindGroup(frame.runtime.device, layout, resources, entryPoints),
         dynamicOffsets: waterMaterialFrameDynamicOffsets(
           {
             ...(infoOffset === undefined ? {} : { waterInfo: infoOffset }),
@@ -450,6 +448,7 @@ export function resolveTargetBindings(
     if (descriptor?.values.view === true) {
       return perFrameViewBindings(
         frame,
+        pipeline,
         atmosphereViews,
         directionalShadow,
         cloudShadow,
@@ -513,6 +512,7 @@ export function resolveTargetBindings(
       // containing only particles still needs the pipeline's View/light ABI.
       return perFrameViewBindings(
         frame,
+        pipeline,
         atmosphereViews,
         directionalShadow,
         cloudShadow,
@@ -546,6 +546,7 @@ function directionalShadowViewOf(
 /** The renderer-owned View/light group shared with the scene passes. */
 function perFrameViewBindings(
   frame: _InternalRenderPipelineContext,
+  pipeline: LayoutPipeline,
   atmosphereViews: AtmosphereViews | undefined,
   directionalShadow: TextureView | undefined,
   cloudShadow: TextureView | undefined,
@@ -568,7 +569,10 @@ function perFrameViewBindings(
   ).viewBindGroup;
   return viewBindGroup === null
     ? undefined
-    : { handle: viewBindGroup, dynamicOffsets: [viewOffset, 0] };
+    : {
+        handle: viewForPipeline(frame.runtime.device, pipeline, viewBindGroup),
+        dynamicOffsets: [viewOffset, 0],
+      };
 }
 
 function postProcessEntryOf(
@@ -651,7 +655,7 @@ function fullscreenAdditionalViews(
   if (!Array.isArray(additionalNames)) return additionalViews;
   for (const [index, value] of additionalNames.entries()) {
     const assetCount = Array.isArray(values.assetTextures) ? values.assetTextures.length : 0;
-    const binding = fullscreen.extraColorBindings[assetCount + index];
+    const binding = fullscreen.extraColorBindings[assetCount + index]?.binding;
     if (binding === undefined) return undefined;
     if (value === false) {
       additionalViews.push({ binding, view: frame.pipelineState.defaultWhiteTextureView });
@@ -700,7 +704,7 @@ function fullscreenAssetViews(
       (fact.dimension !== '2d' && fact.dimension !== '3d')
     )
       return fail('Invalid published cloud texture fact.');
-    const binding = fullscreen.extraColorBindings[index];
+    const binding = fullscreen.extraColorBindings[index]?.binding;
     const handle = fact.handle as AssetHandle<'texture'>;
     const scope = frame.world;
     if (
@@ -818,7 +822,10 @@ function resolveFullscreenBindings(
   if (additionalViews === undefined) return undefined;
   const layout = pipeline.getBindGroupLayout?.(1);
   if (layout === undefined) return undefined;
-  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
+  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
+    shader,
+    entry.params === undefined ? undefined : 'write',
+  );
   if (!writePostProcessParams(frame, shader, entry, paramsBuffer)) return undefined;
   const createdBindGroup = createFullscreenBindGroup(
     frame.runtime.device,
@@ -864,7 +871,10 @@ function resolveTemporalFullscreenBindings(
   if (depth !== undefined && (depthView === undefined || fullscreen.depthSampler === null)) {
     return undefined;
   }
-  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
+  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
+    shader,
+    entry.params === undefined ? undefined : 'write',
+  );
   if (!writePostProcessParams(frame, shader, entry, paramsBuffer)) return undefined;
   const temporalTarget = input.resolveTarget(values.temporal as never);
   if (temporalTarget === undefined) return undefined;
@@ -879,7 +889,7 @@ function resolveTemporalFullscreenBindings(
       paramsBuffer,
       depthView ?? null,
       fullscreen.depthSampler,
-      [{ binding: fullscreen.extraColorBindings[0] ?? 5, view: temporalView.value }],
+      [{ binding: fullscreen.extraColorBindings[0]?.binding ?? 5, view: temporalView.value }],
     ) ?? undefined
   );
 }
@@ -990,8 +1000,9 @@ function resolveStandardViewDepthBindings(
   const texture = target === undefined ? undefined : input.resources.texture(target.texture);
   if (texture !== undefined && !texture.ok) throw texture.error;
   const getLayout = pipeline.getBindGroupLayout;
-  const layout = getLayout?.call(pipeline, 0);
-  if (getLayout === undefined || layout === undefined) {
+  const retainedLayout = pipelineViewLayout(pipeline);
+  const layout = retainedLayout ?? getLayout?.call(pipeline, 0);
+  if (layout === undefined) {
     // Preserve depth-view failure reporting even for a pipeline that cannot
     // supply this layout; this branch never publishes a cached binding.
     if (texture !== undefined) {
@@ -1014,7 +1025,16 @@ function resolveStandardViewDepthBindings(
       cloudShadow,
       spotShadow: frame.frameState.frameOutputs.spotShadowView ?? undefined,
       viewBindGroupLayout: layout,
-      viewLayoutIdentity: [pipeline, getLayout],
+      cluster:
+        frame.standardLighting?.kind === 'clustered'
+          ? (getOrCreateHdrpBuffers(
+              frame.runtime,
+              frame.standardLighting.prepared.layout.grid,
+              frame.frameState.standardClusterTextureExtent,
+            ) ?? undefined)
+          : undefined,
+      viewLayoutIdentity:
+        retainedLayout !== undefined || getLayout === undefined ? undefined : [pipeline, getLayout],
       ...(texture === undefined
         ? { sceneDepth: frame.pipelineState.shadowFallbackTextureView }
         : { sceneDepthTexture: texture.value as Texture }),

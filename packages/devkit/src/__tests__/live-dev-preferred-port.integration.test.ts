@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { materializeViteDevPort } from '../host.js';
 import { startOnPreferredPort } from '../live-dev.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { commandError } from '../project.js';
 import { type CommandResult, resolveProjectPort } from '../types.js';
 

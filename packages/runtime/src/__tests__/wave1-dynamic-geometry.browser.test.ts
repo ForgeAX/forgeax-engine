@@ -3,7 +3,11 @@ import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
   createMeshBuilder,
+  deriveVertexBufferLayoutFromProjection,
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
   meshFromInterleaved,
+  projectStaticMeshVertexStreams,
 } from '@forgeax/engine-geometry';
 import { prepareRuntimePackContent, RuntimePackProducer } from '@forgeax/engine-import';
 import { vec3 } from '@forgeax/engine-math';
@@ -274,26 +278,44 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     const descriptors = [...pipelines.mock.calls, ...asyncPipelines.mock.calls].map(
       ([descriptor]) => descriptor,
     );
+    const sourceLayout = deriveVertexLayoutProjection(closedMesh.attributes);
+    const count = deriveVertexCount(closedMesh.vertices, sourceLayout);
+    const projected =
+      count === undefined ? undefined : projectStaticMeshVertexStreams(sourceLayout, count);
+    if (projected === undefined) throw new Error('Expected a split layout for the colored mesh');
+    const streams = deriveVertexBufferLayoutFromProjection(projected.layout);
+    const color = { shaderLocation: 13, offset: 0, format: 'float32x4' };
     const coloredPbr = descriptors.filter(
       (descriptor) =>
         descriptor.label?.includes('default-standard-pbr') &&
-        Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64),
+        Array.from(descriptor.vertex.buffers ?? []).some(
+          (buffer) =>
+            buffer !== null &&
+            Array.from(buffer.attributes).some(
+              (attribute) => attribute.shaderLocation === color.shaderLocation,
+            ),
+        ),
     );
     expect(coloredPbr.length).toBeGreaterThan(0);
     for (const descriptor of coloredPbr) {
+      const buffers = Array.from(descriptor.vertex.buffers ?? []);
+      expect(buffers).toMatchObject(
+        streams.map(({ arrayStride, attributes }) => ({
+          arrayStride,
+          attributes: expect.arrayContaining(attributes),
+        })),
+      );
+      expect(Array.from(buffers[3]?.attributes ?? [])).toEqual([color]);
       const moduleIndex = modules.mock.results.findIndex(
         (result) => result.type === 'return' && result.value === descriptor.vertex.module,
       );
       expect(moduleIndex).toBeGreaterThanOrEqual(0);
       expect(modules.mock.calls[moduleIndex]?.[0].code).toMatch(/@location\(13\)\s+color/);
     }
-    expect(
-      descriptors.some(
-        (descriptor) =>
-          descriptor.label?.includes('default-shadow-caster') &&
-          Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64),
-      ),
-    ).toBe(true);
+    const casterInputs = descriptors
+      .filter((descriptor) => descriptor.label?.includes('default-shadow-caster'))
+      .map((descriptor) => Array.from(descriptor.vertex.buffers ?? []));
+    expect(casterInputs).toContainEqual(streams.slice(0, 2));
     const closed = await shot('closed');
     stage = 'revision2:prepare-candidate';
     const candidate = renderer

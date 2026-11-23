@@ -1,14 +1,89 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { expect, it, vi } from 'vitest';
 import {
   captureMaterialSnapshot,
   MaterialResource,
+  materialResource,
   ownedMaterialValues,
 } from '../material-resource';
+import { Materials } from '../materials';
 import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
-import { defaultMaterialSnapshot } from '../render-system-extract';
+import {
+  defaultMaterialSnapshot,
+  prepareMaterialSnapshot,
+  resolveMaterialSnapshot,
+  storeMaterialSnapshot,
+} from '../render-system-extract';
 import { projectFramePresentation } from '../render-system-presentation';
+
+it('retains the detached programs already built by material preparation', () => {
+  const assets = new AssetRegistry();
+  const scope = worldRenderResources(new World());
+  try {
+    const material = Materials.standard({ baseColor: [1, 1, 1, 1] });
+    const prepared = prepareMaterialSnapshot({
+      handle: 1,
+      material,
+      world: scope,
+      assets,
+      programSelections: undefined,
+    });
+    const accepted = storeMaterialSnapshot(new Map(), 1, prepared, scope);
+    expect(accepted.retry).toBeUndefined();
+    expect(accepted.snapshot.passes).toBe(prepared.passes);
+    expect(accepted.snapshot.materialProgramInputs).toBe(prepared.materialProgramInputs);
+    expect(Object.isFrozen(accepted.snapshot.passes[0]?.program)).toBe(true);
+  } finally {
+    assets.dispose();
+  }
+});
+
+it('retains program facts across managed value edits and refreshes them on a Pass change', () => {
+  const assets = new AssetRegistry();
+  const scope = worldRenderResources(new World({ assets }));
+  try {
+    const material = Materials.unlit([1, 1, 1, 1]);
+    const handle = assets.create(material).unwrap();
+    const cache = new Map();
+    const read = () => resolveMaterialSnapshot(handle, scope, assets, undefined, cache);
+    const first = read();
+    const resource = materialResource(first);
+    const pass = first.passes[0];
+    if (resource === undefined || pass === undefined)
+      throw new Error('expected a prepared material');
+    const firstProgram = resource.programObservation(pass);
+
+    assets.update(handle, { values: { baseColor: [0.5, 0.5, 1, 1] } }).unwrap();
+    expect(read().passes).toBe(first.passes);
+
+    assets.update(handle, { values: { baseColor: [0.25, 0.5, 1, 1] } }).unwrap();
+    const enumerate = vi.spyOn(Object, 'keys');
+    let edited: ReturnType<typeof read>;
+    try {
+      edited = read();
+      expect(enumerate.mock.calls.some(([value]) => value === first.passes)).toBe(false);
+      expect(enumerate.mock.calls.some(([value]) => value === pass.program)).toBe(false);
+    } finally {
+      enumerate.mockRestore();
+    }
+    expect(edited.passes).toBe(first.passes);
+    expect(edited.materialProgramInputs).toBe(first.materialProgramInputs);
+    expect(edited.materialContext).toBe(first.materialContext);
+    expect(materialResource(edited)?.programObservation(pass)).toBe(firstProgram);
+    expect([...edited.baseColor]).toEqual([0.25, 0.5, 1]);
+    expect([...first.baseColor]).toEqual([1, 1, 1]);
+
+    assets.replace(handle, Materials.standard({ baseColor: [1, 0, 0, 1] })).unwrap();
+    const replacement = read();
+    expect(replacement.passes).not.toBe(edited.passes);
+    expect(replacement.materialShaderId).not.toBe(edited.materialShaderId);
+    expect([...replacement.baseColor]).toEqual([1, 0, 0]);
+  } finally {
+    assets.dispose();
+  }
+});
 
 it('publishes a detached fixed ownership fact without repeated metadata inspection', () => {
   const source = { ...defaultMaterialSnapshot() };
@@ -38,6 +113,7 @@ it('shares only fully frozen program facts across value-only captures', () => {
   const key = { forward: 'shader/b' };
   const borrowed = captureMaterialSnapshot({ ...base, passes, materialProgramKeys: key });
   key.forward = 'shader/c';
+  expect(borrowed.passes).toBe(passes);
   expect(borrowed.materialProgramKeys?.forward).toBe('shader/b');
   expect(borrowed.materialProgramKeys).not.toBe(key);
 });

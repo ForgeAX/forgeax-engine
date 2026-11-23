@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { type ArtifactDescriptor, type AssetLoadError, err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssetReference } from '../internal/runtime-assets';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const GUID = '01900000-0000-7000-8000-000000000043';
 const PACKAGE = 'https://runtime.invalid/generic/pack.json';
@@ -38,13 +38,10 @@ function deferredPack(
   },
   beforeConsume?: (registry: AssetRegistry) => void,
 ) {
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    packageUrl: PACKAGE,
-    sourcePath: 'bundle.pack',
-    sourceRevision: '1',
-    pack: { assets: [{ guid: GUID, kind: kind.kind, payload: {}, refs: [], artifacts }] },
-  });
+  const publication = catalogPack(
+    [{ guid: GUID, kind: kind.kind, payload: {}, refs: [], artifacts }],
+    { packageUrl: PACKAGE, sourcePath: 'bundle.pack' },
+  );
   const pack = publication.pack;
   const originalPack = JSON.stringify(pack);
   const requests: { url: string; release: (response: Response) => void; released: boolean }[] = [];
@@ -95,16 +92,7 @@ function deferredPack(
   );
   registry.installDecoder(kind, { decode });
   registry.setCatalogSource({
-    enumerate: async () =>
-      ok([
-        {
-          guid: GUID,
-          kind: kind.kind,
-          packageUrl: PACKAGE,
-          sourcePath: 'bundle.pack',
-          publication: publication.publication,
-        },
-      ]),
+    enumerate: async () => ok(publication.rows),
     openPackage: () => fetcher,
     subscribe: () => () => {},
   });

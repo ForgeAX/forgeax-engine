@@ -1,5 +1,5 @@
 #define_import_path forgeax_atmosphere::luts
-#import forgeax_view::common::{View}
+#import forgeax_view::common::{View, view_atmosphere_fast_ap_samples}
 #import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample}
 #import forgeax_atmosphere::sampling::{atmosphere_aerial_integrate}
 #import forgeax_atmosphere::optics::{ATMOSPHERE_PI, atmosphere_medium, atmosphere_interval, atmosphere_sphere, atmosphere_segment, atmosphere_transmittance_ray, atmosphere_solar_transmittance, atmosphere_integrate, atmosphere_integrate_phases}
@@ -41,9 +41,18 @@ fn atmosphere_sky_view(@builtin(global_invocation_id) id: vec3<u32>) {
 fn atmosphere_aerial_perspective(@builtin(global_invocation_id) id: vec3<u32>) {
   let size=textureDimensions(output3d);
   if any(id>=size) { return; }
-  let ray=atmosphere_aerial_texel(parameters,id,size,transmittance,multiple,filtering);
+  let ray=atmosphere_aerial_texel(parameters,id,size,transmittance,multiple,filtering,64u);
   textureStore(output3d,vec3<i32>(id),vec4<f32>(ray.luminance,1.0));
   textureStore(outputTransmittance,vec3<i32>(id),vec4<f32>(ray.transmittance,1.0));
+}
+
+@compute @workgroup_size(4,4,4)
+fn atmosphere_aerial_perspective_fast(@builtin(global_invocation_id) id: vec3<u32>) {
+  let size=textureDimensions(output3d);
+  if any(id>=size) { return; }
+  let samples=view_atmosphere_fast_ap_samples(parameters,id.z);
+  let ray=atmosphere_aerial_texel(parameters,id,size,transmittance,multiple,filtering,samples);
+  textureStore(output3d,vec3<i32>(id),vec4<f32>(ray.luminance,dot(ray.transmittance,vec3<f32>(1.0/3.0))));
 }
 
 // Radiance tables store unit white illuminance responses to keep RGBA16F

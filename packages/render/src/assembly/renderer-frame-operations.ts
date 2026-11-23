@@ -37,6 +37,7 @@ export function runCompileMaterialPipeline(
   fragmentEntry: string | null | undefined,
   passKind: string,
   ctx: {
+    stockStandardVertexProgram?: boolean;
     layoutKind?: 'pbr-skin' | 'gpu-driven-skin' | 'gpu-driven-cluster-skin';
     vertexBuffers: readonly GPUVertexBufferLayout[];
     waterGroup2Layout?: import('@forgeax/engine-rhi').BindGroupLayout;

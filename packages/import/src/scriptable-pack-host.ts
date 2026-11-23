@@ -4,7 +4,6 @@ import { normalizeMeshPayload } from '@forgeax/engine-geometry';
 import {
   finalizePackageTransportSource,
   type PackageFinalizePolicy,
-  type PackageProductAsset,
   packageTransportRevision,
   type RuntimePackPublication,
   resolveAssetSource,
@@ -17,8 +16,9 @@ import {
 } from '@forgeax/engine-pack/native-cooker';
 import {
   declaredSourceGuids,
-  type LegacyPackInventoryDocument,
+  type PackInstanceResolution,
   type ScanSourceDeclaration,
+  type ScriptablePackSourceDeclaration,
 } from '@forgeax/engine-pack/scanner';
 import {
   type AnyScriptablePackDefinition,
@@ -28,23 +28,26 @@ import {
   projectScriptablePackSceneComponents,
   type ScriptablePackSourceClosureEntry,
 } from '@forgeax/engine-pack/source';
-import { isEngineMaterial } from '@forgeax/engine-shader';
+import {
+  createLazyScriptablePackDefinition,
+  type ScriptablePackModuleExecutorPool,
+  type ScriptablePackSourceSnapshot,
+} from '@forgeax/engine-pack/source-node';
 import type {
   Asset,
   AssetGuid as AssetGuidType,
   AssetPublicationEnvelope,
   AssetPublicationOutput,
   AssetRef,
-  ImportedArtifactBody,
   ImportedAsset,
-  MaterialAsset,
   ResourceRevision,
   Result,
 } from '@forgeax/engine-types';
 import { AssetError, createAssetPublication, err, ok } from '@forgeax/engine-types';
-import type { DdcPack, ImportRunnerFs, RunImportMeta } from './import-runner.js';
+import type { ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
 import { projectMaterialPackTransport } from './material-pack-transport.js';
+import { orderedPackProduction } from './ordered-pack-preparation.js';
 import { projectImportProductForBuild } from './pack-projection.js';
 import type {
   ScriptablePackAssetSnapshotSource,
@@ -52,20 +55,30 @@ import type {
   ScriptablePackStagedOutput,
 } from './scriptable-pack.js';
 import {
-  buildScriptablePack,
   buildScriptablePackWorklist,
+  createStandardAssetOutputProducerRegistry,
   type ScriptablePackBuildProduct,
   type ScriptablePackBuildWorkItem,
   type ScriptablePackBuildWorklistOptions,
   waterPackReferenceKindFailure,
 } from './scriptable-pack-build.js';
+import {
+  type PackOutputPlan,
+  planPackOutputMap,
+  sealPackOutputPlan,
+} from './scriptable-pack-build-core.js';
 import { scriptablePackFingerprintAsync } from './scriptable-pack-fingerprint.js';
 import { createPreExternalizedSceneAssetOutputProducer } from './scriptable-pack-output-producers.js';
-import { createScriptablePackProductCache } from './scriptable-pack-product-cache.js';
-import { createScriptablePackStagedAssetSnapshotSource } from './scriptable-pack-staged-snapshot.js';
+import {
+  bindScriptablePackMaterialGeneration,
+  createScriptablePackProductCache,
+} from './scriptable-pack-product-cache.js';
+import {
+  createScriptablePackStagedAssetSnapshotSource,
+  sourceWithPreparedPackOutputs,
+} from './scriptable-pack-staged-snapshot.js';
 import { createScriptablePackTransportCache } from './scriptable-pack-transport-cache.js';
 import { produceSourcePackage } from './source-package.js';
-import { createStandardAssetOutputProducerRegistry } from './standard-output-producers.js';
 
 type FinalizedPackageTransport = Awaited<ReturnType<typeof finalizePackageTransportSource>>;
 
@@ -80,7 +93,6 @@ export interface ScriptablePackInput {
     | ((product: ScriptablePackBuildProduct) => PackageFinalizePolicy);
   /** Opt in only for a pure, sink-free policy. Change this identity whenever its URL mapping changes. */
   readonly transportIdentity?: string;
-  readonly cookRuntimeOutputs?: true;
   readonly subjectPackageId?: PackageIdType;
   readonly values?: Readonly<Record<string, unknown>>;
   readonly inheritedValues?: Readonly<
@@ -88,10 +100,64 @@ export interface ScriptablePackInput {
   >;
 }
 
+export function planScriptablePackInputs(
+  declarations: ReadonlyMap<string, ScanSourceDeclaration>,
+  instances: ReadonlyMap<string, PackInstanceResolution>,
+  options: {
+    readonly sourceSnapshot: ScriptablePackSourceSnapshot;
+    readonly executors: ScriptablePackModuleExecutorPool;
+    readonly enginePackageRoot?: string | undefined;
+    readonly displayPath: (sourcePath: string) => string;
+    readonly generationFor: (displayPath: string) => number;
+    readonly policy: (packageId: PackageIdType) => ScriptablePackInput['policy'];
+    readonly transportIdentity: (packageId: PackageIdType) => string;
+    readonly executionBudget?: (displayPath: string) => 'production' | 'interactive';
+  },
+): ScriptablePackInput[] {
+  const inputFor = (
+    root: ScriptablePackSourceDeclaration,
+    sourcePath: string,
+    packageId: PackageIdType,
+  ): ScriptablePackInput => {
+    const displaySourcePath = options.displayPath(sourcePath);
+    const executionBudget = options.executionBudget?.(displaySourcePath);
+    return {
+      sourcePath,
+      displaySourcePath,
+      definition: createLazyScriptablePackDefinition({
+        sourcePath: root.sourcePath,
+        definition: root.definition,
+        sourceClosure: root.sourceClosure,
+        sourceSnapshot: options.sourceSnapshot,
+        executors: options.executors,
+        ...(options.enginePackageRoot === undefined
+          ? {}
+          : { packageBinding: { name: '@forgeax/engine', root: options.enginePackageRoot } }),
+        ...(executionBudget === undefined ? {} : { executionBudget }),
+      }),
+      sourceClosure: root.sourceClosure,
+      publicationGeneration: options.generationFor(displaySourcePath),
+      policy: options.policy(packageId),
+      transportIdentity: options.transportIdentity(packageId),
+    };
+  };
+  const roots = [...declarations.values()].filter((source) => source.format === 'pack.ts');
+  roots.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  return [
+    ...roots.map((root) => inputFor(root, root.sourcePath, root.definition.packageId)),
+    ...[...instances]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([sourcePath, instance]) => ({
+        ...inputFor(instance.root, sourcePath, instance.packageId),
+        subjectPackageId: instance.packageId,
+        values: instance.values,
+      })),
+  ];
+}
+
 export interface PreparedScriptablePack {
   readonly product: ScriptablePackBuildProduct;
   readonly finalized: FinalizedPackageTransport;
-  readonly facts: ScriptablePackPublicationFacts;
   readonly revision: ResourceRevision;
   readonly publication: AssetPublicationEnvelope;
 }
@@ -112,11 +178,6 @@ export interface ScriptablePackProductionOptions {
   readonly maxPasses?: number;
   readonly maxConcurrency?: number;
   readonly onProgress?: ScriptablePackBuildWorklistOptions['onProgress'];
-}
-
-export interface ScriptablePackPublicationFacts {
-  readonly outputs: readonly AssetPublicationOutput[];
-  readonly refs: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface ScriptablePackTransportPaths {
@@ -197,7 +258,6 @@ export async function declaredPackExternalOutputs(
           ...(sourceKey === undefined ? {} : { sourceKey }),
           kind,
         })),
-        buildPack: false,
       };
       const sourcePackage = await produceSourcePackage({
         meta,
@@ -221,66 +281,47 @@ export async function declaredPackExternalOutputs(
       continue;
     }
     if (declaration.format !== 'pack.json') continue;
-    if (declaration.value.schemaVersion === '3.0.0') {
-      const parsed = declaration.value;
-      if (parsed.format !== 'direct') continue;
-      const full = projectDirectPackJson(parsed);
-      const projected = {
-        ...full,
-        assets: full.assets.filter((asset) => required.has(asset.guid.toLowerCase())),
-      };
-      if (projected.assets.length === 0) continue;
-      const prepared = await prepareDirectPackTransport({
-        projected,
-        sourcePath: declaration.sourcePath,
-        sourceRevision: declaration.sourceRevision,
-        availableGuids: available,
-        // These are staged content inputs. Both hosts validate the direct Pack
-        // again against the complete generation before publishing it.
-        deferReferenceValidation: true,
-        ...(cookers.length === 0 ? {} : { cookers }),
-        policy: {
-          base: '/',
-          packagePath: `assets/${projected.packageId}.pack.json`,
-          artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
-        },
-      });
-      if (!prepared.ok) throw prepared.error;
-      // Content reads receive the producer payload; the finalized transport payload
-      // omits data that its artifacts carry.
-      const cookedByGuid = new Map(
-        prepared.value.product.product.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
-      );
-      for (const asset of projected.assets) {
-        if (!required.has(asset.guid.toLowerCase())) continue;
-        const parsedGuid = AssetGuid.parse(asset.guid);
-        if (!parsedGuid.ok) throw parsedGuid.error;
-        const cooked = cookedByGuid.get(asset.guid.toLowerCase());
-        if (cooked === undefined) {
-          throw new AssetError({
-            code: 'asset-not-imported',
-            expected: 'the direct Pack producer to retain every declared output',
-            hint: 'repair the direct Pack output and rerun the Pack build',
-            detail: { sourcePath: declaration.sourcePath },
-          });
-        }
-        outputs.push({
-          guid: parsedGuid.value,
-          sourceKey: asset.sourceKey,
-          asset: { kind: cooked.kind, ...(cooked.payload as Record<string, unknown>) } as Asset,
-        });
-      }
-      continue;
-    }
-    const cooked = await readCookedAuthoredPack(declaration.value, cookers, declaration.sourcePath);
-    for (const asset of cooked?.logicalPackage.assets ?? declaration.value.assets) {
+    const parsed = declaration.value;
+    if (parsed.format !== 'direct') continue;
+    const full = projectDirectPackJson(parsed);
+    const projected = {
+      ...full,
+      assets: full.assets.filter((asset) => required.has(asset.guid.toLowerCase())),
+    };
+    if (projected.assets.length === 0) continue;
+    const prepared = await produceDirectPackProduct({
+      projected,
+      sourcePath: declaration.sourcePath,
+      sourceRevision: declaration.sourceRevision,
+      availableGuids: available,
+      // These are staged content inputs. Both hosts validate the direct Pack
+      // again against the complete generation before publishing it.
+      deferReferenceValidation: true,
+      ...(cookers.length === 0 ? {} : { cookers }),
+    });
+    if (!prepared.ok) throw prepared.error;
+    // Content reads receive the producer payload; the finalized transport payload
+    // omits data that its artifacts carry.
+    const cookedByGuid = new Map(
+      prepared.value.product.assets.map((asset) => [asset.guid.toLowerCase(), asset]),
+    );
+    for (const asset of projected.assets) {
       if (!required.has(asset.guid.toLowerCase())) continue;
       const parsedGuid = AssetGuid.parse(asset.guid);
       if (!parsedGuid.ok) throw parsedGuid.error;
+      const cooked = cookedByGuid.get(asset.guid.toLowerCase());
+      if (cooked === undefined) {
+        throw new AssetError({
+          code: 'asset-not-imported',
+          expected: 'the direct Pack producer to retain every declared output',
+          hint: 'repair the direct Pack output and rerun the Pack build',
+          detail: { sourcePath: declaration.sourcePath },
+        });
+      }
       outputs.push({
         guid: parsedGuid.value,
-        sourceKey: asset.sourceKey ?? asset.guid,
-        asset: { ...asset.payload, kind: asset.kind } as Asset,
+        sourceKey: asset.sourceKey,
+        asset: { kind: cooked.kind, ...(cooked.payload as Record<string, unknown>) } as Asset,
       });
     }
   }
@@ -301,12 +342,9 @@ export function createDeclaredPackAssetSnapshotSource(
       .filter((guid) => available.has(guid.toLowerCase()))
       .map(directGuid);
     if (owned.length === 0) return [];
-    // Direct entries have independent producers. Meta and legacy sources retain
+    // Direct entries have independent producers. Meta sources retain
     // whole-source ownership because their importers may produce a shared closure.
-    const direct =
-      declaration.format === 'pack.json' &&
-      declaration.value.schemaVersion === '3.0.0' &&
-      declaration.value.format === 'direct';
+    const direct = declaration.format === 'pack.json' && declaration.value.format === 'direct';
     const groups = direct ? owned.map((guid) => [guid]) : [owned];
     return groups.map((guids) => ({
       id: direct
@@ -371,101 +409,12 @@ export function createDeclaredPackAssetSnapshotSource(
   };
 }
 
-/** Cook the explicit legacy Pack v2 transport without exposing v1 authoring APIs. */
-export async function readCookedAuthoredPack(
-  authoredPack: LegacyPackInventoryDocument,
-  cookers: readonly NativeCooker[] = [],
-  sourcePath?: string,
-): Promise<
-  | {
-      readonly logicalPackage: Pick<DdcPack, 'assets'>;
-      readonly refsByGuid: ReadonlyMap<string, readonly string[]>;
-    }
-  | undefined
-> {
-  if (authoredPack.schemaVersion !== '2.0.0') return undefined;
-  const registry = new NativeCookerRegistry();
-  for (const cooker of cookers) registry.register(cooker);
-  const assets: PackageProductAsset[] = [];
-  const refsByGuid = new Map<string, readonly string[]>();
-  let hasCookedAsset = false;
-  for (const asset of authoredPack.assets) {
-    if (asset.execution !== 'cooked') {
-      assets.push({
-        guid: asset.guid,
-        kind: asset.kind,
-        ...(asset.name === undefined ? {} : { name: asset.name }),
-        payload: asset.payload,
-        refs: asset.refs,
-        artifacts: {},
-      });
-      continue;
-    }
-    if (isEngineOwnedMaterial(asset)) {
-      // Engine-owned material payloads are already cooked, but a legacy Pack
-      // source still needs to be projected into the runtime transport route.
-      // Mark the package as cooked so prepareLegacyPackTransport stages a
-      // published body instead of falling back to the source URL, which the
-      // dev route intentionally rejects for cooked v2 inputs.
-      hasCookedAsset = true;
-      refsByGuid.set(asset.guid.toLowerCase(), [...asset.refs]);
-      assets.push({
-        guid: asset.guid,
-        kind: asset.kind,
-        ...(asset.name === undefined ? {} : { name: asset.name }),
-        payload: asset.payload,
-        refs: asset.refs,
-        artifacts: {},
-      });
-      continue;
-    }
-    hasCookedAsset = true;
-    const result = await registry.runDraft(asset.kind, {
-      guid: asset.guid,
-      // Pack v2 stores the asset kind beside payload. Native producer APIs
-      // consume the runtime Asset shape, so reconstruct that one boundary
-      // field before invoking the cooker.
-      source: nativeCookSource(asset),
-      ...(asset.sourceKey === undefined ? {} : { sourceKey: asset.sourceKey }),
-      ...(sourcePath === undefined ? {} : { sourcePath }),
-      refs: asset.refs,
-    });
-    if (!result.ok) throw result.error;
-    const draft = result.value;
-    refsByGuid.set(asset.guid.toLowerCase(), [...draft.refs]);
-    assets.push({
-      guid: draft.guid,
-      kind: asset.kind,
-      ...(asset.name === undefined ? {} : { name: asset.name }),
-      payload: draft.payload as Record<string, unknown>,
-      refs: [...draft.refs],
-      artifacts: draft.artifacts,
-    });
-  }
-  return hasCookedAsset
-    ? {
-        logicalPackage: { assets },
-        refsByGuid,
-      }
-    : undefined;
-}
-
-export interface LegacyPackTransport {
-  readonly pack: LegacyPackInventoryDocument;
-  readonly firstGuid?: string;
-  readonly cooked?: Awaited<ReturnType<typeof readCookedAuthoredPack>>;
-  readonly finalized?: FinalizedPackageTransport;
-}
-
-export interface DirectPackTransport {
+export interface DirectPackTransport extends Omit<PreparedScriptablePack, 'publication'> {
+  readonly outputs: readonly AssetPublicationOutput[];
   readonly projected: {
     readonly packageId: string;
     readonly assets: readonly DirectPackAssetProjection[];
   };
-  readonly product: ScriptablePackBuildProduct;
-  readonly finalized: FinalizedPackageTransport;
-  readonly facts: ScriptablePackPublicationFacts;
-  readonly revision: ResourceRevision;
 }
 
 export interface DirectPackTransportInput {
@@ -502,21 +451,26 @@ function mergeDirectReferences(
   return merged;
 }
 
-function directReferenceFailure(
-  sourcePath: string,
-  guids: readonly string[],
-): {
-  readonly code: 'pack-output-reference-missing';
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: { readonly sourcePath: string; readonly guids: readonly string[] };
-} {
-  return {
-    code: 'pack-output-reference-missing',
-    expected: 'every direct Pack reference to resolve to a local or published AssetGuid',
-    hint: 'publish the referenced Pack or repair the direct refs before rebuilding the Pack',
-    detail: { sourcePath, guids: [...guids].sort() },
-  };
+function validateDirectReferences(
+  input: DirectPackProductionInput,
+  assets: readonly ImportedAsset<unknown>[],
+  known: ReadonlySet<string>,
+): Result<void, unknown> {
+  if (input.deferReferenceValidation) return ok(undefined);
+  const missing = new Set<string>();
+  for (const asset of assets) {
+    for (const reference of asset.refs) {
+      if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
+    }
+  }
+  return missing.size === 0
+    ? ok(undefined)
+    : err({
+        code: 'pack-output-reference-missing',
+        expected: 'every direct Pack reference to resolve to a local or published AssetGuid',
+        hint: 'publish the referenced Pack or repair the direct refs before rebuilding the Pack',
+        detail: { sourcePath: input.sourcePath, guids: [...missing].sort() },
+      });
 }
 
 function directInputFingerprint(
@@ -532,23 +486,24 @@ function directInputFingerprint(
   })}`;
 }
 
-function importedAssetArtifacts(
-  assets: readonly ImportedAsset<unknown>[],
-): Readonly<Record<string, ImportedArtifactBody>> {
-  return Object.fromEntries(
-    assets.flatMap((asset) =>
-      Object.entries(asset.artifacts).map(([key, artifact]) => [`${asset.guid}/${key}`, artifact]),
-    ),
-  );
+function directStagedOutputs(assets: readonly DirectPackAssetProjection[]) {
+  return assets.map((asset) => ({
+    guid: directGuid(asset.guid),
+    sourceKey: asset.sourceKey,
+    asset: directAssetForProducer(asset),
+    digest: `sha256:${packageTransportRevision({ kind: asset.kind, payload: asset.payload })}`,
+  }));
 }
 
-function rawDirectProduct(input: DirectPackTransportInput): ScriptablePackBuildProduct {
+function planRawDirectPack(
+  input: DirectPackProductionInput,
+): Omit<PackOutputPlan, 'stagedOutputs'> {
   const inputFingerprint = `sha256:${packageTransportRevision({
     packageId: input.projected.packageId,
     sourceRevision: input.sourceRevision,
     assets: input.projected.assets,
   })}`;
-  const assets: ImportedAsset<unknown>[] = input.projected.assets.map((asset) => ({
+  const imported = input.projected.assets.map((asset) => ({
     guid: asset.guid,
     kind: asset.kind,
     ...(asset.name === undefined ? {} : { name: asset.name }),
@@ -557,32 +512,10 @@ function rawDirectProduct(input: DirectPackTransportInput): ScriptablePackBuildP
     artifacts: {},
   }));
   return {
-    product: {
-      assets,
-      sourceDependencies: [input.sourcePath],
-      refs: assets.flatMap((asset) => asset.refs),
-      artifacts: importedAssetArtifacts(assets),
-      receipts: assets.map((asset) => ({
-        guid: asset.guid,
-        origin: 'authoredPack' as const,
-        status: 'succeeded' as const,
-        inputFingerprint,
-      })),
-      diagnostics: [],
-      sourceRevision: inputFingerprint,
-      sourceKey: input.sourcePath,
-    },
-    stagedOutputs: input.projected.assets.map((asset) => ({
-      guid: directGuid(asset.guid),
-      sourceKey: asset.sourceKey,
-      asset: {
-        ...(directRuntimePayload(asset) as Record<string, unknown>),
-        kind: asset.kind,
-      } as Asset,
-      digest: `sha256:${packageTransportRevision({ kind: asset.kind, payload: asset.payload })}`,
-    })),
+    imported,
     externalEvidence: [],
     inputFingerprint,
+    sourceDependencies: [input.sourcePath],
   };
 }
 
@@ -612,19 +545,15 @@ function nativeCookSource(asset: { readonly kind: string; readonly payload: unkn
   return { ...(asset.payload as Record<string, unknown>), kind: asset.kind };
 }
 
-function isEngineOwnedMaterial(asset: {
-  readonly kind: string;
-  readonly payload: unknown;
-}): boolean {
-  if (
-    asset.kind !== 'material' ||
-    asset.payload === null ||
-    typeof asset.payload !== 'object' ||
-    Array.isArray(asset.payload)
-  ) {
-    return false;
-  }
-  return isEngineMaterial(asset.payload as Pick<MaterialAsset, 'passes'>);
+/** Shared native cooker input for an output from a direct v3 declaration. */
+export function directPackCookInput(asset: DirectPackAssetProjection, sourcePath: string) {
+  return {
+    guid: asset.guid,
+    source: nativeCookSource(asset),
+    sourceKey: asset.sourceKey,
+    sourcePath,
+    refs: asset.refs,
+  };
 }
 
 function directRuntimePayload(asset: DirectPackAssetProjection): unknown {
@@ -650,54 +579,50 @@ function directAssetForProducer(asset: DirectPackAssetProjection): Asset {
 
 /** Cook only opted-in siblings together; drain each bounded batch before returning a failure. */
 async function cookDirectPackDrafts(
-  input: DirectPackTransportInput,
+  input: DirectPackProductionInput,
   registry: NativeCookerRegistry,
-): Promise<Result<readonly NativeCookDraft[], unknown>> {
+): Promise<Result<ReadonlyMap<string, NativeCookDraft>, unknown>> {
   const assets = input.projected.assets.filter(
     (asset) => isScriptablePackAssetKind(asset.kind) && registry.get(asset.kind) !== undefined,
   );
-  const drafts: NativeCookDraft[] = [];
-  const parallel = (index: number): boolean => {
-    const asset = assets[index];
-    return asset !== undefined && registry.get(asset.kind)?.concurrency === 'parallel';
-  };
-  for (let index = 0; index < assets.length; ) {
-    let end = index + 1;
-    if (parallel(index)) {
-      while (end < Math.min(index + 4, assets.length) && parallel(end)) end++;
-    }
-    const batch = assets.slice(index, end);
-    const results = await Promise.all(
-      batch.map(async (asset) => ({
-        asset,
-        draft: await registry.runDraft(asset.kind, {
-          guid: asset.guid,
-          source: nativeCookSource(asset),
-          sourceKey: asset.sourceKey,
+  const materialTable = Object.fromEntries(
+    assets
+      .filter((asset) => asset.kind === 'material')
+      .map((asset) => [asset.guid, nativeCookSource(asset)]),
+  );
+  const drafts = new Map<string, NativeCookDraft>();
+  const parallel = (asset: DirectPackAssetProjection) =>
+    registry.get(asset.kind)?.concurrency === 'parallel';
+  const cook = async (asset: DirectPackAssetProjection) => {
+    const draft = await registry.runDraft(asset.kind, {
+      ...directPackCookInput(asset, input.sourcePath),
+      ...(asset.kind === 'material' ? { publication: 'templates', table: materialTable } : {}),
+    });
+    if (!draft.ok) return draft;
+    const guid = asset.guid.toLowerCase();
+    if (draft.value.guid.toLowerCase() !== guid)
+      return err({
+        code: 'pack-parameter-invalid',
+        expected: 'a direct Pack cooker to preserve the derived AssetGuid',
+        hint: 'repair the native cooker output GUID and rebuild the direct Pack',
+        detail: {
           sourcePath: input.sourcePath,
-          refs: asset.refs,
-          ...(asset.kind === 'material' ? { publication: 'templates' } : {}),
-        }),
-      })),
-    );
-    for (const { asset, draft } of results) {
-      if (!draft.ok) return err(draft.error);
-      if (draft.value.guid.toLowerCase() !== asset.guid.toLowerCase()) {
-        return err({
-          code: 'pack-parameter-invalid',
-          expected: 'a direct Pack cooker to preserve the derived AssetGuid',
-          hint: 'repair the native cooker output GUID and rebuild the direct Pack',
-          detail: {
-            sourcePath: input.sourcePath,
-            sourceKey: asset.sourceKey,
-            expectedGuid: asset.guid,
-            actualGuid: draft.value.guid,
-          },
-        });
-      }
-      drafts.push(draft.value);
-    }
-    index = end;
+          sourceKey: asset.sourceKey,
+          expectedGuid: asset.guid,
+          actualGuid: draft.value.guid,
+        },
+      });
+    return ok({ guid, draft: draft.value });
+  };
+  for await (const result of orderedPackProduction(
+    assets,
+    parallel,
+    cook,
+    (result) => !result.ok,
+  )) {
+    if (result.status === 'rejected') throw result.reason;
+    if (!result.value.ok) return result.value;
+    drafts.set(result.value.value.guid, result.value.value.draft);
   }
   return ok(drafts);
 }
@@ -706,6 +631,26 @@ async function cookDirectPackDrafts(
 export async function prepareDirectPackTransport(
   input: DirectPackTransportInput,
 ): Promise<Result<DirectPackTransport, unknown>> {
+  const product = await produceDirectPackProduct(input);
+  if (!product.ok) return product;
+  const finalized = await finalizePackageTransportSource(
+    projectImportProductForBuild(product.value.product),
+    input.policy,
+  );
+  const transport = await projectPackProductTransport(
+    product.value,
+    finalized,
+    input.displaySourcePath ?? input.sourcePath,
+    [{ path: input.sourcePath, digest: input.sourceRevision }],
+  );
+  return transport.ok ? ok({ ...transport.value, projected: input.projected }) : transport;
+}
+
+type DirectPackProductionInput = Omit<DirectPackTransportInput, 'policy' | 'displaySourcePath'>;
+
+async function produceDirectPackProduct(
+  input: DirectPackProductionInput,
+): Promise<Result<ScriptablePackBuildProduct, unknown>> {
   const localGuids = new Set(input.projected.assets.map((asset) => asset.guid.toLowerCase()));
   const availableGuids = new Set(
     [...(input.availableGuids ?? [])].filter((guid) => !localGuids.has(guid.toLowerCase())),
@@ -727,15 +672,7 @@ export async function prepareDirectPackTransport(
   for (const cooker of input.cookers ?? []) cookerRegistry.register(cooker);
   const cookedDrafts = await cookDirectPackDrafts(input, cookerRegistry);
   if (!cookedDrafts.ok) return cookedDrafts;
-  const nativeDrafts = new Map(
-    cookedDrafts.value.map((draft) => [draft.guid.toLowerCase(), draft]),
-  );
-  const nativeFingerprints = new Map(
-    input.projected.assets.flatMap((asset) => {
-      const draft = nativeDrafts.get(asset.guid.toLowerCase());
-      return draft === undefined ? [] : [[asset.sourceKey, draft.inputFingerprint] as const];
-    }),
-  );
+  const nativeDrafts = cookedDrafts.value;
   const unsupported = input.projected.assets.filter(
     (asset) => !isScriptablePackAssetKind(asset.kind),
   );
@@ -750,105 +687,71 @@ export async function prepareDirectPackTransport(
       },
     });
   }
-  if (unsupported.length === input.projected.assets.length) {
-    const raw = rawDirectProduct(input);
-    const validateRawReferences = () => {
-      const known = new Set([...availableGuids, ...localGuids]);
-      const missing = new Set<string>();
-      for (const asset of raw.product.assets) {
-        for (const reference of asset.refs) {
-          if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
-        }
-      }
-      if (missing.size > 0 && !input.deferReferenceValidation)
-        return err(directReferenceFailure(input.sourcePath, [...missing]));
+  const known = new Set([...availableGuids, ...localGuids]);
+  const plan =
+    unsupported.length === input.projected.assets.length
+      ? ok(planRawDirectPack(input))
+      : await planDirectPack(input, packageId.value, nativeDrafts, availableGuids);
+  if (!plan.ok) return plan;
+  const references = validateDirectReferences(input, plan.value.imported, known);
+  if (!references.ok) return references;
+  return sealPackOutputPlan(input.sourcePath, {
+    ...plan.value,
+    stagedOutputs: directStagedOutputs(input.projected.assets),
+  });
+}
 
-      return undefined;
-    };
-    const referenceFailure = validateRawReferences();
-    if (referenceFailure !== undefined) return referenceFailure;
-    const finalized = await finalizePackageTransportSource(
-      projectImportProductForBuild(raw.product),
-      input.policy,
-    );
-    const facts = projectScriptablePackPublication(raw);
-    if (!facts.ok) return facts;
-    const displaySourcePath = input.displaySourcePath ?? input.sourcePath;
-    const revision = await scriptablePackResourceRevision(displaySourcePath, raw.inputFingerprint, [
-      { path: input.sourcePath, digest: input.sourceRevision },
-    ]);
-    return ok({
-      projected: input.projected,
-      product: raw,
-      finalized,
-      facts: facts.value,
-      revision,
-    });
-  }
-  const definition = {
-    schemaVersion: '2.0.0' as const,
-    packageId: packageId.value,
-    ...(input.projected.assets.some((asset) => asset.kind === 'plugin')
-      ? { plugins: true as const }
-      : {}),
-    build: () =>
-      ok(
-        Object.fromEntries(
-          input.projected.assets.map((asset) => [
-            asset.sourceKey,
-            {
-              ...((nativeDrafts.get(asset.guid.toLowerCase())?.payload as
-                | Record<string, unknown>
-                | undefined) ?? directAssetForProducer(asset)),
-              kind: asset.kind,
-            } as Asset,
-          ]),
-        ),
-      ),
-  } as AnyScriptablePackDefinition;
+async function planDirectPack(
+  input: DirectPackProductionInput,
+  packageId: PackageIdType,
+  nativeDrafts: ReadonlyMap<string, NativeCookDraft>,
+  availableGuids: ReadonlySet<string>,
+): Promise<Result<Omit<PackOutputPlan, 'stagedOutputs'>, unknown>> {
+  const source = Object.fromEntries(
+    input.projected.assets.map((asset) => [
+      asset.sourceKey,
+      {
+        ...((nativeDrafts.get(asset.guid.toLowerCase())?.payload as
+          | Record<string, unknown>
+          | undefined) ?? directAssetForProducer(asset)),
+        kind: asset.kind,
+      } as Asset,
+    ]),
+  );
   const outputs = createStandardAssetOutputProducerRegistry();
   outputs.register(createPreExternalizedSceneAssetOutputProducer());
-  const built = await buildScriptablePack({
-    definition,
-    sourcePath: input.sourcePath,
-    outputs,
-    sourceClosure: [{ path: input.sourcePath, digest: input.sourceRevision }],
-    availableGuids,
-    deferReferenceValidation: true,
-  });
+  const built = await planPackOutputMap(
+    {
+      sourcePath: input.sourcePath,
+      outputs,
+      sourceClosure: [{ path: input.sourcePath, digest: input.sourceRevision }],
+      availableGuids,
+      deferReferenceValidation: true,
+    },
+    packageId,
+    source,
+    input.projected.assets.some((asset) => asset.kind === 'plugin') ? true : undefined,
+  );
   if (!built.ok) return built;
-  const declaredByGuid = new Map(
+  const declared = new Map(
     input.projected.assets.map((asset) => [asset.guid.toLowerCase(), asset.refs]),
   );
-  const assets = built.value.product.assets.map((asset) => ({
-    ...asset,
-    ...(nativeDrafts.has(asset.guid.toLowerCase())
-      ? {
-          payload: nativeDrafts.get(asset.guid.toLowerCase())?.payload as Record<string, unknown>,
-          refs: mergeDirectReferences(
-            nativeRefs(nativeDrafts.get(asset.guid.toLowerCase())?.refs ?? []),
-            declaredByGuid.get(asset.guid.toLowerCase()) ?? [],
-          ),
-          artifacts: nativeDrafts.get(asset.guid.toLowerCase())?.artifacts ?? {},
-        }
-      : {
-          refs: mergeDirectReferences(
-            asset.refs,
-            declaredByGuid.get(asset.guid.toLowerCase()) ?? [],
-          ),
-        }),
-  }));
-  const missing = new Set<string>();
-  const known = new Set([...availableGuids, ...localGuids]);
+  const assets = built.value.imported.map((asset) => {
+    const guid = asset.guid.toLowerCase();
+    const draft = nativeDrafts.get(guid);
+    return {
+      ...asset,
+      ...(draft === undefined ? {} : { payload: draft.payload, artifacts: draft.artifacts }),
+      refs: mergeDirectReferences(
+        draft === undefined ? asset.refs : nativeRefs(draft.refs),
+        declared.get(guid) ?? [],
+      ),
+    };
+  });
   const knownKinds = new Map(
     [...(input.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
   );
   for (const asset of input.projected.assets) knownKinds.set(asset.guid.toLowerCase(), asset.kind);
-  for (const asset of assets) {
-    for (const reference of asset.refs) {
-      if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
-    }
-  }
   for (const asset of input.projected.assets) {
     const kindFailure = waterPackReferenceKindFailure(
       input.sourcePath,
@@ -858,80 +761,27 @@ export async function prepareDirectPackTransport(
     );
     if (kindFailure !== undefined) return err(kindFailure);
   }
-  if (missing.size > 0 && !input.deferReferenceValidation)
-    return err(directReferenceFailure(input.sourcePath, [...missing]));
-  const inputFingerprint = directInputFingerprint(built.value.inputFingerprint, nativeFingerprints);
-  const stagedOutputs = input.projected.assets.map((asset) => ({
-    guid: directGuid(asset.guid),
-    sourceKey: asset.sourceKey,
-    asset: directAssetForProducer(asset),
-    digest: `sha256:${packageTransportRevision({ kind: asset.kind, payload: asset.payload })}`,
-  }));
-  const product: ScriptablePackBuildProduct = {
-    ...built.value,
-    inputFingerprint,
-    stagedOutputs,
-    product: {
-      ...built.value.product,
-      assets,
-      refs: assets.flatMap((asset) => asset.refs),
-      artifacts: importedAssetArtifacts(assets),
-      receipts: built.value.product.receipts.map((receipt) => ({
-        ...receipt,
-        inputFingerprint,
-      })),
-      sourceRevision: inputFingerprint,
-    },
-  };
-  const finalized = await finalizePackageTransportSource(
-    projectImportProductForBuild(product.product),
-    input.policy,
-  );
-  const facts = projectScriptablePackPublication(product);
-  if (!facts.ok) return facts;
-  const displaySourcePath = input.displaySourcePath ?? input.sourcePath;
-  const revision = await scriptablePackResourceRevision(
-    displaySourcePath,
-    product.inputFingerprint,
-    [{ path: input.sourcePath, digest: input.sourceRevision }],
-  );
-  return ok({
-    projected: input.projected,
-    product,
-    finalized,
-    facts: facts.value,
-    revision,
-  });
-}
-
-/** Normalize one explicit Pack v2 transport and invoke its registered cookers once. */
-export async function prepareLegacyPackTransport(
-  authoredPack: LegacyPackInventoryDocument,
-  cookers: readonly NativeCooker[] | undefined,
-  policyFor: (guid: string) => PackageFinalizePolicy,
-  sourcePath?: string,
-): Promise<LegacyPackTransport> {
-  const firstGuid = authoredPack.assets[0]?.guid?.toLowerCase();
-  if (authoredPack.schemaVersion !== '2.0.0' || firstGuid === undefined) {
-    return { pack: authoredPack, ...(firstGuid === undefined ? {} : { firstGuid }) };
+  const fingerprints = new Map<string, string>();
+  for (const asset of input.projected.assets) {
+    const draft = nativeDrafts.get(asset.guid.toLowerCase());
+    if (draft !== undefined) fingerprints.set(asset.sourceKey, draft.inputFingerprint);
   }
-  const cooked = await readCookedAuthoredPack(authoredPack, cookers, sourcePath);
-  if (cooked === undefined) return { pack: authoredPack, firstGuid };
-  return {
-    pack: authoredPack,
-    firstGuid,
-    cooked,
-    finalized: await finalizePackageTransportSource(cooked.logicalPackage, policyFor(firstGuid)),
-  };
+  return ok({
+    imported: assets,
+    externalEvidence: built.value.externalEvidence,
+    inputFingerprint: directInputFingerprint(built.value.inputFingerprint, fingerprints),
+    sourceDependencies: built.value.sourceDependencies,
+  });
 }
 
 /** Materialize a dynamic Pack product through the same dev transport seam. */
 export async function materializePreparedScriptablePack(
-  prepared: PreparedScriptablePack,
+  prepared: Pick<PreparedScriptablePack, 'product' | 'finalized'>,
   paths: ScriptablePackTransportPaths,
   sink: ScriptablePackTransportSink,
   pack: FinalizedPackageTransport['pack'] | RuntimePackPublication['pack'] = prepared.finalized
     .pack,
+  delivery: 'scriptable' | 'direct' = 'scriptable',
 ): Promise<ReadonlyMap<string, string>> {
   const { product, finalized } = prepared;
   await sink.writePackage(paths.packagePath, JSON.stringify(projectMaterialPackTransport(pack)));
@@ -939,30 +789,33 @@ export async function materializePreparedScriptablePack(
     await sink.writeArtifact(
       paths.artifactPath(artifact.path),
       artifact.bytes,
-      artifact.path.endsWith('.json') ? 'application/json' : artifact.mediaType,
+      delivery === 'scriptable' && artifact.path.endsWith('.json')
+        ? 'application/json'
+        : artifact.mediaType,
     );
   }
   const receipts = new Map<string, string>();
-  for (const asset of product.product.assets) {
-    const path = paths.receiptPath(asset.guid);
-    await sink.writeReceipt(
-      path,
-      JSON.stringify({
-        guid: asset.guid,
-        origin: 'sourceMeta',
-        status: 'succeeded',
-        inputFingerprint: product.inputFingerprint,
-        outputDigest: finalized.digest,
-      }),
-    );
-    receipts.set(asset.guid.toLowerCase(), path);
+  const rows =
+    delivery === 'direct'
+      ? product.product.receipts
+      : product.product.assets.map(({ guid }) => ({
+          guid,
+          origin: 'sourceMeta',
+          status: 'succeeded',
+          inputFingerprint: product.inputFingerprint,
+        }));
+  for (const receipt of rows) {
+    const guid = receipt.guid.toLowerCase();
+    const path = paths.receiptPath(delivery === 'direct' ? guid : receipt.guid);
+    await sink.writeReceipt(path, JSON.stringify({ ...receipt, outputDigest: finalized.digest }));
+    receipts.set(guid, path);
   }
   return receipts;
 }
 
 function projectScriptablePackPublication(
   product: ScriptablePackBuildProduct,
-): Result<ScriptablePackPublicationFacts, ScriptablePackDomainError> {
+): Result<readonly AssetPublicationOutput[], ScriptablePackDomainError> {
   const assets = new Map(product.product.assets.map((asset) => [asset.guid.toLowerCase(), asset]));
   const outputs: AssetPublicationOutput[] = [];
   for (const staged of product.stagedOutputs) {
@@ -984,59 +837,7 @@ function projectScriptablePackPublication(
       refs: asset.refs.map((reference) => reference.guid),
     });
   }
-  return ok({
-    outputs,
-    refs: new Map(
-      product.product.assets.map((asset) => [
-        asset.guid.toLowerCase(),
-        asset.refs.map((reference) => reference.guid),
-      ]),
-    ),
-  });
-}
-
-function snapshotSourceForStagedOutputs(
-  outputs: readonly ScriptablePackStagedOutput[],
-): import('./scriptable-pack.js').ScriptablePackAssetSnapshotSource | undefined {
-  if (outputs.length === 0) return undefined;
-  const byGuid = new Map(
-    outputs.map((output) => [AssetGuid.format(output.guid).toLowerCase(), output]),
-  );
-  return {
-    async readByGuid(guid) {
-      const key = AssetGuid.format(guid).toLowerCase();
-      const output = byGuid.get(key);
-      if (output === undefined) {
-        return err(
-          new AssetError({
-            code: 'asset-not-found',
-            expected: `an available Asset snapshot for ${key}`,
-            hint: 'publish the referenced Pack or repair the content dependency',
-          }),
-        );
-      }
-      return ok({
-        asset: structuredClone(output.asset),
-        generation: 1,
-        digest: output.digest ?? (await scriptablePackFingerprintAsync(output.asset)),
-      });
-    },
-  };
-}
-
-function composeScriptablePackAssetSource(
-  staged: import('./scriptable-pack.js').ScriptablePackAssetSnapshotSource | undefined,
-  published: import('./scriptable-pack.js').ScriptablePackAssetSnapshotSource | undefined,
-): import('./scriptable-pack.js').ScriptablePackAssetSnapshotSource | undefined {
-  if (staged === undefined) return published;
-  if (published === undefined) return staged;
-  return {
-    async readByGuid(guid) {
-      const local = await staged.readByGuid(guid);
-      if (local.ok || local.error.code !== 'asset-not-found') return local;
-      return published.readByGuid(guid);
-    },
-  };
+  return ok(outputs);
 }
 
 async function createProductionCaches(
@@ -1070,10 +871,7 @@ export async function produceScriptablePackProducts(
 ): Promise<Result<ReadonlyMap<string, PreparedScriptablePack>, unknown>> {
   if (options.sources.length === 0) return ok(new Map());
   const external = options.declaredExternalOutputs ?? [];
-  const assetSource = composeScriptablePackAssetSource(
-    snapshotSourceForStagedOutputs(external),
-    options.assetSource,
-  );
+  const assetSource = sourceWithPreparedPackOutputs(external, options.assetSource);
   const availableGuids = new Set([
     ...(options.availableGuids ?? []),
     ...external.map((output) => AssetGuid.format(output.guid).toLowerCase()),
@@ -1085,7 +883,6 @@ export async function produceScriptablePackProducts(
     availableKinds.set(AssetGuid.format(output.guid).toLowerCase(), String(output.asset.kind));
   const workItems: ScriptablePackBuildWorkItem[] = options.sources.map((source) => ({
     definition: source.definition,
-    ...(source.cookRuntimeOutputs === true ? { cookRuntimeOutputs: true } : {}),
     sourcePath: source.sourcePath,
     ...(source.subjectPackageId === undefined ? {} : { subjectPackageId: source.subjectPackageId }),
     ...(source.values === undefined ? {} : { values: source.values }),
@@ -1185,157 +982,80 @@ async function finalizeScriptablePackProduct(
     );
     if (policy.sink === undefined) await cache?.write(source, product, finalized);
   }
-  const facts = projectScriptablePackPublication(product);
-  if (!facts.ok) return facts;
-  const revision = await scriptablePackResourceRevision(
+  const transport = await projectPackProductTransport(
+    product,
+    finalized,
     source.displaySourcePath,
-    product.inputFingerprint,
     source.sourceClosure,
   );
-  const publication = createAssetPublication({
-    sourcePath: source.displaySourcePath,
+  if (!transport.ok) return transport;
+  const { revision, outputs } = transport.value;
+  return ok({
+    product,
+    finalized,
+    revision,
+    publication: projectPreparedPackPublication(
+      { product, finalized, outputs },
+      source.displaySourcePath,
+      source.publicationGeneration,
+    ),
+  });
+}
+
+/**
+ * The worklist exposes authored staged outputs to its readers. A metadata-only
+ * material cooker changes neither those outputs nor their dependency evidence.
+ */
+export async function rebindPreparedScriptablePack(
+  source: ScriptablePackInput,
+  prepared: PreparedScriptablePack,
+): Promise<Result<PreparedScriptablePack, unknown>> {
+  const product = bindScriptablePackMaterialGeneration(
+    prepared.product,
+    source.publicationGeneration,
+  );
+  if (!product) return err(new TypeError('invalid cooked material publication generation'));
+  if (product !== prepared.product) return finalizeScriptablePackProduct(source, product);
+  return ok({
+    ...prepared,
+    publication: projectPreparedPackPublication(
+      prepared,
+      source.displaySourcePath,
+      source.publicationGeneration,
+    ),
+  });
+}
+
+export function projectPreparedPackPublication(
+  prepared: Pick<DirectPackTransport, 'product' | 'finalized' | 'outputs'> | PreparedScriptablePack,
+  sourcePath: string,
+  generation: number,
+): AssetPublicationEnvelope {
+  const { product, finalized } = prepared;
+  return createAssetPublication({
+    sourcePath,
     sourceRevision: product.inputFingerprint,
-    generation: source.publicationGeneration,
+    generation,
     digest: finalized.digest,
     packageUrl: finalized.packageUrl,
     inputFingerprint: product.inputFingerprint,
-    outputs: facts.value.outputs,
+    outputs: 'publication' in prepared ? prepared.publication.outputs : prepared.outputs,
     externalEvidence: product.externalEvidence,
   });
-  return ok({ product, finalized, facts: facts.value, revision, publication });
 }
 
-/** One producer context for discovery and final Cook. Known output keys come from source declarations. */
-export function createScriptablePackProduction(options: {
-  readonly sources: readonly (ScriptablePackInput & { readonly sourceKeys: readonly string[] })[];
-  readonly declaredExternalOutputs?: readonly ScriptablePackStagedOutput[];
-  readonly assetSource?: ScriptablePackAssetSnapshotSource;
-  readonly cookers?: readonly NativeCooker[];
-  readonly projectRoot?: string;
-  readonly authoringContractVersion?: string;
-}) {
-  const inputs = new Map(options.sources.map((source) => [source.displaySourcePath, source]));
-  if (inputs.size !== options.sources.length)
-    throw new TypeError('duplicate source in a production generation');
-  const generation = options.sources[0]?.publicationGeneration ?? 1;
-  if (
-    !Number.isSafeInteger(generation) ||
-    generation < 1 ||
-    options.sources.some((source) => source.publicationGeneration !== generation)
-  )
-    throw new TypeError('one production generation requires one positive publication generation');
-  const localGuids = new Set(
-    options.sources.flatMap((source) =>
-      source.sourceKeys.map((key) =>
-        AssetGuid.format(
-          AssetGuid.derive(source.subjectPackageId ?? source.definition.packageId, key),
-        ).toLowerCase(),
-      ),
-    ),
+async function projectPackProductTransport(
+  product: ScriptablePackBuildProduct,
+  finalized: FinalizedPackageTransport,
+  displaySourcePath: string,
+  closure: readonly ScriptablePackSourceClosureEntry[],
+): Promise<Result<Omit<DirectPackTransport, 'projected'>, ScriptablePackDomainError>> {
+  const outputs = projectScriptablePackPublication(product);
+  if (!outputs.ok) return outputs;
+  const revision = await scriptablePackResourceRevision(
+    displaySourcePath,
+    product.inputFingerprint,
+    closure,
   );
-  for (const output of options.declaredExternalOutputs ?? [])
-    localGuids.add(AssetGuid.format(output.guid).toLowerCase());
-  const products = new Map<string, ScriptablePackBuildProduct>();
-  const finalized = new Map<string, Promise<Result<PreparedScriptablePack, unknown>>>();
-  const staged = createScriptablePackStagedAssetSnapshotSource({
-    generation,
-    ...(options.declaredExternalOutputs === undefined
-      ? {}
-      : { declaredExternalOutputs: options.declaredExternalOutputs }),
-    owners: options.sources.map((source) => ({
-      id: source.displaySourcePath,
-      guids: source.sourceKeys.map((key) =>
-        AssetGuid.derive(source.subjectPackageId ?? source.definition.packageId, key),
-      ),
-      async build(local) {
-        const produced = await buildScriptablePack({
-          definition: source.definition,
-          sourcePath: source.displaySourcePath,
-          sourceClosure: source.sourceClosure,
-          publicationGeneration: generation,
-          ...(source.subjectPackageId === undefined
-            ? {}
-            : { subjectPackageId: source.subjectPackageId }),
-          ...(source.values === undefined ? {} : { values: source.values }),
-          ...(source.inheritedValues === undefined
-            ? {}
-            : { inheritedValues: source.inheritedValues }),
-          ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
-          ...(options.authoringContractVersion === undefined
-            ? {}
-            : { authoringContractVersion: options.authoringContractVersion }),
-          ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
-          assetSource: {
-            readByGuid: (guid) =>
-              options.assetSource !== undefined &&
-              !localGuids.has(AssetGuid.format(guid).toLowerCase())
-                ? options.assetSource.readByGuid(guid)
-                : local.readByGuid(guid),
-          },
-          outputs: createStandardAssetOutputProducerRegistry(
-            projectScriptablePackSceneComponents(source.definition.sceneComponents),
-          ),
-          deferReferenceValidation: true,
-        });
-        if (!produced.ok) return produced;
-        const actual = produced.value.stagedOutputs.map((output) => output.sourceKey).sort();
-        const expected = [...source.sourceKeys].sort();
-        if (JSON.stringify(actual) !== JSON.stringify(expected))
-          return err({
-            code: 'pack-source-output-invalid',
-            expected: 'the current output set to match its source declaration',
-            hint: 'refresh source discovery before producing this generation',
-            detail: { sourcePath: source.displaySourcePath, actual, expected },
-          });
-        products.set(source.displaySourcePath, produced.value);
-        return ok(produced.value.stagedOutputs);
-      },
-    })),
-  });
-  const inspect = async (
-    sourcePath: string,
-  ): Promise<Result<ScriptablePackBuildProduct, unknown>> => {
-    const source = inputs.get(sourcePath);
-    if (source === undefined)
-      return err(
-        new AssetError({
-          code: 'asset-not-found',
-          expected: 'a source in this production generation',
-          hint: 'discover the source before requesting production',
-          detail: { sourcePath },
-        }),
-      );
-    for (const key of source.sourceKeys) {
-      const read = await staged.prepareByGuid(
-        AssetGuid.derive(source.subjectPackageId ?? source.definition.packageId, key),
-      );
-      if (!read.ok) return read;
-    }
-    const product = products.get(sourcePath);
-    if (product === undefined)
-      return err({
-        code: 'pack-source-output-invalid',
-        expected: 'at least one declared output',
-        hint: 'refresh the source output discovery',
-        detail: { sourcePath },
-      });
-    return ok(product);
-  };
-  return {
-    inspect,
-    async produce(sourcePath: string): Promise<Result<PreparedScriptablePack, unknown>> {
-      let pending = finalized.get(sourcePath);
-      if (pending === undefined) {
-        pending = (async () => {
-          const built = await inspect(sourcePath);
-          if (!built.ok) return built;
-          const source = inputs.get(sourcePath);
-          if (source === undefined) throw new Error('production source disappeared');
-          return finalizeScriptablePackProduct(source, built.value);
-        })();
-        finalized.set(sourcePath, pending);
-      }
-      return pending;
-    },
-  };
+  return ok({ product, finalized, outputs: outputs.value, revision });
 }

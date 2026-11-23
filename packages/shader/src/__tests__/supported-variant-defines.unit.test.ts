@@ -39,12 +39,12 @@ it('retains the exact Standard matrix and all four maintained lean Water lanes',
   const rows = [...supportedVariantDefines(axes)];
   const constrained = [...supportedVariantDefines(axes, { STORAGE_BUFFER_AVAILABLE: false })];
   expect(constrained).toEqual(rows.filter((row) => row.STORAGE_BUFFER_AVAILABLE === false));
-  expect(rows).toHaveLength(17632);
+  expect(rows).toHaveLength(11272);
   expect(rows.every(isSupportedVariantDefines)).toBe(true);
   const added = rows.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
   const legacy = rows.filter((row) => !added.includes(row));
   expect(added).toHaveLength(320);
-  expect(legacy).toHaveLength(17312);
+  expect(legacy).toHaveLength(10952);
   const legacyKeys = new Set(legacy.map((row) => JSON.stringify(row)));
   for (const row of added)
     expect(legacyKeys.has(JSON.stringify({ ...row, DIRECTIONAL_SHADOW_SIMPLE: true }))).toBe(true);

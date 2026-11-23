@@ -6,8 +6,10 @@ import { runInNewContext } from 'node:vm';
 import {
   assembleAssetRuntime,
   assembleRuntimePacks,
+  createBrowserGameSaves,
   createRendererInspectionError,
   EngineConfigurationError,
+  type GameSaves,
   projectEngineStartup,
   resolveEngineStartup,
   withEngineSettings,
@@ -423,6 +425,7 @@ describe('standalone host', () => {
                   window: { devicePixelRatio: 3.5 },
                   document: { querySelector: () => null, baseURI: 'https://game.test/' },
                   URL,
+                  query: new URLSearchParams(),
                   workerExecution,
                   animation: {},
                   dynamicGeometryMeshBudgetBytes: budget,
@@ -456,13 +459,18 @@ describe('standalone host', () => {
                   pluginPrograms: {},
                   runtimePacks: {},
                   profiler: undefined,
+                  workspaceTarget: false,
                   workspaceGame: false,
                   workspaceMode: false,
                   gameVfx: undefined,
                   gameFeatures: { features: [], plugins: [] },
                   audioPlugin: () => ({}),
                   skinningPlugin: () => ({}),
-                  createApp: (_canvas: unknown, options: { configuration: unknown }) => {
+                  createApp: (
+                    _canvas: unknown,
+                    options: { configuration: unknown; viewportHitWarmup?: boolean },
+                  ) => {
+                    expect(options.viewportHitWarmup).toBeUndefined();
                     const plan = resolveEngineStartup(options.configuration, {
                       platform: 'unknown',
                     }).unwrap();
@@ -1087,9 +1095,9 @@ describe('standalone host', () => {
       await writeFile(
         authored,
         JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: [],
+          schemaVersion: '3.0.0',
+          packageId: '019e3800-0000-7000-8000-73742e747331',
+          assets: {},
         }),
       );
       const facts = await readProjectFacts(root);
@@ -1120,10 +1128,9 @@ describe('standalone host', () => {
       await writeFile(
         authored,
         JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: [],
-          name: 'changed',
+          schemaVersion: '3.0.0',
+          packageId: '019e3800-0000-7000-8000-73742e747332',
+          assets: {},
         }),
       );
       expect(await readLiveProjectInputs(root, paths)).not.toBe(afterDependency);
@@ -1938,7 +1945,8 @@ describe('standalone host', () => {
       const workerStart = generated.indexOf(
         'const localInspection = globalThis.__forgeaxGameInspection;',
       );
-      const workerTail = "}, 'devkit/host-inspection');";
+      const workerTail =
+        "}, diagnostics ? 'devkit/host-inspection' : 'devkit/host-release-inspection');";
       const workerEnd = generated.indexOf(workerTail, workerStart) + workerTail.length;
       expect(Math.min(expose, end, workerStart)).toBeGreaterThanOrEqual(0);
       const install = generated
@@ -1946,12 +1954,16 @@ describe('standalone host', () => {
         .find((line) => line.includes('exposeGameInspection(app as App'));
       if (!install) throw new Error('Missing real local inspection installation');
       const sharedCode = (await transformWithOxc(shared, 'inspection.ts')).code;
-      const workerCode = (
-        await transformWithOxc(
-          generated.slice(workerStart, workerEnd).replaceAll('import.meta.env.DEV', 'true'),
+      const workerSource = generated.slice(workerStart, workerEnd);
+      const compileWorker = (dev: boolean) =>
+        transformWithOxc(
+          workerSource.replaceAll('import.meta.env.DEV', String(dev)),
           'inspection.ts',
-        )
-      ).code;
+        );
+      const [{ code: workerCode }, { code: releaseCode }] = await Promise.all([
+        compileWorker(true),
+        compileWorker(false),
+      ]);
       const installCode = (
         await transformWithOxc(install.replaceAll('import.meta.env.DEV', 'true'), 'inspection.ts')
       ).code;
@@ -1973,7 +1985,7 @@ describe('standalone host', () => {
             : null,
         },
       });
-      const make = (app: object, worker: boolean) => {
+      const make = (app: object, worker: boolean, dev = true, cpuProfileRequested = false) => {
         const appState: { current: object | undefined } = { current: app };
         const effects: Array<() => unknown> = [];
         const context: Record<string, unknown> = {
@@ -1981,8 +1993,9 @@ describe('standalone host', () => {
           appState,
           pageHidden: false,
           workerExecution: worker,
-          cpuProfileRequested: false,
+          cpuProfileRequested,
           gameProjectionDefinitions: new Map(),
+          listGameProjection: () => ({ reads: [] }),
           structuredClone,
           createRendererInspectionError,
           resolveEngineStartup,
@@ -1997,7 +2010,7 @@ describe('standalone host', () => {
           },
         };
         runInNewContext(sharedCode, context);
-        runInNewContext(worker ? workerCode : installCode, context);
+        runInNewContext(worker ? (dev ? workerCode : releaseCode) : installCode, context);
         return {
           inspection: runInNewContext('globalThis.__forgeaxGameInspection', context),
           appState,
@@ -2009,6 +2022,23 @@ describe('standalone host', () => {
         execution: { report: () => ({ frame: { completed: 12 } }) },
         onError: vi.fn(() => () => {}),
       });
+      const projectionRead = vi.fn(async (script: string) =>
+        script.endsWith('.list()') ? { reads: ['remote'] } : 21,
+      );
+      const releaseTarget = { ...appBase(), remoteEval: projectionRead };
+      const releaseOwner = make(releaseTarget, true, false);
+      expect(releaseOwner.inspection.renderer).toBeUndefined();
+      expect(releaseTarget.onError).not.toHaveBeenCalled();
+      expect(await releaseOwner.inspection.list()).toEqual({ reads: ['remote'] });
+      expect(await releaseOwner.inspection.read('remote')).toBe(21);
+      for (const effect of releaseOwner.effects) effect();
+      expect(
+        runInNewContext('globalThis.__forgeaxGameInspection', releaseOwner.context),
+      ).toBeUndefined();
+      const profileOwner = make(releaseTarget, true, false, true);
+      expect(profileOwner.inspection.renderer).toBeTypeOf('function');
+      expect(await profileOwner.inspection.list()).toEqual({ reads: [] });
+
       const localRead = vi.fn(() => payload(false));
       const local = make(
         { ...appBase(), renderer: { state: () => 'alive', inspect: localRead } },
@@ -2140,7 +2170,7 @@ describe('standalone host', () => {
       });
       const generated = await readFile(resolve(root, '.forgeax/generated/main.ts'), 'utf8');
       expect(generated).toContain("await loadOwned(canonicalEnvironmentGuid, 'equirect')");
-      const inspectionStart = generated.indexOf('function exposeGameInspection(app');
+      const inspectionStart = generated.indexOf('function createGameInspection(app');
       const inspectionEnd = generated.indexOf(
         'async function prepareProject(app)',
         inspectionStart,
@@ -2702,9 +2732,13 @@ export default definePack({
     const start = generated.indexOf('    if (workerExecution) {\n      // DOM plugins');
     const end = generated.indexOf('    if (workspaceTarget) {', start);
     expect(Math.min(start, end)).toBeGreaterThanOrEqual(0);
+    const inspectionFactory = generated.slice(
+      generated.indexOf('function createGameInspection(app'),
+      generated.indexOf('function exposeGameInspection(app'),
+    );
     const pageHost = (
       await transformWithOxc(
-        `(async () => { ${gameProjectionSource}\n${generated.slice(start, end).replaceAll('import.meta.env.DEV', String(development))} })()`,
+        `(async () => { ${gameProjectionSource}\n${inspectionFactory}\n${generated.slice(start, end).replaceAll('import.meta.env.DEV', String(development))} })()`,
         'page-host.ts',
         { lang: 'ts' },
       )
@@ -2727,6 +2761,8 @@ export default definePack({
       ShaderRegistry: class {},
       HTMLElement: class {},
       assembleAssetRuntime: () => ({ ok: true, value: { dispose() {} } }),
+      createBrowserGameSaves,
+      createBrowserFileStore: () => ({}),
       trackRendererErrors: () => ({ unsubscribe() {}, read: () => null }),
       app: remote
         ? {
@@ -2750,10 +2786,15 @@ export default definePack({
     sandbox.globalThis = sandbox;
     await runInNewContext(pageHost, sandbox);
     const host = provided.get('gameHost') as {
+      saves?: GameSaves;
       gameProjection?: {
         registerRead(def: { id: string; title: string; read: () => unknown }): () => void;
       };
     };
+    expect(await host.saves?.read('slot')).toMatchObject({
+      ok: false,
+      error: { code: 'storage-unavailable', slot: 'slot' },
+    });
     expect(host.gameProjection).toBeDefined();
     host.gameProjection?.registerRead({
       id: 'frontend.turret',

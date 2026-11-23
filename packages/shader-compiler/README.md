@@ -31,8 +31,8 @@ production. Browser consumers use `/program` and explicit source/module inputs.
 
 Custom lit materials select `program.bindings: 'render-lit-material-and-scene-depth'`
 and `sceneDepth: 'before-pass'`. Their ordinary parameter schema remains authoritative.
-Import `forgeax_material::lighting_inputs` for `irradianceMap`, `irradianceSampler`,
-`prefilterMap`, `prefilterSampler`, `brdfLut`, `skylight` and `skylightPrefilterMap`.
+Import `forgeax_material::lighting_inputs` for `skySh`, `irradianceSampler`,
+`prefilterMap`, `prefilterSampler`, `brdfLut` and `skylight`.
 The cooker generates this Engine-owned module after the schema's user binding region;
 project WGSL must not declare or guess those slots. Publication validates the generated
 resource identities and retains rejection of unrelated undeclared material bindings.
@@ -501,12 +501,16 @@ contracts in the two-lane fixture.
 | `2` or higher | Combined material and program worker budget, clamped to CPU and memory admission |
 
 Admission keeps 2 GiB of host headroom and budgets 2 GiB per material lane.
-Automatic admission reserves one CPU for the host. An explicit request can
-reserve up to two slots for program compilation within the first material
-while keeping at least two material slots when resources allow it. At most four
-material lanes run, and extra program slots require half a GiB each beyond the
-material reservation. The two-CPU, 8 GiB native fixture exercises serial/parallel byte parity,
-warm contract placement and two simultaneous independent contracts.
+Automatic admission reserves one CPU for the host. At most four material lanes
+run, and extra program slots require half a GiB each beyond the material
+reservation. With an explicit budget, a single first cook sizes its program
+slots against one material lane. The pool limits subsequent material lanes to
+the memory left after reserving those slots. A first batch reserves its
+material lanes before assigning spare program capacity.
+The two-CPU, 8 GiB native fixture exercises serial/parallel byte parity, warm
+contract placement and two simultaneous independent contracts. A separate
+fixture checks the actual Worker allocation for a first cook at 6.25 GiB and
+verifies that later material jobs stay within the reservation.
 Each Worker has a 1 GiB old-generation heap limit; native/WASM memory is separate.
 Idle workers are unreferenced and do not hold Node open. A failed job rejects its
 caller; a failed Worker is replaced for later jobs without retrying failed work.
@@ -779,8 +783,8 @@ The Registry owns successful selection reuse; this service adds no second cache
 or GPU resource lifetime.
 
 Custom lit raster materials select `render-lit-material-and-scene-depth` and an
-explicit scene-depth version. Import irradianceMap, irradianceSampler,
-prefilterMap, prefilterSampler, brdfLut, skylight and skylightPrefilterMap from
+explicit scene-depth version. Import skySh, irradianceSampler,
+prefilterMap, prefilterSampler, brdfLut and skylight from
 `forgeax_material::lighting_inputs`. The cooker generates that trusted module
 from the material's own derived parameter schema; project WGSL must not declare
 its bindings. Ordinary parameters remain unchanged. Only this module's actual

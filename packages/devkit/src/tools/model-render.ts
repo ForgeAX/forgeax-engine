@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fitToolPreviewCameraToAabb, workspaceMeshDisplayPlugin } from '@forgeax/engine-app';
 import { assetsPlugin } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
@@ -50,6 +49,7 @@ import {
   type JsonValue,
   operationCommandPath,
   type ToolContribution,
+  type ToolExecutor,
   type ToolJsonSchema,
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
@@ -61,6 +61,8 @@ import {
   type TextureAsset,
 } from '@forgeax/engine-types';
 import { nodeGpu } from '../node-gpu.js';
+import { completeCommand, rejectCommand } from '../types.js';
+import { publishPng, toolRunDirectory } from './evidence-image.js';
 import { offscreenTarget } from './model-render-target.js';
 import {
   drawGrid,
@@ -445,15 +447,12 @@ type Failure = {
 };
 
 function fail(code: string, expected: string, hint: string, detail?: unknown): Failure {
-  return {
-    ok: false,
-    error: {
-      code,
-      expected,
-      hint,
-      ...(detail === undefined ? {} : { detail: detail as JsonValue }),
-    },
-  };
+  return rejectCommand({
+    code,
+    expected,
+    hint,
+    ...(detail === undefined ? {} : { detail: detail as JsonValue }),
+  });
 }
 
 const sub3 = (a: Triple, b: Triple): Triple => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -551,10 +550,6 @@ export function orthoScale(
   return scale;
 }
 
-function sha256(bytes: Uint8Array): string {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
 /** Share of pixels that differ from the clear color: the per-view falsifier. */
 function coverage(rgba: Uint8Array, background: Uint8Array): number {
   const free = freeMask(rgba, background);
@@ -592,9 +587,11 @@ type Renderer = Extract<
 async function drawReady(
   renderer: Renderer,
   request: Parameters<Renderer['draw']>[0],
+  signal: AbortSignal | undefined,
 ): Promise<void> {
   const deadline = Date.now() + 30_000;
   do {
+    signal?.throwIfAborted();
     const submitted = renderer.draw(request);
     if (!submitted.ok) throw submitted.error;
     const completed = await submitted.value.completed;
@@ -847,6 +844,15 @@ export function isSoftwareAdapter(info: RendererAdapter): boolean {
   return SOFTWARE_ADAPTER_MARKERS.some((marker) => text.includes(marker));
 }
 
+async function modelRenderGpu() {
+  const gpu = await nodeGpu();
+  return gpu.ok
+    ? gpu
+    : fail('model-render-backend-unavailable', gpu.error.expected, gpu.error.hint, {
+        cause: gpu.error.cause,
+      });
+}
+
 async function renderStates(
   gpu: GPU,
   states: readonly RenderState[],
@@ -868,10 +874,12 @@ async function renderStates(
     }
   | Failure
 > {
+  signal?.throwIfAborted();
   const { width, height } = set;
-  const target = offscreenTarget(width, height);
   const { requestAdapterFrom, rhi } = await import('@forgeax/engine-rhi-webgpu');
   const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  signal?.throwIfAborted();
+  const target = offscreenTarget(width, height);
   // The Renderer asks the explicit GPU for its adapter; keep the info of that very request.
   let adapterInfo: Partial<GPUAdapterInfo> | undefined;
   const host = await constructRuntimeRendererHost(
@@ -940,6 +948,7 @@ async function renderStates(
       gpuErrors.push(`${event.error.code}: ${event.error.message}`);
   });
   try {
+    signal?.throwIfAborted();
     const world = new World({ assets });
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
@@ -968,7 +977,8 @@ async function renderStates(
         .unwrap();
       const draw = async () => {
         world.update(1 / 60).unwrap();
-        for (let i = 0; i < 2; i++) await drawReady(renderer, { source: lease } as never);
+        for (let i = 0; i < 2; i++) await drawReady(renderer, { source: lease } as never, signal);
+        signal?.throwIfAborted();
         return target.read();
       };
       const background = await draw();
@@ -1075,7 +1085,7 @@ async function renderStates(
           }
           const row: Uint8Array[] = [];
           for (const placement of placed.cameras) {
-            if (signal?.aborted === true) throw new Error('model render cancelled');
+            signal?.throwIfAborted();
             world.set(camera, Transform, {
               pos: placement.eye,
               quat: frameQuaternion(viewFrame(placement.view)),
@@ -1107,18 +1117,15 @@ async function renderStates(
           'inspect the mesh bounds and material slots',
           { coverage: covered },
         );
-      return {
-        ok: true,
-        value: {
-          materialBinding,
-          images,
-          background,
-          coverage: covered,
-          cameras: placed.cameras,
-          frame: placed.frame,
-          renderer: facts,
-        },
-      };
+      return completeCommand({
+        materialBinding,
+        images,
+        background,
+        coverage: covered,
+        cameras: placed.cameras,
+        frame: placed.frame,
+        renderer: facts,
+      });
     } finally {
       await context.fiber.dispose();
     }
@@ -1468,23 +1475,35 @@ function overlaysOf(report: CaptureReport, payload: RenderPayload): Record<strin
 
 async function publisher(projectRoot: string, prefix: string) {
   const runId = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID().slice(0, 8)}`;
-  const runDir = join(projectRoot, '.forgeax', 'tool-runs', runId);
+  const runDir = toolRunDirectory(projectRoot, runId);
   await mkdir(runDir, { recursive: true });
   const artifacts: ArtifactRef[] = [];
-  const uri = (path: string) => relative(projectRoot, path).split(sep).join('/');
+  async function publish(name: string, png: Uint8Array) {
+    const artifact = await publishPng(projectRoot, join(runDir, name), png);
+    artifacts.push(artifact);
+    return artifact.uri;
+  }
   return {
-    artifacts,
-    async publish(name: string, png: Uint8Array) {
-      const path = join(runDir, name);
-      await writeFile(path, png);
-      artifacts.push({
-        kind: 'png',
-        digest: sha256(png),
-        uri: uri(path),
-        mediaType: 'image/png',
-        sizeBytes: png.byteLength,
-      });
-      return uri(path);
+    publish,
+    result(value: Record<string, unknown>) {
+      return {
+        ok: true as const,
+        value: relativeSources(value, projectRoot) as JsonValue,
+        artifacts,
+      };
+    },
+    async sheet(
+      name: string,
+      images: readonly Uint8Array[],
+      width: number,
+      height: number,
+      output?: string,
+      columns?: number,
+    ) {
+      const { layout, png } = compose(images, width, height, columns);
+      const image = await publish(name, png);
+      await copyOutput(projectRoot, output, png);
+      return { info: { image, width: layout.width, height: layout.height }, tiles: layout.tiles };
     },
   };
 }
@@ -1524,11 +1543,38 @@ const RENDER_ERRORS = [
   'model-render-material-load-failed',
 ];
 
+function modelImageCommand(
+  id: 'model.render' | 'model.replay',
+  title: string,
+  summary: string,
+  schema: ToolJsonSchema,
+  execute: ToolExecutor<unknown, JsonValue>,
+): ToolContribution {
+  return defineCommand(
+    {
+      id,
+      path: operationCommandPath(id),
+      title,
+      summary,
+      realm: 'host',
+      argsSchema: toolJsonSchema(schema),
+      resultSchema: toolJsonSchema({ type: 'object' }),
+      evidence: ['png'],
+      capabilities: [],
+      errors: RENDER_ERRORS,
+      inputSchema: schema as JsonValue,
+    },
+    execute,
+  );
+}
+
 async function capture(
   projectRoot: string,
   args: Record<string, unknown>,
   extra: Partial<CaptureRequest>,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const request = captureRequest(projectRoot, args);
   if ('ok' in request) return request as Failure;
   if (
@@ -1542,6 +1588,7 @@ async function capture(
       { output: args.output as JsonValue },
     );
   const captured = await runCapture({ ...request, ...extra });
+  signal?.throwIfAborted();
   if (!captured.ok)
     return fail(
       captured.error.code,
@@ -1570,41 +1617,36 @@ function renderTiming(captured: { value: CaptureReport; capturedAt: number }) {
  * `.forgeax/tool-runs/<run>/` and returns their artifacts.
  */
 export function createModelRenderTool(projectRoot: string): ToolContribution {
-  return defineCommand(
-    {
-      id: 'model.render',
-      path: operationCommandPath('model.render'),
-      title: 'Modeling render',
-      summary:
-        'Renders a modeling Pack session state (final, --checkpoint or --step) with the real Engine Renderer from a fixed camera set (front/back/left/right/top/bottom/iso), orthographic on one scale by default with a drawing-sheet layer (grid, scale bar, extent dimensions, design drawing, contours, --measure spans); optional wireframe, --selector highlight, diagnostic overlays, --xray shell, --explode parts or --section plane; a rig posed with --u/--pose (parts in contact highlighted); returns per-view PNGs, a contact sheet and JSON facts.',
-      realm: 'host',
-      argsSchema: toolJsonSchema(argsSchema as unknown as ToolJsonSchema),
-      resultSchema: toolJsonSchema({ type: 'object' } as ToolJsonSchema),
-      evidence: ['png'],
-      capabilities: [],
-      errors: RENDER_ERRORS,
-      inputSchema: argsSchema as unknown as JsonValue,
-    },
+  return modelImageCommand(
+    'model.render',
+    'Modeling render',
+    'Renders a modeling Pack session state (final, --checkpoint or --step) with the real Engine Renderer from a fixed camera set (front/back/left/right/top/bottom/iso), orthographic on one scale by default with a drawing-sheet layer (grid, scale bar, extent dimensions, design drawing, contours, --measure spans); optional wireframe, --selector highlight, diagnostic overlays, --xray shell, --explode parts or --section plane; a rig posed with --u/--pose (parts in contact highlighted); returns per-view PNGs, a contact sheet and JSON facts.',
+    argsSchema as unknown as ToolJsonSchema,
     async (rawArgs, context) => {
       const args = rawArgs as Record<string, unknown> & RenderArgs;
       const views = args.views ?? DEFAULT_VIEWS;
       const malformed = checkViews(views);
-      if (malformed !== undefined) return malformed as never;
+      if (malformed !== undefined) return malformed;
       const width = args.width ?? 512;
       const height = args.height ?? 512;
       const projection = args.projection ?? 'orthographic';
       const overlays = args.overlays ?? [];
-      const captured = await capture(projectRoot, args, {
-        overlays,
-        ...(overlays.includes('edges') && args.frame !== undefined
-          ? { overlayBounds: args.frame }
-          : {}),
-        render: true,
-        ...(args.xray === undefined ? {} : { xray: args.xray }),
-        ...(args.explode === undefined ? {} : { explode: args.explode }),
-        ...(args.section === undefined ? {} : { section: args.section }),
-      });
-      if (!captured.ok) return captured as never;
+      const captured = await capture(
+        projectRoot,
+        args,
+        {
+          overlays,
+          ...(overlays.includes('edges') && args.frame !== undefined
+            ? { overlayBounds: args.frame }
+            : {}),
+          render: true,
+          ...(args.xray === undefined ? {} : { xray: args.xray }),
+          ...(args.explode === undefined ? {} : { explode: args.explode }),
+          ...(args.section === undefined ? {} : { section: args.section }),
+        },
+        context.signal,
+      );
+      if (!captured.ok) return captured;
       const report = captured.value;
       const payload = report.render;
       if (payload === undefined)
@@ -1612,22 +1654,19 @@ export function createModelRenderTool(projectRoot: string): ToolContribution {
           'model-capture-failed',
           'the capture returns a render payload',
           'inspect the capture',
-        ) as never;
+        );
       const plan = planMaterials(
         payload.mesh.materialSlots.map((slot) => slot.slotName),
         args.materials === 'auto' ? report.materials : undefined,
       );
-      if ('ok' in plan) return plan as never;
-      const gpu = await nodeGpu();
-      if (!gpu.ok)
-        return fail('model-render-backend-unavailable', gpu.error.expected, gpu.error.hint, {
-          cause: gpu.error.cause,
-        }) as never;
+      if ('ok' in plan) return plan;
+      const gpu = await modelRenderGpu();
+      if (!gpu.ok) return gpu;
       const mode = args.mode ?? 'material';
       const analysis = analysisOf(args, payload);
-      if (analysis !== undefined && 'ok' in analysis) return analysis as never;
+      if (analysis !== undefined && 'ok' in analysis) return analysis;
       const combs = combsOf(args, payload);
-      if (combs !== undefined && 'ok' in combs) return combs as never;
+      if (combs !== undefined && 'ok' in combs) return combs;
       const rendered = await renderStates(
         gpu.value,
         [
@@ -1649,10 +1688,10 @@ export function createModelRenderTool(projectRoot: string): ToolContribution {
           bounds: args.frame ?? payload.bounds,
           ...(args.scale === undefined ? {} : { scale: args.scale }),
         },
-        context?.signal,
+        context.signal,
         plan,
       );
-      if (!rendered.ok) return rendered as never;
+      if (!rendered.ok) return rendered;
       const out = await publisher(projectRoot, 'model-render');
       const annotate = projection === 'orthographic' && args.annotate !== false;
       const images = rendered.value.images[0] as Uint8Array[];
@@ -1688,87 +1727,81 @@ export function createModelRenderTool(projectRoot: string): ToolContribution {
           ...(annotation === undefined ? {} : { annotation }),
         });
       }
-      const sheet = compose(images, width, height);
-      const sheetUri = await out.publish('sheet.png', sheet.png);
-      await copyOutput(projectRoot, args.output, sheet.png);
+      const sheet = await out.sheet('sheet.png', images, width, height, args.output);
       const session = report.sessions[payload.session];
-      const value = relativeSources(
-        {
-          source: args.source,
-          values: args.values ?? {},
-          session: payload.session,
-          ...(payload.checkpoint === undefined ? {} : { checkpoint: payload.checkpoint }),
-          ...(args.step === undefined ? {} : { step: args.step }),
-          mode,
-          projection,
-          materialBinding: rendered.value.materialBinding,
-          renderer: rendered.value.renderer,
-          ...(analysis === undefined ? {} : { analysis: analysis.facts }),
-          ...(combs === undefined ? {} : { combs: combs.facts }),
-          ...(report.selected === undefined ? {} : { selected: report.selected }),
-          overlays: (report.overlays ?? []).map((overlay) => ({
-            kind: overlay.kind,
-            legend: overlay.legend,
-          })),
-          mesh: {
-            faces: payload.faces,
-            triangles: payload.triangles,
-            gpuVertices: payload.gpuVertices,
-            bounds: payload.bounds,
-            materialSlots: payload.mesh.materialSlots.map((slot) => slot.slotName),
-            uvProjected: payload.uvProjected,
-          },
-          drawing: {
-            drawings: payload.drawing.drawings.map((d) => ({
-              name: d.name,
-              sources: d.sources,
-              views: d.views,
-              dimensions: d.dimensions,
-              curves: d.curves.map((c) => ({
-                id: c.id,
-                view: c.view,
-                role: c.role,
-                points: c.points.length,
-              })),
-            })),
-            contours: payload.drawing.contours.map((c) => ({
+      return out.result({
+        source: args.source,
+        values: args.values ?? {},
+        session: payload.session,
+        ...(payload.checkpoint === undefined ? {} : { checkpoint: payload.checkpoint }),
+        ...(args.step === undefined ? {} : { step: args.step }),
+        mode,
+        projection,
+        materialBinding: rendered.value.materialBinding,
+        renderer: rendered.value.renderer,
+        ...(analysis === undefined ? {} : { analysis: analysis.facts }),
+        ...(combs === undefined ? {} : { combs: combs.facts }),
+        ...(report.selected === undefined ? {} : { selected: report.selected }),
+        overlays: (report.overlays ?? []).map((overlay) => ({
+          kind: overlay.kind,
+          legend: overlay.legend,
+        })),
+        mesh: {
+          faces: payload.faces,
+          triangles: payload.triangles,
+          gpuVertices: payload.gpuVertices,
+          bounds: payload.bounds,
+          materialSlots: payload.mesh.materialSlots.map((slot) => slot.slotName),
+          uvProjected: payload.uvProjected,
+        },
+        drawing: {
+          drawings: payload.drawing.drawings.map((d) => ({
+            name: d.name,
+            sources: d.sources,
+            views: d.views,
+            dimensions: d.dimensions,
+            curves: d.curves.map((c) => ({
               id: c.id,
               view: c.view,
-              kind: c.kind,
+              role: c.role,
               points: c.points.length,
-              deviation: c.deviation,
-              tolerance: c.tolerance,
-              bounds: c.bounds,
             })),
-          },
-          ...(payload.explode === undefined ? {} : { explode: payload.explode }),
-          ...(payload.section === undefined
-            ? {}
-            : {
-                section: {
-                  point: payload.section.point,
-                  normal: payload.section.normal,
-                  area: payload.section.area,
-                  spacing: payload.section.spacing,
-                  capTriangles: payload.section.cap.length / 9,
-                  hatchLines: payload.section.hatch.length / 6,
-                },
-              }),
-          ...(payload.xray === undefined ? {} : { xray: payload.xray }),
-          ...(session === undefined
-            ? {}
-            : { output: session.output ?? null, checkpoints: session.checkpoints }),
-          ...(report.pose === undefined ? {} : { pose: report.pose }),
-          frame: rendered.value.frame,
-          timing: renderTiming(captured),
-          sheet: { image: sheetUri, width: sheet.layout.width, height: sheet.layout.height },
-          views: facts.map((fact, index) => ({ ...fact, tile: sheet.layout.tiles[index] })),
+          })),
+          contours: payload.drawing.contours.map((c) => ({
+            id: c.id,
+            view: c.view,
+            kind: c.kind,
+            points: c.points.length,
+            deviation: c.deviation,
+            tolerance: c.tolerance,
+            bounds: c.bounds,
+          })),
         },
-        projectRoot,
-      );
-      return { ok: true, value: value as unknown as JsonValue, artifacts: out.artifacts } as never;
+        ...(payload.explode === undefined ? {} : { explode: payload.explode }),
+        ...(payload.section === undefined
+          ? {}
+          : {
+              section: {
+                point: payload.section.point,
+                normal: payload.section.normal,
+                area: payload.section.area,
+                spacing: payload.section.spacing,
+                capTriangles: payload.section.cap.length / 9,
+                hatchLines: payload.section.hatch.length / 6,
+              },
+            }),
+        ...(payload.xray === undefined ? {} : { xray: payload.xray }),
+        ...(session === undefined
+          ? {}
+          : { output: session.output ?? null, checkpoints: session.checkpoints }),
+        ...(report.pose === undefined ? {} : { pose: report.pose }),
+        frame: rendered.value.frame,
+        timing: renderTiming(captured),
+        sheet: sheet.info,
+        views: facts.map((fact, index) => ({ ...fact, tile: sheet.tiles[index] })),
+      });
     },
-  ) as ToolContribution;
+  );
 }
 
 /**
@@ -1778,38 +1811,33 @@ export function createModelRenderTool(projectRoot: string): ToolContribution {
  * operation, its label and author source line.
  */
 export function createModelReplayTool(projectRoot: string): ToolContribution {
-  return defineCommand(
-    {
-      id: 'model.replay',
-      path: operationCommandPath('model.replay'),
-      title: 'Modeling replay',
-      summary:
-        'Replays a modeling Pack session step by step: re-runs the build with a snapshot after every operation and renders the chosen --steps (default every operation that leaves faces, at most 64) with the real Engine Renderer from one fixed camera that frames every state; returns numbered frame PNGs, a labeled strip sheet and the operation, label and source line of each frame.',
-      realm: 'host',
-      argsSchema: toolJsonSchema(replaySchema as unknown as ToolJsonSchema),
-      resultSchema: toolJsonSchema({ type: 'object' } as ToolJsonSchema),
-      evidence: ['png'],
-      capabilities: [],
-      errors: RENDER_ERRORS,
-      inputSchema: replaySchema as unknown as JsonValue,
-    },
+  return modelImageCommand(
+    'model.replay',
+    'Modeling replay',
+    'Replays a modeling Pack session step by step: re-runs the build with a snapshot after every operation and renders the chosen --steps (default every operation that leaves faces, at most 64) with the real Engine Renderer from one fixed camera that frames every state; returns numbered frame PNGs, a labeled strip sheet and the operation, label and source line of each frame.',
+    replaySchema as unknown as ToolJsonSchema,
     async (rawArgs, context) => {
       const args = rawArgs as Record<string, unknown> & ReplayArgs;
       const view = args.view ?? 'iso';
       const malformed = checkViews([view]);
-      if (malformed !== undefined) return malformed as never;
+      if (malformed !== undefined) return malformed;
       const width = args.width ?? 320;
       const height = args.height ?? 320;
       const projection = args.projection ?? 'orthographic';
-      const captured = await capture(projectRoot, args, { replay: args.steps ?? 'all' });
-      if (!captured.ok) return captured as never;
+      const captured = await capture(
+        projectRoot,
+        args,
+        { replay: args.steps ?? 'all' },
+        context.signal,
+      );
+      if (!captured.ok) return captured;
       const replay = captured.value.replay;
       if (replay === undefined || replay.frames.length === 0)
         return fail(
           'model-selection-empty',
           'the session has steps with geometry',
           'inspect model.history',
-        ) as never;
+        );
       const union = replay.frames.reduce<number[]>(
         (acc, frame) =>
           [0, 1, 2, 3, 4, 5].map((k) =>
@@ -1817,11 +1845,8 @@ export function createModelReplayTool(projectRoot: string): ToolContribution {
           ),
         [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
       ) as unknown as Bounds;
-      const gpu = await nodeGpu();
-      if (!gpu.ok)
-        return fail('model-render-backend-unavailable', gpu.error.expected, gpu.error.hint, {
-          cause: gpu.error.cause,
-        }) as never;
+      const gpu = await modelRenderGpu();
+      if (!gpu.ok) return gpu;
       const rendered = await renderStates(
         gpu.value,
         replay.frames.map((frame) => ({ mesh: frame.mesh, mode: 'material', overlays: {} })),
@@ -1833,9 +1858,9 @@ export function createModelReplayTool(projectRoot: string): ToolContribution {
           bounds: args.frame ?? union,
           ...(args.scale === undefined ? {} : { scale: args.scale }),
         },
-        context?.signal,
+        context.signal,
       );
-      if (!rendered.ok) return rendered as never;
+      if (!rendered.ok) return rendered;
       const out = await publisher(projectRoot, 'model-replay');
       const text = width >= 480 ? 2 : 1;
       const frames = [];
@@ -1868,31 +1893,27 @@ export function createModelReplayTool(projectRoot: string): ToolContribution {
           ),
         });
       }
-      const sheet = compose(
+      const sheet = await out.sheet(
+        'strip.png',
         images,
         width,
         height,
+        args.output,
         Math.min(images.length, Math.max(1, Math.round(Math.sqrt(images.length * 1.6)))),
       );
-      const sheetUri = await out.publish('strip.png', sheet.png);
-      await copyOutput(projectRoot, args.output, sheet.png);
-      const value = relativeSources(
-        {
-          source: args.source,
-          values: args.values ?? {},
-          session: replay.session,
-          operations: replay.operations,
-          stepsTruncated: replay.stepsTruncated,
-          view,
-          projection,
-          frame: rendered.value.frame,
-          timing: renderTiming(captured),
-          sheet: { image: sheetUri, width: sheet.layout.width, height: sheet.layout.height },
-          frames: frames.map((frame, index) => ({ ...frame, tile: sheet.layout.tiles[index] })),
-        },
-        projectRoot,
-      );
-      return { ok: true, value: value as unknown as JsonValue, artifacts: out.artifacts } as never;
+      return out.result({
+        source: args.source,
+        values: args.values ?? {},
+        session: replay.session,
+        operations: replay.operations,
+        stepsTruncated: replay.stepsTruncated,
+        view,
+        projection,
+        frame: rendered.value.frame,
+        timing: renderTiming(captured),
+        sheet: sheet.info,
+        frames: frames.map((frame, index) => ({ ...frame, tile: sheet.tiles[index] })),
+      });
     },
-  ) as ToolContribution;
+  );
 }

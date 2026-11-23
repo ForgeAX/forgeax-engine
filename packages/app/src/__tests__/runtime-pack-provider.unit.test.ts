@@ -165,8 +165,8 @@ it.each([
   try {
     const result = await runtime.producer.restore(snapshot);
     expect(result.ok, JSON.stringify(result)).toBe(!corrupt);
-    // Restore validates both its private recipe and the final current publication.
-    expect(artifactHashes).toBe(corrupt ? 1 : 2);
+    // Restore checks the artifact once before publishing the same verified bytes.
+    expect(artifactHashes).toBe(1);
     expect(runtime.producer.rows()).toHaveLength(corrupt ? 0 : 1);
   } finally {
     spy.mockRestore();

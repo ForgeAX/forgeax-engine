@@ -33,7 +33,11 @@ import {
   type SamplerAsset,
 } from '@forgeax/engine-types';
 import { isStandardOutputContract } from '../pipeline/standard-output/types';
-import { resolveSsaoParameters } from '../ssao-config';
+import {
+  hasStandardAoKeys,
+  migrateSavedAmbientOcclusion,
+  resolveSsaoParameters,
+} from '../ssao-config';
 
 function invalid(guid: string, expected: string, reason: string) {
   return err({
@@ -585,12 +589,10 @@ function validRenderPipelineConfig(value: unknown): value is Record<string, unkn
   const ao = value.ambientOcclusion;
   if (ao !== undefined) {
     if (!record(ao) || typeof ao.enabled !== 'boolean') return false;
-    const resolved = resolveSsaoParameters(ao);
-    if (
-      !resolved.ok ||
-      Object.keys(ao).some((key) => key !== 'enabled' && !Object.hasOwn(resolved.value, key))
-    )
-      return false;
+    const typed = ao as unknown as NonNullable<
+      NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
+    >;
+    if (!hasStandardAoKeys(typed) || !resolveSsaoParameters(typed).ok) return false;
   }
   const outputDither = value.outputDither;
   if (outputDither !== undefined && typeof outputDither !== 'boolean') return false;
@@ -616,20 +618,9 @@ function renderPipelineDescriptor(value: Record<string, unknown>): RenderPipelin
   }
   const inputConfig = value.config;
   if (inputConfig !== undefined && !record(inputConfig)) return undefined;
-  const { ssao: legacyAo, ...config } = inputConfig ?? {};
-  let ambientOcclusion = config.ambientOcclusion;
-  if (legacyAo !== undefined) {
-    if (ambientOcclusion !== undefined || !record(legacyAo) || Object.hasOwn(legacyAo, 'method'))
-      return undefined;
-    const { algorithm, ...settings } = legacyAo;
-    // Old assets implicitly selected GTAO. Migrate at decode, preserving their appearance.
-    ambientOcclusion = { ...settings, method: algorithm ?? 'gtao' };
-  }
-  const normalizedConfig = {
-    ...config,
-    ...(ambientOcclusion === undefined ? {} : { ambientOcclusion }),
-  };
-  if (!validRenderPipelineConfig(normalizedConfig)) return undefined;
+  const normalizedConfig = inputConfig ?? {};
+  if (Object.hasOwn(normalizedConfig, 'ssao') || !validRenderPipelineConfig(normalizedConfig))
+    return undefined;
   return {
     kind: 'render-pipeline',
     pipelineId,
@@ -639,6 +630,28 @@ function renderPipelineDescriptor(value: Record<string, unknown>): RenderPipelin
       ...(normalizedConfig as NonNullable<RenderPipelineAsset['config']>),
     },
   };
+}
+
+function savedRenderPipelineDescriptor(value: Record<string, unknown>) {
+  if (!record(value.config)) return renderPipelineDescriptor(value);
+  const { ssao: legacyAo, ...config } = value.config;
+  let ambientOcclusion = config.ambientOcclusion;
+  if (legacyAo !== undefined) {
+    if (ambientOcclusion !== undefined || !record(legacyAo) || Object.hasOwn(legacyAo, 'method'))
+      return undefined;
+    const { algorithm, ...settings } = legacyAo;
+    // Old assets implicitly selected GTAO. Migrate at decode, preserving their appearance.
+    ambientOcclusion = migrateSavedAmbientOcclusion(
+      { ...settings, method: algorithm ?? 'gtao' },
+      true,
+    );
+  }
+  ambientOcclusion = migrateSavedAmbientOcclusion(ambientOcclusion);
+  const normalizedConfig = {
+    ...config,
+    ...(ambientOcclusion === undefined ? {} : { ambientOcclusion }),
+  };
+  return renderPipelineDescriptor({ ...value, config: normalizedConfig });
 }
 
 export const renderPipelineContribution: AssetDecoderContribution<
@@ -676,7 +689,7 @@ export const renderPipelineContribution: AssetDecoderContribution<
           );
         }
       }
-      const value = record(payload) ? renderPipelineDescriptor(payload) : undefined;
+      const value = record(payload) ? savedRenderPipelineDescriptor(payload) : undefined;
       return value === undefined
         ? invalid(
             envelope.guid,

@@ -8,7 +8,7 @@ import {
   createSphereGeometry,
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
-import { createProfiler } from '@forgeax/engine-profiler';
+import { createProfiler, type RecorderSession } from '@forgeax/engine-profiler';
 import {
   ANTIALIAS_TAA,
   Camera,
@@ -25,6 +25,7 @@ import {
   type CapsuleShadowInspection,
   type GpuDrivenProductionInspection,
   type RenderFrameCacheInspection,
+  type Renderer,
   type ShadowRasterInspection,
   SpotLight,
   TONEMAP_ACES_FILMIC,
@@ -71,6 +72,17 @@ const FIXED_DELTA_SECONDS = 1 / 60;
 const DEFAULT_PROFILE_FRAMES = 30;
 const DEFAULT_SAMPLE_FRAMES = 29;
 const PROFILE_EVENT_LIMIT = 16_384;
+const DIRECTIONAL_SHADOW_SIZE = 2048;
+const SPOT_SHADOW_SIZE = 1024;
+const POINT_SHADOW_SIZE = 512;
+
+function staticShadowBudget(spotCount: number, pointCount: number): number {
+  // Allow replacement of the same declared layers while the previous submission drains.
+  const directional = DIRECTIONAL_SHADOW_SIZE ** 2 * DIRECTIONAL_CASCADE_COUNT;
+  const spot = SPOT_SHADOW_SIZE ** 2 * spotCount;
+  const point = POINT_SHADOW_SIZE ** 2 * 6 * pointCount;
+  return 2 * 4 * (directional + spot + point);
+}
 
 const SwayJoint = defineComponent('ShadowStressSwayJoint', { phase: { type: 'f32', default: 0 } });
 
@@ -137,6 +149,7 @@ export interface ShadowStressEvidence {
   simulationSeconds: number;
   appRendererErrors: Array<{ readonly code: string; readonly hint: string }>;
   profileCapture: unknown;
+  profileSourceFailure?: ReturnType<RecorderSession['firstSourceFailure']>;
   profileOverhead: { readonly profilerEventObjectAllocations: number };
   shadowRasterSamples: ShadowRasterSample[];
   gpuDrivenSamples: GpuDrivenSample[];
@@ -145,6 +158,11 @@ export interface ShadowStressEvidence {
   capsuleShadow: CapsuleShadowInspection | null;
   /** Per-frame GPU durations keyed `passKind:passName`, plus the `TOTAL` sum; `gpuTiming=1` only. */
   gpuPassNanos: Record<string, number[]>;
+  shadowProjection?: {
+    readonly requested: 'screen';
+    observed: ReturnType<Renderer['inspect']>['directionalShadow']['forwardReceiver'];
+    timings: unknown[];
+  } | undefined;
 }
 
 declare global {
@@ -302,7 +320,79 @@ if (!parsed.ok) {
   void bootstrap(canvas, parsed.value);
 }
 
+function shadowStressRendererConfig(options: WorkloadOptions, query: URLSearchParams) {
+  const projection = query.get('shadowProjection') === 'screen' ? 'screen' : undefined;
+  const shadowProjection: ShadowStressEvidence['shadowProjection'] =
+    projection === undefined ? undefined : { requested: projection, observed: undefined, timings: [] };
+  const spotShadowCount = projection === undefined ? SPOT_LIGHT_COUNT : 3;
+  return {
+    shadowProjection,
+    spotShadowCount,
+    rendererConfig: {
+      staticShadowBudgetBytes: staticShadowBudget(spotShadowCount, options.pointCount),
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath: options.renderPath,
+        gpuOcclusion: options.gpuOcclusion,
+        ...(projection === 'screen'
+          ? {
+              ...(query.get('shadowFade') === '1' ? { forwardShadowViewFade: true as const } : {}),
+              ...(query.get('shadowGather') === '1' ? { forwardShadowSpotFilter: 'gather' as const } : {}),
+            }
+          : {}),
+      },
+      ...(options.gpuPassTiming ? { gpuPassTiming: {} } : {}),
+    },
+    workloadFingerprint: workloadFingerprint(options) +
+      (projection === undefined ? '' : '|projectionSpotShadows=3'),
+  };
+}
+
+function observeGpuPasses(
+  renderer: Renderer,
+  enabled: boolean,
+  gpuPassNanos: Record<string, number[]>,
+  warmupFrames: number,
+  sampleFrames: number,
+  evidence: ShadowStressEvidence,
+) {
+  if (!enabled) return;
+  renderer.subscribe((event) => {
+    if (event.kind !== 'frame-submitted') return;
+    const progress = evidence.frameProgress;
+    const capture = evidence.shadowProjection;
+    const shadowSample =
+      capture !== undefined &&
+      event.receipt.presentation === 'ready' &&
+      progress > warmupFrames &&
+      progress <= warmupFrames + sampleFrames
+        ? { progress, timing: { status: 'pending' } as unknown }
+        : undefined;
+    if (capture !== undefined && shadowSample !== undefined) {
+      capture.timings.push(shadowSample);
+      if (capture.observed === undefined)
+        capture.observed =
+          renderer.inspect({ fields: ['directionalShadow'] }).directionalShadow.forwardReceiver;
+    }
+    void renderer.observe(event.receipt, { include: ['timings'] }).then((observed) => {
+      const timings = observed.ok ? observed.value.timings : undefined;
+      if (shadowSample !== undefined) shadowSample.timing = timings ?? { status: 'missing' };
+      if (timings === undefined || (timings.status !== 'complete' && timings.status !== 'partial')) return;
+      const perPass: Record<string, number> = { TOTAL: 0 };
+      for (const pass of timings.frame.passes) {
+        if (pass.status !== 'measured') continue;
+        const key = `${pass.passKind}:${pass.passName}`;
+        perPass[key] = (perPass[key] ?? 0) + pass.durationNanoseconds;
+        perPass.TOTAL = (perPass.TOTAL ?? 0) + pass.durationNanoseconds;
+      }
+      for (const [key, nanos] of Object.entries(perPass)) (gpuPassNanos[key] ??= []).push(nanos);
+    });
+  });
+}
+
 async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): Promise<void> {
+  const config = shadowStressRendererConfig(options, params);
+  const { shadowProjection, spotShadowCount } = config;
   const profileFrames = positiveInteger(params.get('profileFrames'), DEFAULT_PROFILE_FRAMES);
   const sampleFrames = positiveInteger(params.get('sampleFrames'), DEFAULT_SAMPLE_FRAMES);
   const warmupFrames = nonNegativeInteger(params.get('warmupFrames'), 0);
@@ -312,12 +402,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
     target,
     {
       profiler,
-      standardProfile: {
-        ...DEFAULT_STANDARD_PROFILE,
-        renderPath: options.renderPath,
-        gpuOcclusion: options.gpuOcclusion,
-      },
-      ...(options.gpuPassTiming ? { gpuPassTiming: {} } : {}),
+      ...config.rendererConfig,
       time: { fixedDeltaSeconds: FIXED_DELTA_SECONDS, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.1 },
     },
     forgeaxBundlerAdapter(),
@@ -330,23 +415,6 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const assets = app.assets;
   if (assets === undefined) throw new Error('App asset service is unavailable');
   const gpuPassNanos: Record<string, number[]> = {};
-  if (options.gpuPassTiming) {
-    app.renderer.subscribe((event) => {
-      if (event.kind !== 'frame-submitted') return;
-      void app.renderer.observe(event.receipt, { include: ['timings'] }).then((observed) => {
-        const timings = observed.ok ? observed.value.timings : undefined;
-        if (timings === undefined || (timings.status !== 'complete' && timings.status !== 'partial')) return;
-        const perPass: Record<string, number> = { TOTAL: 0 };
-        for (const pass of timings.frame.passes) {
-          if (pass.status !== 'measured') continue;
-          const key = `${pass.passKind}:${pass.passName}`;
-          perPass[key] = (perPass[key] ?? 0) + pass.durationNanoseconds;
-          perPass.TOTAL = (perPass.TOTAL ?? 0) + pass.durationNanoseconds;
-        }
-        for (const [key, nanos] of Object.entries(perPass)) (gpuPassNanos[key] ??= []).push(nanos);
-      });
-    });
-  }
   const world = app.world;
 const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
@@ -550,7 +618,7 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
         intensity: 2.5,
         castShadow: true,
         cascadeCount: DIRECTIONAL_CASCADE_COUNT,
-        mapSize: 2048,
+        mapSize: DIRECTIONAL_SHADOW_SIZE,
         shadowDistance: 90,
         // This workload measures the retained static shadow layer, which is opt-in.
         staticShadowCache: true,
@@ -573,8 +641,9 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
             range: 40,
             innerConeDeg: 20,
             outerConeDeg: 35,
-            castShadow: true,
-            mapSize: 1024,
+            castShadow: index < spotShadowCount,
+            mapSize: SPOT_SHADOW_SIZE,
+            staticShadowCache: index < spotShadowCount,
           },
         },
       )
@@ -593,7 +662,7 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
           },
         },
         { component: PointLight, data: { color: [0.8, 0.9, 1], intensity: 20, range: 25 } },
-        { component: PointLightShadow, data: { farPlane: 25 } },
+        { component: PointLightShadow, data: { farPlane: 25, mapSize: POINT_SHADOW_SIZE, staticShadowCache: true } },
       )
       .unwrap();
   }
@@ -616,7 +685,7 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
 
   const evidence: ShadowStressEvidence = {
     backend: 'webgpu',
-    workloadFingerprint: workloadFingerprint(options),
+    workloadFingerprint: config.workloadFingerprint,
     options,
     warmupFrames,
     profileFrames,
@@ -626,7 +695,7 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
       staticCasterCount: chunks.reduce((total, chunk) => total + chunk.length / 16, 0),
       moverCount: options.moverCount,
       characterCount: options.characterCount,
-      spotShadowCount: SPOT_LIGHT_COUNT,
+      spotShadowCount,
       directionalCascadeCount: DIRECTIONAL_CASCADE_COUNT,
     },
     frameProgress: 0,
@@ -644,16 +713,22 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
     gpuDrivenSamples: [],
     trailingSamples: [],
     gpuPassNanos,
+    shadowProjection,
   };
   Object.assign(globalThis, { __forgeaxShadowStress: evidence });
+  observeGpuPasses(app.renderer, options.gpuPassTiming, gpuPassNanos, warmupFrames, sampleFrames, evidence);
 
+  let profileSession: RecorderSession | undefined;
   const startProfile = (): boolean => {
     const capture = profiler.startCapture({
       frameLimit: profileFrames,
       eventLimit: PROFILE_EVENT_LIMIT,
       detail: profileDetail(params.get('profileDetail')),
     });
-    if (capture.ok) return true;
+    if (capture.ok) {
+      profileSession = capture.value;
+      return true;
+    }
     console.error(`${TAG} profiler ${errorText(capture.error)}`);
     errors.push({ code: 'profiler-start-failed', hint: errorText(capture.error) });
     return false;
@@ -721,7 +796,11 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
         // readable during a later Update.
         if (evidence.profileCapture === null) {
           const latest = profiler.latestCapture();
-          if (latest !== undefined) evidence.profileCapture = latest;
+          if (latest !== undefined) {
+            evidence.profileCapture = latest;
+            evidence.profileSourceFailure = profileSession?.firstSourceFailure();
+            profileSession = undefined;
+          }
         }
         if (warmupFrames > 0 && frame === warmupFrames) startProfile();
         // Renderer inspection reflects the frame rendered before this Update.

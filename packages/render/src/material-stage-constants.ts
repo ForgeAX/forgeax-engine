@@ -1,5 +1,7 @@
 import {
   type MaterialShaderArtifact,
+  STANDARD_ORM_REUSE_BIT,
+  STANDARD_ORM_REUSE_OVERRIDE,
   STANDARD_SHADOW_RECEPTION_OVERRIDE,
   STANDARD_SURFACE_DISCARD_CLIPPING_AXIS,
   STANDARD_SURFACE_DISCARD_LOD_AXIS,
@@ -7,6 +9,8 @@ import {
   STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
+  standardCoverageTextureMask,
+  standardVertexTextureMask,
   withSupportedLeanInputs,
 } from '@forgeax/engine-shader';
 
@@ -120,6 +124,18 @@ function selectAxisOn(variantSet: string, axis: string): string {
   return variantSet === '' ? variantSet : `${variantSet}+${axis}=true`;
 }
 
+/** Select the same source axes for artifact proof and PSO assembly. */
+export function variantSetForSurfaceDiscards(variantSet: string | undefined, mask: number): string {
+  let selected =
+    variantSet ??
+    `${STANDARD_SURFACE_DISCARD_CLIPPING_AXIS}=false+${STANDARD_SURFACE_DISCARD_LOD_AXIS}=false`;
+  if ((mask & STANDARD_SURFACE_DISCARD_LOD_COVERAGE) !== 0)
+    selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_LOD_AXIS);
+  if ((mask & STANDARD_SURFACE_DISCARD_VIEW_CLIPPING) !== 0)
+    selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_CLIPPING_AXIS);
+  return withSupportedLeanInputs(selected);
+}
+
 /**
  * Resolve the discard request into the compile-time axes: the LOD bit
  * selects LOD_DITHER=true and the clipping bit CLIPPING_PLANES=true, and the transport key never
@@ -135,20 +151,8 @@ export function applySurfaceDiscardAxis(
   if (constants === undefined || !Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE))
     return { variantSet, constants };
   const { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: requested, ...rest } = constants;
-  const mask = requested ?? 0;
-  let selected =
-    variantSet ??
-    `${STANDARD_SURFACE_DISCARD_CLIPPING_AXIS}=false+${STANDARD_SURFACE_DISCARD_LOD_AXIS}=false`;
-  if (selected !== undefined) {
-    if ((mask & STANDARD_SURFACE_DISCARD_LOD_COVERAGE) !== 0)
-      selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_LOD_AXIS);
-    if ((mask & STANDARD_SURFACE_DISCARD_VIEW_CLIPPING) !== 0)
-      selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_CLIPPING_AXIS);
-    // LOD cross-fade programs keep the general vertex inputs (permutation rules).
-    selected = withSupportedLeanInputs(selected);
-  }
   return {
-    variantSet: selected,
+    variantSet: variantSetForSurfaceDiscards(variantSet, requested ?? 0),
     constants: Object.keys(rest).length === 0 ? undefined : rest,
   };
 }
@@ -167,7 +171,12 @@ export function materialAbiRasterConstants(
   return {
     ...(standardTextureMask === undefined
       ? {}
-      : { [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask }),
+      : {
+          [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask % STANDARD_ORM_REUSE_BIT,
+          ...(standardTextureMask >= STANDARD_ORM_REUSE_BIT
+            ? { [STANDARD_ORM_REUSE_OVERRIDE]: 1 }
+            : {}),
+        }),
     ...(standardSurfaceDiscards === undefined
       ? {}
       : { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscards }),
@@ -175,6 +184,29 @@ export function materialAbiRasterConstants(
       ? {}
       : { [STANDARD_SHADOW_RECEPTION_OVERRIDE]: standardShadowReception }),
   };
+}
+
+/** Keep only specialization values the binary Standard entry can observe. */
+export function projectStandardCoverageConstants(
+  constants: Readonly<Record<string, number>> | undefined,
+  mode: 'vertex' | 'coverage' | 'projected-coverage',
+): Readonly<Record<string, number>> | undefined {
+  if (constants === undefined) return undefined;
+  const {
+    [STANDARD_ORM_REUSE_OVERRIDE]: _orm,
+    [STANDARD_SHADOW_RECEPTION_OVERRIDE]: _shadow,
+    [STANDARD_TEXTURE_MASK_OVERRIDE]: mask,
+    ...remaining
+  } = constants;
+  if (mask !== undefined)
+    return {
+      ...remaining,
+      [STANDARD_TEXTURE_MASK_OVERRIDE]:
+        mode === 'vertex'
+          ? standardVertexTextureMask(mask)
+          : standardCoverageTextureMask(mask, mode === 'projected-coverage'),
+    };
+  return Object.keys(remaining).length === 0 ? undefined : remaining;
 }
 
 /** Engine ABI values specialize only programs that declare those overrides.
@@ -189,15 +221,19 @@ export function materialProgramRasterConstants(
   const omitTexture =
     Object.hasOwn(constants, STANDARD_TEXTURE_MASK_OVERRIDE) &&
     !overrideIds.includes(STANDARD_TEXTURE_MASK_OVERRIDE);
+  const omitOrmReuse =
+    Object.hasOwn(constants, STANDARD_ORM_REUSE_OVERRIDE) &&
+    !overrideIds.includes(STANDARD_ORM_REUSE_OVERRIDE);
   const omitDiscards =
     Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE) &&
     !overrideIds.includes(STANDARD_SURFACE_DISCARDS_OVERRIDE);
   const omitShadow =
     Object.hasOwn(constants, STANDARD_SHADOW_RECEPTION_OVERRIDE) &&
     !overrideIds.includes(STANDARD_SHADOW_RECEPTION_OVERRIDE);
-  if (!omitTexture && !omitDiscards && !omitShadow) return constants;
+  if (!omitTexture && !omitOrmReuse && !omitDiscards && !omitShadow) return constants;
   const selected = { ...constants };
   if (omitTexture) delete selected[STANDARD_TEXTURE_MASK_OVERRIDE];
+  if (omitOrmReuse) delete selected[STANDARD_ORM_REUSE_OVERRIDE];
   if (omitDiscards) delete selected[STANDARD_SURFACE_DISCARDS_OVERRIDE];
   if (omitShadow) delete selected[STANDARD_SHADOW_RECEPTION_OVERRIDE];
   return Object.keys(selected).length === 0 ? undefined : selected;
@@ -209,11 +245,13 @@ export function materialVertexConstants(
 ): Readonly<Record<string, number>> | undefined {
   if (
     constants === undefined ||
-    (!Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE) &&
+    (!Object.hasOwn(constants, STANDARD_ORM_REUSE_OVERRIDE) &&
+      !Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE) &&
       !Object.hasOwn(constants, STANDARD_SHADOW_RECEPTION_OVERRIDE))
   )
     return constants;
   const vertex = { ...constants };
+  delete vertex[STANDARD_ORM_REUSE_OVERRIDE];
   delete vertex[STANDARD_SURFACE_DISCARDS_OVERRIDE];
   delete vertex[STANDARD_SHADOW_RECEPTION_OVERRIDE];
   return vertex;

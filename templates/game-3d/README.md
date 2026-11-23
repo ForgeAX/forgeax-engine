@@ -43,6 +43,7 @@ details, deletion steps, packs, UI realms, lighting, materials and coordinates a
 ```bash
 pnpm exec forgeax project check --json
 pnpm exec forgeax project play scripts/playthrough.mjs --require-ui --json
+pnpm exec forgeax project play scripts/checkpoint-playthrough.mjs --require-ui --json
 pnpm exec forgeax project build --json
 pnpm exec forgeax project play scripts/playthrough.mjs --release --require-ui --json
 ```
@@ -50,6 +51,8 @@ pnpm exec forgeax project play scripts/playthrough.mjs --release --require-ui --
 While iterating, `project play` takes `--from <step>` for a top-level step with a `setup`.
 `--time-scale` runs game time in lockstep (faster), so tune difficulty and pass/fail in
 real time; final acceptance runs without either.
+
+Use **Save checkpoint** after moving. The same game restores position and view on its next launch. Music starts when the Host has an audio output, and a chime follows a committed save.
 
 ## Optional View
 

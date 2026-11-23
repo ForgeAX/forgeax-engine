@@ -63,6 +63,7 @@ export function hostStartupDocument(
       #app-shell { position: relative; isolation: isolate; }
       #game-ui { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
       #forgeax-status { display: none; position: absolute; left: 10px; bottom: 8px; max-width: calc(100% - 20px); z-index: 2147483645; color: #fff; opacity: 0.5; font: 400 10px/14px system-ui, sans-serif; pointer-events: none; user-select: none; }
+      #forgeax-fps-history { position: absolute; left: clamp(12px,3vw,32px); top: clamp(12px,3vh,24px); width: 276px; max-width: calc(100% - 24px); height: auto; z-index: 2147483645; pointer-events: none; background: #101e23eb; border: 1px solid #e9d4a869; border-radius: 9px; }
       #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #07090d; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
       #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
       #forgeax-loading-content { position: absolute; inset: 0; }
@@ -106,7 +107,7 @@ export function hostStartupDocument(
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
-    <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">FPS --</span></div>
+    <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">Render FPS --</span> <span id="forgeax-frame-gap"></span></div>
 ${startupMarkup(
   'forgeax-loading',
   'status',
@@ -203,7 +204,7 @@ export function hostStartupScript(
         const findCanvas = (root) => {
           const preferred = root?.querySelector?.('canvas#app') ?? root?.querySelector?.('#app');
           if (preferred !== null && preferred !== undefined) return preferred;
-          let fallback = root?.querySelector?.('canvas');
+          let fallback = root?.querySelector?.('canvas:not(#forgeax-fps-history)');
           const descendants = root?.querySelectorAll?.('*');
           if (descendants === null || descendants === undefined) return fallback;
           for (const element of descendants) {
@@ -596,30 +597,93 @@ export function hostStartupScript(
           }
         };
         // Receipt observation outlives the loading overlay. It does not request
-        // render frames or sample rAF; one timer updates text only when changed.
+        // render frames or sample rAF; one timer owns both HUD views.
         const frameRate = (() => {
           const node = document.querySelector('#forgeax-fps');
+          const gap = document.querySelector('#forgeax-frame-gap');
           const status = document.querySelector('#forgeax-status');
           let closed = !gamePage || node?.id !== 'forgeax-fps';
-          let session, surface, deviceGeneration = -1, lastFrame = -1;
-          let since, count = 0, timer;
-          const text = value => {
-            if (node?.textContent !== value) setText(node, value);
+          const graph = !closed && query.get('forgeax-fps-chart') === '1'
+            ? document.createElement('canvas') : null;
+          const ctx = graph?.getContext?.('2d');
+          if (ctx && status !== null) {
+            graph.id = 'forgeax-fps-history';
+            graph.width = 276;
+            graph.height = 78;
+            graph.hidden = true;
+            graph.setAttribute('role', 'img');
+            graph.setAttribute('aria-label', 'Render FPS over the last 20 seconds');
+            status.after(graph);
+          }
+          const intervalMs = ctx ? 500 : 1000;
+          const historyMs = 20_000;
+          const capacity = historyMs / intervalMs + 1;
+          const rates = ctx ? new Float32Array(capacity) : undefined;
+          const times = ctx ? new Float64Array(capacity) : undefined;
+          let next = 0, used = 0;
+          const drawGraph = (now, fps) => {
+            if (!ctx || !rates || !times) return;
+            rates[next] = fps; times[next] = now;
+            next = (next + 1) % capacity;
+            used = Math.min(used + 1, capacity);
+            const first = (next - used + capacity) % capacity;
+            let ceiling = 60;
+            for (let i = 0; i < used; i++) {
+              const index = (first + i) % capacity;
+              if (now - times[index] <= historyMs) ceiling = Math.max(ceiling, rates[index]);
+            }
+            ceiling = Math.ceil(ceiling / 30) * 30;
+            const left = 30, right = 266, top = 23, bottom = 67;
+            ctx.clearRect(0, 0, graph.width, graph.height);
+            ctx.font = '11px system-ui, sans-serif';
+            ctx.fillStyle = '#fff4de';
+            ctx.fillText('Render FPS · 20 s', 10, 15);
+            ctx.fillStyle = '#bec9be';
+            ctx.strokeStyle = '#6e898055';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 3; i++) {
+              const y = top + (bottom - top) * i / 2;
+              ctx.fillText(String(ceiling * (1 - i / 2)), 6, y + 3);
+              ctx.beginPath(); ctx.moveTo(left, y + 0.5); ctx.lineTo(right, y + 0.5); ctx.stroke();
+            }
+            ctx.strokeStyle = '#a9e0a9';
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            let x = right, y = bottom;
+            for (let i = 0; i < used; i++) {
+              const index = (first + i) % capacity;
+              const age = now - times[index];
+              if (age > historyMs) continue;
+              x = right - age * (right - left) / historyMs;
+              y = bottom - rates[index] * (bottom - top) / ceiling;
+              ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, y, 2.25, 0, Math.PI * 2); ctx.fill();
+            graph.hidden = false;
           };
+          let session, surface, deviceGeneration = -1, lastFrame = -1;
+          let since, previousAt, count = 0, longestGap = 0, timer;
           const reset = () => {
             clearStartupTimeout(timer); timer = undefined;
-            since = undefined; count = 0;
-            text('FPS --'); setDisplay(status, 'none');
+            since = undefined; previousAt = undefined; count = 0; longestGap = 0;
+            next = 0; used = 0;
+            if (graph !== null) graph.hidden = true;
+            showText(node, 'Render FPS --'); showText(gap, ''); setDisplay(status, 'none');
           };
           const tick = () => {
             if (closed || !isForeground()) { reset(); return; }
             const now = clockNow();
             const elapsed = now - since;
             if (Number.isFinite(elapsed) && elapsed > 0) {
-              text('FPS ' + (count * 1000 / elapsed).toFixed(1));
-              count = 0; since = now;
+              const fps = count * 1000 / elapsed;
+              showText(node, 'Render FPS ' + fps.toFixed(1));
+              showText(gap, Math.round(Math.max(longestGap, now - previousAt)) + ' ms max gap');
+              drawGraph(now, fps);
+              count = 0; longestGap = 0; since = now;
             }
-            timer = setStartupTimeout(tick, 1000);
+            timer = setStartupTimeout(tick, intervalMs);
           };
           const completed = detail => {
             const canvas = currentCanvas();
@@ -633,11 +697,16 @@ export function hostStartupScript(
             }
             if (detail.frameId <= lastFrame) return;
             lastFrame = detail.frameId;
+            const now = clockNow();
             if (since === undefined) {
-              since = clockNow();
+              since = now;
               setDisplay(status, 'block');
-              timer = setStartupTimeout(tick, 1000);
-            } else count += 1;
+              timer = setStartupTimeout(tick, intervalMs);
+            } else {
+              count += 1;
+              longestGap = Math.max(longestGap, now - previousAt);
+            }
+            previousAt = now;
           };
           const onReceipt = event => { if (eventCanvas(event) === currentCanvas()) completed(event.detail); };
           const visibilityChanged = () => reset();

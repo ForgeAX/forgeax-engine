@@ -708,6 +708,11 @@ function publishReport(report: TargetReport): void {
   console.info(`[hello-ssr] report=${JSON.stringify(report)}`);
 }
 
+function reflectionDemoProfile(search: string) {
+  const renderPath = new URLSearchParams(search).get('pipeline') === 'forward' ? 'forward' : 'deferred';
+  return { ...DEFAULT_STANDARD_PROFILE, renderPath } as const;
+}
+
 async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const ssrIdentity = {
     sourceHead: import.meta.env.VITE_FORGEAX_SOURCE_SHA ?? 'unknown',
@@ -763,7 +768,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       ...(new URLSearchParams(location.search).has('timings') ? { gpuPassTiming: {} } : {}),
       captureReflectionFallbackReadback: reflectionEvidence && import.meta.env.VITE_REFLECTION_PROBE_EVIDENCE === '1',
       ...(reflectionEvidence
-        ? { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' as const } }
+        ? { standardProfile: reflectionDemoProfile(location.search) }
         : {}),
       ...(faultInstrumentation === undefined ? {} : { rhiInstrumentation: faultInstrumentation }),
     },

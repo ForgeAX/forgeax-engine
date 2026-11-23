@@ -26,6 +26,9 @@
         "font-atlas"
       ]
     },
+    "smokeArtifacts": {
+      "packGuids": ["0172daac-227f-5a3b-b6ae-313f9fd52081"]
+    },
     "smokeInvocation": "pnpm --filter @forgeax/bevy-text2d smoke",
     "metrics": {
       "bundle-size": {

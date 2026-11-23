@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { backendHeapEnv } from '../backend-heap.js';
+import { backendHeapEnv } from '../child-process.js';
 
 const GIB = 1024 ** 3;
 

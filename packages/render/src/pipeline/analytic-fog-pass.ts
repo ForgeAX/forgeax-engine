@@ -403,7 +403,7 @@ export function addTranslucencyVolumetricFogPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardFogPassInputs & {
     readonly directionalShadow: GraphTextureView | undefined;
-    readonly spotShadow: GraphTextureView;
+    readonly spotShadow: GraphTextureView | undefined;
     readonly clusterBuffers: StandardClusterGraphBuffers | null;
     readonly cloudShadow: GraphTextureView | undefined;
   },

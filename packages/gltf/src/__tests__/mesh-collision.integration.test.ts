@@ -1,5 +1,5 @@
 import { decodeMeshBinary } from '@forgeax/engine-geometry';
-import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { ImporterRegistry, projectImportPack, runImport } from '@forgeax/engine-import';
 import { expect, test } from 'vitest';
 import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { gltfImporter } from '../gltf-importer';
@@ -49,15 +49,17 @@ test('G28 glTF source Meta cooks collision on the same GUID and portable body', 
   const enabled = enabledResult.value,
     disabled = disabledResult.value;
   if ('skipped' in enabled || 'skipped' in disabled) throw new Error('expected imported mesh');
-  expect(enabled.pack.assets.map((asset) => asset.guid)).toEqual(
-    disabled.pack.assets.map((asset) => asset.guid),
+  const enabledPack = projectImportPack(enabled.product);
+  const disabledPack = projectImportPack(disabled.product);
+  expect(enabledPack.assets.map((asset) => asset.guid)).toEqual(
+    disabledPack.assets.map((asset) => asset.guid),
   );
-  const asset = enabled.pack.assets[0];
+  const asset = enabledPack.assets[0];
   if (!asset?.artifacts.body) throw new Error('missing cooked mesh');
   const mesh = decodeMeshBinary(asset.artifacts.body.bytes, []);
   expect(mesh?.collision?.positions.length).toBe(9);
   expect(mesh?.collision?.indices.length).toBe(3);
-  const withoutCollision = disabled.pack.assets[0];
+  const withoutCollision = disabledPack.assets[0];
   if (!withoutCollision) throw new Error('missing Mesh');
   expect(importedMesh(withoutCollision).collision).toBeUndefined();
   expect((await produce('guess')).ok).toBe(false);

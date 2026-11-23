@@ -135,7 +135,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
         ),
       );
     });
-    it('32 entries: user-region 25 - shared pairs 2 + IBL 6 + backdrop 1 + scene material 1 + global specular 1', () => {
+    it('retains the authored region and the scene material row', () => {
       const spec = makeSpec();
       const out = buildBindGroupLayoutDescriptor(spec, {
         kind: 'pbr-material-merged',
@@ -150,24 +150,18 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
       const expected = {
         label: 'pbr-material-skylight-bgl',
         entries: [
-          ...afterIbl.filter((entry) => ![15, 16].includes(entry.binding)),
-          ...appendInjection(afterIbl, 'transmission').filter(
-            (entry) => ![15, 16, 31].includes(entry.binding),
+          ...afterIbl.filter(
+            (entry) => !(entry.binding === 15 || entry.binding === 16 || entry.binding >= 25),
           ),
           {
             binding: 46,
             visibility: 0x1 | 0x2,
             buffer: { type: 'read-only-storage', hasDynamicOffset: false },
           },
-          {
-            binding: 47,
-            visibility: 0x2,
-            texture: { sampleType: 'float', viewDimension: '2d' },
-          },
         ],
       };
       expect(out).toEqual(expected);
-      expect(out.entries.length).toBe(32);
+      expect(out.entries.length).toBe(24);
     });
 
     it('adds only authored physical map pairs after the canonical injection chain', () => {
@@ -181,7 +175,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
         kind: 'pbr-material-merged',
         materialParamSchema: schema,
       });
-      expect(out.entries.slice(30).map((entry) => entry.binding)).toEqual([48, 49, 52, 53, 46, 47]);
+      expect(out.entries.slice(23).map((entry) => entry.binding)).toEqual([48, 49, 52, 53, 46]);
     });
   });
 

@@ -26,8 +26,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
   for (const source of ['output-transform', 'standard-tone']) {
     const built = buildFullscreenPostProcessPass(context, { source });
     if (built === null) throw new Error('fullscreen pass was not built');
-    const handle = built.createHandle(source, {}, null);
-    handle.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+    built.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   }
   expect(groups).toHaveBeenCalledTimes(1);
   expect(groups.mock.calls[0]?.[0].entries).toEqual([]);
@@ -39,9 +38,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
   );
   const view = buildFullscreenPostProcessPass(context, { source: 'view-effect', usesView: true });
   if (view === null) throw new Error('View fullscreen pass was not built');
-  view
-    .createHandle('view-effect', {}, null)
-    .draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+  view.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   expect(pass.setBindGroup).toHaveBeenCalledTimes(2);
   const nextDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const next = buildFullscreenPostProcessPass(
@@ -49,9 +46,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
     { source: 'output-transform' },
   );
   if (next === null) throw new Error('fullscreen pass was not rebuilt for the new device');
-  next
-    .createHandle('output-transform', {}, null)
-    .draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+  next.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   expect(pass.setBindGroup.mock.calls[2]?.[1]).not.toBe(pass.setBindGroup.mock.calls[0]?.[1]);
 });
 

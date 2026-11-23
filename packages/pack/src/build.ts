@@ -23,7 +23,7 @@ export type {
   VideoAsset,
 } from '@forgeax/engine-types';
 export type { ArtifactPathContext } from './artifact-path.js';
-export { validateArtifactPath } from './artifact-path.js';
+export { validateArtifactPath, visitPackArtifactDescriptors } from './artifact-path.js';
 export {
   type AuthorPackClosure,
   type AuthorPackFile,
@@ -41,21 +41,18 @@ export {
   type CatalogImporterPolicy,
   type CatalogProducerVisibility,
   catalogSourcePathFor,
+  emptyCatalogProjection,
   metaPathForGuid,
 } from './catalog-builder.js';
 export { calculateCatalogDelta } from './catalog-delta.js';
 export {
   type CatalogOutputDeclaration,
   type CatalogProducerMeta,
-  type CookedPackageProjection,
   catalogProjectionFor,
   currentProjectionFor,
   type PackageCatalogInput,
-  projectCookedPackageEntry,
   projectExternalCatalogEntries,
   projectPackageCatalog,
-  projectRuntimeCatalogRow,
-  type RuntimeCatalogRowInput,
   sourceOverridesForOutput,
 } from './catalog-projection.js';
 export {
@@ -83,22 +80,12 @@ export {
   validateCookedMaterialRecord,
   validateMaterialCookReceipt,
 } from './evidence/material-cook.js';
-export { buildOfflineAssetEvidence, packageVerification } from './evidence/offline-evidence.js';
 export {
   AssetGuid,
   isValidPackSourceKey,
   PACK_SOURCE_KEY_RE,
   PackageId,
 } from './guid.js';
-export { projectAssetRefs, projectSceneEntityRefs } from './inventory/binding.js';
-export {
-  type AuthorInventory,
-  type AuthorInventoryRow,
-  type InventoryError,
-  type InventoryErrorCode,
-  validateAuthorInventory,
-} from './inventory/declaration.js';
-export { inventoryDigest, syncAuthorInventory } from './inventory/sync.js';
 export {
   decodeMeshBinHeader,
   decodeMeshBinMorphs,
@@ -121,7 +108,6 @@ export {
   createFileSystemPackAuthoringGateway,
   createFileSystemPackAuthoringPort,
   type FileSystemPackAuthoringOptions,
-  type PackAuthoringMaterializedAsset,
 } from './pack-authoring-node.js';
 export * from './pack-generation-projection.js';
 export { listPackSources, type PackSourceIndexRow } from './pack-source-index.js';
@@ -139,10 +125,12 @@ export {
 } from './package-finalizer.js';
 export { validateProducerContract, validateProducerOutputs } from './producer-contract.js';
 export { resolveAssetSource } from './resolve-asset-source.js';
-export { parsePackV2, validateMeta, validatePack, validatePackV2 } from './runtime.js';
+export { parsePackV2, validateMeta, validatePackV2 } from './runtime.js';
 export {
+  bindRuntimePackPublication,
   bindRuntimePackScope,
   createRuntimePackPublication,
+  RUNTIME_PACK_SUFFIX,
   type RuntimePackAssetInput,
   type RuntimePackEnvelope,
   type RuntimePackInput,
@@ -152,9 +140,6 @@ export {
 } from './runtime-publication.js';
 export {
   type InventoryDeclaration,
-  type LegacyPackInventoryDocument,
-  type PackInventoryAsset,
-  type PackInventoryDocument,
   type ScanInventory,
   type ScanOptions,
   type ScanSourceDeclaration,

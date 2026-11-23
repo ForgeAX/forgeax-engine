@@ -15,6 +15,7 @@ export {
   createArtifactRef,
   createPreviewArtifactManifest,
   createSnapshotRef,
+  isPreviewArtifactRole,
   isSerializableValue,
   isToolEvidenceKind,
   type PreviewArtifactIdentity,

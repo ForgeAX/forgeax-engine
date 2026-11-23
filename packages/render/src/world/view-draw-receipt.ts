@@ -5,12 +5,17 @@ import {
   snapshotWaterBakedQueryLineage,
   WATER_BAKED_DESCRIPTOR_STRIDE_BYTES,
 } from '@forgeax/engine-water';
-import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
+import {
+  appendedObservationBytes,
+  MAX_INSPECTION_SAMPLES,
+  MAX_RECEIPT_OBSERVATION_BYTES,
+} from '../observation-budget';
 import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
 import {
   type createPresentationDraws,
   projectDisplayRenderables,
 } from '../render-system-presentation';
+import { RetainedFrameProjection } from '../scene/frame-list';
 import {
   DynamicGeometryCommitOrder,
   DynamicGeometryResetOrder,
@@ -20,12 +25,11 @@ import {
   TerrainReceiptDiscardOrder,
   ViewTerrainCandidateOrder,
 } from '../system-order';
-
 import { captureSubmittedTerrain, type SubmittedTerrainSection } from '../terrain/submitted.js';
 import { ViewRecorder, ViewSubmission, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
 
-import { requireViewField } from './view-field';
+import { readViewState, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 
 /** The terrain sections a view's frame could draw, with the world keys their draws are named by. */
@@ -346,10 +350,14 @@ function captureTerrain(world: World, staged: ViewFrameState): TerrainCandidate 
     const { frame, cameras, source: resourceWorld } = stagedViewInputs(world, staged);
     // A GPU-owned frame derives its display rows from the submitted selection and a
     // cameraless frame draws nothing: neither carries terrain.
-    const drawn = cameras.length === 0 || frame.gpuOwned !== undefined;
+    const noTerrain =
+      cameras.length === 0 ||
+      frame.gpuOwned !== undefined ||
+      (frame.renderables instanceof RetainedFrameProjection &&
+        frame.renderables.facts?.terrainRowCount === 0);
     return {
       // `commit` keeps only the sections the accepted attempt presented, culled or not.
-      sections: drawn
+      sections: noTerrain
         ? []
         : captureSubmittedTerrain(
             projectDisplayRenderables(frame.renderables, frame.dispatch),
@@ -375,6 +383,8 @@ export class ViewDrawReceipt {
     | {
         readonly frame: number;
         readonly draws: WaterBakedDrawReceiptFact[];
+        readonly keys: Set<string>;
+        bytes: number;
         overflow: boolean;
       }
     | undefined;
@@ -382,6 +392,8 @@ export class ViewDrawReceipt {
     | {
         readonly frame: number;
         readonly draws: MaterialSlotDrawReceiptFact[];
+        readonly entities: Set<number>;
+        bytes: number;
         overflow: boolean;
       }
     | undefined;
@@ -428,7 +440,7 @@ export class ViewDrawReceipt {
     expected?: WaterBakedDrawExpected,
   ): void {
     if (this.waterBakedStage?.frame !== frame)
-      this.waterBakedStage = { frame, draws: [], overflow: false };
+      this.waterBakedStage = { frame, draws: [], keys: new Set(), bytes: 2, overflow: false };
     const stage = this.waterBakedStage;
     if (stage.overflow) return;
     const reason =
@@ -441,16 +453,19 @@ export class ViewDrawReceipt {
         : { ...draw, availability: { status: 'unavailable', reason } },
     );
     const signature = waterBakedDrawClosureKey(frozen);
-    if (stage.draws.some((previous) => waterBakedDrawClosureKey(previous) === signature)) return;
+    if (stage.keys.has(signature)) return;
+    if (stage.draws.length < MAX_INSPECTION_SAMPLES)
+      stage.bytes = appendedObservationBytes(stage.bytes, frozen);
     if (
       stage.draws.length >= MAX_INSPECTION_SAMPLES ||
-      new TextEncoder().encode(JSON.stringify([...stage.draws, frozen])).byteLength >
-        MAX_RECEIPT_OBSERVATION_BYTES
+      stage.bytes > MAX_RECEIPT_OBSERVATION_BYTES
     ) {
       stage.draws.length = 0;
+      stage.keys.clear();
       stage.overflow = true;
       return;
     }
+    stage.keys.add(signature);
     stage.draws.push(frozen);
   }
 
@@ -459,9 +474,7 @@ export class ViewDrawReceipt {
     const stage = this.waterBakedStage;
     this.waterBakedStage = undefined;
     const acceptedStage = stage?.frame === frame ? stage : undefined;
-    this.waterBakedDraws = Object.freeze(
-      acceptedStage?.overflow ? [] : [...(acceptedStage?.draws ?? [])],
-    );
+    this.waterBakedDraws = Object.freeze(acceptedStage?.draws ?? []);
     this.waterBakedUnavailableReason = acceptedStage?.overflow ? 'snapshot-too-large' : undefined;
   }
 
@@ -474,6 +487,7 @@ export class ViewDrawReceipt {
 
   /** Capture the accepted material closure from one actual slot draw callback. */
   stageMaterialDraw(frame: number, draw: MaterialSlotDrawReceiptFact): void {
+    if (this.materialDrawStage?.frame === frame && this.materialDrawStage.overflow) return;
     if (
       draw.frameId !== frame ||
       draw.worldIdentity.length === 0 ||
@@ -492,41 +506,33 @@ export class ViewDrawReceipt {
     )
       return;
     if (this.materialDrawStage?.frame !== frame)
-      this.materialDrawStage = { frame, draws: [], overflow: false };
+      this.materialDrawStage = { frame, draws: [], entities: new Set(), bytes: 2, overflow: false };
     const stage = this.materialDrawStage;
-    if (stage.overflow) return;
+    if (stage.entities.has(draw.entityKey)) {
+      for (const previous of stage.draws)
+        if (
+          previous.entityKey === draw.entityKey &&
+          previous.submeshIndex === draw.submeshIndex &&
+          previous.materialSlot === draw.materialSlot &&
+          previous.materialHandle === draw.materialHandle &&
+          previous.sourceRevision === draw.sourceRevision &&
+          previous.worldIdentity === draw.worldIdentity
+        )
+          return;
+    }
     const frozen = Object.freeze({ ...draw });
-    const signature = JSON.stringify([
-      frozen.worldIdentity,
-      frozen.entityKey,
-      frozen.submeshIndex,
-      frozen.materialSlot,
-      frozen.materialHandle,
-      frozen.sourceRevision,
-    ]);
-    if (
-      stage.draws.some(
-        (previous) =>
-          JSON.stringify([
-            previous.worldIdentity,
-            previous.entityKey,
-            previous.submeshIndex,
-            previous.materialSlot,
-            previous.materialHandle,
-            previous.sourceRevision,
-          ]) === signature,
-      )
-    )
-      return;
+    if (stage.draws.length < MAX_INSPECTION_SAMPLES)
+      stage.bytes = appendedObservationBytes(stage.bytes, frozen);
     if (
       stage.draws.length >= MAX_INSPECTION_SAMPLES ||
-      new TextEncoder().encode(JSON.stringify([...stage.draws, frozen])).byteLength >
-        MAX_RECEIPT_OBSERVATION_BYTES
+      stage.bytes > MAX_RECEIPT_OBSERVATION_BYTES
     ) {
       stage.draws.length = 0;
+      stage.entities.clear();
       stage.overflow = true;
       return;
     }
+    stage.entities.add(frozen.entityKey);
     stage.draws.push(frozen);
   }
 
@@ -534,9 +540,7 @@ export class ViewDrawReceipt {
   commitMaterialDraws(frame: number): void {
     const stage = this.materialDrawStage;
     this.materialDrawStage = undefined;
-    this.materialDraws = Object.freeze(
-      stage?.frame === frame && !stage.overflow ? [...stage.draws] : [],
-    );
+    this.materialDraws = Object.freeze(stage?.frame === frame ? stage.draws : []);
   }
 
   /** Rejected attempts publish no material draws and clear stale attempt state. */
@@ -567,10 +571,7 @@ export function viewDrawReceipt(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewDrawReceipt | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewDraws)) return undefined;
-  return world
-    .resolveUniqueRef<ViewDrawReceipt>(requireViewField(world, entity, ViewDraws, 'state'))
-    .unwrap();
+  return readViewState<ViewDrawReceipt>(world, entity, ViewDraws);
 }
 
 /**

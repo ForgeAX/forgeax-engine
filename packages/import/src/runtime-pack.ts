@@ -7,7 +7,9 @@ import {
   decodePackBlob,
   encodePackData,
   type FixedPackPublication,
+  fixedPublicationDependencies,
   loadPackProgram,
+  matchesFixedDependency,
   type PackBinary,
   type PackBlob,
   type PackProgram,
@@ -41,6 +43,7 @@ import {
   projectScriptablePackSceneComponents,
   type ResolvedPackParameterInheritance,
   resolvePackParameterValues,
+  type ScriptablePackRuntime,
   type ScriptablePackSceneComponentInput,
   type ScriptablePackSourceMeta,
   validatePackDefinition,
@@ -76,6 +79,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import { projectImportedAssetPayload } from './import-product.js';
 import { normaliseForPack } from './import-runner.js';
 import { producePluginAsset } from './plugin-asset-output.js';
+import { type RuntimePackCacheStore, RuntimePackPersistentCache } from './runtime-pack-cache.js';
 import {
   runtimeGeneratorDefinition as generatorDefinition,
   parseRuntimePackContent,
@@ -88,6 +92,7 @@ import {
   type RuntimePackPinnedAsset,
   type RuntimePackRecipe,
   type RuntimePackSavedRecipe,
+  savedRecipeOutputs,
   saveRuntimePackSnapshot,
 } from './runtime-pack-snapshot.js';
 import {
@@ -101,6 +106,7 @@ import {
   meshAssetOutputProducer,
 } from './scriptable-pack-output-producers.js';
 
+export type { RuntimePackCacheStore } from './runtime-pack-cache.js';
 export type { RuntimePackPinnedAsset, RuntimePackRecipe } from './runtime-pack-snapshot.js';
 export { createFixedRuntimePackSnapshot } from './runtime-pack-snapshot.js';
 
@@ -123,7 +129,7 @@ export interface RuntimePackContent {
   readonly dependencies?: Readonly<Record<string, string>>;
 }
 export interface RuntimePackSnapshot {
-  readonly schemaVersion: 'runtime-pack-source/2';
+  readonly schemaVersion: 'runtime-pack-source/2' | 'runtime-pack-source/3';
   readonly binary?: PackBinary;
   readonly packs: readonly RuntimePackContent[];
   readonly instances: readonly PackInstanceJson[];
@@ -219,9 +225,11 @@ export interface RuntimePackProducerOptions {
       { readonly asset: Asset | (() => Promise<Asset>); readonly row: CatalogEntry }
     >,
   ) => Promise<Result<ReadonlyMap<string, Asset | (() => Promise<Asset>)>, unknown>>;
+  /** The consumer may need to refresh its private preparation after a Catalog change. */
+  readonly isPreparationCurrent?: (publication: RuntimePackPublicationState) => boolean;
   /** The realm owner updates its existing program projection before Catalog notification. */
   readonly onCommit?: (publication: RuntimePackPublicationState) => void;
-  readonly cache?: Map<string, RuntimePackCacheEntry>;
+  readonly cache?: Map<string, RuntimePackCacheEntry> | RuntimePackCacheStore;
 }
 function failure(
   code: RuntimePackError['code'],
@@ -265,6 +273,48 @@ function assertOutputSet(
   if (fingerprint(normalize(actual)) !== fingerprint(normalize(expected)))
     throw new TypeError('restored dependency output set differs');
 }
+interface RuntimePackAcceptedPublication {
+  readonly state: RuntimePackPublicationState;
+  readonly bodies: ReadonlyMap<string, RuntimeBody>;
+}
+
+interface RuntimePackCandidate extends RuntimePackAcceptedPublication {
+  readonly decoded: ReadonlyMap<string, Asset | (() => Promise<Asset>)>;
+}
+
+interface RuntimePackCommittedOutput {
+  readonly owner: string;
+  readonly row: CatalogEntry;
+  pin?: RuntimePackPinnedAsset;
+}
+
+interface RuntimePackAdmittedSource {
+  readonly content: RuntimePackContent;
+  readonly digest: string;
+  readonly dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
+}
+
+interface RuntimePackRebuild {
+  readonly candidate: RuntimePackCandidate;
+  readonly outputs: ReadonlyMap<string, RuntimePackPinnedAsset>;
+}
+
+type RuntimePackFixedRecipe = Extract<RuntimePackRecipe, { fixed: FixedPackPublication }>;
+
+interface RuntimePackRestoreSource {
+  content: RuntimePackContent;
+  dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
+  identity: string;
+  admitted?: RuntimePackAdmittedSource;
+}
+
+interface RuntimePackRestoreBuild {
+  source: RuntimePackRestoreSource;
+  instance?: PackInstanceJson | undefined;
+  outputs?: readonly AssetPublicationOutput[] | undefined;
+  candidate?: RuntimePackCandidate | undefined;
+}
+
 interface RuntimeBody {
   readonly bytes: Uint8Array | (() => Promise<Uint8Array>);
   readonly mediaType: string;
@@ -287,6 +337,11 @@ function bodyFetcher(bodies: ReadonlyMap<string, RuntimeBody>): PackageFetcher {
 function isGenerator(source: RuntimePackContent['source']): source is RuntimeScriptablePackSource {
   return 'kind' in source && source.kind === 'scriptable-pack-source';
 }
+function externalReferenceRoots(assets: readonly Pick<AssetPublicationOutput, 'guid' | 'refs'>[]) {
+  const own = new Set(assets.map((asset) => asset.guid));
+  return new Set(assets.flatMap((asset) => asset.refs).filter((guid) => !own.has(guid)));
+}
+
 function publicationKey(content: RuntimePackPublicationState['content']): string {
   return 'source' in content ? content.source.packageId : fingerprint(content);
 }
@@ -329,18 +384,63 @@ export function projectRuntimePackTools(
 
 function stageRuntimeArtifactBody(
   artifact: ImportedArtifactBody,
-  kind: Asset['kind'],
-  cookStaticMeshes: boolean,
+  adoptMeshBody: boolean,
 ): Uint8Array<ArrayBuffer> {
   const body = artifact.bytes;
   const backing = body.buffer;
   // The built-in Mesh encoder creates a private body from the isolated output.
-  return cookStaticMeshes &&
-    kind === 'mesh' &&
+  return adoptMeshBody &&
     artifact.assetCodec?.name === 'mesh-binary' &&
     backing instanceof ArrayBuffer
     ? new Uint8Array(backing, body.byteOffset, body.byteLength)
     : new Uint8Array(body);
+}
+
+/** Assemble an already produced output using the caller's byte ownership and hash policy. */
+export async function stageRuntimePackOutput(
+  asset: Pick<DirectPackJson['assets'][string], 'kind' | 'payload' | 'refs'> & {
+    readonly guid: string;
+    readonly artifacts?: Readonly<Record<string, ImportedArtifactBody>>;
+  },
+  blobs: Record<string, PackBlob>,
+  adoptMeshBody = false,
+  hash: (bytes: Uint8Array<ArrayBuffer>) => string | Promise<string> = bytesDigest,
+): Promise<DirectPackJson['assets'][string]> {
+  const artifacts: Record<string, Record<string, unknown>> = {};
+  for (const [key, artifact] of Object.entries(asset.artifacts ?? {})) {
+    const path = `${asset.guid}/${key}`;
+    const bytes = stageRuntimeArtifactBody(artifact, adoptMeshBody);
+    const digest = hash(bytes);
+    blobs[path] = bytes;
+    artifacts[key] = {
+      path,
+      mediaType: artifact.mediaType,
+      byteLength: bytes.byteLength,
+      contentEncoding: 'identity',
+      integrity: {
+        algorithm: 'sha256',
+        digest: typeof digest === 'string' ? digest : await digest,
+      },
+      ...(artifact.assetCodec ? { assetCodec: artifact.assetCodec } : {}),
+    };
+  }
+  return {
+    kind: asset.kind,
+    payload: asset.payload,
+    ...(asset.refs === undefined ? {} : { refs: asset.refs }),
+    artifacts,
+  };
+}
+
+export function assembleRuntimePackContent(
+  packageId: string,
+  assets: DirectPackJson['assets'],
+  blobs: Record<string, PackBlob>,
+  options: Pick<RuntimePackContent, 'programs' | 'dependencies'> = {},
+): RuntimePackContent {
+  const source = { schemaVersion: '3.0.0' as const, packageId, assets };
+  parsePackSourceJson(source).unwrap();
+  return { source, blobs, ...options };
 }
 
 function usesRuntimeMeshBody(asset: unknown): asset is MeshAsset {
@@ -382,38 +482,22 @@ async function contentFromOutputs(
     const producer = producers.get(asset.kind);
     if (!producer) throw new TypeError(`no runtime asset producer for ${asset.kind}`);
     const product = (await producer.produce({ guid, sourceKey, asset })).unwrap();
-    const artifacts: Record<string, Record<string, unknown>> = {};
-    for (const [key, artifact] of Object.entries(product.artifacts)) {
-      const path = `${guid}/${key}`;
-      const bytes = stageRuntimeArtifactBody(artifact, asset.kind, cookStaticMeshes);
-      blobs[path] = bytes;
-      artifacts[key] = {
-        path,
-        mediaType: artifact.mediaType,
-        byteLength: bytes.byteLength,
-        contentEncoding: 'identity',
-        integrity: { algorithm: 'sha256', digest: await bytesDigest(bytes) },
-        ...(artifact.assetCodec ? { assetCodec: artifact.assetCodec } : {}),
-      };
-    }
-    const imported = { ...product, kind: asset.kind, guid };
-    assets[sourceKey] = {
-      kind: asset.kind,
-      payload:
-        asset.kind === 'plugin' && 'module' in asset
-          ? (asset as unknown as Record<string, unknown>)
-          : projectImportedAssetPayload(imported),
-      ...(asset.kind === 'plugin' ? {} : { refs: product.refs.map((ref) => ref.guid) }),
-      artifacts,
-    };
+    assets[sourceKey] = await stageRuntimePackOutput(
+      {
+        guid,
+        kind: asset.kind,
+        payload:
+          asset.kind === 'plugin' && 'module' in asset
+            ? (asset as unknown as Record<string, unknown>)
+            : projectImportedAssetPayload({ ...product, kind: asset.kind, guid }),
+        ...(asset.kind === 'plugin' ? {} : { refs: product.refs.map((ref) => ref.guid) }),
+        artifacts: product.artifacts,
+      },
+      blobs,
+      cookStaticMeshes && asset.kind === 'mesh',
+    );
   }
-  const content = {
-    source: { schemaVersion: '3.0.0' as const, packageId, assets },
-    ...(programs ? { programs } : {}),
-    blobs,
-  };
-  parsePackSourceJson(content.source).unwrap();
-  return content;
+  return assembleRuntimePackContent(packageId, assets, blobs, programs ? { programs } : {});
 }
 
 const RUNTIME_PACK_BUILD_TASK = 'runtime-pack.build';
@@ -429,6 +513,19 @@ interface RuntimePackBuildInput extends RuntimePackBuildSource {
   readonly imports?: RuntimePackProducerOptions['imports'];
   readonly moduleUrl?: string;
   readonly dependencies: ReadonlyMap<string, Asset>;
+}
+
+function runtimeBuildPlacement(
+  runtime: ScriptablePackRuntime | undefined,
+  tasks: TaskExecutor | undefined,
+) {
+  const authored = runtime?.outputs !== undefined;
+  const required = runtime?.execution === 'task-worker';
+  const available = tasks !== undefined && (!('mode' in tasks) || tasks.mode !== 'inline');
+  return {
+    workerBuild: required || (authored && available),
+    cookStaticMeshes: required || authored,
+  };
 }
 
 function runtimeGeneratorValues(
@@ -479,7 +576,7 @@ async function buildRuntimeContent(
     built.value,
     input.programs,
     input.source.sceneComponents,
-    task !== undefined,
+    task !== undefined || input.source.runtime?.outputs !== undefined,
   );
 }
 
@@ -654,23 +751,18 @@ export async function prepareRuntimePackContent(
 
 /** Producer state only. Both runtime readers consume its ordinary Catalog and bytes. */
 export class RuntimePackProducer {
-  private readonly packs = new Map<
-    string,
-    {
-      content: RuntimePackContent;
-      digest: string;
-      dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
-    }
-  >();
-  private readonly published = new Map<string, RuntimePackPublicationState>();
+  private readonly packs = new Map<string, RuntimePackAdmittedSource>();
+  private readonly published = new Map<string, RuntimePackAcceptedPublication>();
   private readonly executions = new Map<string, RuntimePackExecution>();
   private readonly listeners = new Set<(delta: CatalogDelta) => void>();
-  private readonly bodies = new Map<string, ReadonlyMap<string, RuntimeBody>>();
+  private readonly packageUrls = new Map<string, RuntimePackAcceptedPublication>();
   private readonly programs = new Map<string, RuntimePackProgram>();
   private readonly loadedPrograms = new Map<string, ReturnType<typeof loadPackProgram>>();
   private readonly workerBuilds = new Map<string, TaskHandle<RuntimePackContent>>();
-  private readonly snapshots = new Map<string, RuntimePackPinnedAsset>();
+  private readonly committedOutputs = new Map<string, RuntimePackCommittedOutput>();
   private readonly admissions = new Map<string, AbortController>();
+  private readonly memoryCache?: Map<string, RuntimePackCacheEntry>;
+  private readonly persistentCache?: RuntimePackPersistentCache;
   private closed = false;
   private mutationRevision = 0;
   private request = 0;
@@ -679,10 +771,11 @@ export class RuntimePackProducer {
   readonly catalog;
   readonly fetch: PackageFetcher = async (input, init) => {
     if (init?.signal?.aborted) throw init.signal.reason;
-    const key = input;
-    const body = [...this.bodies.values()]
-      .map((bodies) => bodies.get(key))
-      .find((body) => body !== undefined);
+    let body: RuntimeBody | undefined;
+    for (const { bodies } of this.packageUrls.values()) {
+      body = bodies.get(input);
+      if (body !== undefined) break;
+    }
     return body === undefined
       ? createPackageResponse(new Uint8Array(), { status: 404 })
       : createPackageResponse(await bodyBytes(body), {
@@ -692,15 +785,17 @@ export class RuntimePackProducer {
   constructor(private readonly options: RuntimePackProducerOptions) {
     if (!options.scopeId)
       throw new TypeError('Runtime Pack producer requires the active scope identity');
+    if (options.cache instanceof Map) this.memoryCache = options.cache;
+    else if (options.cache) this.persistentCache = new RuntimePackPersistentCache(options.cache);
     this.catalog = {
       expectedScope: { scopeId: this.options.scopeId, generation: 0 },
       openPackage: (packageUrl: string): PackageFetcher | undefined => {
-        const bodies = this.bodies.get(packageUrl);
+        const bodies = this.packageUrls.get(packageUrl)?.bodies;
         return bodies === undefined ? undefined : bodyFetcher(bodies);
       },
       retainArtifact: (packageUrl: string, path: string): PackageFetcher | undefined => {
         const url = new URL(path, packageUrl).href;
-        const body = this.bodies.get(packageUrl)?.get(url);
+        const body = this.packageUrls.get(packageUrl)?.bodies?.get(url);
         return body === undefined ? undefined : bodyFetcher(new Map([[url, body]]));
       },
       enumerate: async (): Promise<
@@ -721,7 +816,12 @@ export class RuntimePackProducer {
   }
   rows(): readonly CatalogEntry[] {
     // Keep each Pack's shared publication table shared in the detached snapshot.
-    return structuredClone([...this.published.values()].flatMap((value) => value.rows));
+    return structuredClone([...this.published.values()].flatMap(({ state }) => state.rows));
+  }
+  /** Read only the matching committed row, detached from producer-owned state. */
+  catalogRow(guid: string): CatalogEntry | undefined {
+    const row = this.committedOutputs.get(guid.toLowerCase())?.row;
+    return row === undefined ? undefined : structuredClone(row);
   }
   inspect(): {
     /** Public module identities supported by this Host; transport URLs remain Host-owned. */
@@ -754,8 +854,8 @@ export class RuntimePackProducer {
         ),
         [
           ...new Set(
-            [...this.snapshots.values()].flatMap((pin) =>
-              pin.recipe && ('fixed' in pin.recipe || pin.recipe.instance !== undefined)
+            [...this.committedOutputs.values()].flatMap(({ pin }) =>
+              pin?.recipe && ('fixed' in pin.recipe || pin.recipe.instance !== undefined)
                 ? [pin.recipe]
                 : [],
             ),
@@ -765,17 +865,20 @@ export class RuntimePackProducer {
     );
   }
   private currentPublication(id: string): RuntimePackPublicationReceipt {
-    const state = this.published.get(id);
+    const state = this.published.get(id)?.state;
     if (!state) throw new TypeError(`admitted Pack has no publication ${id}`);
     return publicationReceipt(state);
   }
   private currentRow(guid: string): CatalogEntry | undefined {
-    return this.snapshots.get(guid)?.row ?? this.options.assetSource?.currentRow?.(guid);
+    return (
+      this.committedOutputs.get(guid.toLowerCase())?.row ??
+      this.options.assetSource?.currentRow?.(guid)
+    );
   }
   async exportSource(versions: ReadonlyMap<string, string>): Promise<RuntimePackSnapshot> {
     const recipes = new Set<RuntimePackRecipe>();
     for (const [guid, digest] of versions) {
-      const pin = this.snapshots.get(guid);
+      const pin = this.committedOutputs.get(guid.toLowerCase())?.pin;
       if (pin?.digest !== digest || !pin.recipe)
         throw new TypeError(`source version unavailable ${guid}@${digest}`);
       recipes.add(pin.recipe);
@@ -842,7 +945,7 @@ export class RuntimePackProducer {
         dependencies.set(guid, pin);
         continue;
       }
-      let pin = this.snapshots.get(guid);
+      let pin = this.committedOutputs.get(guid.toLowerCase())?.pin;
       if (pin?.digest !== digest) {
         pin = undefined;
         for (const owner of this.packs.values()) {
@@ -877,7 +980,7 @@ export class RuntimePackProducer {
     const resolver = await this.restoreDependencyResolver(saved, signal);
     const selections = new Map<string, string>();
     for (const root of saved.recipeRoots ?? []) {
-      for (const output of saved.closure?.recipes[root]?.outputs ?? []) {
+      for (const output of savedRecipeOutputs(saved.closure?.recipes[root])) {
         if (!missing.has(output.guid)) continue;
         if (selections.has(output.guid) || output.digest !== missing.get(output.guid))
           throw new TypeError(`exported dependency version differs ${output.guid}`);
@@ -910,47 +1013,32 @@ export class RuntimePackProducer {
     dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>,
     instance?: PackInstanceJson,
     signal?: AbortSignal,
-  ): Promise<ReadonlyMap<string, RuntimePackPinnedAsset>> {
+  ): Promise<RuntimePackRebuild> {
     signal?.throwIfAborted();
     const { onCommit: _commit, cache: _cache, assetSource: _source, ...options } = this.options;
     let current = new Map<string, CatalogEntry>();
     const privateProducer = new RuntimePackProducer({
       ...options,
-      assetSource: {
-        currentRow: (guid) => current.get(guid),
-        exportSource: async () => {
-          throw new TypeError('private rebuild must use its fixed dependency pins');
-        },
-      },
+      assetSource: { currentRow: (guid) => current.get(guid) },
       validate: (state, fetcher, pins) => {
-        current = new Map(
-          [...pins].map(([guid, pin]) => {
-            const output = pin.row.publication?.outputs.find((output) => output.guid === guid);
-            if (!output) throw new TypeError(`missing private dependency evidence ${guid}`);
-            return [guid, pin.row];
-          }),
-        );
+        current = new Map([...pins].map(([guid, pin]) => [guid, pin.row]));
         return options.validate(state, fetcher, pins);
       },
     });
     try {
-      (
-        await privateProducer.admitContent(
-          content,
-          async (guid, digest) => {
-            const value = dependencies.get(guid);
-            if (!value || value.digest !== digest)
-              throw new TypeError('saved recipe has an undeclared read');
-            return value;
-          },
-          undefined,
-          signal,
-        )
-      ).unwrap();
+      (await privateProducer.admitContent(content, { dependencies }, undefined, signal)).unwrap();
       signal?.throwIfAborted();
       if (instance) (await privateProducer.generate(instance, signal)).unwrap();
       signal?.throwIfAborted();
-      return new Map(privateProducer.snapshots);
+      const accepted = privateProducer.published.get(
+        instance?.packageId ?? content.source.packageId,
+      );
+      if (!accepted) throw new TypeError('private rebuild did not produce a candidate');
+      const outputs = new Map<string, RuntimePackPinnedAsset>();
+      for (const { pin } of privateProducer.committedOutputs.values())
+        if (pin !== undefined) outputs.set(pin.row.guid, pin);
+      const decoded = outputs.values().next().value?.recipe?.assets ?? new Map();
+      return { candidate: { ...accepted, decoded }, outputs };
     } finally {
       privateProducer.dispose();
     }
@@ -961,11 +1049,7 @@ export class RuntimePackProducer {
     revision: string,
     dependencies: ReadonlyMap<string, RuntimePackPinnedAsset> = new Map(),
     hash = createScriptablePackFingerprinter(),
-  ): Promise<{
-    state: RuntimePackPublicationState;
-    bodies: Map<string, RuntimeBody>;
-    decoded: ReadonlyMap<string, Asset | (() => Promise<Asset>)>;
-  }> {
+  ): Promise<RuntimePackCandidate> {
     const packageId = content.source.packageId;
     const bodies = new Map<string, RuntimeBody>();
     if (isGenerator(content.source))
@@ -1029,11 +1113,10 @@ export class RuntimePackProducer {
         mediaType: 'application/octet-stream',
       });
     }
-    const own = new Set(projected.assets.map((asset) => asset.guid));
-    const roots = new Set(
-      projected.assets.flatMap((asset) => asset.refs).filter((guid) => !own.has(guid)),
+    const pins = collectRuntimePackDependencies(
+      dependencies,
+      externalReferenceRoots(projected.assets),
     );
-    const pins = collectRuntimePackDependencies(dependencies, roots);
     const externalEvidence = [
       ...new Set([...Object.keys(content.dependencies ?? {}), ...pins.keys()]),
     ]
@@ -1173,26 +1256,54 @@ export class RuntimePackProducer {
       projected.assets.map((asset) => ({ ...asset, packageId, sourcePath })),
       packageUrl,
     ).map((row) => ({ ...row, publication: publication.publication }));
-    const state = { packageId, status: 'admitted' as const, content, publication, rows };
-    const fetcher: PackageFetcher = async (input) => {
-      const body = bodies.get(input);
-      return body
-        ? createPackageResponse(await bodyBytes(body), {
-            mediaType: body.mediaType,
-          })
-        : this.fetch(input);
-    };
-    const pinned = new Map(
-      [...pins].map(([guid, pin]) => [guid, { asset: pin.asset, row: pin.row }]),
+    return this.validateCandidate(
+      { packageId, status: 'admitted', content, publication, rows },
+      bodies,
+      pins,
+      async (input) => {
+        const body = bodies.get(input);
+        return body
+          ? createPackageResponse(await bodyBytes(body), { mediaType: body.mediaType })
+          : this.fetch(input);
+      },
     );
-    const validation = await this.options.validate(state, fetcher, pinned);
-    if (!validation.ok) throw validation.error;
-    return { state, bodies, decoded: validation.value };
   }
+
+  private async validateCandidate(
+    state: RuntimePackPublicationState,
+    bodies: ReadonlyMap<string, RuntimeBody>,
+    pins: ReadonlyMap<string, RuntimePackPinnedAsset>,
+    fetcher = bodyFetcher(bodies),
+  ) {
+    const validated = await this.options.validate(
+      state,
+      fetcher,
+      new Map([...pins].map(([guid, { row, asset }]) => [guid, { row, asset }])),
+    );
+    if (!validated.ok) throw validated.error;
+    return { state, bodies, decoded: validated.value };
+  }
+  private refreshPreparation(
+    candidate: RuntimePackCandidate,
+    dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>,
+  ): RuntimePackCandidate | Promise<RuntimePackCandidate> {
+    const { state, bodies } = candidate;
+    const publication = state.publication?.publication;
+    if (!publication || this.options.isPreparationCurrent?.(state) !== false) return candidate;
+    // Authored sources declare root pins. Publication evidence also contains their
+    // transitive references, which must be resolved through the retained recipes.
+    const roots =
+      'source' in state.content
+        ? externalReferenceRoots(publication.outputs)
+        : fixedPublicationDependencies(publication).keys();
+    const pins = collectRuntimePackDependencies(dependencies, roots);
+    return this.validateCandidate(state, bodies, pins);
+  }
+
   private async fixedCandidate(
     fixed: FixedPackPublication,
     dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>,
-  ): Promise<Awaited<ReturnType<RuntimePackProducer['candidate']>>> {
+  ): Promise<RuntimePackCandidate> {
     validateFixedPackPublication(fixed).unwrap();
     const execution =
       this.options.target === undefined ? undefined : fixed.executions?.[this.options.target];
@@ -1203,20 +1314,12 @@ export class RuntimePackProducer {
     }
     const original = fixed.rows[0]?.publication;
     if (!original) throw new TypeError('fixed publication missing');
-    const own = new Set(original.outputs.map((output) => output.guid));
-    const roots = new Set(
-      original.outputs.flatMap((output) => output.refs).filter((guid) => !own.has(guid)),
-    );
-    const pins = collectRuntimePackDependencies(dependencies, roots);
-    for (const evidence of original.externalEvidence) {
-      if (evidence.usage === 'content') continue;
-      const pin = pins.get(evidence.guid);
-      if (
-        !pin ||
-        (evidence.digest !== undefined && evidence.digest !== pin.digest) ||
-        (evidence.generation !== undefined && evidence.generation !== pin.generation)
-      )
-        throw new TypeError(`fixed dependency version differs ${evidence.guid}`);
+    const roots = fixedPublicationDependencies(original);
+    const pins = collectRuntimePackDependencies(dependencies, roots.keys());
+    for (const [guid, evidence] of roots) {
+      const pin = pins.get(guid);
+      if (!pin || !matchesFixedDependency(evidence, pin))
+        throw new TypeError(`fixed dependency version differs ${guid}`);
     }
     const packageUrl = new URL(
       `fixed/${(await fingerprintAsync(fixed)).slice(7)}/pack.json`,
@@ -1249,26 +1352,23 @@ export class RuntimePackProducer {
         },
       );
     const packageId = fixed.rows[0]?.packageId;
-    const state: RuntimePackPublicationState = {
-      ...(packageId ? { packageId } : {}),
-      status: 'admitted',
-      content: fixed,
-      rows,
-      publication: { pack, publication },
-    };
-    const validated = await this.options.validate(
-      state,
-      bodyFetcher(bodies),
-      new Map([...pins].map(([guid, pin]) => [guid, { row: pin.row, asset: pin.asset }])),
+    return this.validateCandidate(
+      {
+        ...(packageId ? { packageId } : {}),
+        status: 'admitted',
+        content: fixed,
+        rows,
+        publication: { pack, publication },
+      },
+      bodies,
+      pins,
     );
-    if (!validated.ok) throw validated.error;
-    return { state, bodies, decoded: validated.value };
   }
   private async rebuildFixed(
     fixed: FixedPackPublication,
     dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>,
     signal?: AbortSignal,
-  ): Promise<ReadonlyMap<string, RuntimePackPinnedAsset>> {
+  ): Promise<RuntimePackRebuild> {
     signal?.throwIfAborted();
     const candidate = await this.fixedCandidate(fixed, dependencies);
     signal?.throwIfAborted();
@@ -1278,7 +1378,7 @@ export class RuntimePackProducer {
       outputs: candidate.state.publication?.publication.outputs ?? [],
       assets: candidate.decoded,
     };
-    return new Map(
+    const outputs = new Map(
       candidate.state.rows.map((row) => {
         const asset = recipe.assets.get(row.guid);
         const output = recipe.outputs.find((output) => output.guid === row.guid);
@@ -1289,9 +1389,44 @@ export class RuntimePackProducer {
         ];
       }),
     );
+    return { candidate, outputs };
   }
+  private indexCommittedOutputs(
+    key: string,
+    { state, decoded }: RuntimePackCandidate,
+    recipe?: RuntimePackRecipe,
+  ): ReadonlyMap<string, RuntimePackCommittedOutput> {
+    const next = new Map<string, RuntimePackCommittedOutput>();
+    for (const row of state.rows) {
+      const guid = row.guid.toLowerCase();
+      const prior = this.committedOutputs.get(guid);
+      if (prior !== undefined && prior.owner !== key)
+        throw new TypeError(`GUID collision ${row.guid}`);
+      next.set(guid, { owner: key, row });
+    }
+    if (decoded.size === 0) return next;
+    const publication = state.publication;
+    const digests = new Map(
+      publication?.publication.outputs.map(({ guid, digest }) => [guid, digest]),
+    );
+    for (const [guid, asset] of decoded) {
+      const entry = next.get(guid.toLowerCase());
+      const digest = digests.get(guid);
+      if (!publication || entry?.row.guid !== guid || digest === undefined)
+        throw new TypeError(`missing output evidence ${guid}`);
+      entry.pin = {
+        asset: recipe?.assets.get(guid) ?? asset,
+        digest,
+        generation: publication.pack.generation,
+        row: entry.row,
+        ...(recipe === undefined ? {} : { recipe }),
+      };
+    }
+    return next;
+  }
+
   private commit(
-    candidate: Awaited<ReturnType<RuntimePackProducer['candidate']>>,
+    candidate: RuntimePackCandidate,
     install?: () => void,
     recipe?: RuntimePackRecipe,
   ): void {
@@ -1299,7 +1434,7 @@ export class RuntimePackProducer {
     if (this.closed && state.status !== 'withdrawn')
       throw new TypeError('runtime Pack producer is disposed');
     const key = publicationKey(state.content);
-    const before = this.published.get(key);
+    const before = this.published.get(key)?.state;
     const validateCommitDependencyEvidence = () => {
       if (recipe && 'fixed' in recipe)
         for (const [guid, pin] of collectRuntimePackDependencies(
@@ -1325,29 +1460,7 @@ export class RuntimePackProducer {
     };
     validateCommitDependencyEvidence();
     // Prepare all potentially failing clones and evidence before the first public mutation.
-    const snapshots = [...candidate.decoded].map(([guid, asset]) => {
-      const publication = state.publication;
-      const row = state.rows.find((row) => row.guid === guid);
-      const output = publication?.publication.outputs.find((output) => output.guid === guid);
-      if (!publication || !row || !output) throw new TypeError(`missing output evidence ${guid}`);
-      return [
-        guid,
-        {
-          asset: recipe?.assets.get(guid) ?? asset,
-          digest: output.digest,
-          generation: publication.pack.generation,
-          row,
-          ...(recipe === undefined ? {} : { recipe }),
-        },
-      ] as const;
-    });
-    for (const row of state.rows) {
-      const collision = [...this.published].some(
-        ([owner, state]) =>
-          owner !== key && state.rows.some((previous) => previous.guid === row.guid),
-      );
-      if (collision) throw new TypeError(`GUID collision ${row.guid}`);
-    }
+    const next = this.indexCommittedOutputs(key, candidate, recipe);
     const mutationRevision = this.mutationRevision;
     this.options.onCommit?.(state);
     // A synchronous realm callback may withdraw or dispose this prepared candidate.
@@ -1356,13 +1469,17 @@ export class RuntimePackProducer {
       throw new RuntimePackCommitInterrupted('publication withdrawn or disposed during commit');
     }
     this.mutationRevision++;
+    const oldUrl = before?.rows[0]?.packageUrl;
+    if (oldUrl !== undefined) this.packageUrls.delete(oldUrl);
     if (state.status === 'withdrawn') this.published.delete(key);
-    else this.published.set(key, state);
-    for (const row of before?.rows ?? []) this.snapshots.delete(row.guid);
-    for (const [guid, snapshot] of snapshots) this.snapshots.set(guid, snapshot);
-    for (const row of before?.rows ?? []) this.bodies.delete(row.packageUrl);
-    const first = state.rows[0];
-    if (first) this.bodies.set(first.packageUrl, bodies);
+    else {
+      const accepted = { state, bodies };
+      this.published.set(key, accepted);
+      const url = state.rows[0]?.packageUrl;
+      if (url !== undefined) this.packageUrls.set(url, accepted);
+    }
+    for (const row of before?.rows ?? []) this.committedOutputs.delete(row.guid.toLowerCase());
+    for (const [guid, entry] of next) this.committedOutputs.set(guid, entry);
     install?.();
     const baselineRevision = this.catalogRevision++;
     const oldGuids = new Set(before?.rows.map((row) => row.guid));
@@ -1403,8 +1520,8 @@ export class RuntimePackProducer {
   }
   private async admitContent(
     input: RuntimePackContent,
-    recovery?: (guid: string, digest: string) => Promise<RuntimePackPinnedAsset>,
-    expectedOutputs?: readonly AssetPublicationOutput[],
+    recovery?: Pick<RuntimePackRestoreSource, 'dependencies' | 'admitted'>,
+    prepared?: RuntimePackCandidate,
     signal?: AbortSignal,
     replacement?: Pick<AssetPublicationEnvelope, 'generation' | 'digest'>,
   ): Promise<Result<RuntimePackPublicationReceipt, RuntimePackError>> {
@@ -1421,7 +1538,7 @@ export class RuntimePackProducer {
       if (this.closed || lifetime.signal.aborted || signal?.aborted)
         return err(failure('runtime-pack-cancelled', id, 'admission cancelled while hashing'));
       const previous = this.packs.get(id);
-      const previousPublication = this.published.get(id)?.publication?.publication;
+      const previousPublication = this.published.get(id)?.state.publication?.publication;
       if (
         replacement &&
         (!previous ||
@@ -1474,46 +1591,58 @@ export class RuntimePackProducer {
       const validateAdmissionProgramsFailure = validateAdmissionPrograms();
       if (validateAdmissionProgramsFailure !== undefined) return validateAdmissionProgramsFailure;
 
-      const dependencies = await this.readDependencies(
-        content.dependencies ?? {},
-        recovery,
-        signal,
-      );
-      const matches = (value: {
-        content: RuntimePackContent;
-        digest: string;
-        dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
-      }) =>
+      const dependencies =
+        recovery?.dependencies ??
+        (await this.readDependencies(content.dependencies ?? {}, undefined, signal));
+      const matches = (value: RuntimePackAdmittedSource) =>
         value.digest === digest &&
         (!recovery ||
           fingerprint(saveRuntimePackSnapshot([value], [])) ===
             fingerprint(saveRuntimePackSnapshot([{ content, dependencies }], [])));
-      const retained = this.packs.get(id);
-      if (this.closed || lifetime.signal.aborted || signal?.aborted)
-        return err(
-          failure('runtime-pack-cancelled', id, 'admission cancelled during dependency recovery'),
-        );
-      if (replacement && retained !== previous)
+      const checkAdmission = (committing: boolean) => {
+        if (this.closed || lifetime.signal.aborted || signal?.aborted)
+          return err(
+            failure(
+              'runtime-pack-cancelled',
+              id,
+              committing
+                ? 'admission withdrawn, disposed or cancelled'
+                : 'admission cancelled during dependency recovery',
+            ),
+          );
+        if (committing && this.executions.has(id))
+          return err(failure('runtime-pack-conflict', id, 'concurrent instance claimed identity'));
+        const admitted = this.packs.get(id);
+        if (replacement && admitted !== previous)
+          return err(
+            failure(
+              'runtime-pack-conflict',
+              id,
+              committing
+                ? 'publication changed during replacement validation'
+                : 'publication changed during replacement preparation',
+            ),
+          );
+        if (!admitted || replacement) return undefined;
+        if (matches(admitted)) {
+          if (recovery) recovery.admitted = admitted;
+          return ok(this.currentPublication(id));
+        }
         return err(
           failure(
             'runtime-pack-conflict',
             id,
-            'publication changed during replacement preparation',
+            committing
+              ? 'concurrent admission differs'
+              : 'saved source bindings conflict with admitted content',
           ),
         );
-      if (retained && !replacement)
-        return matches(retained)
-          ? ok(this.currentPublication(id))
-          : err(
-              failure(
-                'runtime-pack-conflict',
-                id,
-                'saved source bindings conflict with admitted content',
-              ),
-            );
-      const candidate = await this.candidate(content, digest, dependencies, hash);
-      if (expectedOutputs)
-        assertOutputSet(candidate.state.publication?.publication.outputs ?? [], expectedOutputs);
+      };
+      const preparedAdmission = checkAdmission(false);
+      if (preparedAdmission !== undefined) return preparedAdmission;
+      const candidate = prepared
+        ? await this.refreshPreparation(prepared, dependencies)
+        : await this.candidate(content, digest, dependencies, hash);
       const validateCandidateReferences = () => {
         const internal = new Set(candidate.state.rows.map((row) => row.guid));
         for (const asset of candidate.state.publication?.pack.assets ?? []) {
@@ -1529,42 +1658,21 @@ export class RuntimePackProducer {
       };
       validateCandidateReferences();
 
-      const validateAdmissionCommit = () => {
-        if (this.closed || lifetime.signal.aborted || signal?.aborted)
-          return err(
-            failure('runtime-pack-cancelled', id, 'admission withdrawn, disposed or cancelled'),
-          );
-        if (this.executions.has(id))
-          return err(failure('runtime-pack-conflict', id, 'concurrent instance claimed identity'));
-        const raced = this.packs.get(id);
-        if (replacement && raced !== previous)
-          return err(
-            failure(
-              'runtime-pack-conflict',
-              id,
-              'publication changed during replacement validation',
-            ),
-          );
-        if (raced && !replacement)
-          return matches(raced)
-            ? ok(this.currentPublication(id))
-            : err(failure('runtime-pack-conflict', id, 'concurrent admission differs'));
-        for (const [name, program] of Object.entries(content.programs ?? {})) {
-          const installed = this.programs.get(name);
-          if (installed && fingerprint(installed) !== fingerprint(program))
-            return err(failure('runtime-pack-conflict', id, `concurrent program ${name}`));
-        }
-
-        return undefined;
-      };
-      const validateAdmissionCommitFailure = validateAdmissionCommit();
-      if (validateAdmissionCommitFailure !== undefined) return validateAdmissionCommitFailure;
+      const committingAdmission = checkAdmission(true);
+      if (committingAdmission !== undefined) return committingAdmission;
+      for (const [name, program] of Object.entries(content.programs ?? {})) {
+        const installed = this.programs.get(name);
+        if (installed && fingerprint(installed) !== fingerprint(program))
+          return err(failure('runtime-pack-conflict', id, `concurrent program ${name}`));
+      }
 
       const reply = publicationReceipt(candidate.state);
+      const admitted = { content, digest, dependencies };
       this.commit(
         candidate,
         () => {
-          this.packs.set(id, { content, digest, dependencies });
+          this.packs.set(id, admitted);
+          if (recovery) recovery.admitted = admitted;
           for (const [name, program] of Object.entries(content.programs ?? {}))
             this.programs.set(name, program);
         },
@@ -1592,7 +1700,7 @@ export class RuntimePackProducer {
   private async generateInstance(
     input: PackInstanceJson,
     signal?: AbortSignal,
-    expectedOutputs?: readonly AssetPublicationOutput[],
+    prepared?: { candidate: RuntimePackCandidate; owner: RuntimePackAdmittedSource },
   ): Promise<Result<RuntimePackPublicationReceipt, RuntimePackError>> {
     let id = '';
     const request = ++this.request;
@@ -1609,6 +1717,10 @@ export class RuntimePackProducer {
       if (!owner || !isGenerator(owner.content.source))
         throw new TypeError('parent must be an admitted ScriptablePack anchor');
       const beginInstanceGeneration = () => {
+        if (prepared && prepared.owner !== owner)
+          return err(
+            failure('runtime-pack-conflict', id, 'instance parent changed during restore'),
+          );
         if (old && old.instance.parent !== instance.parent)
           return err(failure('runtime-pack-conflict', id, 'instance parent cannot change'));
         this.workerBuilds.get(id)?.cancel();
@@ -1628,8 +1740,7 @@ export class RuntimePackProducer {
         this.closed ||
         this.packs.get(instance.parent) !== owner ||
         signal?.aborted === true ||
-        this.executions.get(id)?.request !== request ||
-        this.executions.get(id)?.status === 'withdrawn';
+        this.executions.get(id)?.request !== request;
       requestCancelled = cancelled;
       if (cancelled()) return this.cancelled(id, request, 'generation cancelled');
       const source = owner.content.source;
@@ -1637,11 +1748,14 @@ export class RuntimePackProducer {
       const values = runtimeGeneratorValues(metadata, instance.values);
       const program = owner.content.programs?.[source.program]?.artifact;
       if (!program) throw new TypeError(`missing admitted generator program ${source.program}`);
-      const workerBuild = metadata.runtime?.execution === 'task-worker';
+      const { workerBuild, cookStaticMeshes } = runtimeBuildPlacement(
+        metadata.runtime,
+        this.options.tasks,
+      );
       const outputs = runtimeOutputProducers(
         owner.content.programs,
         source.sceneComponents,
-        workerBuild,
+        cookStaticMeshes,
       );
       const key = fingerprint({
         sourceRevision: owner.digest,
@@ -1651,29 +1765,18 @@ export class RuntimePackProducer {
         dependencies: owner.content.dependencies ?? {},
         producers: outputs.versions(),
       });
-      const cached = this.options.cache?.get(key);
-      let content: RuntimePackContent | undefined;
-      let candidate: Awaited<ReturnType<RuntimePackProducer['candidate']>> | undefined;
-      if (cached) {
-        try {
-          const saved = parseRuntimePackContent(cached.content);
-          const { inputFingerprint, digest } = cached;
-          if (
-            inputFingerprint !== key ||
-            digest !== (await fingerprintAsync(saved)) ||
-            saved.source.packageId !== id ||
-            fingerprint(saved.programs ?? {}) !== fingerprint(owner.content.programs ?? {}) ||
-            isGenerator(saved.source)
-          )
-            throw new TypeError('invalid cache envelope');
-          content = saved;
-          candidate = await this.candidate(content, key, owner.dependencies);
-        } catch {
-          // Derived bytes are disposable even when their envelope integrity is valid.
-          this.options.cache?.delete(key);
-          content = undefined;
-        }
-      }
+      const declared = prepared === undefined ? source.runtime?.outputs : undefined;
+      const cached =
+        prepared === undefined
+          ? await this.cachedGeneration(key, id, owner, declared, signal)
+          : undefined;
+      let candidate = prepared
+        ? await this.refreshPreparation(prepared.candidate, owner.dependencies)
+        : cached?.candidate;
+      if (cancelled()) return this.cancelled(id, request, 'late cache lookup');
+      let content = prepared
+        ? (candidate?.state.content as RuntimePackContent | undefined)
+        : cached?.content;
       if (!content) {
         const programs = owner.content.programs ?? {};
         const buildInput = { packageId: id, source, values, programs };
@@ -1696,14 +1799,14 @@ export class RuntimePackProducer {
       const accepted = candidate;
       const publication = accepted.state.publication;
       if (!publication) throw new TypeError(`missing generated publication ${id}`);
-      if (expectedOutputs) assertOutputSet(publication.publication.outputs, expectedOutputs);
-      const cachedContent = this.options.cache
-        ? {
-            inputFingerprint: key,
-            digest: await fingerprintAsync(content),
-            content: copyPackData(content) as RuntimePackContent,
-          }
-        : undefined;
+      const cachedContent =
+        this.memoryCache && cached === undefined
+          ? {
+              inputFingerprint: key,
+              digest: await fingerprintAsync(content),
+              content: copyPackData(content) as RuntimePackContent,
+            }
+          : undefined;
       if (cancelled()) return this.cancelled(id, request, 'late cache preparation');
       const reply = publicationReceipt(candidate.state);
       this.commit(
@@ -1720,7 +1823,8 @@ export class RuntimePackProducer {
           }),
         this.recipe(owner.content, owner.dependencies, accepted, instance),
       );
-      if (cachedContent) this.options.cache?.set(key, cachedContent);
+      if (cachedContent) this.memoryCache?.set(key, cachedContent);
+      if (!cached && declared) this.persistentCache?.write(key, content);
       return ok(reply);
     } catch (cause) {
       if (signal?.aborted || requestCancelled?.() || cause instanceof RuntimePackCommitInterrupted)
@@ -1735,6 +1839,43 @@ export class RuntimePackProducer {
         this.executions.set(id, { ...current, status: 'failed', error });
       return err(error);
     }
+  }
+  private async cachedGeneration(
+    key: string,
+    packageId: string,
+    owner: {
+      content: RuntimePackContent;
+      dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
+    },
+    declared:
+      | NonNullable<NonNullable<RuntimeScriptablePackSource['runtime']>['outputs']>
+      | undefined,
+    signal?: AbortSignal,
+  ) {
+    try {
+      const entry = this.memoryCache?.get(key);
+      let content: RuntimePackContent | undefined;
+      if (entry) {
+        content = parseRuntimePackContent(entry.content);
+        if (
+          entry.inputFingerprint !== key ||
+          entry.digest !== (await fingerprintAsync(content)) ||
+          content.source.packageId !== packageId ||
+          fingerprint(content.programs ?? {}) !== fingerprint(owner.content.programs ?? {}) ||
+          isGenerator(content.source)
+        )
+          throw new TypeError('invalid cache envelope');
+      } else if (declared) {
+        content = await this.persistentCache?.read(key, packageId, declared, owner.content, signal);
+      }
+      if (content && !signal?.aborted) {
+        const candidate = await this.candidate(content, key, owner.dependencies);
+        return { content, candidate };
+      }
+    } catch {
+      this.memoryCache?.delete(key);
+    }
+    return undefined;
   }
   private async runLocalBuild(
     input: RuntimePackBuildSource,
@@ -1804,7 +1945,7 @@ export class RuntimePackProducer {
   private recipe(
     content: RuntimePackContent,
     dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>,
-    candidate: Awaited<ReturnType<RuntimePackProducer['candidate']>>,
+    candidate: RuntimePackCandidate,
     instance?: PackInstanceJson,
   ): RuntimePackRecipe {
     return {
@@ -1833,7 +1974,7 @@ export class RuntimePackProducer {
     const current = this.executions.get(packageId);
     if (current)
       this.executions.set(packageId, { ...current, request: ++this.request, status: 'withdrawn' });
-    const previous = this.published.get(packageId);
+    const previous = this.published.get(packageId)?.state;
     if (!previous) return;
     const { publication: _publication, ...rest } = previous;
     this.commit({
@@ -1841,7 +1982,6 @@ export class RuntimePackProducer {
       bodies: new Map(),
       decoded: new Map(),
     });
-    for (const row of previous.rows) this.snapshots.delete(row.guid);
   }
   /** Restores source first; activation remains an explicit consumer operation. */
   async restore(
@@ -1868,11 +2008,11 @@ export class RuntimePackProducer {
       );
     }
   }
-  private async restoreDependencyResolver(
-    snapshot: RuntimePackSnapshot,
-    signal?: AbortSignal,
-    completed = new Map<string, Promise<ReadonlyMap<string, RuntimePackPinnedAsset>>>(),
-  ) {
+  private async restoreDependencyResolver(snapshot: RuntimePackSnapshot, signal?: AbortSignal) {
+    const completed = new Map<string, Promise<ReadonlyMap<string, RuntimePackPinnedAsset>>>();
+    const rootIds = new Set(snapshot.recipeRoots);
+    // Only explicit publication roots carry full candidates out of graph recovery.
+    const preparedRoots = new WeakMap<RuntimePackRecipe, RuntimePackCandidate>();
     const contents = new Map<string, RuntimePackContent>();
     const roots = new Set<string>();
     for (const content of snapshot.packs) {
@@ -1903,7 +2043,10 @@ export class RuntimePackProducer {
         throw new TypeError('saved dependency bindings differ from declared inputs');
       for (const [guid, digest] of Object.entries(versions)) {
         const recipe = recipes.get(edges[guid] ?? '');
-        if (!recipe || recipe.outputs.find((output) => output.guid === guid)?.digest !== digest)
+        if (
+          !recipe ||
+          savedRecipeOutputs(recipe).find((output) => output.guid === guid)?.digest !== digest
+        )
           throw new TypeError(`saved dependency binding unavailable ${guid}@${digest}`);
       }
     };
@@ -1913,25 +2056,16 @@ export class RuntimePackProducer {
         if (!content) throw new TypeError('saved recipe content unavailable');
         return content.dependencies ?? {};
       }
-      const own = new Set(recipe.fixed.pack.assets.map((asset) => asset.guid));
-      const refs = new Set(
-        recipe.fixed.pack.assets.flatMap((asset) => asset.refs).filter((guid) => !own.has(guid)),
-      );
-      if (fingerprint([...refs].sort()) !== fingerprint(Object.keys(recipe.dependencies).sort()))
+      const publication = recipe.fixed.rows[0]?.publication;
+      if (!publication) throw new TypeError('fixed publication missing');
+      const refs = fixedPublicationDependencies(publication);
+      if (refs.size !== Object.keys(recipe.dependencies).length)
         throw new TypeError('fixed dependency bindings differ from retained references');
       return Object.fromEntries(
-        [...refs].map((guid) => {
+        [...refs].map(([guid, evidence]) => {
           const target = recipes.get(recipe.dependencies[guid] ?? '');
-          const output = target?.outputs.find((output) => output.guid === guid);
-          const evidence = recipe.fixed.rows[0]?.publication?.externalEvidence.find(
-            (entry) => entry.guid === guid,
-          );
-          if (
-            !output ||
-            (evidence?.usage !== 'content' &&
-              evidence?.digest !== undefined &&
-              evidence.digest !== output.digest)
-          )
+          const output = savedRecipeOutputs(target).find((output) => output.guid === guid);
+          if (!output || (evidence?.digest !== undefined && evidence.digest !== output.digest))
             throw new TypeError(`fixed dependency binding unavailable ${guid}`);
           return [guid, output.digest];
         }),
@@ -1969,7 +2103,10 @@ export class RuntimePackProducer {
     ): Promise<RuntimePackPinnedAsset> => {
       signal?.throwIfAborted();
       const selected = recipes.get(recipeId);
-      if (!selected || selected.outputs.find((output) => output.guid === guid)?.digest !== digest)
+      if (
+        !selected ||
+        savedRecipeOutputs(selected).find((output) => output.guid === guid)?.digest !== digest
+      )
         throw new TypeError(`saved dependency source missing ${guid}@${digest}`);
       if (ancestors.has(recipeId)) throw new TypeError('saved dependency recipe cycle');
       let pending = completed.get(recipeId);
@@ -1991,9 +2128,10 @@ export class RuntimePackProducer {
                 : (() => {
                     throw new TypeError('missing saved content');
                   })();
-          const actual = result.get(guid)?.recipe?.outputs;
-          assertOutputSet(actual ?? [], selected.outputs);
-          return result;
+          const recipe = result.outputs.get(guid)?.recipe;
+          assertOutputSet(recipe?.outputs ?? [], savedRecipeOutputs(selected));
+          if (recipe && rootIds.has(recipeId)) preparedRoots.set(recipe, result.candidate);
+          return result.outputs;
         })();
         completed.set(recipeId, pending);
       }
@@ -2001,14 +2139,10 @@ export class RuntimePackProducer {
       signal?.throwIfAborted();
       if (!value || value.digest !== digest)
         throw new TypeError(`restored dependency unavailable ${guid}`);
-      return {
-        ...value,
-        asset: structuredClone(
-          typeof value.asset === 'function' ? await value.asset() : value.asset,
-        ),
-      };
+      return value;
     };
     return {
+      prepared: (recipe: RuntimePackRecipe) => preparedRoots.get(recipe),
       dependency: async (content: RuntimePackContent, guid: string, digest: string) =>
         resolve(
           guid,
@@ -2017,7 +2151,7 @@ export class RuntimePackProducer {
         ),
       root: async (id: string): Promise<ReadonlyMap<string, RuntimePackPinnedAsset>> => {
         signal?.throwIfAborted();
-        const first = recipes.get(id)?.outputs[0];
+        const first = savedRecipeOutputs(recipes.get(id))[0];
         if (!first) throw new TypeError(`saved root recipe missing ${id}`);
         await resolve(first.guid, first.digest, id);
         const result = completed.get(id);
@@ -2031,44 +2165,15 @@ export class RuntimePackProducer {
     recovery: Awaited<ReturnType<RuntimePackProducer['restoreDependencyResolver']>>,
     signal?: AbortSignal,
   ): Promise<Result<void, RuntimePackError>> {
-    const plans = new Map<
-      string,
-      {
-        content: RuntimePackContent;
-        dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
-        identity: string;
-      }
-    >();
-    const savedInstances = new Map<string, PackInstanceJson>();
-    const pending: {
-      content: RuntimePackContent;
-      dependencies: ReadonlyMap<string, RuntimePackPinnedAsset>;
-      instance?: PackInstanceJson;
-    }[] = [];
-    const scheduled = new Set<string>();
-    const expectedOutputs = new Map<string, readonly AssetPublicationOutput[]>();
-    const fixedPlans = new Map<
-      string,
-      Extract<RuntimePackRecipe, { fixed: FixedPackPublication }>
-    >();
+    const plans = new Map<string, RuntimePackRestoreSource>();
+    const pending = new Map<string, RuntimePackRestoreBuild>();
+    const fixedPlans = new Map<string, RuntimePackFixedRecipe>();
     const includeRecipe = (recipe: RuntimePackRecipe): void => {
       if ('fixed' in recipe) {
         const key = fingerprint(recipe.fixed);
         if (fixedPlans.has(key)) return;
-        for (const output of recipe.outputs) {
-          const row = this.currentRow(output.guid);
-          if (
-            row &&
-            (row.publication?.generation !== recipe.fixed.pack.generation ||
-              row.publication?.digest !== recipe.fixed.pack.digest ||
-              row.publication?.outputSetDigest !== recipe.fixed.pack.outputSetDigest)
-          )
-            throw new TypeError(`fixed restore conflicts with current publication ${output.guid}`);
-        }
+        this.fixedRestoreExists(recipe);
         fixedPlans.set(key, recipe);
-        const existing = recipe.outputs.filter((output) => this.currentRow(output.guid));
-        if (existing.length && existing.length !== recipe.outputs.length)
-          throw new TypeError('partial fixed publication already exists');
         for (const pin of collectRuntimePackDependencies(
           recipe.dependencies,
           recipe.dependencies.keys(),
@@ -2081,7 +2186,10 @@ export class RuntimePackProducer {
             );
           if (!current || 'fixed' in pin.recipe) includeRecipe(pin.recipe);
         }
-      } else include(recipe.content, recipe.dependencies, recipe.instance, recipe.outputs);
+      } else {
+        const plan = include(recipe.content, recipe.dependencies, recipe.instance, recipe.outputs);
+        plan.candidate ??= recovery.prepared(recipe);
+      }
     };
     const include = (
       content: RuntimePackContent,
@@ -2090,33 +2198,34 @@ export class RuntimePackProducer {
       outputs?: readonly AssetPublicationOutput[],
     ) => {
       const id = content.source.packageId;
-      if (outputs) {
-        const outputId = instance?.packageId ?? id;
-        const previous = expectedOutputs.get(outputId);
-        if (previous) assertOutputSet(outputs, previous);
-        expectedOutputs.set(outputId, outputs);
-      }
       const identity = fingerprint(saveRuntimePackSnapshot([{ content, dependencies }], []));
       const admitted = this.packs.get(id);
       if (admitted && fingerprint(saveRuntimePackSnapshot([admitted], [])) !== identity)
         throw new TypeError(`restore source bindings conflict with admitted content ${id}`);
       const prior = plans.get(id);
+      if (pending.get(id)?.instance)
+        throw new TypeError('restore instance overlaps an admitted Pack identity');
       if (prior && prior.identity !== identity)
         throw new TypeError(`restore requires conflicting source versions ${id}`);
-      if (!prior) plans.set(id, { content, dependencies, identity });
-      if (instance) {
-        const previous = savedInstances.get(instance.packageId);
-        if (previous && fingerprint(previous) !== fingerprint(instance))
-          throw new TypeError(
-            `restore requires conflicting instance versions ${instance.packageId}`,
-          );
-        savedInstances.set(instance.packageId, instance);
+      const source = prior ?? { content, dependencies, identity };
+      if (!prior) plans.set(id, source);
+      const outputId = instance?.packageId ?? id;
+      const scheduled = pending.get(outputId);
+      if (!scheduled) {
+        const plan: RuntimePackRestoreBuild = { source, instance, outputs };
+        pending.set(outputId, plan);
+        return plan;
       }
-      const run = fingerprint({ identity, instance: instance ?? null });
-      if (!scheduled.has(run)) {
-        scheduled.add(run);
-        pending.push({ content, dependencies, ...(instance ? { instance } : {}) });
+      if (
+        scheduled.source !== source ||
+        fingerprint(scheduled.instance ?? null) !== fingerprint(instance ?? null)
+      )
+        throw new TypeError('restore requires conflicting publications');
+      if (outputs) {
+        if (scheduled.outputs) assertOutputSet(outputs, scheduled.outputs);
+        scheduled.outputs = outputs;
       }
+      return scheduled;
     };
     for (const content of snapshot.packs) {
       signal?.throwIfAborted();
@@ -2138,116 +2247,110 @@ export class RuntimePackProducer {
       if (!recipe) throw new TypeError(`saved root has no reconstructed recipe ${id}`);
       includeRecipe(recipe);
     }
-    // Discover the actual retained-reference closure from private rebuilt outputs.
-    // Content-only inputs never become public merely because they are needed to rebuild.
-    for (const plan of pending) {
-      const outputs = await this.rebuildRecipe(
-        plan.content,
-        plan.dependencies,
-        plan.instance,
-        signal,
-      );
-      const outputId = plan.instance?.packageId ?? plan.content.source.packageId;
-      const actual = [...outputs.values()].flatMap(
-        (pin) => pin.recipe?.outputs.filter((output) => output.guid === pin.row.guid) ?? [],
-      );
-      const expected = expectedOutputs.get(outputId);
-      if (expected) assertOutputSet(actual, expected);
-      expectedOutputs.set(outputId, actual);
-      const own = new Set(outputs.keys());
-      const closure = collectRuntimePackDependencies(outputs, outputs.keys());
-      const visited = new Set<string>();
-      const reference = (guid: string) => {
-        if (own.has(guid) || visited.has(guid)) return;
-        visited.add(guid);
-        const pin = closure.get(guid);
-        if (!pin?.recipe) throw new TypeError(`saved reference has no producer source ${guid}`);
-        const row = this.currentRow(guid);
-        const actual = row?.publication?.outputs.find((output) => output.guid === guid)?.digest;
-        if (row && !matchesPinnedPublication(row, pin))
+    // Follow only references in the produced assets. Historical inputs remain private.
+    for (const [id, plan] of pending) {
+      if (plan.instance && plans.has(id))
+        throw new TypeError('restore instance overlaps an admitted Pack identity');
+      const { content, dependencies } = plan.source;
+      plan.candidate ??= (
+        await this.rebuildRecipe(content, dependencies, plan.instance, signal)
+      ).candidate;
+      const outputs = plan.candidate.state.publication?.publication.outputs ?? [];
+      if (plan.outputs) assertOutputSet(outputs, plan.outputs);
+      plan.outputs = outputs;
+      const roots = externalReferenceRoots(outputs);
+      for (const [guid, pin] of collectRuntimePackDependencies(dependencies, roots)) {
+        const current = this.currentRow(guid);
+        if (current && !matchesPinnedPublication(current, pin))
           throw new TypeError(`restore reference conflicts with current version ${guid}`);
-        if (actual === undefined) includeRecipe(pin.recipe);
-        const output = pin.recipe.outputs.find((output) => output.guid === guid);
-        if (!output) throw new TypeError(`saved reference has no output evidence ${guid}`);
-        for (const ref of output.refs) reference(ref);
-      };
-      for (const pin of outputs.values()) {
-        const output = pin.recipe?.outputs.find((output) => output.guid === pin.row.guid);
-        if (!output) throw new TypeError(`missing rebuilt output ${pin.row.guid}`);
-        for (const ref of output.refs) reference(ref);
+        if (!current && pin.recipe) includeRecipe(pin.recipe);
       }
     }
-    const packs = [...plans.values()];
-    const instances = [...savedInstances.values()];
-    const fixed = [...fixedPlans.values()];
-    while (packs.length || instances.length || fixed.length) {
-      if (signal?.aborted) return err(failure('runtime-pack-cancelled', '', 'request cancelled'));
-      let progress = false;
-      let last: RuntimePackError | undefined;
-      for (const recipe of [...fixed]) {
+    return this.publishRestore(plans, pending, fixedPlans.values(), recovery.prepared, signal);
+  }
+
+  private fixedRestoreExists(recipe: RuntimePackFixedRecipe): boolean {
+    let present = 0;
+    for (const output of recipe.outputs) {
+      const current = this.currentRow(output.guid);
+      if (!current) continue;
+      const row = recipe.fixed.rows.find((entry) => entry.guid === output.guid);
+      if (
+        !row ||
+        !matchesPinnedPublication(current, {
+          row,
+          digest: output.digest,
+          generation: recipe.fixed.pack.generation,
+        })
+      )
+        throw new TypeError(`fixed restore version changed ${output.guid}`);
+      present++;
+    }
+    if (present > 0 && present !== recipe.outputs.length)
+      throw new TypeError('partial fixed publication already exists');
+    return present > 0;
+  }
+
+  private async publishRestore(
+    plans: ReadonlyMap<string, RuntimePackRestoreSource>,
+    pending: Map<string, RuntimePackRestoreBuild>,
+    fixedPlans: Iterable<RuntimePackFixedRecipe>,
+    prepared: (recipe: RuntimePackRecipe) => RuntimePackCandidate | undefined,
+    signal?: AbortSignal,
+  ): Promise<Result<void, RuntimePackError>> {
+    type Step = () => Promise<Result<unknown, RuntimePackError> | undefined>;
+    const steps: Step[] = [
+      ...[...fixedPlans].map((recipe) => async () => {
         try {
-          for (const output of recipe.outputs) {
-            const current = this.currentRow(output.guid);
-            const row = recipe.fixed.rows.find((row) => row.guid === output.guid);
-            if (
-              !row ||
-              (current &&
-                !matchesPinnedPublication(current, {
-                  row,
-                  digest: output.digest,
-                  generation: recipe.fixed.pack.generation,
-                }))
-            )
-              throw new TypeError(`fixed restore version changed ${output.guid}`);
-          }
-          const existing = recipe.outputs.filter((output) => this.currentRow(output.guid));
-          if (existing.length && existing.length !== recipe.outputs.length)
-            throw new TypeError('partial fixed publication already exists');
-          if (!existing.length) {
-            const candidate = await this.fixedCandidate(recipe.fixed, recipe.dependencies);
-            signal?.throwIfAborted();
-            this.commit(candidate, undefined, recipe);
-          }
-          fixed.splice(fixed.indexOf(recipe), 1);
-          progress = true;
+          if (this.fixedRestoreExists(recipe)) return ok(undefined);
+          const previous = prepared(recipe);
+          const candidate = previous
+            ? await this.refreshPreparation(previous, recipe.dependencies)
+            : await this.fixedCandidate(recipe.fixed, recipe.dependencies);
+          signal?.throwIfAborted();
+          this.commit(candidate, undefined, recipe);
+          return ok(undefined);
         } catch (cause) {
-          if (signal?.aborted) return err(failure('runtime-pack-cancelled', '', cause));
-          last = failure('runtime-pack-dependency-unavailable', '', cause);
+          return err(
+            failure(
+              signal?.aborted ? 'runtime-pack-cancelled' : 'runtime-pack-dependency-unavailable',
+              '',
+              cause,
+            ),
+          );
         }
+      }),
+      ...[...plans.values()].map(
+        (plan) => () =>
+          this.admitContent(
+            plan.content,
+            plan,
+            pending.get(plan.content.source.packageId)?.candidate,
+            signal,
+          ),
+      ),
+      ...[...pending.values()]
+        .filter(({ instance }) => instance !== undefined)
+        .map(({ instance, candidate }) => async () => {
+          if (!instance || !candidate) throw new TypeError('missing prepared instance');
+          const owner = plans.get(instance.parent)?.admitted;
+          return owner === undefined
+            ? undefined
+            : this.generateInstance(instance, signal, { candidate, owner });
+        }),
+    ];
+    const worklist = new Set(steps);
+    while (worklist.size > 0) {
+      const remaining = worklist.size;
+      let last: RuntimePackError | undefined;
+      for (const step of worklist) {
+        if (signal?.aborted) return err(failure('runtime-pack-cancelled', '', 'request cancelled'));
+        const result = await step();
+        if (result?.ok) worklist.delete(step);
+        else if (result?.error.code === 'runtime-pack-cancelled') return result;
+        else if (result !== undefined) last = result.error;
       }
-      for (const plan of [...packs]) {
-        const result = await this.admitContent(
-          plan.content,
-          async (guid, digest) => {
-            const pin = plan.dependencies.get(guid);
-            if (!pin || pin.digest !== digest)
-              throw new TypeError(`saved dependency unavailable ${guid}`);
-            return pin;
-          },
-          expectedOutputs.get(plan.content.source.packageId),
-          signal,
-        );
-        if (!result.ok) {
-          last = result.error;
-          continue;
-        }
-        packs.splice(packs.indexOf(plan), 1);
-        progress = true;
-      }
-      for (const instance of [...instances]) {
-        const result = await this.generateInstance(
-          instance,
-          signal,
-          expectedOutputs.get(instance.packageId),
-        );
-        if (!result.ok) {
-          last = result.error;
-          continue;
-        }
-        instances.splice(instances.indexOf(instance), 1);
-        progress = true;
-      }
-      if (!progress)
+      if (worklist.size === remaining)
         return err(last ?? failure('runtime-pack-invalid', '', 'restore made no progress'));
     }
     return ok(undefined);
@@ -2256,6 +2359,7 @@ export class RuntimePackProducer {
     if (this.closed) return;
     this.mutationRevision++;
     this.closed = true;
+    this.persistentCache?.dispose();
     for (const controller of this.admissions.values()) controller.abort();
     const failures: unknown[] = [];
     for (const id of [...this.published.keys()]) {
@@ -2266,9 +2370,9 @@ export class RuntimePackProducer {
       }
     }
     this.listeners.clear();
-    this.bodies.clear();
+    this.packageUrls.clear();
     this.published.clear();
-    this.snapshots.clear();
+    this.committedOutputs.clear();
     this.packs.clear();
     this.programs.clear();
     this.loadedPrograms.clear();

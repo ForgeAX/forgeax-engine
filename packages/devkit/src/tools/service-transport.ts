@@ -1,12 +1,11 @@
-import { once } from 'node:events';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
   type AuthenticatedLoopbackTransport,
   createAuthenticatedLoopbackTransport,
   type ServiceWireHandler,
   type ServiceWireRequest,
-  type ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
+
+import { serveLoopbackJson } from '../loopback.js';
 
 export type {
   AuthenticatedLoopbackTransport,
@@ -30,24 +29,6 @@ export interface AuthenticatedLoopbackService {
   readonly close: () => Promise<void>;
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  const body = Buffer.concat(chunks);
-  if (body.byteLength > 1024 * 1024) throw new Error('request body is too large');
-  return JSON.parse(body.toString('utf8')) as unknown;
-}
-
-function reply(
-  response: ServerResponse,
-  status: number,
-  payload: ToolTerminal<unknown> | { readonly error: string },
-): void {
-  response.statusCode = status;
-  response.setHeader('content-type', 'application/json');
-  response.end(JSON.stringify(payload));
-}
-
 function parseRequest(value: unknown): ServiceWireRequest {
   if (typeof value !== 'object' || value === null) throw new Error('request must be an object');
   const request = value as Record<string, unknown>;
@@ -65,68 +46,37 @@ function parseRequest(value: unknown): ServiceWireRequest {
   };
 }
 
-function isAuthorized(request: IncomingMessage, bearerToken: string): boolean {
-  return request.headers.authorization === `Bearer ${bearerToken}`;
-}
-
 export async function createAuthenticatedLoopbackService(
   options: AuthenticatedLoopbackServiceOptions,
 ): Promise<AuthenticatedLoopbackService> {
   if (options.bearerToken.length < 8) throw new TypeError('service bearer token is too short');
-  const host = options.host ?? '127.0.0.1';
-  const server = createServer(async (request, response) => {
-    if (request.method !== 'POST' || request.url !== '/run') {
-      reply(response, 404, { error: 'service route not found' });
-      return;
-    }
-    if (!isAuthorized(request, options.bearerToken)) {
-      reply(response, 401, { error: 'service bearer token rejected' });
-      return;
-    }
-    try {
-      const wireRequest = parseRequest(await readJson(request));
+  const service = await serveLoopbackJson({
+    host: options.host,
+    bearerToken: options.bearerToken,
+    route: (path) => (path === '/run' ? path : undefined),
+    missingRoute: { error: 'service route not found' },
+    rejectedToken: { error: 'service bearer token rejected' },
+    invalidRequest: (cause) => ({ error: cause instanceof Error ? cause.message : String(cause) }),
+    maxBodyBytes: 1024 * 1024,
+    async run(_route, body) {
+      const wireRequest = parseRequest(body);
       if (
         options.expectedDescriptorDigest !== undefined &&
         wireRequest.descriptorDigest !== options.expectedDescriptorDigest
-      ) {
-        reply(response, 409, { error: 'service descriptor digest mismatch' });
-        return;
-      }
+      )
+        return [409, { error: 'service descriptor digest mismatch' }];
       if (
         options.expectedRecipeDigest !== undefined &&
         wireRequest.recipeDigest !== options.expectedRecipeDigest
-      ) {
-        reply(response, 409, { error: 'service recipe digest mismatch' });
-        return;
-      }
-      reply(response, 200, await options.handler(wireRequest));
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      reply(response, 400, { error: message });
-    }
+      )
+        return [409, { error: 'service recipe digest mismatch' }];
+      return [200, await options.handler(wireRequest)];
+    },
   });
-  await once(server.listen(0, host), 'listening');
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    throw new Error('loopback service did not expose a TCP address');
-  }
-  const endpoint = `http://${host}:${address.port}/run`;
+  const endpoint = `${service.origin}/run`;
   const transport = createAuthenticatedLoopbackTransport({
     endpoint,
     bearerToken: options.bearerToken,
   });
-  let closed = false;
-  return {
-    endpoint,
-    transport,
-    async close() {
-      if (closed) return;
-      closed = true;
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
-      });
-      transport.close();
-    },
-  };
+  return { endpoint, transport, close: () => service.close(() => transport.close()) };
 }

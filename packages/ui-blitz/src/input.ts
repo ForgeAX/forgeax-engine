@@ -18,6 +18,8 @@ export interface UiKeyInput {
   readonly ctrlKey?: boolean;
   readonly altKey?: boolean;
   readonly metaKey?: boolean;
+  /** Native keyboard editing. Text is already interpreted by the platform. */
+  readonly nativeText?: { readonly text?: string };
 }
 export interface UiTextEditor {
   readonly value: string;
@@ -46,6 +48,14 @@ export interface BlitzUiInput {
   /** Explicit user activation of an editable control; focus alone is not an edit request. */
   subscribeTextEdit(listener: () => void): () => void;
   ownsInput(): boolean;
+}
+/** Text composition handled by an operating system desktop IME. */
+export interface BlitzDesktopInput extends BlitzUiInput {
+  composition(event: {
+    readonly kind: 'preedit' | 'commit' | 'cancel';
+    readonly text?: string;
+  }): void;
+  focusedTextArea(): readonly [number, number, number, number] | null;
 }
 interface Contact {
   readonly target: UiElement;
@@ -118,13 +128,39 @@ function isEditor(node: UiElement | null): node is UiElement {
   );
 }
 
-export class BlitzInput implements BlitzUiInput {
+let graphemes: Intl.Segmenter | undefined;
+
+function characterAt(text: string, index: number): { index: number; segment: string } | undefined {
+  if (index < 0 || index >= text.length) return undefined;
+  if (typeof Intl.Segmenter === 'function') {
+    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    return graphemes.segment(text).containing(index);
+  }
+  let start = 0;
+  for (const segment of text) {
+    if (start + segment.length > index) return { index: start, segment };
+    start += segment.length;
+  }
+  return undefined;
+}
+
+function previousBoundary(text: string, caret: number): number {
+  return characterAt(text, caret - 1)?.index ?? 0;
+}
+
+function nextBoundary(text: string, caret: number): number {
+  const part = characterAt(text, caret);
+  return part === undefined ? text.length : part.index + part.segment.length;
+}
+
+export class BlitzInput implements BlitzDesktopInput {
   private readonly contacts = new Map<number, Contact>();
   private readonly listeners = new Set<() => void>();
   private readonly editListeners = new Set<() => void>();
   private focused: UiElement | null = null;
   private editor: UiElement | null = null;
   private committedValue = '';
+  private compositionOwner: UiElement | undefined;
   private spaceTarget: UiElement | null = null;
   private disposed = false;
   constructor(private readonly dom: BlitzDocument) {
@@ -157,6 +193,7 @@ export class BlitzInput implements BlitzUiInput {
     this.focused = focused;
     this.editor = editor;
     this.committedValue = editor?.value ?? '';
+    this.endComposition('');
     this.spaceTarget = null;
     if (previous?.isConnected && previous.value !== committed)
       dispatch(previous, 'change', {}, false);
@@ -419,8 +456,7 @@ export class BlitzInput implements BlitzUiInput {
       this.scroll(hit, event.deltaX, event.deltaY);
     return true;
   }
-  key(event: UiKeyInput): boolean {
-    if (this.disposed) return false;
+  private updateFocusModality(event: UiKeyInput): void {
     if (
       event.type === 'keydown' &&
       !event.ctrlKey &&
@@ -429,10 +465,22 @@ export class BlitzInput implements BlitzUiInput {
       !['Control', 'Alt', 'Meta'].includes(event.key)
     )
       this.dom.read('input.focusVisible', (core) => core.keyboard_focus());
+  }
+
+  key(event: UiKeyInput): boolean {
+    if (this.disposed) return false;
+    this.updateFocusModality(event);
     const focused = this.dom.focused() ?? (event.key === 'Tab' ? this.dom.root.body : null);
     if (!focused) return false;
     if (!dispatch(focused, event.type, event) || isInert(focused)) return true;
     if (event.type === 'keydown') {
+      if (
+        event.nativeText !== undefined &&
+        isEditor(focused) &&
+        this.dom.focused() === focused &&
+        this.editKey(focused, event)
+      )
+        return true;
       if (
         focused.localName === 'select' &&
         !focused.disabled &&
@@ -515,25 +563,186 @@ export class BlitzInput implements BlitzUiInput {
     if (this.disposed) return;
     const editor = this.dom.focused();
     if (!isEditor(editor)) return;
-    const text = String(value);
+    this.writeText(editor, String(value), String(value), 'insertReplacementText');
+  }
+
+  private writeText(
+    editor: UiElement,
+    value: string,
+    data: string | null,
+    inputType: string,
+  ): boolean {
     if (
       !dispatch(editor, 'beforeinput', {
-        data: text,
-        inputType: 'insertReplacementText',
+        data,
+        inputType,
         isComposing: false,
       })
     )
-      return;
+      return false;
     // The callback can remove, hide or change the control before its default edit.
-    if (!editor.isConnected || !isEditor(editor) || isInert(editor)) return;
+    if (
+      this.dom.focused() !== editor ||
+      !editor.isConnected ||
+      !isEditor(editor) ||
+      isInert(editor)
+    )
+      return false;
     // Editing drafts, number sanitization and badInput remain in the core.
-    if (!this.dom.read('input.text', (core) => core.set_input_text(editor.coreId, text))) return;
-    dispatch(
-      editor,
-      'input',
-      { data: text, inputType: 'insertReplacementText', isComposing: false },
-      false,
+    if (!this.dom.read('input.text', (core) => core.set_input_text(editor.coreId, value)))
+      return false;
+    dispatch(editor, 'input', { data, inputType, isComposing: false }, false);
+    return true;
+  }
+
+  private editorSelection(editor: UiElement) {
+    const text = this.dom.read('input.editor', (core) => core.input_text(editor.coreId));
+    const range = this.dom.read('input.selection.get', (core) =>
+      core.input_selection(editor.coreId),
     );
+    return { text, anchor: range[0] ?? text.length, caret: range[1] ?? text.length };
+  }
+
+  private setEditorSelection(editor: UiElement, anchor: number, caret: number): void {
+    this.dom.read('input.selection.set', (core) =>
+      core.set_input_selection(editor.coreId, anchor, caret),
+    );
+  }
+
+  private replaceSelection(
+    editor: UiElement,
+    selection: { text: string; anchor: number; caret: number },
+    data: string | null,
+    inputType: string,
+  ): void {
+    const { text, anchor, caret } = selection;
+    const start = Math.min(anchor, caret);
+    const end = Math.max(anchor, caret);
+    let inserted = data ?? '';
+    if (editor.localName !== 'textarea') inserted = inserted.replace(/[\r\n]/g, '');
+    const limit = editor.maxLength;
+    if (limit >= 0) {
+      const room = Math.max(0, limit - (text.length - (end - start)));
+      if (inserted.length > room) {
+        const part = characterAt(inserted, room);
+        inserted = inserted.slice(0, part?.index ?? room);
+      }
+    }
+    if (data !== null && inserted.length === 0) return;
+    const value = text.slice(0, start) + inserted + text.slice(end);
+    if (
+      value !== text &&
+      this.writeText(editor, value, data === null ? null : inserted, inputType)
+    ) {
+      const point = start + inserted.length;
+      if (this.dom.focused() === editor) this.setEditorSelection(editor, point, point);
+    }
+  }
+
+  private editKey(editor: UiElement, event: UiKeyInput): boolean {
+    if (this.compositionOwner) return true;
+    const { text, anchor, caret } = this.editorSelection(editor);
+    const shortcut = (event.ctrlKey || event.metaKey) && !event.altKey;
+    if (shortcut && event.key.toLowerCase() === 'a') {
+      this.setEditorSelection(editor, 0, text.length);
+      return true;
+    }
+    if (shortcut) return false;
+    if (this.navigateEditor(editor, event, { text, anchor, caret })) return true;
+    switch (event.key) {
+      case 'Enter':
+        if (editor.localName !== 'textarea') return false;
+        this.replaceSelection(editor, { text, anchor, caret }, '\n', 'insertLineBreak');
+        return true;
+    }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: Winit key text also includes non-printing control keys.
+    const inserted = event.nativeText?.text?.replace(/[\u0000-\u001f\u007f]/g, '');
+    if (!inserted) return false;
+    this.replaceSelection(editor, { text, anchor, caret }, inserted, 'insertText');
+    return true;
+  }
+
+  private navigateEditor(
+    editor: UiElement,
+    event: UiKeyInput,
+    { text, anchor, caret }: { text: string; anchor: number; caret: number },
+  ): boolean {
+    const low = Math.min(anchor, caret);
+    const high = Math.max(anchor, caret);
+    switch (event.key) {
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        const left = event.key === 'ArrowLeft';
+        const point =
+          !event.shiftKey && low !== high
+            ? left
+              ? low
+              : high
+            : left
+              ? previousBoundary(text, caret)
+              : nextBoundary(text, caret);
+        this.setEditorSelection(editor, event.shiftKey ? anchor : point, point);
+        return true;
+      }
+      case 'Home':
+      case 'End': {
+        const point = event.key === 'Home' ? 0 : text.length;
+        this.setEditorSelection(editor, event.shiftKey ? anchor : point, point);
+        return true;
+      }
+      case 'Backspace':
+      case 'Delete': {
+        const back = event.key === 'Backspace';
+        const from = low === high && back ? previousBoundary(text, low) : low;
+        const to = low === high && !back ? nextBoundary(text, high) : high;
+        this.replaceSelection(
+          editor,
+          { text, anchor: from, caret: to },
+          null,
+          back ? 'deleteContentBackward' : 'deleteContentForward',
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private endComposition(data: string): void {
+    const owner = this.compositionOwner;
+    this.compositionOwner = undefined;
+    if (owner?.isConnected) dispatch(owner, 'compositionend', { data }, false);
+  }
+
+  composition(event: {
+    readonly kind: 'preedit' | 'commit' | 'cancel';
+    readonly text?: string;
+  }): void {
+    if (this.disposed) return;
+    if (event.kind === 'cancel') {
+      this.endComposition('');
+      return;
+    }
+    const editor = this.dom.focused();
+    if (!isEditor(editor) || isInert(editor)) return;
+    const data = event.text ?? '';
+    if (event.kind === 'commit') {
+      this.endComposition(data);
+      if (data !== '' && this.dom.focused() === editor)
+        this.replaceSelection(editor, this.editorSelection(editor), data, 'insertCompositionText');
+    } else if (data !== '' || this.compositionOwner === editor) {
+      if (this.compositionOwner !== editor) {
+        this.compositionOwner = editor;
+        dispatch(editor, 'compositionstart', { data: '' }, false);
+      }
+      if (this.compositionOwner === editor) dispatch(editor, 'compositionupdate', { data }, false);
+    }
+  }
+
+  focusedTextArea(): readonly [number, number, number, number] | null {
+    const editor = this.disposed ? null : this.dom.focused();
+    if (!isEditor(editor) || isInert(editor)) return null;
+    const { x, y, width, height } = editor.getBoundingClientRect();
+    return [x, y, width, height];
   }
   commitText(): void {
     if (this.disposed) return;

@@ -126,7 +126,8 @@ it('moves and removes a field source in place: only its Cards, its SDF box and n
     const composite = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
-          shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_diffuse_reconstructed',
+          shader.stage === 'fragment' &&
+          shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
       ),
     );
     assert(composite, 'edit frame contains the shared diffuse composite');

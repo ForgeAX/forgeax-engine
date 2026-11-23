@@ -3,11 +3,17 @@
 #import forgeax_material::terrain_layer_sampling::{terrain_layer}
 #import forgeax_pbr::tbn::{applyTBN}
 
-fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  let uv=input.uv0;
+fn terrain_authored_weights(uv: vec2<f32>) -> vec4<f32> {
   let controlSize=vec2<f32>(textureDimensions(terrainWeightTexture,0));
   let controlUv=(clamp(uv,vec2<f32>(0.0),vec2<f32>(1.0))*(controlSize-1.0)+0.5)/controlSize;
-  let authored=textureSampleLevel(terrainWeightTexture,terrainWeightTexture_sampler,controlUv,0.0);
+  return textureSampleLevel(terrainWeightTexture,terrainWeightTexture_sampler,controlUv,0.0);
+}
+
+fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
+  return evaluate_terrain_surface(input, terrain_authored_weights(input.uv0));
+}
+
+fn evaluate_terrain_surface(input: SurfaceInput, authored: vec4<f32>) -> SurfaceData {
   var w=authored;
   var colors: array<vec4<f32>,4>;
   var normals: array<vec4<f32>,4>;

@@ -30,11 +30,26 @@ export const repairReusableJobs = Object.freeze({
   'modeling-ci.yml': ['engine-candidate'],
 });
 
+export const browserFallbackTailSteps = Object.freeze([
+  'MSAA paired P2 proof (real OFF/ON captures)',
+  'Multiplayer snake browser E2E (M16 reconnect/resync)',
+]);
+
 // A successful name from before an owner moved cannot qualify its new work.
 const repairRequiredExecutionSteps = {
   'ci.yml': {
+    'primary-pnpm': [
+      'Package declaration typecheck',
+      'Reproduce clean state declaration graph (issue #758)',
+      'Reproduce clean import geometry declaration graph',
+    ],
+    'metrics-validate-browser': [
+      'Chromium fallback color-lighting parity sentinel matrix (Xvfb headed)',
+    ],
+    'webkit-fallback': browserFallbackTailSteps,
     'view-integration-0': [
       'Prepare verified paired consumer inputs',
+      'Verify paired candidate and resource-preview roster',
       'Runtime Pack Worker dev/build JS/TS browser gate',
     ],
     'view-integration-1': [
@@ -43,6 +58,7 @@ const repairRequiredExecutionSteps = {
     ],
     'view-integration-2': [
       'Prepare verified paired consumer inputs',
+      'Verify paired candidate and resource-preview roster',
       'Runtime Pack Worker dev/build JS/TS browser gate',
     ],
     'view-integration-3': [
@@ -69,18 +85,13 @@ export const repairArtifactSuites = Object.freeze({
     'coverage-pnpm-shard': 'coverage-pnpm',
     'coverage-pnpm': 'coverage-pnpm',
     'smoke-fleet': 'smoke-fleet',
-    'webkit-fallback': 'metrics-validate',
     'metrics-validate-browser': 'metrics-validate',
     'metrics-validate-runtime': 'metrics-validate',
   },
   'sdk-pr-preflight.yml': { consumers: 'sdk-build' },
 });
 
-export const metricProducers = [
-  'webkit-fallback',
-  'metrics-validate-browser',
-  'metrics-validate-runtime',
-];
+export const metricProducers = ['metrics-validate-browser', 'metrics-validate-runtime'];
 const metricMembers = [...metricProducers, 'metrics-validate'];
 
 export const coverageMembers = [0, 1, 2, 3].map((shard) => `coverage-pnpm-shard-${shard}`);
@@ -529,7 +540,6 @@ export async function runArtifacts(api, repository, run) {
 }
 
 export function metricArtifactName(name, job) {
-  if (name === 'webkit-fallback') return 'chromium-fallback-color-lighting-status';
   if (name === 'metrics-validate-runtime') return 'metrics-report';
   return Number.isSafeInteger(job.run_attempt) && job.run_attempt > 0
     ? `metrics-validate-browser-evidence-a${job.run_attempt}`
@@ -568,7 +578,7 @@ async function metricSuiteArtifacts(api, input, run, jobs) {
   for (const name of metricProducers) {
     const job = await successfulJob(api, input.repository, run, name, jobs);
     const source = await originalSuccess(api, { ...input, checkName: name }, run, job);
-    if (!source) return undefined;
+    if (!source || !repairExecutionIsComplete(input.workflow, name, source.job)) return undefined;
     sources.push(source);
   }
   const original = sources[0].run;

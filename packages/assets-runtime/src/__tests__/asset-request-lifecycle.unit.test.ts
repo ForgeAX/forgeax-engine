@@ -1,5 +1,5 @@
 import { type AssetLoadError, err, ok, type Result } from '@forgeax/engine-types';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { AssetGraph } from '../internal/asset-graph.js';
 import { PackReader } from '../internal/pack-reader.js';
 
@@ -143,23 +143,20 @@ describe('shared Pack reader lifecycle', () => {
       .mockResolvedValueOnce(Response.json({ ...pack, assets: [null] }))
       .mockResolvedValueOnce(Response.json(pack));
     const reader = new PackReader({ fetcher });
-    try {
-      const requests = [
-        reader.read('/pack', tuple, new AbortController().signal),
-        reader.read('/pack', tuple, new AbortController().signal),
-      ];
-      const failures = await Promise.all(requests);
-      expect(failures).toHaveLength(2);
-      for (const failure of failures)
-        expect(failure).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(await reader.read('/pack', tuple, new AbortController().signal)).toMatchObject({
-        ok: true,
-      });
-      expect(fetcher).toHaveBeenCalledTimes(2);
-    } finally {
-      reader.dispose();
-    }
+    onTestFinished(() => reader.dispose());
+    const requests = [
+      reader.read('/pack', tuple, new AbortController().signal),
+      reader.read('/pack', tuple, new AbortController().signal),
+    ];
+    const failures = await Promise.all(requests);
+    expect(failures).toHaveLength(2);
+    for (const failure of failures)
+      expect(failure).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await reader.read('/pack', tuple, new AbortController().signal)).toMatchObject({
+      ok: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
 

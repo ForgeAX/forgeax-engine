@@ -27,6 +27,7 @@ import type {
 } from '../gpu-driven/production-raster-prepare';
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
+import { buildGpuDrivenPrimitiveBindGroupLayout } from '../pbr-pipeline';
 import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -41,7 +42,7 @@ import {
 } from './gpu-driven-production-fixture';
 import { duplicateMeshVertices, editResidentMesh } from './managed-mesh-edit';
 
-async function fixture(materialIndices?: readonly number[]) {
+async function fixture(materialIndices?: readonly number[], stationary = false) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
   const configure = () => store.configureGpuDevice(device, undefined, device.caps);
@@ -75,7 +76,9 @@ async function fixture(materialIndices?: readonly number[]) {
       material,
       materials: [material],
       materialBindingSources: ['engine-default'],
-      instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 },
+      ...(stationary
+        ? { mobility: 'static' as const }
+        : { instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 } }),
       gpuDrivenDraws: [
         {
           ...defined(gpuSnapshot(index + 1, Number(handle)).gpuDrivenDraws?.[0]),
@@ -320,6 +323,33 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       completeOld();
       vertices.mockRestore();
       if (compiled?.ok) await compiled.value.retire();
+      f.close();
+    }
+  });
+
+  it('retires departed physical camera classes while new material programs keep drawing', async () => {
+    const f = await fixture();
+    try {
+      const first = f.prepare();
+      const raster = defined(
+        first.projectCamera?.({ format: 'rgba8unorm', sampleCount: 1 }),
+      ).unwrap();
+      expect(raster.hasWork('opaque')).toBe(true);
+      for (let frame = 1; frame <= 60; frame++) {
+        const materialArtifact = {
+          ...defined(f.input.materialArtifact),
+          fragmentEntry: `camera-fragment-${frame}`,
+        };
+        const next = defined(
+          f.production.prepare(admitGpuFixture({ ...f.input, materialArtifact })).unwrap(),
+        );
+        raster.stageCameraClasses?.();
+        expect(raster.hasWork('opaque')).toBe(true);
+        expect(f.production.lateRasterClasses.retired).toBe(frame);
+        expect(f.production.lateRasterClasses.projected).toBe(frame);
+        next._commitResourceReplacement();
+      }
+    } finally {
       f.close();
     }
   });
@@ -731,7 +761,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
     false,
     true,
   ])('projects a directional view once when its light disables the static shadow cache (owned %s)', async (ownedRequests) => {
-    const f = await fixture();
+    const f = await fixture(undefined, true);
     try {
       const main = defined(f.input.materialArtifact);
       const shadow = { ...main, pass: 'shadow', program: createMaterialShaderProgram('shadow-a') };
@@ -767,7 +797,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
         return frame;
       };
 
-      // Default: initial casters are settled, so they live in the static layer.
+      // The fixture authors both rigid casters as static.
       const cached = update(true);
       expect(cached.shadowViewPool?.isActive(staticLayer)).toBe(true);
       const settled = candidates(cached, staticLayer);
@@ -1151,19 +1181,7 @@ describe('selected GPU material graph dependencies', () => {
         ]),
       );
       const state = defined(f.input.materialPipelineState);
-      const skinLayout = f.device
-        .createBindGroupLayout({
-          entries: [
-            {
-              binding: 0,
-              visibility: 1,
-              buffer: { type: 'read-only-storage', hasDynamicOffset: true },
-            },
-            { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
-          ],
-        })
-        .unwrap();
+      const skinLayout = buildGpuDrivenPrimitiveBindGroupLayout(f.device, true);
       const materialPipelineState = {
         ...state,
         gpuDrivenPbrPrograms: new Map([
@@ -1177,7 +1195,7 @@ describe('selected GPU material graph dependencies', () => {
           ],
         ]),
         gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
-        pbrSkinMeshBindGroupLayout: skinLayout,
+        gpuDrivenSkinPrimitiveBindGroupLayout: skinLayout,
       };
       const prepare = (materialSkinArtifact: MaterialShaderArtifact) =>
         defined(

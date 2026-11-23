@@ -16,6 +16,7 @@ import {
   buildGpuDrivenPbrInstancesBindGroupLayout,
   buildGpuDrivenPbrPipelineLayout,
   buildGpuDrivenPbrSkinPipelineLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
   buildPbrSkinLayouts,
   buildSceneDirectInstancesBindGroupLayout,
   buildSceneDirectPipelineLayout,
@@ -57,6 +58,8 @@ interface GpuDrivenPbrReadyLayouts {
   readonly pbrSkinProbePipelineLayout: PipelineLayout | null;
   readonly pbrSkinMeshBindGroupLayout: BindGroupLayout | null;
   readonly gpuDrivenInstancesBindGroupLayout: BindGroupLayout | null;
+  readonly gpuDrivenPrimitiveBindGroupLayout: BindGroupLayout | null;
+  readonly gpuDrivenSkinPrimitiveBindGroupLayout: BindGroupLayout | null;
   readonly gpuDrivenPbrPipelineLayout: PipelineLayout | null;
   readonly gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null;
   readonly surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null;
@@ -243,6 +246,8 @@ export function buildGpuDrivenPbrReadyLayouts(
   let pbrSkinProbePipelineLayout: PipelineLayout | null = null;
   let pbrSkinMeshBindGroupLayout: BindGroupLayout | null = null;
   let gpuDrivenInstancesBindGroupLayout: BindGroupLayout | null = null;
+  let gpuDrivenPrimitiveBindGroupLayout: BindGroupLayout | null = null;
+  let gpuDrivenSkinPrimitiveBindGroupLayout: BindGroupLayout | null = null;
   let gpuDrivenPbrPipelineLayout: PipelineLayout | null = null;
   let gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null = null;
   let surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null = null;
@@ -268,16 +273,22 @@ export function buildGpuDrivenPbrReadyLayouts(
         const surfaceDirect = buildSurfaceDirectInstancesBindGroupLayout(device, {
           storageBuffer: true,
         });
-        const rigid = buildGpuDrivenPbrPipelineLayout(device, pbrLayouts, instances);
+        const primitive = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
+        const skinPrimitive = buildGpuDrivenPrimitiveBindGroupLayout(device, true);
+        const rigid = buildGpuDrivenPbrPipelineLayout(
+          device,
+          { ...pbrLayouts, meshArrayBgl: primitive },
+          instances,
+        );
         const skin =
           pbrSkinMeshBindGroupLayout === null
             ? null
             : buildGpuDrivenPbrSkinPipelineLayout(
                 device,
-                { ...pbrLayouts, meshArrayBgl: pbrSkinMeshBindGroupLayout },
+                { ...pbrLayouts, meshArrayBgl: skinPrimitive },
                 instances,
               );
-        return ok({ instances, rigid, skin, surfaceDirect });
+        return ok({ instances, rigid, skin, surfaceDirect, primitive, skinPrimitive });
       },
       'webgpu-runtime-error',
       'build GPU-driven PBR pipeline layouts succeeded',
@@ -285,6 +296,8 @@ export function buildGpuDrivenPbrReadyLayouts(
     );
     if (layoutResult.ok) {
       gpuDrivenInstancesBindGroupLayout = layoutResult.value.instances;
+      gpuDrivenPrimitiveBindGroupLayout = layoutResult.value.primitive;
+      gpuDrivenSkinPrimitiveBindGroupLayout = layoutResult.value.skinPrimitive;
       gpuDrivenPbrPipelineLayout = layoutResult.value.rigid;
       gpuDrivenPbrSkinPipelineLayout = layoutResult.value.skin;
       surfaceDirectInstancesBindGroupLayout = layoutResult.value.surfaceDirect;
@@ -354,6 +367,8 @@ export function buildGpuDrivenPbrReadyLayouts(
     pbrSkinProbePipelineLayout,
     pbrSkinMeshBindGroupLayout,
     gpuDrivenInstancesBindGroupLayout,
+    gpuDrivenPrimitiveBindGroupLayout,
+    gpuDrivenSkinPrimitiveBindGroupLayout,
     gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout,

@@ -23,6 +23,7 @@ Cooked section coordinates, bounds and active layers derive from `TerrainSection
 | Samples | `columns × rows` finite `Float32Array`, X-fast row-major, no holes |
 | Subsection | Power-of-two 2–128 vertices; each axis contains complete `vertices − 1` quad subsections |
 | Weights | Sample-major, one value for every ordered author layer; values in [0,1], nonzero weight group sums to one |
+| Detail weights | Optional sampled linear RGBA8 mask; channels use author layer order, repeat in Terrain-local metres |
 | Layers | Weight, height-adjusted weight, then ordered alpha composition; zero weight uses Standard defaults |
 | Active budget | Ordinary controls: at most four active layers per subsection; ID controls: 1–32 original author layers with at most three candidates per fine control triangle |
 | Height | One root RGBA8 atlas stores exact little-endian f32 height bytes; near-square section tiles retain their addresses across all mips, independent of author aspect ratio |
@@ -37,11 +38,17 @@ Cooked section coordinates, bounds and active layers derive from `TerrainSection
 
 Admission validates each canonical LOD grid, height mip and control byte, author bounds and the section material height/control bindings before exposing a candidate. A partial same-GUID rewrite cannot repin an existing root.
 
-Section materials use the fixed Engine Standard Terrain programs (`forgeax::standard-terrain` or `forgeax::standard-terrain-ids`, with matching shadow programs) and three canonical forward/deferred/shadow passes. The shared `TERRAIN_MATERIAL_PARAMETERS` contract supplies their ABI. Engine shader builds prepare these fixed compositions; runtime author edits require no shader compilation or material Cook. Altered programs, parameter schemas or pass rosters cannot enter a Terrain closure.
+Section materials use the fixed Engine Standard Terrain programs (`forgeax::standard-terrain`, `forgeax::standard-terrain-detail` or `forgeax::standard-terrain-ids`, with matching shadow programs) and three canonical forward/deferred/shadow passes. Each family uses its canonical Engine material parameter schema. Engine shader builds prepare these fixed compositions; runtime author edits require no shader compilation or material Cook. Altered programs, parameter schemas or pass rosters cannot enter a Terrain closure.
 
 The runtime source adapter accepts resident RGBA8 2D data and encoded textures through the existing texture decoder. Renderer residency retains exact source RGBA8 texels; GPU preparation linearizes sRGB neighbors before filtering and writes derived channels in binary16, with f32 Material values. Each actual selected frame owns four RGBA16F texture arrays at the largest selected source dimensions. Identical selections share active arrays; an edit GPU-copies the previous arrays and rebakes only changed layers when dimensions still match. Fragment sampling is four ordinary repeated, bilinear array samples. Preparation uses compute with RGBA16F storage textures when available. WebGL2 writes the same channels with four RGBA16F color attachments into selected 2D array-layer views; it requires four renderable targets and 32 color-attachment bytes per sample. Both paths use the same standalone WGSL arithmetic and retained input versions. Unsupported shader/pass, physical-layer or coordinate extensions fail during cooking. Runtime never imports source files or compiles WGSL.
 
 `terrainHeightBounds(min, max, heightRange)` derives conservative GPU geometry bounds from the packed-height half-step and f32 decode/morph rounding. Input validation rejects spacing, extents and derived bounds that cannot be represented by finite f32 values. Author extrema remain author facts.
+
+## Optional detail weights
+
+Set `weightDetail: { texture, period, strength }` on a source with up to four weight-blended layers and the ordinary `weights` control encoding. `texture` resolves to a linear `rgba8unorm` 2D asset or GPU Texture output in the same dependency closure. A single repeat sampler and texture are shared across sections. A strength of zero gives neutral bias, and the upper bound is four log2 weight units.
+
+The color pass multiplies author weights by $2^{(2d-1)s}$ for the corresponding detail channel $d$ and strength $s$, then preserves the original total weight. An absent layer stays absent, including on sections that omit it from their active roster. The GPU samples the texture in Terrain-local XZ metres with filtering and implicit mip selection. Height, collision and authored controls retain the same data.
 
 ## Optional material ID specialization
 

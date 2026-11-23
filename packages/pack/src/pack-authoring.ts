@@ -18,7 +18,7 @@ import {
 } from './plugin-asset.js';
 import type { ScriptablePackSceneComponentInput } from './scriptable-pack.js';
 import { isScriptablePackAssetKind } from './scriptable-pack-kinds.js';
-import { isScriptablePackField } from './scriptable-pack-wire.js';
+import { isScriptablePackField, projectPackParameters } from './scriptable-pack-wire.js';
 
 /** Values deliberately stay finite and serialisable at the authoring boundary. */
 export type PackParameterScalar = boolean | number | string;
@@ -119,6 +119,8 @@ export type PackAuthoringErrorCode =
   | 'pack-output-reference-conflict'
   | 'pack-output-not-materialized'
   | 'asset-not-ready'
+  | 'asset-not-found'
+  | 'asset-subject-ambiguous'
   | 'pack-source-revision-conflict'
   | 'pack-source-path-invalid'
   | 'pack-source-not-found'
@@ -685,16 +687,13 @@ export type ScriptablePackRuntime = ScriptablePackRuntimeBase &
         readonly execution?: 'task-worker';
         readonly outputs?: never;
         readonly export?: never;
-        readonly fallback?: never;
       }
     | {
-        /** Ordinary Pack outputs always execute in a Task Worker. */
+        /** Require a Task Worker. Ordinary outputs otherwise prefer a Worker when available. */
         readonly execution?: 'task-worker';
         readonly outputs: ScriptablePackRuntimeOutputs;
         /** Named generator export in this .pack.ts module. */
         readonly export: string;
-        /** Allow targets without a Task Worker carrier to cook this generator offline. */
-        readonly fallback?: 'build';
       }
   );
 
@@ -859,23 +858,10 @@ export function projectScriptablePackMeta(
         }),
     ...('parameters' in definition
       ? {
-          parameters: definition.parameters.map((parameter) => ({
-            name: parameter.name,
-            type: parameter.type,
-            default: jsonParameterValue(parameter.default),
-            ...(parameter.minimum === undefined ? {} : { minimum: parameter.minimum }),
-            ...(parameter.maximum === undefined ? {} : { maximum: parameter.maximum }),
-            ...(parameter.values === undefined ? {} : { values: parameter.values }),
-            ...(parameter.kind === undefined ? {} : { kind: parameter.kind }),
-            ...(parameter.apply === undefined ? {} : { apply: parameter.apply }),
-          })),
+          parameters: projectPackParameters(definition.parameters),
         }
       : {}),
   };
-}
-
-function jsonParameterValue(value: PackParameterValue): unknown {
-  return value instanceof Uint8Array ? AssetGuidCodec.format(value) : value;
 }
 
 function validateRuntimePackOutputs(
@@ -911,7 +897,7 @@ function validatePackRuntime(
   if (
     !isRecord(candidate) ||
     Object.keys(candidate).some(
-      (key) => !['dependencies', 'execution', 'outputs', 'export', 'fallback'].includes(key),
+      (key) => !['dependencies', 'execution', 'outputs', 'export'].includes(key),
     ) ||
     (candidate.execution !== undefined && candidate.execution !== 'task-worker') ||
     !Array.isArray(candidate.dependencies) ||
@@ -931,11 +917,7 @@ function validatePackRuntime(
     );
   }
   const dependencies = Object.freeze([...candidate.dependencies]);
-  if (
-    candidate.outputs === undefined &&
-    candidate.export === undefined &&
-    candidate.fallback === undefined
-  ) {
+  if (candidate.outputs === undefined && candidate.export === undefined) {
     return ok(
       Object.freeze({
         dependencies,
@@ -945,16 +927,6 @@ function validatePackRuntime(
   }
   const outputs = validateRuntimePackOutputs(candidate.outputs);
   if (!outputs.ok) return outputs;
-  if (candidate.fallback !== undefined && candidate.fallback !== 'build') {
-    return failure(
-      parameterFailure(
-        '$.runtime.fallback',
-        "the literal 'build' or no fallback",
-        candidate.fallback,
-        'opt in to offline cooking for carriers without a Task Worker',
-      ),
-    );
-  }
   if (
     typeof candidate.export !== 'string' ||
     !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(candidate.export) ||
@@ -972,10 +944,9 @@ function validatePackRuntime(
   return ok(
     Object.freeze({
       dependencies,
-      execution: 'task-worker',
+      ...(candidate.execution === undefined ? {} : { execution: candidate.execution }),
       outputs: outputs.value,
       export: candidate.export,
-      ...(candidate.fallback === undefined ? {} : { fallback: candidate.fallback }),
     }),
   );
 }
@@ -1680,6 +1651,8 @@ export interface PackAuthoringOperationResult {
   readonly values?: Readonly<Record<string, unknown>>;
   /** Authored payload of the selected direct Pack output, never the whole source. */
   readonly payload?: Readonly<Record<string, unknown>>;
+  /** Meta declaration selected by a Catalog subject query. */
+  readonly catalogSubject?: Readonly<Record<string, unknown>>;
   readonly effectiveValues?: Readonly<Record<string, unknown>>;
   readonly parentChain?: readonly string[];
   readonly assets?: readonly Readonly<Record<string, unknown>>[];

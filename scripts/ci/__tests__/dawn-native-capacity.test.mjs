@@ -34,8 +34,6 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     'direct-light',
     'feature-depth',
     'gi-1',
-    'gi-3',
-    'gi-5',
     'gi-6',
     'heavy-1',
     'heavy-2',
@@ -64,19 +62,22 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
   for (const id of ['modeling-show', 'surface-pipelines', 'gi-2', 'path-tracer']) {
     const group = DAWN_GATE_GROUPS.find((entry) => entry.id === id);
     assert.equal(group?.nativeProcessSlots, 2);
-    assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).LP_NUM_THREADS, '8');
+    assert.equal(
+      dawnGroupEnvironment(group, uncapped, 2, 2).LP_NUM_THREADS,
+      id === 'gi-2' ? '1' : '8',
+    );
     assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).FORGEAX_SHADER_COMPILE_WORKERS, '7');
   }
 });
 
 test('memory-intensive GI owners keep exclusive admission and bounded workers in CI and Focus', () => {
   const environment = { LP_NUM_THREADS: '8', FORGEAX_SHADER_COMPILE_WORKERS: '7' };
-  for (const id of ['gi-4', 'screen-probe']) {
+  for (const id of ['gi-3', 'gi-4', 'gi-5', 'screen-probe']) {
     const group = DAWN_GATE_GROUPS.find((entry) => entry.id === id);
     assert.equal(group?.nativeProcessSlots, 2);
     for (const concurrency of [1, 2]) {
       const bounded = dawnGroupEnvironment(group, environment, 2, concurrency);
-      assert.equal(bounded.LP_NUM_THREADS, '4');
+      assert.equal(bounded.LP_NUM_THREADS, id === 'gi-5' ? '1' : '4');
       assert.equal(bounded.FORGEAX_SHADER_COMPILE_WORKERS, '1');
       assert.equal(
         dawnGroupEnvironment(group, { LP_NUM_THREADS: '1' }, 2, concurrency).LP_NUM_THREADS,

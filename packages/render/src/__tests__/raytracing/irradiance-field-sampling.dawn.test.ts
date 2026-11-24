@@ -17,6 +17,51 @@ const count = 2 * perLevel;
 const fineValue = 0.2;
 const coarseValue = 1;
 
+async function verifySignedReconstruction(
+  device: GPUDevice,
+  irradiance: GPUBuffer,
+  radiance: Float32Array,
+  receivers: GPUBuffer,
+  sample: () => Promise<Float32Array>,
+): Promise<Record<string, number[]>> {
+  const fine = [-0.2, 0.1, -0.6] as const;
+  const coarse = [0.4, 0.7, 0.1] as const;
+  for (let probe = 0; probe < count; probe++)
+    for (let texel = 0; texel < IRRADIANCE_FIELD_PROBE_STRIDE; texel++)
+      radiance.set(
+        [...(probe < perLevel ? fine : coarse), 1],
+        (probe * IRRADIANCE_FIELD_PROBE_STRIDE + texel) * 4,
+      );
+  device.queue.writeBuffer(irradiance, 0, radiance);
+  const records: Record<string, number[]> = {};
+  for (const cone of [0.1, 0.4, 0.75, 1.1]) {
+    device.queue.writeBuffer(
+      receivers,
+      0,
+      new Float32Array(positions.flatMap((z) => [0, 0, z, cone])),
+    );
+    const actual = await sample();
+    records[String(cone)] = Array.from(actual);
+    for (const [receiver, z] of positions.entries()) {
+      const edge = Math.min(z + 1.5, 1.5 - z, 1.5);
+      const alpha = edge > 0 ? edge / 2 : 0;
+      for (const offset of [receiver * 8, receiver * 8 + 4]) {
+        for (const channel of [0, 1, 2] as const) {
+          // Clamp only the completed linear reconstruction. Clamping each
+          // negative fine corner first would incorrectly brighten this blend.
+          const expected = Math.max(fine[channel] * alpha + coarse[channel] * (1 - alpha), 0);
+          expect(
+            actual[offset + channel],
+            `signed blend ${cone}/${receiver}/${channel}`,
+          ).toBeCloseTo(expected, 5);
+        }
+        expect(actual[offset + 3], 'supported black remains supported').toBe(1);
+      }
+    }
+  }
+  return records;
+}
+
 it('keeps same-field clipmap endpoints convex and excludes unpublished probe histories', async () => {
   const source = `
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, sampleRadianceCacheAt}
@@ -54,6 +99,7 @@ it('keeps same-field clipmap endpoints convex and excludes unpublished probe his
     relocatedOpenSpace?: number[];
     angularSupport?: Record<string, number[]>;
     pendingWorld?: Record<number, number[]>;
+    signedReconstruction?: Record<string, number[]>;
   } = { status: 'running', rejected: {} };
   const owned: GPUBuffer[] = [];
   const buffer = (bytes: Uint8Array, usage: GPUBufferUsageFlags) => {
@@ -197,7 +243,8 @@ it('keeps same-field clipmap endpoints convex and excludes unpublished probe his
       ),
     );
     stateData.fill(0);
-    // 0x3600 is exactly 0.375 in f16, matching the production meta packing.
+    // 0x3600 is exactly 0.375 spacings in f16. Here spacing=1, so the
+    // normalized production meta also represents a world offset of 0.375.
     const corner = (1 * 4 + 1) * 4 + 1;
     stateData.set([1, IrradianceFieldProbeState.active, 0x36003600, 0x3600], corner * 4);
     // A nearby dark probe keeps normalization well-conditioned: a tiny
@@ -337,6 +384,13 @@ it('keeps same-field clipmap endpoints convex and excludes unpublished probe his
         for (let entry = 0; entry < positions.length * 2; entry++)
           expect(values[entry * 4 + 3]).toBe(1);
     }
+    result.signedReconstruction = await verifySignedReconstruction(
+      device,
+      irradiance,
+      radiance,
+      receivers,
+      sample,
+    );
     expect(errors).toEqual([]);
     result.status = 'pass';
   } catch (cause) {

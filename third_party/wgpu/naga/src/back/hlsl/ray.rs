@@ -335,6 +335,7 @@ impl<W: Write> super::Writer<'_, W> {
         writeln!(self.out, ";")?;
 
         if self.options.ray_query_initialization_tracking {
+            writeln!(self.out, "{level}{rq_tracker} = 0;")?;
             // Validate ray extents https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#ray-extents
 
             // just for convenience
@@ -431,7 +432,7 @@ impl<W: Write> super::Writer<'_, W> {
             level = level.next();
             writeln!(
                 self.out,
-                "{level}{rq_tracker} = {rq_tracker} | {};",
+                "{level}{rq_tracker} = {};",
                 crate::back::RayQueryPoint::INITIALIZED.bits()
             )?;
         }

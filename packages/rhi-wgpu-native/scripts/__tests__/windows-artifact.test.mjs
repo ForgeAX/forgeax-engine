@@ -41,6 +41,8 @@ test('PE admission reads normal and delayed imports and rejects workstation-only
   assert.deepEqual(inspectWindowsBinary(binary(['COMCTL32.dll'])), ['comctl32.dll']);
   assert.deepEqual(inspectWindowsBinary(binary(['OPENGL32.dll'])), ['opengl32.dll']);
   assert.deepEqual(inspectWindowsBinary(binary(['UxTheme.dll'])), ['uxtheme.dll']);
+  assert.deepEqual(inspectWindowsBinary(binary([], ['UXTHEME.DLL'])), ['uxtheme.dll']);
+  assert.throws(() => inspectWindowsBinary(binary(['uxtheme-private.dll'])), /unbundled-imports:uxtheme-private.dll/);
   assert.throws(() => inspectWindowsBinary(binary(['dxcompiler.dll'])), /unbundled-imports:dxcompiler.dll/);
   assert.throws(() => inspectWindowsBinary(binary([], ['vcruntime140.dll'])), /unbundled-imports:vcruntime140.dll/);
 });

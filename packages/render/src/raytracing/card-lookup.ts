@@ -6,15 +6,16 @@ import type {
   ShaderModule,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { CARD_OWNER_LOOKUP_WGSL, rebuildCardOwnerIndex } from './card-owner-index';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 import { type SdfQuery, SdfQueryStatus } from './sdf-query';
 import {
   CARD_TEXTURES,
-  packCardProjection,
   type SurfaceCapture,
   type SurfaceCaptureSource,
   type SurfaceCardSource,
   surfaceCardKey,
+  writeCardLookupProjection,
 } from './surface-cards';
 export const CardLookupStatus = { notSurface: 0, mapped: 1, unmapped: 2, stale: 3 } as const;
 export const CARD_LOOKUP_STRIDE = 112;
@@ -27,11 +28,15 @@ fn decodeCardNormal(p: vec2f) -> vec3f {
 }
 struct Card { origin: vec4f, u: vec4f, v: vec4f, n: vec4f, ids: vec4u }
 struct Lookup { state: vec4u, albedoRoughness: vec4f, normalDepth: vec4f, emissionMetallic: vec4f, f0: vec4f, texels: vec4u, weights: vec4f }
+${CARD_OWNER_LOOKUP_WGSL}
 fn lookupCardPoint(position: vec3f, hitNormal: vec3f, instanceId: u32, projectionMargin: f32, queryStatus: u32, cardCount: u32, resolution: u32) -> Lookup {
  var out=Lookup(vec4u(${CardLookupStatus.unmapped}u,queryStatus,0xffffffffu,instanceId),vec4f(0),vec4f(0),vec4f(0),vec4f(0),vec4u(0xffffffffu),vec4f(0));
  var best=-1.0;
- for(var i=0u;i<cardCount;i++){
-  let card=cards[i];if(card.ids.x!=instanceId){continue;}
+ let count=min(cardCount,arrayLength(&cards));
+ var cursor=firstOwnerCard(instanceId,count);var previous=0u;
+ while(cursor!=0u){
+  let i=cursor-1u;if(i>=count||cursor<=previous){break;}previous=cursor;
+  let card=cards[i];cursor=card.ids.w;if(card.ids.x!=instanceId){break;}
   if(card.ids.y!=1u){out.state.x=${CardLookupStatus.stale}u;continue;}
   let alignment=dot(hitNormal,card.n.xyz);if(alignment<0.5){continue;}
   let rel=position-card.origin.xyz;let uv=vec2f(dot(rel,card.u.xyz)/card.u.w,dot(rel,card.v.xyz)/card.v.w);
@@ -109,28 +114,43 @@ export function packCardLookupProjections(
   sources: readonly { readonly instanceId: number; readonly key: string }[],
   expected: readonly (SurfaceCardSource | Pick<SurfaceCaptureSource, 'instance' | 'captureKey'>)[],
 ): { readonly bytes: Uint8Array; readonly count: number } {
-  const projectionBytes = new Uint8Array(
-      Math.max(
-        1,
-        cache.entries.reduce((n, e) => n + e.projections.length, 0),
-      ) * 80,
-    ),
-    view = new DataView(projectionBytes.buffer);
-  let count = 0;
+  const count = cache.allocatedTiles;
+  if (!Number.isSafeInteger(count) || count < 0)
+    throw new Error('Card lookup requires an admitted physical atlas window');
+  const projectionBytes = new Uint8Array(Math.max(1, count) * 80);
+  const view = new DataView(projectionBytes.buffer);
+  for (let offset = 64; offset < projectionBytes.byteLength; offset += 80)
+    view.setUint32(offset, 0xffffffff, true);
+  const expectedById = new Map<number, (typeof expected)[number]>();
+  for (const source of expected)
+    if (!expectedById.has(source.instance.instanceId))
+      expectedById.set(source.instance.instanceId, source);
+  const sourcesById = new Map<number, (typeof sources)[number]>();
+  for (const source of sources)
+    if (!sourcesById.has(source.instanceId)) sourcesById.set(source.instanceId, source);
   for (const entry of cache.entries) {
-    const source = expected.find((s) => s.instance.instanceId === entry.instanceId);
-    const current = sources.find((s) => s.instanceId === entry.instanceId);
+    if (
+      !Number.isSafeInteger(entry.firstTile) ||
+      entry.firstTile < 0 ||
+      entry.firstTile + entry.projections.length > count
+    )
+      throw new Error('Card lookup projection lies outside its physical atlas window');
+    const source = expectedById.get(entry.instanceId);
+    const current = sourcesById.get(entry.instanceId);
     const valid =
       source !== undefined &&
       current?.key === entry.geometryKey &&
       ('captureKey' in source ? source.captureKey : surfaceCardKey(source)) === entry.captureKey;
-    for (const p of entry.projections) {
-      projectionBytes.set(packCardProjection(p), count * 80);
-      view.setUint32(count * 80 + 64, entry.instanceId, true);
-      view.setUint32(count * 80 + 68, valid ? 1 : 0, true);
-      count++;
-    }
+    for (const [index, projection] of entry.projections.entries())
+      writeCardLookupProjection(
+        projectionBytes,
+        entry.firstTile + index,
+        projection,
+        entry.instanceId,
+        valid ? 1 : 0,
+      );
   }
+  rebuildCardOwnerIndex(projectionBytes, count);
   return { bytes: projectionBytes, count };
 }
 

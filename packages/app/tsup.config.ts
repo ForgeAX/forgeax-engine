@@ -3,6 +3,7 @@ import { baseTsupConfig } from '../../config/tsup.base';
 
 export default defineConfig({
   ...baseTsupConfig,
+  loader: { '.svg': 'text' },
   // Root workspace tools and browser construction share private frame state
   // and error classes. Separate entry bundles would duplicate those owners.
   splitting: true,

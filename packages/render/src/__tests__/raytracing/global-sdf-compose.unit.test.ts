@@ -12,7 +12,7 @@ it('borrows exact composition ranges without creating, writing, submitting or re
     await createShaderModule(device, { code: globalSdf.GLOBAL_SDF_COMPOSE_WGSL })
   ).unwrap();
   const input = Object.fromEntries(
-    Object.entries({ instances: 288, fields: 256, bounds: 96, settings: 48, voxels: 65 * 16 }).map(
+    Object.entries({ instances: 288, fields: 256, bounds: 192, settings: 64, voxels: 65 * 16 }).map(
       ([name, size]) => [
         name,
         {
@@ -53,7 +53,7 @@ it('borrows exact composition ranges without creating, writing, submitting or re
     ).toBe(false);
   }
   expect(
-    recorder.record(pass, { ...input, instances: { ...input.instances, size: 144 } }, 65).ok,
+    recorder.record(pass, { ...input, instances: { ...input.instances, size: 143 } }, 65).ok,
   ).toBe(false);
   expect(
     recorder.record(
@@ -113,7 +113,7 @@ it('rejects unavailable composition limits and preserves the backend binding fai
     { maxBindingsPerBindGroup: 4 },
     { maxStorageBuffersPerShaderStage: 3 },
     { maxUniformBuffersPerShaderStage: 0 },
-    { maxUniformBufferBindingSize: 47 },
+    { maxUniformBufferBindingSize: 63 },
     { maxComputeWorkgroupSizeX: 63 },
     { maxComputeInvocationsPerWorkgroup: 63 },
   ])
@@ -122,7 +122,7 @@ it('rejects unavailable composition limits and preserves the backend binding fai
       error: { code: 'limit-exceeded' },
     });
   const input = Object.fromEntries(
-    Object.entries({ instances: 144, fields: 4, bounds: 48, settings: 48, voxels: 65 * 16 }).map(
+    Object.entries({ instances: 144, fields: 4, bounds: 144, settings: 64, voxels: 65 * 16 }).map(
       ([name, size]) => [
         name,
         { buffer: device.createBuffer({ size, usage: 0xcc }).unwrap(), size },

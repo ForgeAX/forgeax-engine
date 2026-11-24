@@ -40,11 +40,10 @@ interface SsrTracePlan {
   readonly refineSteps: number;
 }
 
-interface WaterSsrTracePlan {
+interface WaterSsrTracePlan extends SsrTracePlan {
   readonly resolution: 'full';
-  readonly algorithm: 'furthest-hzb-screen-ray';
-  readonly groupSize: 4;
-  readonly refinement: 'adjacent-depth-difference';
+  readonly algorithm: 'closest-hzb-surface-ray';
+  readonly refinement: 'surface-plane';
   readonly profile: typeof WATER_SSR_DEFAULT_PROFILE;
 }
 
@@ -76,7 +75,7 @@ export interface SsrSpatialGraphInputs extends SsrGBufferInput {
   readonly width: number;
   readonly height: number;
   readonly depth?: GraphTextureView;
-  /** Opaque tracing reads closest depth; the independent Water profile reads furthest depth. */
+  /** Hit traversal reads closest depth independently of the receiver profile. */
   readonly depthPyramid?: DepthPyramid;
   readonly normal?: GraphTextureView;
   /** Current-view radiance paired with depth; prior radiance belongs to the temporal resolve. */
@@ -163,19 +162,6 @@ function requiredSsrInputs(input: SsrSpatialGraphInputs) {
   const { depth, normal, scene, fallback, currentTemporal, depthPyramid, origin } = input;
   if (scene === undefined) return missingInput('scene');
   if (depthPyramid === undefined) return missingInput('depthPyramid');
-  if (origin !== undefined) {
-    const color = origin.sceneColorHistory;
-    if (color === undefined)
-      return ok({ scene, depthPyramid, opaque: undefined, waterHistory: undefined });
-    if (depth === undefined) return missingInput('depth');
-    if (currentTemporal === undefined) return missingInput('currentTemporal');
-    return ok({
-      scene,
-      depthPyramid,
-      opaque: undefined,
-      waterHistory: { color, depth, currentTemporal },
-    });
-  }
   if (depth === undefined) return missingInput('depth');
   if (normal === undefined) return missingInput('normal');
   if (fallback === undefined) return missingInput('fallback');
@@ -184,7 +170,10 @@ function requiredSsrInputs(input: SsrSpatialGraphInputs) {
     scene,
     depthPyramid,
     opaque: { depth, normal, fallback, currentTemporal },
-    waterHistory: undefined,
+    waterHistory:
+      origin?.sceneColorHistory === undefined
+        ? undefined
+        : { color: origin.sceneColorHistory, depth, currentTemporal },
   });
 }
 
@@ -248,21 +237,18 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   const label = input.label ?? 'ssr';
   const origin = input.origin;
   const compactMaterial = input.compactMaterial;
-  if (compactMaterial !== undefined && (origin !== undefined || input.gbufferV2 !== true))
-    return missingInput('Default GBuffer B with an opaque receiver');
-  const gbuffer = origin === undefined ? input : undefined;
-  if (depthPyramid.reduction !== (origin === undefined ? 'closest' : 'furthest'))
-    return missingInput(
-      origin === undefined ? 'closest depthPyramid' : 'furthest depthPyramid',
-      depthPyramid.reduction,
-    );
+  if (compactMaterial !== undefined && input.gbufferV2 !== true)
+    return missingInput('Default GBuffer B with its matching normal layout');
+  const gbuffer = input;
+  if (depthPyramid.reduction !== 'closest')
+    return missingInput('closest depthPyramid', depthPyramid.reduction);
 
   const resources = createTraceResources(graph, input, label);
   if (!resources.ok) return resources;
   const { trace, hitReactivity } = resources.value;
   const passNames: string[] = [];
   if (input.execution === 'fragment') {
-    if (opaque === undefined) return missingInput('compute execution for Water SSR');
+    if (origin !== undefined) return missingInput('compute execution for Water SSR');
     const added = addSsrFragmentStages(
       graph,
       { ...input, ...opaque, scene, depthPyramid },
@@ -302,11 +288,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       { binding: 11, view: origin.coverage, sampleType: 'unfilterable-float' },
     );
   if (waterHistory !== undefined)
-    traceTextures.push(
-      { binding: 0, view: waterHistory.depth, sampleType: 'depth' },
-      { binding: 7, view: waterHistory.currentTemporal, sampleType: 'unfilterable-float' },
-      { binding: 13, view: waterHistory.color, sampleType: 'unfilterable-float' },
-    );
+    traceTextures.push({ binding: 13, view: waterHistory.color, sampleType: 'unfilterable-float' });
   const createSsrComputeEntries = () => {
     const computeEntries = {
       trace: [
@@ -448,10 +430,10 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       origin === undefined
         ? buildSsrTracePlan(input.quality)
         : {
+            ...buildSsrTracePlan(input.quality),
             resolution: 'full',
-            algorithm: 'furthest-hzb-screen-ray',
-            groupSize: 4,
-            refinement: 'adjacent-depth-difference',
+            algorithm: 'closest-hzb-surface-ray',
+            refinement: 'surface-plane',
             profile: WATER_SSR_DEFAULT_PROFILE,
           },
     reactivity: hitReactivity,

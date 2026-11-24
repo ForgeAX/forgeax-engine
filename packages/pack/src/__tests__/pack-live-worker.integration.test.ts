@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { definePackageId, resolvePackParameterValues } from '../pack-authoring';
+import {
+  type AnyScriptablePackDefinition,
+  definePackageId,
+  resolvePackParameterValues,
+} from '../pack-authoring';
 import { executePackBuild } from '../pack-parameter-bindings';
 import {
   createScriptablePackModuleExecutorPool,
@@ -12,6 +16,10 @@ import {
 import { installPackProjectDependencies } from './support/pack-project-dependencies.js';
 
 const directories: string[] = [];
+function parameterValues(definition: AnyScriptablePackDefinition, overrides: unknown = {}) {
+  if (!('parameters' in definition)) throw new Error('the fixture declares Pack parameters');
+  return resolvePackParameterValues(definition, overrides).unwrap();
+}
 afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
@@ -182,7 +190,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
     ]);
     const built = await executePackBuild(definition, {
       packageId: definition.packageId,
-      values: resolvePackParameterValues(definition, {}).unwrap(),
+      values: parameterValues(definition),
       readByGuid: vi.fn(),
     });
     expect(built.unwrap()['scene/main']).toMatchObject({
@@ -211,7 +219,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
     expect(definition.sceneComponents?.map((component) => component.name)).toEqual(['Atmosphere']);
     const built = await executePackBuild(definition, {
       packageId: definition.packageId,
-      values: resolvePackParameterValues(definition, {}).unwrap(),
+      values: parameterValues(definition),
       readByGuid: vi.fn(),
     });
     expect(built.unwrap()['scene/main']).toMatchObject({
@@ -287,7 +295,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
     ).unwrap();
     const built = await executePackBuild(definition, {
       packageId: definition.packageId,
-      values: resolvePackParameterValues(definition, {}).unwrap(),
+      values: parameterValues(definition),
       readByGuid: vi.fn(),
     });
     expect(built.unwrap()['scene/main']).toMatchObject({
@@ -306,7 +314,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
     const definition = (await loadScriptablePack(path)).unwrap();
     const result = await executePackBuild(definition, {
       packageId: definition.packageId,
-      values: resolvePackParameterValues(definition, {}).unwrap(),
+      values: parameterValues(definition),
       readByGuid: vi.fn(),
     });
     expect(result.unwrap()['scene/showcase']).toMatchObject({
@@ -340,7 +348,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
         const definition = (
           await loadScriptablePack(path, { executor: await pool.acquire() })
         ).unwrap();
-        const values = resolvePackParameterValues(definition, { color }).unwrap();
+        const values = parameterValues(definition, { color });
         const result = await executePackBuild(definition, {
           packageId: definition.packageId,
           values,
@@ -365,7 +373,7 @@ describe('live Pack generation isolation in the actual Worker', () => {
       ),
     );
     const definition = (await loadScriptablePack(path)).unwrap();
-    const values = resolvePackParameterValues(definition, { color: [0.2, 0.3, 0.4] }).unwrap();
+    const values = parameterValues(definition, { color: [0.2, 0.3, 0.4] });
     const result = await executePackBuild(definition, {
       packageId: definePackageId('01900000-0000-7000-8000-000000000077'),
       values,

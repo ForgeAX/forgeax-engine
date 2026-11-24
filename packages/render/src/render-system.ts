@@ -125,6 +125,7 @@ import { registerTemporalStageSystems } from './world/temporal-systems';
 import { recoverViewTransmission, registerTransmissionSystem } from './world/transmission-systems';
 import { type ViewDrawReceipt, viewDrawReceipt } from './world/view-draw-receipt';
 import { registerViewFrameSystem } from './world/view-frame-systems';
+import type { ViewRecorderState } from './world/view-output-systems';
 import { viewPointsLines } from './world/view-points-lines';
 import {
   ownerOf,
@@ -223,6 +224,21 @@ export interface RendererState {
 
 export function createRendererState(internals: RenderSystemInternals): RendererState {
   return createRenderOwner(internals, 'renderer');
+}
+
+/** Shared rows follow the live view owners, not one view's last Field choice. */
+function visibleSurfaceDemand(internals: RenderSystemInternals): boolean {
+  if (internals.standardProfile?.visibleSurface === true) return true;
+  const world = renderWorldFor(internals);
+  const views = world.query({ read: [ViewRecorder] });
+  if (!views.ok) return false;
+  for (const row of views.value) {
+    const state = world.get(row.entity, ViewRecorder);
+    if (!state.ok) continue;
+    const view = world.resolveUniqueRef<ViewRecorderState>(state.value.state).unwrap();
+    if (!view.retired && view.owner.internals.standardProfile?.visibleSurface === true) return true;
+  }
+  return false;
 }
 
 /** Capture admission includes the exact live graph pass identities of every view. */
@@ -514,7 +530,7 @@ function createRenderOwner(
     registerLightSystems(renderWorldFor(internals));
     registerShadowCasterSystem(renderWorldFor(internals));
     registerVisibleSurfaceSystem(renderWorldFor(internals), {
-      enabled: () => internals.standardProfile?.visibleSurface === true,
+      enabled: () => visibleSurfaceDemand(internals),
       retained: () => sceneComposition.compositionRetainedScene(),
       maxRecords: () =>
         Math.min(1048576, Math.floor(internals.device.limits.maxStorageBufferBindingSize / 64)),
@@ -543,7 +559,10 @@ function createRenderOwner(
   Object.assign(internals, { preparedMaterialTexture: terrainLayers.texture.bind(terrainLayers) });
   const persistentRenderScene = new PersistentRenderScene(
     {
-      getTemporalConsumerDemand: () => internals.standardProfile?.visibleSurface === true,
+      getTemporalConsumerDemand: () =>
+        ownsSceneComposition
+          ? visibleSurfaceDemand(internals)
+          : internals.standardProfile?.visibleSurface === true,
       // Each view adopts its own GI dependencies once per shared change, even when held.
       onViewAssetChange: (scope, change) => {
         frameState.irradianceField?.adoptAsset(scope, change);

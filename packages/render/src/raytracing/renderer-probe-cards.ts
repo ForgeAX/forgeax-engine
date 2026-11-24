@@ -12,6 +12,7 @@ import type { MaterialFrame } from '../scene/material-dispatch';
 import { recordContext } from '../world/view-record-context';
 import { CardCaptureScheduler } from './card-capture-schedule';
 import { packCardLookupProjections } from './card-lookup';
+import { CardReceiverGeometry } from './card-receiver';
 import { type CardResidencyFocus, cardResidencyScore, rankCardResidency } from './card-residency';
 import { fieldLocalBounds, worldBounds } from './field-edit';
 import {
@@ -45,16 +46,21 @@ export interface ProbeCardCapture {
   readonly device: RhiDevice;
   readonly capture: SurfaceCapture;
   acceptMaterials(frame: MaterialFrame): void;
-  readonly projections: { readonly buffer: Buffer; readonly size: number };
+  /** One retained producer image, exactly the GPU capacity * 80 bytes. */
+  readonly projections: {
+    readonly buffer: Buffer;
+    readonly size: number;
+    readonly bytes: Uint8Array;
+  };
   readonly settings: { readonly buffer: Buffer; readonly size: number };
   readonly textures: readonly TexturePreparation[];
   readonly textureRevision: number;
   readonly lookup: Extract<
-    ReturnType<typeof createGlobalSdfCardLookupRecorder>,
+    Awaited<ReturnType<typeof createGlobalSdfCardLookupRecorder>>,
     { ok: true }
   >['value']['record'];
   readonly support: Extract<
-    ReturnType<typeof createProbeCardSupportRecorder>,
+    Awaited<ReturnType<typeof createProbeCardSupportRecorder>>,
     { ok: true }
   >['value']['record'];
   /**
@@ -224,12 +230,13 @@ export async function prepareProbeCards(
       colors: Float32Array | undefined;
       uvSets: Float32Array[];
       attributeKeys: unknown[];
+      receiverGeometry: CardReceiverGeometry | undefined;
     }
   >();
   const meshGeometry = (source: SceneFieldSource) => {
     const { mesh } = source;
     const cached = geometries.get(mesh);
-    if (cached !== undefined && cached.field === source.field) return cached;
+    if (cached !== undefined && cached.field === source.fieldSnapshot) return cached;
     const geometry = meshDistanceFieldSource(mesh, {
       sectionSidedness: source.field.sectionSidedness,
     }).unwrap();
@@ -262,10 +269,13 @@ export async function prepareProbeCards(
             bytesToHex(sha256(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))),
           ],
     );
+    const positions = geometry.positions.slice(),
+      indices = geometry.indices.slice();
     const value = {
-      field: source.field,
-      positions: geometry.positions.slice(),
-      indices: geometry.indices.slice(),
+      field: source.fieldSnapshot,
+      positions,
+      indices,
+      receiverGeometry: CardReceiverGeometry.from(source.fieldSnapshot, positions, indices),
       normals,
       tangents,
       colors,
@@ -394,6 +404,9 @@ export async function prepareProbeCards(
       instance: cardInstance,
       layout: mesh.cardLayout,
       sections: sections.sectionInputs,
+      ...(geometry.receiverGeometry === undefined
+        ? {}
+        : { receiverGeometry: geometry.receiverGeometry }),
       captureKey: JSON.stringify([
         rayGeometryKey(cardInstance, mesh.cardLayout.meshDigest),
         mesh.cardLayout,
@@ -476,23 +489,33 @@ export async function prepareProbeCards(
       device.queue.writeBuffer(value, 0, data).unwrap();
       return { buffer: value, size: data.byteLength };
     };
-    const cards = buffer('probe-global.card-projections', projections.bytes);
+    const cards = {
+      ...buffer('probe-global.card-projections', projections.bytes),
+      bytes: projections.bytes,
+    };
     const settings = buffer(
       'probe-global.card-settings',
       new Uint8Array(new Uint32Array([projections.count, capture.resolution, 0, 0]).buffer),
       true,
     );
-    const lookup = createGlobalSdfCardLookupRecorder(
-      device,
-      (
-        await compile(device, { code: GLOBAL_SDF_CARD_LOOKUP_WGSL, label: 'probe-global.cards' })
-      ).unwrap(),
+    const lookup = (
+      await createGlobalSdfCardLookupRecorder(
+        device,
+        (
+          await compile(device, { code: GLOBAL_SDF_CARD_LOOKUP_WGSL, label: 'probe-global.cards' })
+        ).unwrap(),
+      )
     ).unwrap();
-    const support = createProbeCardSupportRecorder(
-      device,
-      (
-        await compile(device, { code: PROBE_CARD_SUPPORT_WGSL, label: 'probe-global.card-support' })
-      ).unwrap(),
+    const support = (
+      await createProbeCardSupportRecorder(
+        device,
+        (
+          await compile(device, {
+            code: PROBE_CARD_SUPPORT_WGSL,
+            label: 'probe-global.card-support',
+          })
+        ).unwrap(),
+      )
     ).unwrap();
     return {
       device,

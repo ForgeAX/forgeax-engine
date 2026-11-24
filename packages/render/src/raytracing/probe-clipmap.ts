@@ -1,5 +1,9 @@
 import type { FieldEditBounds } from './field-edit';
 import type { IrradianceFieldPlan } from './irradiance-field-plan';
+import { splitProbeBudget } from './probe-budget';
+import { PROBE_ENTRY_FAST, PROBE_ENTRY_FRESH } from './probe-entry';
+
+export { PROBE_ENTRY_FAST, PROBE_ENTRY_FRESH, PROBE_ENTRY_INDEX } from './probe-entry';
 
 /** Integer lattice cell of one clipmap level, relative to the plan origin. */
 export type ProbeCell = readonly [number, number, number];
@@ -11,12 +15,11 @@ interface ProbeBox {
   readonly max: ProbeCell;
 }
 
-/** Probe-list entry flags: the low 30 bits are the probe storage index. */
-export const PROBE_ENTRY_FRESH = 0x8000_0000;
-export const PROBE_ENTRY_FAST = 0x4000_0000;
-export const PROBE_ENTRY_INDEX = 0x3fff_ffff;
 /** Edited probes sweep this many times at fast hysteresis once Cards relit. */
 export const PROBE_EDIT_SWEEPS = 3;
+
+/** Reserve one ordinary probe every four committed frames during repeated edits. */
+const REPEATED_EDIT_ROTATION_PERIOD = 4;
 
 export type ProbeClipmapPlan = Pick<
   IrradianceFieldPlan,
@@ -82,6 +85,27 @@ const intersect = (a: Pick<ProbeBox, 'min' | 'max'>, b: Pick<ProbeBox, 'min' | '
   return boxCount({ min, max }) > 0 ? { min, max } : { min, max: min };
 };
 
+/** Count the retained tasks before an old x-fastest traversal cursor. Clipping
+ * changes task ordinals, not which world cells already received this sweep. */
+function clippedPrefixCount(box: ProbeBox, clipped: ProbeBox, prefix: number): number {
+  if (prefix >= boxCount(box)) return boxCount(clipped);
+  const dx = box.max[0] - box.min[0];
+  const dy = box.max[1] - box.min[1];
+  const z = box.min[2] + Math.floor(prefix / (dx * dy));
+  const y = box.min[1] + Math.floor((prefix % (dx * dy)) / dx);
+  const x = box.min[0] + (prefix % dx);
+  const before = (axis: 0 | 1 | 2, coordinate: number) =>
+    Math.max(0, Math.min(clipped.max[axis], coordinate) - clipped.min[axis]);
+  const width = clipped.max[0] - clipped.min[0];
+  const height = clipped.max[1] - clipped.min[1];
+  let count = before(2, z) * width * height;
+  if (z >= clipped.min[2] && z < clipped.max[2]) {
+    count += before(1, y) * width;
+    if (y >= clipped.min[1] && y < clipped.max[1]) count += before(0, x);
+  }
+  return count;
+}
+
 /**
  * Newly exposed cells of `window` outside the still-valid box `valid` (inside
  * `window`), as at most two slabs per axis in x, y, z order. Each slab spans the
@@ -121,11 +145,29 @@ export function exposedSlabs(
   return out;
 }
 
+/** Append only cells the existing same-level edit boxes do not own. */
+function appendEditBox(boxes: ProbeBox[], box: ProbeBox): void {
+  let uncovered = [box];
+  for (const covered of boxes) {
+    if (covered.level !== box.level) continue;
+    const remaining: ProbeBox[] = [];
+    for (const piece of uncovered) {
+      const overlap = intersect(covered, piece);
+      if (boxCount(overlap) === 0) remaining.push(piece);
+      else remaining.push(...exposedSlabs(piece.level, overlap, piece));
+    }
+    if (remaining.length === 0) return;
+    uncovered = remaining;
+  }
+  boxes.push(...uncovered);
+}
+
 interface EditSweep {
   boxes: ProbeBox[];
   cursor: number;
-  sweeps: number;
+  end: number;
   count: number;
+  rotationPhase: number | undefined;
 }
 
 interface Level {
@@ -173,6 +215,7 @@ export class ProbeClipmapScheduler {
   #edit: EditSweep | undefined;
   #cached: ProbeFrameSchedule | undefined;
   #limit: number;
+  #tinyLevel = 0;
   #exposed = 0;
   readonly #scrolls: number[];
 
@@ -226,21 +269,34 @@ export class ProbeClipmapScheduler {
   }
 
   #clipEdit(edit: EditSweep): EditSweep | undefined {
-    const boxes = edit.boxes
-      .map((box) => {
-        const level = this.#levels[box.level];
-        return level === undefined
-          ? undefined
-          : {
-              level: box.level,
-              ...intersect(box, { min: level.window, max: this.#max(level.window) }),
-            };
-      })
-      .filter((box): box is ProbeBox => box !== undefined && boxCount(box) > 0);
+    const boxes: ProbeBox[] = [];
+    let startPrefix = edit.cursor % edit.count;
+    let endPrefix = edit.end % edit.count;
+    let retainedStart = 0;
+    let retainedEnd = 0;
+    for (const box of edit.boxes) {
+      const level = this.#levels[box.level];
+      if (level !== undefined) {
+        const clipped = {
+          level: box.level,
+          ...intersect(box, { min: level.window, max: this.#max(level.window) }),
+        };
+        if (boxCount(clipped) > 0) {
+          boxes.push(clipped);
+          retainedStart += clippedPrefixCount(box, clipped, startPrefix);
+          retainedEnd += clippedPrefixCount(box, clipped, endPrefix);
+        }
+      }
+      const size = boxCount(box);
+      startPrefix = Math.max(0, startPrefix - size);
+      endPrefix = Math.max(0, endPrefix - size);
+    }
     const count = boxes.reduce((n, box) => n + boxCount(box), 0);
-    return count === 0
-      ? undefined
-      : { boxes, cursor: Math.min(edit.cursor, count * edit.sweeps), sweeps: edit.sweeps, count };
+    const cursor = Math.floor(edit.cursor / edit.count) * count + retainedStart;
+    const end = Math.floor(edit.end / edit.count) * count + retainedEnd;
+    return cursor < end
+      ? { boxes, cursor, end, count, rotationPhase: edit.rotationPhase }
+      : undefined;
   }
 
   /** World boxes whose probes must re-integrate once their Cards relit. */
@@ -253,11 +309,23 @@ export class ProbeClipmapScheduler {
     if (this.#pendingEdit.length === 0) return;
     const boxes = this.editBoxes(this.#pendingEdit);
     this.#pendingEdit = [];
-    const previous = this.#edit?.boxes ?? [];
-    const merged = [...previous, ...boxes];
+    if (boxes.length === 0) return;
+    const previous = this.#edit;
+    const merged = previous === undefined ? boxes : [...previous.boxes];
+    if (previous !== undefined) {
+      for (const box of boxes) appendEditBox(merged, box);
+    }
     const count = merged.reduce((n, box) => n + boxCount(box), 0);
-    this.#edit =
-      count === 0 ? undefined : { boxes: merged, cursor: 0, sweeps: PROBE_EDIT_SWEEPS, count };
+    // New boxes append after the existing disjoint boxes. An accepted edit
+    // starts a full set of sweeps without moving the next cell to the front.
+    const cursor = previous === undefined ? 0 : previous.cursor % previous.count;
+    this.#edit = {
+      boxes: merged,
+      cursor,
+      end: cursor + count * PROBE_EDIT_SWEEPS,
+      count,
+      rotationPhase: previous === undefined ? undefined : (previous.rotationPhase ?? 0),
+    };
     this.#cached = undefined;
   }
 
@@ -278,7 +346,7 @@ export class ProbeClipmapScheduler {
           },
           window,
         );
-        if (boxCount(clipped) > 0) out.push({ level: index, ...clipped });
+        if (boxCount(clipped) > 0) appendEditBox(out, { level: index, ...clipped });
       }
     }
     return out;
@@ -294,8 +362,7 @@ export class ProbeClipmapScheduler {
   pendingPriorityUpdates(): number {
     const pending =
       PROBE_EDIT_SWEEPS * this.editBoxes(this.#pendingEdit).reduce((n, b) => n + boxCount(b), 0);
-    const active =
-      this.#edit === undefined ? 0 : this.#edit.sweeps * this.#edit.count - this.#edit.cursor;
+    const active = this.#edit === undefined ? 0 : this.#edit.end - this.#edit.cursor;
     return pending + active;
   }
 
@@ -364,26 +431,38 @@ export class ProbeClipmapScheduler {
     const edit = this.#edit;
     if (edit !== undefined) {
       // One sweep at most per frame keeps the entries distinct.
-      priority = Math.min(budget - count, edit.count * edit.sweeps - edit.cursor, edit.count);
+      const reserved = edit.rotationPhase === REPEATED_EDIT_ROTATION_PERIOD - 1 ? 1 : 0;
+      priority = Math.min(
+        Math.max(0, budget - count - reserved),
+        edit.end - edit.cursor,
+        edit.count,
+      );
       for (let i = 0; i < priority; i++) {
         const { level, cell } = this.#cellAt(edit.boxes, (edit.cursor + i) % edit.count);
         push(probeIndex(plan, level, cell), PROBE_ENTRY_FAST);
       }
     }
     const rotation = this.#levels.map(() => 0);
-    for (const [index, level] of this.#levels.entries()) {
-      const levelBudget = plan.levelBudgets[index] ?? 0;
-      const share =
-        budget === plan.probeBudget
-          ? levelBudget
-          : Math.max(
-              levelBudget > 0 ? 1 : 0,
-              Math.floor((levelBudget * budget) / plan.probeBudget),
-            );
-      const take = Math.min(budget - count, share);
-      for (let i = 0; i < take; i++)
-        push(index * this.#per + ((level.rotation + i) % this.#per), 0);
-      rotation[index] = take;
+    const tinyBudget = budget < plan.levels;
+    const shares = tinyBudget
+      ? undefined
+      : budget === plan.probeBudget
+        ? plan.levelBudgets
+        : splitProbeBudget(budget, plan.levels, this.#per);
+    for (let offset = 0; offset < this.#levels.length && count < budget; offset++) {
+      // With fewer free slots than levels, using array order can always award
+      // a lone remaining slot to a lower level, even when shares rotate.
+      const index = tinyBudget ? (this.#tinyLevel + offset) % plan.levels : offset;
+      const level = this.#levels[index];
+      if (level === undefined) break;
+      const share = shares === undefined ? 1 : (shares[index] ?? 0);
+      const first = count;
+      let visited = 0;
+      // Fresh/edit entries already satisfy their work. Skip those slots while
+      // filling the remaining unique quota, visiting at most one level cycle.
+      for (; visited < this.#per && count < budget && count - first < share; visited++)
+        push(index * this.#per + ((level.rotation + visited) % this.#per), 0);
+      rotation[index] = visited;
     }
     this.#cached = { list, count, fresh, priority, rotation, slabs };
     return this.#cached;
@@ -393,6 +472,13 @@ export class ProbeClipmapScheduler {
   commit(done: ProbeFrameSchedule): void {
     if (done !== this.#cached) return;
     this.#cached = undefined;
+    if (this.#limit < this.#plan.levels) {
+      const visitedLevels = done.rotation.reduce(
+        (count, visited) => count + Number(visited > 0),
+        0,
+      );
+      this.#tinyLevel = (this.#tinyLevel + visitedLevels) % this.#plan.levels;
+    }
     for (const [index, level] of this.#levels.entries()) {
       level.rotation = (level.rotation + (done.rotation[index] ?? 0)) % this.#per;
       const head = level.slabs[0];
@@ -413,7 +499,10 @@ export class ProbeClipmapScheduler {
     const edit = this.#edit;
     if (edit !== undefined) {
       edit.cursor += done.priority;
-      if (edit.cursor >= edit.count * edit.sweeps) this.#edit = undefined;
+      if (edit.rotationPhase !== undefined) {
+        edit.rotationPhase = (edit.rotationPhase + 1) % REPEATED_EDIT_ROTATION_PERIOD;
+      }
+      if (edit.cursor >= edit.end) this.#edit = undefined;
     }
   }
 

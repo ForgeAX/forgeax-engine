@@ -13,6 +13,7 @@ import {
   derive,
   type MaterialAsset,
   type MaterialTextureValue,
+  type MaterialValue,
   materialValuesToLinearRuntime,
   ok,
   type ParamSchemaEntry,
@@ -29,6 +30,19 @@ import { type RayReferenceError, rayReferenceFailure } from './scene';
 export type ResolveSurfaceTexture = (
   value: MaterialTextureValue,
 ) => Result<{ view: TextureView; sampler: Sampler }, RayReferenceError>;
+/** Resolved assets retain authored defaults separately from explicit value edits. */
+export function referenceSurfaceMaterialValues(
+  asset: MaterialAsset,
+): Readonly<Record<string, MaterialValue | null>> {
+  return {
+    ...Object.fromEntries(
+      (asset.parameters ?? []).flatMap((parameter) =>
+        parameter.default === undefined ? [] : [[parameter.name, parameter.default]],
+      ),
+    ),
+    ...asset.values,
+  };
+}
 /** Offline reference/capture sources lower into the submitted-material binding path. */
 export function createReferenceSurfaceMaterialBindings(
   device: RhiDevice,
@@ -36,13 +50,14 @@ export function createReferenceSurfaceMaterialBindings(
   visibility: number,
   resolveTexture?: ResolveSurfaceTexture,
 ): ReturnType<typeof createSurfaceMaterialBindings> {
+  const values = referenceSurfaceMaterialValues(material.asset);
   return createSurfaceMaterialBindings(
     device,
     material.program.paramSchema,
-    referenceSurfaceMaterialSnapshot(material),
+    referenceSurfaceMaterialSnapshot(material, values),
     visibility,
     (parameter) => {
-      const value = materialTextureValue(material.asset.values?.[parameter]);
+      const value = materialTextureValue(values[parameter]);
       return value && resolveTexture
         ? resolveTexture(value)
         : rayReferenceFailure(`missing texture binding ${parameter}`);
@@ -51,12 +66,15 @@ export function createReferenceSurfaceMaterialBindings(
 }
 
 /** The reference caller crosses the same linear snapshot boundary once. */
-export function referenceSurfaceMaterialSnapshot(material: {
-  readonly program: RaySurfaceProgram;
-  readonly asset: MaterialAsset;
-}): MaterialSnapshot {
+export function referenceSurfaceMaterialSnapshot(
+  material: {
+    readonly program: RaySurfaceProgram;
+    readonly asset: MaterialAsset;
+  },
+  authoredValues = referenceSurfaceMaterialValues(material.asset),
+): MaterialSnapshot {
   const values = materialValuesToLinearRuntime(
-    material.asset.values,
+    authoredValues,
     material.program.paramSchema,
     material.asset.colorSpace,
   );

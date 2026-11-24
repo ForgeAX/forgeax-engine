@@ -31,9 +31,11 @@ export interface RayDiffuseTargets {
   readonly albedo: RenderPipelineTarget;
   readonly f0: RenderPipelineTarget;
   readonly compactGbuffer?: true;
-  /** Visible-surface identity; only the exact gather reads it (`visibleSurface` profiles). */
+  /** Same-frame identity for exact gather and canonical software Screen receivers. */
   readonly identity?: RenderPipelineTarget;
   readonly motion: RenderPipelineTarget;
+  /** Compact velocity carries previous device Z beside the legacy XY word. */
+  readonly motionWithDepth?: RenderPipelineTarget;
   /** The view's shared closest-depth pyramid, created on first request. */
   readonly depthPyramid?: () => Result<GraphTextureView, RenderGraphError>;
   /** Deferred split-sum response and the SSR-replaceable fallback; present when any

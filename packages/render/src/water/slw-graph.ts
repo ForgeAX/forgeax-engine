@@ -19,6 +19,7 @@ import { createRenderPipelineTarget } from '../render-pipeline';
 import type { RendererState } from '../render-system';
 import { addSsrHitColor } from '../ssr/color-mips';
 import { addSsrSpatialPasses } from '../ssr/graph';
+import type { SsrGBufferInput } from '../ssr/shader-layout';
 import { isWaterSsrAdmitted } from '../ssr/water-profile';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
@@ -35,6 +36,10 @@ export interface WaterSlwGraphInputs {
   readonly opaqueRawDepth?: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
   readonly opaqueTemporal?: RenderPipelineTarget;
+  readonly opaqueSurface?: SsrGBufferInput & {
+    readonly normal: RenderPipelineTarget;
+    readonly fallback: RenderPipelineTarget;
+  };
   readonly receiver: StandardForwardReceiverInputs;
   readonly view: GraphBuffer;
   readonly depthPyramid?: DepthPyramid;
@@ -182,7 +187,7 @@ function prepareWaterBackdrops(
     : ok(undefined);
 }
 
-/** Water receiver, opaque Furthest HZB and current scene color have distinct graph edges. */
+/** Water receiver, opaque closest HZB and current scene color have distinct graph edges. */
 export function addWaterSlwPasses(
   input: WaterSlwGraphInputs,
 ): Result<WaterSlwGraphResources, RenderPipelineBuildError> {
@@ -237,8 +242,8 @@ export function addWaterSlwPasses(
   const prepareOpaqueWaterDepthPyramid = () => {
     if (waterSsr !== undefined && depthPyramid === undefined) {
       const hitPyramid = addDepthPyramidPasses(graph, {
-        label: 'water-furthest-depth-pyramid',
-        reduction: 'furthest',
+        label: 'water-closest-depth-pyramid',
+        reduction: 'closest',
         depth: noWaterDepthView.value,
         width,
         height,
@@ -455,6 +460,13 @@ export function addWaterSlwPasses(
             width,
             height,
             depth: noWaterDepthView.value,
+            ...(input.opaqueSurface === undefined
+              ? {}
+              : {
+                  ...input.opaqueSurface,
+                  normal: input.opaqueSurface.normal.view,
+                  fallback: input.opaqueSurface.fallback.view,
+                }),
             scene: hitColor.value.view,
             sceneColorMipCount: hitColor.value.mipCount,
             ...(input.opaqueTemporal === undefined

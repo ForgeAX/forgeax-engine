@@ -31,7 +31,7 @@
 
 ## 运行、测试、构建与发布
 
-- **打开可选 View：** 需要交互检查工程、场景或资产时，阅读 `skills/forgeax-view-start/SKILL.zh-CN.md`。从游戏根目录运行 `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`。若本地技能早于 View，则阅读 `node_modules/@forgeax/engine/tools/view/skills/` 下的同名技能。该文件入口由 View 负责；冷启动 CLI 帮助不会发现它。已发布包不需要构建 Engine 或安装全局 SDK。保持终端打开，并在页面中核对请求的工程。
+- **Open optional View:** read `skills/forgeax-view-start/SKILL.md` or the SDK's `tools/view/skills/forgeax-view-start/SKILL.md`. From the game root run `node /absolute/forgeax-sdk/tools/view/start.mjs --project .`. View ships only in the SDK, whose launcher initializes its own matching Engine and tool runtime. Keep the terminal open and verify the project in the page.
 - **本地迭代：** `pnpm exec forgeax dev start` 提供源码服务；Vite 和 DevKit 按需处理 TypeScript 与 Pack 资产。不需要预先运行 `project build`、单独构建资产或手动编译 TypeScript。
 - **构建与预览：** `pnpm exec forgeax project build` 通过 Vite 和资产生产器生成生产 `dist/`；`pnpm exec forgeax project preview` 提供该产物。`pnpm typecheck` 是独立检查，不是启动前提。
 

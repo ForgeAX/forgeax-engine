@@ -4,7 +4,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
-import { createGlobalSdfComposition } from '../../raytracing/global-sdf';
+import { createGlobalSdfComposition, GLOBAL_SDF_SETTINGS_BYTES } from '../../raytracing/global-sdf';
 import {
   createGlobalSdfQueryRecorder,
   GLOBAL_SDF_QUERY_WGSL,
@@ -91,9 +91,13 @@ export async function verifyGlobalSdfGpuRays(
   const outputs: { rays: Uint8Array; hits: Uint8Array }[] = [];
   let tapeBytes: Uint8Array;
   try {
-    const query = createGlobalSdfQueryRecorder(
-      device,
-      (await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_QUERY_WGSL })).unwrap(),
+    const query = (
+      await createGlobalSdfQueryRecorder(
+        device,
+        (
+          await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_QUERY_WGSL })
+        ).unwrap(),
+      )
     ).unwrap();
     const layout = device
       .createBindGroupLayout({
@@ -156,7 +160,7 @@ export async function verifyGlobalSdfGpuRays(
             pass,
             {
               voxels: { buffer: composition.buffers.voxels, size: composition.voxelCount * 16 },
-              grid: { buffer: composition.buffers.settings, size: 48 },
+              grid: { buffer: composition.buffers.settings, size: GLOBAL_SDF_SETTINGS_BYTES },
               rays: { buffer: rays, offset, size: count * 48 },
               hits: { buffer: hits, offset, size: count * 64 },
               settings: { buffer: settings, size: 16 },

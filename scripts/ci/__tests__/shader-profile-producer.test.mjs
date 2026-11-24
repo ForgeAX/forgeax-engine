@@ -326,8 +326,13 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     write('packages/vfx-render/package.json', '{"name":"@forgeax/engine-vfx-render"}');
     write(
       'packages/vite-plugin-shader/package.json',
-      '{"name":"@forgeax/engine-vite-plugin-shader","dependencies":{"@fixture/compiler":"workspace:*"}}',
+      JSON.stringify({
+        name: '@forgeax/engine-vite-plugin-shader',
+        dependencies: { '@fixture/compiler': 'workspace:*' },
+        exports: { './package.json': './package.json' },
+      }),
     );
+    write('packages/vite-plugin-shader/src/engine-inputs/recipe.ts', 'export const layout = 1;');
     write('packages/compiler/dist/index.js', 'original');
     write(
       'packages/shader/src/surface.wgsl',

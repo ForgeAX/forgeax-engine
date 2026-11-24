@@ -4,17 +4,15 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } from '@forgeax/engin
 import { quat } from '@forgeax/engine-math';
 import type { CameraExposure } from '@forgeax/engine-render';
 import {
-  CAMERA_EXPOSURE_MODE_AUTO,
-  CAMERA_EXPOSURE_MODE_MANUAL,
   CAMERA_PROJECTION_ORTHOGRAPHIC,
   CAMERA_PROJECTION_PERSPECTIVE,
   Camera,
+  cameraExposureColumns,
   cameraExposureFromColumns,
   getActiveCamera,
   MeshFilter,
   type RenderSceneBounds,
   setActiveCamera,
-  validateCameraExposure,
 } from '@forgeax/engine-render';
 import { Children, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
 import type { ExecutionHdrObservationResult } from './execution/types';
@@ -330,24 +328,7 @@ export function createAppObservation(
     if (cameraPatch.far !== undefined && (cameraPatch.far as number) <= 0)
       throw new TypeError('camera.set lens.far expects a positive number');
     if (candidate.exposure !== undefined) {
-      const exposure = validateCameraExposure(candidate.exposure as CameraExposure);
-      if (exposure.kind === 'manual') {
-        Object.assign(cameraPatch, {
-          exposureMode: CAMERA_EXPOSURE_MODE_MANUAL,
-          exposure: exposure.multiplier,
-          compensationEv: 0,
-          rangeEv: new Float32Array([-8, 8]),
-          rates: new Float32Array([3, 1]),
-        });
-      } else {
-        Object.assign(cameraPatch, {
-          exposureMode: CAMERA_EXPOSURE_MODE_AUTO,
-          exposure: exposure.fallback,
-          compensationEv: exposure.compensationEv,
-          rangeEv: new Float32Array(exposure.rangeEv),
-          rates: new Float32Array(exposure.rates),
-        });
-      }
+      Object.assign(cameraPatch, cameraExposureColumns(candidate.exposure as CameraExposure));
     }
     const observed = acquire(entity);
     if (projection !== undefined || Object.keys(cameraPatch).length > 0) {

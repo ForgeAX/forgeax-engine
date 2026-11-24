@@ -863,6 +863,22 @@ describe('SDK verifier template contract', () => {
 
     const launcher = join(sdk, 'bin', 'forgeax.mjs');
     await writeFile(launcher, sdkLauncherSource('pnpm@12.10.1'));
+    const bootstrap = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+        import { pathToFileURL } from 'node:url';
+        const { ensureSdkRuntime } = await import(pathToFileURL(${JSON.stringify(launcher)}));
+        console.log(await ensureSdkRuntime());
+      `,
+      ],
+      { cwd: root, env: { ...process.env, PATH: toolBin }, encoding: 'utf8' },
+    );
+    expect(bootstrap.status).toBe(0);
+    expect(bootstrap.stdout.trim()).toBe(await realpath(join(sdk, '.forgeax', 'cli-runtime')));
+    expect(bootstrap.stdout).not.toContain('engine-bin-ok');
     const result = spawnSync(process.execPath, [launcher], {
       cwd: sdk,
       env: {

@@ -141,7 +141,9 @@ it('recooks WGSL-only edits and reads a supplied source snapshot for every shade
   const first = await captured.cook(input);
   const wgsl = resolve(root, 'cloud.wgsl');
   expect(first.sourceDependencies).toContain(wgsl);
-  expect([...inputs.keys()].some((path) => path.endsWith('cloud/medium.wgsl'))).toBe(true);
+  expect(
+    [...inputs.keys()].some((path) => path.replaceAll('\\', '/').endsWith('cloud/medium.wgsl')),
+  ).toBe(true);
   await writeFile(wgsl, program.replace('vec3f(0.8)', 'vec3f(0.4)'));
   expect((await captured.cook(input)).inputFingerprint).toBe(first.inputFingerprint);
   const [current] = createDefaultCloudCookers();

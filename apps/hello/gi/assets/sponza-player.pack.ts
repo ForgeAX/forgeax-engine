@@ -5,7 +5,13 @@ import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { Transform, worldDespawnScene } from '@forgeax/engine/scene';
 import { ok } from '@forgeax/engine/types';
-import { cameraOnPath, cameraTransform, spawnCamera, spawnLight } from '../src/build-scene.ts';
+import {
+  cameraOnPath,
+  cameraTransform,
+  spawnCamera,
+  spawnLight,
+  spawnSponzaSky,
+} from '../src/build-scene.ts';
 import { diffuseGiFor, SPONZA } from '../src/scenes.ts';
 
 const packageId = definePackageId('019fb37a-b02b-7a12-8b74-3c439f3a1e70');
@@ -43,6 +49,8 @@ export const sponzaPlayer: Plugin.Object<{ readonly scene: string }> = {
       yield () => { worldDespawnScene(world, root).unwrap(); };
       const light = spawnLight(world, SPONZA.light);
       yield () => { world.despawn(light).unwrap(); };
+      const sky = spawnSponzaSky(world);
+      yield () => { world.despawn(sky).unwrap(); };
       const size = host.drawingBufferSize?.();
       const camera = spawnCamera(world, SPONZA.camera, size ? size.width / size.height : 1);
       yield () => { world.despawn(camera).unwrap(); };

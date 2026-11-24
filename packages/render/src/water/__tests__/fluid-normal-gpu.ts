@@ -1,6 +1,6 @@
 import { type WaterFluidStage, waterFluidShader } from '../fluid-shaders';
 
-async function rasterProbe(
+export async function rasterProbe(
   stage: WaterFluidStage,
   size: number,
   fields: readonly Float32Array[],

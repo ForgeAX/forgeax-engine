@@ -5,6 +5,7 @@ import type {
   Result,
 } from '@forgeax/engine-types';
 import { createMaterialError, err, ok, stripWgslComments } from '@forgeax/engine-types';
+import { tokenizeWgsl } from './wgsl-tokens.js';
 
 export const SURFACE_SLOT = 'surface' as const;
 export const SURFACE_EXPORT = 'evaluate_surface' as const;
@@ -80,19 +81,35 @@ function moduleName(source: string): string {
 }
 
 const FORBIDDEN_INTERFACES: readonly [RegExp, Parameters<typeof forbiddenInterface>[1]][] = [
-  [/@fragment\b/, 'fragment-entry'],
-  [/@vertex\b/, 'vertex-entry'],
-  [/@compute\b/, 'compute-entry'],
-  [/@group\s*\(/, 'resource-binding'],
-  [/@binding\s*\(/, 'resource-binding'],
   [/\bfn\s+(?:vs_main|fs_main|vertex_main|fragment_main)\s*\(/, 'engine-entry'],
   [/\bposition(?:OS|WS)\s*=\s*/, 'vertex-position-mutation'],
 ];
+
+function forbiddenAttribute(source: string): Parameters<typeof forbiddenInterface>[1] | undefined {
+  const tokens = tokenizeWgsl(source);
+  for (const [index, token] of tokens.entries()) {
+    if (token.text !== '@') continue;
+    switch (tokens[index + 1]?.text) {
+      case 'fragment':
+        return 'fragment-entry';
+      case 'vertex':
+        return 'vertex-entry';
+      case 'compute':
+        return 'compute-entry';
+      case 'group':
+      case 'binding':
+        return 'resource-binding';
+    }
+  }
+  return undefined;
+}
 
 function validateForbiddenInterfaces(
   request: SurfaceContractRequest,
   source: string,
 ): Result<true, SurfaceContractError> {
+  const attribute = forbiddenAttribute(source);
+  if (attribute !== undefined) return err(forbiddenInterface(request, attribute));
   const withoutComments = stripWgslComments(source);
   for (const [pattern, interfaceName] of FORBIDDEN_INTERFACES) {
     if (pattern.test(withoutComments)) return err(forbiddenInterface(request, interfaceName));

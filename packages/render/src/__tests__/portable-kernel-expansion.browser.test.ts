@@ -4,7 +4,11 @@ import { expect, it, onTestFinished } from 'vitest';
 import * as wgpu from '../../../rhi-wgpu/src/index';
 import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
 import { browserShaderEntries } from './browser-shader-entries.fixture';
-import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
+import {
+  runPortableExposure,
+  runPortablePyramid,
+  runUeExposureMeterFixture,
+} from './portable-kernel-expansion-gpu';
 import {
   runSsrGpuDispatch,
   SSR_PROBE_SHADER_IDENTIFIERS,
@@ -123,6 +127,13 @@ it.each([
     expect(invalid.histogram.every((count) => count === 0)).toBe(true);
     expect(invalid.candidate[0]).toBe(1);
   }
+  const { maxBucketError, gainErrorEv } = await runUeExposureMeterFixture(
+    device,
+    factory,
+    'fragment',
+  );
+  expect(maxBucketError).toBeLessThanOrEqual(32);
+  expect(gainErrorEv).toBeLessThan(2e-6);
   const ssr = await runSsrGpuDispatch(
     device,
     sources,

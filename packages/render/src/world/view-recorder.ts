@@ -56,6 +56,9 @@ export function createViewRecorder(
       viewContext: context,
       observationGraphGeneration: undefined,
     });
+    Object.defineProperty(recordInternals, 'standardProfile', {
+      get: () => context.standardProfile,
+    });
     const viewOwner = createRenderViewOwner(recordInternals);
     seedViewConfiguration(primaryOwner, viewOwner);
     const view: ViewRecorderState = {

@@ -8,6 +8,7 @@ import { err, ok } from '@forgeax/engine-types';
 import { CARD_LOOKUP_STRIDE, CardLookupStatus } from './card-lookup';
 import { GLOBAL_CARD_CANDIDATE_STRIDE } from './global-card-lookup';
 import { type GlobalSdfQueryInputs, GlobalSdfQueryStatus } from './global-sdf-query';
+import { prepareComputePipeline } from './prepare-pipeline';
 import { RAY_REFERENCE_LIMIT } from './scene';
 
 /** State/query-status/candidate-flags/mapped-mask, then hit-t/TMin/TMax/first-distance.
@@ -60,7 +61,7 @@ export type ProbeCardSupportInputs = Readonly<
 >;
 
 /** Borrowed caller-state diagnostic. Query and sample bytes remain untouched. */
-export function createProbeCardSupportRecorder(device: RhiDevice, module: ShaderModule) {
+export async function createProbeCardSupportRecorder(device: RhiDevice, module: ShaderModule) {
   const failure = (expected: string) =>
     err(
       new RhiError({
@@ -88,7 +89,7 @@ export function createProbeCardSupportRecorder(device: RhiDevice, module: Shader
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createComputePipeline({
+  const pipeline = await prepareComputePipeline(device, {
     label: 'probe-global.card-support',
     layout: pipelineLayout.value,
     compute: { module, entryPoint: 'main' },

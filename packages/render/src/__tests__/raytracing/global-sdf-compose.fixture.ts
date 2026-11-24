@@ -8,9 +8,10 @@ import {
   createGlobalSdfComposition,
   createGlobalSdfCompositionRecorder,
   GLOBAL_SDF_COMPOSE_WGSL,
+  GLOBAL_SDF_SETTINGS_BYTES,
   type GlobalSdfCompositionInputs,
+  packGlobalSdfComposition,
 } from '../../raytracing/global-sdf';
-import { packSdfScene } from '../../raytracing/sdf-query';
 import { readBuffer } from './path-tracer.fixture';
 import { sdfCubeIndices, sdfCubePositions } from './sdf-cards.geometry';
 
@@ -41,7 +42,6 @@ export async function verifyBorrowedGlobalSdfComposition(
       transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
     },
   ];
-  const packed = packSdfScene(source, 1024).unwrap();
   const grid = {
     origin: [-2, -2, -2] as const,
     dimensions: [9, 9, 9] as const,
@@ -52,6 +52,7 @@ export async function verifyBorrowedGlobalSdfComposition(
   const reference = (
     await createGlobalSdfComposition(device, recorder.backend.createShaderModule, source, grid)
   ).unwrap();
+  const packed = packGlobalSdfComposition(source, grid).unwrap();
   const count = reference.voxelCount;
   const offset = Math.max(
     256,
@@ -59,10 +60,10 @@ export async function verifyBorrowedGlobalSdfComposition(
     device.limits.minUniformBufferOffsetAlignment,
   );
   const sizes = {
-    instances: packed.instances.byteLength,
-    fields: packed.fields.byteLength,
-    bounds: 48,
-    settings: 48,
+    instances: packed.data.instances.byteLength,
+    fields: packed.data.fields.byteLength,
+    bounds: packed.data.bounds.byteLength,
+    settings: GLOBAL_SDF_SETTINGS_BYTES,
     voxels: count * 16,
   };
   const owned: Buffer[] = [];
@@ -84,11 +85,13 @@ export async function verifyBorrowedGlobalSdfComposition(
   let borrowedBytes: Uint8Array;
   let omittedBytes: Uint8Array;
   try {
-    const compose = createGlobalSdfCompositionRecorder(
-      device,
-      (
-        await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_COMPOSE_WGSL })
-      ).unwrap(),
+    const compose = (
+      await createGlobalSdfCompositionRecorder(
+        device,
+        (
+          await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_COMPOSE_WGSL })
+        ).unwrap(),
+      )
     ).unwrap();
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();

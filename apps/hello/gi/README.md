@@ -33,6 +33,11 @@ Query parameters, mirrored by the on-page controls:
 | `camera` | `path` animates the camera along the scene path |
 | `size`, `bounces` | canvas size (512) and GI bounce count (1) |
 
+Selecting Screen Probe in Sponza uses the renderer's High GI tier by default.
+The native Sponza window starts in the same tier, and its Irradiance Field mode
+uses Medium. Sponza's authored 32-texel Card captures apply to either mode.
+Use `--screen-probe-tier epic` in the native runner to inspect the Epic profile.
+
 `window.__gi` exposes `set`, `observe(frames, warmup)`, `state()` and `capture(runId)` for
 automation. Dev serve defines the RHI Debug flag, so `capture` uploads a tape through
 `/__forgeax-debug/tape`.

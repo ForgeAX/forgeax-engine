@@ -235,9 +235,20 @@ struct WaterPrepassOutput {
   @location(1) coverage: vec4<f32>,
   @location(2) temporal: vec4<f32>,
 };
+fn waterShadingReactivity(input: SingleLayerWaterSurfaceInput, surface: SingleLayerWaterSurfaceData,
+  previousTime: f32) -> f32 {
+  // Normal-only animation changes reflected radiance without moving geometry.
+  // Reuse the Surface and accepted Body clocks instead of inventing velocity.
+  var previousInput = input;
+  previousInput.frameTime = previousTime;
+  let previousNormal = evaluate_surface(previousInput).normalWS;
+  let reactive = clamp(length(surface.normalWS - previousNormal) * 64.0, 0.0, 1.0);
+  return select(reactive, 0.0, input.frameTime == previousTime);
+}
 @fragment fn fs_water_prepass(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterPrepassOutput {
   let surfaceInput = waterSurfaceInput(input, frontFacing);
   let surface = evaluate_surface(surfaceInput);
+  let reactivity = waterShadingReactivity(surfaceInput, surface, waterBodyData[input.bodyIndex].timeAndMask.y);
   if (!waterCoverage(input, surface)) { discard; }
   let normal = select(-surface.normalWS, surface.normalWS, frontFacing);
   let coverage = clamp(surface.coverage * input.maskAndVertexFlow.x, 0.0, 1.0);
@@ -249,7 +260,7 @@ struct WaterPrepassOutput {
 #endif
   return WaterPrepassOutput(vec4<u32>(encodeStandardNormalRoughness(normal, surface.roughness), 0u, 0u, 0u),
     vec4<f32>(ssrCoverage, 0.0, 0.0, coverage),
-    packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0));
+    packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, reactivity));
 }
 struct WaterVisibilityOutput {
   @location(0) coverage: vec4<f32>,
@@ -265,8 +276,9 @@ struct WaterVisibilityOutput {
 @fragment fn fs_water_velocity(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
   let surfaceInput = waterSurfaceInput(input, frontFacing);
   let surface = evaluate_surface(surfaceInput);
+  let reactivity = waterShadingReactivity(surfaceInput, surface, waterBodyData[input.bodyIndex].timeAndMask.y);
   if (!waterCoverage(input, surface)) { discard; }
-  return packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0);
+  return packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, reactivity);
 }
 @fragment fn fs_water_shadow(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) {
   let surfaceInput = waterSurfaceInput(input, frontFacing);

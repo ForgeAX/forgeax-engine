@@ -26,6 +26,7 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import {
   cacheKeyOf,
   getOrBuildPipeline,
+  getOrBuildPipelineAsync,
   type PipelineCache,
   type PipelineDeviceProvider,
   type PipelineSpec,
@@ -126,27 +127,36 @@ export function createReadyPipelineDeviceProvider(
   unlitPipelineLayout: PipelineLayout,
   pbrPipelineLayout: PipelineLayout,
 ): PipelineDeviceProvider {
+  const normalizeDescriptor = (descriptor: Record<string, unknown>) => {
+    const d = { ...descriptor } as Record<string, unknown>;
+    if (d.layout === undefined) {
+      d.layout =
+        (d.fragment as { module?: unknown } | undefined)?.module === modules.unlit
+          ? unlitPipelineLayout
+          : pbrPipelineLayout;
+    }
+    let label = 'pbr-pipeline';
+    if (d.fragment) {
+      const f = { ...(d.fragment as Record<string, unknown>) } as Record<string, unknown>;
+      const targets = f.targets as Array<Record<string, unknown>> | undefined;
+      const isHdr = targets?.[0]?.format === HDR_COLOR_ATTACHMENT_FORMAT;
+      label = fragmentPipelineLabel(modules, f.module, isHdr, d.multisample !== undefined);
+      if (isHdr && isSpriteModule(modules, f.module)) f.entryPoint = 'fs_main_hdr';
+      d.fragment = f;
+    }
+    d.label = (d.label as string | undefined) ?? label;
+    return d as Parameters<typeof device.createRenderPipeline>[0];
+  };
+  const createAsync = device.createRenderPipelineAsync;
   return {
-    createRenderPipeline(descriptor: Record<string, unknown>) {
-      const d = { ...descriptor } as Record<string, unknown>;
-      if (d.layout === undefined) {
-        d.layout =
-          (d.fragment as { module?: unknown } | undefined)?.module === modules.unlit
-            ? unlitPipelineLayout
-            : pbrPipelineLayout;
-      }
-      let label = 'pbr-pipeline';
-      if (d.fragment) {
-        const f = { ...(d.fragment as Record<string, unknown>) } as Record<string, unknown>;
-        const targets = f.targets as Array<Record<string, unknown>> | undefined;
-        const isHdr = targets?.[0]?.format === HDR_COLOR_ATTACHMENT_FORMAT;
-        label = fragmentPipelineLabel(modules, f.module, isHdr, d.multisample !== undefined);
-        if (isHdr && isSpriteModule(modules, f.module)) f.entryPoint = 'fs_main_hdr';
-        d.fragment = f;
-      }
-      d.label = (d.label as string | undefined) ?? label;
-      return device.createRenderPipeline(d as Parameters<typeof device.createRenderPipeline>[0]);
-    },
+    createRenderPipeline: (descriptor) =>
+      device.createRenderPipeline(normalizeDescriptor(descriptor)),
+    ...(createAsync === undefined
+      ? {}
+      : {
+          createRenderPipelineAsync: (descriptor: Record<string, unknown>) =>
+            createAsync.call(device, normalizeDescriptor(descriptor)),
+        }),
   };
 }
 
@@ -224,23 +234,33 @@ function group2ContractForSpec(
  * Build every SPEC_CONST entry whose shader module compiled; absent modules
  * (empty manifest) are skipped, and a failed build blocks the first frame.
  */
-export function prewarmMaterialSpecPipelines(
+export async function prewarmMaterialSpecPipelines(
   specs: readonly PipelineSpec[],
   modulesById: ReadonlyMap<string, PipelineModules>,
   provider: PipelineDeviceProvider,
   cache: PipelineCache,
-): void {
+): Promise<void> {
+  const unique = new Map<string, { spec: PipelineSpec; modules: PipelineModules }>();
   for (const spec of specs) {
+    const key = cacheKeyOf(spec);
     const modules = modulesById.get(spec.shader.id);
-    if (modules === undefined) continue;
-    buildPipelineOrThrow(
-      spec,
-      provider,
-      cache,
-      modules,
-      `Boot-time SPEC_CONST pre-warm failed for shader '${spec.shader.id}'; inspect gpuMessage on the cause`,
-    );
+    if (modules !== undefined && !unique.has(key)) unique.set(key, { spec, modules });
   }
+  const results = await Promise.allSettled(
+    [...unique.values()].map(async ({ spec, modules }) => {
+      try {
+        await getOrBuildPipelineAsync(spec, provider, cache, modules);
+      } catch (error) {
+        if (error instanceof PipelineSpecError) throw error;
+        throw new PipelineSpecError({
+          code: 'pipeline-build-failed',
+          detail: { cause: error },
+          hint: `Boot-time SPEC_CONST pre-warm failed for shader '${spec.shader.id}'; inspect gpuMessage on the cause`,
+        });
+      }
+    }),
+  );
+  for (const result of results) if (result.status === 'rejected') throw result.reason;
 }
 
 /**

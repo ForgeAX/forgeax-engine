@@ -165,11 +165,11 @@ function clockResetReason(
   return firstFrame ? ('first-frame' as const) : undefined;
 }
 
-function reusedTemporalHistory(reusable: TemporalView | undefined) {
+function reusedTemporalHistory(reusable: TemporalView | undefined, geometryPrevious = reusable) {
   return {
-    ...(reusable?.currentUnjitteredViewProjection === undefined
+    ...(geometryPrevious?.currentUnjitteredViewProjection === undefined
       ? {}
-      : { previousUnjitteredViewProjection: reusable.currentUnjitteredViewProjection }),
+      : { previousUnjitteredViewProjection: geometryPrevious.currentUnjitteredViewProjection }),
     ...(reusable?.currentCameraPosition === undefined
       ? {}
       : { previousCameraPosition: reusable.currentCameraPosition }),
@@ -229,17 +229,25 @@ export function resolveFrameTemporal(
     fogSignature,
     currentUnjitteredViewProjection,
   );
+  const clockReset = clockResetReason(
+    temporalReset,
+    motionBlurDemand,
+    intervalValid,
+    motionBlurFirstFrame(camera, motionBlurDemand, previous),
+  );
   const resetReason =
     temporalDemand && environmentReady
-      ? (resolveTemporalReset(previous?.input, candidate) ??
-        clockResetReason(
-          temporalReset,
-          motionBlurDemand,
-          intervalValid,
-          motionBlurFirstFrame(camera, motionBlurDemand, previous),
-        ))
+      ? (resolveTemporalReset(previous?.input, candidate) ?? clockReset)
       : undefined;
   const reusable = resetReason === undefined ? previous : undefined;
+  // Lighting resets color history, not the geometry projection used by rigid
+  // motion. Previous camera validity still resets for volume color history.
+  // An overlapping clock discontinuity also breaks the geometry pair.
+  const geometryPrevious =
+    clockReset === undefined &&
+    (resetReason === 'environment-change' || resetReason === 'fog-change')
+      ? previous
+      : reusable;
   const view = createTemporalView({
     ...candidate,
     frameIndex: resetReason === undefined ? candidate.frameIndex : 0,
@@ -252,7 +260,7 @@ export function resolveFrameTemporal(
       reusable !== undefined &&
       (!motionBlurDemand || intervalValid),
     resetReason,
-    ...reusedTemporalHistory(reusable),
+    ...reusedTemporalHistory(reusable, geometryPrevious),
   });
   frameState.temporalView.stage(
     pendingTemporalCommitFor(internals, cameraCount, environmentReady, view),
@@ -263,10 +271,7 @@ export function resolveFrameTemporal(
     recordCamera: view.mode !== 'off' || gtao ? { ...camera, temporal: view } : camera,
     deltaSeconds,
     motionBlurDemand,
-    continuousGeometry:
-      reusable !== undefined ||
-      resetReason === 'environment-change' ||
-      resetReason === 'fog-change',
+    continuousGeometry: geometryPrevious !== undefined,
     currentUnjitteredViewProjection,
   };
 }

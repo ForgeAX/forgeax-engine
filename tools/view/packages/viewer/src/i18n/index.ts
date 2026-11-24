@@ -2,22 +2,24 @@
  * Viewer shell i18n — catalogs live here; locale state lives in view-workspace-core/locale-bridge.
  */
 import {
+  DEFAULT_VIEW_LOCALE as DEFAULT_LOCALE,
   getViewLocale,
   setViewLocale,
   subscribeViewLocale,
+  type ViewLocale,
 } from '@forgeax/view-workspace-core/locale-bridge';
 import { useCallback, useSyncExternalStore } from 'react';
 import en from './locales/en.json';
 import zh from './locales/zh.json';
 
-export type Locale = 'en' | 'zh';
+export type Locale = ViewLocale;
 
 export const SUPPORTED_LOCALES = [
   { code: 'en' as Locale, label: 'English', nativeLabel: 'English' },
   { code: 'zh' as Locale, label: 'Chinese', nativeLabel: '简体中文' },
 ];
 
-export const DEFAULT_LOCALE: Locale = 'zh';
+export { DEFAULT_LOCALE };
 
 const STORAGE_KEY = 'forgeax.view.locale';
 const CATALOGS: Record<Locale, Record<string, unknown>> = { en, zh };
@@ -26,20 +28,32 @@ function isLocale(value: unknown): value is Locale {
   return value === 'en' || value === 'zh';
 }
 
-function readPersisted(): Locale {
+function readPersisted(): Locale | undefined {
   try {
-    if (typeof localStorage === 'undefined') return DEFAULT_LOCALE;
+    if (typeof localStorage === 'undefined') return undefined;
     const raw = localStorage.getItem(STORAGE_KEY);
     if (isLocale(raw)) return raw;
   } catch {
     /* Storage may be unavailable in private or sandboxed documents. */
+  }
+  return undefined;
+}
+
+function readBrowserLocale(): Locale {
+  try {
+    if (typeof navigator === 'undefined') return DEFAULT_LOCALE;
+    const language = navigator.languages?.[0] ?? navigator.language;
+    const locale = language?.trim().toLowerCase().split('-')[0];
+    if (isLocale(locale)) return locale;
+  } catch {
+    /* Host language preferences may be inaccessible in embedded documents. */
   }
   return DEFAULT_LOCALE;
 }
 
 /** Hydrate locale once at app boot (do not call during React render). */
 export function initI18n(): void {
-  setViewLocale(readPersisted());
+  setViewLocale(readPersisted() ?? readBrowserLocale());
 }
 
 export function getLocale(): Locale {

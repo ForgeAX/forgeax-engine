@@ -282,7 +282,7 @@ acceleration-structure API, so a native lowering is a field rename.
 
 | Surface | Contract |
 |:--|:--|
-| `device.createBlas(desc)` / `destroyBlas` | Opaque `Blas`; `geometries` fixes the opaque `float32x3` triangle-list topology (optional `index`) at creation. |
+| `device.createBlas(desc)` / `destroyBlas` | Opaque `Blas`; `geometries` fixes `float32x3` triangle-list topology (optional `index`) and `opaque` (default true). Explicit false exposes triangle candidates for shader confirmation. |
 | `device.createTlas(desc)` / `destroyTlas` | Opaque `Tlas` with `maxInstances`; both take `preference: 'fast-trace' \| 'fast-build'` and `updateMode: 'rebuild' \| 'refit'`. |
 | `encoder.buildAccelerationStructures(blas, tlas)` | BLAS entries build first, then TLAS entries. Instances carry a 12-number row-major 3x4 `transform`, 24-bit `customIndex`, and 8-bit `mask`; each must reference a BLAS built earlier or in the same call. Re-building the same handle is the per-frame update path. |
 | Bind group layout `accelerationStructure: {}` + resource `{ kind: 'accelerationStructure', value: tlas }` | WGSL `var scene: acceleration_structure;`; a TLAS must be built before it is bound. |

@@ -21,7 +21,7 @@ export interface PreparedRayReflections {
   readonly transport: RayPathTracer;
   readonly generate: Extract<ReturnType<typeof createRasterRayGenerator>, { ok: true }>['value'];
   readonly composite: Extract<
-    ReturnType<typeof createRayReflectionComposite>,
+    Awaited<ReturnType<typeof createRayReflectionComposite>>,
     { ok: true }
   >['value'];
   readonly reconstruction?: RendererDiffuseReconstruction;
@@ -51,10 +51,12 @@ export async function prepareRayReflections(
     await input.compile('ray-reflection.generate', 'generateReflectionRays'),
     'generateReflectionRays',
   ).unwrap();
-  const composite = createRayReflectionComposite(
-    device,
-    await input.compile('ray-reflection.composite', 'fs_ray_reflection'),
-    profile.reconstruction === undefined ? 'raw' : 'reconstructed',
+  const composite = (
+    await createRayReflectionComposite(
+      device,
+      await input.compile('ray-reflection.composite', 'fs_ray_reflection'),
+      profile.reconstruction === undefined ? 'raw' : 'reconstructed',
+    )
   ).unwrap();
   const seed = (profile.seed ^ REFLECTION_SEED_SALT) >>> 0;
   const reconstruction =

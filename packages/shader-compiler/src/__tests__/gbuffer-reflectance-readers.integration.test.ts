@@ -1,21 +1,25 @@
 import { readFileSync } from 'node:fs';
+import { SCREEN_PROBE_RECONSTRUCTION_WGSL } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
 import { compileShader } from '../compile';
 
 const source = (name: string) =>
   readFileSync(new URL(`../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8');
-const imports = Object.fromEntries(
-  (
-    [
-      ['forgeax_view::common', 'common'],
-      ['forgeax_pbr::gbuffer', 'standard-gbuffer'],
-      ['forgeax_pbr::ibl_shared', 'ibl-shared'],
-      ['forgeax_pbr::ibl_sampling', 'ibl-sampling'],
-      ['forgeax_pbr::brdf', 'brdf'],
-      ['forgeax_pbr::pmrem', 'ibl-pmrem'],
-    ] as const
-  ).map(([id, file]) => [id, source(file)]),
-);
+const imports = {
+  ...Object.fromEntries(
+    (
+      [
+        ['forgeax_view::common', 'common'],
+        ['forgeax_pbr::gbuffer', 'standard-gbuffer'],
+        ['forgeax_pbr::ibl_shared', 'ibl-shared'],
+        ['forgeax_pbr::ibl_sampling', 'ibl-sampling'],
+        ['forgeax_pbr::brdf', 'brdf'],
+        ['forgeax_pbr::pmrem', 'ibl-pmrem'],
+      ] as const
+    ).map(([id, file]) => [id, source(file)]),
+  ),
+  'forgeax_ray::screen_reconstruction': SCREEN_PROBE_RECONSTRUCTION_WGSL,
+};
 
 it.each([
   'fs_ray_diffuse',

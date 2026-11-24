@@ -7,7 +7,7 @@ import {
   waterGpuTraverseWgsl,
 } from '../gpu-mesh-shaders';
 
-it('scatters logical LOD and the remaining node morph budget into the shared Water tile ABI', async () => {
+it('scatters logical LOD and a common terminal lattice into the shared Water tile ABI', async () => {
   const adapter = await navigator.gpu.requestAdapter();
   expect(adapter).not.toBeNull();
   const device = await requiredFixtureValue(adapter).requestDevice();
@@ -35,8 +35,8 @@ it('scatters logical LOD and the remaining node morph budget into the shared Wat
   const cases = [
     { mip: 0, density: 1, logicalLod: 1, maxMorphLod: 3, heightMorph: 0.75 },
     { mip: 0, density: 0, logicalLod: 0, maxMorphLod: 3, heightMorph: 0 },
-    { mip: 2, density: 1, logicalLod: 3, maxMorphLod: 5, heightMorph: 0 },
-    { mip: 4, density: 0, logicalLod: 4, maxMorphLod: 5, heightMorph: 0 },
+    { mip: 2, density: 1, logicalLod: 3, maxMorphLod: 3, heightMorph: 0 },
+    { mip: 3, density: 0, logicalLod: 3, maxMorphLod: 3, heightMorph: 0 },
   ];
   params.set([32, 32, nodeCount, 2], 0);
   params.set([cases.length, 1, 2, cases.length], 4);
@@ -117,7 +117,7 @@ it('scatters logical LOD and the remaining node morph budget into the shared Wat
   }
 });
 
-it('reduces and traverses a real 512-leaf grid through ten mip descriptors without overwriting fixed parameters', async () => {
+it('traverses ten mip descriptors while retaining the finest leaf density limit at high altitude', async () => {
   const adapter = await navigator.gpu.requestAdapter();
   expect(adapter).not.toBeNull();
   const device = await requiredFixtureValue(adapter).requestDevice();
@@ -143,7 +143,9 @@ it('reduces and traverses a real 512-leaf grid through ten mip descriptors witho
     nodeCount += width * width;
   }
   params.set([512, 512, nodeCount, 2]);
-  params.set([1, 1, 8, 1], 4);
+  const capacity = 128 * 128;
+  const tileWords = 64 + capacity * 24;
+  params.set([1, 1, 8, capacity], 4);
   floats.set([0, 0, 512, 512], 8);
   floats.set([-1, 1, 1, 0], 12);
   params.set([1, 1, 0xffffffff, 10], 16);
@@ -166,10 +168,10 @@ it('reduces and traverses a real 512-leaf grid through ten mip descriptors witho
     counts = buffer(new Uint32Array(1)),
     offsets = buffer(new Uint32Array(1));
   const blocks = buffer(new Uint32Array(1)),
-    tiles = buffer(new Uint32Array(88)),
+    tiles = buffer(new Uint32Array(tileWords)),
     args = buffer(new Uint32Array(6));
   const readback = device.createBuffer({
-    size: 16 + 24 + 88 * 4,
+    size: 16 + 24 + tileWords * 4,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   try {
@@ -257,18 +259,25 @@ it('reduces and traverses a real 512-leaf grid through ten mip descriptors witho
     );
     encoder.copyBufferToBuffer(n, requiredFixtureValue(mipOffsets[9]) * 16, readback, 0, 16);
     encoder.copyBufferToBuffer(args, 0, readback, 16, 24);
-    encoder.copyBufferToBuffer(tiles, 0, readback, 40, 88 * 4);
+    encoder.copyBufferToBuffer(tiles, 0, readback, 40, tileWords * 4);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const words = new Uint32Array(readback.getMappedRange()),
       values = new Float32Array(words.buffer);
     expect(Array.from(words.subarray(0, 1))).toEqual([0xc0000001]);
     expect(Array.from(values.subarray(1, 4))).toEqual([-0.25, 0.25, 0]);
-    expect(Array.from(words.subarray(4, 10))).toEqual([384, 1, 0, 0, 0, 0]);
-    const tile = 10 + 64;
-    expect(Array.from(values.subarray(tile, tile + 4))).toEqual([17.25, -31.5, 512, 512]);
-    expect(words[tile + 9]).toBe(9);
-    expect(words[tile + 22]).toBe(9);
+    expect(Array.from(words.subarray(4, 10))).toEqual([384, capacity, 0, 0, 0, 0]);
+    const origins = new Set<string>();
+    for (let index = 0; index < capacity; index++) {
+      const tile = 10 + 64 + index * 24;
+      origins.add(`${values[tile]},${values[tile + 1]}`);
+      expect(Array.from(values.subarray(tile + 2, tile + 4))).toEqual([4, 4]);
+      expect(words[tile + 9]).toBe(2);
+      expect(words[tile + 22]).toBe(2);
+    }
+    expect(origins.size).toBe(capacity);
+    expect(origins.has('17.25,-31.5')).toBe(true);
+    expect(origins.has('525.25,476.5')).toBe(true);
     readback.unmap();
     expect(await device.popErrorScope()).toBeNull();
   } finally {

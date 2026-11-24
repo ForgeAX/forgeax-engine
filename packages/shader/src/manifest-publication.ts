@@ -567,9 +567,9 @@ export async function readShaderManifestPublication(value: unknown): Promise<unk
 
 /**
  * Same verification as {@link readShaderManifestPublication}, but takes ownership of
- * `value.reflections`: immutable subtrees are shared in place, and each row is
- * validated on first read without an up-front clone. Callers must pass freshly
- * parsed JSON that nothing else retains.
+ * `value.reflections`: complete plain facts share immutable storage without cloning;
+ * each row still validates on first read. Callers must pass freshly parsed JSON that
+ * nothing else retains. Non-plain values and accessors keep the ordinary deferred route.
  */
 export async function readOwnedShaderManifestPublication(value: unknown): Promise<unknown> {
   return verifyShaderManifestPublication(
@@ -650,14 +650,17 @@ function plainTree(
   if (prototype === null || (Array.isArray(value) && prototype !== Array.prototype))
     json.safe = false;
   active.add(value);
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record);
+  const keys = Object.keys(value);
   if (
     Array.isArray(value) &&
     (keys.length !== value.length || keys.some((field, index) => field !== String(index)))
   )
     json.safe = false;
-  for (const field of keys) if (!plainTree(record[field], active, visited, json)) return false;
+  for (const field of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return false;
+    if (!plainTree(descriptor.value, active, visited, json)) return false;
+  }
   active.delete(value);
   visited.add(value);
   return true;

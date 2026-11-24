@@ -18,6 +18,21 @@ it('keeps depth-only and masked pixels invalid through the full six-target Defer
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     }),
   );
+  const composedFormats = ['rg32uint', 'r32uint', 'r32uint'] as const;
+  const composed = composedFormats.map((format) =>
+    device.createTexture({
+      size: [8, 1],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    }),
+  );
+  const decalLayers = Array.from({ length: 2 }, () =>
+    device.createTexture({
+      size: [8, 1],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    }),
+  );
   const depth = device.createTexture({
     size: [8, 1],
     format: 'depth32float',
@@ -46,9 +61,11 @@ it('keeps depth-only and masked pixels invalid through the full six-target Defer
   // Forward-only contributor with no material output in this lane.
   if (x < 3u) { discard; }
   let metallic = select(select(0.0, 0.99999, x == 4u), 1.0, x == 5u);
+  let subsurface = select(vec4f(0), vec4f(2,1,1,0.5), x == 5u);
+  let profile = select(subsurface, vec4f(0,0,0,0.5), x == 6u);
   return encodeStandardGBuffer(vec3f(0,0,1), vec3f(0,1,0), 0.25,
     vec3f(0.16,0.36,0.64), metallic, vec4f(0.01,0.04,0.16,0.35), 0.6,
-    vec3f(2,3,4), 1.0, 2u, 17u, x != 7u, 0x80000001u, vec4f(0), x == 6u);
+    vec3f(2,3,4), 1.0, 2u, 17u, x != 7u, 0x80000001u, profile, x == 6u, x == 4u);
 }
 @group(0) @binding(0) var color: texture_2d<f32>;
 @group(0) @binding(1) var normal: texture_2d<u32>;
@@ -113,6 +130,41 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
         targets: formats.map((format) => ({ format })),
       },
     });
+    const decalModule = device.createShaderModule({
+      code: await composeShader(
+        readFileSync(new URL('../decal-apply.wgsl', import.meta.url), 'utf8'),
+        {
+          'forgeax_pbr::gbuffer': readFileSync(
+            new URL('../standard-gbuffer.wgsl', import.meta.url),
+            'utf8',
+          ),
+        },
+        {},
+      ),
+    });
+    const decalPipeline = await device.createRenderPipelineAsync({
+      layout: 'auto',
+      vertex: { module: decalModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: decalModule,
+        entryPoint: 'fs_main',
+        targets: composedFormats.map((format) => ({ format })),
+      },
+    });
+    const decalGroup = device.createBindGroup({
+      layout: decalPipeline.getBindGroupLayout(0),
+      entries: [
+        textures[1],
+        textures[3],
+        textures[2],
+        decalLayers[0],
+        decalLayers[1],
+        decalLayers[0],
+      ].map((texture, binding) => {
+        if (texture === undefined) throw new Error('Missing decal fixture input');
+        return { binding, resource: texture.createView() };
+      }),
+    });
     const reader = await device.createComputePipelineAsync({
       layout: 'auto',
       compute: { module, entryPoint: 'cs_read_surface' },
@@ -120,7 +172,12 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
     const group = device.createBindGroup({
       layout: reader.getBindGroupLayout(0),
       entries: [
-        ...textures.map((texture, binding) => ({ binding, resource: texture.createView() })),
+        ...[textures[0], composed[0], composed[2], composed[1], textures[4], textures[5]].map(
+          (texture, binding) => {
+            if (texture === undefined) throw new Error('Missing composed GBuffer fixture input');
+            return { binding, resource: texture.createView() };
+          },
+        ),
         { binding: 6, resource: depth.createView() },
         { binding: 7, resource: { buffer: output } },
       ],
@@ -154,6 +211,28 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
     pass.setPipeline(writer);
     pass.draw(3);
     pass.end();
+    encoder
+      .beginRenderPass({
+        colorAttachments: decalLayers.map((texture, index) => ({
+          view: texture.createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: index === 0 ? [0, 0, 0, 0] : [0, 1, 0, 1],
+        })),
+      })
+      .end();
+    const decal = encoder.beginRenderPass({
+      colorAttachments: composed.map((texture) => ({
+        view: texture.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: [0, 0, 0, 0],
+      })),
+    });
+    decal.setPipeline(decalPipeline);
+    decal.setBindGroup(0, decalGroup);
+    decal.draw(3);
+    decal.end();
     const read = encoder.beginComputePass();
     read.setPipeline(reader);
     read.setBindGroup(0, group);
@@ -172,7 +251,7 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
         expect(Array.from(f.slice(at + 12, at + 16))).toEqual([0, 0.75, 0, 0]);
         continue;
       }
-      expect(f[at + 2]).toBeGreaterThan(0.999);
+      expect(f[at + 1]).toBeGreaterThan(0.999);
       expect(Math.abs((f[at + 3] ?? NaN) - 0.25)).toBeLessThan(1 / 510 + 1e-6);
       expect(Math.abs((f[at + 7] ?? NaN) - 0.6)).toBeLessThan(1 / 510 + 1e-6);
       expect(Math.abs((f[at + 11] ?? NaN) - 0.35)).toBeLessThan(1 / 510 + 1e-6);
@@ -190,11 +269,12 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
       expect(Array.from(f.slice(at + 12, at + 16))).toEqual([2, 0.5, 1, x === 6 ? 1 : 0]);
       expect(u[at + 16]).toBe(((2 << 24) | (x === 7 ? 1 << 23 : 0) | 17) >>> 0);
       expect(u[at + 18]).toBe(0x80000001);
+      expect((u[at + 19] ?? 0) >>> 16).toBe(x === 4 || x === 5 ? 3 : 1);
     }
     readback.unmap();
     expect(await device.popErrorScope()).toBeNull();
   } finally {
-    for (const texture of textures) texture.destroy();
+    for (const texture of [...textures, ...composed, ...decalLayers]) texture.destroy();
     depth.destroy();
     output.destroy();
     readback.destroy();

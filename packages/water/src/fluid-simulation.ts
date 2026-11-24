@@ -704,7 +704,7 @@ function invalidFluidRecipeIdentity(value: Record<string, unknown>): boolean {
   return (
     value.kind !== 'water-simulation-recipe' ||
     value.system !== 'fluid-simulation' ||
-    value.configurationVersion !== 1 ||
+    (value.configurationVersion !== 1 && value.configurationVersion !== 2) ||
     !['ripple', 'shallow'].includes(String(value.solverMode)) ||
     !['none', 'constant-depth', 'water-info'].includes(String(value.terrainMode))
   );

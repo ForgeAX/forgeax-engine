@@ -98,14 +98,20 @@ pub(super) struct EntryPointInterface {
 #[derive(Clone, Eq, PartialEq, PartialOrd, Ord)]
 enum InterfaceKey {
     Location(u32),
+    Position,
     BuiltIn(crate::BuiltIn),
     Other,
 }
 
 impl InterfaceKey {
-    const fn new(binding: Option<&crate::Binding>) -> Self {
+    fn new(binding: Option<&crate::Binding>, shader_model: ShaderModel) -> Self {
         match binding {
             Some(&crate::Binding::Location { location, .. }) => Self::Location(location),
+            Some(&crate::Binding::BuiltIn(crate::BuiltIn::Position { .. }))
+                if shader_model >= ShaderModel::V6_0 =>
+            {
+                Self::Position
+            }
             Some(&crate::Binding::BuiltIn(built_in)) => Self::BuiltIn(built_in),
             None => Self::Other,
         }
@@ -688,7 +694,8 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         // Sort the members so that first come the user-defined varyings
         // in ascending locations, and then built-ins. This allows VS and FS
         // interfaces to match with regards to order.
-        members.sort_by_key(|m| InterfaceKey::new(m.binding.as_ref()));
+        // DXC must pack Position before fragment-only PrimitiveID; FXC needs the opposite order.
+        members.sort_by_key(|m| InterfaceKey::new(m.binding.as_ref(), self.options.shader_model));
 
         write!(self.out, "struct {struct_name}")?;
         writeln!(self.out, " {{")?;

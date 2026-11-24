@@ -502,5 +502,290 @@
   {
     "file": "packages/devkit/src/__tests__/project-play.e2e.test.ts",
     "reason": "Complete seven-case real-browser acceptance runs uninstrumented in existing View shard one. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
+  },
+  {
+    "file": "packages/render/src/__tests__/advanced-rigid-sdf.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/canonical-field-edit.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-contact-capture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-fully-rough.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-lighting-support.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-primitive-identity.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-radiosity-status.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-radiosity-visibility.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-residency-owner-index.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-shadow-status.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-static-closure.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-support-tags.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-unknown-support.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/custom-surface-card-parameters.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/custom-surface-cards.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-clearance-qualification.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-convolution.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-position.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-radiance-atlas.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-rotation-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-unlit-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-card-facing.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-contact-coverage.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-sample-cosine.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-scene-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-screen-origin.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-raster-receiver.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-candidates.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-texture-reader.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-texture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-axis-tie.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-endpoint-aggregation.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-intersection.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-clearance.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-mesh-suffix.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-silhouette.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-surface-origin.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-cavity.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-clipmap-energy.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-concave.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-curved.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-directional.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-motion.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-moving-occluder.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-rooms.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-scenes.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-shadow-budget.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-temporal.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-coverage.dawn.test.ts",
+    "reason": "The complete scene exceeded the 15-minute software-adapter test budget. The required Native mutation group and full Dawn gi-3 owner retain recapture, edits and unsupported-material recovery. Dawn core retains software Global SDF GPU rays and material lookup with bounded Card candidates.",
+    "retained": "packages/render/src/__tests__/raytracing/global-card-lookup.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-visible-temporal.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies the full scene addition and probe updates. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies the full camera and clipmap residency journey. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-edit.dawn.test.ts",
+    "reason": "The Native Ray Query foundation group verifies asset edits, removal and exact RHI replay. Dawn core retains the focused software GPU traversal and Card lookup cases."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-residency.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies full scene residency and buffer ownership. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts",
+    "reason": "The Native Ray Query foundation group preserves the complete live Renderer convergence. Dawn core retains focused visibility sampling and software GPU traversal."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-multiview.dawn.test.ts",
+    "reason": "The Native Ray Query mutation owner proves two-view pixel convergence, fair probe budgets and staging-buffer ownership. The full Dawn profile retains the software fallback journey.",
+    "retained": "packages/render/src/__tests__/raytracing/irradiance-field-view-demand.unit.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-radiance-cache.dawn.test.ts",
+    "reason": "The Native Ray Query foundation owner runs the complete Radiance Cache reference, energy and negative RHI replay checks. The full Dawn profile retains the software fallback journey.",
+    "retained": "packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-reflection-denoise.dawn.test.ts",
+    "reason": "The full Dawn profile and explicit gi-4 Focus keep the live Renderer journey with convergence, replay and camera disocclusion. Required Dawn runs the production reflection filter directly to bound software-adapter memory while checking spatial denoising at receiver boundaries.",
+    "retained": "packages/render/src/__tests__/raytracing/irradiance-field-reflection-filter.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts",
+    "reason": "The Native Ray Query gather owner runs the complete Screen Probe Renderer, pixel replay and recovery journey. Dawn core retains independent Screen Probe history and traversal checks.",
+    "retained": "packages/render/src/__tests__/raytracing/screen-probe-history.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-near-plane.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/screen-canonical-receiver.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader-compiler/src/__tests__/wgsl-f32-boundary.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-scene-texture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-accept.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-closed-boundary.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-correlated-triangle.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-exact-bits.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-exact-endpoints.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-local-ray.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-pool.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
   }
 ]

@@ -245,7 +245,8 @@ export function validateTemporalPipelineContract(
   }
   const validCoverageTarget = ctx.coverageOnly === true && ctx.colorFormat === 'r8unorm';
   const validVelocityTarget =
-    fragmentEntry === 'fs_scene_velocity' && ctx.colorFormat === 'r32uint';
+    fragmentEntry === 'fs_scene_velocity' &&
+    (ctx.colorFormat === 'r32uint' || ctx.colorFormat === 'rg32uint');
   if (ctx.colorFormat !== 'rgba16float' && !validCoverageTarget && !validVelocityTarget) {
     return err(
       new RhiError({

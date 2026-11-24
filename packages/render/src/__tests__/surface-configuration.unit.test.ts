@@ -39,6 +39,29 @@ const webGlPresentationProof = {
 } as const;
 
 describe('configureSurface', () => {
+  it.each([
+    [0x13, 0x11],
+    [0x10, 0x10],
+    [0x14, 0x14],
+    [0x15, 0x15],
+  ])('negotiates optional texture usages against concrete surface mask %i', (supportedTextureUsages, usage) => {
+    const configure = vi.fn(() => ok(undefined));
+    const context = { configure, supportedTextureUsages } as unknown as RhiCanvasContext;
+    expect(
+      configureSurface(context, device('webgpu', true), 'bgra8unorm', 'bgra8unorm-srgb').ok,
+    ).toBe(true);
+    expect(configure).toHaveBeenCalledWith(expect.objectContaining({ usage }));
+  });
+
+  it('rejects a surface without the required attachment usage before configure', () => {
+    const configure = vi.fn(() => ok(undefined));
+    const context = { configure, supportedTextureUsages: 0x03 } as unknown as RhiCanvasContext;
+    expect(
+      configureSurface(context, device('webgpu', true), 'bgra8unorm', 'bgra8unorm-srgb').ok,
+    ).toBe(false);
+    expect(configure).not.toHaveBeenCalled();
+  });
+
   it('exposes every surface failure with the four-field structured contract', () => {
     const detail: RenderSurfaceFailureDetail = {
       lane: 'direct',

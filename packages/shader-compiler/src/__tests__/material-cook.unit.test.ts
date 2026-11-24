@@ -272,7 +272,7 @@ describe('cookMaterialAsset', () => {
           pipeline: 'ray',
           geometry: 'mesh',
           pass: 'card-capture',
-          profile: 'forgeax-material-ray-v1',
+          profile: 'forgeax-material-card-v4',
           toolchain: 'naga-oil',
           instrumentation: 'none',
         },
@@ -280,6 +280,7 @@ describe('cookMaterialAsset', () => {
     ]);
     expect(new TextDecoder().decode(card?.artifact.bytes)).toMatch(/fn vs_card\(/);
     expect(new TextDecoder().decode(card?.artifact.bytes)).toMatch(/fn fs_card\(/);
+    expect(new TextDecoder().decode(card?.artifact.bytes)).toMatch(/fn fs_card_identity\(/);
     expect(card?.specializationKey).not.toBe(ray[0]?.specializationKey);
     expect(card && output.artifacts[card.artifact.path]?.bytes).toEqual(card?.artifact.bytes);
     expect(ray[0]?.selections).toEqual([

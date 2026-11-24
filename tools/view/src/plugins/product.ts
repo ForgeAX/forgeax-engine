@@ -20,7 +20,7 @@ import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE, VIEW_WOR
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer, type ViewHostServerOptions } from '@forgeax/view-workspace-core/resident';
-import { installedEngineRoot } from '../engine-root.ts';
+import { installedEngineRoot, installedEngineVersion } from '../engine-root.ts';
 
 import { openViewProject, viewProjectOpenError } from '../view-project-open.ts';
 import { resolveProjectIntent } from '../view-start.ts';
@@ -174,8 +174,10 @@ export default {
       const token = randomUUID();
       const workspaceClient = { clientId: 'view-frontend', token, resourceBrowser: true };
       const layout = args.frontendConfig?.layout ?? config.frontendConfig?.layout;
+      const engineVersion = installedEngineVersion(ctx.devkitBackend.hostPackageRoot);
       const frontendConfig: ViewFrontendConfig = {
         embedded: true,
+        ...(engineVersion === undefined ? {} : { engineVersion }),
         workspace: workspaceClient,
         ...(layout === undefined ? {} : { layout }),
       };
@@ -214,7 +216,7 @@ export default {
             ...(ctx.devkitBackend.viewBootstrap === undefined
               ? { staticRoot: config.staticRoot ?? builtRoot }
               : {}),
-            engineRoot: installedEngineRoot(),
+            engineRoot: installedEngineRoot(ctx.devkitBackend.hostPackageRoot),
             frontendConfig,
             ...(core === undefined ? {} : {
               onClientConnect: (caller) => core.attachPageSession(caller, host.transport),

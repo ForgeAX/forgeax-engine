@@ -4,6 +4,10 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import {
+  FIELD_VISIBILITY_BOUNDS_WGSL,
+  SCREEN_PROBE_RECONSTRUCTION_WGSL,
+} from '@forgeax/engine-shader';
+import {
   SURFACE_SLOT_MODULE,
   terrainProgramSource,
   waterDeformationAbiSource,
@@ -380,6 +384,15 @@ const CLOUD_DETAIL: bool = ${detail};
     }).then((file) => ({ ...file, id: `${file.id}?baked` })),
     rayScreenProbe: readGBufferEntry('ray-screen-probe.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE: false,
+    }),
+    rayScreenProbeGenerate: readEntry('ray-screen-probe.wgsl', undefined, {
+      IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE: true,
+    }).then((file) => ({ ...file, id: `${file.id}?generate-visibility-cache` })),
+    rayScreenProbeAtlas: readEntry('ray-screen-probe-atlas.wgsl', undefined, {
+      IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_RADIANCE_ATLAS: true,
     }),
     rayReflectionComposite: readGBufferEntry('ray-reflection-composite.wgsl'),
     standardDeferred: readGBufferEntry(
@@ -426,7 +439,11 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_material::terrain_surface': readSource('terrain-surface.wgsl'),
     'forgeax_material::terrain_detail_surface': readSource('terrain-detail-surface.wgsl'),
     'forgeax_material::terrain_id_surface': readSource('terrain-id-surface.wgsl'),
+    'forgeax_ray::screen_probe': readSource('ray-screen-probe.wgsl'),
     'forgeax_ray::irradiance_field_sample': readSource('ray-irradiance-field-sample.wgsl'),
+    'forgeax_ray::screen_candidate': readSource('ray-screen-candidate.wgsl'),
+    'forgeax_ray::screen_reconstruction': SCREEN_PROBE_RECONSTRUCTION_WGSL,
+    'forgeax_ray::field_visibility': FIELD_VISIBILITY_BOUNDS_WGSL,
     'forgeax_ray::traversal': readSource('ray-traversal.wgsl'),
     'forgeax_lighting::light_texture_resample_kernel': readSource(
       'light-texture-resample-kernel.wgsl',

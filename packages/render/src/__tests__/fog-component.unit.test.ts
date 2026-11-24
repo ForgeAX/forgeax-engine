@@ -151,8 +151,8 @@ describe('Fog component contract', () => {
       expected: 'a finite number in [0, 1]',
     });
     // skyOpacity scales only the sky; it never decides whether fog is active.
-    const unfoggedSky = { ...EXP_FOG, skyOpacity: 0 };
-    expect(fogIsActive(unfoggedSky)).toBe(true);
+    const fogWithoutSky: FogCandidate = { ...EXP_FOG, skyOpacity: 0 };
+    expect(fogIsActive(fogWithoutSky)).toBe(true);
   });
 
   it('rejects a second Fog owner without choosing a first-hit winner', () => {

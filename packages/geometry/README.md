@@ -605,8 +605,13 @@ partition and expands source section sidedness. `decodeMeshDistanceFieldAttachme
 an ordinary Mesh publication against the encoded field and returns the complete
 validated field. The Mesh decoder owns the no-attachment path and composes the
 field with its geometry.
-The artifact codec profile and native cook fingerprint derive their policy
-revision from `MESH_DISTANCE_FIELD_GENERATION_VERSION`.
+Artifact version 5 publishes exact samples and `MeshDistanceFieldSurface` flat
+source triangles, strict sidedness and a complete BVH; older artifacts require
+source recooking. Sampled fields carry `unsignedSampleError` for capped source
+magnitudes, without asserting signed interiors, GPU arithmetic or raster-surface
+identity. Samples and surface share the existing 32 MiB artifact budget.
+The codec version derives from `MESH_DISTANCE_FIELD_ARTIFACT_VERSION`; its builder
+profile and cook fingerprint derive separately from `MESH_DISTANCE_FIELD_GENERATION_VERSION`.
 
 `packMeshBin` only encodes geometry and rejects a decoded `distanceField` rather
 than dropping it. Use Import's complete Mesh output producer for export; it

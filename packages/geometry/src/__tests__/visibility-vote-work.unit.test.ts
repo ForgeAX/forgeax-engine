@@ -104,8 +104,27 @@ it('does not cast sign rays when the bounded nearest query found no nearby geome
 // Reconstruct the frozen v3 oracle only in this regression. Its old digests stay
 // unchanged across storage versions, proving every logical sample and metadata.
 async function legacyDenseArtifact(field: MeshDistanceField): Promise<Uint8Array> {
-  const { values: _, bricks: __, ...metadata } = field;
-  const header = new TextEncoder().encode(JSON.stringify({ version: 3, ...metadata }));
+  const { policy } = field;
+  if (policy.kind !== 'sampled-visibility') throw new Error('Expected sampled visibility');
+  // The v3 oracle saves the historical logical fields in their original order.
+  const header = new TextEncoder().encode(
+    JSON.stringify({
+      version: 3,
+      meshDigest: field.meshDigest,
+      bounds: field.bounds,
+      dimensions: field.dimensions,
+      origin: field.origin,
+      spacing: field.spacing,
+      policy: {
+        kind: policy.kind,
+        sourceDigest: policy.sourceDigest,
+        mostlyTwoSided: policy.mostlyTwoSided,
+        traceBounds: policy.traceBounds,
+        distanceBand: policy.distanceBand,
+      },
+      quality: field.quality,
+    }),
+  );
   const [nx, ny, nz] = field.dimensions;
   const bytes = new Uint8Array(4 + header.length + nx * ny * nz * 4 + 64),
     view = new DataView(bytes.buffer);

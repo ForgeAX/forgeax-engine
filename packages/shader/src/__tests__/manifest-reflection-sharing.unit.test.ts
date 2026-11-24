@@ -3,6 +3,7 @@ import { isShaderReflection, type ShaderReflection } from '@forgeax/engine-types
 import { expect, it, vi } from 'vitest';
 import {
   expandShaderManifestPublication,
+  hasDeferredReflection,
   readOwnedShaderManifestPublication,
   readShaderManifestPublication,
   shaderSourceDigestInput,
@@ -182,6 +183,91 @@ it('does not merge non-plain extension values or introduce cross-publication ret
   const first = await admit([reflection()]);
   const second = await admit([reflection()]);
   expect(second[0]?.boundGlobals).not.toBe(first[0]?.boundGlobals);
+});
+
+it('shares complete facts in an owned publication while retaining deferred per-row validation', async () => {
+  const input = JSON.parse(JSON.stringify(publication([reflection(0), reflection(1)])));
+  const expanded = (await readOwnedShaderManifestPublication(input)) as {
+    entries: { reflection: ShaderReflection }[];
+  };
+  const [first, second] = expanded.entries;
+  if (first === undefined || second === undefined) throw new Error('Missing owned reflection rows');
+  expect(hasDeferredReflection(first)).toBe(true);
+  expect(hasDeferredReflection(second)).toBe(true);
+  expect(first.reflection.uvSetCount).toBe(0);
+  expect(second.reflection.uvSetCount).toBe(1);
+  expect(first.reflection).not.toBe(second.reflection);
+  expect(first.reflection.boundGlobals).toBe(second.reflection.boundGlobals);
+  expect(Object.isFrozen(first.reflection.boundGlobals[0]?.typeDescriptor)).toBe(true);
+  const next = (await readOwnedShaderManifestPublication(
+    JSON.parse(JSON.stringify(publication([reflection()]))),
+  )) as typeof expanded;
+  expect(next.entries[0]?.reflection.boundGlobals).not.toBe(first.reflection.boundGlobals);
+
+  const invalid = (await readOwnedShaderManifestPublication(
+    publication([reflection(), { ...reflection(), schemaVersion: 'invalid-reflection' }]),
+  )) as typeof expanded;
+  expect(hasDeferredReflection(invalid.entries[1] as object)).toBe(true);
+  expect(invalid.entries[0]?.reflection.uvSetCount).toBe(0);
+  expect(() => invalid.entries[1]?.reflection).toThrow('Invalid shader manifest publication');
+});
+
+it('keeps every owned extension distinction while sharing equal immutable subtrees', async () => {
+  const extensions = [
+    { zero: -0, facts: {}, order: { a: 1, b: 2 }, list: ['a', 'b', 'a'] },
+    { zero: 0, facts: {}, order: { b: 2, a: 1 }, list: ['a', 'a', 'b'] },
+    { zero: -0, facts: { fields: [] }, order: { a: 1, b: 2 }, list: ['a', 'b', 'a'] },
+  ];
+  const expanded = (await readOwnedShaderManifestPublication(
+    publication(extensions.map((extension) => ({ ...reflection(), extension }))),
+  )) as {
+    entries: { reflection: ShaderReflection & { extension: (typeof extensions)[number] } }[];
+  };
+  const values = expanded.entries.map((row) => row.reflection);
+  expect(values).toEqual(extensions.map((extension) => ({ ...reflection(), extension })));
+  expect(values[0]?.boundGlobals).toBe(values[1]?.boundGlobals);
+  expect(values[1]?.boundGlobals).toBe(values[2]?.boundGlobals);
+  expect(values[0]).not.toBe(values[1]);
+  expect(values[0]).not.toBe(values[2]);
+  expect(Object.is(values[0]?.extension.zero, -0)).toBe(true);
+  expect(Object.is(values[1]?.extension.zero, 0)).toBe(true);
+  expect(Object.keys(values[0]?.extension.order ?? {})).toEqual(['a', 'b']);
+  expect(Object.keys(values[1]?.extension.order ?? {})).toEqual(['b', 'a']);
+  expect(Object.hasOwn(values[0]?.extension.facts ?? {}, 'fields')).toBe(false);
+  expect(Object.hasOwn(values[2]?.extension.facts ?? {}, 'fields')).toBe(true);
+  expect(values[0]?.extension.list).toBe(values[2]?.extension.list);
+  expect(values[0]?.extension.list).not.toBe(values[1]?.extension.list);
+});
+
+it('does not canonicalize owned accessors or non-plain extension values', async () => {
+  let reads = 0;
+  const accessor = () => ({
+    ...reflection(),
+    extension: {
+      get value() {
+        reads++;
+        return 1;
+      },
+    },
+  });
+  const expanded = (await readOwnedShaderManifestPublication(
+    publication([accessor(), accessor()]),
+  )) as { entries: { reflection: ShaderReflection & { extension: unknown } }[] };
+  expect(reads).toBe(0);
+  expect(expanded.entries[0]?.reflection.boundGlobals).not.toBe(
+    expanded.entries[1]?.reflection.boundGlobals,
+  );
+  expect(reads).toBe(2);
+  const unusual = (await readOwnedShaderManifestPublication(
+    publication([
+      { ...reflection(), extension: new Date(0) },
+      { ...reflection(), extension: new Date(0) },
+    ]),
+  )) as typeof expanded;
+  expect(unusual.entries[0]?.reflection.extension).toBeInstanceOf(Date);
+  expect(unusual.entries[0]?.reflection.extension).not.toBe(
+    unusual.entries[1]?.reflection.extension,
+  );
 });
 
 it('takes explicit reflection ownership without deferring any reflection validation', () => {

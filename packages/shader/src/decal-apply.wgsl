@@ -1,4 +1,4 @@
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardReflectance, encodeStandardReflectance, decodeStandardGBufferNormal, encodeStandardGBufferNormal, standardGBufferValid, standardGBufferOcclusion, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT, compactGBufferLit, decodeCompactBaseColor, encodeCompactBaseColor}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardReflectance, encodeStandardReflectance, decodeStandardGBufferNormal, encodeStandardGBufferNormal, standardGBufferValid, standardGBufferOcclusion, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT, STANDARD_GBUFFER_SCREEN_TRACE_MASK, compactGBufferLit, decodeCompactBaseColor, encodeCompactBaseColor}
 
 @group(0) @binding(0) var originalNormal : texture_2d<u32>;
 @group(0) @binding(1) var originalAlbedo : texture_2d<u32>;
@@ -53,9 +53,10 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalSurfaceOutput {
   let finalColor = color.rgb + baseColor.rgb * (1.0 - color.a);
   let finalNormal = composeNormalRoughness(baseNormal, normal, roughness);
   // Preserve the receiver's metallic fraction and dielectric reflectance.
-  return DecalSurfaceOutput(encodeStandardGBufferNormal(finalNormal.xyz, finalNormal.w, standardGBufferOcclusion(normalBits),
-    (normalBits.x & STANDARD_GBUFFER_V2_DIRECT_DFG_BIT) != 0u),
-    encodeStandardReflectance(finalColor, baseColor.a), f0Bits);
+  var composed = encodeStandardGBufferNormal(finalNormal.xyz, finalNormal.w, standardGBufferOcclusion(normalBits),
+    (normalBits.x & STANDARD_GBUFFER_V2_DIRECT_DFG_BIT) != 0u);
+  composed.y |= normalBits.y & STANDARD_GBUFFER_SCREEN_TRACE_MASK;
+  return DecalSurfaceOutput(composed, encodeStandardReflectance(finalColor, baseColor.a), f0Bits);
 }
 
 struct DefaultDecalSurfaceOutput {

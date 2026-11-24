@@ -34,7 +34,7 @@ export const AUTO_EXPOSURE_HISTOGRAM_BYTES = 1024;
 const AUTO_EXPOSURE_STATE_BYTES = 32;
 const AUTO_EXPOSURE_CANDIDATE_BYTES = 32;
 /** Camera/time inputs consumed by adapt; this is not a CPU exposure estimate. */
-const AUTO_EXPOSURE_PARAMETERS_BYTES = 32;
+export const AUTO_EXPOSURE_PARAMETERS_BYTES = 48;
 
 interface AutoExposureGpuParameters {
   readonly compensationEv: number;
@@ -46,6 +46,7 @@ interface AutoExposureGpuParameters {
   readonly fallback: number;
   readonly generation: number;
   readonly historyIdentity?: string;
+  readonly adaptation?: 'ue-eye-adaptation';
 }
 
 export interface AutoExposureGpuResources {
@@ -174,6 +175,7 @@ export function createAutoExposureGpuResources(
 interface AutoExposureHistoryKey {
   readonly generation: number;
   readonly view: string | undefined;
+  readonly ue: boolean;
   readonly fallback: number;
   readonly revision: number;
 }
@@ -205,13 +207,18 @@ export function writeAutoExposureParameters(
   const previous = history.submitted;
   const generation = parameters.generation;
   const view = parameters.historyIdentity;
+  const ue = parameters.adaptation === 'ue-eye-adaptation';
   const fallback = parameters.fallback;
   const key =
-    previous?.generation === generation && previous.view === view && previous.fallback === fallback
+    previous?.generation === generation &&
+    previous.view === view &&
+    previous.fallback === fallback &&
+    previous.ue === ue
       ? previous
       : {
           generation,
           view,
+          ue,
           fallback,
           revision: previous ? previous.revision + 1 : resources.generation,
         };
@@ -224,6 +231,10 @@ export function writeAutoExposureParameters(
     parameters.deltaTime,
     fallback,
     key.revision,
+    Number(ue),
+    0,
+    0,
+    0,
   ]);
   const written = resources.device.queue.writeBuffer(resources.parameters, 0, values);
   if (written.ok) history.pending = key;

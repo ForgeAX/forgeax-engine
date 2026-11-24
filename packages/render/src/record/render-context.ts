@@ -1091,6 +1091,35 @@ function surfaceCapabilityFacts(
   };
 }
 
+function negotiateSurfaceTextureUsage(
+  context: RhiCanvasContext,
+  device: RhiDevice,
+): Result<number, RhiError> {
+  const backendKind = device.caps?.backendKind ?? 'webgpu';
+  const supportsTextureBinding =
+    backendKind !== 'wgpu-webgl2' && (device.caps?.storageBuffer ?? true);
+  const supportedUsages = context.supportedTextureUsages;
+  const supportsUsage = (usage: number) =>
+    supportedUsages === undefined || (supportedUsages & usage) === usage;
+  if (!supportsUsage(GPU_TEXTURE_USAGE_RENDER_ATTACHMENT))
+    return err(
+      new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'the concrete surface supports render attachment usage',
+        hint: 'recreate a surface advertising RENDER_ATTACHMENT before rendering',
+      }),
+    );
+  return ok(
+    GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
+      (supportsTextureBinding && supportsUsage(GPU_TEXTURE_USAGE_TEXTURE_BINDING)
+        ? GPU_TEXTURE_USAGE_TEXTURE_BINDING
+        : 0) |
+      (backendKind !== 'wgpu-webgl2' && supportsUsage(GPU_TEXTURE_USAGE_COPY_SRC)
+        ? GPU_TEXTURE_USAGE_COPY_SRC
+        : 0),
+  );
+}
+
 /**
  * Configure the canvas surface and negotiate its presentation colour space.
  * sRGB keeps the spec default (no `colorSpace` member). Display P3 is
@@ -1120,8 +1149,8 @@ export function configureSurface(
   // wgpu surface derives supported usages from SurfaceCapabilities and rejects
   // unsupported requests; this path requests only the guaranteed attachment
   // usage. Raw-only deliberately has no alternate view.
-  const supportsTextureBinding =
-    backendKind !== 'wgpu-webgl2' && (device.caps?.storageBuffer ?? true);
+  const usage = negotiateSurfaceTextureUsage(context, device);
+  if (!usage.ok) return usage;
   const modes = context.supportedAlphaModes;
   const alphaMode =
     modes === undefined
@@ -1141,24 +1170,11 @@ export function configureSurface(
         hint: 'the surface advertised no supported alpha modes; recreate a usable presentation target',
       }),
     );
-  const availableUsage = context.supportedTextureUsages;
-  if (availableUsage !== undefined && (availableUsage & GPU_TEXTURE_USAGE_RENDER_ATTACHMENT) === 0)
-    return err(
-      new RhiError({
-        code: 'webgpu-runtime-error',
-        expected: 'the concrete surface allows render attachments',
-        hint: 'select a presentation target with GPU render attachment support',
-      }),
-    );
-  const usage =
-    GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-    (supportsTextureBinding ? GPU_TEXTURE_USAGE_TEXTURE_BINDING : 0) |
-    (isWebGl2 ? 0 : GPU_TEXTURE_USAGE_COPY_SRC);
   const descriptor = {
     device,
     format: surfaceFormats.storage,
     alphaMode,
-    usage: availableUsage === undefined ? usage : usage & availableUsage,
+    usage: usage.value,
     viewFormats: [...profile.value.viewFormats],
   } satisfies CanvasConfiguration;
   let colorSpaceReport: OutputColorSpaceReport = appliedOutputColorSpace('srgb');

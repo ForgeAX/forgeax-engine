@@ -54,7 +54,6 @@ import type {
   RenderPipelineFrame,
   RenderPipelineTarget,
 } from '../render-pipeline';
-import { getTemporalGpuState, stageTemporalGpuWrite } from '../temporal/gpu';
 import {
   isSceneDataTarget,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
@@ -68,6 +67,7 @@ import {
   waterMaterialSystemBindGroup,
 } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
+import { stageCloudHistoryWrite } from './frame-graph-history';
 import { buildPerFrameBindGroups, buildViewBindGroup } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -744,23 +744,6 @@ function fullscreenStorageBindings(
     if (buffer === undefined) throw new Error(`fullscreen storage buffer unavailable: ${name}`);
     return { binding, buffer: buffer.buffer };
   });
-}
-
-// Cloud history is a producer of the shared temporal ping-pong state even
-// when TAA is disabled. Stage the write at encode time; execute's finish
-// guard and submit transaction then give it the same abort/commit/fence
-// semantics as the TAA resolve.
-function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
-  const state = getTemporalGpuState(
-    frame.frameState,
-    frame.runtime.device,
-    recordContext(frame.runtime).deviceScope,
-    frame.targetW,
-    frame.targetH,
-    true,
-    frame.camera,
-  );
-  stageTemporalGpuWrite(frame.frameState, state);
 }
 
 /** One-input fullscreen producer with optional depth and named extra inputs. */

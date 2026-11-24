@@ -4,7 +4,12 @@ import { compileShader } from '../../../../shader-compiler/src/index';
 import { packIrradianceFieldUniform } from '../../raytracing/irradiance-field';
 import { IRRADIANCE_FIELD_PROBE_STRIDE } from '../../raytracing/irradiance-field-plan';
 import { SCREEN_PROBE_BINDINGS, SCREEN_PROBE_STAGES } from '../../raytracing/screen-probe-kernels';
-import { packScreenProbeFrame, SCREEN_PROBE_FRAME_BYTES } from '../../raytracing/screen-probe-plan';
+import {
+  packScreenProbeFrame,
+  SCREEN_PROBE_FRAME_BYTES,
+  SCREEN_PROBE_RECORD_BYTES,
+} from '../../raytracing/screen-probe-plan';
+import { rayShaderTestImports } from './ray-shader-imports.fixture';
 
 it('stratifies each receiver angular sequence independently of placement jitter and adaptive slots', async () => {
   const read = (name: string) =>
@@ -12,12 +17,7 @@ it('stratifies each receiver angular sequence independently of placement jitter 
   const compiled = (
     await compileShader(read('ray-screen-probe'), {
       id: 'screen-probe-ray-sequence',
-      imports: {
-        'forgeax_view::common': read('common'),
-        'forgeax_pbr::gbuffer': read('standard-gbuffer'),
-        'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
-        'forgeax_ray::irradiance_field_sample': read('ray-irradiance-field-sample'),
-      },
+      imports: await rayShaderTestImports(),
     })
   ).unwrap();
   const adapter = await navigator.gpu.requestAdapter();
@@ -35,7 +35,7 @@ it('stratifies each receiver angular sequence independently of placement jitter 
   let status = 'running';
   try {
     const frame = buffer(SCREEN_PROBE_FRAME_BYTES, 64 | 8),
-      probes = buffer(6 * 32, 128 | 8),
+      probes = buffer(6 * SCREEN_PROBE_RECORD_BYTES, 128 | 8),
       count = buffer(4, 128 | 8),
       rays = buffer(6 * 64 * 32, 128 | 4),
       staging = buffer(rays.size, 1 | 8);
@@ -99,6 +99,7 @@ it('stratifies each receiver angular sequence independently of placement jitter 
         frame,
         0,
         packScreenProbeFrame({
+          worldSource: { traversal: 'unused' },
           layout: {
             width: 16,
             height: 4,
@@ -126,14 +127,14 @@ it('stratifies each receiver angular sequence independently of placement jitter 
           reprojection: undefined,
         }),
       );
-      const records = new Float32Array(6 * 8),
+      const records = new Float32Array(6 * (SCREEN_PROBE_RECORD_BYTES / 4)),
         words = new Uint32Array(records.buffer);
       for (let probe = 0; probe < 6; probe++) {
-        records.set([probe, 0, 0, 1, 0, 0, 1], probe * 8);
+        records.set([probe, 0, 0, 1, 0, 0, 1], probe * (SCREEN_PROBE_RECORD_BYTES / 4));
         const pixel =
           probe < 4 ? probe * 4 + (frameIndex % 4) : adaptivePixels[(probe - 4) ^ Number(swapped)];
         assert(pixel !== undefined);
-        words[probe * 8 + 7] = pixel;
+        words[probe * (SCREEN_PROBE_RECORD_BYTES / 4) + 7] = pixel;
       }
       device.queue.writeBuffer(probes, 0, records);
       const encoder = device.createCommandEncoder(),
@@ -150,62 +151,118 @@ it('stratifies each receiver angular sequence independently of placement jitter 
       staging.unmap();
       const result: Record<string, number[]> = {};
       for (let probe = 0; probe < 6; probe++) {
-        const key = probe < 4 ? `uniform:${probe}` : `adaptive:${words[probe * 8 + 7]}`;
+        const key =
+          probe < 4
+            ? `uniform:${probe}`
+            : `adaptive:${words[probe * (SCREEN_PROBE_RECORD_BYTES / 4) + 7]}`;
         result[key] = Array.from(actual.subarray(probe * 64 * 8, (probe + 1) * 64 * 8));
       }
       return result;
     };
     const checks: { name: string; actual: unknown; expected: unknown }[] = [];
-    for (const first of [0, 47, 101]) {
+    for (const first of [0, 47, 101, 1021, 65533, 0x7ffffffd, 0xfffffffd]) {
+      const cycleStart = first - (first % 8);
       const frames: Record<string, number[]>[] = [];
-      for (let phase = 0; phase < 8; phase++)
-        frames.push(await execute(first + phase, phase % 2 === 1));
+      // Exercise both complete cycles surrounding the original arbitrary
+      // starting frames, including their boundary and every placement phase.
+      for (let phase = 0; phase < 16; phase++)
+        frames.push(await execute(cycleStart + phase, phase % 2 === 1));
       const initial = frames[0];
       assert(initial !== undefined);
-      for (const key of Object.keys(initial)) {
-        const jitter: number[] = [];
-        for (const frame of frames) {
-          const data = frame[key];
-          assert(data !== undefined);
-          const bits = new Uint32Array(new Float32Array(data).buffer);
-          const texels = new Set<number>();
-          for (let ray = 0; ray < 64; ray++) {
-            const at = ray * 8,
-              info = bits[at + 3];
-            assert(info !== undefined);
-            expect(info & 512).toBe(512);
-            expect((info >> 12) & 7).toBe(1);
-            texels.add(info & 63);
-            expect(Math.hypot(...data.slice(at, at + 3))).toBeCloseTo(1, 6);
+      for (const key of Object.keys(initial))
+        for (const cycle of [0, 8]) {
+          const jitter: number[] = [];
+          for (const frame of frames.slice(cycle, cycle + 8)) {
+            const data = frame[key];
+            assert(data !== undefined);
+            const bits = new Uint32Array(new Float32Array(data).buffer);
+            const texels = new Set<number>();
+            for (let ray = 0; ray < 64; ray++) {
+              const at = ray * 8,
+                info = bits[at + 3];
+              assert(info !== undefined);
+              expect(info & 512).toBe(512);
+              expect((info >> 12) & 7).toBe(1);
+              texels.add(info & 63);
+              expect(Math.hypot(...data.slice(at, at + 3))).toBeCloseTo(1, 6);
+            }
+            expect(texels.size).toBe(64);
+            // Texel 27 stays on the interior +Z octahedral face. Inverting the
+            // actual emitted direction exposes its two within-cell coordinates.
+            const at = 27 * 8,
+              direction = data.slice(at, at + 3),
+              l1 = direction.reduce((s, v) => s + Math.abs(v), 0);
+            jitter.push(
+              (((direction[0] ?? Number.NaN) / l1) * 0.5 + 0.5) * 8 - 3,
+              (((direction[1] ?? Number.NaN) / l1) * 0.5 + 0.5) * 8 - 3,
+            );
           }
-          expect(texels.size).toBe(64);
-          // Texel 27 stays on the interior +Z octahedral face. Inverting the
-          // actual emitted direction exposes its two within-cell coordinates.
-          const at = 27 * 8,
-            direction = data.slice(at, at + 3),
-            l1 = direction.reduce((s, v) => s + Math.abs(v), 0);
-          jitter.push(
-            (((direction[0] ?? Number.NaN) / l1) * 0.5 + 0.5) * 8 - 3,
-            (((direction[1] ?? Number.NaN) / l1) * 0.5 + 0.5) * 8 - 3,
-          );
+          controls[`${first}:${key}:cycle${cycle}:jitter`] = jitter;
+          // One-dimensional strata do not constrain the joint footprint. A
+          // cell may miss a narrow diagonal source despite both axis checks.
+          // Check each binary rectangle of area 1/8, across both folded faces.
+          for (const texel of [0, 7, 9, 27, 36, 63]) {
+            const samples = frames.slice(cycle, cycle + 8).map((frame) => {
+              const data = frame[key];
+              assert(data !== undefined);
+              const direction = data.slice(texel * 8, texel * 8 + 3);
+              const l1 = direction.reduce((sum, value) => sum + Math.abs(value), 0);
+              let x = (direction[0] ?? Number.NaN) / l1;
+              let y = (direction[1] ?? Number.NaN) / l1;
+              if ((direction[2] ?? Number.NaN) < 0) {
+                const oldX = x;
+                x = (1 - Math.abs(y)) * (oldX < 0 ? -1 : 1);
+                y = (1 - Math.abs(oldX)) * (y < 0 ? -1 : 1);
+              }
+              return [
+                (x * 0.5 + 0.5) * 8 - (texel % 8),
+                (y * 0.5 + 0.5) * 8 - Math.floor(texel / 8),
+              ];
+            });
+            controls[`${first}:${key}:cycle${cycle}:cell${texel}:joint`] = samples.flat();
+            for (const columns of [1, 2, 4, 8]) {
+              const rows = 8 / columns;
+              const counts = new Array<number>(8).fill(0);
+              for (const [x, y] of samples) {
+                assert(x !== undefined && y !== undefined);
+                expect(x).toBeGreaterThanOrEqual(-1e-5);
+                expect(y).toBeGreaterThanOrEqual(-1e-5);
+                expect(x).toBeLessThan(1 + 1e-5);
+                expect(y).toBeLessThan(1 + 1e-5);
+                const ix = Math.min(columns - 1, Math.max(0, Math.floor(x * columns)));
+                const iy = Math.min(rows - 1, Math.max(0, Math.floor(y * rows)));
+                const cell = iy * columns + ix;
+                counts[cell] = (counts[cell] ?? 0) + 1;
+              }
+              checks.push({
+                name: `${first}:${key}:cycle${cycle}:cell${texel}:${columns}x${rows}`,
+                actual: counts,
+                expected: new Array<number>(8).fill(1),
+              });
+            }
+          }
+          for (const axis of [0, 1]) {
+            const bins = jitter.filter((_, i) => i % 2 === axis).map((v) => Math.floor(v * 8));
+            checks.push({
+              name: `${first}:${key}:cycle${cycle}:axis${axis}`,
+              actual: [...bins].sort((a, b) => a - b),
+              expected: [0, 1, 2, 3, 4, 5, 6, 7],
+            });
+          }
         }
-        controls[`${first}:${key}:jitter`] = jitter;
-        for (const axis of [0, 1]) {
-          const bins = jitter.filter((_, i) => i % 2 === axis).map((v) => Math.floor(v * 8));
-          checks.push({
-            name: `${first}:${key}:axis${axis}`,
-            actual: [...bins].sort((a, b) => a - b),
-            expected: [0, 1, 2, 3, 4, 5, 6, 7],
-          });
-        }
-      }
+      const sameFrame = await execute(first, false);
+      const compacted = await execute(first, true);
+      const progressed = await execute(first + 1, true);
       const repeated = await execute(first + 8, true);
-      for (const key of Object.keys(repeated))
+      for (const key of Object.keys(compacted)) {
         checks.push({
-          name: `${first}:${key}:period-and-slot-invariance`,
-          actual: repeated[key],
-          expected: initial[key],
+          name: `${first}:${key}:same-frame-slot-invariance`,
+          actual: compacted[key],
+          expected: sameFrame[key],
         });
+        expect(progressed[key], `${first}:${key}:angular-progress`).not.toEqual(sameFrame[key]);
+        expect(repeated[key], `${first}:${key}:eight-phase-repeat`).toEqual(sameFrame[key]);
+      }
     }
     expect(errors).toEqual([]);
     for (const check of checks) expect(check.actual, check.name).toEqual(check.expected);

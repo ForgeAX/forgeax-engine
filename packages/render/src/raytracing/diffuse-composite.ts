@@ -7,8 +7,8 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
-import { STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS } from '../standard-attachments';
 import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
+import { prepareRenderPipeline } from './prepare-pipeline';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's attachments and the matching raw unit-receiver D. */
@@ -16,29 +16,27 @@ type RayDiffuseCompositeInputs = {
   readonly irradiance: Buffer;
   readonly depth: TextureView;
   readonly normal: TextureView;
-  readonly compactGbuffer?: true;
 } & (
   | { readonly baseline: Buffer; readonly subsurface: boolean }
   | {
       readonly baseline?: undefined;
       readonly albedoMetallic: TextureView;
       readonly dielectricSpecular: TextureView;
-      readonly reflectionResponse?: TextureView;
       readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
     }
 );
 
+type RayDiffuseMode = 'add' | 'replace' | 'replace_subsurface';
+
 /** Record into the caller's linear HDR pass; never owns submission or scene color.
  * The graph owner declares every borrowed read and retires inputs after completion. */
-export function createRayDiffuseComposite(
+export async function createRayDiffuseComposite(
   device: RhiDevice,
   module: ShaderModule,
   signal: 'raw' | 'reconstructed',
+  composition: 'replace-environment' | 'add' = 'replace-environment',
 ) {
-  const createPipeline = (
-    mode: 'add' | 'reflections' | 'replace' | 'replace_subsurface',
-    compact: boolean,
-  ) => {
+  const createPipeline = async (mode: RayDiffuseMode) => {
     const replacement = mode === 'replace' || mode === 'replace_subsurface';
     const layout = device.createBindGroupLayout({
       entries: [
@@ -52,24 +50,18 @@ export function createRayDiffuseComposite(
         ...(replacement
           ? [{ binding: 7, visibility: 2, buffer: { type: 'read-only-storage' as const } }]
           : [{ binding: 5, visibility: 2, buffer: { type: 'uniform' as const } }]),
-        ...(mode === 'reflections'
-          ? [{ binding: 6, visibility: 2, texture: { sampleType: 'float' as const } }]
-          : []),
       ],
     });
     if (!layout.ok) return layout;
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
     if (!pipelineLayout.ok) return pipelineLayout;
-    const pipeline = device.createRenderPipeline({
+    const pipeline = await prepareRenderPipeline(device, {
       label: 'ray-diffuse.composite',
       layout: pipelineLayout.value,
       vertex: { module, entryPoint: 'vs_ray_diffuse', buffers: [] },
       fragment: {
         module,
         entryPoint: `${signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'}${mode === 'add' ? '' : `_${mode}`}`,
-        ...(compact && !replacement
-          ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS }
-          : {}),
         targets: Array.from({ length: mode === 'replace_subsurface' ? 2 : 1 }, () => ({
           format: 'rgba16float',
           blend: {
@@ -83,7 +75,15 @@ export function createRayDiffuseComposite(
     if (!pipeline.ok) return pipeline;
     return ok({ layout: layout.value, pipeline: pipeline.value });
   };
-  const pipelines = new Map<string, ReturnType<typeof createPipeline>>();
+  const modes: readonly RayDiffuseMode[] =
+    composition === 'add' ? ['add'] : ['replace', 'replace_subsurface'];
+  const prepared = await Promise.all(
+    modes.map(async (mode) => [mode, await createPipeline(mode)] as const),
+  );
+  for (const [, result] of prepared) {
+    if (!result.ok) return result;
+  }
+  const pipelines = new Map(prepared);
   return ok({
     record(pass: RhiRenderPassEncoder, input: RayDiffuseCompositeInputs, pixelCount: number) {
       const stride = signal === 'raw' ? RAY_ACCUMULATION_STRIDE : 16;
@@ -101,15 +101,10 @@ export function createRayDiffuseComposite(
           ? input.subsurface === true
             ? 'replace_subsurface'
             : 'replace'
-          : input.reflectionResponse !== undefined
-            ? 'reflections'
-            : 'add';
-      const compact = input.compactGbuffer === true;
-      const key = `${mode}:${compact}`;
-      let pipeline = pipelines.get(key);
+          : 'add';
+      const pipeline = pipelines.get(mode);
       if (pipeline === undefined) {
-        pipeline = createPipeline(mode, compact);
-        pipelines.set(key, pipeline);
+        return rayReferenceFailure('diffuse composite requires its prepared target mode', true);
       }
       if (!pipeline.ok) return pipeline;
       const selected = pipeline.value;
@@ -139,14 +134,6 @@ export function createRayDiffuseComposite(
                 {
                   binding: 7,
                   resource: { kind: 'buffer' as const, value: { buffer: input.baseline } },
-                },
-              ]),
-          ...(input.baseline !== undefined || input.reflectionResponse === undefined
-            ? []
-            : [
-                {
-                  binding: 6,
-                  resource: { kind: 'textureView' as const, value: input.reflectionResponse },
                 },
               ]),
         ],

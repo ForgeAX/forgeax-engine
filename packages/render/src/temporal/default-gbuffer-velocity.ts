@@ -70,9 +70,13 @@ function selectVelocityWriters(frame: RenderPipelineFrame, writes: boolean) {
 }
 
 /** Separate raster attachment; the material GBuffer keeps the same attachment roster. */
-export function createDefaultVelocityTarget(graph: Graph, size: GraphTextureDescriptor['size']) {
+export function createDefaultVelocityTarget(
+  graph: Graph,
+  size: GraphTextureDescriptor['size'],
+  withPreviousDepth: boolean,
+) {
   return createRenderPipelineTarget(graph, 'scene-velocity', {
-    format: 'r32uint',
+    format: withPreviousDepth ? 'rg32uint' : 'r32uint',
     size,
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });

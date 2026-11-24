@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ToolExecutionContext } from '@forgeax/engine-tool-runtime';
 import type { Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -534,12 +534,12 @@ describe('play result shaping', () => {
       returned: { checks: 3 },
       state: { phase: 'won', coins: 125 },
       screenshots: [
-        'artifacts/play/playthrough/01-start.png',
-        'artifacts/play/playthrough/02-final.png',
+        join('artifacts', 'play', 'playthrough', '01-start.png'),
+        join('artifacts', 'play', 'playthrough', '02-final.png'),
       ],
       rendered: true,
       errors: { console: 0, page: 0 },
-      report: 'artifacts/play/playthrough/play.json',
+      report: join('artifacts', 'play', 'playthrough', 'play.json'),
     });
     expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
     expect(playResultValue(passing, true)).toBe(passing);
@@ -607,12 +607,12 @@ describe('play result shaping', () => {
         reason: 'script-error',
         step: 'collect coin',
         action: 'collect coin: keyboard.press KeyE',
-        screenshot: 'artifacts/play/playthrough/03-failure.png',
+        screenshot: join('artifacts', 'play', 'playthrough', '03-failure.png'),
         state: { phase: 'menu' },
         errors: { console: 1, page: 0 },
         firstError: 'TypeError: boom',
         log: ['three', 'four'],
-        report: 'artifacts/play/playthrough/play.json',
+        report: join('artifacts', 'play', 'playthrough', 'play.json'),
       },
     });
     expect(Buffer.byteLength(JSON.stringify(error))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
@@ -652,7 +652,10 @@ describe('play result shaping', () => {
     });
     const value = playResultValue(many, false);
     expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
-    expect(value).toMatchObject({ passed: true, report: 'artifacts/play/playthrough/play.json' });
+    expect(value).toMatchObject({
+      passed: true,
+      report: join('artifacts', 'play', 'playthrough', 'play.json'),
+    });
   });
 
   it('keys the output directory by script path under artifacts/play', () => {
@@ -668,6 +671,8 @@ describe('play result shaping', () => {
     expect(relative(root, external).split(sep).join('/')).toMatch(
       /^artifacts\/play\/external\/playthrough-[0-9a-f]{8}$/,
     );
+    expect(dirname(external)).toBe(resolve('/game', 'artifacts', 'play', 'external'));
+    expect(basename(external)).toMatch(/^playthrough-[0-9a-f]{8}$/);
   });
 
   it('names the first failing final-frame check from the strict capture record', () => {

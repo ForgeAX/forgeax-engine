@@ -458,8 +458,14 @@ try {
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally {
-  await rm(temporaryRoot, { recursive: true, force: true });
-  await new Promise((accept, reject) =>
-    registry.close((error) => (error === undefined ? accept() : reject(error))),
+  await sdkStage('cleanup npm consumer files', () =>
+    rm(temporaryRoot, { recursive: true, force: true }),
+  );
+  await sdkStage(
+    'close npm consumer registry',
+    () =>
+      new Promise((accept, reject) =>
+        registry.close((error) => (error === undefined ? accept() : reject(error))),
+      ),
   );
 }

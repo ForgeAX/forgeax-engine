@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "forgeax-engine",
@@ -3145,6 +3144,7 @@
         "@forgeax/engine-rhi-wgpu-native": "workspace:*",
         "@forgeax/engine-shader": "workspace:*",
         "@forgeax/engine-shader-compiler": "workspace:*",
+        "@forgeax/engine-ui-blitz": "workspace:*",
         "@forgeax/engine-vite-plugin-pack": "workspace:*",
         "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
         "@forgeax/engine-vite-plugin-shader": "workspace:*",
@@ -5510,6 +5510,7 @@
         "autoprefixer": "^10.4.21",
         "jsdom": "^26.0.0",
         "postcss": "^8.5.31",
+        "postcss-selector-parser": "6.1.6",
         "tailwindcss": "^3.4.19",
         "typescript": "^5.7.0",
         "vite": "8.3.5",
@@ -6014,7 +6015,7 @@
       "name": "@forgeax/engine-devkit",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/cli.mjs",
+        "forgeax": "./dist/cli.mjs"
       },
       "dependencies": {
         "@fontsource-variable/noto-sans-sc": "5.3.0",
@@ -6123,7 +6124,7 @@
       "name": "@forgeax/engine",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/bin/forgeax.mjs",
+        "forgeax": "./dist/bin/forgeax.mjs"
       },
       "dependencies": {
         "@forgeax/engine-animation": "workspace:*",
@@ -7245,9 +7246,7 @@
       "name": "@forgeax/view",
       "version": "0.2.0",
       "bin": {
-        "forgeax-view": "./dist/modules/cli.mjs",
-        "forgeax-view-start": "./dist/modules/start-cli.mjs",
-      },
+        "forgeax-view": "./dist/modules/cli.mjs",        "forgeax-view-start": "./dist/modules/start-cli.mjs"      },
       "dependencies": {
         "@forgeax/engine": "workspace:*",
         "@forgeax/engine-host": "workspace:*",
@@ -7584,16 +7583,17 @@
     "@actions/glob@0.7.0": "patches/@actions__glob@0.7.0.patch",
   },
   "overrides": {
-    "@hono/node-server": "2.1.6",
-    "body-parser": "^2.4.0",
-    "fast-uri": "^3.1.9",
-    "follow-redirects": "^1.16.2",
-    "glob": "^14.0.2",
-    "hono": "4.13.18",
     "joi": "^18.3.1",
-    "minimatch": "^11.0.1",
+    "@hono/node-server": "2.1.6",
+    "follow-redirects": "^1.16.2",
+    "hono": "4.13.18",
+    "glob": "^14.0.2",
     "qs": "^6.16.1",
+    "minimatch": "^11.0.1",
+    "postcss-selector-parser": "6.1.6",
     "zod": "^4.6.7",
+    "fast-uri": "^3.1.9",
+    "body-parser": "^2.4.0",
   },
   "packages": {
     "@actions/core": ["@actions/core@3.0.1", "", { "dependencies": { "@actions/exec": "^3.0.0", "@actions/http-client": "^4.0.0" } }, "sha512-a6d/Nwahm9fliVGRhdhofo40HjHQasUPusmc7vBfyky+7Z+P2A1J68zyFVaNcEclc/Se+eO595oAr5nwEIoIUA=="],
@@ -9086,8 +9086,6 @@
 
     "css.escape": ["css.escape@1.5.1", "", {}, "sha512-YUifsXXuknHlUsmlgyY0PKzgPOr7/FjCePfHNt0jxm83wHZi44VDMQ7/fGNkjY3/jV1MC+1CmZbaHzugyeRtpg=="],
 
-    "cssesc": ["cssesc@3.0.0", "", { "bin": { "cssesc": "bin/cssesc" } }, "sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg=="],
-
     "cssom": ["cssom@0.5.0", "", {}, "sha512-iKuQcq+NdHqlAcwUY0o/HL69XQrUaQdMjmStJ8JFmUaiiQErlhrmuigkg/CU4E2J0IyUKUrMAgl36TvN67MqTw=="],
 
     "cssstyle": ["cssstyle@4.6.0", "", { "dependencies": { "@asamuzakjp/css-color": "^3.2.0", "rrweb-cssom": "^0.8.0" } }, "sha512-2z+rWdzbbSZv6/rhtvzvqeZQHrBaqgogqt85sqFNbabZOuFbCVFb8kPeEtZjiKkbrm395irpNKiYeFeLiQnFPg=="],
@@ -9626,7 +9624,7 @@
 
     "postcss-nested": ["postcss-nested@6.2.0", "", { "dependencies": { "postcss-selector-parser": "^6.1.1" }, "peerDependencies": { "postcss": "^8.2.14" } }, "sha512-HQbt28KulC5AJzG+cZtj9kvKB93CFCdLvog1WFLf1D+xmMvPGlBstkpTEZfK5+AN9hfJocyBFCNiqyS48bpgzQ=="],
 
-    "postcss-selector-parser": ["postcss-selector-parser@6.1.4", "", { "dependencies": { "cssesc": "^3.0.0", "util-deprecate": "^1.0.2" } }, "sha512-bIoJLOmjCO1S9XdY/DcnR5hJxvrDir1PbGChrzXG3vw0/FOliy/fA3dmdhQ441kah4gKv+TwckGzex6wNS5cnQ=="],
+    "postcss-selector-parser": ["postcss-selector-parser@6.1.6", "", { "dependencies": { "util-deprecate": "^1.0.2" } }, "sha512-BK87/Qgti3DIcgS2PaCVoteFIkjIFvCJBizZDIVSjdlFNg4Jv+SRqbN2JONb/qQUH4ZFqfXYF+izg15W2HVRvA=="],
 
     "postcss-value-parser": ["postcss-value-parser@4.2.0", "", {}, "sha512-1NNCs6uurfkVbeXG4S8JFT9t19m45ICnif8zWLd5oPSZ50QnwMfK+H3jv408d4jw/7Bttv5axS5IiHoLaVNHeQ=="],
 

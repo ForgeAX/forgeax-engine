@@ -54,7 +54,7 @@ struct RigidPrimitive { inverse:mat4x4<f32>, previous:mat4x4<f32>, shape:vec4<f3
 @group(0) @binding(12) var outputOccupancy:texture_storage_2d<rgba32float,write>;
 @group(0) @binding(14) var outputMapping:texture_storage_2d<rgba32float,write>;
 @group(0) @binding(17) var<storage,read> primitives:array<RigidPrimitive>;
-@group(0) @binding(18) var<storage,read> instances:array<Instance>;
+@group(0) @binding(18) var<storage,read> instances:array<RawInstance>;
 @group(0) @binding(19) var<storage,read> fields:array<u32>;
 @group(0) @binding(20) var<storage,read> waveImpulses:array<vec4<f32>>;
 ${SDF_SAMPLE_WGSL}
@@ -121,7 +121,8 @@ fn columnAt(xz:vec2<f32>,group:f32)->vec4<f32>{
     if(group>=0.0&&primitive.field.w!=group){continue;}
     if(primitive.field.x>0.5){
       var duplicate=false;for(var prior=0u;prior<element;prior++){if(primitives[prior].field.x==primitive.field.x&&primitives[prior].field.w==primitive.field.w){duplicate=true;break;}}
-      if(!duplicate){fieldIntervals(instances[u32(primitive.field.x)-1u],xz);}
+      let row=u32(primitive.field.x)-1u;
+      if(!duplicate&&row<sdfInstanceRowCount()){fieldIntervals(sdfInstanceAt(row),xz);}
     }else{insertInterval(primitiveRay(primitive,xz));}
   }
   var thickness=vec4<f32>(0.0);var total=0.0;var at=0u;

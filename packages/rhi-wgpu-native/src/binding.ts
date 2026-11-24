@@ -34,6 +34,11 @@ export interface NativeDevice {
   createBindGroup(descriptor: string): number;
   createRenderPipeline(descriptor: string): number;
   createComputePipeline(descriptor: string): number;
+  createComputePipelineAsync(descriptor: string): Promise<unknown>;
+  adoptComputePipeline(completion: unknown): {
+    id: number;
+    error?: { kind: 'validation' | 'internal'; message: string } | null;
+  };
   pipelineBindGroupLayout(pipeline: number, index: number): number;
   createQuerySet(descriptor: string): number;
   querySetDestroy(id: number): void;

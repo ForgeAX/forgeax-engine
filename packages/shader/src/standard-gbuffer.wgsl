@@ -5,6 +5,12 @@
 @id(64003) override standardSceneNormalLayout : u32 = 0u;
 const STANDARD_GBUFFER_VALID_BIT : u32 = 0x40000000u;
 const STANDARD_GBUFFER_V2_DIRECT_DFG_BIT : u32 = 0x80000000u;
+// The upper lane of normal_roughness.y describes the material, independently
+// of the shading normal. Older or custom writers can leave it unclassified.
+const STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT : u32 = 0x00010000u;
+const STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT : u32 = 0x00020000u;
+const STANDARD_GBUFFER_SCREEN_TRACE_MASK : u32 =
+  STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT | STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT;
 
 fn encodeStandardGBufferNormal(normal : vec3<f32>, roughness : f32, occlusion : f32, directDfg : bool) -> vec2<u32> {
   let xyz = vec3<u32>(round(clamp(normalize(normal) * 0.5 + 0.5, vec3<f32>(0.0), vec3<f32>(1.0)) * 1023.0));
@@ -143,13 +149,15 @@ fn projectDeferredReceiverChannels(raw : u32, mapping : u32) -> u32 {
 // R32Uint retains the logical channel widths without increasing WebGPU MRT cost.
 const COMPACT_DEFAULT_LIT : u32 = 1u;
 const COMPACT_SUBSURFACE_PROFILE : u32 = 5u;
+const COMPACT_TWO_SIDED_FOLIAGE : u32 = 6u;
 const COMPACT_SKIP_PRECOMPUTED_SHADOW : u32 = 32u;
 const COMPACT_SKIP_VELOCITY : u32 = 128u;
 
 fn encodeCompactGBuffer(normal : vec3<f32>, metallic : f32, dielectricF0 : f32,
-  roughness : f32, baseColor : vec3<f32>, ao : f32, hasCustomData : bool, objectFlags : u32) -> vec3<u32> {
+  roughness : f32, baseColor : vec3<f32>, ao : f32, hasCustomData : bool, hasBackfaceDiffuse : bool, objectFlags : u32) -> vec3<u32> {
   let a = (encodeStandardGBufferNormal(normal, 0.0, 0.0, false).x & 0x3fffffffu) | (objectFlags << 30u);
-  let model = select(COMPACT_DEFAULT_LIT, COMPACT_SUBSURFACE_PROFILE, hasCustomData);
+  let litModel = select(COMPACT_DEFAULT_LIT, COMPACT_TWO_SIDED_FOLIAGE, hasBackfaceDiffuse);
+  let model = select(litModel, COMPACT_SUBSURFACE_PROFILE, hasCustomData);
   let modelAndMask = model | COMPACT_SKIP_PRECOMPUTED_SHADOW | COMPACT_SKIP_VELOCITY;
   let b = pack4x8unorm(vec4<f32>(metallic, dielectricF0 / 0.08, roughness, f32(modelAndMask) / 255.0));
   return vec3<u32>(a, b, encodeCompactBaseColor(baseColor, ao));
@@ -164,7 +172,7 @@ fn encodeCompactBaseColor(baseColor : vec3<f32>, ao : f32) -> u32 {
 
 fn compactGBufferLit(word : u32) -> bool {
   let model = (word >> 24u) & 15u;
-  return model == COMPACT_DEFAULT_LIT || model == COMPACT_SUBSURFACE_PROFILE;
+  return model == COMPACT_DEFAULT_LIT || model == COMPACT_SUBSURFACE_PROFILE || model == COMPACT_TWO_SIDED_FOLIAGE;
 }
 
 fn compactGBufferSubsurface(word : u32) -> bool {

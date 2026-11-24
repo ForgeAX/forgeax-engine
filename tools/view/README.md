@@ -35,31 +35,37 @@ See the authoring design.
 
 Agent guidance: [forgeax-view-start](skills/forgeax-view-start/SKILL.md).
 
+The initial language uses a saved user choice first, then the primary
+browser/system language preference (`navigator.languages[0]`, or `navigator.language`
+when that list is unavailable). English is the default and the only fallback. Automatic
+detection does not save a user choice; the language menu does.
+
 `pnpm test` and `pnpm test:view` run both the top-level suites and each package's
 `src/*.test.mjs` and `src/__tests__` owner regressions. Paired Engine and View CI use these same entries.
 
 ### One-file startup
 
-Use the View file included in the complete Engine or SDK installation. Source
-checkouts use the same location:
+Use the View file shipped only in the SDK. The Engine npm package and game
+npm dependencies do not contain View. Prepared source checkouts use the same entry:
 
 ```sh
-# Ordinary npm game, from its root:
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-# Explicit SDK or source installation:
-node /path/to/forgeax-engine/tools/view/start.mjs
+node /path/to/forgeax-sdk/tools/view/start.mjs --project /path/to/game
+node /path/to/forgeax-sdk/tools/view/start.mjs
 node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
-node /path/to/forgeax-engine/tools/view/start.mjs --new-instance --project /path/to/another-game
 ```
 
-View resolves its matching Engine from its installation and reads its own
-`host.pack.json`. Published outputs are built already. A source contributor can
-prepare missing outputs with
+SDK startup initializes `.forgeax/cli-runtime` through the SDK's existing launcher,
+then resolves its matching Engine and View Host Pack from that runtime. It never
+uses the game's npm Engine to host View. Published outputs are built already.
+A source contributor can prepare missing outputs with
 `node tools/view/skills/forgeax-view-start/scripts/start-view.mjs [--project G]`;
 ordinary startup uses the root file with prepared outputs. See the
 [contributor guide](skills/forgeax-view-start/CONTRIBUTOR.md) for source preparation
-and native host integration. The published startup skill contains only consumer
-guidance; no global SDK or game-level launcher is required.
+and native host integration. No game-level launcher is required.
+
+The bottom-right footer displays the hosting Engine package version (for example,
+`Engine 0.5.2`), including while the backend is preparing or disconnected. View's
+independent package version and the selected game do not determine this label.
 
 The initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
 `project`, `url`, Backend `root` and `phase: preparing`. This is an announcement,
@@ -1168,6 +1174,12 @@ the exact Engine target/generation. Settings change that preview's display and
 never rewrite the asset. Pixel generation stays on the Engine-owned surface.
 
 ## Paired Engine CI
+
+The four daily shards follow Engine's core roster. Engine #5354 retains
+`diagnostic-texture`, `diagnostic-pack-authoring`, `diagnostic-gpu-2d` and `runtime-ts` as
+independently runnable specialists through `--group`, outside the daily matrix.
+The workflow contract checks complete coverage of every other planned owner and
+verifies that all four specialists remain explicitly runnable.
 
 PR CI defaults to Engine's `main` branch. A PR that introduces a matching Engine
 capability may declare `Engine-Revision: <full commit SHA>` in its description.

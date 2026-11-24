@@ -1,17 +1,238 @@
 import { buildMeshCardLayout } from '@forgeax/engine-geometry';
+import { RhiError } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-null';
 import { rayMaterialContract } from '@forgeax/engine-shader';
-import { type AssetHandle, ok } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { Materials } from '../../materials';
+import { buildRaySurfaceScene, type RaySurfaceScene } from '../../raytracing/attributes';
+import { packCardLookupProjections } from '../../raytracing/card-lookup';
+import { rayGeometryKey } from '../../raytracing/scene';
 import {
+  CARD_PLANES,
   createSurfaceCapture,
   prepareSurfaceCapture,
   type SurfaceCaptureSource,
 } from '../../raytracing/surface-cards';
 import { defaultMaterialSnapshot } from '../../render-system-extract';
+import { retiredDenseCardProjections } from './card-slot-reuse-control.fixture';
 import { queryTestDevice } from './global-sdf-query-device.fixture';
 import { sdfCubeIndices, sdfCubePositions } from './sdf-cards.geometry';
+
+async function uploadedCaptureSections(
+  device: Awaited<ReturnType<typeof queryTestDevice>>,
+  source: SurfaceCaptureSource,
+  transform?: readonly number[],
+) {
+  const buffers = vi.spyOn(device, 'createBuffer');
+  const writes = vi.spyOn(device.queue, 'writeBuffer');
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, [source])).unwrap();
+  try {
+    if (transform !== undefined)
+      capture.retransform(source.instance.instanceId, transform).unwrap();
+    const uploaded = (label: string) =>
+      buffers.mock.results.flatMap((result, index) => {
+        if (
+          buffers.mock.calls[index]?.[0].label !== label ||
+          result.type !== 'return' ||
+          !result.value.ok
+        )
+          return [];
+        const target = result.value.value;
+        const data = writes.mock.calls.filter(([buffer]) => buffer === target).at(-1)?.[2];
+        assert(data, `${label} must be uploaded by the real capture producer`);
+        return [
+          data instanceof ArrayBuffer
+            ? new Uint8Array(data).slice()
+            : new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice(),
+        ];
+      });
+    return { triangles: uploaded('cards.triangles'), attributes: uploaded('cards.attributes') };
+  } finally {
+    capture.dispose();
+    buffers.mockRestore();
+    writes.mockRestore();
+  }
+}
+
+function expectCapturePrimitives(
+  whole: RaySurfaceScene,
+  observed: Awaited<ReturnType<typeof uploadedCaptureSections>>,
+  source: SurfaceCaptureSource,
+  sections: SurfaceCaptureSource['sections'],
+) {
+  expect(observed.triangles).toHaveLength(sections.length);
+  expect(observed.attributes).toHaveLength(sections.length);
+  const wholeIds = new DataView(
+    whole.triangles.buffer,
+    whole.triangles.byteOffset,
+    whole.triangles.byteLength,
+  );
+  for (const [sectionIndex, section] of sections.entries()) {
+    const triangles = observed.triangles[sectionIndex];
+    const attributes = observed.attributes[sectionIndex];
+    assert(triangles && attributes);
+    const ids = new DataView(triangles.buffer, triangles.byteOffset, triangles.byteLength);
+    for (let local = 0; local < section.indexCount / 3; local++) {
+      // The traversal BVH can reorder triangles. Match
+      // the actual geometry independently before checking authored raster order.
+      const geometry = triangles.subarray(local * 80, local * 80 + 48);
+      const matches = Array.from({ length: whole.triangleCount }, (_, i) => i).filter((i) =>
+        geometry.every((byte, j) => byte === whole.triangles[i * 80 + j]),
+      );
+      expect(matches).toHaveLength(1);
+      const meshRow = matches[0];
+      assert(meshRow !== undefined);
+      const primitive = wholeIds.getUint32(meshRow * 80 + 56, true);
+      expect(primitive).toBe(section.indexOffset / 3 + local);
+      expect(
+        ids.getUint32(local * 80 + 56, true),
+        `section ${sectionIndex}, storage row ${local}`,
+      ).toBe(primitive);
+      expect(ids.getUint32(local * 80 + 48, true)).toBe(source.instance.instanceId);
+      expect(ids.getUint32(local * 80 + 52, true)).toBe(source.instance.geometryId);
+      expect(ids.getUint32(local * 80 + 60, true)).toBe(section.material.id);
+      expect(attributes.slice(local * 384, (local + 1) * 384)).toEqual(
+        whole.attributes.slice(meshRow * 384, (meshRow + 1) * 384),
+      );
+    }
+  }
+}
+
+it.each([
+  [6, 12, 18],
+  [3, 9, 24],
+])('keeps canonical source primitive identity after splitting Card capture into material sections: %j', async (...counts) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const material = source.sections[0]?.material;
+  assert(material);
+  let offset = 0;
+  const sections = counts.map((indexCount, index) => {
+    const section = {
+      indexOffset: offset,
+      indexCount,
+      material: { ...material, id: 10 + index },
+    };
+    offset += indexCount;
+    return section;
+  });
+  expect(offset).toBe(source.instance.indices.length);
+  const whole = buildRaySurfaceScene([{ ...source.instance, materialId: 10 }]).unwrap();
+  const observed = await uploadedCaptureSections(device, { ...source, sections });
+  expectCapturePrimitives(whole, observed, source, sections);
+});
+
+it('keeps canonical source primitive identity after an in-place multi-material Card transform', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const material = source.sections[0]?.material;
+  assert(material);
+  const sections = [
+    { indexOffset: 0, indexCount: 6, material },
+    { indexOffset: 6, indexCount: 12, material: { ...material, id: 11 } },
+    { indexOffset: 18, indexCount: 18, material: { ...material, id: 12 } },
+  ];
+  const transform = [2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 7, -5, 2, 1];
+  const whole = buildRaySurfaceScene([{ ...source.instance, transform, materialId: 10 }]).unwrap();
+  const observed = await uploadedCaptureSections(device, { ...source, sections }, transform);
+  expectCapturePrimitives(whole, observed, source, sections);
+});
+
+it.each([
+  'unversioned',
+  'v2',
+  'v3',
+])('refuses a retired Card contract (%s) before creating a shader module', async (version) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const asset = Materials.standard({ baseColor: [0.25, 0.5, 0.75, 1] });
+  const compile = vi.fn(createShaderModule);
+  const result = await createSurfaceCapture(device, compile, [
+    {
+      instance: source.instance,
+      layout: source.layout,
+      sections: [
+        {
+          indexOffset: 0,
+          indexCount: sdfCubeIndices.length,
+          material: {
+            id: 0,
+            asset,
+            program: {
+              context: 'card-capture',
+              wgsl: '',
+              paramSchema: [],
+              contract: JSON.stringify([
+                ...(version === 'unversioned' ? [] : [`forgeax-material-card-${version}`]),
+                asset.parameters,
+                asset.passes,
+                asset.surface,
+                asset.colorSpace,
+              ]),
+              sourceClosureDigest: 'old-card-context-v1',
+            },
+          },
+        },
+      ],
+    },
+  ]);
+  if (result.ok) result.value.dispose();
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: 'ray-material-unsupported', hint: expect.stringContaining('recook') },
+  });
+  expect(compile).not.toHaveBeenCalled();
+});
+
+it.each([
+  2, -2,
+])('uploads the real object basis for Card install and transform edits: %s', async (scale) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const transform = [0, scale, 0, 0, -3, 0, 0, 0, 0, 0, 4, 0, 7, -5, 2, 1];
+  const buffers = vi.spyOn(device, 'createBuffer');
+  const writes = vi.spyOn(device.queue, 'writeBuffer');
+  const capture = (
+    await prepareSurfaceCapture(device, createShaderModule, [
+      {
+        ...source,
+        instance: { ...source.instance, transform },
+      },
+    ])
+  ).unwrap();
+  try {
+    const contexts = buffers.mock.results.flatMap((r, index) => {
+      const desc = buffers.mock.calls[index]?.[0];
+      return desc?.label === 'cards.projection' && r.value.ok
+        ? [{ buffer: r.value.value, desc }]
+        : [];
+    });
+    expect(contexts.length).toBe(source.layout.cards.length);
+    const assertBasis = (matrix: readonly number[]) => {
+      for (const context of contexts) {
+        expect(context.desc.size).toBe(144);
+        const latest = writes.mock.calls
+          .filter(([buffer]) => buffer === context.buffer)
+          .at(-1)?.[2];
+        assert(latest);
+        const bytes =
+          latest instanceof ArrayBuffer
+            ? new Uint8Array(latest)
+            : new Uint8Array(latest.buffer, latest.byteOffset, latest.byteLength);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        expect(view.getUint32(80, true)).toBe(1);
+        for (let column = 0; column < 3; column++)
+          for (let axis = 0; axis < 3; axis++)
+            expect(view.getFloat32(96 + column * 16 + axis * 4, true)).toBe(
+              matrix[column * 4 + axis],
+            );
+      }
+    };
+    assertBasis(transform);
+    const changed = [0, scale * 2, 0, 0, -6, 0, 0, 0, 0, 0, 8, 0, -2, 9, 5, 1];
+    capture.retransform(0, changed).unwrap();
+    assertBasis(changed);
+  } finally {
+    capture.dispose();
+  }
+});
 
 it('records the same Card draws into a caller-owned pass without ending or submitting it', async () => {
   const device = await queryTestDevice();
@@ -41,7 +262,7 @@ it('records the same Card draws into a caller-owned pass without ending or submi
                 context: 'card-capture',
                 wgsl: '',
                 paramSchema: [{ name: 'baseColor', type: 'color', default: [1, 1, 1, 1] }],
-                contract: rayMaterialContract(asset),
+                contract: rayMaterialContract(asset, 'card-capture'),
                 sourceClosureDigest: 'null-device-structural-fixture',
               },
             },
@@ -63,7 +284,7 @@ it('records the same Card draws into a caller-owned pass without ending or submi
   expect(submit).not.toHaveBeenCalled();
   pass.end();
   capture.record(encoder).unwrap();
-  expect(record).toHaveBeenCalledTimes(2);
+  expect(record).toHaveBeenCalledTimes(3);
   encoder.finish().unwrap();
   capture.dispose();
   expect(capture.recordPass(pass).ok).toBe(false);
@@ -104,6 +325,265 @@ async function acceptedCaptureFixture() {
   };
   return { device, source };
 }
+
+it('prepares an integer identity raster beside the unchanged four material attachments', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const textures = vi.spyOn(device, 'createTexture');
+  const pipelines = vi.spyOn(device, 'createRenderPipeline');
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, [source])).unwrap();
+  try {
+    expect(textures.mock.calls.filter(([desc]) => desc.format === 'r32uint')).toHaveLength(1);
+    const material = pipelines.mock.calls.find(([desc]) => desc.fragment?.entryPoint === 'fs_card');
+    const identity = pipelines.mock.calls.find(
+      ([desc]) => desc.fragment?.entryPoint === 'fs_card_identity',
+    );
+    expect(material?.[0].fragment?.targets.map((target) => target?.format)).toEqual(
+      Array(4).fill('rgba16float'),
+    );
+    expect(identity?.[0].fragment?.targets.map((target) => target?.format)).toEqual(['r32uint']);
+    expect(identity?.[0].vertex).toEqual(material?.[0].vertex);
+    expect(identity?.[0].depthStencil).toEqual(material?.[0].depthStencil);
+    expect(capture.bytes).toBe(
+      capture.width * capture.height * 40 +
+        capture.bufferReads.reduce((sum, read) => sum + read.size, 0) +
+        (capture.width / capture.resolution) * (capture.height / capture.resolution) * 320,
+    );
+  } finally {
+    capture.dispose();
+  }
+});
+
+it('rejects two-phase section and clear work beyond the unchanged draw ceiling before allocating an atlas', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const section = source.sections[0];
+  assert(section);
+  const sections = Array.from({ length: 12 }, (_, index) => ({
+    ...section,
+    indexOffset: index * 3,
+    indexCount: 3,
+  }));
+  const sources = Array.from({ length: 512 }, (_, instanceId) => ({
+    ...source,
+    instance: { ...source.instance, instanceId },
+    sections,
+  }));
+  expect(sources.length * source.layout.cards.length * sections.length).toBeLessThanOrEqual(65536);
+  const textures = vi.spyOn(device, 'createTexture');
+  const result = await prepareSurfaceCapture(device, createShaderModule, sources);
+  expect(result).toMatchObject({ ok: false, error: { code: 'ray-reference-limit' } });
+  expect(textures).not.toHaveBeenCalled();
+});
+
+it.each([
+  'view',
+  'cards',
+] as const)('clears full %s identity with exact uint shader draws before geometry', async (kind) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const capture = (
+    await prepareSurfaceCapture(
+      device,
+      createShaderModule,
+      [source],
+      kind === 'cards'
+        ? { kind, resolution: 16 }
+        : {
+            kind,
+            resolution: 16,
+            projection: {
+              origin: [-1, 1, 1],
+              u: [1, 0, 0],
+              v: [0, -1, 0],
+              n: [0, 0, 1],
+              width: 2,
+              height: 2,
+              depth: 2,
+            },
+          },
+    )
+  ).unwrap();
+  try {
+    const count = kind === 'cards' ? source.layout.cards.length : 1;
+    expect(capture.rasterWork().unwrap().clears).toBe(count);
+    const encoder = device.createCommandEncoder({}).unwrap();
+    const begin = encoder.beginRenderPass.bind(encoder);
+    let identityDraws: unknown[][] | undefined;
+    vi.spyOn(encoder, 'beginRenderPass').mockImplementation((descriptor) => {
+      const pass = begin(descriptor);
+      if (descriptor.label === 'cards.capture-identity')
+        identityDraws = vi.spyOn(pass, 'draw').mock.calls;
+      return pass;
+    });
+    capture.record(encoder).unwrap();
+    expect(identityDraws?.slice(0, count)).toEqual(Array.from({ length: count }, () => [3]));
+    expect(capture.materialWork.clearDraws).toBe(count);
+    encoder.finish().unwrap();
+  } finally {
+    capture.dispose();
+  }
+});
+
+it('rebuilds only a selected identity tile and counts both physical phases without changing tile units', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, [source])).unwrap();
+  try {
+    const slice = { first: 1, count: 1 };
+    expect(capture.rasterWork(slice, true).unwrap()).toEqual({
+      material: 1,
+      identity: 1,
+      clears: 2,
+      total: 4,
+    });
+    const encoder = device.createCommandEncoder({}).unwrap();
+    const material = encoder.beginRenderPass({
+      colorAttachments: CARD_PLANES.map((name) => ({
+        view: capture.views[name],
+        loadOp: 'load' as const,
+        storeOp: 'store' as const,
+      })),
+      depthStencilAttachment: {
+        view: capture.views.depth,
+        depthLoadOp: 'load',
+        depthStoreOp: 'store',
+      },
+    });
+    capture.clearTiles(material, slice).unwrap();
+    capture.recordPass(material, slice).unwrap();
+    material.end();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: capture.primitiveIndex.view, loadOp: 'load', storeOp: 'store' }],
+      depthStencilAttachment: {
+        view: capture.views.depth,
+        depthLoadOp: 'load',
+        depthStoreOp: 'store',
+      },
+    });
+    const viewport = vi.spyOn(pass, 'setViewport');
+    const scissor = vi.spyOn(pass, 'setScissorRect');
+    const draw = vi.spyOn(pass, 'draw');
+    capture.clearTiles(pass, slice, 'identity').unwrap();
+    capture.recordPass(pass, slice, 'identity').unwrap();
+    expect(draw.mock.calls).toEqual([[3], [source.instance.indices.length]]);
+    expect(viewport.mock.calls).toEqual([
+      [16, 0, 16, 16, 0, 1],
+      [16, 0, 16, 16, 0, 1],
+    ]);
+    expect(scissor.mock.calls).toEqual([
+      [16, 0, 16, 16],
+      [16, 0, 16, 16],
+    ]);
+    expect(capture.materialWork).toMatchObject({ rasterDraws: 2, clearDraws: 2 });
+    pass.end();
+    encoder.finish().unwrap();
+    const disposed = capture.rasterWork.bind(capture);
+    capture.dispose();
+    expect(disposed(slice).ok).toBe(false);
+  } finally {
+    capture.dispose();
+  }
+});
+
+it('rejects an identity PSO failure before publishing a capture or creating an encoder', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const create = device.createRenderPipeline.bind(device);
+  const failure = new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'identity PSO failure',
+    hint: 'repair the material cook',
+  });
+  vi.spyOn(device, 'createRenderPipeline').mockImplementation((desc) =>
+    desc.fragment?.entryPoint === 'fs_card_identity' ? err(failure) : create(desc),
+  );
+  const encoder = vi.spyOn(device, 'createCommandEncoder');
+  const result = await prepareSurfaceCapture(device, createShaderModule, [source]);
+  expect(result).toEqual(err(failure));
+  expect(encoder).not.toHaveBeenCalled();
+});
+
+it('cooks both raster entries from the authored Card context with the actual Naga compiler', async () => {
+  const { prepareSdfCardsBaseFixture } = await import('./sdf-cards.commands');
+  const { compileShader } = await import('../../../../shader-compiler/src/compile');
+  const { card } = await prepareSdfCardsBaseFixture();
+  expect(card.program.contract).toContain('forgeax-material-card-v4');
+  const result = await compileShader(card.program.wgsl, {
+    id: 'card-primitive-identity-regression',
+    renderEntries: { vertex: 'vs_card', fragment: 'fs_card_identity', colorFormats: ['r32uint'] },
+  });
+  expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
+}, 30000);
+
+it.each([
+  'material',
+  'pose',
+  'remove',
+  'dispose',
+  'range',
+  'duplicate',
+] as const)('refuses identity clear before touching pixels when its prepared material facts change: %s', async (change) => {
+  const { device, source } = await acceptedCaptureFixture();
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, [source])).unwrap();
+  const encoder = device.createCommandEncoder({}).unwrap();
+  const slice = { first: 0, count: 1 };
+  const material = encoder.beginRenderPass({
+    colorAttachments: CARD_PLANES.map((name) => ({
+      view: capture.views[name],
+      loadOp: 'load' as const,
+      storeOp: 'store' as const,
+    })),
+    depthStencilAttachment: {
+      view: capture.views.depth,
+      depthLoadOp: 'load',
+      depthStoreOp: 'store',
+    },
+  });
+  capture.recordPass(material, slice).unwrap();
+  material.end();
+  const identity = encoder.beginRenderPass({
+    colorAttachments: [{ view: capture.primitiveIndex.view, loadOp: 'load', storeOp: 'store' }],
+    depthStencilAttachment: {
+      view: capture.views.depth,
+      depthLoadOp: 'load',
+      depthStoreOp: 'store',
+    },
+  });
+  const draw = vi.spyOn(identity, 'draw');
+  try {
+    const snapshot = source.sections[0]?.material.snapshot;
+    assert(snapshot);
+    switch (change) {
+      case 'material':
+        capture
+          .adoptMaterial(snapshot, { ...snapshot, paramSnapshot: { baseColor: [1, 0, 0, 1] } })
+          .unwrap();
+        break;
+      case 'pose':
+        capture.retransform(0, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1]).unwrap();
+        break;
+      case 'remove':
+        capture.remove(0).unwrap();
+        break;
+      case 'dispose':
+        capture.dispose();
+        break;
+      case 'range':
+        break;
+      case 'duplicate':
+        capture.recordPass(identity, slice, 'identity').unwrap();
+        draw.mockClear();
+        break;
+    }
+    expect(
+      capture.clearTiles(identity, change === 'range' ? { first: 1, count: 1 } : slice, 'identity')
+        .ok,
+    ).toBe(false);
+    expect(draw).not.toHaveBeenCalled();
+  } finally {
+    identity.end();
+    const finished = encoder.finish();
+    if (change === 'dispose') expect(finished.ok).toBe(false);
+    else finished.unwrap();
+    capture.dispose();
+  }
+});
 
 it('uses accepted linear material values exactly once and preserves whole-Mesh validation', async () => {
   const { device, source } = await acceptedCaptureFixture();
@@ -157,6 +637,150 @@ it('rejects an explicit attachment budget before allocating GPU resources', asyn
   );
   expect(capture.ok).toBe(false);
   expect(create).not.toHaveBeenCalled();
+});
+
+it('repacks real resident Cards at their allocated atlas slots after removal and reuse', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const cards = source.layout.cards.length;
+  const at = (instanceId: number): SurfaceCaptureSource => ({
+    ...source,
+    instance: { ...source.instance, instanceId },
+  });
+  const a = at(0),
+    b = at(1),
+    c = at(2);
+  const capture = (
+    await prepareSurfaceCapture(
+      device,
+      createShaderModule,
+      [a],
+      { kind: 'cards', resolution: 16 },
+      256 * 1024 * 1024,
+      cards,
+    )
+  ).unwrap();
+  const sources = [a, b, c].map((s) => ({
+    instanceId: s.instance.instanceId,
+    key: rayGeometryKey(s.instance, s.layout.meshDigest),
+  }));
+  try {
+    const bRun = capture.add(b).unwrap();
+    expect(bRun).toEqual({ first: cards, count: cards });
+    const initial = packCardLookupProjections(capture, sources, [a, b, c]);
+    expect(new DataView(initial.bytes.buffer).getUint32(bRun.first * 80 + 64, true)).toBe(1);
+    expect(capture.remove(0).unwrap()).toEqual({ first: 0, count: cards });
+    const cRun = capture.add(c).unwrap();
+    expect(cRun).toEqual({ first: 0, count: cards });
+    expect(capture.entries.map((entry) => entry.instanceId)).toEqual([1, 2]);
+    expect(capture.entry(1)?.firstTile).toBe(bRun.first);
+    expect(capture.entry(2)?.firstTile).toBe(cRun.first);
+    const packed = packCardLookupProjections(capture, sources, [a, b, c]);
+    expect(packed.count).toBe(capture.allocatedTiles);
+    const view = new DataView(packed.bytes.buffer);
+    expect(view.getUint32(bRun.first * 80 + 64, true)).toBe(1);
+    expect(view.getUint32(cRun.first * 80 + 64, true)).toBe(2);
+    const retired = retiredDenseCardProjections(capture, sources, [a, b, c]);
+    const old = new DataView(retired.bytes.buffer);
+    expect(old.getUint32(bRun.first * 80 + 64, true)).toBe(2);
+    expect(old.getUint32(cRun.first * 80 + 64, true)).toBe(1);
+  } finally {
+    capture.dispose();
+  }
+});
+
+it('keeps holes, rematerialized slots and first-match source staleness in a real capture', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const cards = source.layout.cards.length;
+  const b = { ...source, instance: { ...source.instance, instanceId: 1 } };
+  const current = [source, b].map((s) => ({
+    instanceId: s.instance.instanceId,
+    key: rayGeometryKey(s.instance, s.layout.meshDigest),
+  }));
+  const capture = (
+    await prepareSurfaceCapture(
+      device,
+      createShaderModule,
+      [source],
+      { kind: 'cards', resolution: 16 },
+      256 * 1024 * 1024,
+      cards,
+    )
+  ).unwrap();
+  try {
+    const run = capture.add(b).unwrap();
+    capture.remove(source.instance.instanceId).unwrap();
+    const hole = packCardLookupProjections(capture, current, [source, b]);
+    expect(hole.count).toBe(run.first + run.count);
+    const holeView = new DataView(hole.bytes.buffer);
+    for (let i = 0; i < cards; i++) {
+      expect(holeView.getUint32(i * 80 + 64, true)).toBe(0xffffffff);
+      expect(holeView.getUint32(i * 80 + 68, true)).toBe(0);
+      expect(holeView.getUint32((run.first + i) * 80 + 64, true)).toBe(1);
+    }
+    const changed = { ...b, captureKey: 'new-material-revision' };
+    expect(capture.rematerialize(1, changed).unwrap()).toEqual(run);
+    expect(capture.entry(1)?.firstTile).toBe(run.first);
+    const state = (sources: typeof current, expected: readonly SurfaceCaptureSource[]) => {
+      const packed = packCardLookupProjections(capture, sources, expected);
+      return new DataView(packed.bytes.buffer).getUint32(run.first * 80 + 68, true);
+    };
+    const live = current[1];
+    assert(live);
+    const stale = { ...live, key: 'stale-geometry' };
+    expect(state(current, [changed])).toBe(1);
+    expect(state(current, [b])).toBe(0);
+    expect(state([stale, live], [changed])).toBe(0);
+    expect(state([live, stale], [changed, b])).toBe(1);
+    expect(state(current, [b, changed])).toBe(0);
+    capture.remove(1).unwrap();
+    const empty = packCardLookupProjections(capture, [], []);
+    expect(empty.count).toBe(capture.allocatedTiles);
+    for (let i = 0; i < empty.count; i++)
+      expect(new DataView(empty.bytes.buffer).getUint32(i * 80 + 64, true)).toBe(0xffffffff);
+  } finally {
+    capture.dispose();
+  }
+});
+
+it('reads frozen source metadata once per list when packing real resident Cards', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const card = source.layout.cards[0];
+  assert(card);
+  const expected = Array.from({ length: 64 }, (_, instanceId) => ({
+    ...source,
+    layout: { ...source.layout, cards: [card] },
+    instance: { ...source.instance, instanceId },
+  }));
+  const sources = expected.map((s) => ({
+    instanceId: s.instance.instanceId,
+    key: rayGeometryKey(s.instance, s.layout.meshDigest),
+  }));
+  const capture = (
+    await prepareSurfaceCapture(device, createShaderModule, expected, {
+      kind: 'cards',
+      resolution: 8,
+    })
+  ).unwrap();
+  let reads = 0;
+  const observed = <T>(values: readonly T[]) =>
+    new Proxy(values, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+  try {
+    const packed = packCardLookupProjections(capture, observed(sources), observed(expected));
+    expect(packed.count).toBe(64);
+    expect(reads).toBeLessThanOrEqual(64 * 4);
+    const view = new DataView(packed.bytes.buffer);
+    for (let row = 0; row < 64; row++) {
+      expect(view.getUint32(row * 80 + 64, true)).toBe(row);
+      expect(view.getUint32(row * 80 + 68, true)).toBe(1);
+    }
+  } finally {
+    capture.dispose();
+  }
 });
 
 it('adds, rematerializes and removes Card instances in place within the reserved atlas', async () => {
@@ -320,6 +944,8 @@ it('adopts shared numeric values without draw visits or uploads and pulls them i
     uniformUploads: 0,
     assetRoots: 0,
     bindingRefreshes: 0,
+    rasterDraws: 0,
+    clearDraws: 0,
   });
   expect(write).not.toHaveBeenCalled();
   const encoder = device.createCommandEncoder({}).unwrap();
@@ -331,6 +957,8 @@ it('adopts shared numeric values without draw visits or uploads and pulls them i
     uniformUploads: 1,
     assetRoots: 0,
     bindingRefreshes: 0,
+    rasterDraws: 1,
+    clearDraws: 0,
   });
   expect(write).toHaveBeenCalledTimes(1);
   const row = write.mock.calls[0]?.[2];
@@ -343,6 +971,8 @@ it('adopts shared numeric values without draw visits or uploads and pulls them i
     uniformUploads: 1,
     assetRoots: 0,
     bindingRefreshes: 0,
+    rasterDraws: 2,
+    clearDraws: 0,
   });
   expect(write).toHaveBeenCalledTimes(1);
   pass.end();
@@ -371,6 +1001,8 @@ it('rejects changed sampler bindings instead of accepting a numeric-row update',
       uniformUploads: 0,
       assetRoots: 0,
       bindingRefreshes: 0,
+      rasterDraws: 0,
+      clearDraws: 0,
     });
   }
   capture.dispose();

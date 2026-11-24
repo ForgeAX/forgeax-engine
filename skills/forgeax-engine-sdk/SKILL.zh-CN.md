@@ -12,7 +12,7 @@
 0. 能力与边界：先看 [Engine 概览](ENGINE-OVERVIEW.md)，把游戏需求映射到 Engine 能力，识别 Engine 不负责的部分。
 1. 签名和导入：先查 API 索引，再搜 node_modules README 或 .d.ts。
 2. `empty` 项目的效果配方：效果手册约 2 KB 索引；水面外观用内置 `single-layer-medium`，雾/光束用 `beam-pillar`，室内发光用 `runtime-light-emissive`，雨雪火焰火花用 `particles-*`。只打开所需文件。
-3. 命令查 [CLI 技能](../forgeax-engine-cli/SKILL.zh-CN.md)顶部 Quick contract；相机、光照、后处理查 [Render Pipeline](../forgeax-engine-render-pipeline/SKILL.zh-CN.md)的 Quick contract。可选交互项目/资产审阅查看游戏根 `skills/forgeax-view-start/SKILL.zh-CN.md`，或安装副本 `node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.zh-CN.md`。View 拥有文件启动器，不通过冷 CLI help 发现。
+3. 命令查 [CLI 技能](../forgeax-engine-cli/SKILL.zh-CN.md)顶部 Quick contract；相机、光照、后处理查 [Render Pipeline](../forgeax-engine-render-pipeline/SKILL.zh-CN.md)的 Quick contract。可选交互项目/资产审阅查看游戏根 `skills/forgeax-view-start/SKILL.zh-CN.md`，或 SDK 中的 `tools/view/skills/forgeax-view-start/SKILL.md`。使用 `node /absolute/forgeax-sdk/tools/view/start.mjs --project /absolute/game`。View 仅随 SDK 分发，启动器初始化其运行环境，不通过冷 CLI help 发现。
 4. 深入需求从下方能力表选一行，只读相应章节。布局、资产、配置见游戏项目指南；验收、发布、受阻检查见交付指南。
 5. Look-dev：场景首次构建后，以及每次 light/material/fog/sky/post/camera 编辑后，运行 `dev look` 并完成[视觉自查](#visual-self-review)，再进入 gameplay；`project play` 截图用于 gameplay 验收。
 6. 移植 Three.js 效果前，先查原生等价能力与缺口，再决定简化。

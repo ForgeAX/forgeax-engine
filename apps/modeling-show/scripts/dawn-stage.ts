@@ -112,7 +112,9 @@ export async function createDawnStage(width: number, height: number): Promise<Da
         world.update(dt).unwrap();
         const capture = recorder !== undefined && (ordinal === 0 || ordinal === 13) && i === count - 1 ? recorder.captureFrame() : undefined;
         if (capture !== undefined) (await recorder?.frameBoundary())?.unwrap();
-        await drawReadyFrame(renderer, { source: lease }).catch((error: unknown) => {
+        // The cold Show can rebuild Standard pipelines after geometry promotion.
+        // Use its existing scene deadline for the signalled preparation phase.
+        await drawReadyFrame(renderer, { source: lease }, undefined, { timeoutMs: 90_000 }).catch((error: unknown) => {
           // Keep the original readiness failure; diagnose only its bounded
           // recent renderer errors, without collecting more successful frames.
           console.error('show renderer errors at failure:', errors.slice(-8));

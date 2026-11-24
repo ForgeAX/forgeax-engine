@@ -19,7 +19,7 @@ import { RhiError, type RhiInstance } from '@forgeax/engine-rhi';
 
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { assert } from 'vitest';
+import { assert, expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
@@ -91,6 +91,51 @@ export interface FieldImage {
 }
 
 type DiffuseGiState = NonNullable<ReturnType<Renderer['inspect']>['diffuseGi']>;
+type FieldState = Extract<DiffuseGiState, { readonly gather: 'irradiance-field' }>;
+
+export function fieldInspection(h: { readonly inspection: () => DiffuseGiState }): FieldState {
+  const state = h.inspection();
+  assert('gather' in state && state.gather === 'irradiance-field');
+  return state;
+}
+
+/** New identities require a complete canonical pool, even with spare allocation.
+ * Check that the rebuilt scene actually contains the added geometry before its
+ * pixels become a cold reference; a reset counter alone is not that evidence. */
+export function expectFieldTopologyRebuild(
+  before: FieldState,
+  after: FieldState,
+  instanceDelta: 0 | 1,
+  meshDelta: 0 | 1,
+) {
+  expect(after).toMatchObject({
+    state: 'ready',
+    generation: before.generation + 1,
+    traversal: before.traversal,
+    edits: {
+      applied: 0,
+      addedInstances: 0,
+      movedInstances: 0,
+      removedInstances: 0,
+      pendingTiles: 0,
+      pendingPriorityUpdates: 0,
+    },
+  });
+  assert(before.cards && after.cards);
+  if (instanceDelta === 1) expect(after.cards.tiles).toBeGreaterThan(before.cards.tiles);
+  else expect(after.cards.tiles).toBe(before.cards.tiles);
+  if (before.traversal === 'ray-query') {
+    assert(before.acceleration && after.acceleration);
+    expect(after.acceleration).toMatchObject({
+      instances: before.acceleration.instances + instanceDelta,
+      geometries: before.acceleration.geometries + meshDelta,
+      blasBuilt: after.acceleration.geometries,
+      pending: 0,
+      settled: true,
+      tlasBuilt: 1,
+    });
+  }
+}
 
 /**
  * `FORGEAX_REQUIRE_NATIVE_RAY_QUERY=1` (the native wgpu CI lane): every settled field must
@@ -123,6 +168,7 @@ export async function createIrradianceFieldHarness(options: {
   readonly manifest: string;
   readonly host?: Record<string, unknown>;
   readonly instrumentation?: Record<string, unknown>;
+  readonly captureScreenProbeBuffers?: boolean;
 }) {
   const errors: unknown[] = [];
   let native: GPUDevice | undefined;
@@ -164,7 +210,9 @@ export async function createIrradianceFieldHarness(options: {
           const isSurfaceReadback = label === 'test.surface-readback';
           if (isSurfaceReadback) surfaceReadbacks.push(buffer);
           if (card) cardBuffers.push(buffer);
-          if (card || isSurfaceReadback || label.startsWith('irradiance-field.')) {
+          const screenProbe =
+            options.captureScreenProbeBuffers === true && label.startsWith('screen-probe.');
+          if (card || isSurfaceReadback || screenProbe || label.startsWith('irradiance-field.')) {
             if (!card && !isSurfaceReadback) buffers.set(label, buffer);
             const destroy = buffer.destroy.bind(buffer);
             buffer.destroy = () => {
@@ -319,8 +367,13 @@ export async function createIrradianceFieldHarness(options: {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
   };
-  const draw = async () => {
+  const draw = async (
+    observation?: Parameters<typeof drawReadyFrame>[2],
+    options?: Parameters<typeof drawReadyFrame>[3],
+  ) => {
     advanceWorld();
+    if (observation !== undefined || options !== undefined)
+      return drawReadyFrame(renderer, request, observation, options);
     const result = submit();
     if (!result.ok)
       throw new Error(JSON.stringify({ result, gi: renderer.inspect().diffuseGi, errors }));
@@ -386,9 +439,11 @@ export async function createIrradianceFieldHarness(options: {
    * The presented surface after one more frame, sRGB-decoded red. Unlike `image()`
    * it also covers CameraView composition, which has no linear-HDR observation.
    */
-  const surfaceImage = async (): Promise<FieldImage> => {
+  const surfaceImage = async (
+    options?: Parameters<typeof drawReadyFrame>[3],
+  ): Promise<FieldImage> => {
     advanceWorld();
-    const receipt = await drawReadyFrame(renderer, request);
+    const receipt = await drawReadyFrame(renderer, request, undefined, options);
     assert(native && surface);
     const { width, height } = canvas;
     const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
@@ -433,9 +488,9 @@ export async function createIrradianceFieldHarness(options: {
       if (target.mapState === 'mapped') target.unmap();
     }
   };
-  const read = async (label: string) => {
-    const source = buffers.get(`irradiance-field.${label}`);
-    assert(native && source, `missing irradiance-field.${label}`);
+  const readBuffer = async (label: string) => {
+    const source = buffers.get(label);
+    assert(native && source && !destroyed.has(source), `missing live buffer ${label}`);
     const target = native.createBuffer({ size: source.size, usage: 9 });
     try {
       const encoder = native.createCommandEncoder();
@@ -469,7 +524,8 @@ export async function createIrradianceFieldHarness(options: {
     settle,
     image,
     surfaceImage,
-    read,
+    read: (label: string) => readBuffer(`irradiance-field.${label}`),
+    readBuffer,
     inspection,
     // Pass presence needs consecutive completed frames, not a benchmark's
     // repeated median sampling. Preserve structured timestamp unavailability.

@@ -33,7 +33,7 @@ it('borrows exact original ranges without allocating, mutating, ending or submit
   const end = vi.spyOn(pass, 'end');
   const dispatch = vi.spyOn(pass, 'dispatchWorkgroups');
   const bind = vi.spyOn(device, 'createBindGroup');
-  const recorder = createProbeCardSupportRecorder(device, module).unwrap();
+  const recorder = (await createProbeCardSupportRecorder(device, module)).unwrap();
   recorder.record(pass, input, 65).unwrap();
   expect(dispatch.mock.calls).toEqual([[2]]);
   expect(Array.from(bind.mock.calls[0]?.[0].entries ?? [], (e) => e.resource)).toEqual(

@@ -71,6 +71,23 @@ describe('CameraExposure contract', () => {
     expect(describeExposure(cameraExposureFromColumns(perspectiveCamera))).toBe('auto:1.25');
   });
 
+  it('retains UE eye adaptation through both camera factories', () => {
+    const exposure = {
+      kind: 'auto',
+      adaptation: 'ue-eye-adaptation',
+      fallback: 1,
+      compensationEv: 0,
+      rangeEv: [-4, 8],
+      rates: [3, 1],
+    } as const;
+    expect(cameraExposureFromColumns(perspective({ fov: 1, aspect: 1, exposure }))).toEqual(
+      exposure,
+    );
+    expect(
+      cameraExposureFromColumns(orthographic({ left: -1, right: 1, bottom: -1, top: 1, exposure })),
+    ).toEqual(exposure);
+  });
+
   it('retains zero manual exposure through both camera factories', () => {
     const exposure = { kind: 'manual', multiplier: 0 } as const;
     expect(cameraExposureFromColumns(perspective({ fov: 1, aspect: 1, exposure }))).toEqual(

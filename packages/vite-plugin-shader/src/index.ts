@@ -1430,6 +1430,8 @@ export function engineManifestFiles(
     eng.rayIrradianceField,
     eng.rayBakedField,
     eng.rayScreenProbe,
+    eng.rayScreenProbeGenerate,
+    eng.rayScreenProbeAtlas,
     eng.rayReflectionComposite,
     eng.standardDeferred,
     eng.forwardScreenCompose,
@@ -2817,6 +2819,8 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       await compileEngineEntry(state, eng.rayIrradianceField, eng.imports);
       await compileEngineEntry(state, eng.rayBakedField, eng.imports);
       await compileEngineEntry(state, eng.rayScreenProbe, eng.imports);
+      await compileEngineEntry(state, eng.rayScreenProbeGenerate, eng.imports);
+      await compileEngineEntry(state, eng.rayScreenProbeAtlas, eng.imports);
       await compileEngineEntry(state, eng.rayReflectionComposite, eng.imports);
       await compileEngineEntry(state, eng.standardDeferred, eng.imports, wantPointShadows);
       await compileEngineEntry(state, eng.forwardScreenCompose, eng.imports);

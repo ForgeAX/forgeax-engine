@@ -37,6 +37,7 @@ import {
   RendererOperationError,
 } from '../errors/render';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import {
   isStandardLightCount,
   STANDARD_MAX_LIGHT_COUNT,
@@ -1033,12 +1034,16 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
                 }),
           }),
         }),
-    // Only the exact gather reads per-pixel visible-surface identity; field,
-    // screen-probe and baked gathers keep the caller's visibleSurface choice.
+    // Software Screen receivers reconstruct from the real deferred primitive,
+    // rather than treating the depth-derived point as an exact World origin.
     ...(profile.diffuseGi === undefined
       ? {}
       : {
-          ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
+          ...(profile.diffuseGi.gather === 'exact' ||
+          (profile.diffuseGi.gather === 'screen-probe' &&
+            profile.diffuseGi.field.hardwareRayTracing === false)
+            ? { visibleSurface: true }
+            : {}),
           diffuseGi: freezeDiffuseGi(profile.diffuseGi),
         }),
     ambientOcclusion: Object.freeze({
@@ -1052,4 +1057,50 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
       : { volumetricFog: Object.freeze({ ...profile.volumetricFog }) }),
     postStages: Object.freeze([...profile.postStages]) as RenderProfile['postStages'],
   });
+}
+
+/** One view locks its writer/graph dependency for the existing Renderer frame.
+ * The installation epoch is the accepted configuration authority; a readonly
+ * annotation or shallow object identity is not a configuration revision. */
+export function createScreenReceiverProfile(required: () => boolean) {
+  let frame = -1,
+    configuration = -1,
+    generation = -1;
+  let base: StandardProfile | undefined, locked: StandardProfile | undefined;
+  let derivedBase: StandardProfile | undefined,
+    derivedConfiguration = -1;
+  let derived: StandardProfile | undefined;
+  return (
+    profile: StandardProfile | undefined,
+    nextFrame: number,
+    installation: number,
+    deviceGeneration: number,
+  ) => {
+    if (
+      frame === nextFrame &&
+      base === profile &&
+      configuration === installation &&
+      generation === deviceGeneration
+    )
+      return locked;
+    frame = nextFrame;
+    base = profile;
+    configuration = installation;
+    generation = deviceGeneration;
+    if (
+      profile?.diffuseGi?.gather !== 'screen-probe' ||
+      profile.visibleSurface === true ||
+      !required()
+    ) {
+      locked = profile;
+      return locked;
+    }
+    if (derivedBase !== profile || derivedConfiguration !== installation) {
+      derivedBase = profile;
+      derivedConfiguration = installation;
+      derived = Object.freeze({ ...profile, visibleSurface: true });
+    }
+    locked = derived;
+    return locked;
+  };
 }

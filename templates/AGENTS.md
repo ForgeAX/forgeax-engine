@@ -47,12 +47,12 @@ where output is clamped earlier (an 8-bit target, per-draw tone mapping) does no
 ## Run, test, build, and release
 
 - **Open optional View:** for interactive project, scene or asset review, read
-  `skills/forgeax-view-start/SKILL.md`. From this game root run
-  `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
-  If local skills predate View, read the same skill under
-  `node_modules/@forgeax/engine/tools/view/skills/`. View owns this file entry;
-  cold CLI help does not discover it. Published packages need no Engine build or
-  global SDK. Keep the terminal open and verify the requested project in the page.
+  `skills/forgeax-view-start/SKILL.md` or the SDK's
+  `tools/view/skills/forgeax-view-start/SKILL.md`. From this game root run
+  `node /absolute/forgeax-sdk/tools/view/start.mjs --project .`.
+  View is shipped only in the SDK; its launcher initializes its own tool runtime
+  and matching Engine. Keep the terminal open and verify the requested project
+  in the page. Cold Engine CLI help does not discover this file entry.
 - **Iterate locally:** `pnpm exec forgeax dev start` serves source; Vite/DevKit handles TypeScript and Pack assets as needed. No prior `project build`, separate asset build, or manual TypeScript compilation is required.
 - **Build and preview:** `pnpm exec forgeax project build` produces the production `dist/` through Vite and asset producers; `pnpm exec forgeax project preview` serves it. `pnpm typecheck` is a separate check, not a launch prerequisite.
 

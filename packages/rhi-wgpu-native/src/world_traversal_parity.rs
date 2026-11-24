@@ -4,9 +4,10 @@
 //! (`world-traversal.unit.test.ts` fails when they drift), so this test runs the exact
 //! WGSL the renderer composes: one parity kernel per traversal with the same body
 //! (`traceWorld` + `worldCardRadiance`), against one analytic box scene. Ray Query traces
-//! a TLAS of 12-triangle unit boxes; the Global SDF lane traces voxels composed on the GPU
-//! by the production compose shader from per-instance dense fields. Both shade through
-//! the same Cards. A CPU ray/OBB oracle is the reference for both.
+//! a TLAS of 12-triangle unit boxes; the software lane uses the production world seam
+//! and its per-instance field refinement. The compose kernel runs too, but its coarse
+//! voxel buffer is inactive in this seam's entry point: this does not qualify coarse
+//! grid sampling. Both shade through the same Cards. A CPU ray/OBB oracle is the reference.
 
 use crate::acceleration::tests::{gpu, Gpu};
 use crate::acceleration::{
@@ -69,17 +70,6 @@ const STATUS_HIT: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuInstance {
-    inverse: [f32; 16],
-    ids: [u32; 4],
-    field: [u32; 4],
-    origin: [f32; 4],
-    extent: [f32; 4],
-    error: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuBounds {
     lo: [f32; 4],
     hi: [f32; 4],
@@ -92,6 +82,14 @@ struct GpuGrid {
     origin_spacing: [f32; 4],
     dimensions_count: [u32; 4],
     ranges: [f32; 4],
+    source: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuParity {
+    trace: [f32; 4],
+    expected_source: [u32; 4],
 }
 
 #[repr(C)]
@@ -296,7 +294,7 @@ struct Scene {
     fields: wgpu::Buffer,
     bounds: wgpu::Buffer,
     grid: wgpu::Buffer,
-    voxels: wgpu::Buffer,
+    _composed_voxels: wgpu::Buffer,
     cards: wgpu::Buffer,
     card_lit: wgpu::Buffer,
     textures: Vec<wgpu::TextureView>,
@@ -305,6 +303,7 @@ struct Scene {
     tlas: crate::acceleration::Tlas,
     /// `settings.z`: Card residency has pending (non-resident) instances.
     residency_pending: u32,
+    source_expected: [u32; 4],
 }
 
 fn storage(gpu: &Gpu, label: &str, contents: &[u8]) -> wgpu::Buffer {
@@ -355,48 +354,20 @@ fn unit_box() -> ([[f32; 3]; 8], [u32; 36]) {
 
 /// `pending` names instances whose Card rows are installed but not yet captured
 /// (`ids.y = 2`, Card residency); any of them turns the residency flag on.
-fn build_scene(gpu: &Gpu, boxes: Vec<Box3>, pending: &[u32]) -> Scene {
+fn build_scene(
+    gpu: &Gpu,
+    canonical: &CanonicalParityScene,
+    boxes: Vec<Box3>,
+    pending: &[u32],
+) -> Scene {
     let device = &gpu.device;
     let count = boxes.len() as u32;
-    let field_words = (FIELD_DIM * FIELD_DIM * FIELD_DIM) as usize;
-    let mut fields = Vec::with_capacity(field_words * boxes.len());
-    let mut instances = Vec::new();
-    let mut bounds = Vec::new();
-    for (i, b) in boxes.iter().enumerate() {
-        for z in 0..FIELD_DIM {
-            for y in 0..FIELD_DIM {
-                for x in 0..FIELD_DIM {
-                    let p = Vec3::new(x as f32, y as f32, z as f32) * FIELD_SPACING
-                        + Vec3::splat(FIELD_LO);
-                    fields.push(box_sdf(p).to_bits());
-                }
-            }
-        }
-        let scale = axis_scales(&b.transform);
-        instances.push(GpuInstance {
-            inverse: b.transform.inverse().to_cols_array(),
-            ids: [b.id, 0, 0, u32::from(b.mask)],
-            field: [(i * field_words) as u32, FIELD_DIM, FIELD_DIM, FIELD_DIM],
-            origin: [FIELD_LO, FIELD_LO, FIELD_LO, FIELD_SPACING],
-            extent: [-FIELD_LO, -FIELD_LO, -FIELD_LO, 1.0],
-            error: [0.0; 4],
-        });
-        bounds.push(GpuBounds {
-            lo: [-0.5, -0.5, -0.5, 0.0],
-            hi: [0.5, 0.5, 0.5, 0.0],
-            scale: [scale.x, scale.y, scale.z, scale.min_element()],
-        });
-    }
-    let grid = GpuGrid {
-        origin_spacing: [ORIGIN, ORIGIN, ORIGIN, SPACING],
-        dimensions_count: [DIMS, DIMS, DIMS, count],
-        ranges: [2.0, SPACING, 0.0, 0.0],
-    };
+    assert_eq!(canonical.instance_count, boxes.len());
     let voxel_count = (DIMS * DIMS * DIMS) as u64;
-    let scene_instances = storage(gpu, "parity.instances", bytemuck::cast_slice(&instances));
-    let scene_fields = storage(gpu, "parity.fields", bytemuck::cast_slice(&fields));
-    let scene_bounds = storage(gpu, "parity.bounds", bytemuck::cast_slice(&bounds));
-    let scene_grid = uniform(gpu, "parity.grid", bytemuck::bytes_of(&grid));
+    let scene_instances = storage(gpu, "parity.instances", &canonical.instances);
+    let scene_fields = storage(gpu, "parity.fields", &canonical.fields);
+    let scene_bounds = storage(gpu, "parity.bounds", &canonical.bounds);
+    let scene_grid = uniform(gpu, "parity.grid", &canonical.settings);
     let voxels = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("parity.voxels"),
         size: voxel_count * 16,
@@ -449,6 +420,18 @@ fn build_scene(gpu: &Gpu, boxes: Vec<Box3>, pending: &[u32]) -> Scene {
                 }
             }
         }
+    }
+    assert_eq!(canonical.card_owner_index.len(), cards.len() * 8);
+    assert_eq!(
+        cards.iter().map(|card| card.ids[0]).collect::<Vec<_>>(),
+        canonical.card_owners
+    );
+    for (card, encoded) in cards
+        .iter_mut()
+        .zip(canonical.card_owner_index.chunks_exact(8))
+    {
+        card.ids[2] = u32::from_le_bytes(encoded[..4].try_into().unwrap());
+        card.ids[3] = u32::from_le_bytes(encoded[4..].try_into().unwrap());
     }
     let texture = |label: &str, format: wgpu::TextureFormat, data: &[u8]| {
         device
@@ -552,9 +535,33 @@ fn build_scene(gpu: &Gpu, boxes: Vec<Box3>, pending: &[u32]) -> Scene {
         },
     )
     .unwrap();
-    let rows: Vec<[u32; 4]> = std::iter::once([0; 4])
-        .chain(boxes.iter().map(|b| [b.id, 0, 0, 0]))
-        .collect();
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct QueryTableLayout {
+        row_words: u32,
+        mode_bits: u32,
+    }
+    // Produced beside the exact WGSL by the same TypeScript layout owner.
+    let layout: QueryTableLayout = serde_json::from_str(include_str!(
+        "__tests__/fixtures/world-traversal/ray-query-layout.json"
+    ))
+    .expect("invalid production query-table layout");
+    assert_eq!(
+        layout.row_words as usize,
+        std::mem::size_of::<[u32; 4]>() / std::mem::size_of::<u32>()
+    );
+    let primitive_count = u32::try_from(indices.len() / 3).unwrap();
+    let rows: Vec<[u32; 4]> =
+        std::iter::once([0, 0, (count + 1).checked_mul(layout.row_words).unwrap(), 0])
+            .chain(boxes.iter().map(|b| {
+                [
+                    b.id,
+                    0,
+                    primitive_count.checked_shl(layout.mode_bits).unwrap(),
+                    0,
+                ]
+            }))
+            .collect();
     let mut encoder = device.create_command_encoder(&Default::default());
     build_acceleration_structures(
         &mut encoder,
@@ -627,8 +634,12 @@ fn build_scene(gpu: &Gpu, boxes: Vec<Box3>, pending: &[u32]) -> Scene {
         fields: scene_fields,
         bounds: scene_bounds,
         grid: scene_grid,
-        voxels,
-        cards: storage(gpu, "parity.cards", bytemuck::cast_slice(&cards)),
+        _composed_voxels: voxels,
+        cards: device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("parity.cards"),
+            contents: bytemuck::cast_slice(&cards),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        }),
         card_lit: storage(gpu, "parity.card-lit", bytemuck::cast_slice(&card_lit)),
         textures,
         traversal_instances: storage(
@@ -643,6 +654,7 @@ fn build_scene(gpu: &Gpu, boxes: Vec<Box3>, pending: &[u32]) -> Scene {
         ),
         tlas,
         residency_pending: u32::from(!pending.is_empty()),
+        source_expected: canonical.source_expected,
     }
 }
 
@@ -708,7 +720,10 @@ fn trace(gpu: &Gpu, scene: &Scene, traversal: Traversal, rays: &[GpuRay]) -> Vec
     let parity = uniform(
         gpu,
         "parity.trace",
-        bytemuck::bytes_of(&[MARGIN, MIN_STEP_FACTOR, 0.0, 0.0]),
+        bytemuck::bytes_of(&GpuParity {
+            trace: [MARGIN, MIN_STEP_FACTOR, 0.0, 0.0],
+            expected_source: scene.source_expected,
+        }),
     );
     let settings = uniform(
         gpu,
@@ -727,7 +742,6 @@ fn trace(gpu: &Gpu, scene: &Scene, traversal: Traversal, rays: &[GpuRay]) -> Vec
     let kernel = pipeline(gpu, source);
     let mut entries = match traversal {
         Traversal::GlobalSdf => vec![
-            (0, scene.voxels.as_entire_binding()),
             (1, scene.grid.as_entire_binding()),
             (2, scene.instances.as_entire_binding()),
             (3, scene.fields.as_entire_binding()),
@@ -825,6 +839,41 @@ fn percentile(values: &mut [f32], p: f32) -> f32 {
     values[((values.len() - 1) as f32 * p).round() as usize]
 }
 
+fn validate_world_bounds_control(control: &CanonicalHeaderControl) {
+    let row = GpuBounds {
+        lo: [-0.5, -0.5, -0.5, 0.0],
+        hi: [0.5, 0.5, 0.5, 0.0],
+        scale: [1.0; 4],
+    };
+    let scaled = GpuBounds {
+        scale: [2.0, 3.0, 4.0, 2.0],
+        ..row
+    };
+    assert_eq!(parity_sha256(&control.one), control.one_sha256);
+    assert_eq!(parity_sha256(&control.two), control.two_sha256);
+    let bytes = &control.two;
+    let word =
+        |index: usize| u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+    assert_eq!(bytes.len(), 192);
+    assert_eq!(&bytes[..4], &[0x31, 0x50, 0x42, 0x57]);
+    assert_eq!((word(1), word(2), word(3)), (1, 2, 2));
+    assert_eq!((word(4), word(5)), (6, 6));
+    assert_eq!((word(6), word(7), word(23)), (1, 0, 48));
+    assert_eq!(f32::from_le_bytes(bytes[96..100].try_into().unwrap()), -0.5);
+    assert_eq!(f32::from_le_bytes(bytes[176..180].try_into().unwrap()), 2.0);
+    assert_eq!(
+        &bytes[96..],
+        bytemuck::cast_slice::<GpuBounds, u8>(&[row, scaled])
+    );
+    assert_eq!(control.one.len(), 144);
+}
+
+#[test]
+fn world_bounds_header_uses_independent_byte_and_vec4_units() {
+    // The real reader executes the original assertions before any device.
+    read_same_host_canonical_parity_payload();
+}
+
 #[test]
 fn fixtures_validate_with_ray_query_capability() {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -855,10 +904,41 @@ fn fixtures_validate_with_ray_query_capability() {
 }
 
 #[test]
+fn world_trace_implicit_layout_matches_active_entry_point_bindings() {
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
+    for (name, expected) in [
+        ("global-sdf.wgsl", (1..=15).collect::<Vec<u32>>()),
+        (
+            "ray-query.wgsl",
+            vec![0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        ),
+    ] {
+        let module = naga::front::wgsl::parse_str(fixture(name)).unwrap();
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module)
+            .unwrap();
+        let entry = info.get_entry_point(0);
+        let mut active: Vec<_> = module
+            .global_variables
+            .iter()
+            .filter(|(handle, _)| !entry[*handle].is_empty())
+            .filter_map(|(_, global)| global.binding.as_ref())
+            .map(|binding| {
+                assert_eq!(binding.group, 0);
+                binding.binding
+            })
+            .collect();
+        active.sort_unstable();
+        assert_eq!(active, expected, "{name} implicit layout");
+    }
+}
+
+#[test]
 fn hardware_and_global_sdf_traversal_agree_on_one_scene() {
+    let prepared = read_same_host_canonical_parity_payload();
     let Some(gpu) = gpu() else { return };
     let scope = validation_scope(&gpu);
-    let scene = build_scene(&gpu, furnished(), &[]);
+    let scene = build_scene(&gpu, prepared.scene("furnished"), furnished(), &[]);
     let origins = [
         [0.0, 0.0, 0.0],
         [2.0, 1.0, 2.0],
@@ -964,6 +1044,120 @@ fn hardware_and_global_sdf_traversal_agree_on_one_scene() {
     assert!(plane_within >= 0.95, "global-sdf plane distance <= 1 voxel");
     assert!(dt_within >= 0.95, "global-sdf |dt| <= 2 voxels");
     assert!(radiance >= 0.97, "global-sdf Card radiance agreement");
+
+    // Change only the directory/link words. Geometry, atlas texels, hit inputs,
+    // states and the original production kernels stay identical. An old linear
+    // Card scan would keep returning radiance and must fail this control.
+    let scope = validation_scope(&gpu);
+    for tile in 0..scene.boxes.len() * 6 {
+        gpu.queue
+            .write_buffer(&scene.cards, (tile * 80 + 72) as u64, &[0; 8]);
+    }
+    let missing_hardware = trace(&gpu, &scene, Traversal::RayQuery, &rays);
+    let missing_software = trace(&gpu, &scene, Traversal::GlobalSdf, &rays);
+    assert_no_validation_error(scope);
+    write_card_index_witness(
+        &expected,
+        [&hardware, &software, &missing_hardware, &missing_software],
+    );
+    for (valid, missing) in hardware
+        .iter()
+        .zip(&missing_hardware)
+        .chain(software.iter().zip(&missing_software))
+    {
+        assert_eq!(
+            missing.state, valid.state,
+            "Card metadata cannot alter hits"
+        );
+        assert_eq!(missing.metrics, valid.metrics);
+        assert_eq!(missing.position, valid.position);
+        assert_eq!(missing.normal, valid.normal);
+        assert_eq!(
+            missing.radiance, [0.0; 4],
+            "cleared owner index is unmapped"
+        );
+    }
+}
+
+/// Optional external raw readbacks and a shared-scale diagnostic ray image.
+/// Each band is the same ordered ray roster; it is not a scene screenshot.
+fn write_card_index_witness(expected: &[Expected], samples: [&[Traced]; 4]) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("FORGEAX_NATIVE_WORLD_PARITY_EVIDENCE") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(path);
+    assert!(directory.is_absolute());
+    let parent = directory.parent().unwrap().canonicalize().unwrap();
+    assert!(!parent.starts_with(std::env::current_dir().unwrap().canonicalize().unwrap()));
+    std::fs::create_dir(&directory).expect("use a new owned external witness directory");
+    let write = |name: &str, bytes: &[u8]| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join(name))
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        serde_json::json!({"file": name, "bytes": bytes.len(), "sha256": parity_sha256(bytes)})
+    };
+    let names = [
+        "hardware-valid",
+        "software-valid",
+        "hardware-cleared",
+        "software-cleared",
+    ];
+    let raw: Vec<_> = names
+        .iter()
+        .zip(samples)
+        .map(|(name, sample)| write(&format!("{name}.bin"), bytemuck::cast_slice(sample)))
+        .collect();
+    let colors: Vec<_> = expected.iter().map(|hit| card_color(hit.card)).collect();
+    let oracle = write("authored-oracle-colors.bin", bytemuck::cast_slice(&colors));
+    const COLUMNS: usize = 128;
+    const SCALE: usize = 4;
+    let rows = expected.len().div_ceil(COLUMNS);
+    let width = COLUMNS * SCALE;
+    let height = rows * SCALE * 5;
+    let mut rgba = vec![0u8; width * height * 4];
+    for band in 0..5 {
+        for ray in 0..expected.len() {
+            let value = if band == 0 {
+                colors[ray]
+            } else {
+                samples[band - 1][ray].radiance
+            };
+            assert!(value.iter().all(|component| component.is_finite()));
+            let rgb =
+                [value[0], value[1], value[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            for y in 0..SCALE {
+                for x in 0..SCALE {
+                    let pixel = ((band * rows * SCALE + ray / COLUMNS * SCALE + y) * width
+                        + ray % COLUMNS * SCALE
+                        + x)
+                        * 4;
+                    rgba[pixel..pixel + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                }
+            }
+        }
+    }
+    let file = std::fs::File::create(directory.join("card-owner-index-ray-witness.png")).unwrap();
+    let mut encoder = png::Encoder::new(file, width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&rgba).unwrap();
+    writer.finish().unwrap();
+    let manifest = serde_json::json!({
+        "scope": "Card index ownership and negative control, not physical GI or performance",
+        "rays": expected.len(), "traceStride": std::mem::size_of::<Traced>(),
+        "bands": ["authored-oracle", "hardware-valid", "software-valid", "hardware-cleared", "software-cleared"],
+        "display": {"encoding": "linear-rgb-clamp-0-1-to-unorm8", "columns": COLUMNS, "scale": SCALE},
+        "oracle": oracle, "raw": raw,
+    });
+    write(
+        "manifest.json",
+        &serde_json::to_vec_pretty(&manifest).unwrap(),
+    );
 }
 
 /// Unlit marker `worldCardRadiance` returns for a hit on a non-resident instance.
@@ -975,10 +1169,11 @@ const UNLIT: [f32; 4] = [0.0, 0.0, 0.0, -1.0];
 /// their Card radiance. Falsifier: without the residency flag the same hits read black.
 #[test]
 fn pending_cards_are_unlit_on_ray_query_and_global_sdf() {
+    let prepared = read_same_host_canonical_parity_payload();
     let Some(gpu) = gpu() else { return };
     let scope = validation_scope(&gpu);
     const PENDING: u32 = 200;
-    let mut scene = build_scene(&gpu, furnished(), &[PENDING]);
+    let mut scene = build_scene(&gpu, prepared.scene("furnished"), furnished(), &[PENDING]);
     let origins = [
         [0.0, 0.0, 0.0],
         [2.5, -0.5, -1.5],
@@ -1050,6 +1245,7 @@ fn pending_cards_are_unlit_on_ray_query_and_global_sdf() {
 
 #[test]
 fn thin_wall_does_not_leak_through_ray_query() {
+    let prepared = read_same_host_canonical_parity_payload();
     let Some(gpu) = gpu() else { return };
     let scope = validation_scope(&gpu);
     let mut rays = Vec::new();
@@ -1082,12 +1278,22 @@ fn thin_wall_does_not_leak_through_ray_query() {
             .filter(|(hit, &b)| b && (hit.state[0] != STATUS_HIT || hit.position[0] > past))
             .count()
     };
-    let visible = build_scene(&gpu, partitioned(0x01), &[]);
+    let visible = build_scene(
+        &gpu,
+        prepared.scene("partitioned-visible"),
+        partitioned(0x01),
+        &[],
+    );
     let hardware = trace(&gpu, &visible, Traversal::RayQuery, &rays);
     let software = trace(&gpu, &visible, Traversal::GlobalSdf, &rays);
     let (hardware_leaks, software_leaks) = (leaks(&hardware), leaks(&software));
     // Falsifier: the same detector must see every ray leak once the plate is masked out.
-    let masked = build_scene(&gpu, partitioned(0x02), &[]);
+    let masked = build_scene(
+        &gpu,
+        prepared.scene("partitioned-masked"),
+        partitioned(0x02),
+        &[],
+    );
     let falsified = trace(&gpu, &masked, Traversal::RayQuery, &rays);
     let masked_leaks = leaks(&falsified);
     assert_no_validation_error(scope);
@@ -1102,4 +1308,557 @@ fn thin_wall_does_not_leak_through_ray_query() {
         masked_leaks, bound,
         "the leak detector must see a removed wall"
     );
+}
+
+fn authored_world_parity_scene_inputs() -> serde_json::Value {
+    fn bits(values: &[f32]) -> Vec<u32> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+    fn scene(name: &str, boxes: Vec<Box3>) -> serde_json::Value {
+        let rows: Vec<_> = boxes
+            .iter()
+            .map(|source| {
+                serde_json::json!({
+                    "id": source.id,
+                    "geometryId": 0,
+                    "mask": source.mask,
+                    "transformF32Bits": bits(&source.transform.to_cols_array()),
+                    "originalInverseF32Bits": bits(&source.transform.inverse().to_cols_array()),
+                    "originalAxisScalesF32Bits": bits(&axis_scales(&source.transform).to_array()),
+                })
+            })
+            .collect();
+        let card_owners: Vec<_> = boxes
+            .iter()
+            .flat_map(|source| faces().map(move |_| source.id))
+            .collect();
+        serde_json::json!({"name": name, "instances": rows, "cardOwners": card_owners})
+    }
+    let (vertices, indices) = unit_box();
+    let vertex_bits: Vec<_> = vertices.iter().map(|vertex| bits(vertex)).collect();
+    serde_json::json!({
+        "format": "native-world-parity-inputs/2",
+        "floatEncoding": "f32-to-bits-u32",
+        "verticesF32Bits": vertex_bits,
+        "indices": indices.to_vec(),
+        "scenes": [
+            scene("furnished", furnished()),
+            scene("partitioned-visible", partitioned(0x01)),
+            scene("partitioned-masked", partitioned(0x02)),
+        ],
+        "gridOriginSpacingF32Bits": bits(&[ORIGIN, ORIGIN, ORIGIN, SPACING]),
+        "gridDimensions": [DIMS, DIMS, DIMS],
+        "gridRangesF32Bits": bits(&[2.0, SPACING, 0.0, 0.0]),
+        "originalDenseSampling": {
+            "dimension": FIELD_DIM,
+            "originF32Bits": FIELD_LO.to_bits(),
+            "spacingF32Bits": FIELD_SPACING.to_bits(),
+        },
+        "headerControl": scene("header-control", vec![
+            placed(1, [0.0; 3], [1.0; 3], Quat::IDENTITY),
+            placed(2, [0.0; 3], [2.0, 3.0, 4.0], Quat::IDENTITY),
+        ])["instances"].clone(),
+        "cardResolution": RES,
+        "cardAtlas": [ATLAS.0, ATLAS.1],
+        "maxSteps": MAX_STEPS,
+        "minStepFactorF32Bits": MIN_STEP_FACTOR.to_bits(),
+        "projectionMarginF32Bits": MARGIN.to_bits(),
+    })
+}
+
+#[test]
+fn authored_world_parity_inputs_retain_primitive_winding_and_float_bits() {
+    let (vertices, indices) = unit_box();
+    for primitive in 0..12 {
+        let triangle = &indices[primitive * 3..primitive * 3 + 3];
+        let a = Vec3::from(vertices[triangle[0] as usize]);
+        let b = Vec3::from(vertices[triangle[1] as usize]);
+        let c = Vec3::from(vertices[triangle[2] as usize]);
+        let face = primitive / 2;
+        let (axis, sign) = faces().nth(face).unwrap();
+        let mut expected = Vec3::ZERO;
+        expected[axis] = sign;
+        assert_eq!((b - a).cross(c - a).normalize(), expected);
+    }
+    let encoded = serde_json::to_string(&[0.0f32.to_bits(), (-0.0f32).to_bits()]).unwrap();
+    let decoded: [u32; 2] = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, [0, 0x8000_0000]);
+    let source = authored_world_parity_scene_inputs();
+    let visible = &source["scenes"][1]["instances"];
+    let masked = &source["scenes"][2]["instances"];
+    assert_eq!(
+        visible.as_array().unwrap().len(),
+        masked.as_array().unwrap().len()
+    );
+    for (a, b) in visible
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(masked.as_array().unwrap())
+    {
+        assert_eq!(a["id"], b["id"]);
+        assert_eq!(a["transformF32Bits"], b["transformF32Bits"]);
+        assert_eq!(a["originalInverseF32Bits"], b["originalInverseF32Bits"]);
+        if a["id"] == PLATE_ID {
+            assert_eq!(a["mask"], 0x01);
+            assert_eq!(b["mask"], 0x02);
+        } else {
+            assert_eq!(a["mask"], b["mask"]);
+        }
+    }
+}
+
+#[test]
+fn export_authored_world_parity_inputs_for_this_host() {
+    let actual = authored_world_parity_scene_inputs();
+    let path = std::path::PathBuf::from(
+        std::env::var_os("FORGEAX_NATIVE_WORLD_PARITY_INPUTS")
+            .expect("prepare an explicit owned same-host input output path"),
+    );
+    assert!(path.is_absolute(), "input path must be absolute");
+    if path.exists() {
+        let bytes = std::fs::read(&path).unwrap();
+        let captured: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            captured, actual,
+            "do not overwrite a different captured source"
+        );
+    } else {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all((serde_json::to_string_pretty(&actual).unwrap() + "\n").as_bytes())
+            .unwrap();
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalParityPayload {
+    format: String,
+    source: serde_json::Value,
+    scenes: Vec<CanonicalParityScene>,
+    header_control: CanonicalHeaderControl,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalParityScene {
+    name: String,
+    instance_count: usize,
+    instances: Vec<u8>,
+    fields: Vec<u8>,
+    bounds: Vec<u8>,
+    settings: Vec<u8>,
+    source_expected: [u32; 4],
+    card_owners: Vec<u32>,
+    card_owner_index: Vec<u8>,
+    digests: CanonicalParityDigests,
+    voxel_bytes: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalParityDigests {
+    instances: String,
+    fields: String,
+    bounds: String,
+    settings: String,
+    #[serde(rename = "cardOwnerIndex")]
+    card_owner_index: String,
+}
+
+fn parity_sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+fn read_parity_evidence(path_key: &str, digest_key: &str, maximum: u64) -> Vec<u8> {
+    let path = std::path::PathBuf::from(
+        std::env::var_os(path_key).unwrap_or_else(|| panic!("prepare {path_key} first")),
+    );
+    assert!(path.is_absolute(), "Native fixture paths must be absolute");
+    assert!(std::fs::metadata(&path).unwrap().len() <= maximum);
+    let expected = std::env::var(digest_key).unwrap_or_else(|_| panic!("missing {digest_key}"));
+    let bytes = std::fs::read(path).expect("missing prepared Native parity evidence");
+    assert_eq!(
+        parity_sha256(&bytes),
+        expected,
+        "changed prepared Native parity bytes"
+    );
+    bytes
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalHeaderControl {
+    one: Vec<u8>,
+    two: Vec<u8>,
+    one_sha256: String,
+    two_sha256: String,
+}
+
+fn world_instance_stride() -> usize {
+    let module = naga::front::wgsl::parse_str(fixture("global-sdf.wgsl")).unwrap();
+    let (_, raw) = module
+        .types
+        .iter()
+        .find(|(_, value)| value.name.as_deref() == Some("RawInstance"))
+        .expect("production World fixture declares its raw instance type");
+    match &raw.inner {
+        naga::TypeInner::Struct { span, .. } => *span as usize,
+        _ => panic!("RawInstance must remain a structured host window"),
+    }
+}
+
+fn validate_card_owner_index(bytes: &[u8], owners: &[u32]) {
+    assert_eq!(
+        bytes.len(),
+        owners.len() * 8,
+        "one directory/link pair per Card"
+    );
+    assert!(owners.iter().all(|owner| *owner != u32::MAX));
+    let words: Vec<_> = bytes
+        .chunks_exact(8)
+        .map(|row| {
+            [
+                u32::from_le_bytes(row[..4].try_into().unwrap()),
+                u32::from_le_bytes(row[4..].try_into().unwrap()),
+            ]
+        })
+        .collect();
+    let mut visited = vec![false; owners.len()];
+    let mut previous_owner = None;
+    let mut empty_suffix = false;
+    for row in &words {
+        let head = row[0] as usize;
+        if head == 0 {
+            empty_suffix = true;
+            continue;
+        }
+        assert!(!empty_suffix, "directory entries precede its empty suffix");
+        assert!(
+            head <= owners.len(),
+            "directory head must address a physical Card"
+        );
+        let owner = owners[head - 1];
+        assert!(
+            previous_owner.is_none_or(|previous| previous < owner),
+            "owners sorted uniquely"
+        );
+        previous_owner = Some(owner);
+        let mut next = head;
+        while next != 0 {
+            assert!(next <= owners.len(), "link must address a physical Card");
+            let index = next - 1;
+            assert_eq!(owners[index], owner, "link must retain its authored owner");
+            assert!(!visited[index], "a Card occurs in exactly one chain");
+            visited[index] = true;
+            next = words[index][1] as usize;
+            assert!(
+                next == 0 || next > index + 1,
+                "links retain physical tie-breaking order"
+            );
+        }
+    }
+    assert!(
+        visited.into_iter().all(|value| value),
+        "all authored Cards are reachable"
+    );
+}
+
+#[test]
+fn canonical_card_owner_index_checks_authored_identity_and_physical_order_before_gpu() {
+    let encode = |rows: &[[u32; 2]]| -> Vec<u8> {
+        rows.iter()
+            .flatten()
+            .flat_map(|word| word.to_le_bytes())
+            .collect()
+    };
+    // Intentionally interleaved physical tiles. These are independent authored
+    // expectations, not another implementation of the production index builder.
+    let owners = [4, 1, 4, 1];
+    let rows = [[2, 3], [1, 4], [0, 0], [0, 0]];
+    validate_card_owner_index(&encode(&rows), &owners);
+    validate_card_owner_index(&[], &[]);
+    validate_card_owner_index(
+        &encode(&[[2, 3], [1, 0], [0, 0]]),
+        &[u32::MAX - 1, 0, u32::MAX - 1],
+    );
+    for broken in [
+        [[5, 3], [1, 4], [0, 0], [0, 0]], // Out-of-range directory head.
+        [[1, 3], [2, 4], [0, 0], [0, 0]], // Descending owner directory.
+        [[0, 3], [1, 4], [0, 0], [0, 0]], // Nonempty entry after the sentinel.
+        [[2, 2], [1, 4], [0, 0], [0, 0]], // Cross-owner successor.
+        [[2, 3], [1, 4], [0, 1], [0, 0]], // A cycle/backward physical link.
+        [[2, 0], [1, 4], [0, 0], [0, 0]], // Dropped physical Card.
+        [[2, 3], [2, 4], [0, 0], [0, 0]], // Duplicate owner head.
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| validate_card_owner_index(&encode(&broken), &owners))
+                .is_err()
+        );
+    }
+    assert!(
+        std::panic::catch_unwind(|| validate_card_owner_index(&encode(&rows)[..31], &owners))
+            .is_err()
+    );
+    assert!(std::panic::catch_unwind(|| validate_card_owner_index(
+        &encode(&[[1, 0]]),
+        &[u32::MAX]
+    ))
+    .is_err());
+}
+
+fn validate_parity_scene(
+    scene: &CanonicalParityScene,
+    count: usize,
+    stride: usize,
+    owners: &[u32],
+) {
+    for (bytes, digest) in [
+        (&scene.instances, &scene.digests.instances),
+        (&scene.fields, &scene.digests.fields),
+        (&scene.bounds, &scene.digests.bounds),
+        (&scene.settings, &scene.digests.settings),
+        (&scene.card_owner_index, &scene.digests.card_owner_index),
+    ] {
+        assert_eq!(
+            parity_sha256(bytes),
+            *digest,
+            "actual upload bytes must match the producer"
+        );
+    }
+    assert_eq!(scene.instance_count, count);
+    assert_eq!(
+        scene.card_owners, owners,
+        "Card identities must match the authored source"
+    );
+    validate_card_owner_index(&scene.card_owner_index, owners);
+    assert_eq!(stride, 144, "production raw instance stride changed");
+    assert_eq!(scene.instances.len(), count * stride);
+    assert!(
+        (16..=16 * 1024 * 1024).contains(&scene.fields.len())
+            && scene.fields.len().is_multiple_of(4)
+    );
+    assert!(scene.bounds.len() >= 96 + count * 48 && scene.bounds.len().is_multiple_of(16));
+    // Derive from physical uploads and the original host roster, never from Grid.
+    // One is sceneFieldSourceEpoch(0): the initial accepted source-owner revision.
+    let expected = [
+        u32::try_from(scene.instances.len() / 4).unwrap(),
+        u32::try_from(scene.fields.len() / 4).unwrap(),
+        u32::try_from(count).unwrap(),
+        1,
+    ];
+    assert_eq!(
+        scene.source_expected, expected,
+        "foreign canonical source tuple"
+    );
+    assert_eq!(scene.settings.len(), 64);
+    let grid = GpuGrid {
+        origin_spacing: [ORIGIN, ORIGIN, ORIGIN, SPACING],
+        dimensions_count: [DIMS, DIMS, DIMS, count as u32],
+        ranges: [2.0, SPACING, 0.0, 0.0],
+        source: expected,
+    };
+    assert_eq!(scene.settings.as_slice(), bytemuck::bytes_of(&grid));
+    assert_eq!(scene.voxel_bytes, u64::from(DIMS).pow(3) * 16);
+}
+
+fn decode_parity_payload(bytes: &[u8]) -> CanonicalParityPayload {
+    let payload: CanonicalParityPayload = serde_json::from_slice(bytes).expect("malformed payload");
+    assert_eq!(payload.format, "native-world-parity-canonical/3");
+    let source = authored_world_parity_scene_inputs();
+    assert_eq!(
+        payload.source, source,
+        "foreign or changed authored source input"
+    );
+    assert_eq!(payload.scenes.len(), 3);
+    let stride = world_instance_stride();
+    validate_world_bounds_control(&payload.header_control);
+    for (index, expected) in ["furnished", "partitioned-visible", "partitioned-masked"]
+        .iter()
+        .enumerate()
+    {
+        let scene = &payload.scenes[index];
+        assert_eq!(scene.name, *expected);
+        let count = source["scenes"][index]["instances"]
+            .as_array()
+            .unwrap()
+            .len();
+        let owners: Vec<u32> = source["scenes"][index]["cardOwners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| u32::try_from(value.as_u64().unwrap()).unwrap())
+            .collect();
+        validate_parity_scene(scene, count, stride, &owners);
+    }
+    payload
+}
+
+fn read_same_host_canonical_parity_payload() -> CanonicalParityPayload {
+    let input = read_parity_evidence(
+        "FORGEAX_NATIVE_WORLD_PARITY_INPUTS",
+        "FORGEAX_NATIVE_WORLD_PARITY_INPUT_SHA256",
+        1024 * 1024,
+    );
+    let source: serde_json::Value = serde_json::from_slice(&input).unwrap();
+    assert_eq!(
+        source,
+        authored_world_parity_scene_inputs(),
+        "input was not authored on this host"
+    );
+    let bytes = read_parity_evidence(
+        "FORGEAX_NATIVE_WORLD_PARITY_PAYLOAD",
+        "FORGEAX_NATIVE_WORLD_PARITY_PAYLOAD_SHA256",
+        64 * 1024 * 1024,
+    );
+    decode_parity_payload(&bytes)
+}
+
+impl CanonicalParityPayload {
+    fn scene(&self, name: &str) -> &CanonicalParityScene {
+        self.scenes
+            .iter()
+            .find(|scene| scene.name == name)
+            .expect("missing original scene")
+    }
+}
+
+#[test]
+fn prepared_parity_payload_rejects_changed_source_and_upload_bytes_before_gpu() {
+    let bytes = read_parity_evidence(
+        "FORGEAX_NATIVE_WORLD_PARITY_PAYLOAD",
+        "FORGEAX_NATIVE_WORLD_PARITY_PAYLOAD_SHA256",
+        64 * 1024 * 1024,
+    );
+    let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    decode_parity_payload(&bytes);
+    for control in 0..9 {
+        let mut changed = original.clone();
+        let source = &mut changed["source"];
+        match control {
+            0 => source["scenes"][2]["instances"][6]["mask"] = serde_json::json!(1),
+            1 => source["scenes"][0]["instances"][0]["id"] = serde_json::json!(999),
+            2 => {
+                source["scenes"][0]["instances"][0]["transformF32Bits"][3] =
+                    serde_json::json!(0x8000_0000u32)
+            }
+            3 => source["indices"].as_array_mut().unwrap().swap(0, 1),
+            4 => {
+                let indices = source["indices"].as_array_mut().unwrap();
+                for index in 0..3 {
+                    indices.swap(index, index + 3);
+                }
+            }
+            5 => {
+                let word = changed["scenes"][0]["fields"][0].as_u64().unwrap();
+                changed["scenes"][0]["fields"][0] = serde_json::json!(word ^ 1);
+            }
+            6 => source["scenes"][0]["instances"][0]["geometryId"] = serde_json::json!(1),
+            7 => source["scenes"][0]["cardOwners"][0] = serde_json::json!(999),
+            8 => {
+                let byte = changed["scenes"][0]["cardOwnerIndex"][0].as_u64().unwrap();
+                changed["scenes"][0]["cardOwnerIndex"][0] = serde_json::json!(byte ^ 1);
+            }
+            _ => unreachable!(),
+        }
+        let altered = serde_json::to_vec(&changed).unwrap();
+        // Deliberately pass an internally valid JSON document to the real
+        // reader: source equality and upload digest checks must each contribute.
+        assert!(
+            std::panic::catch_unwind(|| decode_parity_payload(&altered)).is_err(),
+            "negative control {control} must reject before gpu()"
+        );
+    }
+    // Independently authored expectation must not be reconstructed from a
+    // coherently forged Grid tail, even if its upload digest is refreshed.
+    for control in 0..12 {
+        let mut changed = original.clone();
+        match control {
+            0 => changed["format"] = serde_json::json!("native-world-parity-canonical/1"),
+            1 => {
+                changed["scenes"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("sourceExpected");
+            }
+            2 => changed["scenes"][0]["sourceExpected"] = serde_json::json!([324, 16, 9]),
+            3 => changed["scenes"][0]["sourceExpected"] = serde_json::json!([324, 16, 9, 1, 0]),
+            4..=7 => {
+                let index = control - 4;
+                let value = changed["scenes"][0]["sourceExpected"][index]
+                    .as_u64()
+                    .unwrap();
+                changed["scenes"][0]["sourceExpected"][index] = serde_json::json!(value ^ 1);
+            }
+            8 | 9 => {
+                let mut settings: Vec<u8> =
+                    serde_json::from_value(changed["scenes"][0]["settings"].clone()).unwrap();
+                if control == 8 {
+                    changed["scenes"][0]["sourceExpected"][3] = serde_json::json!(2);
+                    settings[60..64].copy_from_slice(&2u32.to_le_bytes());
+                } else {
+                    settings.truncate(48);
+                }
+                changed["scenes"][0]["digests"]["settings"] =
+                    serde_json::json!(parity_sha256(&settings));
+                changed["scenes"][0]["settings"] = serde_json::json!(settings);
+            }
+            10 => changed["format"] = serde_json::json!("native-world-parity-canonical/2"),
+            11 => {
+                // A valid refreshed digest must not authorize an invalid index.
+                let mut index: Vec<u8> =
+                    serde_json::from_value(changed["scenes"][0]["cardOwnerIndex"].clone()).unwrap();
+                index[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+                changed["scenes"][0]["digests"]["cardOwnerIndex"] =
+                    serde_json::json!(parity_sha256(&index));
+                changed["scenes"][0]["cardOwnerIndex"] = serde_json::json!(index);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            std::panic::catch_unwind(|| decode_parity_payload(
+                &serde_json::to_vec(&changed).unwrap()
+            ))
+            .is_err(),
+            "V3 source control {control} must reject before gpu()"
+        );
+    }
+}
+
+#[test]
+fn parity_uniform_keeps_original_trace_and_independent_expected_tail() {
+    let expected = [324, 4096, 9, 1];
+    let parity = GpuParity {
+        trace: [MARGIN, MIN_STEP_FACTOR, 0.0, 0.0],
+        expected_source: expected,
+    };
+    let bytes = bytemuck::bytes_of(&parity);
+    assert_eq!(bytes.len(), 32);
+    assert_eq!(
+        &bytes[..16],
+        bytemuck::bytes_of(&[MARGIN, MIN_STEP_FACTOR, 0.0, 0.0])
+    );
+    assert_eq!(&bytes[16..], bytemuck::bytes_of(&expected));
+    assert_eq!(std::mem::size_of::<GpuGrid>(), 64);
+    for name in ["global-sdf.wgsl", "ray-query.wgsl"] {
+        let module = naga::front::wgsl::parse_str(fixture(name)).unwrap();
+        let (_, parity_type) = module
+            .types
+            .iter()
+            .find(|(_, value)| value.name.as_deref() == Some("Parity"))
+            .unwrap();
+        let naga::TypeInner::Struct { span, members } = &parity_type.inner else {
+            panic!("Parity must remain a struct");
+        };
+        assert_eq!(*span, 32);
+        assert_eq!(members[0].offset, 0);
+        assert_eq!(members[1].offset, 16);
+        assert_eq!(members[1].name.as_deref(), Some("expectedSource"));
+    }
 }

@@ -26,9 +26,11 @@ Reach a first correct edit with this short path, not by reading large skills up 
    effects: the Quick contract of
    [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md).
    For optional interactive project/asset review, read
-   `skills/forgeax-view-start/SKILL.md` from the game root, or the installed copy at
-   `node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.md`.
-   View owns its file launcher; it is not discovered through cold CLI help.
+   `skills/forgeax-view-start/SKILL.md` from the game root, or the SDK copy at
+   `tools/view/skills/forgeax-view-start/SKILL.md`. Start with
+   `node /absolute/forgeax-sdk/tools/view/start.mjs --project /absolute/game`.
+   View is SDK-only; the Engine npm package never contains View. Its launcher
+   initializes the SDK tool runtime and is not discovered through cold CLI help.
 4. Deeper needs: pick one row in the capability table below and read only that skill's
    relevant section. Project layout, assets and setup live in the
    game project guide; acceptance, release and

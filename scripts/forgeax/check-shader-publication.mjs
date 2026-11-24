@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { writeHeapSnapshot } from 'node:v8';
+import { shaderPublicationOracle } from './shader-publication-oracle.mjs';
 
 // Run in a fresh --expose-gc process with the runner-derived SDK heap. This exercises
 // JSON/fetch admission of the real complete fleet without constructing a GPU.
@@ -25,36 +26,6 @@ const checkerBlobSha256 = createHash('sha256')
   .update(await readFile(new URL(import.meta.url)))
   .digest('hex');
 
-function expectedCountsFromOracle(wireText, rebuiltPublicationRef) {
-  const publication = JSON.parse(wireText);
-  assert.equal(publication.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
-  assert.ok(Array.isArray(publication.materialShaders));
-  if (diagnosticHeapSnapshot) {
-    diagnosticOracleRefs = [
-      ['rebuilt-publication', rebuiltPublicationRef],
-      ...[
-        ['publication', publication],
-        ['materialShaders', publication.materialShaders],
-        ['sources', publication.sources],
-        ['fragments', publication.fragments],
-      ].map(([label, value]) => [label, new WeakRef(value)]),
-    ];
-  }
-  return {
-    materialCount: publication.materialShaders.length,
-    variantCount: publication.materialShaders.reduce((sum, row) => sum + row.variants.length, 0),
-    firstSource:
-      publication.materialShaders[0] === undefined
-        ? undefined
-        : Buffer.from(
-            publication.sources[publication.materialShaders[0].sourceDigest]
-              .map((index) => publication.fragments[index])
-              .join(''),
-            'utf16le',
-          ),
-  };
-}
-
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -67,16 +38,28 @@ async function loadRegistryFromOracle(containerPath, profile) {
   // the retained-heap limit are unchanged.
   let container = decodePackagedProfiles(containerBytes);
   assert.ok(container, `obsolete packaged profile container: ${containerPath}`);
+  const oracle = shaderPublicationOracle(container, profile, SHADER_MANIFEST_PUBLICATION_VERSION);
   let rebuilt = packagedProfilePublication(container, profile);
-  container = null;
   assert.ok(rebuilt, `packaged profile is missing: ${profile}`);
+  if (diagnosticHeapSnapshot) {
+    diagnosticOracleRefs = [
+      ['rebuilt-publication', rebuilt],
+      ['container', container],
+      ['materialShaders', container.profiles[profile].materialShaders],
+      ['sources', container.sources],
+      ['fragments', container.fragments],
+    ].map(([label, value]) => [label, new WeakRef(value)]);
+  }
+  container = null;
   let wireText = JSON.stringify(rebuilt);
-  const rebuiltRef = diagnosticHeapSnapshot ? new WeakRef(rebuilt) : undefined;
   rebuilt = null;
-  const expectedCounts = expectedCountsFromOracle(wireText, rebuiltRef);
+  const expectedCounts = { materialCount: oracle.materialCount, variantCount: oracle.variantCount };
   const wireBytes = Buffer.byteLength(wireText);
   let wireBody = new TextEncoder().encode(wireText);
   wireText = null;
+  // Retire checker-only producer/oracle graphs before measuring the real consumer.
+  await new Promise((resolveTick) => setImmediate(resolveTick));
+  globalThis.gc();
   const registry = new ShaderRegistry({
     manifestUrl: 'https://shader-publication.invalid/manifest.json',
   });
@@ -95,16 +78,15 @@ async function loadRegistryFromOracle(containerPath, profile) {
   return {
     registry,
     expectedCounts,
+    firstSourceBytes: oracle.firstSourceBytes,
     wireBytes,
     containerSha256: sha256(containerBytes),
   };
 }
 
 const started = performance.now();
-const { registry, expectedCounts, wireBytes, containerSha256 } = await loadRegistryFromOracle(
-  containerPath,
-  profile,
-);
+const { registry, expectedCounts, firstSourceBytes, wireBytes, containerSha256 } =
+  await loadRegistryFromOracle(containerPath, profile);
 await new Promise((resolveTick) => setImmediate(resolveTick));
 globalThis.gc();
 const retained = process.memoryUsage();
@@ -128,7 +110,7 @@ const variantCountMatches = variantCount === expectedCounts.variantCount;
 // container again beside the live registry would measure two fleets at once.
 const selectedSourceEqual =
   materials[0] !== undefined &&
-  Buffer.from(materials[0].composedWgsl, 'utf16le').equals(expectedCounts.firstSource);
+  Buffer.from(materials[0].composedWgsl, 'utf16le').equals(firstSourceBytes);
 const containerHashAfter = sha256(await readFile(containerPath));
 const containerUnchanged = containerHashAfter === containerSha256;
 const retainedHeapWithinLimit = retained.heapUsed < 128 * 1024 * 1024;

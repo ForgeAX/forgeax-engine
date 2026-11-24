@@ -2775,19 +2775,19 @@ async function makeWebGPURenderer(
           { frameId, deviceGeneration },
         );
   };
-  const pendingFramePreparations = (presentation: FrameReceipt['presentation']) => {
+  const pendingFramePreparations = () => {
     const shaderState = candidateShaderState ?? activeShaderState;
-    return presentation === 'ready'
-      ? []
-      : [
-          internals.device.pipelineLibrary?.pendingRuntimeCompilation?.(),
-          gpuStore.pendingCubemapCompletion(),
-          preparedPipelineOwners.get(currentPipelineCacheState())?.pendingCompletion(),
-          shaderState.shaderInstance?.pendingTemplatePreparations(),
-          shaderState.shaderInstance?.pendingMaterialPreparations(),
-          shaderState.sharedShaderModuleAdapter?.pendingCompletion(),
-          shaderState.sharedImmediateShaderModuleAdapter?.pendingCompletion(),
-        ].filter((value) => value !== undefined);
+    // Optional GI can prepare behind a ready direct picture. Its completion is
+    // observable without delaying draw or changing that submitted presentation.
+    return [
+      internals.device.pipelineLibrary?.pendingRuntimeCompilation?.(),
+      gpuStore.pendingCubemapCompletion(),
+      preparedPipelineOwners.get(currentPipelineCacheState())?.pendingCompletion(),
+      shaderState.shaderInstance?.pendingTemplatePreparations(),
+      shaderState.shaderInstance?.pendingMaterialPreparations(),
+      shaderState.sharedShaderModuleAdapter?.pendingCompletion(),
+      shaderState.sharedImmediateShaderModuleAdapter?.pendingCompletion(),
+    ].filter((value) => value !== undefined);
   };
   /** Publish the receipt of a submitted frame with its completion and observations. */
   const issueFrameReceipt = (
@@ -2836,7 +2836,7 @@ async function makeWebGPURenderer(
       if (preparationCompleted === undefined || preparationSettled)
         frameContinuations.delete(continuation);
     });
-    const preparations = pendingFramePreparations(presentation);
+    const preparations = pendingFramePreparations();
     preparationCompleted =
       preparations.length === 0 && !presentationPendingReason?.code.includes('pipeline-preparation')
         ? undefined

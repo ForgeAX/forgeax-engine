@@ -205,6 +205,13 @@ export async function runPortableExposure(
   height: number,
   inputPixels?: Float32Array,
   deltas: readonly number[] = [1 / 60],
+  changes: readonly (
+    | undefined
+    | {
+        readonly pixels?: Float32Array;
+        readonly ue?: boolean;
+      }
+  )[] = [],
 ) {
   const gpu = createAutoExposureGpuResources(device, 7, execution).unwrap();
   const source = device
@@ -220,14 +227,16 @@ export async function runPortableExposure(
     const value = 2 ** (-4 + ((index * 7) % 64) * 0.09375 + 0.03125);
     pixels.set([value, value, value, 1], index * 4);
   }
-  device.queue
-    .writeTexture(
-      { texture: source },
-      pixels,
-      { bytesPerRow: width * 16, rowsPerImage: height },
-      { width, height, depthOrArrayLayers: 1 },
-    )
-    .unwrap();
+  const upload = (values: Float32Array) =>
+    device.queue
+      .writeTexture(
+        { texture: source },
+        values,
+        { bytesPerRow: width * 16, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 },
+      )
+      .unwrap();
+  upload(pixels);
   const sourceView = device.createTextureView(source, {}).unwrap();
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const imported = graph
@@ -271,7 +280,10 @@ export async function runPortableExposure(
   try {
     for (const [index, deltaTime] of deltas.entries()) {
       frameIndex = index;
+      const change = changes[index];
+      if (change?.pixels !== undefined) upload(change.pixels);
       writeAutoExposureParameters(gpu, {
+        ...(change?.ue ? { adaptation: 'ue-eye-adaptation' } : {}),
         compensationEv: 0,
         rangeMinEv: -8,
         rangeMaxEv: 8,
@@ -308,4 +320,63 @@ export async function runPortableExposure(
     device.destroyTexture(source);
     device.destroyBuffer(readback);
   }
+}
+
+/** Half-resolution colored quads, floor rejection, split bins and percentile clipping. */
+export async function runUeExposureMeterFixture(
+  device: RhiDevice,
+  factory: ModuleFactory,
+  execution: 'compute' | 'fragment',
+) {
+  const positions = [0, 0.5, 8.5, 8.5, 12.25, 12.25, 12.25, 16.5, 16.5, 16.5, 20.75, 52.5];
+  const width = 13;
+  const height = 5;
+  const pixels = new Float32Array(width * height * 4);
+  const logAtBin = (bin: number) => -10 + (bin * 30) / 63;
+  for (const [index, position] of positions.entries()) {
+    const x = (index % 6) * 2;
+    const y = Math.floor(index / 6) * 2;
+    // Only one red pixel per quad. Its mean RGB luminance after the box is R/12.
+    const red = index === 0 ? 0 : 12 * 2 ** logAtBin(position);
+    pixels.set([red, 0, 0, 1], (y * width + x) * 4);
+  }
+  // The incomplete right and bottom edges are outside the UE histogram viewport.
+  for (let y = 0; y < height; y++) pixels.set([256, 256, 256, 1], (y * width + 12) * 4);
+  for (let x = 0; x < width; x++) pixels.set([256, 256, 256, 1], (4 * width + x) * 4);
+  const actual = await runPortableExposure(
+    device,
+    factory,
+    execution,
+    width,
+    height,
+    pixels,
+    [1 / 60],
+    [{ ue: true }],
+  );
+  const expectedBins = new Array<number>(256).fill(0);
+  const scale = 2 ** 19;
+  for (const position of positions) {
+    const low = Math.floor(position);
+    const highWeight = (position - low) * scale;
+    if (low > 0) expectedBins[low] = (expectedBins[low] ?? 0) + scale - highWeight;
+    expectedBins[low + 1] = (expectedBins[low + 1] ?? 0) + highWeight;
+  }
+  const total = 10.5;
+  const lowRank = total * 0.1;
+  const highRank = total * 0.9;
+  let cumulative = 0;
+  let sum = 0;
+  for (const [bin, count] of expectedBins.entries()) {
+    const start = cumulative;
+    cumulative += count / scale;
+    const kept = Math.max(0, Math.min(cumulative, highRank) - Math.max(start, lowRank));
+    sum += kept * logAtBin(bin);
+  }
+  const expectedGain = 0.18 * 2 ** (-sum / (highRank - lowRank));
+  const maxBucketError = Math.max(
+    ...actual.histogram.map((count, bin) => Math.abs(count - (expectedBins[bin] ?? 0))),
+  );
+  // Fixed-point bin quantization and backend f32 math can differ below one micro-EV.
+  const gainErrorEv = Math.abs(Math.log2((actual.timeline[0] ?? NaN) / expectedGain));
+  return { maxBucketError, gainErrorEv };
 }

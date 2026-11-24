@@ -41,7 +41,11 @@ const materialCompilerSplitFile =
   'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts';
 
 function coverageGroupsForHistoricalReceipts(projects, size, options) {
-  const groups = coverageGroups(projects, size, { ...options, includeLocalShowcases: true });
+  const groups = coverageGroups(projects, size, {
+    ...options,
+    includeLocalShowcases: true,
+    historicalModeling: true,
+  });
   const split = groups.find((group) => group.files.includes(materialCompilerSplitFile));
   const ledger =
     options?.completed ??
@@ -2439,7 +2443,7 @@ test('the Primary live journey is excluded from V8 while Scene and local browser
         reportPath: 'result.json',
       });
       assert.equal(
-        args.includes(`--exclude=${path.resolve(file).replaceAll('\\\\', '/')}`),
+        args.includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`),
         isolateFiles || group.files.length === 0,
       );
     }
@@ -2995,6 +2999,7 @@ test('the completed split compiler cohort fits the daily Coverage replay target'
   );
   const receipt = ledger.replayRuns.find((run) => run.runId === 44949779826);
   const groups = coverageGroups(allProjectNames(), 8, {
+    historicalModeling: true,
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   assert.equal(receipt.originalJobs.length, 4);
@@ -3018,6 +3023,7 @@ test('the timeout cohort moves complete Coverage work off the overrun lane', () 
   );
   const receipt = ledger.replayRuns.find(({ runId }) => runId === 44984141441);
   const groups = coverageGroups(allProjectNames(), 8, {
+    historicalModeling: true,
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   assert.equal(Object.keys(receipt.completedSeconds).length, 61);
@@ -3048,6 +3054,12 @@ test('current Coverage assigns each Standard output batch once across the four j
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   const assignments = assignCoverageShards(groups, 4, { typecheck: false });
+  const modelingByShard = [0, 0, 0, 0];
+  for (const [index, group] of groups.entries()) {
+    if (group.shard && group.projects[0] === '@forgeax/engine-modeling')
+      modelingByShard[assignments[index]]++;
+  }
+  assert.deepEqual(modelingByShard, [3, 3, 3, 3]);
   const compilerSplitIndex = groups.findIndex((group) =>
     group.files.includes(materialCompilerSplitFile),
   );

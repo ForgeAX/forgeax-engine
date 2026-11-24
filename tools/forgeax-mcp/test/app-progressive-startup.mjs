@@ -114,7 +114,7 @@ try {
   let initialViewFrame;
   for (let index = 0; index < projects.length; index++) {
     const projectAt = performance.now();
-    if (index) await view.getByRole('button', { name: /empty3d.*running/ }).click();
+    if (index) await view.getByRole('button', { name: /empty3d.*(?:Running|运行中)/ }).click();
     await view.getByPlaceholder(/项目目录的绝对路径|Absolute project directory/).fill(projects[index]);
     await view.getByRole('button', { name: /^(下一步|Next)$/ }).click();
     const ready = await poll(() => workspace.getState(), state => { if (state.projectFailure) throw new Error(JSON.stringify(state.projectFailure)); return state.projectPhase === 'running' && state.project?.root === projects[index]; });

@@ -1,5 +1,5 @@
 #define_import_path forgeax_pbr::gbuffer_output
-#import forgeax_pbr::gbuffer::{encodeStandardGBufferNormal, encodeStandardReceiverNormal, encodeStandardReflectance, STANDARD_GBUFFER_NO_RECEIVE_BIT, encodeCompactGBuffer, standardSubsurfaceActive}
+#import forgeax_pbr::gbuffer::{encodeStandardGBufferNormal, encodeStandardReceiverNormal, encodeStandardReflectance, STANDARD_GBUFFER_NO_RECEIVE_BIT, STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT, STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT, encodeCompactGBuffer, standardSubsurfaceActive}
 
 // SceneColor owns emissive/opacity from the geometry pass onward. Five packed
 // surface attachments retain receiver channels and the bounded subsurface profile.
@@ -46,7 +46,7 @@ fn compactSubsurfaceCustomData(subsurface : vec4<f32>, profiles : array<vec4<u32
 
 fn encodeStandardGBuffer(normal : vec3<f32>, receiverNormal : vec3<f32>, roughness : f32, albedo : vec3<f32>,
   metallic : f32, dielectricSpecular : vec4<f32>, occlusion : f32, emissive : vec3<f32>,
-  opacity : f32, reflection : u32, probeRow : u32, receiveShadows : bool, receiverChannels : u32, subsurface : vec4<f32>, useDirectDfgLut : bool) -> GBufferOutput {
+  opacity : f32, reflection : u32, probeRow : u32, receiveShadows : bool, receiverChannels : u32, subsurface : vec4<f32>, useDirectDfgLut : bool, hasDiffuseTransmission : bool) -> GBufferOutput {
   var output : GBufferOutput;
   output.scene_color = vec4<f32>(emissive, opacity);
   output.receiver_geometry = vec2<u32>(encodeStandardReceiverNormal(receiverNormal), receiverChannels);
@@ -56,6 +56,9 @@ fn encodeStandardGBuffer(normal : vec3<f32>, receiverNormal : vec3<f32>, roughne
   output.dielectric_specular = encodeStandardReflectance(dielectricSpecular.rgb, dielectricSpecular.a);
   output.albedo_metallic = encodeStandardReflectance(albedo, metallic);
   let subsurfaceProfile = encodeStandardSubsurfaceRadius(subsurface);
+  let hasBackfaceDiffuse = hasDiffuseTransmission || standardSubsurfaceActive(subsurfaceProfile);
+  output.normal_roughness.y |= STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT |
+    select(0u, STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT, hasBackfaceDiffuse);
   output.lighting_context = vec2<u32>(encodeStandardReceiverContext(reflection, probeRow, receiveShadows), subsurfaceProfile);
   output.scene_temporal = vec4<f32>(0.0, 0.0, -1.0, 1.0);
   return output;
@@ -79,7 +82,7 @@ struct StandardGBufferPassOutput {
 };
 
 fn encodeCompactStandardGBuffer(normal : vec3<f32>, roughness : f32, baseColor : vec3<f32>,
-  metallic : f32, dielectricF0 : f32, ao : f32, emissive : vec3<f32>, opacity : f32, receiver : vec4<u32>, customData : u32, objectFlags : u32) -> CompactGBufferOutput {
-  let words = encodeCompactGBuffer(normal, metallic, dielectricF0, roughness, baseColor, ao, customData != 0u, objectFlags);
+  metallic : f32, dielectricF0 : f32, ao : f32, emissive : vec3<f32>, opacity : f32, receiver : vec4<u32>, customData : u32, objectFlags : u32, hasBackfaceDiffuse : bool) -> CompactGBufferOutput {
+  let words = encodeCompactGBuffer(normal, metallic, dielectricF0, roughness, baseColor, ao, customData != 0u, hasBackfaceDiffuse, objectFlags);
   return CompactGBufferOutput(vec4<f32>(emissive, opacity), words.x, words.y, words.z, customData, receiver, vec4<u32>(0u));
 }

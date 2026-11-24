@@ -163,7 +163,11 @@ it('carries both accepted Surface programs through value edits and detached publ
       selections: [
         {
           pass: 'Forward',
-          context: { ...context, pass: 'card-capture' as const },
+          context: {
+            ...context,
+            pass: 'card-capture' as const,
+            profile: 'forgeax-material-card-v4' as const,
+          },
           entry: 'vs_card',
         },
       ],

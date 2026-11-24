@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { IrradianceFieldProbeState } from './irradiance-field';
 import {
   IRRADIANCE_FIELD_MAX_PROBES,
   IRRADIANCE_FIELD_OCT,
@@ -74,7 +75,7 @@ export interface IrradianceVolume extends IrradianceVolumeLattice {
   readonly irradiance: Float32Array;
   /** Per probe 64 x (mean, mean^2) of the ray distance clamped to `2 * spacing`. */
   readonly moments: Float32Array;
-  /** Per probe [updates, valid, backfaces, traced], the live field's meta record. */
+  /** Format-1 diagnostics [updates, valid, backfaces, traced], not GPU relocation words. */
   readonly meta: Uint32Array;
   /** `sha256:` digest of the encoded artifact bytes. */
   readonly digest: string;
@@ -408,6 +409,22 @@ export function irradianceVolumeProbeBlocks(volume: IrradianceVolumeContent): Fl
       probe * IRRADIANCE_FIELD_PROBE_STRIDE * 4,
     );
   return blocks;
+}
+
+/** Project format-1 diagnostics into the transient field sampling record. */
+export function irradianceVolumeProbeMeta(volume: IrradianceVolumeContent): Uint32Array {
+  const meta = new Uint32Array(volume.probeCount * 4);
+  for (let probe = 0; probe < volume.probeCount; probe++) {
+    const index = probe * 4;
+    meta[index] = volume.meta[index] ?? 0;
+    meta[index + 1] =
+      volume.meta[index + 1] === 1
+        ? IrradianceFieldProbeState.active
+        : IrradianceFieldProbeState.untraced;
+    // Format-1 bakes trace the fixed lattice, so they have no relocation.
+    // Preserve the diagnostic counts in the asset, never decode them as f16.
+  }
+  return meta;
 }
 
 /** Typed owner contribution; runtime assembly installs it with the other render decoders. */

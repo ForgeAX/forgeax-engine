@@ -45,7 +45,11 @@ const RAY_RECEIVER_NORMAL_WGSL = `
   if (model == 0u) { return vec2u(0u); }
   let a = textureLoad(normals, pixel, 0).r;
   // Transport keeps its normal, validity and roughness in one texel.
-  return vec2u((a & 0x3fffffffu) | 0x40000000u, (b >> 16u) & 255u);
+  // Standard-G-buffer/4 model 5 carries subsurface and model 6 carries two-sided diffuse.
+  let classified = model == 1u || model == 5u || model == 6u;
+  let backfaceDiffuse = model == 5u || model == 6u;
+  let flags = select(0u, 0x10000u, classified) | select(0u, 0x20000u, backfaceDiffuse);
+  return vec2u((a & 0x3fffffffu) | 0x40000000u, ((b >> 16u) & 255u) | flags);
 }
 `;
 
@@ -221,7 +225,10 @@ export function addRayReconstructionPasses(
 export function addRayDiffuseCompositePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   name: string,
-  current: () => Extract<ReturnType<typeof createRayDiffuseComposite>, { ok: true }>['value'],
+  current: () => Extract<
+    Awaited<ReturnType<typeof createRayDiffuseComposite>>,
+    { ok: true }
+  >['value'],
   target: RayDiffuseTargets,
   irradiance: GraphBuffer,
   pixelCount: number,
@@ -251,7 +258,6 @@ export function addRayDiffuseCompositePass(
           {
             irradiance: resources.buffer(irradiance).unwrap(),
             baseline: resources.buffer(baseline).unwrap(),
-            ...(target.compactGbuffer === true ? { compactGbuffer: true as const } : {}),
             subsurface: subsurface !== undefined,
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),

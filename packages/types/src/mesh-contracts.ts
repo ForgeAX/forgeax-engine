@@ -11,6 +11,7 @@ export type {
   FieldBounds,
   FieldVec3,
   MeshDistanceField,
+  MeshDistanceFieldSurface,
 } from './mesh-distance-field.js';
 
 import type { MeshLodLevel } from './mesh.js';

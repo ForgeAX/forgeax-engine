@@ -93,6 +93,68 @@ const request = { guid: 'material', specializationKey: 'publication' };
 const load = (publication: MaterialPublication) =>
   createMaterialLoader({ loadPublication: async () => publication }).load(request);
 
+it('rejects a historical Card-v2 wire publication instead of trusting its old compiler identity', async () => {
+  const { record, publication, artifacts } = fixture();
+  // Representative opaque legacy bytes, not a pixel oracle. Frozen C2 cook
+  // acceptance of a private card.eye read is retained in the external evidence.
+  const bytes = new TextEncoder().encode(`
+struct Projection { viewProjection: mat4x4f, eye: vec4f, geometryCoverage: u32, objectToWorld: mat3x3f }
+@group(0) @binding(2) var<uniform> card: Projection;
+struct Output { @location(0) color: vec4f, @location(1) normal: vec4f, @location(2) emission: vec4f, @location(3) validity: vec4f }
+@vertex fn vs_card() -> @builtin(position) vec4f { return vec4f(0,0,0,1); }
+@fragment fn fs_card() -> Output { return Output(vec4f(abs(card.eye.xyz),1), vec4f(0), vec4f(0), vec4f(0,0,0,1)); }
+`);
+  const retired: MaterialCookProgram = {
+    specializationKey: 'historical-card-v2',
+    artifact: {
+      mediaType: 'text/wgsl',
+      path: 'historical-card-v2.wgsl',
+      digest: createMaterialArtifactDigest(bytes),
+      bytes,
+    },
+    selections: [
+      {
+        pass: 'Forward',
+        entry: 'vs_card',
+        context: {
+          backend: 'webgpu',
+          capability: 'storage-buffer',
+          pipeline: 'ray',
+          geometry: 'mesh',
+          pass: 'card-capture',
+          profile: 'forgeax-material-card-v2',
+          toolchain: 'naga-oil',
+          instrumentation: 'none',
+        } as unknown as MaterialCookProgramContext,
+      },
+    ],
+  };
+  const programs = [...record.programs, retired];
+  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
+  const historical = {
+    ...record,
+    programs,
+    artifactDigest,
+    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
+  };
+  expect(
+    await load({
+      ...publication,
+      record: historical,
+      artifacts: {
+        ...artifacts,
+        [retired.artifact.path]: { bytes, digest: retired.artifact.digest },
+      },
+    }),
+  ).toMatchObject({
+    status: 'Error',
+    error: {
+      code: 'material-cook-record-invalid',
+      recoveryActions: ['recook-material-publication'],
+    },
+  });
+});
+
 it('publishes Ready only after every program has verified immutable bytes', async () => {
   const { publication, artifacts } = fixture();
   const result = await load(publication);
@@ -472,7 +534,11 @@ it('loads and selects both Surface derivatives atomically through the same compl
   const cardBytes = new TextEncoder().encode(
     '@vertex fn vs_card() -> @builtin(position) vec4f { return vec4f(0); }',
   );
-  const cardContext = { ...rayContext, pass: 'card-capture' } as const;
+  const cardContext = {
+    ...rayContext,
+    pass: 'card-capture',
+    profile: 'forgeax-material-card-v4',
+  } as const;
   const card: MaterialCookProgram = {
     specializationKey: 'card-surface',
     artifact: {
@@ -484,6 +550,19 @@ it('loads and selects both Surface derivatives atomically through the same compl
     selections: [{ pass: 'Forward', context: cardContext, entry: 'vs_card' }],
   };
   const { artifacts, publication } = materialPublication(record, [...record.programs, ray, card]);
+  const oldRecord = structuredClone(publication.record);
+  const oldSelection = oldRecord.programs.find(
+    (program) => program.specializationKey === 'card-surface',
+  )?.selections[0];
+  if (!oldSelection) throw new Error('missing old Card control');
+  Object.assign(oldSelection.context, { profile: 'forgeax-material-ray-v1' });
+  expect(await load({ ...publication, record: oldRecord })).toMatchObject({
+    status: 'Error',
+    error: {
+      code: 'material-cook-record-invalid',
+      recoveryActions: ['recook-material-publication'],
+    },
+  });
   const ready = await load(publication);
   expect(ready.status).toBe('Ready');
   if (ready.status !== 'Ready') throw new Error('shared publication did not load');

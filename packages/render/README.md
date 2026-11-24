@@ -3,6 +3,11 @@
 
 # `@forgeax/engine-render`
 
+Retained field byte limits cover the complete numeric backing of samples and
+canonical surface geometry. Each field snapshot counts a shared backing once;
+instances of the same field share its snapshot. Admission precedes that field's
+clone. Metadata and caller-held older snapshots have separate ownership.
+
 ## Direct mesh draw parameters
 
 Attach `MeshDrawParameters` to selected mesh entities. The render components
@@ -1056,6 +1061,9 @@ failures. Valid Forward-only opaque materials use the existing later Forward
 pass. Stock Deferred AO consumes the GBuffer before those writers; their lack
 of GBuffer output does not reject the frame. Full-scene SceneData normal/depth
 requests still require complete coverage and report unsupported contributors.
+Stock Deferred AO also accepts selected writers with a producer-certified
+`standard-gbuffer/2` ABI, including Terrain, without granting full-scene SceneData
+coverage. Such writers keep the GBuffer nonempty even when that coverage is unavailable.
 Admission follows the selected pass: an unused `fs_gbuffer` published in a
 Forward module is not GBuffer coverage. The complete current-device contributor
 proof can certify an empty GBuffer. Its lighting pass retains attachment loads
@@ -5437,12 +5445,24 @@ the overlapping odd-boundary footprint. Consumers name their binding
 `occlusion-depth-pyramid-seed` / `-reduce-chain` keep the farthest linear
 distance per texel, and any uncovered sample makes the texel empty, so a texel
 only hides geometry behind every surface it covers. It is a graph transient
-sized to the view's internal depth extent. GPU occlusion consumes that bound. Deferred Water SSR also uses a furthest
-hierarchy, seeded from opaque depth before the Water visibility pass. Its
-receiver comes from that pass. The trace defaults to one mirror ray with 16
-steps and uses fixed sampling when the view has no temporal AA. It can use
-accepted main AA scene color as hit radiance and falls back to current no-water
-HDR. The main AA resolves the composed image for both opaque and Water.
+sized to the view's internal depth extent. GPU occlusion consumes that bound.
+Deferred Water SSR instead traces the opaque closest hierarchy through the
+shared SSR surface traversal and quality budgets. Its displaced receiver comes
+from the Water visibility pass; source normals, material coverage and motion
+come from the matching opaque GBuffer. Compact and extended GBuffer producers
+retain their declared decoding layout. It can use accepted main AA scene color
+as hit radiance and falls back to current no-water HDR. The main AA resolves
+the composed image for both opaque and Water; there is no independent SSR history.
+
+Traversal addresses crossed cells with directional f32 rounding and uses linear
+view depth for orthographic rays, reciprocal-affine depth for perspective rays.
+Rejected surface candidates resume within the same total traversal/refinement
+budgets; depth crossing alone does not become a valid radiance coordinate.
+Water hit history reconstructs the current raster hit once and samples previous
+color in the unjittered screen domain, with motion admitted only for the matching
+opaque depth layer. Water Surface normal animation contributes temporal
+reactivity separately from geometric motion; previous producer texture contents
+are not reconstructed.
 
 On the native Forward path opaque Standard materials trace inside their color
 draw using current opaque Hi-Z and the accepted View HDR of the preceding
@@ -11528,6 +11548,23 @@ after device destruction, publication failures and unchanged direct HDR.
 
 Card direct-light visibility shares the world traversal's `worldSurfaceOrigin` policy. Ray Query uses exact receiver precision rather than the field voxel clearance, preserving nearby blockers; Global SDF keeps its authored field bias. Point-light endpoint clearance derives from the actual origin displacement. Both ordinary probe lanes consume this same Card producer.
 
+Global SDF Card radiance admits an associated instance only when the traced ray
+enters its retained local mesh bounds within `[tMin, tMax]`. The inverse instance
+transform preserves rotated and nonuniformly scaled bounds, including parallel
+rays. Conservative field expansion may occlude space outside a silhouette; it
+cannot assign that space the radiance of an instance the ray never enters. Such
+rejected candidates also cannot retain history as a pending Card. Ray Query
+already supplies the exact intersected instance. This necessary bounds test
+retains the remaining sampled-field, Card and probe approximation limits.
+If an expanded Global SDF hit's finite ray misses every active mesh bound in the
+retained scene roster, world traversal reports a miss so environment transport
+is not replaced by black. A different intersected bound, unavailable field,
+negative start or exhausted query does not establish that exclusion. Thin-wall
+retrace and Card admission consume the same actual shifted ray.
+The retained instance/bounds rows are the complete population used for Global
+SDF composition, including instances without resident Cards; a nonempty field
+paired with an empty or partial population is not a valid world-trace input.
+
 Set `global.cards: { resolution, maxCaptureBytes, budget }` to append unlit material
 capture, bounded object association, Card sampling and support diagnostics. Resolution
 is 8..512; the complete capture budget is positive and at most 256 MiB; `budget` is the
@@ -11538,11 +11575,11 @@ scene color unchanged.
 |:--|:--|
 | Sources | The complete retained whole-Mesh roster supplies cooked `cardLayout`, original triangle sections, actual material slots, UV/normal/tangent attributes and every instance transform, including offscreen contributors. Missing layouts or accepted `materialSurfacePrograms['card-capture']` reject region preparation |
 | Material | The accepted Card artifact schema and linear `MaterialSnapshot` feed the same capture preparation and draw loop as the reference path. Static 2D texture and authored sampler payloads must remain current. Dynamic Canvas/video/target textures, unsupported shading and mismatched geometry/sidedness fail admission |
-| Capture | One coherent four-plane rgba16float MRT plus depth32float atlas. Graph declares the borrowed geometry/material buffers and texture reads. Cold generated texture mips are graph raster writers; the native capture borrows that same submission and publishes residency only after it succeeds |
+| Capture | Four rgba16float material attachments, depth32float and an independent r32uint original-Mesh primitive plane. The integer phase rebuilds only the selected tiles' depth with the same invariant vertex, coverage and draw order; both phases share one submission before publication. Complete texture accounting is 40 bytes/texel plus owned buffers, within the unchanged byte budget. Actual section draws and local clear quads across both phases share the 65536 draw ceiling; `budget` still counts complete logical tiles. Graph declares the borrowed geometry/material resources. Cold generated texture mips remain graph raster writers |
 | Progress | The atlas is captured progressively by the same `CardCaptureScheduler` the irradiance field uses: the first frame clears the atlas and captures tiles `[0, budget)`, later frames load it and capture the next slice. Probes publish every frame; tiles not yet captured stay cleared (no support). `inspect().probePlacement.global.cards.captured` turns true once every tile is submitted |
 | Reuse | A retained region reuses its physically captured atlas. Mesh, publication, material, texture or sampler payload replacement invalidates its source fence. Capture keys include geometry/pose, attribute content, accepted program/values/UVs and residency/sampler facts |
 | Transaction | Capture, selection, sampling and support must all encode, physically submit and remain current before the candidate publishes. Failed finish/submit, source mutation and missing writers preserve accepted state; old atlases and texture leases wait for their last GPU use |
-| Tooling | Graph names are `probe-card.capture`, optional `probe-card.material.*.mip-*`, `probe-card.selectCandidates`, `probe-card.sampleCards` and `probe-card.support`. RHI Debug identifies actual Card draws by `vs_card`/`fs_card`, their material bindings and coherent attachments; compute passes retain their labels. `inspect().probePlacement.global.cards` reports physical capture state, Card count and owned capture bytes |
+| Tooling | Graph names include `probe-card.capture`, `probe-card.capture-identity`, optional `probe-card.material.*.mip-*`, selection, sampling and support. `vs_card` feeds both `fs_card` and `fs_card_identity`. Identity is paired with the selected tile's instance, never stored in f16; `0xffffffff` remains unavailable for clear, unsupported or alpha-proxy texels. Card context v4 requires recooking older v3 publications. Integer identity alone does not certify contact or physical visibility |
 
 Selection and sampling borrow the original Global hit buffers and retained field
 inputs. The final 32-byte per-ray support record stores
@@ -11669,6 +11706,9 @@ Meshes need the cooked distance field and Card layout (`MeshAsset.distanceField`
 | Distance moments | The depth clamp encloses the biased receiver's cell corners including each probe's per-axis relocation: `ceil(sqrt(3) · (1 + limit))` spacings, scaled by the clipmap level. With the current relocation limit it is 3 spacings; a 2-spacing clamp wrongly rejects an open-space far corner. Diffuse and radiance-cache consumers share these moments and geometric weighting, admitting their queried angular support |
 | Diagnostics | `renderer.inspect().diffuseGi` (`gather: 'irradiance-field'`): state, generation, submitted frames, pixel count, probe lattice/budget, Card `tiles`/`captured`/`perFrame` plus the last submitted frame's `relit` (direct-lit) and `radiated` tiles, `edits` (`IrradianceFieldEditStats`), `residency` (`resident`/`pending`/`evicted`, only when the scene exceeds the Card ceilings), `share` (this frame's `views`, `probes`, `captureTiles`, `relightTiles`), structured error; with CameraViews each view reports its own field under `inspect().views[i].diffuseGi`; GPU pass timings use the labels above |
 | Recovery | Device loss rebuilds the field from zero history; disable retires buffers after submitted work completes |
+| Diffuse pipeline demand | Full-resolution fields omit the upsample pipeline. With radiosity off, Card direct light still copies to lit radiance through a closed entry that reads no field; its alpha remains `f32(surface.valid)`, independent of direct-light alpha. Half resolution and radiosity on retain their upsample and feedback paths. These profile changes keep the existing field generation/reset contract |
+| Pipeline completion | Field/Screen compute preparation and their composites await advertised RHI async pipeline APIs; backends without them retain the synchronous fallback. Pending pipelines are never graph-ready. A demanded gather pair publishes atomically for its current generation; a failed optional gather stays isolated from Screen's shared probe/Card state and does not retry each frame |
+| Optional reflections | The field prepares reflection trace, view and composite pipelines only when requested. They share the field's sample layout and generation fence. Turning reflections off leaves diffuse probe history intact; a pending or failed optional preparation does not replace that history. Reflections publish only after their current-generation pipelines are ready |
 | Sizing | Size `probeSpacing` from the region's geometric-mean extent (hello-gi: `cbrt(x·y·z) / 12`), not its longest axis: a longest-axis rule leaves flat rooms and tall atria only a few probe layers thick, which leaks light through thin dividers and under-represents bounce light (Sponza 0.82 → 0.96 of the path-traced indirect). Card texels must stay well below wall thickness plus the surface bias; 16-texel Cards bleed lit texels across a 4 cm divider, 32-texel Cards do not. `cards.maxCaptureBytes` is a ceiling, not an allocation (the tier default is the 256 MiB maximum); above it the field streams Card residency on either world traversal (see Card residency) |
 
 Deliberate deviations from UE5 Lumen: an 8x8 interior octahedral map per probe
@@ -11707,10 +11747,10 @@ maintenance. `edits.skippedProjections` reports revisions with no admitted chang
 
 | Delta | Field response |
 |:--|:--|
-| Move of an owned instance | Rewrite its Global SDF inverse/scale rows, re-project its world-space Card geometry and lookup projections in place (same tiles, same atlas rectangles), clear and recapture **only its tiles**, recompose only the Global SDF voxel box covering old + new bounds plus `maxDistance + spacing`, relight every tile once, then sweep the probes within 2 lattice spacings three times with `min(hysteresis, 0.5)` |
-| Removal | Mask its SDF row, turn its lookup tiles into holes, recompose its box; same relight and probe sweep. No light remains from it once the sweep finishes |
-| Addition (new identity), mesh or distance-field change, LOD | In place when spare capacity fits: write SDF/bounds/field rows and Card projections, capture **only its new tiles**, recompose its Global SDF box, relight and sweep nearby probes. A mesh/field change is a removal plus an addition |
-| Material-only change | Replace its Card draws in place (same tiles, same order) and recapture them; no SDF recompose |
+| Move of an owned instance | Preflight the complete 144-byte instance, bounds and independent 20-word surface header; invalidate before physical writes and publish ready after Card/adoption/edit-box work. Re-project and recapture **only its tiles**, recompose the old + new voxel box plus `maxDistance + spacing`, relight every tile once, then sweep nearby probes three times with `min(hysteresis, 0.5)` |
+| Removal of an owned instance | Preflight its identity and pose, then retain its canonical row as a zero-mask tombstone, disable its surface header and clear its Card projections and tiles. Surviving rows and probe history keep their generation; the old bounds trigger the existing composition, relight and probe edit sweep. A removal keeps the spatial index as a safe superset; a simultaneous move still invalidates it. Row and Mesh addresses remain reserved until a cold rebuild; a later addition still rebuilds |
+| Addition (new identity), mesh or distance-field change, LOD | Rebuild before mutation; spare allocation does not qualify the old append layout for the versioned surface pool |
+| Material-only change | Require prior Card admission and an unchanged pose (or a matching explicit move), replace its Card draws and per-instance coverage qualification, then recapture. Unavailable coverage remains unknown; it cannot borrow another instance's opaque qualification |
 | Flip of handedness, capacity overflow, a texture or scope not yet resident | New generation (reset + progressive full capture) |
 | Light change | Never touches Cards or the SDF; every tile relights on the next frame |
 | Skinned / morph source (`skin`, `skinPose`, `morph`, morph targets) | Excluded from the field: no SDF, no Cards, so it never occludes or bounces GI; it still receives GI and screen traces. Its animation is a no-op edit. Its deferred draw writes visible-surface row 0 (uncovered) through the skinned `fs_gbuffer_uncovered` entry, so the forced visible-surface target never invalidates its pipeline |
@@ -11718,21 +11758,24 @@ maintenance. `edits.skippedProjections` reports revisions with no admitted chang
 The field reserves spare capacity when it is built: atlas tiles `max(64, cardCount)`
 (at most half the capture byte budget, 4096 tiles and an 8192-texel extent), Global SDF
 rows `min(1024, maxInstances)`, field words up to `maxFieldBytes / 4` and Card
-projection rows for every spare tile. One index allocator hands out tile runs and SDF
-rows (freed runs first, then append); field words are append-only and identical fields
-share one copy. Preparing a new Card program is asynchronous: the edit reports
+projection rows for every spare tile. Canonical Mesh regions share one geometry
+payload; each instance retains its own transform certificate and coverage header.
+The Region owns a copy-on-write current image: at most `16 + 80 * capacity` CPU
+header bytes and `144 * capacity` instance bytes, plus row/Map metadata. It does not
+retain another complete geometry pool; held cold-pack/current snapshots stay unchanged.
+Preparing a new Card program is asynchronous: the edit reports
 `'deferred'` and keeps the current field until it is ready. Overflow or a failed
-preparation rebuilds before anything is written. The Ray Query lane applies the same
-deltas (moves/removals rebuild only the TLAS, an add builds one BLAS per new mesh, a
-material change does no acceleration work; see World traversal seam), so edit statistics
-and probe restarts match the Global SDF lane.
+preparation rebuilds before anything is written. Any failure after invalidation,
+including adoption or final ready publication, retires the generation and cold-rebuilds.
+The Ray Query lane applies admitted moves to its TLAS; membership changes rebuild
+the complete field, and a material-only change performs no acceleration work.
 
 Card capture is one progressive scheduler (`CardCaptureScheduler`) shared with the
 exact lane: each frame captures at most `cards.budget` tiles, the never-captured
 frontier first and then edited tile runs, which clear their slice before recapture.
 It advances only once the slice is submitted.
 
-The probe field is never reset by an edit; the old lighting fades with fast
+Admitted moves and material edits preserve the probe field; the old lighting fades with fast
 hysteresis while the edited Cards are relit. `edits` reports `applied`,
 `movedInstances`, `removedInstances`, `addedInstances`, `rematerializedInstances`,
 cumulative `recapturedTiles`, `pendingTiles`, `composedVoxels` of the last edit,
@@ -11816,9 +11859,15 @@ caller owns the region framing (`DiffuseGiTierScene`). Budgets are the data in
 | Tier | Lane | Field rays / probes per frame / Card budget / resolution | Screen probes |
 |:--|:--|:--|:--|
 | `low` | `direct-ibl-ssao` (GI off) | - | - |
-| `medium` | `irradiance-field` | 32 / 64 / 128 / half, no radiosity; 2 clipmap levels | - |
-| `high` | `screen-probe` | 64 / 128 / 256 / half, radiosity; 3 clipmap levels | downsample 16, 1 filter pass |
-| `epic` | `screen-probe` | 128 / 256 / 512 / full, radiosity; 4 clipmap levels | downsample 8, 2 filter passes |
+| `medium` | `irradiance-field` | 32 / 100 / 128 / half; 2 clipmap levels | - |
+| `high` | `screen-probe` | 64 / 100 / 256 / half; 3 clipmap levels | 32 px, 8 × 8 ray slots, 3 filter passes, octahedral irradiance |
+| `epic` | `screen-probe` | 128 / 150 / 512 / full; 4 clipmap levels | 16 px, 8 × 8 ray slots, 3 filter passes |
+
+Card radiosity uses spacing / hemisphere resolution / update factor of
+`4 / 3 / 128` at Medium, `8 / 3 / 128` at High and `4 / 4 / 64` at Epic.
+The scene may supply its authored per-Card capture resolution independently.
+The probe update caps follow the corresponding UE 5.8.1 gather settings.
+The field uses ForgeaX's fixed Fibonacci ray counts and lattice.
 
 Without compute storage buffers or on the WebGL2 backend a GI tier resolves to
 `lane: 'direct-ibl'` with `fallback: { reason, hint }`
@@ -11832,7 +11881,12 @@ Other consumers sample the field through the WGSL module
 count, then per level the window and traced `[validMin, validMax)` cell boxes), b1
 probe block `array<vec4f>`,
 b2 moments `array<vec2f>`, b3 probe meta `array<vec4u>` (x update count, y
-`IrradianceFieldProbeState`, zw relocation offset as f16 xyz). Each probe owns one
+`IrradianceFieldProbeState`, zw relocation offset divided by the probe level's
+spacing, packed as f16 xyz). Decoders multiply by that same level spacing. The
+internal meta encoding identity participates in the field generation key: an
+encoding change retires the old buffers and allocates zero history. Old words
+must never enter a new decoder; a captured tape retains its matching shader
+bytes and may still replay its original encoding. Each probe owns one
 144-texel (2304-byte) block in b1:
 
 > [!IMPORTANT]
@@ -11887,6 +11941,15 @@ an endpoint with zero weight needs no data. If the finer neighborhood has no
 support for that query, sampling falls back to the supported coarser level rather
 than promoting unwritten or stale bytes to radiance. Diffuse and a wide-cone cache
 lookup retain identical values and support for the same receiver.
+
+A pending relocation never contributes old-position lighting. When the ordinary
+live-field stencil is empty, a normal-clearance alternative may contribute only
+after the biased receiver-to-anchor segment is proven clear and all positive
+geometric candidates have known classification and angular support. Each accepted
+candidate also needs clear receiver-to-probe and anchor-to-probe segments. Known
+occlusion excludes a candidate; unavailable transport invalidates the query.
+Untraced or pending candidates in the alternative cannot be normalized away.
+This path adds no probe trace budget and is absent from baked sampling.
 
 The real-GPU `irradiance-field-sampling.dawn.test.ts` gate uses one retained
 fine/coarse buffer set. It checks absent support, coarse fallback, resolved black,
@@ -11970,7 +12033,10 @@ reference path integrator (`samples` converged paths, material face culling, the
 environment), then a two-sided first-hit pass for distance and backface status, and
 integrates them on the CPU into the field layout: 8x8 octahedral `D` levels, a cos^16
 distance-moment splat clamped at `2·spacing`, and per-probe meta
-`[updates, valid, backfaces, traced]` (valid when `backfaces · 4 <= traced`). Use
+`[updates, valid, backfaces, traced]` (valid when `backfaces · 4 <= traced`). The
+volume owner's render-meta projection preserves these format-1 diagnostic counts
+in the asset and supplies validity with zero relocation to sampling, because the
+bake traced the fixed lattice. Use
 the live field's lattice (`origin = grid.origin + grid.spacing`, `probeSpacing`) so baked
 and live lanes sample one grid; bake `maxBounces` equals the reference's bounces after
 the receiver's first vertex.
@@ -12021,15 +12087,18 @@ diffuseGi: { gather: 'screen-probe', maxDistance: 100, environment, field,
     shortRangeAo: 0.5, maxFrames: 10 } }
 ```
 
+Software canonical receivers currently keep the requested Screen quality configuration but upload `control.steps=0`: an unqualified biased HZB endpoint cannot finish a ray before exact World tracing. All 64 rays and their original World budget remain. Hardware tracing retains its existing Screen shortcut. Restoring qualified software screen radiance requires a canonical endpoint and certified segment; this transition does not qualify that acceleration path.
+
 | Pass (`screen-probe.*`) | Work |
 |:--|:--|
 | `place-uniform` / `place-adaptive` / `compact-adaptive` | One per-frame jittered probe per `downsample` tile on valid depth; half-tile candidates retain the original plane/normal agreement below 0.25. Per-workgroup counts and a bounded compaction pass assign pixel-order slots, admitting the earliest eligible receivers when the unchanged `adaptiveFraction` capacity is exhausted. GPU scheduling cannot change the admitted set or physical order |
 | `generate-rays` | 8×8 world-space octahedron per probe; jitter is keyed by packed receiver pixel and frame, so adaptive allocation order cannot change the receiver's samples. `brdf` retains one ray for every positive-cosine texel, including small contributions from decoded normals, and spends the back-facing capacity on the highest cosine-times-luminance estimate from the covered shared radiance cache within the same 64-ray budget. Missing cache coverage keeps the original cosine rank. Supported black still retains its actual base ray; cached light guides refinement rather than replacing traced radiance |
 | `trace-screen` | Closest-depth HZB march on the shared view pyramid; a hit returns the previous frame's lit HDR scene, reprojected through the previous view. A cell is free only when the whole ray segment is in front of its closest depth, and once the ray passes behind a surface the depth buffer proves nothing further: the march stops and rejects a later screen hit. A surface with no depth sample (thinner than a pixel, or edge-on to the view) is invisible to this march, so reuse also requires a fully covered clear segment from the shared live field between normal-biased endpoints. A blocked or unavailable segment leaves the original ray for world tracing |
-| `trace-world` | Unresolved rays trace from the original normal-biased receiver through the selected world traversal to Card radiance; a miss returns `environment`. Global SDF uses field clearance, while Ray Query uses the exact raster/PT receiver precision bias `max(1e-4, max(abs(position)) * 1e-5)` so a voxel-sized offset cannot skip a nearby triangle. Shared field visibility retains its field clearance. Raster-empty cells cannot certify world-space visibility, so no HZB distance skips thin or edge-on world occluders |
-| `resolve` | Averages each texel's rays and derives its closest used, resolved endpoint, including packed refined sub-rays; a texel no ray resolved samples the world radiance cache along its direction (0.25 rad cone, one 8x8 texel) with unknown endpoint |
-| `probe-temporal` | Reprojects each receiver into four previous uniform probes before filtering. Plane/normal agreement, covered live-field visibility and directional hit parallax reject incompatible transport; supported unfiltered radiance is normalized and accumulated within its share of `maxFrames`. Each directional texel keeps its effective age; black radiance remains supported and missing current transport clears its retained age. Adaptive receivers read geometry-compatible uniform history instead of assuming adaptive slot identity |
-| `filter-N` | `filterPasses` probe-space passes gather the same texel from neighbour probes, weighted by plane/normal agreement, covered live-field visibility and directional hit parallax. The neighbor hit distance is clamped to the receiver's closest resolved hit; its angular shift must fit the octahedral texel's solid-angle cone. Four lanes evaluate geometry and visibility once per probe; all lanes consume the resolve-owned endpoint records without reading or reducing rays again. Neighbour visibility queries stay bounded at four per pass; physical timing is measured separately |
+| `prepare-receivers` | Software Screen reads the actual same-frame visible-surface row and original primitive. The accepted receiver projection transports the independently admitted source tuple, revision and forward matrix in one derived `rgba32uint` texture. The existing jittered View matrix and exact canonical triangle construct one enclosure per probe, not per ray. Unsupported material/geometry, missing lineage, non-interior or singular reconstruction remains unavailable |
+| `trace-world` | Software rays start at the canonical constructed point. The complete origin enclosure flows through candidate bounds, local transforms, prefix tests and triangle traversal. Only the selected original primitive with a proven unique nonparallel t=0 contact is excluded; other faces of the same instance and thin blockers remain charged and queried. Missing proof is incomplete, never MISS. This is canonical construction, not a certificate enclosing the old depth point (`rasterQualified` remains zero). Ray Query retains its existing receiver precision bias and is not qualified by this software change. Shared field visibility retains its own clearance |
+| `resolve` | Retains up to four actual refined-ray directions and radiances per texel, with angular-area weights and the closest used, resolved endpoint. Identical directions keep an exact f32 point packet. A texel with no resolved ray queries the directional world cache with an unknown endpoint; incomplete world transport does not become available cache light |
+| `probe-temporal` | Reprojects each receiver into four previous uniform probes before filtering, including a bounded one-tile border outside the old viewport through the same geometry, covered visibility and endpoint checks. Plane/normal agreement, covered live-field visibility and directional hit parallax reject incompatible transport; supported unfiltered radiance is normalized and accumulated within its share of `maxFrames`. Each directional texel keeps its effective age; black radiance remains supported and missing current transport clears its retained age. Adaptive receivers read geometry-compatible uniform history instead of assuming adaptive slot identity |
+| `filter-N` | `filterPasses` probe-space passes gather the same texel from neighbour probes, weighted by plane/normal agreement, covered live-field visibility and directional hit parallax. The neighbor hit distance is clamped to the receiver's closest resolved hit; its angular shift must fit the octahedral texel's solid-angle cone. Eight lanes evaluate geometry and visibility once per probe; all lanes consume the resolve-owned endpoint records without reading or reducing rays again. Neighbour visibility queries stay bounded at eight per pass; physical timing is measured separately |
 | `integrate` | Per pixel: solid-angle-weighted cosine convolution of filtered radiance at the actual short-range bent normal, then bilinear uniform probes plus the tile's adaptive probe, multiplied once by short-range AO; with no admissible probe the irradiance field is sampled. Reuses the filtered radiance binding without a converted octahedron allocation or pass |
 | `temporal` | Reprojects the previous accumulation through the last accepted view geometry; each of four bilinear taps is rejected on absent support, view-distance (2%) or normal (45°) disagreement, then valid tap weights are normalized. No valid tap cold-starts from the current estimate. The youngest contributing tap bounds effective history age; its share of `maxFrames` caps the count |
 | `composite` | The shared additive diffuse composite |
@@ -12040,12 +12109,20 @@ diffuseGi: { gather: 'screen-probe', maxDistance: 100, environment, field,
 | Lifetime | Probe/pixel history resets on device, profile, field generation and extent, and reprojection rejects every pixel and every screen-trace hit after a geometric temporal reset (camera cut, view switch, history version); a Transform teleport without a `Camera.historyVersion` bump is continuous motion and reprojects whatever the old view estimated. Probe and pixel history also restart while an in-place field edit (Card recapture or probe sweeps) is pending, so world lighting changes are not smeared over `maxFrames`; a sun, environment or fog change keeps the reprojection and converges through `maxFrames` instead of restarting. Resize replaces only per-extent buffers and keeps the field. A rejected submit neither flips ping-pong parity nor counts a frame. Disable retires the field after its submitted work completes. |
 | Support | A resolved zero has directional support; an unresolved direction without an admissible retained cache does not. Probe filtering excludes missing neighbors and never fills a missing center. Cosine convolution rejects the actual receiver direction if any positively weighted input lacks support; directions outside that cosine lobe do not participate. Spatial probe interpolation retains that validity. Pixel integration falls back to the field, and without either source it clears pixel history and effective weight. Ray status retains the distinction between actual resolved rays and retained-cache reconstruction; the temporal count is an effective frame weight, not a ray sample count |
 | Spatial transport | Normal/plane agreement cannot connect coplanar surfaces across a partition. Live-field spatial filtering and pixel interpolation also require a fully covered clear segment between normal-biased endpoints through the shared scene visibility projection. Occluded or unavailable segments contribute no interpolation weight; an unsupported pixel uses the existing field fallback. Placement remains a geometric decision. |
-| Directional hit geometry | The existing 32-byte ray record carries resolved hit distance in its final 4 bytes. Screen hits measure their accepted world endpoint from the receiver; world hits measure the traced endpoint, misses use `maxDistance`, and an immediate blocker is zero. Negative means unavailable, including unresolved, incomplete or cache-only transport. Resolve reduces only used, resolved rays and keeps the minimum across sub-rays. Its internal 32-byte directional record carries RGB/support plus hit distance; the two radiance buffers and two probe histories use this record. History keeps effective age in place of support and retains the current resolved endpoint. Temporal reuse scales the youngest retained effective count by the fraction of geometrically supported weight surviving directional parallax before adding the one current resolved sample; RGB normalization cannot turn a small transport overlap into full historical confidence. Coincident or unknown endpoints retain the original age, support and cap. Both temporal reuse and spatial filtering share one parallax kernel. A known distance on either receiver constrains parallax; two unknown distances retain the existing geometric/support test. Supported black remains valid and unknown endpoints are never invented. The filter stage removes its ray-buffer read and 1,280-byte atomic workgroup reduction. No additional storage binding, buffer or author parameter is introduced, but extending the four existing radiance/history buffers adds 4,096 bytes per probe; allocation still checks every buffer against the device limit. Temporal still uses at most eight storage buffers with the complete field group, and filtering uses seven. |
+| Directional hit geometry | The existing 32-byte ray record carries resolved hit distance in its final 4 bytes. Screen hits measure their accepted world endpoint from the receiver; world hits measure the traced endpoint, misses use `maxDistance`, and an immediate blocker is zero. Negative means unavailable, including unresolved, incomplete or cache-only transport. Resolve reduces only used, resolved rays and keeps the minimum across sub-rays. Its private 40-byte directional record carries a closed point/sample/moment payload, exact f32 support/age and exact f32 hit distance; the two radiance buffers and two probe histories use this record. History keeps effective age in place of support and retains the current resolved endpoint. Temporal reuse scales the youngest retained effective count by the fraction of geometrically supported weight surviving directional parallax before adding the one current resolved sample; RGB normalization cannot turn a small transport overlap into full historical confidence. Coincident or unknown endpoints retain the original age, support and cap. Both temporal reuse and spatial filtering share one parallax kernel. A known distance on either receiver constrains parallax; two unknown distances retain the existing geometric/support test. Supported black remains valid and unknown endpoints are never invented. The filter stage removes its ray-buffer read and 1,280-byte atomic workgroup reduction. No additional storage binding, buffer or author parameter is introduced, but the four existing radiance/history buffers now hold 40 bytes per directional texel (2,656 bytes per probe history including its 96-byte receiver record), adding 2,048 bytes per probe over the previous 32-byte directional layout; allocation still checks every buffer against the device limit. Temporal still uses at most eight storage buffers with the complete field group, and filtering uses seven. |
 | Probe interpolation | One shared eight-phase Hammersley offset places interior probes. Outermost rows and columns anchor to valid viewport-edge pixel centers, including partial final tiles, so jitter does not leave a screen border uncovered. Tap selection inverts these boundary intervals and uses the previous phase for history. Nominal tiles select the same four taps; supported, compatible taps use their actual placed world positions to derive nonnegative bilinear weights. A bounded six-step inverse solves a four-position patch; one-row/column grids project onto their edge. Incompatible, degenerate or unconverged patches retain covered nominal weights. Probe history uses the same position reconstruction before directional support and live visibility rejection. No missing support or dark radiance is invented. |
 | Limits | `downsample` 4/8/16/32; `adaptiveFraction` and `shortRangeAo ≥ 0` finite; `screenTrace.maxSteps` 0..128 (0 = world only), `thickness` (0, 1]; `filterPasses` 0..4; `maxFrames ≥ 1`; every per-extent buffer within `maxStorageBufferBindingSize` |
 | Reconstruction response | `maxFrames` is one response budget across probe and pixel history. With both enabled, probe cap is `max(1, floor(maxFrames / 2))` and pixel cap is `maxFrames - probeCap + 1`; their steady EMA mean ages sum to `maxFrames - 1`. A single enabled lane uses the full cap. Effective ages may be younger when geometric support is rejected; this bounds mean delay rather than promising a particular whole-scene convergence rate or counting ray samples |
 | Independent controls | `probes.history` accepts optional `probe`, `pixel`, and `screen` booleans, each defaulting to true. Disable a lane to measure it independently; switching the profile retires and resets its histories. `maxFrames: 1` disables probe/pixel accumulation while leaving screen feedback independently selectable |
 | Diagnostics | `renderer.inspect().diffuseGi` (`gather: 'screen-probe'`): state, generation, submitted frames, probe tiles/uniform/adaptive capacity and the shared field inspection; RHI Debug sees every kernel by entry point |
+
+Screen feedback follows the field's authored `radiosity` contract: false keeps
+one-bounce diffuse transport and copies the current direct scene after all old
+scene reads, before the diffuse composite. True retains the existing post-GI
+scene feedback. Both paths use one history dispatch and the same buffers;
+profile changes retire histories, and retained graph identity includes this
+ordering choice. High and epic continue to enable radiosity. This transport
+order is separate from convergence, missing support and physical GI acceptance.
 
 Deviations from UE: radiance is RGB octahedra in storage buffers, not atlases.
 The shared field's radiance level stands in for UE's world probe radiance cache
@@ -12054,13 +12131,57 @@ slots per uniform tile. Probe radiance history is retained before spatial filter
 then per-pixel history follows integration; both use the same submission transaction. In this lane the shared field allocates no per-pixel diffuse gather; its
 view extent holds only the Lite reflection records when `reflections` is set.
 
-Angular jitter uses the existing eight-phase Hammersley sequence with a fixed
-random rotation per receiver. A uniform tile keeps its sequence while its placed
-pixel jitters; an adaptive receiver follows its packed pixel through compaction.
-`screen-probe-ray-sequence.dawn.test.ts` checks all eight strata in both coordinates,
-phase wrap, unit directions, the original 64-ray budget and adaptive slot invariance.
+Angular jitter combines the eight-phase Hammersley sequence with a progressive
+base-3/base-5 rotation per complete cycle and independent angular-cell scrambling.
+A uniform tile keeps its sequence while its placed pixel jitters; an adaptive
+receiver follows its packed pixel through compaction. Complete aligned cycles
+retain eight strata in each coordinate; arbitrary sliding windows across a cycle
+boundary need not. `screen-probe-ray-sequence.dawn.test.ts` checks two complete
+cycles around frames 0, 47 and 101, unit directions, the original 64-ray budget,
+same-frame adaptive slot invariance and continued angular exploration after eight frames.
 This changes neither storage bindings nor authored settings. Kernel stratification
 is distinct from whole-scene noise, bias, motion and physical cost acceptance.
+
+Software world tracing retains the authored field-clearance origin for both
+Cards and G-buffer receivers. A positive coarse interpolated distance does not
+certify a precision receiver start: ordinary minimum steps can still cross
+nearby triangles. Hardware Ray Query retains its separate precision-origin
+policy. Origin-policy controls do not establish general thin-geometry accuracy
+for the approximate software field.
+
+The Field retains signed corrected angular samples through its cosine convolution
+and angular, spatial and clipmap reconstruction. They are intermediate values;
+public diffuse and radiance-cache queries clamp the completed result to
+nonnegative radiance. Clamping each intermediate texel injects energy and breaks
+constant-shift invariance. The owning convolution and sampling GPU gates cover
+that invariant, signed fine/coarse blends and supported black independently.
+
+Directional records are 40 bytes: a 32-byte closed point/refined/residual payload,
+followed by full f32 support (or effective history age) and closest hit distance.
+A point retains weighted RGB and angular measure as f32; a refined cell retains
+up to four RGBE/weighted-direction samples. Temporal and spatial mixtures retain
+four linear moment vectors and one sample selected in proportion to angular
+mass. The mass remains a convex mean, independent of reservoir reuse count.
+Support is independent of
+radiance, so black remains available and unknown RGB cannot become supported light.
+
+A first moment alone cannot answer a clipped cosine query. For each channel,
+a nonnegative linear projection receives the sampled negative-half correction;
+a negative projection uses the sampled positive half. Both choices are
+nonnegative and preserve the clipped expectation up to the encoded vector and
+direction errors. Never clamp a signed stochastic estimate to zero. The GPU
+proof checks explicit HDR vector-codec bounds, an independent PPS phase integral,
+a biased fixed-phase mutation, full-f32 metadata and exact self reuse. A weighted
+expectation proof does not establish an unbiased normalized ratio or an exact
+per-frame mixture. No whole-cell corner scan is required for this estimator.
+The finite-source curved-receiver and complete motion scenes remain required.
+
+Software world traversal continues a Global SDF `outsideRegion` suffix through
+the complete Mesh SDF roster when expanded bounds cannot certify that suffix
+empty. Missing fields and exhausted budgets remain incomplete. A zero-distance
+sample is contact even before clearance expansion has accumulated; closed ray
+endpoints cannot turn such a contact into a miss. `world-mesh-suffix.dawn.test.ts`
+checks real produced fields beyond the grid, finite endpoints and nonunit rays.
 
 Refinement reads the field group already supplied to every probe kernel. Its
 0.25-radian radiance query uses the same directional cache contract as unresolved
@@ -12073,7 +12194,7 @@ whole-scene motion, Sponza quality or physical cost.
 The controlled production-kernel gate
 `screen-probe-radiance-history.dawn.test.ts` covers supported bilinear history,
 plane/normal/empty-tap rejection, black and constant radiance, missing and incomplete
-current transport, youngest age, disabled history, shared response budget, geometric reset, out-of-view,
+current transport, youngest age, disabled history, shared response budget, geometric reset, out-of-view, four-edge/corner border reuse, beyond-border rejection,
 one-frame accumulation, cross-wall visibility, unavailable coverage, near/far endpoint parallax, supported black, zero-distance blockers and coincident receivers. The support suite independently verifies closest-endpoint reduction from actual packed/refined, unused, unresolved, unknown and incomplete rays. It requests
 no elevated device limits. `screen-probe-reconstruction.dawn.test.ts` independently checks affine pixel and prior-probe reconstruction over all jitter phases, flat and tilted planes, the full viewport and non-square partial final tiles. Full-scene motion, thin-wall, Sponza and physical
 performance acceptance are separate and remain required.
@@ -12202,7 +12323,7 @@ rotated rays over time, so the per-hit filter adds no quality there. Direct ray 
 | `WorldTraversal` | Slots | Hit |
 |:--|:--|:--|
 | `'global-sdf'` | voxels, grid, instances, fields, bounds | Sphere-traced Global SDF; instances associated by distance (approximate) |
-| `'ray-query'` | `tlas`, `traversalInstances`, `faceNormals` | Exact committed triangle; its instance is the only Card candidate; complete coverage reports `miss` or `hit`; pending geometry reports `missingField` |
+| `'ray-query'` | `tlas`, `traversalInstances`, `faceNormals` | Closest known opaque triangle; an intersecting unknown before or tied with it reports `missingField`; pending geometry also reports `missingField` |
 
 `'ray-query'` requires `caps.rayQuery.supported`: `createIrradianceFieldKernel` /
 `createScreenProbeWorldKernel` and `createWorldAcceleration` return
@@ -12259,13 +12380,32 @@ only the coverage guard and must expose partial-world hits/misses on the same
 scene. This coverage gate does not
 prove receiver-to-probe segment visibility or close the native wall-leak gate.
 
+Hardware BLAS geometry remains shared by Mesh payload version and is declared
+non-opaque. When every placement is opaque, a `FORCE_OPAQUE` query retains the
+native closest-hit path. An auto-commit outside the original range restarts once
+without that flag, so only in-range candidates can confirm and an outer near face
+cannot hide an inner surface. Otherwise the first query confirms only admitted opaque
+primitives; a second non-committing query checks unknown candidates in its closed
+prefix. Both consume the same `maxSteps`; exhaustion remains unavailable. Positive
+endpoints use one representable broadphase step and an original-range filter.
+The native open-zero endpoint is not a canonical contact certificate, and MASK
+texture alpha is not evaluated by this conservative coverage gate.
+
+Placement records retain count/mode and a word offset into the same buffer's
+bitmap tail. Same-Mesh equal patterns share immutable payloads; opaque and unknown
+constants require none. The tail capacity is `maxTriangles` u32 words, aligned to
+16 bytes, in addition to the `(maxInstances + 1) * 16` record bytes. Its full CPU
+image has the same size; only changed records and fresh payloads upload.
+`traversalTableBytes`, `coverageWords` and `coverageBytesUploaded` report that cost.
+
 Scene edits apply in place on both lanes (same generation, same Card capture schedule,
 dirty SDF box and probe sweep; see Dynamic content). On the Ray Query lane the field also
-hands each applied edit to `PreparedWorldAcceleration.edit({ moved, removed, added })`: a
+  hands each applied edit to `PreparedWorldAcceleration.edit({ moved, removed, added, coverage })`: a
 move or removal replaces the roster and rebuilds only the TLAS, reusing every BLAS; an add
 builds a BLAS only for a mesh not yet resident (BLASes are cached by mesh identity for the
 generation, also across removals) and rebuilds the TLAS; a material-only change does no
-acceleration work. An edit past the instance/triangle headroom or `maxBlasPrimitiveCount`
+  BLAS/TLAS work; a qualification change updates only placement records and shared
+  bitmaps. An edit past the instance/triangle/coverage headroom or `maxBlasPrimitiveCount`
 returns `ray-reference-limit` and the field rebuilds.
 
 `inspect().diffuseGi` reports `traversal`, `traversalFallback`, and on the Ray Query lane
@@ -12304,7 +12444,7 @@ frame execution are unchanged; this is not retained-scene GI integration.
 | Contract | Current snapshot behavior |
 |:--|:--|
 | SDF query | Up to 64 affine instances, 16 MiB of shared local samples and 1–1,024 steps. Non-unit rays and mirrored/nonuniform transforms preserve ray t. Error-aware stepping returns an approximate surface band, proven miss, inside start, exhausted budget or missing field separately. Only the surface-band state has a normal; other states store zero. Explicit two-sided fields admit zero-thickness bounds, return no inside-start state, and derive a gradient facing the approached side. Their band is an unsigned-distance approximation, not opacity or thickness. |
-| Card capture | Consumes a checked offline `MeshCardLayout` per whole-mesh source, independent of SDF availability. Its contiguous `sections` cover all indexed triangles and supply their material/texture bindings. Every section draws into each shared card viewport/depth; material slots do not own separate card instances. Up to 1,024 sources, 1,024 sections per source, 4,096 cards and 65,536 section/card draws, 8–512 pixels per card (default 16), 256 MiB total resource budget. Resolution is explicit and uniform; attachment overflow rejects before texture allocation and owned buffers are admitted against the remaining byte budget. This is bounded capture, not adaptive residency. Rasterizes the actual indexed mesh through the same canonical Standard Surface and material bindings as ray-hit. Requires four renderable rgba16float targets. |
+| Card capture | Consumes a checked offline `MeshCardLayout` per whole-mesh source, independent of SDF availability. Its contiguous `sections` cover all indexed triangles and supply their material/texture bindings. Every section draws into each shared card viewport/depth; material slots do not own separate card instances. Up to 1,024 sources, 1,024 sections per source, 4,096 cards and 65,536 section/card draws, 8–512 pixels per card (default 16), 256 MiB total resource budget. Resolution is explicit and uniform; attachment overflow rejects before texture allocation and owned buffers are admitted against the remaining byte budget. This is bounded capture, not adaptive residency. Rasterizes the actual indexed mesh through the same MaterialAsset and its qualified static Surface closure and bindings. Requires four renderable rgba16float targets. |
 | Atlas | Flattened card order is the entry/projection order; columns are `ceil(sqrt(cardCount))`. Padding stays invalid. Local card bounds enclose sampled occupied depth cells with half-cell near/far margins; no fixed six-view indexing. |
 | Planes | Albedo/roughness, oct-encoded shading and geometric normals, emission/metallic, F0/validity; depth uses the existing depth32float attachment. They contain unlit properties, never cached irradiance or final diffuse lighting. |
 | Coverage | `cards` retain geometry-backed material texels through MASK holes; `view` applies authored cutout. F0/validity 1 means valid material data, 2 remains invalid material, and clear 0 means no geometry. Cache sampling does not prove opacity, visibility or correct thin-surface transport. No material values are rewritten. |
@@ -12315,7 +12455,7 @@ frame execution are unchanged; this is not retained-scene GI integration.
 Card capture admits the existing opaque/MASK Standard subset with distinct geometric and
 shading normals, normal maps, UV0–7 and vertex color. Normal maps require valid
 authored vertex normals and xyzw tangents; missing frames are refused. It rejects absent required UVs, mismatched contexts,
-custom/view-dependent surfaces and front-face culling. The cooked per-triangle sidedness digest
+view/time-dependent Surface closures and front-face culling. Static custom Surfaces require the current typed reachable-context facts and Card-v3 publication; older Card contexts require recooking. The cooked per-triangle sidedness digest
 must match all section material back/none culling; a changed policy requires recooking.
 Multiple depth layers cover enclosed room interiors, while sampled coverage and
 card budgets can still leave holes. No global SDF/clipmap, streaming,
@@ -12377,6 +12517,25 @@ Material validity, geometric orientation and depth still gate every mapping. The
 fields; the visibility query and composition do not qualify GI transport or
 ordinary Renderer publication. They retain the existing RHI capture, bindings
 and fresh-device replay surfaces.
+
+Card lookup keeps the 80-byte physical projection row and existing bindings.
+`render/internal.rebuildCardOwnerIndex(bytes, cardCount)` owns its in-place index:
+
+| Word | Contract |
+|:--|:--|
+| `ids.x` | Instance owner; `0xffffffff` explicitly marks a free slot. Owner zero is legal. |
+| `ids.y` | Existing valid, pending or stale state; indexing never filters it. |
+| `ids.z` | Owner-sorted directory of one-based first physical tiles, then zero padding. |
+| `ids.w` | Same owner's next physical tile, one-based; zero ends the chain. |
+
+Lookup binary-searches the directory and visits that owner's tiles in original
+physical order, preserving score ties and stale-state order. Editable captures
+retain their single producer projection image (`capacity * 80` CPU bytes).
+Membership batches rebuild the index and upload the complete `capacity * 80`
+image once, preserving surviving rows' first 72 bytes. Geometry, material and
+validity writes preserve both index words and retain their small update ranges.
+Scene measurements include this retained CPU image and the full membership
+upload cost. The index adds no GPU storage or binding.
 
 ## Bounded world distance-field composition
 

@@ -82,6 +82,7 @@ void main_candidate()
     float3 dir = float3(0.0, 1.0, 0.0);
     {
         RayDesc_ naga_desc = ConstructRayDesc_(4u, 255u, 0.1, 100.0, pos, dir);
+        naga_query_init_tracker_for_rq_1 = 0;
         float naga_tmin = naga_desc.tmin;
         float naga_tmax = naga_desc.tmax;
         float3 naga_origin = naga_desc.origin;
@@ -103,7 +104,7 @@ void main_candidate()
         bool naga_contains_skip_triangles_cull =  (naga_contains_cull_front && naga_contains_skip_triangles) || (naga_contains_cull_front && naga_contains_cull_back) || (naga_contains_cull_back && naga_contains_skip_triangles) ;
         bool naga_contains_multiple_opaque =  (naga_contains_cull_no_opaque && naga_contains_opaque) || (naga_contains_cull_no_opaque && naga_contains_no_opaque) || (naga_contains_cull_no_opaque && naga_contains_cull_opaque) || (naga_contains_cull_opaque && naga_contains_opaque) || (naga_contains_cull_opaque && naga_contains_no_opaque) || (naga_contains_no_opaque && naga_contains_opaque) ;
         if (naga_tmin_valid && naga_tmax_valid && naga_origin_valid && naga_dir_valid && !(naga_contains_skip_triangles_aabbs || naga_contains_skip_triangles_cull || naga_contains_multiple_opaque)) {
-            naga_query_init_tracker_for_rq_1 = naga_query_init_tracker_for_rq_1 | 1;
+            naga_query_init_tracker_for_rq_1 = 1;
             rq_1.TraceRayInline(acc_struct, naga_desc.flags, naga_desc.cull_mask, RayDescFromRayDesc_(naga_desc));
         }
     }

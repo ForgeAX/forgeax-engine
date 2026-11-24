@@ -6,6 +6,7 @@ import {
   rayMaterialFailure,
 } from '@forgeax/engine-shader';
 import {
+  derive,
   type MaterialAsset,
   type MaterialError,
   type MaterialTable,
@@ -13,10 +14,13 @@ import {
   type Result,
   resolveMaterialAsset,
   selectMaterialStaticContract,
+  standardPhysicalTextureFields,
   stripWgslComments,
 } from '@forgeax/engine-types';
 import { compileShader, type PreparedShaderCompiler } from '../compile.js';
 import type { ShaderError } from '../errors.js';
+import { compareDerivedMaterialInterface } from '../reflection.js';
+import { staticCardContextFailure } from './card-context.js';
 import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
 import { generateParameterModule, type MaterialCompilation } from './cook.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
@@ -120,25 +124,46 @@ function* rayMaterialCompilation(
     RAY_SURFACE_CONTEXT: context === 'ray-hit',
     CARD_SURFACE_CONTEXT: context === 'card-capture',
   };
-  const compiled = yield [
-    source,
-    {
-      // The template/context owns compiler identity; material identity stays in publication.
-      id: `forgeax_material::ray_surface::${context}`,
-      imports: { ...composed.value.imports },
-      defines,
-      ...(context === 'card-capture'
-        ? {
-            renderEntries: {
-              vertex: 'vs_card',
-              fragment: 'fs_card',
-              colorFormats: ['rgba16float', 'rgba16float', 'rgba16float', 'rgba16float'] as const,
-            },
-          }
-        : {}),
-    },
-  ];
+  const options = {
+    // The template/context owns compiler identity; material identity stays in publication.
+    id: `forgeax_material::ray_surface::${context}`,
+    imports: { ...composed.value.imports },
+    defines,
+    ...(context === 'card-capture'
+      ? {
+          valueMemberReads: 'shader-value-member-reads/1' as const,
+          renderEntries: {
+            vertex: 'vs_card',
+            fragment: 'fs_card',
+            colorFormats: ['rgba16float', 'rgba16float', 'rgba16float', 'rgba16float'] as const,
+          },
+        }
+      : {}),
+  };
+  const compiled = yield [source, options];
   if (!compiled.ok) return compiled;
+  if (context === 'card-capture') {
+    const schema = lowered.value.paramSchema;
+    const checked = compareDerivedMaterialInterface(
+      derive(schema),
+      compiled.value.reflection,
+      new Set(standardPhysicalTextureFields(schema)),
+      true,
+    );
+    if (!checked.ok) return checked;
+    const material = yield [
+      lowerStandardPhysicalBindings(generateParameterModule(schema), schema),
+      { id: 'forgeax_material::card_parameter_contract' },
+    ];
+    if (!material.ok) return material;
+    const failure = staticCardContextFailure(compiled.value.reflection, material.value.reflection);
+    if (failure !== undefined)
+      return rayMaterialFailure(
+        request.material,
+        composed.value.surfaceModule,
+        `static Card inputs: ${failure}`,
+      );
+  }
   return ok({
     asset,
     sourceClosure: composed.value.sourceClosure,
@@ -146,11 +171,15 @@ function* rayMaterialCompilation(
       context,
       wgsl: compiled.value.wgsl,
       paramSchema: lowered.value.paramSchema,
-      contract: rayMaterialContract(asset),
+      contract: rayMaterialContract(asset, context),
       sourceClosureDigest: digestMaterialSourceClosure({
         ...composed.value.imports,
         source,
-        context: JSON.stringify(defines),
+        context: JSON.stringify({
+          defines,
+          valueMemberReads: options.valueMemberReads,
+          staticCardPolicy: 'reachable-surface-context/2',
+        }),
       }),
     },
   });

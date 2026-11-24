@@ -349,9 +349,17 @@ ordinary `mesh`/`sprite` layouts. This is a derived program selection within
 the same material GUID; it does not add a second authoring asset.
 
 `MaterialCookProgramContext` is the closed union of raster and Surface-derivative
-contexts. Derivatives use `pipeline: ray`, `profile: forgeax-material-ray-v1` and
-mesh/storage inputs: `pass: ray-hit` selects `cs_surface`, while `pass: card-capture`
-selects `vs_card` with the fixed `fs_card` fragment entry. Both select an existing
+contexts. Derivatives use `pipeline: ray` and mesh/storage inputs:
+
+| Pass | Required profile | Entry |
+|:--|:--|:--|
+| `ray-hit` | `forgeax-material-ray-v1` | `cs_surface` |
+| `card-capture` | `forgeax-material-card-v4` | `vs_card` with fixed `fs_card` |
+
+The Card v3 context carries the real object basis and qualifies reachable Surface member/global dependencies, excluding unavailable camera
+direction/time from static Surface inputs. Old Card v1/v2 publications and mismatched
+pass/profile pairs are rejected; recook and republish the material generation.
+Both select an existing
 authored pass without a raster address pair or submission ABI. Card cooking
 validates its four `rgba16float` outputs. The executable validator and JSON schema
 admit both contexts; `raster-probe` remains a build-time diagnostic. The complete

@@ -1,5 +1,11 @@
 {
   "view": {
+    "projectPhase": {
+      "preparing": "Preparing",
+      "starting": "Starting",
+      "running": "Running",
+      "failed": "Failed"
+    },
     "preparation": {
       "project": "Preparing project inputs",
       "vite": "Preparing project server",

@@ -60,11 +60,12 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 > forgeax help --tree --json returns the complete structured command tree. ToolContribution, ToolClient,
 > and ToolRun are internal composition contracts behind the CLI, not additional product entries.
 
-Optional View owns a separate file launcher. For interactive scene/asset review,
-read the game's `skills/forgeax-view-start/SKILL.md`, or its installed copy at
-`node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.md`.
-From the game root: `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
-This needs no global SDK or manual Backend startup. Cold `forgeax help` does not
+Optional View is shipped only in the SDK. For interactive scene/asset review,
+read the SDK's `tools/view/skills/forgeax-view-start/SKILL.md` or the game's copied
+`skills/forgeax-view-start/SKILL.md`. From the game root run
+`node /absolute/forgeax-sdk/tools/view/start.mjs --project .`.
+The launcher initializes the SDK tool runtime and selects its matching Engine;
+the game's npm Engine package does not contain View. Cold `forgeax help` does not
 discover the launcher; ordinary Engine commands do not require View.
 
 `--json` output is compact by default: large owner fields are summarized and listed in

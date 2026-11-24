@@ -9,6 +9,7 @@ import {
 } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import {
+  Atmosphere,
   Camera,
   DirectionalLight,
   MeshFilter,
@@ -71,6 +72,11 @@ export function boxMatrix(center: Vec3, half: Vec3, yaw = 0): number[] {
   const s = Math.sin(yaw);
   const [x, y, z] = half;
   return [c * x, 0, -s * x, 0, 0, y, 0, 0, s * z, 0, c * z, 0, center[0], center[1], center[2], 1];
+}
+
+/** The visible Sponza sky uses the scene sun; GI retains its separate miss radiance. */
+export function spawnSponzaSky(world: World): Entity {
+  return world.spawn({ component: Atmosphere, data: { backgroundOnly: true } }).unwrap();
 }
 
 export function spawnLight(world: World, light: GiLight): Entity {

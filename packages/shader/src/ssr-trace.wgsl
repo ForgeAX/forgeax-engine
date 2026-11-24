@@ -67,7 +67,6 @@ struct WaterSsrParams {
   hitColorUvScaleBias: vec4<f32>,
   hitColorUvClamp: vec4<f32>,
   hitColorParams: vec4<f32>,
-  traceParams: vec4<f32>,
 };
 @group(0) @binding(12) var<uniform> waterParams: WaterSsrParams;
 @group(0) @binding(13) var waterSceneColorHistory: texture_2d<f32>;
@@ -179,6 +178,29 @@ fn ssrRayFraction(uv : vec2<f32>, startUv : vec2<f32>, deltaUv : vec2<f32>,
   let yFraction = select(fallback, (uv.y - startUv.y) / deltaUv.y, useY);
   let fraction = select(xFraction, yFraction, useY);
   return clamp(select(fallback, fraction, isFinite(fraction)), 0.0, endFraction);
+}
+
+fn ssrTraversalCell(uv : vec2<f32>, size : vec2<u32>,
+  moving : vec2<bool>, towardMax : vec2<bool>) -> vec2<u32> {
+  // At a crossed boundary, the minor-axis displacement can round away even
+  // though t advanced. Round the scaled coordinate one f32 value in the ray's
+  // direction so a boundary belongs to the entering cell. This changes only
+  // address rounding, not the ray interval or the public traversal budget.
+  let scaled = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(size);
+  // Scalar integer selects also lower to legal GLSL ES 3.0; its vector mix
+  // overloads do not admit integer operands on the portable fragment route.
+  let step = vec2<u32>(select(0xffffffffu, 1u, towardMax.x),
+    select(0xffffffffu, 1u, towardMax.y));
+  let rounded = bitcast<vec2<f32>>(bitcast<vec2<u32>>(scaled) + step);
+  return min(vec2<u32>(select(scaled, rounded, moving & (scaled > vec2<f32>(0.0)))),
+    size - vec2<u32>(1u));
+}
+
+fn ssrProjectedRayDepth(start : f32, end : f32, fraction : f32) -> f32 {
+  // Reciprocal view depth is affine in perspective screen space; orthographic
+  // projection preserves linear view depth instead.
+  return select(1.0 / mix(1.0 / start, 1.0 / end, fraction),
+    mix(start, end, fraction), view.temporalProjection.z > 0.5);
 }
 
 fn ssrSourceReactivity(pixel : vec2<i32>) -> f32 {
@@ -337,8 +359,10 @@ fn traceScreenRay(
       !isFinite(thickness) || thickness <= 0.0 || maxDistance < thickness ||
       !isFinite(coarsestDepth) || coarsestDepth <= 0.0) { return result; }
   let startDepth = projectWorldViewDistance(origin);
-  let depthDirection = dot(vec3<f32>(view.worldViewProj[0].w,
-    view.worldViewProj[1].w, view.worldViewProj[2].w), direction);
+  let projectedDirection = view.worldViewProj * vec4<f32>(direction, 0.0);
+  let depthDirection = select(projectedDirection.w,
+    -projectedDirection.z * (view.temporalProjection.y - view.temporalProjection.x),
+    view.temporalProjection.z > 0.5);
   // Like Unreal's RayCast (WorldTMax = SceneDepth), distant receivers get a
   // ray at least as long as their view depth; grazing ground keeps its reach.
   var rayLength = max(maxDistance, startDepth);
@@ -363,8 +387,6 @@ fn traceScreenRay(
   let crossEpsilon = 1e-3 / fullPixelSpan;
   let moving = abs(deltaUv) > vec2<f32>(1e-8);
   let towardMax = deltaUv > vec2<f32>(0.0);
-  let inverseStart = 1.0 / max(startDepth, 1e-5);
-  let inverseEnd = 1.0 / max(endDepth, 1e-5);
   var lower = 0.0;
   var upper = 0.0;
   var found = false;
@@ -403,17 +425,15 @@ fn traceScreenRay(
       let uv = startUv + deltaUv * t;
       var levelSize = fullSize;
       if (level > 0u) { levelSize = depthPyramidLevelSize(depthPyramid, level - 1u); }
-      let cell = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(levelSize)),
-        levelSize - vec2<u32>(1u));
+      let cell = ssrTraversalCell(uv, levelSize, moving, towardMax);
       let boundaryUv = (vec2<f32>(cell) + select(vec2<f32>(0.0), vec2<f32>(1.0), towardMax)) /
         vec2<f32>(levelSize);
       let exitFractions = select(vec2<f32>(endFraction),
         (boundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
       exitFraction = clamp(min(exitFractions.x, exitFractions.y), t, endFraction);
-      // Reciprocal depth is linear along the projected segment, so the segment's
-      // depth range is bounded by its endpoints.
-      let entryDepth = 1.0 / mix(inverseStart, inverseEnd, t);
-      let exitDepth = 1.0 / mix(inverseStart, inverseEnd, exitFraction);
+      // Both admitted projections have monotonic view depth on this segment.
+      let entryDepth = ssrProjectedRayDepth(startDepth, endDepth, t);
+      let exitDepth = ssrProjectedRayDepth(startDepth, endDepth, exitFraction);
       rayMin = min(entryDepth, exitDepth);
       rayMax = max(entryDepth, exitDepth);
       let cellCenterUv = (vec2<f32>(cell) + vec2<f32>(0.5)) / vec2<f32>(levelSize);
@@ -492,7 +512,7 @@ fn traceScreenRay(
     let pixel = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) *
       vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
     let surfaceDepth = sampleSsrTraceDepth(uv, 0u);
-    let rayDepth = 1.0 / mix(inverseStart, inverseEnd, middle);
+    let rayDepth = ssrProjectedRayDepth(startDepth, endDepth, middle);
     // A depth crossing on a rejected surface is not the accepted bracket.
     // Near contact points, depth-only bisection can walk backward onto the
     // receiver even though the coarse step correctly found the facing wall.
@@ -644,118 +664,25 @@ fn waterSsrReceiver(pixel: vec2<i32>, size: vec2<u32>) -> WaterSsrReceiver {
   return WaterSsrReceiver(true, origin, normal.xyz / normalLength, toCamera / cameraDistance, normal.a);
 }
 
-fn waterRayScreenClipFactor(start: vec2<f32>, step: vec2<f32>) -> f32 {
-  let inverseLength = 0.5 * length(step);
-  if (inverseLength < 1e-8) { return 1.0; }
-  let scale = vec2<f32>(1.0) - max(abs(step + start * inverseLength) - vec2<f32>(inverseLength),
-    vec2<f32>(0.0)) / max(abs(step), vec2<f32>(1e-8));
-  return min(scale.x, scale.y) / inverseLength;
-}
-
-// Point-clamped HZB sampling selects one texel and the nearest explicit mip.
-// Furthest positive view distance +inf is UE's reversed-Z empty value (zero).
-fn waterFurthestDeviceDepth(uv: vec2<f32>, mip: f32) -> f32 {
-  let level = min(u32(max(round(mip), 0.0)), textureNumLevels(depthPyramid) - 1u);
-  let size = depthPyramidLevelSize(depthPyramid, level);
-  let cell = depthPyramidCell(uv, size);
-  let depth = textureLoad(depthPyramid, vec2<i32>(cell), i32(level)).r;
-  if (!isFinite(depth) || depth <= 0.0) { return 0.0; }
-  let near = view.temporalProjection.x;
-  let far = view.temporalProjection.y;
-  return select((near / depth - near / far) / (1.0 - near / far),
-    (far - depth) / (far - near), view.temporalProjection.z > 0.5);
-}
-
 struct WaterSsrHit {
   found: bool,
   uv: vec2<f32>,
   depth: f32,
 };
 
-// UE's active SSR cast tests four consecutive samples per batch. Each pair
-// advances its explicit HZB mip; the first accepted depth interval interpolates
-// adjacent differences. This consumer never enters the closest-depth rescue.
-fn traceWaterProjectedRay(start: vec3<f32>, step: vec3<f32>, numSteps: u32,
-  roughness: f32, stepOffset: f32, tolerance: f32) -> WaterSsrHit {
-  var previousDiff = 0.0;
-  var previousTime = stepOffset;
-  let mipStep = 8.0 / f32(numSteps) * roughness;
-  for (var batch = 0u; batch < numSteps; batch += 4u) {
-    var differences: array<f32, 4>;
-    var candidates: array<bool, 4>;
-    for (var tap = 0u; tap < 4u; tap++) {
-      let time = f32(batch + tap + 1u) + stepOffset;
-      let position = start + step * time;
-      let onscreen = all(position.xy >= vec2<f32>(0.0)) && all(position.xy < vec2<f32>(1.0));
-      var sampledDepth = 0.0;
-      if (onscreen) {
-        sampledDepth = waterFurthestDeviceDepth(position.xy, 1.0 + f32((batch + tap) / 2u) * mipStep);
-      }
-      let difference = position.z - sampledDepth;
-      differences[tap] = difference;
-      candidates[tap] = batch + tap < numSteps && onscreen && sampledDepth != 0.0 &&
-        abs(difference + tolerance) < tolerance;
-    }
-    for (var tap = 0u; tap < 4u; tap++) {
-      let time = f32(batch + tap + 1u) + stepOffset;
-      let difference = differences[tap];
-      if (candidates[tap]) {
-        let denominator = previousDiff - difference;
-        let blend = clamp(select(0.0, previousDiff / denominator, abs(denominator) > 1e-8), 0.0, 1.0);
-        let position = start + step * mix(previousTime, time, blend);
-        return WaterSsrHit(true, position.xy, position.z);
-      }
-      previousDiff = difference;
-      previousTime = time;
-    }
-  }
-  return WaterSsrHit(false, vec2<f32>(0.0), 0.0);
-}
-
-fn waterTraceNoise(pixel: vec2<i32>) -> f32 {
-  if (waterParams.hitColorParams.w < 0.0) { return 0.0; }
-  let frame = f32(u32(waterParams.hitColorParams.w) % 8u);
-  let position = vec2<f32>(pixel) + vec2<f32>(0.5) + frame * vec2<f32>(47.0, 17.0) * 0.695;
-  return fract(52.9829189 * fract(dot(position, vec2<f32>(0.06711056, 0.00583715)))) - 0.5;
-}
-
-fn traceWaterWorldRay(receiver: WaterSsrReceiver, pixel: vec2<i32>) -> WaterSsrHit {
+fn traceWaterWorldRay(receiver: WaterSsrReceiver) -> WaterSsrHit {
   let miss = WaterSsrHit(false, vec2<f32>(0.0), 0.0);
-  let maximumDistance = view.ssrParams.x;
-  let numSteps = u32(waterParams.traceParams.x);
-  let forward = waterCameraForward();
-  if (!isFinite(maximumDistance) || maximumDistance <= 0.0 || numSteps == 0u ||
-      dot(forward, forward) < 0.5) { return miss; }
-  // Medium quality is a single mirror ray. Roughness controls the HZB mip and
-  // reflection fade; visible-GGX ray sampling belongs to the higher qualities.
   let direction = reflect(-receiver.toCamera, receiver.normal);
-  let viewDirectionZ = dot(direction, forward);
-  let sceneDepth = projectWorldViewDistance(receiver.origin);
-  var rayDistance = maximumDistance;
-  if (viewDirectionZ < 0.0) {
-    rayDistance = min(-0.95 * sceneDepth / viewDirectionZ, maximumDistance);
-  }
-  let startClip = view.worldViewProj * vec4<f32>(receiver.origin, 1.0);
-  let endClip = view.worldViewProj * vec4<f32>(receiver.origin + direction * rayDistance, 1.0);
-  // Project an equal forward depth excursion to obtain the source's slope
-  // tolerance without uploading a second camera or projection matrix.
-  let depthClip = startClip + view.worldViewProj * vec4<f32>(forward * rayDistance, 0.0);
-  if (!isFinite(startClip.w) || startClip.w <= 1e-8 || !isFinite(endClip.w) || endClip.w <= 1e-8 ||
-      !isFinite(depthClip.w) || depthClip.w <= 1e-8) { return miss; }
-  let startScreen = startClip.xyz / startClip.w;
-  let endScreen = endClip.xyz / endClip.w;
-  let depthScreen = depthClip.z / depthClip.w;
-  var screenStep = endScreen - startScreen;
-  // The source SSR path extends its projected ray to the screen edge.
-  screenStep *= waterRayScreenClipFactor(startScreen.xy, screenStep.xy);
-  let slopeTolerance = (startScreen.z - depthScreen) * 4.0;
-  let compareTolerance = select(max(abs(screenStep.z), slopeTolerance), max(0.0, slopeTolerance),
-    view.temporalProjection.z > 0.5) / f32(numSteps);
-  let start = vec3<f32>(startScreen.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5), startScreen.z);
-  let step = vec3<f32>(screenStep.xy * vec2<f32>(0.5, -0.5), screenStep.z) / f32(numSteps);
-  if (!isFinite(compareTolerance) || compareTolerance <= 0.0 ||
-      !all(vec3<bool>(isFinite(step.x), isFinite(step.y), isFinite(step.z)))) { return miss; }
-  return traceWaterProjectedRay(start, step, numSteps, receiver.roughness, waterTraceNoise(pixel), compareTolerance);
+  let size = textureDimensions(sceneDepth);
+  let maxTraceLevel = min(maxSsrTraceLevel(size), ssrDepthPyramidLevelCount());
+  // Water owns the displaced receiver, not a second intersection algorithm.
+  // Closest bounds skip provably clear cells; full-resolution surface tests
+  // retain thin silhouettes and recover the actual radiance coordinate.
+  let hit = traceScreenRay(receiver.origin, direction, view.ssrParams.x, view.ssrParams.y,
+    size, view.temporalProjection.y, maxTraceLevel);
+  if (hit.hit <= 0.0) { return miss; }
+  let hitPixel = min(vec2<u32>(hit.uv * vec2<f32>(size)), size - vec2<u32>(1u));
+  return WaterSsrHit(true, hit.uv, textureLoad(sceneDepth, vec2<i32>(hitPixel), 0));
 }
 
 fn waterHitPreviousScreen(hit: WaterSsrHit) -> vec2<f32> {
@@ -763,13 +690,10 @@ fn waterHitPreviousScreen(hit: WaterSsrHit) -> vec2<f32> {
   let rasterWorldH = view.inverseViewProj * rawHitClip;
   let currentNoAaClip = view.temporalCurrentViewProj * rasterWorldH;
   if (!isFinite(currentNoAaClip.w) || currentNoAaClip.w <= 1e-8) { return vec2<f32>(-1.0); }
-  // UE feeds the raw jittered hit to its no-AA ClipToPrevClip. With
-  // M_raster = J * M_noAA, inverse(M_noAA) = inverse(M_raster) * J.
-  // Recover J from the existing matrices, then apply it to the raw hit;
-  // subtracting jitter from the hit would change the source behavior.
-  let clipJitter = rawHitClip.xy - currentNoAaClip.xy / currentNoAaClip.w;
-  let noAaWorldH = view.inverseViewProj * vec4<f32>(rawHitClip.xy + clipJitter, rawHitClip.zw);
-  let previousClip = view.temporalPreviousViewProj * noAaWorldH;
+  // Hit depth lives on the current raster grid; retained TAA radiance and
+  // scene motion use unjittered coordinates. Reconstruct the hit only once.
+  let currentUv = currentNoAaClip.xy / currentNoAaClip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  let previousClip = view.temporalPreviousViewProj * rasterWorldH;
   var previousUv = vec2<f32>(-1.0);
   if (isFinite(previousClip.w) && previousClip.w > 1e-8) {
     previousUv = previousClip.xy / previousClip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
@@ -789,7 +713,7 @@ fn waterHitPreviousScreen(hit: WaterSsrHit) -> vec2<f32> {
       let depthTolerance = (1.0 + opaqueViewDepth) * (exp2(logSpacing) - 1.0)
         + max(1e-6, opaqueViewDepth * 1e-6);
       if (abs(temporal.viewDepth - opaqueViewDepth) <= depthTolerance) {
-        previousUv = hit.uv - temporal.motionUv;
+        previousUv = currentUv - temporal.motionUv;
       }
     }
   }
@@ -833,7 +757,7 @@ fn storeWaterCurrentReflection(globalId: vec3<u32>) {
   var reflection = vec4<f32>(0.0);
   let receiver = waterSsrReceiver(pixel, size);
   if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
-    reflection = waterCurrentReflection(traceWaterWorldRay(receiver, pixel), receiver.roughness);
+    reflection = waterCurrentReflection(traceWaterWorldRay(receiver), receiver.roughness);
   }
   textureStore(traceOutput, pixel, reflection);
 }
@@ -846,7 +770,7 @@ fn storeWaterHistoryReflection(globalId: vec3<u32>) {
   var reflection = vec4<f32>(0.0);
   let receiver = waterSsrReceiver(pixel, size);
   if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
-    reflection = waterHistoryReflection(traceWaterWorldRay(receiver, pixel), receiver.roughness);
+    reflection = waterHistoryReflection(traceWaterWorldRay(receiver), receiver.roughness);
   }
   textureStore(traceOutput, pixel, reflection);
 }

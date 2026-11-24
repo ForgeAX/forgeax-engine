@@ -113,6 +113,8 @@ export interface CompileOptions {
    * hasDynamicOffset:true.
    */
   readonly dynamicOffsets?: readonly { readonly group: number; readonly binding: number }[];
+  /** Opt-in, versioned facts for typed values in each entry's reachable helper closure. */
+  readonly valueMemberReads?: 'shader-value-member-reads/1';
 }
 
 /** Success-branch value of `compileShader`. */
@@ -570,7 +572,10 @@ export async function compileShaderWithComposition(
   return compiled.ok ? ok({ ...compiled.value, deps }) : compiled;
 }
 
-type ProgramOptions = Pick<CompileOptions, 'computeEntry' | 'renderEntries' | 'dynamicOffsets'>;
+type ProgramOptions = Pick<
+  CompileOptions,
+  'computeEntry' | 'renderEntries' | 'dynamicOffsets' | 'valueMemberReads'
+>;
 interface NativeProgram {
   readonly source: string;
   readonly module: ValidatedModule;
@@ -611,7 +616,7 @@ function prepareNativeProgram(
         }),
       );
     }
-    selectedSource = selected.source;
+    selectedSource = canonicalizePortableWgsl(selected.source);
   }
   const parsed = native.parse(selectedSource);
   if (!parsed.ok) return programFailure(parsed.error, 'parse');
@@ -641,6 +646,9 @@ function finishPreparedProgram(
   // Stage 4: emit_reflection.
   const optionsJson = JSON.stringify({
     dynamicOffsets: options.dynamicOffsets ?? [],
+    ...(options.valueMemberReads === undefined
+      ? {}
+      : { valueMemberReads: options.valueMemberReads }),
   });
   const reflectionResult = native.emitReflection(module, optionsJson);
   if (!reflectionResult.ok) {

@@ -286,8 +286,9 @@ The runtime compiler selects the pass, device context, vertex inputs and
 submission address requested by Render. The selected program and its reflection
 use the same validation as a compiled publication.
 
-The Pack producer identity is `material-pack-cooker/7`. Existing compiled
-`material-cook/5` publications remain readable.
+The Pack producer identity is `material-pack-cooker/7`. Compiled publications
+use `material-cook/5`. Re-cook Card publications carrying a retired Card profile
+and Water publications produced before the current deformation layout.
 
 Water's `waterVertexMapping` defaults to true. The compiler enables
 `WATER_HEIGHT_MAPPING_AVAILABLE` only when that choice and a selected

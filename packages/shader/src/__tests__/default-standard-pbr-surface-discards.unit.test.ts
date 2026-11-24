@@ -61,8 +61,12 @@ describe('Standard surface discard override', () => {
     const temporal = shader.slice(shader.indexOf('fn materialTemporal('));
     expect(temporal).toMatch(/\n {2}applyViewClipping\(in\.clippingPositionWS, false\);/);
     expect(temporal).toMatch(/\n {2}applyLodCoverage\(in\.clip\.xy, in\.temporal\.z\);/);
-    expect(temporal).toContain('return encodeSceneVelocity(materialTemporal(in));');
-    expect(read('default-standard-pbr-skin.wgsl')).not.toContain('standardSurfaceDiscards');
+    const packedVelocity =
+      'return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);';
+    expect(temporal).toContain(packedVelocity);
+    const skin = read('default-standard-pbr-skin.wgsl');
+    expect(skin).toContain(packedVelocity);
+    expect(skin).not.toContain('standardSurfaceDiscards');
   });
 
   it('rejects uncovered Water geometry in every Standard raster entry after Surface evaluation', () => {

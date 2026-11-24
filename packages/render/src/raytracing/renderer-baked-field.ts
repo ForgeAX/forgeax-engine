@@ -9,7 +9,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { recordContext } from '../world/view-record-context';
 import { createRayDiffuseComposite } from './diffuse-composite';
 import {
-  createIrradianceFieldViewKernels,
+  createBakedIrradianceFieldViewKernels,
   IRRADIANCE_FIELD_FRAME_BYTES,
   IRRADIANCE_FIELD_UNIFORM_BYTES,
   packIrradianceFieldUniform,
@@ -20,6 +20,7 @@ import {
   type IrradianceVolume,
   irradianceVolumeKind,
   irradianceVolumeProbeBlocks,
+  irradianceVolumeProbeMeta,
   validateIrradianceVolume,
 } from './irradiance-volume';
 import { requirePublishedKernel } from './published-kernel';
@@ -148,12 +149,12 @@ async function createBakedPrograms(
     compile(device, { label: 'baked-field.view', code: gatherSource }),
     compile(device, { label: 'baked-field.composite', code: compositeSource }),
   ]);
-  const { sampleLayout, kernels: view } = createIrradianceFieldViewKernels(
-    device,
-    gather.unwrap(),
-    'baked',
-  ).unwrap();
-  const composite = createRayDiffuseComposite(device, fragment.unwrap(), 'reconstructed').unwrap();
+  const [viewPrograms, diffuseComposite] = await Promise.all([
+    createBakedIrradianceFieldViewKernels(device, gather.unwrap()),
+    createRayDiffuseComposite(device, fragment.unwrap(), 'reconstructed'),
+  ]);
+  const { sampleLayout, kernels: view } = viewPrograms.unwrap();
+  const composite = diffuseComposite.unwrap();
   return { sampleLayout, view, composite };
 }
 
@@ -510,7 +511,7 @@ export class RendererBakedField {
           ),
           irradiance: upload('irradiance', irradianceVolumeProbeBlocks(volume)),
           moments: upload('moments', volume.moments),
-          meta: upload('meta', volume.meta),
+          meta: upload('meta', irradianceVolumeProbeMeta(volume)),
         };
         if (buffers.irradiance.size !== volume.probeCount * IRRADIANCE_FIELD_PROBE_BYTES)
           throw new Error('baked probe blocks do not match the field stride');

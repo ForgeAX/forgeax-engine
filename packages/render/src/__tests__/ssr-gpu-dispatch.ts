@@ -860,7 +860,6 @@ export async function runSsrGpuDispatch(
     width: SSR_GPU_PROBE_WIDTH,
     height: SSR_GPU_PROBE_HEIGHT,
     view,
-    ...(options.waterTrace === undefined ? {} : { reduction: 'furthest' as const }),
   });
   const pyramid = depthPyramid.unwrap().pyramid;
   const water = options.waterTrace;
@@ -875,16 +874,7 @@ export async function runSsrGpuDispatch(
     writeSsrColorViewport(values, 0, viewport);
     writeSsrColorViewport(values, 32, viewport);
     const profile = WATER_SSR_DEFAULT_PROFILE;
-    for (const [index, value] of [
-      water === 'history' ? 1 : 0,
-      1,
-      profile.intensity,
-      0,
-      profile.numSteps,
-      profile.numRays,
-      0,
-      profile.quality,
-    ].entries())
+    for (const [index, value] of [water === 'history' ? 1 : 0, 1, profile.intensity, 0].entries())
       values.setFloat32(64 + index * 4, value, true);
     device.queue.writeBuffer(buffer, 0, values.buffer).unwrap();
     return graph.importBuffer('water-ssr-probe-params', { size, usage }, () => buffer).unwrap();
@@ -905,18 +895,14 @@ export async function runSsrGpuDispatch(
     scene: hitColor,
     view,
     depthPyramid: pyramid,
+    depth: depthSample,
+    normal: normal.view,
+    ...gbufferInputs,
+    fallback: fallback.view,
+    currentTemporal: currentTemporal.view,
     ...(water === undefined
-      ? {
-          depth: depthSample,
-          normal: normal.view,
-          ...gbufferInputs,
-          fallback: fallback.view,
-          currentTemporal: currentTemporal.view,
-        }
+      ? {}
       : {
-          ...(water === 'history'
-            ? { depth: depthSample, currentTemporal: currentTemporal.view }
-            : {}),
           origin: {
             depth: depthSample,
             normal: normal.view,

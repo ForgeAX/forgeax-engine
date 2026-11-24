@@ -14,7 +14,7 @@ import {
 import { mat4 } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { rhi } from '@forgeax/engine-rhi-null';
+import { RhiNullAdapter, rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
@@ -41,14 +41,39 @@ import { MeshFrame } from '../../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../../scene/render-scene';
 import { RowProjection } from '../../scene/row-projection';
 import { adoptFieldEdit, diffFieldEdit, fieldEditState } from '../field-edit';
+import { deriveFieldReceivers } from '../field-receiver';
+import { packGlobalSdfComposition } from '../global-sdf';
+import {
+  prepareWorldAcceleration,
+  WorldAccelerationGeometryIds,
+  worldAccelerationEdit,
+  worldAccelerationRoster,
+} from '../renderer-world-acceleration';
 import { projectSceneFields, SceneFieldRows } from '../scene-field-projection';
+import { validateSdfSurfacePoolHeader } from '../sdf-surface-storage';
+import { resolveVisibleSurfaceRange, VisibleSurfaceRows } from '../visible-surface';
 
 const matrix = (x = 0) => {
   const value = mat4.identity(mat4.create());
   value[12] = x;
   return value;
 };
-async function fixture(world = new World(), sourceAssets?: AssetRegistry) {
+function admittedFieldBytes(field: NonNullable<MeshAsset['distanceField']>) {
+  const surface = field.surface;
+  assert(surface);
+  // AssetRegistry's Pack copy detaches each channel into its own tight buffer.
+  // Include the canonical geometry that the retained snapshot now also owns.
+  return [
+    field.bricks,
+    field.values,
+    surface.positions,
+    surface.indices,
+    surface.nodes,
+    surface.primitiveOrder,
+    surface.triangleSidedness,
+  ].reduce((bytes, channel) => bytes + channel.byteLength, 0);
+}
+async function fixture(world = new World(), sourceAssets?: AssetRegistry, sectionCount = 2) {
   const assets =
     sourceAssets ??
     new AssetRegistry({
@@ -68,26 +93,35 @@ async function fixture(world = new World(), sourceAssets?: AssetRegistry) {
   const bytes = (await encodeMeshDistanceField(field)).unwrap();
   const mesh: MeshAsset = {
     ...geometry,
-    submeshes: [
-      {
-        indexOffset: 0,
-        indexCount: 18,
-        vertexCount: 12,
-        materialSlot: 1,
-        topology: 'triangle-list',
-      },
-      {
-        indexOffset: 18,
-        indexCount: 18,
-        vertexCount: 12,
-        materialSlot: 0,
-        topology: 'triangle-list',
-      },
-    ],
+    submeshes:
+      sectionCount === 3
+        ? Array.from({ length: 3 }, (_, index) => ({
+            indexOffset: index * 12,
+            indexCount: 12,
+            vertexCount: 8,
+            materialSlot: index % 2,
+            topology: 'triangle-list' as const,
+          }))
+        : [
+            {
+              indexOffset: 0,
+              indexCount: 18,
+              vertexCount: 12,
+              materialSlot: 1,
+              topology: 'triangle-list',
+            },
+            {
+              indexOffset: 18,
+              indexCount: 18,
+              vertexCount: 12,
+              materialSlot: 0,
+              topology: 'triangle-list',
+            },
+          ],
     materialSlots: [{ slotName: 'second' }, { slotName: 'first' }],
     distanceField: {
       ...field,
-      sectionSidedness: [0, 0],
+      sectionSidedness: new Array<0 | 1>(sectionCount).fill(0),
       artifact: {
         integrity: {
           algorithm: 'sha256',
@@ -136,6 +170,82 @@ async function fixture(world = new World(), sourceAssets?: AssetRegistry) {
     );
   return { assets, world, mesh, materialAsset, materialHandle, source, scene, update, project };
 }
+
+it.each([
+  { kept: [0, 2] },
+  { kept: [0] },
+  { kept: [2] },
+])('identifies covered receiver sections around an admitted raster draw hole %j', async ({
+  kept,
+}) => {
+  const f = await fixture(new World(), undefined, 3);
+  const draws = f.source.gpuDrivenDraws;
+  assert(draws?.length === 3);
+  expect(draws.map((draw) => draw.drawItemIndex)).toEqual([0, 1, 2]);
+  f.update({ ...f.source, gpuDrivenDraws: draws.filter((_, index) => kept.includes(index)) });
+  const input = {
+    identity: f.scene,
+    slots: f.scene.slotsSnapshot(),
+    materials: new MaterialFrame(undefined),
+    meshes: new MeshFrame(),
+  };
+  const rows = new SceneFieldRows();
+  const scope = worldRenderResources(f.world);
+  const projected = rows
+    .update(input, scope, { maxInstances: 4, maxFieldBytes: 1024 * 1024 }, f.assets)
+    .unwrap();
+  expect(projected.sources).toHaveLength(1);
+  const raster = new VisibleSurfaceRows().update(input, 16).unwrap();
+  const base = raster.entityBases.get(31);
+  assert(base !== undefined);
+  for (const section of kept)
+    expect(resolveVisibleSurfaceRange(raster, base + section).unwrap()?.firstElement).toBe(
+      section * 12,
+    );
+  // The strict covered-row decoder still rejects an uncovered address.
+  expect(resolveVisibleSurfaceRange(raster, base + 1).ok).toBe(false);
+  const composition = packGlobalSdfComposition(
+    projected.instances,
+    {
+      origin: [-2, -2, -2],
+      dimensions: [5, 5, 5],
+      spacing: 1,
+      maxDistance: 2,
+      coverageDistance: 0.5,
+    },
+    { capacity: 1, index: false, sourceEpoch: 1 },
+  ).unwrap();
+  const expected = [
+    composition.data.instances.byteLength / 4,
+    composition.data.fields.byteLength / 4,
+    projected.instances.length,
+    1,
+  ] as const;
+  const result = deriveFieldReceivers({
+    raster,
+    sources: rows.receiverSources(),
+    state: fieldEditState(projected.sources, projected.instances),
+    sourceScope: scope,
+    owner: { identity: rows, current: () => true },
+    acceptedSource: expected,
+    placement: {
+      instances: projected.instances,
+      instanceData: composition.data.instances,
+      surface: composition.surface,
+    },
+  });
+  expect(result.ok).toBe(true);
+  const frame = result.unwrap();
+  assert(frame.state === 'ready');
+  for (const section of kept)
+    expect(frame.resolve(base + section, 0, expected, rows).unwrap()).toMatchObject({
+      state: 'identified',
+      primitive: section * 4,
+    });
+  expect(frame.resolve(base + 1, 0, expected, rows).unwrap()).toMatchObject({
+    state: 'unavailable',
+  });
+});
 
 it('projects complete retained slots times instances and shares one owned whole-mesh field', async () => {
   const f = await fixture();
@@ -295,7 +405,7 @@ it('uses explicit complete-roster budgets and counts shared field bytes once', a
   const f = await fixture();
   const field = f.mesh.distanceField;
   assert(field);
-  const bytes = field.bricks.byteLength + field.values.byteLength;
+  const bytes = admittedFieldBytes(field);
   f.update({ ...f.source, entityKey: 32 });
   const project = (maxInstances: number, maxFieldBytes: number) =>
     projectSceneFields(
@@ -344,6 +454,21 @@ it.each([
   expect(projected.instances).toHaveLength(1);
   expect(projected.sources.map((s) => s.entityKey)).toEqual([31]);
   expect(projected.deforming).toEqual([expect.objectContaining({ entityKey: 32 })]);
+  const rows = new SceneFieldRows();
+  rows
+    .update(
+      {
+        identity: f.scene,
+        slots: f.scene.slotsSnapshot(),
+        materials: new MaterialFrame(undefined),
+        meshes: new MeshFrame(),
+      },
+      worldRenderResources(f.world),
+      { maxInstances: 4, maxFieldBytes: 1024 * 1024 },
+      f.assets,
+    )
+    .unwrap();
+  expect([...rows.receiverSources()].map((source) => source.record.entityKey)).toEqual([31]);
 });
 
 it.each([
@@ -455,6 +580,21 @@ it.each([
     ]);
   f.assets.replace(f.materialHandle, f.materialAsset).unwrap();
   expect(f.project()).toMatchObject({ ok: false, error: { code: 'ray-reference-invalid' } });
+  const rows = new SceneFieldRows();
+  expect(
+    rows.update(
+      {
+        identity: f.scene,
+        slots: f.scene.slotsSnapshot(),
+        materials: new MaterialFrame(undefined),
+        meshes: new MeshFrame(),
+      },
+      worldRenderResources(f.world),
+      { maxInstances: 4, maxFieldBytes: 1024 * 1024 },
+      f.assets,
+    ).ok,
+  ).toBe(false);
+  expect([...rows.receiverSources()]).toEqual([]);
 });
 
 it.each([
@@ -504,12 +644,181 @@ it('resolves inherited native values and records MASK as omitted alpha coverage'
   (await f.assets.load(parent, 'material')).unwrap();
   const child: MaterialAsset = { kind: 'material', parent };
   const handle = f.assets.create(child).unwrap();
-  const material = MaterialResource.from({ ...f.source.material.snapshot, materialHandle: handle });
+  const material = MaterialResource.from({
+    ...f.source.material.snapshot,
+    materialHandle: handle,
+    paramSnapshot: { alphaCutoff: 0.5, baseColor: [1, 1, 1, 0.5] },
+  });
   f.update({ ...f.source, material, materials: [material, material] });
   const result = f.project().unwrap();
   expect(result.sources[0]?.materials[0]?.payload.parent).toBeUndefined();
   expect(result.sources[0]?.materials[0]?.alphaCoverageOmitted).toBe(true);
   expect(result.sources[0]?.materials[0]?.facts.paramSnapshot?.alphaCutoff).toBe(0.5);
+});
+
+it('retains opaque canonical primitives when another actual section has MASK coverage', async () => {
+  const f = await fixture();
+  const handle = f.assets.create({ ...f.materialAsset, values: { alphaCutoff: 0.5 } }).unwrap();
+  const masked = MaterialResource.from({
+    ...f.source.material.snapshot,
+    materialHandle: handle,
+    paramSnapshot: { alphaCutoff: 0.5 },
+  });
+  // Actual section 0 uses material slot 1; section 1 uses slot 0.
+  f.update({ ...f.source, materials: [f.source.material, masked] });
+  const projected = f.project().unwrap();
+  expect(projected.sources[0]?.materials.map((part) => part.alphaCoverageOmitted)).toEqual([
+    true,
+    false,
+  ]);
+  expect(projected.instances[0]?.surfaceCoverage).toMatchObject({
+    kind: 'partial',
+    opaquePrimitives: new Uint32Array([0xfc0]),
+  });
+  const packed = packGlobalSdfComposition(
+    projected.instances,
+    {
+      origin: [-2, -2, -2],
+      dimensions: [5, 5, 5],
+      spacing: 1,
+      maxDistance: 2,
+      coverageDistance: 0.5,
+    },
+    { capacity: 1, index: false, sourceEpoch: 1 },
+  ).unwrap();
+  expect(validateSdfSurfacePoolHeader(new Uint32Array(packed.data.fields.buffer), 0, 1).ok).toBe(
+    true,
+  );
+  const state = fieldEditState(projected.sources, projected.instances);
+  const coverage = projected.instances[0]?.surfaceCoverage;
+  assert(typeof coverage === 'object');
+  coverage.opaquePrimitives[0] = 0x3f;
+  expect(diffFieldEdit(state, projected).rematerialized).toHaveLength(1);
+});
+
+it('detects same-handle alpha coverage edits without treating ordinary root values as row edits', async () => {
+  const f = await fixture();
+  const rows = new SceneFieldRows();
+  const project = () =>
+    rows
+      .update(
+        {
+          identity: f.scene,
+          slots: f.scene.slotsSnapshot(),
+          materials: new MaterialFrame(undefined),
+          meshes: new MeshFrame(),
+        },
+        worldRenderResources(f.world),
+        { maxInstances: 16, maxFieldBytes: 1024 * 1024 },
+        f.assets,
+      )
+      .unwrap();
+  const before = project();
+  const hardwareIds = new WorldAccelerationGeometryIds();
+  const initialHardware = worldAccelerationRoster(before, hardwareIds);
+  expect(initialHardware.instances[0]?.surfaceCoverage).toBe('opaque');
+  const device = (
+    await new RhiNullAdapter({
+      rayQuery: {
+        maxBlasGeometryCount: 4,
+        maxBlasPrimitiveCount: 128,
+        maxTlasInstanceCount: 16,
+        maxAccelerationStructuresPerShaderStage: 1,
+      },
+    }).requestDevice()
+  ).unwrap();
+  const hardware = prepareWorldAcceleration(
+    device,
+    initialHardware,
+    initialHardware.geometries,
+  ).unwrap();
+  const submit = () => {
+    hardware.record(device.createCommandEncoder({}).unwrap()).unwrap();
+    hardware.commit();
+  };
+  submit();
+  rows.acceptChanges(rows.revision);
+  const state = fieldEditState(before.sources, before.instances);
+  f.assets.update(f.materialHandle, { values: { roughness: 0.25 } }).unwrap();
+  for (const resource of new Set([f.source.material, ...f.source.materials]))
+    resource.adopt({ ...resource.snapshot, paramSnapshot: { roughness: 0.25, alphaCutoff: 0 } });
+  const colorOnly = project();
+  expect(diffFieldEdit(state, colorOnly).rematerialized).toHaveLength(0);
+  f.assets.update(f.materialHandle, { values: { alphaCutoff: 0.5 } }).unwrap();
+  for (const resource of new Set([f.source.material, ...f.source.materials]))
+    resource.adopt({ ...resource.snapshot, paramSnapshot: { roughness: 0.25, alphaCutoff: 0.5 } });
+  const masked = project();
+  const maskedHardware = worldAccelerationRoster(masked, hardwareIds);
+  expect(maskedHardware.instances[0]?.surfaceCoverage).toBe('unknown');
+  expect(maskedHardware.instances[0]?.geometryId).toBe(initialHardware.instances[0]?.geometryId);
+  expect(masked.sources[0]?.materials.every((part) => part.alphaCoverageOmitted)).toBe(true);
+  expect(diffFieldEdit(state, masked).rematerialized).toHaveLength(1);
+  hardware
+    .edit(worldAccelerationEdit(diffFieldEdit(state, masked), [], hardwareIds).unwrap())
+    .unwrap();
+  submit();
+  expect(hardware.inspect()).toMatchObject({ blasBuilt: 1, tlasBuilt: 1, settled: true });
+  const maskedState = fieldEditState(masked.sources, masked.instances);
+  rows.acceptChanges(rows.revision);
+  f.assets.update(f.materialHandle, { values: { alphaCutoff: 0 } }).unwrap();
+  for (const resource of new Set([f.source.material, ...f.source.materials]))
+    resource.adopt({ ...resource.snapshot, paramSnapshot: { roughness: 0.25, alphaCutoff: 0 } });
+  const restored = project();
+  expect(diffFieldEdit(maskedState, restored).rematerialized).toHaveLength(1);
+  const restoredHardware = worldAccelerationRoster(restored, hardwareIds);
+  expect(restoredHardware.instances[0]?.surfaceCoverage).toBe('opaque');
+  expect(restoredHardware.instances[0]?.geometryId).toBe(initialHardware.instances[0]?.geometryId);
+  hardware
+    .edit(worldAccelerationEdit(diffFieldEdit(maskedState, restored), [], hardwareIds).unwrap())
+    .unwrap();
+  submit();
+  expect(hardware.inspect()).toMatchObject({
+    blasBuilt: 1,
+    tlasBuilt: 1,
+    settled: true,
+    coverageWords: 0,
+  });
+  hardware.dispose();
+});
+
+it('uses accepted withParameters coverage independently for placements sharing the same asset handle', async () => {
+  const f = await fixture();
+  const masked = f.source.material.withParameters({ alphaCutoff: 0.5 });
+  expect(masked.snapshot.materialHandle).toBe(f.source.material.snapshot.materialHandle);
+  f.update({ ...f.source, materials: [f.source.material, masked] });
+  const projected = f.project().unwrap();
+  expect(projected.sources[0]?.materials.map((part) => part.alphaCoverageOmitted)).toEqual([
+    true,
+    false,
+  ]);
+  expect(projected.sources[0]?.materials[0]?.facts.paramSnapshot?.alphaCutoff).toBe(0.5);
+  expect(projected.instances[0]?.surfaceCoverage).toMatchObject({
+    kind: 'partial',
+    opaquePrimitives: new Uint32Array([0xfc0]),
+  });
+});
+
+it('keeps different placement overrides local while sharing the complete canonical Mesh', async () => {
+  const f = await fixture();
+  const masked = f.source.material.withParameters({ alphaCutoff: 0.5 });
+  f.update({ ...f.source, entityKey: 32, materials: [f.source.material, masked] });
+  const projected = f.project().unwrap();
+  expect(projected.instances).toHaveLength(2);
+  expect(projected.instances[0]?.surfaceCoverage).toBe('opaque');
+  expect(projected.instances[1]?.surfaceCoverage).toMatchObject({
+    kind: 'partial',
+    opaquePrimitives: new Uint32Array([0xfc0]),
+  });
+  expect(projected.instances[0]?.field).toBe(projected.instances[1]?.field);
+  expect(projected.instances[0]?.geometryId).toBe(projected.instances[1]?.geometryId);
+  const hardware = worldAccelerationRoster(projected, new WorldAccelerationGeometryIds());
+  expect(hardware.geometries).toHaveLength(1);
+  expect(hardware.instances[0]?.geometryId).toBe(hardware.instances[1]?.geometryId);
+  expect(hardware.instances[0]?.surfaceCoverage).toBe('opaque');
+  expect(hardware.instances[1]?.surfaceCoverage).toMatchObject({
+    kind: 'partial',
+    opaquePrimitives: new Uint32Array([0xfc0]),
+  });
 });
 
 it('projects the actual transferred receiver mesh and rejects then restores runtime vertex content', async () => {
@@ -655,8 +964,16 @@ it('keeps cooked program admission while the owned material values advance', asy
   expect(material?.facts.paramSnapshot?.alphaCutoff).toBe(0.75);
   expect(material?.alphaCoverageOmitted).toBe(true);
   f.assets.update(handle, { values: { alphaHash: 1 } }).unwrap();
+  resource.adopt({
+    ...resource.snapshot,
+    paramSnapshot: { ...resource.snapshot.paramSnapshot, alphaHash: 1 },
+  });
   expect(f.project().ok).toBe(false);
   f.assets.update(handle, { values: { alphaHash: 0 } }).unwrap();
+  resource.adopt({
+    ...resource.snapshot,
+    paramSnapshot: { ...resource.snapshot.paramSnapshot, alphaHash: 0 },
+  });
   expect(f.project().ok).toBe(true);
   // The packet carries real cooked programs but not the AssetRegistry's
   // payload-to-native-projection proof. Refuse that unqualified receiver.
@@ -930,7 +1247,7 @@ it.each([
   const sourceScope = worldRenderResources(f.world);
   const budget = {
     maxInstances: 1,
-    maxFieldBytes: field.bricks.byteLength + field.values.byteLength,
+    maxFieldBytes: admittedFieldBytes(field),
   };
   if (failure === 'byte-budget') budget.maxInstances = 2;
   const fields = new SceneFieldRows();

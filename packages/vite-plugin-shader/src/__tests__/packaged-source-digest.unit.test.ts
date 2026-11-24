@@ -43,6 +43,52 @@ describe('packaged engine shader profile provenance', () => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 
+  it('invalidates a profile when an unconventionally named program helper changes', () => {
+    mkdirSync(join(sources, 'helpers'), { recursive: true });
+    writeFileSync(
+      join(sources, 'field-visibility-wgsl.ts'),
+      "import { factor } from './helpers/coordinate-tools.js';\nexport const CODE = 'fn factor()->u32{return ' + factor + 'u;}';\n",
+    );
+    writeFileSync(join(sources, 'helpers', 'coordinate-tools.ts'), 'export const factor = 1;\n');
+    const before = engineShaderSourceDigest(sources);
+    writeFileSync(join(sources, 'helpers', 'coordinate-tools.ts'), 'export const factor = 2;\n');
+    expect(engineShaderSourceDigest(sources)).not.toBe(before);
+    expect(packagedProfileMatchesSource(before, sources, label)).toBe(false);
+  });
+
+  it('invalidates a profile when its package-owned entry composition recipe changes', () => {
+    const owner = join(root, 'node_modules/@forgeax/engine-vite-plugin-shader');
+    mkdirSync(join(owner, 'src/engine-inputs'), { recursive: true });
+    writeFileSync(
+      join(owner, 'package.json'),
+      JSON.stringify({ name: '@forgeax/engine-vite-plugin-shader' }),
+    );
+    const recipe = join(owner, 'src/engine-inputs/load-engine-shader-entries.ts');
+    writeFileSync(recipe, "export const imports = { field: 'old' };\n");
+    const before = engineShaderSourceDigest(sources);
+    writeFileSync(recipe, "export const imports = { field: 'new' };\n");
+    expect(engineShaderSourceDigest(sources)).not.toBe(before);
+    expect(packagedProfileMatchesSource(before, sources, label)).toBe(false);
+  });
+
+  it('ignores test, generated and temporary TypeScript inputs', () => {
+    const before = engineShaderSourceDigest(sources);
+    for (const directory of ['__tests__', '__generated__', 'tmp']) {
+      mkdirSync(join(sources, directory), { recursive: true });
+      writeFileSync(join(sources, directory, 'helper.ts'), 'export const irrelevant = 1;\n');
+    }
+    for (const name of [
+      'helper.test.ts',
+      'helper.spec.ts',
+      'helper.fixture.ts',
+      'helper.generated.ts',
+      'helper.tmp.ts',
+      'wgsl-raw.d.ts',
+    ])
+      writeFileSync(join(sources, name), 'export const irrelevant = 1;\n');
+    expect(engineShaderSourceDigest(sources)).toBe(before);
+  });
+
   it('invalidates package profiles after a VFX program declaration or source edit', () => {
     const owner = join(root, 'node_modules/@forgeax/engine-vfx-render');
     mkdirSync(join(owner, 'src/shaders'), { recursive: true });

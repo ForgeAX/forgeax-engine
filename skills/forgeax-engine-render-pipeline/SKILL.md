@@ -423,12 +423,11 @@ Forward MSAA uses that same fog kernel at each sample depth on the original
 4x color producer, with an average display resolve. Water's late nearest-color
 gather retains the opaque sample ID across underwater translucency.
 
-Water SSR borrows the existing temporal color owner: main TAA color when enabled,
-otherwise a color-only HDR snapshot after DoF and before Motion Blur/Bloom.
-Set `ScreenSpaceReflection.waterTemporal` with `WaterSsrTemporalValue.auto`
-(default: own Water resolve only without main TAA), `.always` or `.off`.
-Water MSAA selects the real Forward 4x opaque producer; full SLW/SSR raster
-remains 1x with matched opaque normal, velocity and legal depth.
+Deferred Water SSR uses the shared closest-depth surface traversal with the
+matching opaque normal layout, material coverage and motion. Water's displaced
+receiver stays separate. Main AA owns temporal resolve; do not restore removed
+SSR history slots or `waterTemporal` controls. Forward Water keeps its inline
+Standard reflection route. GPU occlusion retains its furthest hierarchy.
 
 An after-tonemap raster pass that reads depth declares `sceneDepth` on the
 pass. With TAA, Standard then supplies full-output geometry coverage and a
@@ -1192,7 +1191,8 @@ method, passes, resource extent and accepted history.
 Use the Standard pipeline's admitted execution plan; do not select backends in
 game shaders. Compute retains native workgroup algorithms. Fragment Hi-Z uses
 independent attachments and legal mip publication; SSR uses its shared SceneData,
-material response MRT and completion-fenced history. Forward SSR requires built-in
+material response MRT and the View-owned accepted scene-color history.
+Forward SSR requires built-in
 Standard materials and single sampling; Deferred keeps its own admission contract.
 Auto exposure preserves the weighted 256-bin histogram with integer reductions,
 never mean luminance. Read the [portable contract](../../packages/render/README.md#portable-hi-z-ssr-and-histogram-exposure)

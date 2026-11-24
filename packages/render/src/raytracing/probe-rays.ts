@@ -3,6 +3,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
 import type { GlobalSdfQueryInputs } from './global-sdf-query';
+import { prepareComputePipeline } from './prepare-pipeline';
 import { PROBE_PLACEMENT_DIAGNOSTIC_STRIDE, PROBE_PLACEMENT_STRIDE } from './probe-placement';
 import { RAY_INPUT_STRIDE, RAY_REFERENCE_LIMIT } from './scene';
 
@@ -96,7 +97,7 @@ fn probeRayInputStatus(probe: Probe, state: Candidate) -> u32 {
  * id/generation plus the texel ordinal. No compaction or pretrace field mask.
  * Invalid/untraced inputs overwrite their entire interval with safe mask-zero
  * rays; consumers must inspect emission diagnostics before interpreting hits. */
-export function createProbeRayRecorder(device: RhiDevice, module: ShaderModule) {
+export async function createProbeRayRecorder(device: RhiDevice, module: ShaderModule) {
   const failure = (expected: string, code: RhiError['code'] = 'rhi-descriptor-invalid') =>
     err(
       new RhiError({
@@ -142,7 +143,7 @@ export function createProbeRayRecorder(device: RhiDevice, module: ShaderModule) 
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createComputePipeline({
+  const pipeline = await prepareComputePipeline(device, {
     label: 'probe-rays.emit',
     layout: pipelineLayout.value,
     compute: { module, entryPoint: 'emitProbeRays' },

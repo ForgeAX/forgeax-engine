@@ -21,16 +21,17 @@ pnpm exec forgeax project package --output release/empty-game-web.zip --json
 
 ## Optional View
 
-From this game root, open the View included in the installed Engine:
+From this game root, open the optional View shipped in the SDK:
 
 ```sh
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+node /absolute/forgeax-sdk/tools/view/start.mjs --project .
 ```
 
 Keep the terminal open and open the returned URL. The page reports Backend and
-project readiness; the URL alone is not readiness. No global SDK or Engine build
-is needed. Agent guidance: `skills/forgeax-view-start/SKILL.md`, or the copy under
-`node_modules/@forgeax/engine/tools/view/skills/` for older projects.
+project readiness; the URL alone is not readiness. The launcher initializes the
+SDK tool runtime and uses its matching Engine. View is absent from this game's
+npm dependencies. Read `skills/forgeax-view-start/SKILL.md` or the SDK copy at
+`tools/view/skills/forgeax-view-start/SKILL.md` for instance controls.
 
 ## Project Boundaries
 

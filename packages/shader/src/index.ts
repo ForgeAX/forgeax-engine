@@ -21,6 +21,12 @@
 // - ManifestEntry — re-exported from `@forgeax/engine-types` (manifest schema SSOT)
 
 export type { ManifestEntry, ParamSchemaEntry } from '@forgeax/engine-types';
+export {
+  CANONICAL_RECEIVER_REASON,
+  CANONICAL_RECEIVER_RECONSTRUCTION_BODY_WGSL,
+  CANONICAL_RECEIVER_RECONSTRUCTION_WGSL,
+  CANONICAL_RECEIVER_STATE,
+} from './canonical-receiver-reconstruction-wgsl.js';
 export { DIRECT_DFG_LUT_SIZE, directDfgLutBytes } from './direct-dfg-lut-data.js';
 export {
   expandShaderManifestPublication,
@@ -30,6 +36,36 @@ export {
   SHADER_MANIFEST_PUBLICATION_VERSION,
   shaderSourceDigestInput,
 } from './manifest-publication.js';
+export { SCREEN_PROBE_CANDIDATE_WGSL } from './screen-probe-candidate-source';
+export {
+  SCREEN_PROBE_CURRENT_SUPPORT_MASK,
+  SCREEN_PROBE_RECONSTRUCTION_WGSL,
+} from './screen-probe-reconstruction';
+export { SDF_INSTANCE_WORD_GUARDS_WGSL } from './sdf-instance-word-guards-wgsl.js';
+export { SDF_MESH_DF_APPROX_WGSL } from './sdf-mesh-df-approx-wgsl.js';
+export { SDF_MESH_MARCH_STATE, SDF_MESH_MARCH_WGSL } from './sdf-mesh-march-wgsl.js';
+export { SDF_SCENE_TEXTURE_LAYOUT, SDF_SCENE_TEXTURE_READ_WGSL } from './sdf-scene-texture-wgsl.js';
+export {
+  SDF_SURFACE_CANDIDATE_STATE,
+  SDF_SURFACE_CANDIDATES_WGSL,
+  sdfSurfaceCandidatesWgsl,
+} from './sdf-surface-candidates-wgsl.js';
+export {
+  SDF_SURFACE_INTERSECTION_WGSL,
+  SDF_SURFACE_LOCAL_RAY_WGSL,
+} from './sdf-surface-intersection-wgsl.js';
+export { SDF_SURFACE_MARCH_FOUNDATION_WGSL } from './sdf-surface-march-wgsl.js';
+export { SDF_SURFACE_POOL_LAYOUT, SDF_SURFACE_POOL_WGSL } from './sdf-surface-pool-wgsl.js';
+export {
+  SDF_SURFACE_ROOT_PREPARATION_WGSL,
+  SDF_SURFACE_ROOT_PREPARE_WGSL,
+  SDF_SURFACE_ROOT_REQUEST_BYTES,
+  SDF_SURFACE_ROOT_REQUEST_WGSL,
+} from './sdf-surface-root-request-wgsl.js';
+export {
+  SDF_SURFACE_TRACE_HINTED_RECEIVER_WGSL,
+  SDF_SURFACE_TRACE_RECEIVER_WGSL,
+} from './sdf-surface-trace-wgsl.js';
 
 import type { MaterialAsset, MaterialParameter, MaterialValue } from '@forgeax/engine-types';
 import { standardSurfaceParameters, unlitMaterialParameters } from '@forgeax/engine-types';
@@ -308,6 +344,7 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
  */
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
+export { FIELD_VISIBILITY_BOUNDS_WGSL } from './field-visibility-wgsl';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
 export {
@@ -361,6 +398,12 @@ export {
   SCENE_VELOCITY_RECONSTRUCTION_WGSL,
   TAA_SCENE_VELOCITY_WGSL,
 } from './scene-velocity-source';
+export {
+  SDF_SURFACE_BOUNDS_WGSL,
+  SDF_SURFACE_TRACE_ROOT_WGSL,
+  SDF_SURFACE_TRACE_WGSL,
+  SDF_SURFACE_TRACE_WITH_BOUNDS_WGSL,
+} from './sdf-surface-trace-wgsl';
 export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
 export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,

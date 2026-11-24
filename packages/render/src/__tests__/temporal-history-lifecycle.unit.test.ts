@@ -1,14 +1,19 @@
+import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiQueue } from '@forgeax/engine-rhi';
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
+import { importCloudHistoryTargets, stageCloudHistoryWrite } from '../record/frame-graph-history';
 import type { RenderFrameState } from '../record/frame-snapshot';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
+import type { RenderPipelineFrame } from '../render-pipeline';
 import {
   abortStagedTemporalGpuState,
   commitStagedTemporalGpuState,
   commitTemporalGpuSubmit,
   getTemporalBindGroupResources,
   getTemporalGpuState,
+  releaseTemporalGpuStates,
   retireTemporalGpuState,
   retireTemporalGpuStateAfterFence,
   stageTemporalGpuSubmit,
@@ -66,6 +71,44 @@ describe('TAA history lifecycle', () => {
     expect(frameState.activeTemporalGpuState).toBe(state);
     retireTemporalGpuState(taa);
     retireTemporalGpuState(state);
+  });
+  it('reuses the cloud history written by the graph with temporal AA disabled', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const textures = vi.spyOn(device, 'createTexture');
+    const frameState = { retiringTemporalGpuStates: new Set() } as unknown as RenderFrameState;
+    const frame = {
+      camera: { antialias: 'off' },
+      frameState,
+      runtime: { device, deviceScope: DeviceScope.create(24, 'cloud-scene-color-history') },
+      targetW: 8,
+      targetH: 8,
+    } as unknown as _InternalRenderPipelineContext;
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    const imports = vi.spyOn(graph, 'importTexture');
+    importCloudHistoryTargets(graph, 'rgba16float');
+    const current = imports.mock.calls.find(
+      ([name]) => name === 'cloud-history-radiance-current',
+    )?.[2];
+    if (current === undefined) throw new Error('Missing cloud history target resolver');
+    const hooks = { onReplaced: vi.fn(), onRetireFailure: vi.fn() };
+    try {
+      const firstWrite = current(frame);
+      const boundHistory = frameState.temporalGpuState;
+      expect(boundHistory?.mode).toBe('scene-color');
+      stageCloudHistoryWrite(frame);
+      commitStagedTemporalGpuState(frameState, device.queue, hooks);
+      expect(frameState.activeTemporalGpuState).toBe(boundHistory);
+      expect(frameState.activeTemporalGpuState?.valid).toBe(true);
+      const secondWrite = current(frame);
+      expect(secondWrite).not.toBe(firstWrite);
+      stageCloudHistoryWrite(frame);
+      commitStagedTemporalGpuState(frameState, device.queue, hooks);
+      expect(current(frame)).toBe(firstWrite);
+      expect(textures).toHaveBeenCalledTimes(8);
+      expect(hooks.onReplaced).not.toHaveBeenCalled();
+    } finally {
+      releaseTemporalGpuStates(frameState);
+    }
   });
   it('keeps stability history separate from downstream temporal-v1 metadata', async () => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();

@@ -120,6 +120,8 @@ describe('cooked material schema', () => {
     const pass = record.resolved.passes[0];
     if (selection === undefined || sceneSelection === undefined || pass === undefined)
       throw new Error('missing fixture pass');
+    if (selection.context.pipeline === 'ray' || sceneSelection.context.pipeline === 'ray')
+      throw new Error('the locale fixture requires its original raster selections');
     const source = seal({
       ...record,
       resolved: {
@@ -170,11 +172,12 @@ describe('cooked material schema', () => {
     });
     const published = serializeCookedMaterialRecord(source);
     // Native mini-game JS engines need not provide the producer's ICU collation.
-    const collation = vi
-      .spyOn(String.prototype, 'localeCompare')
-      .mockImplementation(function (other) {
-        return String(this) < other ? -1 : String(this) > other ? 1 : 0;
-      });
+    const collation = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+      this: string,
+      other,
+    ) {
+      return String(this) < other ? -1 : String(this) > other ? 1 : 0;
+    });
     try {
       expect(validateCookedMaterialRecord(JSON.parse(published))).toMatchObject({ ok: true });
       expect(serializeCookedMaterialRecord(source)).toBe(published);
@@ -210,8 +213,9 @@ describe('cooked material schema', () => {
             context: {
               ...rasterContext,
               pipeline: 'ray',
-              profile: 'forgeax-material-ray-v1',
-              pass,
+              ...(pass === 'ray-hit'
+                ? ({ pass, profile: 'forgeax-material-ray-v1' } as const)
+                : ({ pass, profile: 'forgeax-material-card-v4' } as const)),
             },
           },
         ],
@@ -242,6 +246,8 @@ describe('cooked material schema', () => {
           { entry: 'cs_surface' },
           { entry: 'fs_card' },
           { pass: 'raster-probe' },
+          { profile: 'forgeax-material-ray-v1' },
+          { profile: undefined },
           { visibleSurface: true },
         ],
       ],
@@ -253,7 +259,8 @@ describe('cooked material schema', () => {
           'visibleSurface' in change ||
           'backend' in change ||
           'geometry' in change ||
-          'pass' in change;
+          'pass' in change ||
+          'profile' in change;
         Object.assign(contextChange ? selection.context : selection, change);
         expect(validateCookedMaterialRecord(invalid).ok).toBe(false);
         if (index === 2) expect(validateJson(invalid), JSON.stringify(change)).toBe(false);

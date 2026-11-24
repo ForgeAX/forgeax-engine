@@ -1352,3 +1352,16 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 .fx-workspace-preparation[data-active] .fx-workspace-preparation__spinner { animation: fx-preparation-spin 1.2s linear infinite; }
 @keyframes fx-preparation-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .fx-workspace-preparation[data-active] .fx-workspace-preparation__spinner { animation: none; } }
+
+.fx-view-version {
+  flex: 0 0 auto;
+  padding: var(--fx-ref-space-2) var(--fx-ref-space-10);
+  border-top: var(--fx-border-width) solid var(--fx-color-border-subtle);
+  color: var(--fx-color-text-secondary);
+  background: var(--fx-color-surface-canvas);
+  font-size: var(--fx-type-caption-font-size);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

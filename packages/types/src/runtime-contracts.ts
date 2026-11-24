@@ -69,7 +69,25 @@ export interface ShaderEntryPointReads {
   readonly bindings: readonly ShaderBindingReads[];
   /** Missing legacy metadata is unknown, never proof of an effect-free entry. */
   readonly effects?: ShaderEntryPointEffects;
+  /** Optional compiler capability. Absence is unknown, never an empty read set. */
+  readonly valueReads?: ShaderValueMemberReads;
 }
+
+/** Typed value reads in one entry's actual helper call closure, independent of buffer origins. */
+export interface ShaderValueMemberReads {
+  readonly schemaVersion: 'shader-value-member-reads/1';
+  readonly structs: readonly {
+    readonly typeDescriptor: Extract<ShaderReflectionTypeDescriptor, { kind: 'struct' }>;
+    /** Omitted means complete aggregate consumption; [] means observed with no member reads. */
+    readonly fields?: readonly string[];
+    /** Lexical globals read by typed-argument consumers and their helpers. Omitted is unknown. */
+    readonly consumerGlobals?: readonly ShaderConsumerGlobal[];
+  }[];
+}
+
+export type ShaderConsumerGlobal =
+  | { readonly kind: 'bound'; readonly group: number; readonly binding: number }
+  | { readonly kind: 'unbound'; readonly name: string; readonly addressSpace: string };
 
 /** Naga-derived byte layout for one member of a bound shader resource. */
 export interface ShaderReflectionMember {
@@ -880,6 +898,69 @@ function validShaderEntryEffects(effects: Record<string, unknown>, stage: unknow
   return true;
 }
 
+function isShaderConsumerGlobals(value: unknown): value is readonly ShaderConsumerGlobal[] {
+  if (!Array.isArray(value)) return false;
+  const identities = new Set<string>();
+  return value.every((global: unknown) => {
+    if (!isReflectionRecord(global)) return false;
+    let identity: string;
+    if (global.kind === 'bound') {
+      if (
+        !Number.isSafeInteger(global.group) ||
+        Number(global.group) < 0 ||
+        !Number.isSafeInteger(global.binding) ||
+        Number(global.binding) < 0
+      )
+        return false;
+      identity = `bound:${global.group}:${global.binding}`;
+    } else if (global.kind === 'unbound') {
+      if (
+        typeof global.name !== 'string' ||
+        global.name.length === 0 ||
+        typeof global.addressSpace !== 'string' ||
+        global.addressSpace.length === 0
+      )
+        return false;
+      identity = `unbound:${global.addressSpace}:${global.name}`;
+    } else return false;
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    return true;
+  });
+}
+
+function isShaderValueMemberReads(value: unknown): value is ShaderValueMemberReads {
+  if (
+    !isReflectionRecord(value) ||
+    value.schemaVersion !== 'shader-value-member-reads/1' ||
+    !Array.isArray(value.structs)
+  )
+    return false;
+  const identities = new Set<string>();
+  return value.structs.every((candidate: unknown) => {
+    if (
+      !isReflectionRecord(candidate) ||
+      !isShaderReflectionTypeDescriptor(candidate.typeDescriptor) ||
+      candidate.typeDescriptor.kind !== 'struct'
+    )
+      return false;
+    const identity = JSON.stringify(candidate.typeDescriptor);
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    const names = new Set(candidate.typeDescriptor.members.map((member) => member.name));
+    if (
+      candidate.fields !== undefined &&
+      (!Array.isArray(candidate.fields) ||
+        candidate.fields.some((field: unknown) => typeof field !== 'string' || !names.has(field)) ||
+        new Set(candidate.fields).size !== candidate.fields.length)
+    )
+      return false;
+    return (
+      candidate.consumerGlobals === undefined || isShaderConsumerGlobals(candidate.consumerGlobals)
+    );
+  });
+}
+
 export function isShaderEntryPointReads(value: unknown): value is readonly ShaderEntryPointReads[] {
   if (!Array.isArray(value)) return false;
   if (frozenShaderEntryPointReads.has(value)) return true;
@@ -892,7 +973,8 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
       typeof row.name !== 'string' ||
       row.name.length === 0 ||
       !SHADER_STAGES.has(row.stage) ||
-      !Array.isArray(row.bindings)
+      !Array.isArray(row.bindings) ||
+      (row.valueReads !== undefined && !isShaderValueMemberReads(row.valueReads))
     )
       return false;
     if (row.effects !== undefined) {
@@ -905,6 +987,7 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
     if (identities.has(identity)) return false;
     identities.add(identity);
     frozen &&= Object.isFrozen(row) && Object.isFrozen(row.bindings);
+    frozen &&= row.valueReads === undefined || isDeepFrozenJson(row.valueReads);
     const coordinates = new Set<string>();
     return row.bindings.every((binding: unknown) => {
       if (binding === null || typeof binding !== 'object') return false;

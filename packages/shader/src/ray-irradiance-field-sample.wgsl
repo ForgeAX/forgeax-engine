@@ -19,8 +19,9 @@ struct IrradianceField {
   // by 2^level), w cross-level blend band in cells of the finer level.
   bias: vec4f,
   // x clipmap level count, y probes per level, z pending native world instances,
-  // w current scene trace bounds are contained in the live SDF sample box.
+  // w flags: bit 0 proves scene containment, bit 1 selects the far producer.
   levels: vec4u,
+  // window[0].w packs level-zero ProbeTMin as f32 bits.
   // Per level: window min cell (toroidal origin), and the traced cell box
   // [validMin, validMax) a receiver may interpolate inside.
   window: array<vec4i, 4>,
@@ -32,16 +33,14 @@ struct IrradianceField {
 // Per texel mean and mean-square clamped ray distance.
 @group(1) @binding(2) var<storage, read> irradianceFieldMoments: array<vec2f>;
 // Per probe: x updates, y classification (IRRADIANCE_FIELD_PROBE_ACTIVE is the
-// only state that contributes), zw the f16 xyz relocation offset from the
-// lattice point; rays are traced from the relocated position.
+// only state that contributes), zw the f16 xyz relocation offset divided by
+// this probe level's spacing; rays are traced from the relocated position.
 @group(1) @binding(3) var<storage, read> irradianceFieldMeta: array<vec4u>;
 
 #ifdef IRRADIANCE_FIELD_VISIBILITY
 // Live fields derive this projection after Global SDF composition. Baked fields
 // have no live region and retain the four-buffer sampling contract.
-struct FieldVisibilityGrid { originSpacing: vec4f, dimensionsCount: vec4u, ranges: vec4f }
-@group(1) @binding(4) var<uniform> fieldVisibilityGrid: FieldVisibilityGrid;
-@group(1) @binding(5) var fieldVisibility: texture_3d<f32>;
+#import forgeax_ray::field_visibility::{fieldVisibilityGrid, fieldVisibility, fieldCanonicalVisibility}
 
 fn fieldVisibilitySample(p: vec3f) -> vec2f {
   let dims = fieldVisibilityGrid.dimensionsCount.xyz;
@@ -62,15 +61,15 @@ fn fieldVisibilitySample(p: vec3f) -> vec2f {
 }
 
 // 1 = fully covered clear segment, 0 = occluded, -1 = unavailable transport.
-// Keep the same conservative distance expansion as Global SDF traversal; no
-// visibility floor can reintroduce a rejected corner through normalization.
+// The conservative distance expansion identifies ambiguity, not a geometry hit.
+// Keep checking the original march's coverage before refining the whole segment.
 fn fieldSegmentVisibility(origin: vec3f, endpoint: vec3f) -> f32 {
   let spacing = fieldVisibilityGrid.originSpacing.w;
   // Distance-only interpolation needs no gradient border. Outside portions are
   // clear only with the producer's current-scene containment proof.
   let lo = fieldVisibilityGrid.originSpacing.xyz;
   let hi = lo + vec3f(fieldVisibilityGrid.dimensionsCount.xyz - vec3u(1u)) * spacing;
-  if (irradianceField.levels.w == 0u &&
+  if ((irradianceField.levels.w & 1u) == 0u &&
       (any(origin < lo) || any(origin > hi) || any(endpoint < lo) || any(endpoint > hi))) { return -1.0; }
   let delta = endpoint - origin;
   let distance = length(delta);
@@ -92,16 +91,20 @@ fn fieldSegmentVisibility(origin: vec3f, endpoint: vec3f) -> f32 {
   let h = spacing * 0.5;
   var t = near;
   var maximum = 0.0;
+  var ambiguous = false;
   for (var step = 0u; step < 256u; step++) {
     let sample = fieldVisibilitySample(clamp(origin + direction * t, lo, hi));
     if (sample.y < 0.0) { return -1.0; }
     maximum = max(maximum, sample.x);
     let expansion = h * clamp(maximum / (2.0 * h), 0.0, 1.0);
-    if (sample.x < expansion) { return 0.0; }
+    if (sample.x < expansion) { ambiguous = true; }
     // The final covered point must satisfy the same distance/status test.
     // Jumping past it makes admission depend on the march phase: neighbouring
     // receivers alternately see a near-surface probe, producing concentric rings.
-    if (t >= far) { return 1.0; }
+    if (t >= far) {
+      if (ambiguous) { return fieldCanonicalVisibility(origin, endpoint, 255u - step); }
+      return 1.0;
+    }
     let next = t + max(sample.x, h * 0.25);
     if (!(next > t)) { return -1.0; }
     t = min(next, far);
@@ -112,6 +115,8 @@ fn fieldSegmentVisibility(origin: vec3f, endpoint: vec3f) -> f32 {
 
 const IRRADIANCE_FIELD_PROBE_STRIDE = 144u;
 const IRRADIANCE_FIELD_PROBE_ACTIVE = 1u;
+const IRRADIANCE_FIELD_PROBE_INSIDE = 2u;
+const IRRADIANCE_FIELD_PROBE_RELOCATED = 3u;
 const IRRADIANCE_FIELD_RADIANCE = 64u;
 const IRRADIANCE_FIELD_RADIANCE_MIP = 128u;
 // Cone half-angles (radians) each level resolves: one 8x8 texel, one 4x4
@@ -149,6 +154,129 @@ fn irradianceFieldOctWrap(coordinate: vec2i, size: i32) -> vec2u {
   else if (c.y >= size) { c = vec2i(size - 1 - c.x, 2 * size - c.y - 1); }
   return vec2u(c);
 }
+
+#ifdef IRRADIANCE_FIELD_RADIANCE_ATLAS
+const IRRADIANCE_FIELD_ATLAS_TILE = vec2u(11u, 10u);
+const IRRADIANCE_FIELD_ATLAS_COMPLETE = vec2u(10u, 0u);
+const IRRADIANCE_FIELD_FAR_RADIANCE = 2u;
+@group(0) @binding(37) var irradianceFieldRadianceAtlas: texture_2d<f32>;
+@group(0) @binding(38) var irradianceFieldRadianceSampler: sampler;
+
+fn irradianceFieldAtlasRadiance(probe: u32, directionIndex: u32) -> vec4f {
+  let stored = irradianceFieldProbes[probe * IRRADIANCE_FIELD_PROBE_STRIDE +
+    IRRADIANCE_FIELD_RADIANCE + directionIndex];
+  // Preserve signed reconstruction. Unsupported and out-of-range taps take
+  // the precise buffer path at sampling time; valid black keeps alpha one.
+  if (!(stored.w > 0.0) || !all(abs(stored.rgb) <= vec3f(65504.0))) { return vec4f(0.0); }
+  return vec4f(stored.rgb, 1.0);
+}
+
+fn irradianceFieldAtlasOrigin(probe: u32, dimensions: vec2u, far: bool) -> vec2u {
+  let columns = dimensions.x / IRRADIANCE_FIELD_ATLAS_TILE.x;
+  let bank = vec2u(0u, select(0u, dimensions.y / 2u, far));
+  return bank + vec2u(probe % columns, probe / columns) * IRRADIANCE_FIELD_ATLAS_TILE;
+}
+
+fn irradianceFieldAtlasSampleAt(probe: u32, direction: vec3f, far: bool) -> vec4f {
+  let dimensions = textureDimensions(irradianceFieldRadianceAtlas);
+  let tile = irradianceFieldAtlasOrigin(probe, dimensions, far);
+  let oct = irradianceFieldOctEncode(direction) * 0.5 + vec2f(0.5);
+  let uv = (vec2f(tile) + vec2f(1.0) + oct * 8.0) / vec2f(dimensions);
+  return textureSampleLevel(irradianceFieldRadianceAtlas, irradianceFieldRadianceSampler, uv, 0.0);
+}
+
+fn irradianceFieldAtlasSample(probe: u32, direction: vec3f) -> vec4f {
+  return irradianceFieldAtlasSampleAt(probe, direction, false);
+}
+
+fn screenRadianceAtlasMetadata(probe: u32) -> vec4f {
+  let tile = irradianceFieldAtlasOrigin(probe, textureDimensions(irradianceFieldRadianceAtlas), true);
+  return textureLoad(irradianceFieldRadianceAtlas, vec2i(tile + IRRADIANCE_FIELD_ATLAS_COMPLETE), 0);
+}
+
+fn screenRadianceProbeTMin(level: u32) -> f32 {
+  return bitcast<f32>(irradianceField.window[0].w) * irradianceFieldLevelScale(level);
+}
+
+struct ScreenRadianceCoverage {
+  base: vec3i,
+  fraction: vec3f,
+  level: u32,
+  traceDistance: f32,
+}
+
+fn screenRadianceProbePosition(cell: vec3i, offset: vec3f, spacing: f32) -> vec3f {
+  return irradianceField.originSpacing.xyz + (vec3f(cell) + offset) * spacing;
+}
+
+// Like Screen Probe Gather's Radiance Cache, select a single covered clipmap
+// before tracing. The padded atlas publishes whether every direction is ready.
+// A missing corner cannot promise a continuation for a shortened world ray.
+fn screenRadianceCoverage(position: vec3f) -> ScreenRadianceCoverage {
+  if (irradianceField.levels.z != 0u || !(screenRadianceProbeTMin(0u) > 0.0)) {
+    return ScreenRadianceCoverage();
+  }
+  for (var level = 0u; level < irradianceField.levels.x; level++) {
+    let spacing = irradianceField.originSpacing.w * irradianceFieldLevelScale(level);
+    let grid = (position - irradianceField.originSpacing.xyz) / spacing;
+    let lo = irradianceField.validMin[level].xyz;
+    let hi = irradianceField.validMax[level].xyz - vec3i(1);
+    if (any(hi <= lo) || !all(grid >= vec3f(lo)) || !all(grid < vec3f(hi))) { continue; }
+    let base = vec3i(floor(grid));
+    var complete = true;
+    // The exact producer start plus the cell diagonal reaches beyond the near
+    // exclusion sphere even when the receiver lies at the opposite corner.
+    let tMin = screenRadianceProbeTMin(level);
+    var cornerDistance = tMin;
+    for (var i = 0u; i < 8u; i++) {
+      let cell = base + vec3i(i32(i & 1u), i32((i >> 1u) & 1u), i32(i >> 2u));
+      let probe = irradianceFieldProbeIndex(level, cell);
+      let marker = screenRadianceAtlasMetadata(probe);
+      if (marker.w != 1.0) { complete = false; break; }
+      let distanceToProbe = distance(position, screenRadianceProbePosition(cell, marker.xyz, spacing));
+      // The 1.5x parallax sphere must enclose the receiver for every corner.
+      if (!(distanceToProbe < 1.5 * tMin)) { complete = false; break; }
+      cornerDistance = max(cornerDistance, distanceToProbe);
+    }
+    if (complete) { return ScreenRadianceCoverage(base, fract(grid), level, tMin + cornerDistance); }
+  }
+  return ScreenRadianceCoverage();
+}
+
+// The ray generator already checked the eight corners of this clipmap in the
+// frame's immutable atlas. Reconstruct their coordinates without a new search.
+fn screenRadianceCoverageFromTrace(position: vec3f, level: u32, traceDistance: f32) -> ScreenRadianceCoverage {
+  if (level >= irradianceField.levels.x || irradianceField.levels.z != 0u || !(traceDistance > 0.0)) {
+    return ScreenRadianceCoverage();
+  }
+  let spacing = irradianceField.originSpacing.w * irradianceFieldLevelScale(level);
+  let grid = (position - irradianceField.originSpacing.xyz) / spacing;
+  return ScreenRadianceCoverage(vec3i(floor(grid)), fract(grid), level, traceDistance);
+}
+
+fn sampleScreenRadianceCache(coverage: ScreenRadianceCoverage, position: vec3f, direction: vec3f) -> vec4f {
+  if (!(coverage.traceDistance > 0.0)) { return vec4f(0.0); }
+  let spacing = irradianceField.originSpacing.w * irradianceFieldLevelScale(coverage.level);
+  let radius = 1.5 * screenRadianceProbeTMin(coverage.level);
+  var radiance = vec3f(0.0);
+  for (var i = 0u; i < 8u; i++) {
+    let offset = vec3i(i32(i & 1u), i32((i >> 1u) & 1u), i32(i >> 2u));
+    let cell = coverage.base + offset;
+    let probe = irradianceFieldProbeIndex(coverage.level, cell);
+    let axis = select(vec3f(1.0) - coverage.fraction, coverage.fraction, offset > vec3i(0));
+    let weight = axis.x * axis.y * axis.z;
+    if (!(weight > 0.0)) { continue; }
+    let offsetInCells = screenRadianceAtlasMetadata(probe).xyz;
+    let fromProbe = position - screenRadianceProbePosition(cell, offsetInCells, spacing);
+    let projection = dot(fromProbe, direction);
+    let t = sqrt(max(0.0, projection * projection + radius * radius - dot(fromProbe, fromProbe))) - projection;
+    let reprojected = fromProbe + t * direction;
+    let correction = t * t / (radius * dot(reprojected, direction));
+    radiance += irradianceFieldAtlasSampleAt(probe, reprojected, true).rgb * (correction * weight);
+  }
+  return vec4f(max(radiance, vec3f(0.0)), 1.0);
+}
+#endif
 
 fn irradianceFieldOctTaps(direction: vec3f, size: u32) -> IrradianceFieldTaps {
   let xy = (irradianceFieldOctEncode(direction) * 0.5 + vec2f(0.5)) * f32(size) - vec2f(0.5);
@@ -190,8 +318,113 @@ fn irradianceFieldDepth(probe: u32, direction: vec3f) -> vec2f {
   return moments;
 }
 
-fn irradianceFieldProbeOffset(state: vec4u) -> vec3f {
-  return vec3f(unpack2x16float(state.z), unpack2x16float(state.w).x);
+fn irradianceFieldProbeOffset(state: vec4u, spacing: f32) -> vec3f {
+  return vec3f(unpack2x16float(state.z), unpack2x16float(state.w).x) * spacing;
+}
+
+#ifdef IRRADIANCE_FIELD_VISIBILITY
+#ifdef IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE
+// Compute-only Screen probe specialization. Cache geometry outcomes, never
+// angular support, weights or radiance. Other entries start with enabled=0.
+var<workgroup> fieldProbeCacheEnabled: u32;
+var<workgroup> fieldProbeCachePrimary: array<vec3u,4>;
+var<workgroup> fieldProbeCacheProof: array<vec3u,8>;
+var<workgroup> fieldProbeCacheEndpoint: array<vec3u,64>;
+var<workgroup> fieldProbeCacheValue: array<vec2f,64>;
+var<workgroup> fieldProbeCacheAnchor: array<vec3u,4>;
+var<workgroup> fieldProbeCacheAnchorValue: array<f32,4>;
+#endif
+
+fn irradianceFieldCachedCornerSegment(level:u32, corner:u32, normalClearance:bool,
+    secondary:bool, origin:vec3f, endpoint:vec3f)->f32 {
+#ifdef IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE
+  if (fieldProbeCacheEnabled != 0u && level < 4u) {
+    let index = level * 16u + select(0u,8u,normalClearance) + corner;
+    let cachedOrigin = select(fieldProbeCachePrimary[level],fieldProbeCacheProof[level*2u+select(0u,1u,normalClearance)],secondary);
+    if (any(bitcast<vec3u>(origin) != cachedOrigin) || any(bitcast<vec3u>(endpoint) != fieldProbeCacheEndpoint[index])) {
+      return fieldSegmentVisibility(origin,endpoint);
+    }
+    let value = select(fieldProbeCacheValue[index].x,fieldProbeCacheValue[index].y,secondary);
+    if (value != 2.0) { return value; }
+  }
+#endif
+  return fieldSegmentVisibility(origin,endpoint);
+}
+
+fn irradianceFieldCachedAnchorSegment(level:u32, origin:vec3f, endpoint:vec3f)->f32 {
+#ifdef IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE
+  if (fieldProbeCacheEnabled != 0u && level < 4u &&
+      all(bitcast<vec3u>(origin) == fieldProbeCachePrimary[level]) &&
+      all(bitcast<vec3u>(endpoint) == fieldProbeCacheAnchor[level])) {
+    let value = fieldProbeCacheAnchorValue[level];
+    if (value != 2.0) { return value; }
+  }
+#endif
+  return fieldSegmentVisibility(origin,endpoint);
+}
+#endif
+
+// Called uniformly by all64 lanes of generateProbeRays. Eager queries are
+// read-only; only the original callsite may consume their ternary result.
+// Full endpoint bits fence duplicated endpoint construction; mismatch takes
+// the original query instead of reusing a rounded or different segment.
+fn prepareIrradianceFieldProbeVisibility(position:vec3f, normal:vec3f, viewDir:vec3f,
+    enabled:bool, lane:u32) {
+#ifdef IRRADIANCE_FIELD_VISIBILITY
+#ifdef IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE
+  if (lane == 0u) { fieldProbeCacheEnabled = select(0u,1u,enabled); }
+  let level = lane / 16u;
+  let normalClearance = (lane & 8u) != 0u;
+  let corner = lane & 7u;
+  fieldProbeCacheValue[lane] = vec2f(2.0);
+  if (corner == 0u && !normalClearance) { fieldProbeCacheAnchorValue[level] = 2.0; }
+  if (enabled && irradianceField.levels.z == 0u && level < max(irradianceField.levels.x,1u)) {
+    let scale = irradianceFieldLevelScale(level);
+    let spacing = irradianceField.originSpacing.w * scale;
+    let lo = irradianceField.validMin[level].xyz;
+    let hi = irradianceField.validMax[level].xyz - vec3i(1);
+    let biased = position + (normal * irradianceField.bias.x + viewDir * irradianceField.bias.y) * scale;
+    let lightingPosition = position + normal * irradianceField.bias.x * scale * select(0.0,1.0,normalClearance);
+    if (corner == 0u) {
+      fieldProbeCacheProof[level*2u+select(0u,1u,normalClearance)] = bitcast<vec3u>(lightingPosition);
+      if (!normalClearance) {
+        let anchor = position + normal * irradianceField.bias.x * scale;
+        fieldProbeCachePrimary[level] = bitcast<vec3u>(biased);
+        fieldProbeCacheAnchor[level] = bitcast<vec3u>(anchor);
+        fieldProbeCacheAnchorValue[level] = fieldSegmentVisibility(biased,anchor);
+      }
+    }
+    if (all(hi >= lo)) {
+      let q = clamp((lightingPosition - irradianceField.originSpacing.xyz) / spacing, vec3f(lo), vec3f(hi));
+      let base = vec3i(min(floor(q), vec3f(max(hi - vec3i(1), lo))));
+      let f = q - vec3f(base);
+      let offset = vec3u(corner & 1u, (corner >> 1u) & 1u, corner >> 2u);
+      let cell = base + vec3i(offset);
+      if (all(cell <= hi)) {
+        let probe = irradianceFieldProbeIndex(level,cell);
+        let state = irradianceFieldMeta[probe];
+        let endpoint = irradianceField.originSpacing.xyz + vec3f(cell) * spacing
+          + irradianceFieldProbeOffset(state, spacing);
+        fieldProbeCacheEndpoint[lane] = bitcast<vec3u>(endpoint);
+        let axis = select(vec3f(1.0) - f, f, offset > vec3u(0u));
+        let trilinear = axis.x * axis.y * axis.z;
+        if (!(dot(endpoint-position,normal) <= 0.0) && trilinear > 0.0 && state.y == IRRADIANCE_FIELD_PROBE_ACTIVE) {
+          let primary = fieldSegmentVisibility(biased,endpoint);
+          var secondary = 2.0;
+          if (normalClearance) {
+            secondary = primary;
+            if (any(bitcast<vec3u>(lightingPosition) != bitcast<vec3u>(biased))) {
+              secondary = fieldSegmentVisibility(lightingPosition,endpoint);
+            }
+          }
+          fieldProbeCacheValue[lane] = vec2f(primary,secondary);
+        }
+      }
+    }
+  }
+  workgroupBarrier();
+#endif
+#endif
 }
 
 // Mean radiance over a cone around `direction` from one probe. Narrow cones read
@@ -213,6 +446,14 @@ fn irradianceFieldCone(probe: u32, direction: vec3f, coneAngle: f32) -> vec4f {
     return irradianceFieldConeBlend(irradianceFieldLevel(probe, IRRADIANCE_FIELD_RADIANCE_MIP, 4u, direction),
       irradianceFieldLevel(probe, 0u, 8u, direction), (coneAngle - cones.y) / (cones.z - cones.y));
   }
+#ifdef IRRADIANCE_FIELD_RADIANCE_ATLAS
+  if (coneAngle <= cones.x) {
+    let atlas = irradianceFieldAtlasSample(probe, direction);
+    // Hardware rounds address weights. Retain the buffer's exact support
+    // test and normalization whenever any appreciable weight is unavailable.
+    if (atlas.w == 1.0) { return atlas; }
+  }
+#endif
   let fine = irradianceFieldLevel(probe, IRRADIANCE_FIELD_RADIANCE, 8u, direction);
   if (coneAngle <= cones.x) { return fine; }
   return irradianceFieldConeBlend(fine, irradianceFieldLevel(probe, IRRADIANCE_FIELD_RADIANCE_MIP, 4u, direction),
@@ -227,17 +468,23 @@ fn irradianceFieldCone(probe: u32, direction: vec3f, coneAngle: f32) -> vec4f {
 // contribute. Rejected fine directions fall back to the retained coarser level.
 const IRRADIANCE_FIELD_CORNERS = 16u;
 struct IrradianceFieldCorners { values: array<vec3f, 16>, weights: array<f32, 16>, valid: bool, incomplete: bool }
+struct IrradianceFieldSupport { unavailable: bool, pendingRelocation: bool }
 
 // Unnormalized corner weights of one level into slots [first, first + 8).
 fn irradianceFieldLevelCorners(corners: ptr<function, IrradianceFieldCorners>, first: u32,
-    level: u32, position: vec3f, normal: vec3f, viewDir: vec3f, direction: vec3f, coneAngle: f32) -> f32 {
+    level: u32, position: vec3f, normal: vec3f, viewDir: vec3f, direction: vec3f, coneAngle: f32,
+    normalClearance: bool, clearanceProof: bool, support: ptr<function,IrradianceFieldSupport>) -> f32 {
   let scale = irradianceFieldLevelScale(level);
   let spacing = irradianceField.originSpacing.w * scale;
   let lo = irradianceField.validMin[level].xyz;
   let hi = irradianceField.validMax[level].xyz - vec3i(1);
   if (any(hi < lo)) { return 0.0; }
   let biased = position + (normal * irradianceField.bias.x + viewDir * irradianceField.bias.y) * scale;
-  let q = clamp((biased - irradianceField.originSpacing.xyz) / spacing, vec3f(lo), vec3f(hi));
+  // Start at the actual receiver. A normal-clearance stencil is only the
+  // geometric fallback for an empty front-side neighbourhood, never a camera
+  // translation of the lighting query.
+  let lightingPosition = position + normal * irradianceField.bias.x * scale * select(0.0,1.0,normalClearance);
+  let q = clamp((lightingPosition - irradianceField.originSpacing.xyz) / spacing, vec3f(lo), vec3f(hi));
   let base = vec3i(min(floor(q), vec3f(max(hi - vec3i(1), lo))));
   let f = q - vec3f(base);
   var total = 0.0;
@@ -248,21 +495,29 @@ fn irradianceFieldLevelCorners(corners: ptr<function, IrradianceFieldCorners>, f
     if (any(cell > hi)) { continue; }
     let probe = irradianceFieldProbeIndex(level, cell);
     let state = irradianceFieldMeta[probe];
-    // Untraced, inside and just-relocated probes contribute nothing.
-    if (state.y != IRRADIANCE_FIELD_PROBE_ACTIVE) { continue; }
     // Trilinear weights stay on the lattice; visibility and the side test use
     // the relocated position the probe's rays and moments were traced from.
     let probePosition = irradianceField.originSpacing.xyz + vec3f(cell) * spacing
-      + irradianceFieldProbeOffset(state);
+      + irradianceFieldProbeOffset(state, spacing);
     let toProbe = probePosition - position;
     if (dot(toProbe, normal) <= 0.0) { continue; }
     let axis = select(vec3f(1.0) - f, f, offset > vec3u(0u));
     let trilinear = axis.x * axis.y * axis.z;
     if (!(trilinear > 0.0)) { continue; }
+    // Pending relocation never publishes its old-position lighting. Distinguish
+    // it from unavailable data so a separately proven stencil can be qualified.
+    if (state.y != IRRADIANCE_FIELD_PROBE_ACTIVE) {
+      if (state.y == IRRADIANCE_FIELD_PROBE_RELOCATED && state.x == 0u) {
+        (*support).pendingRelocation = true;
+      } else if (state.y != IRRADIANCE_FIELD_PROBE_INSIDE) {
+        (*support).unavailable = true;
+      }
+      continue;
+    }
     // Classification proves that rays reached this probe, not that the queried
     // radiance direction has lit support. Keep physical zero; reject absence.
     let value = irradianceFieldCone(probe, direction, coneAngle);
-    if (!(value.w > 0.0)) { continue; }
+    if (!(value.w > 0.0)) { (*support).unavailable = true; continue; }
     let fromProbe = biased - probePosition;
     let distance = length(fromProbe);
     let momentDirection = select(normal, fromProbe / distance, distance > 1e-6);
@@ -278,15 +533,65 @@ fn irradianceFieldLevelCorners(corners: ptr<function, IrradianceFieldCorners>, f
     let weight = trilinear * visibility;
     if (!(weight > 0.0)) { continue; }
 #ifdef IRRADIANCE_FIELD_VISIBILITY
-    let segment = fieldSegmentVisibility(biased, probePosition);
-    if (segment < 0.0) { (*corners).incomplete = true; return 0.0; }
-    if (segment == 0.0) { continue; }
+    var visible = true;
+    // The optional anchor proof follows the primary segment at one callsite.
+    // Both stages have the same immutable endpoint. Reuse only bit-identical
+    // origins within this corner; each distinct segment retains its own budget.
+    var segment = 0.0;
+    for (var stage = 0u; stage < 2u; stage++) {
+      var segmentOrigin = biased;
+      if (stage != 0u) { segmentOrigin = lightingPosition; }
+      if (stage == 0u || any(bitcast<vec3u>(segmentOrigin) != bitcast<vec3u>(biased))) {
+        segment = irradianceFieldCachedCornerSegment(level,corner,normalClearance,stage != 0u,segmentOrigin,probePosition);
+      }
+      if (segment < 0.0) { (*corners).incomplete = true; return 0.0; }
+      if (segment == 0.0) { visible = false; break; }
+      if (!clearanceProof) { break; }
+    }
+    if (!visible) { continue; }
 #endif
     (*corners).values[first + corner] = value.xyz;
     (*corners).weights[first + corner] = weight;
     total += weight;
   }
   return total;
+}
+
+fn irradianceFieldSupportedCorners(corners: ptr<function, IrradianceFieldCorners>, first: u32,
+    level: u32, position: vec3f, normal: vec3f, viewDir: vec3f, direction: vec3f, coneAngle: f32) -> f32 {
+  var support: IrradianceFieldSupport;
+  var normalClearance = false;
+  var clearanceProof = false;
+  // Initial and optional fallback share one static LevelCorners callsite.
+  for (var stage = 0u; stage < 2u; stage++) {
+    let total = irradianceFieldLevelCorners(corners, first, level, position, normal, viewDir, direction, coneAngle, normalClearance, clearanceProof, &support);
+    if (stage != 0u) {
+      // Every positive geometric candidate must be known. Ordinary normal
+      // clearance retains its original return without the alternative gate.
+      if (clearanceProof && (support.unavailable || support.pendingRelocation)) { return 0.0; }
+      return total;
+    }
+    if (total > 0.0 || (*corners).incomplete || support.unavailable) { return total; }
+    if (support.pendingRelocation) {
+#ifdef IRRADIANCE_FIELD_VISIBILITY
+      let scale = irradianceFieldLevelScale(level);
+      let anchor = position + normal * irradianceField.bias.x * scale;
+      let biased = position + (normal * irradianceField.bias.x + viewDir * irradianceField.bias.y) * scale;
+      let segment = irradianceFieldCachedAnchorSegment(level,biased,anchor);
+      if (segment < 0.0) { (*corners).incomplete = true; return 0.0; }
+      if (segment == 0.0) { return 0.0; }
+      // Match the separately zero-initialized alternative in the original.
+      support = IrradianceFieldSupport(false, false);
+      clearanceProof = true;
+#else
+      return 0.0;
+#endif
+    }
+    // Known empty support tries normal clearance; pending support reaches
+    // this stage only after the unchanged biased-to-anchor proof above.
+    normalClearance = true;
+  }
+  return 0.0;
 }
 
 fn irradianceFieldScale(corners: ptr<function, IrradianceFieldCorners>, first: u32, scale: f32) {
@@ -315,11 +620,18 @@ fn irradianceFieldCorners(position: vec3f, normal: vec3f, viewDir: vec3f, direct
     alpha = select(1.0, saturate(t / irradianceField.bias.w), irradianceField.bias.w > 0.0);
     break;
   }
-  let fine = irradianceFieldLevelCorners(&corners, 0u, level, position, normal, viewDir, direction, coneAngle);
+  var fine = 0.0;
   var coarse = 0.0;
-  // A fully invalid finer neighbourhood also falls back to the coarser level.
-  if (level + 1u < count && (alpha < 1.0 || !(fine > 0.0))) {
-    coarse = irradianceFieldLevelCorners(&corners, 8u, level + 1u, position, normal, viewDir, direction, coneAngle);
+  // Fine and conditionally coarse support retain their order and slot ranges.
+  for (var stage = 0u; stage < 2u; stage++) {
+    let weight = irradianceFieldSupportedCorners(&corners, stage * 8u, level + stage, position, normal, viewDir, direction, coneAngle);
+    if (stage == 0u) {
+      fine = weight;
+      // Incomplete support does not bypass the original coarse-level call.
+      if (!(level + 1u < count && (alpha < 1.0 || !(fine > 0.0)))) { break; }
+    } else {
+      coarse = weight;
+    }
   }
   let wFine = select(0.0, alpha, fine > 0.0);
   let wCoarse = select(0.0, select(1.0 - alpha, 1.0, !(fine > 0.0)), coarse > 0.0);
@@ -349,11 +661,17 @@ fn sampleRadianceCacheAt(position: vec3f, normal: vec3f, viewDir: vec3f, directi
   if (corners.incomplete) { return vec4f(0.0, 0.0, 0.0, -1.0); }
   if (!corners.valid) { return vec4f(0.0); }
   var sum = vec3f(0.0);
+  var weightSum = 0.0;
   for (var corner = 0u; corner < IRRADIANCE_FIELD_CORNERS; corner++) {
     let weight = corners.weights[corner];
-    if (weight > 0.0) { sum += corners.values[corner] * weight; }
+    if (weight > 0.0) { sum += corners.values[corner] * weight; weightSum += weight; }
   }
-  return vec4f(sum, 1.0);
+  // Normalize the actual f32 sum too: normalizing each level's weights does
+  // not make their rounded total exactly one. Constant fields retain DC gain.
+  // The producer retains signed angular reconstruction samples so the cosine
+  // convolution stays linear. Clamp physical radiance only after every angular,
+  // spatial and clipmap blend, retaining supported black and all support flags.
+  return vec4f(max(sum / weightSum, vec3f(0.0)), 1.0);
 }
 
 // Diffuse is the wide-cone cache query, sharing support and normalization.

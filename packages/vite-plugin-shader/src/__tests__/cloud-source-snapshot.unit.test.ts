@@ -17,6 +17,8 @@ it('uses the supplied source reader for cloud density and renderer imports', asy
   expect(captured.imports['forgeax_cloud::medium']).toContain('// captured cloud source');
   const renderer = await loadCloudRendererModules(readText);
   expect(renderer.imports['forgeax_view::common']).toContain('// captured cloud source');
-  expect([...paths].some((path) => path.endsWith('/cloud/medium.wgsl'))).toBe(true);
+  expect([...paths].some((path) => path.replaceAll('\\', '/').endsWith('/cloud/medium.wgsl'))).toBe(
+    true,
+  );
   expect(renderer.sourcePaths).toContain(captured.sourcePaths[0]);
 });

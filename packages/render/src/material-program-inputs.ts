@@ -7,6 +7,7 @@ import type {
 } from '@forgeax/engine-types';
 
 export interface MaterialProgramInputs {
+  readonly gbuffer?: MaterialProgramAbi['gbuffer'];
   readonly forwardFog?: 'height-vertex/1';
   readonly entryPoints: readonly ShaderEntryPointReads[];
   readonly systemInputs?: MaterialProgramSystemInputs;
@@ -24,8 +25,10 @@ export function materialProgramInputs(artifact: {
   if (entryPoints === undefined) return undefined;
   const systemInputs = artifact.receipt?.systemInputs;
   const forwardFog = artifact.program.forwardFog ?? artifact.receipt?.forwardFog;
+  const gbuffer = artifact.receipt?.gbuffer;
   return Object.freeze({
     entryPoints,
+    ...(gbuffer === undefined ? {} : { gbuffer }),
     ...(systemInputs === undefined ? {} : { systemInputs }),
     ...(forwardFog === undefined ? {} : { forwardFog }),
   });

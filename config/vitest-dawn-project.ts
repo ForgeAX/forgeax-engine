@@ -14,6 +14,7 @@ const R32FLOAT_CAPABILITY_GENERATION_TEST =
 const RUNNING_DIRECT_LIGHT_PARTITION = process.env.FORGEAX_DAWN_PARTITION !== undefined;
 const RUNNING_DAWN_COMPACT = process.env.FORGEAX_DAWN_COMPACT === '1';
 const RUNNING_DAWN_ISOLATED = process.env.FORGEAX_DAWN_ISOLATED === '1';
+const RUNNING_DAWN_SERIAL_ORDINARY = process.env.FORGEAX_DAWN_SERIAL_ORDINARY !== undefined;
 
 /** The sole Dawn project policy for root and native-only entrypoints. */
 export const dawnProject = defineProject({
@@ -33,7 +34,10 @@ export const dawnProject = defineProject({
     // Never inherit host-wide GPU fanout. Only explicitly admitted ordinary
     // forks can run together; native capture/compact/partition owners stay serial.
     maxWorkers:
-      RUNNING_DIRECT_LIGHT_PARTITION || RUNNING_DAWN_COMPACT || RUNNING_DAWN_ISOLATED
+      RUNNING_DIRECT_LIGHT_PARTITION ||
+      RUNNING_DAWN_COMPACT ||
+      RUNNING_DAWN_ISOLATED ||
+      RUNNING_DAWN_SERIAL_ORDINARY
         ? 1
         : dawnOrdinaryWorkers(),
     include: [

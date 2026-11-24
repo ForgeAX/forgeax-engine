@@ -2,6 +2,7 @@ import { freezeJson } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { SceneDataUnavailableError } from '../errors/render';
 import type { RenderFeatureWorkPlan } from '../features/plan';
+import { materialProgramInputs } from '../material-program-inputs';
 import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import {
   defaultMaterialSnapshot,
@@ -23,6 +24,64 @@ import {
   standardSceneDataContributorForDispatch,
   standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
+
+it.each([
+  ['forgeax::standard-terrain', 'standard-gbuffer/2', 'fs_gbuffer', true],
+  ['forgeax::standard-terrain-detail', 'standard-gbuffer/2', 'fs_gbuffer', true],
+  ['forgeax::standard-terrain-ids', 'standard-gbuffer/2', 'fs_gbuffer', true],
+  ['custom::terrain', 'standard-gbuffer/2', 'fs_gbuffer', true],
+  ['forgeax::standard-terrain', undefined, 'fs_gbuffer', false],
+  ['forgeax::standard-terrain', 'standard-gbuffer/2', 'fs_main', false],
+] as const)('qualifies Deferred AO from the selected writer receipt: %s/%s/%s', (module, gbuffer, entry, compatible) => {
+  const inputs = materialProgramInputs({
+    program: { entryPoints: [{ name: entry, stage: 'fragment', bindings: [] }] },
+    receipt: { gbuffer } as Parameters<typeof materialProgramInputs>[0]['receipt'],
+  });
+  if (inputs === undefined) throw new Error('Missing Terrain program inputs');
+  const material = new MaterialResource({
+    ...defaultMaterialSnapshot(52),
+    passes: [
+      {
+        name: 'deferred',
+        program: { module, fragmentEntry: 'fs_gbuffer' },
+        renderState: { tags: { LightMode: 'Deferred' } },
+      },
+    ],
+    materialProgramKeys: { deferred: 'cooked:terrain-deferred' },
+    materialProgramInputs: { deferred: inputs },
+    materialContext: { geometry: 'terrain', vertexColor: false },
+  });
+  const contributor = standardSceneDataContributorForDispatch(
+    { material, materials: [material], entityKey: 9 } as unknown as RenderableSnapshot,
+    {
+      materialHandle: 52,
+      materialShaderId: 'cooked:terrain-deferred',
+      tags: { LightMode: 'Deferred' },
+      passIndex: 0,
+    },
+    'deferred',
+  );
+  expect(contributor).toBeDefined();
+  const input = {
+    viewIdentity: 'terrain-view',
+    generation: 1,
+    deviceGeneration: 0,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered' as const,
+    renderPath: 'deferred' as const,
+    contributors: contributor === undefined ? [] : [contributor],
+  };
+  const admission = createStandardSceneSurfaceAdmission(input);
+  expect(admission).toMatchObject({
+    status: 'unavailable',
+    deferredAoCompatible: compatible,
+    deferredGBufferEmpty: false,
+  });
+  expect(
+    standardAoSceneDataUnavailable({ ...input, admission, fallbackLane: 'clustered' }),
+  ).toEqual(compatible ? undefined : expect.any(SceneDataUnavailableError));
+});
 
 it('serializes each complete contributor key once instead of during every sort comparison', () => {
   const contributors = Array.from({ length: 64 }, (_, index) => ({

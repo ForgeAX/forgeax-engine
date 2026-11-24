@@ -11,18 +11,20 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
-
 it('rebuilds and consumes the Renderer depth pyramid across captured screen-probe frames', {
   timeout: 600_000,
+  // The complete Renderer exceeds the software adapter limit before the first capture.
+  skip: process.env.FORGEAX_CI_CORE_VALIDATION === '1',
 }, async () => {
+  const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
   const recorder = attachRecorder(webgpu).unwrap();
   const h = await createIrradianceFieldHarness({
     rhi: recorder.backend.rhi,
     manifest,
     instrumentation: {
-      resolveSurfaceDevice: (device) =>
-        ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
+      resolveSurfaceDevice: (
+        device: Parameters<typeof recorder.backend.unwrapDeviceForSurface>[0],
+      ) => ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
     },
   });
   const directory = 'artifacts/screen-probe-barriers/dawn';
@@ -57,6 +59,23 @@ it('rebuilds and consumes the Renderer depth pyramid across captured screen-prob
       const encoded = (await pending).unwrap();
       writeFileSync(`${directory}/frame-${frame}.rhitape`, encoded.bytes);
       const model = buildFrameModel(decodeTape(encoded.bytes).unwrap());
+      const history = model.works.filter((work) =>
+        work.pipeline?.shaders.some((shader) => shader.entryPoint === 'copyDiffuseSceneHistory'),
+      );
+      const composite = model.works.filter((work) =>
+        work.pipeline?.shaders.some(
+          (shader) => shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
+        ),
+      );
+      // The default fixture explicitly enables radiosity. Its positive GPU
+      // control must retain post-GI feedback, rather than dimming every mode.
+      expect(history).toHaveLength(1);
+      expect(composite).toHaveLength(1);
+      const historyWork = history[0];
+      const compositeWork = composite[0];
+      if (historyWork === undefined || compositeWork === undefined)
+        throw new Error('The actual frame must contain both history and diffuse composite');
+      expect(historyWork.workIndex).toBeGreaterThan(compositeWork.workIndex);
       images.push({ center: image.center, digest: encoded.digest, works: model.works.length });
       expect(image.center).toBeGreaterThan(0.05);
     }

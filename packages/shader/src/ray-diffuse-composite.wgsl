@@ -1,4 +1,5 @@
 #define_import_path forgeax_ray::diffuse_composite
+#import forgeax_ray::screen_reconstruction::{spReconstructionConfidence}
 #import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle}
 #import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, standardGBufferValid, decodeStandardReflectance, decodeStandardGBufferReflectance, decodeCompactBaseColor, usesDefaultGBuffer, compactGBufferSubsurface}
 #import forgeax_pbr::ibl_shared::{standardDiffuseWeight}
@@ -96,6 +97,9 @@ fn reconstructedIrradiance(in: FullscreenOutput) -> vec4f {
   if (arrayLength(&accumulation) != extent.x * extent.y) { return vec4f(0); }
   let pixel = vec2u(in.position.xy);
   let value = bitcast<vec4f>(accumulation[pixel.y * extent.x + pixel.x]);
+  // Only the explicit finite reconstruction tag is a confidence estimate.
+  // Legacy missing/negative statuses are not confidence and remain rejected.
+  if(spReconstructionConfidence(value)>0.0){return vec4f(value.xyz,1.0);}
   if (value.w != 1.0) { return vec4f(0); }
   return value;
 }

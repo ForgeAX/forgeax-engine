@@ -130,6 +130,11 @@ function frame(
 }
 
 describe('Water fluid source admission and submission', () => {
+  it('admits both explicit kernel versions and rejects unknown versions', () => {
+    for (const configurationVersion of [1, 2])
+      expect(validWaterFluidConfiguration({ ...recipe(), configurationVersion })).toBe(true);
+    expect(validWaterFluidConfiguration({ ...recipe(), configurationVersion: 3 })).toBe(false);
+  });
   it('rejects rectangular grids that cannot preserve the scalar source sampling contract', () => {
     const configuration = recipe();
     expect(validWaterFluidConfiguration({ ...configuration, resolution: [16, 8] })).toBe(false);

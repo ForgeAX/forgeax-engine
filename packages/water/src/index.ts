@@ -13,6 +13,7 @@ export * from './default-water-brush-curve.js';
 export * from './fluid-simulation.js';
 export * from './foam-input.js';
 export * from './material-family.js';
+export { waterInfoZoneTransformSupported } from './mesh-transforms.js';
 export * from './ocean-patch.js';
 export * from './pack-cook.js';
 export * from './particle-query.js';

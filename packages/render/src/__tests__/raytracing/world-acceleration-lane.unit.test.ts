@@ -49,6 +49,26 @@ const instance = (instanceId: number, geometryId: number): SdfMeshInstance => ({
 });
 
 describe('world traversal lane selection', () => {
+  it('forces Global SDF without pretending the device has lost Ray Query support', () => {
+    const geometries = [triangle(0)];
+    expect(selectWorldTraversal(SUPPORTED, 3, geometries, false)).toEqual({
+      traversal: 'global-sdf',
+      fallback: 'hardware-ray-query-disabled',
+    });
+    expect(SUPPORTED.supported).toBe(true);
+    expect(selectWorldTraversal(SUPPORTED, 3, geometries, true)).toEqual({
+      traversal: 'ray-query',
+    });
+    expect(
+      selectWorldTraversal(
+        { supported: false, reason: 'backend-has-no-ray-query' },
+        3,
+        geometries,
+        true,
+      ),
+    ).toEqual({ traversal: 'global-sdf', fallback: 'backend-has-no-ray-query' });
+  });
+
   it('selects ray-query only when supported and the scene fits caps.rayQuery', () => {
     const geometries = [triangle(0)];
     expect(selectWorldTraversal(SUPPORTED, 3, geometries)).toEqual({ traversal: 'ray-query' });
@@ -125,8 +145,11 @@ describe('prepared world acceleration', () => {
       bytesBuilt: built * (48 + 64),
       // Row 0 (pending count) plus one 16 B row per traced instance.
       rowsWritten: built + 1,
-      // BLAS inputs and one 16 B face normal per built mesh, plus the written rows.
-      bytesUploaded: built * (48 + 16) + (built + 1) * 16,
+      // BLAS inputs, one 16 B face normal and one 64 B motion record per instance, plus the written rows.
+      bytesUploaded: built * (48 + 16 + 64) + (built + 1) * 16,
+      coverageBytesUploaded: 0,
+      coverageWords: 0,
+      traversalTableBytes: (count + 1) * 16 + Math.ceil(count / 4) * 16 + count * 64,
       recordsPatched: built,
       blasReleased: 0,
     });
@@ -516,7 +539,7 @@ describe('incremental world acceleration', () => {
       blasBuilt: 0,
       tlasBuilt: 1,
       rowsWritten: 8,
-      bytesUploaded: 8 * 16,
+      bytesUploaded: 8 * (16 + 2 * 64),
       recordsPatched: 8,
       blasReleased: 0,
     });
@@ -525,7 +548,7 @@ describe('incremental world acceleration', () => {
     expect(small.removed.rowsWritten).toBeLessThanOrEqual(8);
     // Adds of one new mesh build exactly one BLAS: 36 + 12 B inputs + 16 B normal.
     expect(small.added).toMatchObject({ blasBuilt: 1, recordsPatched: 8, rowsWritten: 8 });
-    expect(small.added.bytesUploaded).toBe(36 + 12 + 16 + 8 * 16);
+    expect(small.added.bytesUploaded).toBe(36 + 12 + 16 + 8 * (16 + 2 * 64));
     expect(small.released).toMatchObject({ blasBuilt: 0, blasReleased: 1 });
     expect(large.moved).toEqual(small.moved);
     expect(large.removed).toEqual(small.removed);

@@ -34,7 +34,7 @@ it('matches standalone Deferred lighting across resident and overflow PMREM clas
   let env = array<u32, 8>(0u, 0u, 1u, 3u, 1u, 1u, 5u, 5u)[x];
   let n = normalize(vec3f(0.2, 0.5, 0.84));
   return encodeStandardGBuffer(n, n, 0.34, vec3f(0.6, 0.65, 0.7), 0.25,
-    vec4f(0.08, 0.08, 0.08, 1.0), 0.8, vec3f(0.01), 1.0, env, 0u, false, 1u, select(vec4f(0), vec4f(12, 6, 3, 1), x == 6u), false);
+    vec4f(0.08, 0.08, 0.08, 1.0), 0.8, vec3f(0.01), 1.0, env, 0u, false, 1u, select(vec4f(0), vec4f(12, 6, 3, 1), x == 6u), false, false);
 }`,
       { id: 'deferred_array_fixture', imports: deferredShaderImports },
     );

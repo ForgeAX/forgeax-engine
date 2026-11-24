@@ -84,18 +84,20 @@ function createDevice(queue: RecordingNullQueue): RhiNullDevice {
 it.each([
   false,
   true,
-])('reads only the scene inputs Water SSR uses (color history: %s)', (history) => {
+])('binds opaque surface validation separately from the Water receiver (color history: %s)', (history) => {
   const graph = new RenderGraphBuilder<Frame>();
   const passes = vi.spyOn(graph, 'addComputePass');
   const depth = input(graph, 'opaque-depth', 'r32float');
   const motion = input(graph, 'opaque-motion', 'rgba16float');
+  const normal = input(graph, 'opaque-normal', 'r32uint');
+  const fallback = input(graph, 'opaque-coverage', 'rgba16float');
   const scene = input(graph, 'scene-color', 'rgba16float');
   const previousColor = input(graph, 'previous-color', 'rgba16float');
   const pyramid = addDepthPyramidPasses(graph, {
     depth,
     width: WIDTH,
     height: HEIGHT,
-    reduction: 'furthest',
+    reduction: 'closest',
   }).unwrap();
   const origin = {
     depth: input(graph, 'water-depth', 'r32float'),
@@ -110,7 +112,10 @@ it.each([
     width: WIDTH,
     height: HEIGHT,
     scene,
-    ...(history ? { depth, currentTemporal: motion } : {}),
+    depth,
+    normal,
+    fallback,
+    currentTemporal: motion,
     origin,
     depthPyramid: pyramid.pyramid,
   }).unwrap();
@@ -118,7 +123,7 @@ it.each([
     .find(([name]) => name === 'water-ssr-trace')?.[1]
     .accesses.filter(({ usage }) => usage === 'sampled-read')
     .map(({ resource }) => resource);
-  expect(sampled).toHaveLength(history ? 8 : 5);
+  expect(sampled).toHaveLength(history ? 10 : 9);
   expect(sampled).toEqual(
     expect.arrayContaining([
       scene,
@@ -126,7 +131,11 @@ it.each([
       origin.depth,
       origin.normal,
       origin.coverage,
-      ...(history ? [depth, motion, previousColor] : []),
+      depth,
+      normal,
+      fallback,
+      motion,
+      ...(history ? [previousColor] : []),
     ]),
   );
 });

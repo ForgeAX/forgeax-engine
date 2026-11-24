@@ -156,3 +156,29 @@ it('rejects a stale completion after a different camera or extent submits', asyn
     cleanup();
   }
 });
+
+it('restarts the exposure history once when entering UE eye adaptation', async () => {
+  const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+  const resources = createAutoExposureGpuResources(device, 7).unwrap();
+  const writes = vi.spyOn(device.queue, 'writeBuffer');
+  const ue = { ...parameters, adaptation: 'ue-eye-adaptation' } as const;
+  const stage = (input: typeof parameters) => {
+    writeAutoExposureParameters(resources, input).unwrap();
+    return writes.mock.lastCall?.[2] as Float32Array;
+  };
+  try {
+    const initial = stage(parameters);
+    submitAutoExposureGpuFrame(resources, () => {});
+    const cut = stage(ue);
+    expect(cut[7]).toBeGreaterThan(initial[7] ?? 0);
+    expect(cut[8]).toBe(1);
+    abortAutoExposureGpuFrame(resources);
+    expect(stage(parameters)[7]).toBe(initial[7]);
+    expect(stage(ue)[7]).toBe(cut[7]);
+    submitAutoExposureGpuFrame(resources, () => {});
+    expect(stage(ue)[7]).toBe(cut[7]);
+    expect(stage({ ...ue, historyIdentity: 'another-camera' })[7]).toBeGreaterThan(cut[7] ?? 0);
+  } finally {
+    retireAutoExposureGpuResources(resources);
+  }
+});

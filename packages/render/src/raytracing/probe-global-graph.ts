@@ -1,6 +1,6 @@
 import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { GlobalSdfCompositionInputs } from './global-sdf';
+import { GLOBAL_SDF_SETTINGS_BYTES, type GlobalSdfCompositionInputs } from './global-sdf';
 import { addProbeCardPasses, probeCardGraphShape } from './probe-card-graph';
 import { PROBE_ORIGIN_SUPPORT_STRIDE } from './probe-origin-support';
 import type { ProbePlacementGraphBuffers } from './probe-placement-graph';
@@ -165,7 +165,10 @@ export function addProbeGlobalPasses(
               buffer: resources.buffer(region.voxels).unwrap(),
               size: voxelBytes,
             },
-            grid: { buffer: resources.buffer(region.settings).unwrap(), size: 48 },
+            grid: {
+              buffer: resources.buffer(region.settings).unwrap(),
+              size: GLOBAL_SDF_SETTINGS_BYTES,
+            },
             rays: { buffer: resources.buffer(rays).unwrap(), size: rayCount * 48 },
             hits: { buffer: resources.buffer(hits).unwrap(), size: rayCount * 64 },
             settings: { buffer: resources.buffer(querySettings).unwrap(), size: 16 },
@@ -200,7 +203,10 @@ export function addProbeGlobalPasses(
               buffer: resources.buffer(region.voxels).unwrap(),
               size: voxelBytes,
             },
-            grid: { buffer: resources.buffer(region.settings).unwrap(), size: 48 },
+            grid: {
+              buffer: resources.buffer(region.settings).unwrap(),
+              size: GLOBAL_SDF_SETTINGS_BYTES,
+            },
             diagnostics: {
               buffer: resources.buffer(diagnostics).unwrap(),
               size: count * PROBE_ORIGIN_SUPPORT_STRIDE,

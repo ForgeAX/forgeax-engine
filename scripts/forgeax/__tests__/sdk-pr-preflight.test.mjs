@@ -1343,3 +1343,29 @@ test('SDK seed runs source-export regressions after its one prepared workspace i
     assert.ok(steps[verify].run.includes(`${testFile}.test.mjs`), testFile);
   assert.ok(steps[verify].run.includes('prepare-source-checkout.test.mjs'));
 });
+
+test('SDK consumer failure preserves validation logs and reports cleanup stages', () => {
+  const workflow = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
+  const job = workflow.jobs.consumers;
+  const evidence = job.steps.find((step) => step.name === 'Preserve SDK consumer evidence');
+  const expression = evidence.if.replace('steps.ci-repair.outputs.reused', 'reused');
+  for (const [reused, failed, cancelled, expected] of [
+    ['false', false, true, false],
+    ['false', true, false, true],
+    ['false', false, false, false],
+    ['true', false, true, false],
+  ])
+    assert.equal(
+      runInNewContext(expression, { reused, failure: () => failed, cancelled: () => cancelled }),
+      expected,
+    );
+  assert.equal(evidence.with['retention-days'], 3);
+  const command = job.steps.find((step) =>
+    step.name?.startsWith('Install Engine and SDK through the exact PR consumer route'),
+  );
+  assert.match(command.run, /> artifacts\/sdk\/npm-consumer\.log/);
+  assert.equal(job['timeout-minutes'], "${{ matrix.group == 'source' && 40 || 30 }}");
+  const source = readFileSync('scripts/forgeax/check-sdk-npm-consumer.mjs', 'utf8');
+  assert.match(source, /sdkStage\(\s*'cleanup npm consumer files'/);
+  assert.match(source, /sdkStage\(\s*'close npm consumer registry'/);
+});

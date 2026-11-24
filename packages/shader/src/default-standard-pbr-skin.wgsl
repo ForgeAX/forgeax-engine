@@ -30,7 +30,7 @@
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
-#import forgeax_scene_temporal::{encodeSceneVelocity, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_ssr::forward::{forwardSsrOpaque}
 #import forgeax_view::common::{spotModifierSampler, iesProfileTexture, cookieTexture, cookieMatrices}
@@ -1421,6 +1421,10 @@ fn skinGBuffer(in : VsOut, frontFacing : bool, compact : bool) -> StandardGBuffe
   subsurface = vec4<f32>(material.subsurfaceRadius, material.subsurfaceWeight);
 #endif
   let specular = evaluateStandardSpecular(physicalMaterialUvs(in), clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0), standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
+  var hasDiffuseTransmission = false;
+#ifdef DIFFUSE_TRANSMISSION_AVAILABLE
+  hasDiffuseTransmission = finiteScalar(material.diffuseTransmission, 0.0) > 0.0;
+#endif
   let roughness = specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread);
   let metallic = clamp(surface.metallic, 0.0, 1.0);
   let opacity = materialOutputAlpha(surface.opacity, standardAlphaMode());
@@ -1434,14 +1438,14 @@ fn skinGBuffer(in : VsOut, frontFacing : bool, compact : bool) -> StandardGBuffe
       metallic, specular.x, surface.occlusion, surface.emissive, opacity,
       vec4<u32>(in.surfaceData.y, encodeStandardReceiverContext(
         u32(skylight.diffuseScale.w), probeRow, standardReceivesShadows(in)),
-        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u, 0u), customData, standardGBufferObjectFlags(in));
+        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u, 0u), customData, standardGBufferObjectFlags(in), hasDiffuseTransmission);
     return output;
   }
   output.full = encodeStandardGBuffer(surface.normalWS, receiverNormal, roughness,
       surface.baseColor, metallic, specular,
       surface.occlusion, surface.emissive, opacity, u32(skylight.diffuseScale.w), probeRow,
       standardReceivesShadows(in), in.surfaceData.y, subsurface,
-      useDirectDfgLut);
+      useDirectDfgLut, hasDiffuseTransmission);
   // The vertex lane retains the canonical validity/reactivity encoding;
   // coverage and opacity come from the same evaluated surface as GBuffer.
   let temporal = unpackSceneTemporalV1(vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(in.surfaceData.x)));
@@ -1712,7 +1716,7 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
-  return encodeSceneVelocity(materialTemporal(in));
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
+  return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);
 }
 #endif

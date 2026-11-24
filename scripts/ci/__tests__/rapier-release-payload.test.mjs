@@ -227,7 +227,8 @@ test('native publication satisfies the unchanged engineering stance gate', (t) =
     ['--import', pathToFileURL(observer).href, 'apps/hello/triangle/scripts/ac-08-grep-gate.mjs'],
     {
       encoding: 'utf8',
-      timeout: 30_000,
+      // The full source gate can overlap runner-owned cold disk activity.
+      timeout: 60_000,
       env: sourceGateEnvironment(),
     },
   );

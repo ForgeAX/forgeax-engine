@@ -12,7 +12,6 @@ import type { NativeAdapter, NativeBinding, NativeDevice } from './binding';
 import { NativeCommandEncoder, NativeRenderBundleEncoder } from './encoder';
 import {
   bytesOf,
-  DeviceChild,
   domError,
   extent,
   hideReference,
@@ -25,6 +24,7 @@ import {
   NativeGPUShaderModule,
   NativeGPUTexture,
   NativeGPUTextureView,
+  referencedTextures,
 } from './objects';
 
 export class GPUValidationError extends Error {
@@ -108,6 +108,14 @@ function programmableStage(stage: GPUProgrammableStage): Record<string, unknown>
   };
 }
 
+function computePipelineJson(descriptor: GPUComputePipelineDescriptor): string {
+  return JSON.stringify({
+    label: descriptor.label,
+    layout: layoutId(descriptor.layout),
+    compute: programmableStage(descriptor.compute),
+  });
+}
+
 function layoutId(layout: GPUPipelineLayout | 'auto' | undefined): number | null {
   return layout === undefined || layout === 'auto' ? null : idOf(layout);
 }
@@ -139,22 +147,6 @@ function renderPipelineJson(descriptor: GPURenderPipelineDescriptor): string {
 
 // Resource references already retained by encoders/bind groups are the submission
 // authority. An unrelated upload or empty submit must not present an acquired image.
-function submittedTextures(buffers: readonly GPUCommandBuffer[]): ReadonlySet<NativeGPUTexture> {
-  const textures = new Set<NativeGPUTexture>();
-  const visited = new Set<object>();
-  const visit = (value: unknown): void => {
-    if (value === null || typeof value !== 'object' || visited.has(value)) return;
-    visited.add(value);
-    if (value instanceof NativeGPUTexture) textures.add(value);
-    else if (value instanceof NativeGPUTextureView) textures.add(value.texture);
-    else if (value instanceof NativeGPUObject) visit(value.refs);
-    else if (Array.isArray(value)) for (const entry of value) visit(entry);
-    else if (!(value instanceof DeviceChild))
-      for (const entry of Object.values(value)) visit(entry);
-  };
-  for (const buffer of buffers) visit(buffer);
-  return textures;
-}
 
 class NativeGPUQueue {
   label = '';
@@ -288,7 +280,7 @@ export class NativeGPUDevice extends EventTarget {
 
   presentSurfaces(buffers: readonly GPUCommandBuffer[]): void {
     if (this.surfaces.size === 0) return;
-    const textures = submittedTextures(buffers);
+    const textures = referencedTextures(buffers);
     for (const surface of this.surfaces) surface.present(textures);
   }
 
@@ -436,13 +428,7 @@ export class NativeGPUDevice extends EventTarget {
   }
 
   createComputePipeline(descriptor: GPUComputePipelineDescriptor): NativeGPUPipeline {
-    const id = this.native.createComputePipeline(
-      JSON.stringify({
-        label: descriptor.label,
-        layout: layoutId(descriptor.layout),
-        compute: programmableStage(descriptor.compute),
-      }),
-    );
+    const id = this.native.createComputePipeline(computePipelineJson(descriptor));
     this.touch();
     return new NativeGPUPipeline(this, id, descriptor.label);
   }
@@ -451,8 +437,37 @@ export class NativeGPUDevice extends EventTarget {
     return this.scopedPipeline(() => this.createRenderPipeline(descriptor));
   }
 
-  createComputePipelineAsync(descriptor: GPUComputePipelineDescriptor): Promise<NativeGPUPipeline> {
-    return this.scopedPipeline(() => this.createComputePipeline(descriptor));
+  async createComputePipelineAsync(
+    descriptor: GPUComputePipelineDescriptor,
+  ): Promise<NativeGPUPipeline> {
+    try {
+      if (this.destroyed) throw new Error('The native GPU device is destroyed');
+      if (
+        !(descriptor.compute.module instanceof NativeGPUShaderModule) ||
+        descriptor.compute.module.device !== this ||
+        (descriptor.layout !== 'auto' &&
+          (!(descriptor.layout instanceof NativeGPUObject) || descriptor.layout.device !== this))
+      ) {
+        throw new GPUPipelineError('Pipeline resources belong to another device', 'validation');
+      }
+      const label = descriptor.label;
+      const completion = await this.native.createComputePipelineAsync(
+        computePipelineJson(descriptor),
+      );
+      if (this.destroyed) throw new Error('The native GPU device is destroyed');
+      const result = this.native.adoptComputePipeline(completion);
+      this.touch();
+      if (result.error !== undefined && result.error !== null)
+        throw new GPUPipelineError(result.error.message, result.error.kind);
+      if (result.id === 0) throw new Error('Native async pipeline returned an invalid object');
+      return new NativeGPUPipeline(this, result.id, label);
+    } catch (cause) {
+      if (cause instanceof GPUPipelineError) throw cause;
+      throw new GPUPipelineError(
+        cause instanceof Error ? cause.message : String(cause),
+        'internal',
+      );
+    }
   }
 
   private async scopedPipeline(create: () => NativeGPUPipeline): Promise<NativeGPUPipeline> {

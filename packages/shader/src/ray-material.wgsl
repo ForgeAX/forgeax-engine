@@ -9,7 +9,7 @@
 struct CardTriangle { a: vec4f, b: vec4f, c: vec4f, ids: vec4u, maskData: vec4u }
 struct CardAttributeVertex { position: vec4f, color: vec4f, uvA: vec4f, uvB: vec4f, uvC: vec4f, uvD: vec4f, normal: vec4f, tangent: vec4f }
 struct CardAttributes { a: CardAttributeVertex, b: CardAttributeVertex, c: CardAttributeVertex }
-struct CardProjection { viewProjection: mat4x4f, eye: vec4f, geometryCoverage: u32 }
+struct CardProjection { viewProjection: mat4x4f, eye: vec4f, geometryCoverage: u32, objectToWorld: mat3x3f }
 @group(0) @binding(0) var<storage, read> cardTriangles: array<CardTriangle>;
 @group(0) @binding(1) var<storage, read> cardAttributes: array<CardAttributes>;
 @group(0) @binding(2) var<uniform> card: CardProjection;
@@ -52,7 +52,7 @@ fn evaluateRayMaterial(record: RayMaterialInput) -> RayMaterialSurface {
 }
 #ifdef CARD_SURFACE_CONTEXT
 struct CardVertex {
-  @builtin(position) clip: vec4f,
+  @invariant @builtin(position) clip: vec4f,
   @location(0) positionOS: vec3f,
   @location(1) positionWS: vec3f,
   @location(2) color: vec4f,
@@ -63,6 +63,7 @@ struct CardVertex {
   @location(7) @interpolate(flat) normalWS: vec3f,
   @location(8) vertexNormalWS: vec3f,
   @location(9) tangentWS: vec4f,
+  @location(10) @interpolate(flat) primitiveIndex: u32,
 }
 @vertex fn vs_card(@builtin(vertex_index) index: u32) -> CardVertex {
   let tri=cardTriangles[index/3u];let attr=cardAttributes[index/3u];
@@ -71,7 +72,7 @@ struct CardVertex {
   if(index%3u==2u){p=tri.c.xyz;v=attr.c;}
   let clip=card.viewProjection*vec4f(p,1);
   return CardVertex(clip,v.position.xyz,p,v.color,v.uvA,v.uvB,v.uvC,v.uvD,
-    normalize(cross(tri.b.xyz-tri.a.xyz,tri.c.xyz-tri.a.xyz))*v.normal.w,v.normal.xyz,v.tangent);
+    normalize(cross(tri.b.xyz-tri.a.xyz,tri.c.xyz-tri.a.xyz))*v.normal.w,v.normal.xyz,v.tangent,tri.ids.z);
 }
 struct CardOutput {
   @location(0) albedoRoughness: vec4f,
@@ -79,16 +80,26 @@ struct CardOutput {
   @location(2) emissionMetallic: vec4f,
   @location(3) f0Validity: vec4f,
 }
-@fragment fn fs_card(v: CardVertex,@builtin(front_facing) front: bool) -> CardOutput {
+fn evaluateCardSurface(v: CardVertex,front: bool) -> RayMaterialSurface {
   var outgoing=card.eye.xyz;
   if(card.eye.w==1.0){outgoing=normalize(card.eye.xyz-v.positionWS);}
   let record=RayMaterialInput(vec4f(v.positionOS,1),vec4f(v.positionWS,1),vec4f(v.normalWS,select(0.0,1.0,front)),
     v.tangentWS,vec4f(outgoing,0),v.uvA,v.uvB,v.uvC,v.uvD,v.color,vec4f(0),vec4f(0),vec4f(v.vertexNormalWS,0),vec4u(0));
-  let surface=evaluateRayMaterial(record);
-  // UE LumenCardBasePass separates geometry validity from material opacity;
-  // the physical material cache is a proxy, not an exact alpha visibility query.
-  // The same evaluator still clips exact view captures and ray-hit candidates.
-  if (surface.status.x == 3u && card.geometryCoverage == 0u) { discard; }
+  return evaluateRayMaterial(record);
+}
+fn discardCardSurface(surface: RayMaterialSurface) -> bool {
+  // Material opacity clips exact captures. Geometry proxies retain the material.
+  return surface.status.x == 3u && card.geometryCoverage == 0u;
+}
+@fragment fn fs_card_identity(v: CardVertex,@builtin(front_facing) front: bool) -> @location(0) u32 {
+  let surface=evaluateCardSurface(v,front);
+  if (discardCardSurface(surface)) { discard; }
+  // A retained geometry proxy or unsupported material cannot qualify contact identity.
+  return select(0xffffffffu,v.primitiveIndex,surface.status.x==1u);
+}
+@fragment fn fs_card(v: CardVertex,@builtin(front_facing) front: bool) -> CardOutput {
+  let surface=evaluateCardSurface(v,front);
+  if (discardCardSurface(surface)) { discard; }
   let validity = select(surface.status.x, 1u, surface.status.x == 3u);
   let validityAndDfg = validity | (surface.status.z << 2u);
   return CardOutput(vec4f(surface.albedoOpacity.xyz,surface.normalRoughness.w),
@@ -133,7 +144,11 @@ struct ProbeVertex {
 // Hit records carry world geometry only; an identity basis keeps object-space
 // helpers finite while ray admission rejects object-space material inputs.
 fn rayObjectToWorld(value: RayMaterialInput) -> mat3x3f {
+#ifdef CARD_SURFACE_CONTEXT
+  return card.objectToWorld;
+#else
   return mat3x3f(vec3f(1, 0, 0), vec3f(0, 1, 0), vec3f(0, 0, 1));
+#endif
 }
 
 fn raySurfaceInput(value: RayMaterialInput) -> SurfaceInput {

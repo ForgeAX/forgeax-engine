@@ -44,6 +44,7 @@ import { WATER_SSR_DEFAULT_PROFILE, WATER_SSR_PARAMS_BYTES } from '../ssr/water-
 import {
   CLOUD_HISTORY_FORMATS,
   getTemporalGpuState,
+  stageTemporalGpuWrite,
   TEMPORAL_HISTORY_FORMATS,
   temporalReadIndex,
   temporalWriteIndex,
@@ -213,6 +214,28 @@ function cloudHistorySurface(
   }
 }
 
+function cloudHistoryState(frame: _InternalRenderPipelineContext) {
+  return getTemporalGpuState(
+    frame.frameState,
+    frame.runtime.device,
+    recordContext(frame.runtime).deviceScope,
+    frame.targetW,
+    frame.targetH,
+    true,
+    frame.camera,
+    isTemporalAntialias(frame.camera.antialias)
+      ? frame.camera.antialias === 'tsr'
+        ? 'tsr'
+        : 'taa'
+      : 'scene-color',
+  );
+}
+
+/** Stage the same ping-pong state that backs the imported cloud attachments. */
+export function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
+  stageTemporalGpuWrite(frame.frameState, cloudHistoryState(frame));
+}
+
 /** Import one renderer-owned cloud history attachment into the typed graph. */
 function importCloudHistoryTarget(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -223,21 +246,7 @@ function importCloudHistoryTarget(
 ): import('../render-pipeline').RenderPipelineTarget {
   const format = kind === 'depth' ? CLOUD_HISTORY_FORMATS.depth : transportFormat;
   const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as _InternalRenderPipelineContext;
-    const state = getTemporalGpuState(
-      internal.frameState,
-      internal.runtime.device,
-      recordContext(internal.runtime).deviceScope,
-      frame.targetW,
-      frame.targetH,
-      true,
-      frame.camera,
-      isTemporalAntialias(internal.camera.antialias)
-        ? internal.camera.antialias === 'tsr'
-          ? 'tsr'
-          : 'taa'
-        : 'scene-color',
-    );
+    const state = cloudHistoryState(frame as _InternalRenderPipelineContext);
     const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
     return cloudHistorySurface(state, kind, index);
   };
@@ -345,19 +354,7 @@ export function importWaterSsrInputParams(
           temporalView.accepted?.input.historyVersion === internal.camera.historyVersion;
         const colorSize = ssrColorExtent({ width: frame.targetW, height: frame.targetH });
         writeSsrColorViewport(values, 32, fullSsrColorViewport(colorSize.width, colorSize.height));
-        payload.set(
-          [
-            Number(valid),
-            1,
-            WATER_SSR_DEFAULT_PROFILE.intensity,
-            temporal ? temporalView.frameIndex : -1,
-            WATER_SSR_DEFAULT_PROFILE.numSteps,
-            WATER_SSR_DEFAULT_PROFILE.numRays,
-            0,
-            WATER_SSR_DEFAULT_PROFILE.quality,
-          ],
-          16,
-        );
+        payload.set([Number(valid), 1, WATER_SSR_DEFAULT_PROFILE.intensity, 0], 16);
         frame.runtime.device.queue
           .writeBuffer(resources.buffer(params).unwrap(), 0, payload)
           .unwrap();

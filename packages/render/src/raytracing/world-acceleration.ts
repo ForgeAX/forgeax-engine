@@ -12,6 +12,15 @@ import {
 import { ok, type Result } from '@forgeax/engine-types';
 import { createIndexAllocator, type IndexRun } from './index-allocator';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
+import type { SdfSurfaceCoverage } from './sdf-surface-coverage';
+import {
+  createWorldAccelerationCoverage,
+  WORLD_ACCELERATION_MOTION_ROW_WORDS,
+  WORLD_ACCELERATION_TABLE_LAYOUT,
+  type WorldAccelerationCoverage,
+  worldAccelerationMotionStart,
+  worldAccelerationTableWords,
+} from './world-acceleration-coverage';
 
 /** Static triangle geometry of one `geometryId`; positions are object-space float32x3. */
 export interface WorldAccelerationGeometry {
@@ -26,6 +35,13 @@ export interface WorldAccelerationInstance {
   readonly geometryId: number;
   readonly mask: number;
   readonly transform: ArrayLike<number>;
+  /** Accepted placement qualification in the complete Mesh primitive namespace. */
+  readonly surfaceCoverage?: SdfSurfaceCoverage | undefined;
+}
+
+export interface WorldAccelerationCoverageChange {
+  readonly index: number;
+  readonly surfaceCoverage: SdfSurfaceCoverage | undefined;
 }
 
 interface WorldAccelerationBudget {
@@ -42,8 +58,8 @@ interface WorldAccelerationBudget {
  * as wgpu packs it) that every TLAS build consumes.
  */
 const TLAS_INSTANCE_BYTES = 64;
-/** One `traversalInstances` row: x = instance id, y = first `faceNormals` row. */
-const ROW_WORDS = 4;
+/** One row: instance id, first face normal, (primitive count << modeBits) | coverage mode, bitmap word. */
+const ROW_WORDS = WORLD_ACCELERATION_TABLE_LAYOUT.rowWords;
 
 /** The work one `update` encoded. */
 export interface WorldAccelerationBuild {
@@ -63,6 +79,8 @@ export interface WorldAccelerationBuild {
   readonly rowsWritten: number;
   /** Bytes this owner wrote from the CPU: changed table rows plus new BLAS inputs and face normals. */
   readonly bytesUploaded: number;
+  /** Actual partial-coverage payload bytes written; included in bytesUploaded. */
+  readonly coverageBytesUploaded: number;
 }
 
 /** Cumulative CPU-side work of one acceleration owner; regression evidence for O(changes). */
@@ -79,8 +97,10 @@ export interface WorldAccelerationWork {
  * released after the submission that last referenced it), a dense retained
  * TLAS instance list patched per changed instance (removals swap the last
  * record in), `traversalInstances` (row 0: x = pending instance count; row
- * `customIndex`, starting at 1: x = instance id, y = first `faceNormals` row)
- * uploaded per changed row, and `faceNormals` (object-space unit normal per
+ * `customIndex`, starting at 1: instance id, first face normal, count/coverage mode,
+ * bitmap word). Its tail holds at most maxTriangles u32 bitmap words, shared by
+ * same-Mesh same-pattern placements; the CPU image is the sole retained bitmap.
+ * Rows and newly admitted payloads upload only when changed. `faceNormals` (object-space unit normal per
  * triangle; w marks exact coincident opposite-winding coverage) written once
  * per resident geometry. CPU work and uploads are O(changed instances +
  * newly built geometry); the GPU TLAS rebuild itself consumes every record.
@@ -97,6 +117,10 @@ export interface WorldAcceleration {
   readonly geometries: number;
   /** Face rows referenced geometries occupy (or hold until their release submits). */
   readonly triangles: number;
+  /** Bounded immutable bitmap words currently referenced by placements, not per-placement copies. */
+  readonly coverageWords: number;
+  /** A submitted transform changed; publish its stationary successor on the next frame. */
+  readonly motionPending: boolean;
   readonly work: WorldAccelerationWork;
   has(instanceId: number): boolean;
   /** Whether `geometryId` is referenced (its face rows are reserved and its BLAS built or queued). */
@@ -112,6 +136,15 @@ export interface WorldAcceleration {
   ): Result<void, RayReferenceError>;
   /** Replace one owned instance's transform; its BLAS and row stay. */
   move(instanceId: number, transform: ArrayLike<number>): Result<void, RayReferenceError>;
+  /** Replace only accepted material qualification; geometry and BLAS remain shared. */
+  setCoverage(
+    instanceId: number,
+    coverage: SdfSurfaceCoverage | undefined,
+  ): Result<void, RayReferenceError>;
+  /** Acquire the complete material batch before changing any owned record. */
+  setCoverages(
+    changes: readonly WorldAccelerationCoverageChange[],
+  ): Result<void, RayReferenceError>;
   remove(instanceId: number): void;
   /** Encode the budgeted BLAS builds plus one TLAS build when a traced record changed. */
   update(encoder: RhiCommandEncoder): Result<WorldAccelerationBuild, RhiError | RayReferenceError>;
@@ -142,8 +175,10 @@ interface OwnedInstance {
   readonly geometryId: number;
   mask: number;
   transform: number[];
+  previousTransform: number[] | undefined;
   /** 1-based TLAS row (its `customIndex`), or 0 while waiting for the BLAS. */
   row: number;
+  coverage: WorldAccelerationCoverage;
 }
 
 const COPY_DST = 0x8,
@@ -204,10 +239,13 @@ export function createWorldAcceleration(
   budget: WorldAccelerationBudget,
 ): Result<WorldAcceleration, RhiError | RayReferenceError> {
   const caps = device.caps.rayQuery;
+  const tableWords = worldAccelerationTableWords(budget.maxInstances, budget.maxTriangles);
   if (
     ![budget.maxInstances, budget.maxTriangles, budget.maxBlasBuildsPerFrame].every(
       (v) => Number.isSafeInteger(v) && v >= 1,
     ) ||
+    !Number.isSafeInteger(tableWords) ||
+    tableWords * 4 > (device.limits.maxStorageBufferBindingSize ?? Infinity) ||
     (caps.supported && budget.maxInstances > caps.maxTlasInstanceCount)
   )
     return rayReferenceFailure(
@@ -224,7 +262,7 @@ export function createWorldAcceleration(
     if (!tlas.ok) return tlas;
     const rows = device.createBuffer({
       label: 'world.traversal-instances',
-      size: (budget.maxInstances + 1) * ROW_WORDS * 4,
+      size: tableWords * 4,
       usage: STORAGE | COPY_DST | 4,
     });
     if (!rows.ok) {
@@ -253,13 +291,24 @@ export function createWorldAcceleration(
   /** Dense retained TLAS records; record i has `customIndex` i + 1. */
   const traced: TlasInstance[] = [];
   /** CPU image of `traversalInstances`; rows are rewritten only when their record changes. */
-  const table = new Uint32Array((budget.maxInstances + 1) * ROW_WORDS);
+  const table = new Uint32Array(tableWords);
+  const motionStart = worldAccelerationMotionStart(budget.maxInstances, budget.maxTriangles);
+  const motionRows = new Float32Array(table.buffer);
+  const dirtyMotion = new Set<OwnedInstance>();
+  const encodedMotion = new Map<OwnedInstance, number[]>();
+  const coverage = createWorldAccelerationCoverage(
+    table,
+    (budget.maxInstances + 1) * ROW_WORDS,
+    budget.maxTriangles,
+  );
   /** Instance id per traced record, for the swap-remove fill. */
   const tracedIds: number[] = [];
   const dirtyRows = new Set<number>();
   let tlasDirty = true;
   let waiting = 0;
   let uploadedPending = -1;
+  let unknownPlacements = 0;
+  let uploadedUnknown = -1;
   /** Geometries whose BLAS is unbuilt, in reference order; released entries are skipped. */
   let queue: number[] = [];
   /** Released BLAS and face rows, retired with the next tracked submission. */
@@ -285,6 +334,12 @@ export function createWorldAcceleration(
     void inFlight.then(release, release);
   };
 
+  const writeCoverage = (row: number, qualified: WorldAccelerationCoverage) => {
+    table[row * ROW_WORDS + 2] =
+      qualified.primitives * (1 << WORLD_ACCELERATION_TABLE_LAYOUT.modeBits) + qualified.mode;
+    table[row * ROW_WORDS + 3] = qualified.firstWord;
+    dirtyRows.add(row);
+  };
   const writeRecord = (row: number, id: number, entry: GeometryEntry, instance: OwnedInstance) => {
     const resident = entry.resident;
     if (resident === undefined) throw new Error('world acceleration traced an unbuilt BLAS');
@@ -297,7 +352,9 @@ export function createWorldAcceleration(
     tracedIds[row - 1] = id;
     table[row * ROW_WORDS] = id;
     table[row * ROW_WORDS + 1] = entry.faces.first;
+    writeCoverage(row, instance.coverage);
     instance.row = row;
+    dirtyMotion.add(instance);
     dirtyRows.add(row);
     tlasDirty = true;
     work.recordsPatched++;
@@ -340,6 +397,10 @@ export function createWorldAcceleration(
     const instance = owned.get(id);
     if (instance === undefined) return;
     owned.delete(id);
+    dirtyMotion.delete(instance);
+    encodedMotion.delete(instance);
+    coverage.release(instance.coverage);
+    if (instance.coverage.mode !== 0) unknownPlacements--;
     const entry = geometries.get(instance.geometryId);
     if (entry === undefined) throw new Error('world acceleration lost a referenced geometry');
     if (instance.row > 0) untrace(instance);
@@ -389,6 +450,9 @@ export function createWorldAcceleration(
       geometries: [
         {
           vertexFormat: 'float32x3',
+          // The query forces opaque only when every placement is known opaque.
+          // Mixed scenes must expose candidates, including equal-distance unknown triangles.
+          opaque: false,
           vertexCount: positions.length / 3,
           index: { format: 'uint32', count: indices.length },
         },
@@ -455,6 +519,107 @@ export function createWorldAcceleration(
       : rayReferenceFailure('world acceleration requires finite instance transforms');
   };
 
+  const setCoverages = (changes: readonly WorldAccelerationCoverageChange[]) => {
+    const staged: { instance: OwnedInstance; qualified: WorldAccelerationCoverage }[] = [];
+    const reject = (error: ReturnType<typeof rayReferenceFailure>) => {
+      for (const change of staged) coverage.release(change.qualified);
+      return error;
+    };
+    for (const change of changes) {
+      const instance = owned.get(change.index);
+      if (instance === undefined) continue;
+      const entry = geometries.get(instance.geometryId);
+      if (entry === undefined)
+        return reject(rayReferenceFailure('world acceleration lost coverage geometry'));
+      const qualified = coverage.acquire(
+        instance.geometryId,
+        entry.indices.length / 3,
+        change.surfaceCoverage,
+      );
+      if (!qualified.ok) return reject(qualified);
+      staged.push({ instance, qualified: qualified.value });
+    }
+    for (const { instance, qualified } of staged) {
+      if (
+        instance.coverage.mode === qualified.mode &&
+        instance.coverage.firstWord === qualified.firstWord
+      ) {
+        coverage.release(qualified);
+        continue;
+      }
+      if (instance.coverage.mode !== 0) unknownPlacements--;
+      coverage.release(instance.coverage);
+      instance.coverage = qualified;
+      if (instance.coverage.mode !== 0) unknownPlacements++;
+      if (instance.row > 0) writeCoverage(instance.row, instance.coverage);
+    }
+    return ok(undefined);
+  };
+
+  const uploadCoverage = () => {
+    if (uploadedPending !== waiting || uploadedUnknown !== unknownPlacements) {
+      table[0] = waiting;
+      table[1] = unknownPlacements;
+      table[2] = (budget.maxInstances + 1) * ROW_WORDS;
+      table[3] = budget.maxTriangles;
+      dirtyRows.add(0);
+      uploadedPending = waiting;
+      uploadedUnknown = unknownPlacements;
+    }
+    let bytes = 0;
+    for (const payload of coverage.pending()) {
+      const wrote = device.queue.writeBuffer(gpu.rows, payload.firstWord * 4, payload.data);
+      if (!wrote.ok) return wrote;
+      bytes += payload.data.byteLength;
+    }
+    coverage.committed();
+    return ok(bytes);
+  };
+
+  const uploadMotion = (motion: readonly OwnedInstance[]) => {
+    let bytesUploaded = 0;
+    const motionOffset = (row: number) =>
+      motionStart + (row - 1) * WORLD_ACCELERATION_MOTION_ROW_WORDS;
+    for (const instance of motion) {
+      const base = motionOffset(instance.row);
+      const previous = instance.previousTransform;
+      const moved =
+        previous !== undefined && !previous.every((value, i) => value === instance.transform[i]);
+      if (moved) motionRows.set(previous, base);
+      else motionRows.fill(0, base, base + 12);
+      table[base + 12] = moved ? 2 : previous === undefined ? 0 : 1;
+    }
+    for (let i = 0; i < motion.length; ) {
+      const first = (motion[i] as OwnedInstance).row;
+      let end = first + 1;
+      while (motion[++i]?.row === end) end++;
+      const offset = motionOffset(first);
+      const data = table.subarray(offset, motionOffset(end));
+      const wrote = device.queue.writeBuffer(gpu.rows, offset * 4, data);
+      if (!wrote.ok) return wrote;
+      bytesUploaded += data.byteLength;
+    }
+    return ok(bytesUploaded);
+  };
+
+  const uploadDirtyRows = () => {
+    const rows = [...dirtyRows].sort((a, b) => a - b);
+    dirtyRows.clear();
+    let bytesUploaded = 0;
+    let rowsWritten = 0;
+    for (let i = 0; i < rows.length; ) {
+      const first = rows[i] as number;
+      let end = first + 1;
+      while (rows[++i] === end) end++;
+      const data = table.subarray(first * ROW_WORDS, end * ROW_WORDS);
+      const wrote = device.queue.writeBuffer(gpu.rows, first * ROW_WORDS * 4, data);
+      if (!wrote.ok) return wrote;
+      rowsWritten += end - first;
+      bytesUploaded += data.byteLength;
+    }
+    return ok({ rowsWritten, bytesUploaded });
+  };
+
   const self: WorldAcceleration = {
     get tlas() {
       return gpu.tlas;
@@ -474,6 +639,12 @@ export function createWorldAcceleration(
     get triangles() {
       return triangleRows;
     },
+    get coverageWords() {
+      return coverage.words;
+    },
+    get motionPending() {
+      return dirtyMotion.size !== 0;
+    },
     work,
     has: (id) => owned.has(id),
     hasGeometry: (id) => geometries.has(id),
@@ -484,13 +655,24 @@ export function createWorldAcceleration(
       if (!transform.ok) return transform;
       const present = owned.get(instance.instanceId);
       if (present?.geometryId === instance.geometryId) {
+        const changed = self.setCoverage(instance.instanceId, instance.surfaceCoverage);
+        if (!changed.ok) return changed;
         present.mask = instance.mask & 0xff;
         return self.move(instance.instanceId, instance.transform);
       }
       if (present === undefined && owned.size >= budget.maxInstances)
         return rayReferenceFailure('world acceleration exceeds its instance budget', true);
+      const qualified = coverage.acquire(
+        instance.geometryId,
+        (geometry.indices?.length ?? geometry.positions.length / 3) / 3,
+        instance.surfaceCoverage,
+      );
+      if (!qualified.ok) return qualified;
       const referenced = reference(geometry);
-      if (!referenced.ok) return referenced;
+      if (!referenced.ok) {
+        coverage.release(qualified.value);
+        return referenced;
+      }
       const entry = referenced.value;
       entry.refs++;
       if (present !== undefined) drop(instance.instanceId);
@@ -498,8 +680,11 @@ export function createWorldAcceleration(
         geometryId: instance.geometryId,
         mask: instance.mask & 0xff,
         transform: transform.value,
+        previousTransform: undefined,
         row: 0,
+        coverage: qualified.value,
       };
+      if (next.coverage.mode !== 0) unknownPlacements++;
       owned.set(instance.instanceId, next);
       if (entry.resident !== undefined) trace(instance.instanceId, next, entry);
       else {
@@ -508,12 +693,17 @@ export function createWorldAcceleration(
       }
       return ok(undefined);
     },
+    setCoverage(id, source) {
+      return setCoverages([{ index: id, surfaceCoverage: source }]);
+    },
+    setCoverages,
     move(id, to) {
       const instance = owned.get(id);
       if (instance === undefined) return ok(undefined);
       const transform = admitTransform(to);
       if (!transform.ok) return transform;
-      instance.transform = transform.value;
+      if (!transform.value.every((value, i) => value === instance.transform[i]))
+        instance.transform = transform.value;
       const entry = geometries.get(instance.geometryId);
       if (instance.row > 0 && entry !== undefined) writeRecord(instance.row, id, entry, instance);
       return ok(undefined);
@@ -547,26 +737,17 @@ export function createWorldAcceleration(
         entry.waiting.clear();
       }
       // Coverage belongs to the roster being encoded: an omitted BLAS proves neither hit nor miss.
-      let rowsWritten = 0;
-      if (uploadedPending !== waiting) {
-        table[0] = waiting;
-        dirtyRows.add(0);
-        uploadedPending = waiting;
-      }
-      if (dirtyRows.size > 0) {
-        const rows = [...dirtyRows].sort((a, b) => a - b);
-        dirtyRows.clear();
-        for (let i = 0; i < rows.length; ) {
-          const first = rows[i] as number;
-          let end = first + 1;
-          while (rows[++i] === end) end++;
-          const data = table.subarray(first * ROW_WORDS, end * ROW_WORDS);
-          const wrote = device.queue.writeBuffer(gpu.rows, first * ROW_WORDS * 4, data);
-          if (!wrote.ok) return wrote;
-          rowsWritten += end - first;
-          bytesUploaded += data.byteLength;
-        }
-      }
+      const uploaded = uploadCoverage();
+      if (!uploaded.ok) return uploaded;
+      const coverageBytesUploaded = uploaded.value;
+      bytesUploaded += coverageBytesUploaded;
+      const uploadedRows = uploadDirtyRows();
+      if (!uploadedRows.ok) return uploadedRows;
+      bytesUploaded += uploadedRows.value.bytesUploaded;
+      const motion = [...dirtyMotion].sort((a, b) => a.row - b.row);
+      const motionUploaded = uploadMotion(motion);
+      if (!motionUploaded.ok) return motionUploaded;
+      bytesUploaded += motionUploaded.value;
       const tlasBuilt = builds.length > 0 || tlasDirty;
       if (tlasBuilt) {
         const encoded = encoder.buildAccelerationStructures(builds, [
@@ -576,17 +757,28 @@ export function createWorldAcceleration(
         tlasDirty = false;
         bytesBuilt += traced.length * TLAS_INSTANCE_BYTES;
       }
+      for (const instance of motion) {
+        if (instance.previousTransform !== instance.transform)
+          encodedMotion.set(instance, instance.transform);
+      }
+      dirtyMotion.clear();
       return ok({
         pending: waiting,
         blasBuilt: builds.length,
         tlasBuilt: tlasBuilt ? 1 : 0,
         bytesBuilt,
-        rowsWritten,
+        rowsWritten: uploadedRows.value.rowsWritten,
         bytesUploaded,
+        coverageBytesUploaded,
       });
     },
     track(completed) {
       inFlight = completed;
+      for (const [instance, transform] of encodedMotion) {
+        instance.previousTransform = transform;
+        dirtyMotion.add(instance);
+      }
+      encodedMotion.clear();
       if (releasing.length === 0) return;
       const retired = releasing;
       releasing = [];
@@ -626,7 +818,11 @@ export function createWorldAcceleration(
         waiting++;
       }
       dirtyRows.clear();
+      dirtyMotion.clear();
+      encodedMotion.clear();
       uploadedPending = -1;
+      uploadedUnknown = -1;
+      coverage.recover();
       tlasDirty = true;
       afterFlight(() => {
         destroyGpu(retired);

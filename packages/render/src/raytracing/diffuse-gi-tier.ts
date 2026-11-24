@@ -1,6 +1,7 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type {
+  StandardCardCapture,
   StandardDiffuseGi,
   StandardGlobalSdfRegion,
   StandardIrradianceField,
@@ -9,6 +10,7 @@ import type {
 } from '../pipeline/standard-profile';
 import { freezeDiffuseGi, validateDiffuseGi } from './irradiance-field-plan';
 import type { RayReferenceError } from './scene';
+import { SCREEN_PROBE_DEFAULTS } from './screen-probe-plan';
 
 /** Closed diffuse GI quality ladder (UE sg.GlobalIlluminationQuality 0..3). */
 export type DiffuseGiTier = 'low' | 'medium' | 'high' | 'epic';
@@ -46,6 +48,8 @@ export interface DiffuseGiTierScene {
    * (`diffuseGi.residency`) instead of failing; only invalid configs reject.
    */
   readonly maxCaptureBytes?: number;
+  /** Authored per-Card capture resolution, when the assets require finer charts. */
+  readonly cardResolution?: number;
   /** Camera-following probe window (probes per axis per level); absent keeps one fixed
    * lattice. The tier owns the level count and its `probeBudget` splits over levels. */
   readonly clipmapDimensions?: readonly [number, number, number];
@@ -59,6 +63,7 @@ export interface DiffuseGiTierBudget {
   > & {
     readonly cardResolution: number;
     readonly cardBudget: number;
+    readonly cardRadiosity: NonNullable<StandardCardCapture['radiosity']>;
     /** Clipmap levels when the scene opts into a camera-following window. */
     readonly clipmapLevels: number;
   };
@@ -71,55 +76,70 @@ export const DIFFUSE_GI_TIER_BUDGETS: Readonly<Record<DiffuseGiTier, DiffuseGiTi
     medium: Object.freeze({
       field: Object.freeze({
         raysPerProbe: 32,
-        probeBudget: 64,
+        probeBudget: 100,
         hysteresis: 0.8,
         cardResolution: 16,
         cardBudget: 128,
+        cardRadiosity: Object.freeze({
+          probeSpacing: 4,
+          hemisphereResolution: 3,
+          updateFactor: 128,
+        }),
         clipmapLevels: 2,
         resolution: 'half',
-        radiosity: false,
+        radiosity: true,
       }),
     }),
     high: Object.freeze({
       field: Object.freeze({
         raysPerProbe: 64,
-        probeBudget: 128,
+        probeBudget: 100,
         hysteresis: 0.7,
         cardResolution: 16,
         cardBudget: 256,
+        cardRadiosity: Object.freeze({
+          probeSpacing: 8,
+          hemisphereResolution: 3,
+          updateFactor: 128,
+        }),
         clipmapLevels: 3,
         resolution: 'half',
         radiosity: true,
       }),
       probes: Object.freeze({
-        downsample: 16,
-        adaptiveFraction: 0.25,
-        importance: 'brdf',
-        screenTrace: Object.freeze({ maxSteps: 16, thickness: 0.02 }),
-        filterPasses: 1,
-        shortRangeAo: 0,
-        maxFrames: 10,
+        ...SCREEN_PROBE_DEFAULTS,
+        downsample: 32,
+        adaptiveCandidates: 16,
+        irradiance: 'probe-octahedral',
+        integration: 'screen-space',
+        interpolation: 'stochastic',
+        shortRangeAo: 0.5,
+        shortRangeAoMode: 'half-scalar',
       }),
     }),
     epic: Object.freeze({
       field: Object.freeze({
         raysPerProbe: 128,
-        probeBudget: 256,
+        probeBudget: 150,
         hysteresis: 0.7,
         cardResolution: 16,
         cardBudget: 512,
+        cardRadiosity: Object.freeze({
+          probeSpacing: 4,
+          hemisphereResolution: 4,
+          updateFactor: 64,
+        }),
         clipmapLevels: 4,
         resolution: 'full',
         radiosity: true,
       }),
       probes: Object.freeze({
-        downsample: 8,
-        adaptiveFraction: 0.5,
-        importance: 'brdf',
-        screenTrace: Object.freeze({ maxSteps: 32, thickness: 0.02 }),
-        filterPasses: 2,
-        shortRangeAo: 0,
-        maxFrames: 10,
+        ...SCREEN_PROBE_DEFAULTS,
+        adaptiveCandidates: 8,
+        irradiance: 'probe-sh3',
+        integration: 'screen-space',
+        shortRangeAo: 0.5,
+        shortRangeAoMode: 'full-bent',
       }),
     }),
   } satisfies Record<DiffuseGiTier, DiffuseGiTierBudget>);
@@ -182,17 +202,17 @@ export function resolveDiffuseGiTier(
       }),
     );
   const budget = DIFFUSE_GI_TIER_BUDGETS[tier];
-  const { cardResolution, cardBudget, clipmapLevels, ...fieldBudget } = budget.field as NonNullable<
-    DiffuseGiTierBudget['field']
-  >;
+  const { cardResolution, cardBudget, cardRadiosity, clipmapLevels, ...fieldBudget } =
+    budget.field as NonNullable<DiffuseGiTierBudget['field']>;
   const field: StandardIrradianceField = {
     ...fieldBudget,
     region: scene.region,
     probeSpacing: scene.probeSpacing,
     cards: {
-      resolution: cardResolution,
+      resolution: scene.cardResolution ?? cardResolution,
       maxCaptureBytes: scene.maxCaptureBytes ?? 256 * 1024 * 1024,
       budget: cardBudget,
+      radiosity: cardRadiosity,
     },
     ...(scene.clipmapDimensions === undefined
       ? {}

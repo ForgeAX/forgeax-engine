@@ -2,7 +2,9 @@ import type { RhiComputePassEncoder, RhiDevice, ShaderModule } from '@forgeax/en
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
+import { GLOBAL_SDF_SETTINGS_BYTES } from './global-sdf';
 import { GLOBAL_SDF_SAMPLE_WGSL, type GlobalSdfQueryInputs } from './global-sdf-query';
+import { prepareComputePipeline } from './prepare-pipeline';
 import { ProbeRayStatus } from './probe-rays';
 import { RAY_REFERENCE_LIMIT } from './scene';
 
@@ -67,7 +69,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 /** Borrowed post-trace recorder; the graph owns all producers and lifetimes. */
-export function createProbeOriginSupportRecorder(device: RhiDevice, module: ShaderModule) {
+export async function createProbeOriginSupportRecorder(device: RhiDevice, module: ShaderModule) {
   const fail = (expected: string, code: RhiError['code'] = 'rhi-descriptor-invalid') =>
     err(
       new RhiError({
@@ -86,14 +88,14 @@ export function createProbeOriginSupportRecorder(device: RhiDevice, module: Shad
     ['maxBindingsPerBindGroup', 7],
     ['maxStorageBuffersPerShaderStage', 6],
     ['maxUniformBuffersPerShaderStage', 1],
-    ['maxUniformBufferBindingSize', 48],
+    ['maxUniformBufferBindingSize', GLOBAL_SDF_SETTINGS_BYTES],
     ['maxComputeWorkgroupSizeX', 64],
     ['maxComputeInvocationsPerWorkgroup', 64],
   ] as const)
     if (!(device.limits[name] >= count))
       return fail(`probe origin diagnostics require ${name} >= ${count}`, 'limit-exceeded');
   const layout = device.createBindGroupLayout({
-    entries: [32, 32, 16, 64, 16, 48, PROBE_ORIGIN_SUPPORT_STRIDE].map(
+    entries: [32, 32, 16, 64, 16, GLOBAL_SDF_SETTINGS_BYTES, PROBE_ORIGIN_SUPPORT_STRIDE].map(
       (minBindingSize, binding) => ({
         binding,
         visibility: 4,
@@ -107,7 +109,7 @@ export function createProbeOriginSupportRecorder(device: RhiDevice, module: Shad
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createComputePipeline({
+  const pipeline = await prepareComputePipeline(device, {
     label: 'probe-global.origin-support',
     layout: pipelineLayout.value,
     compute: { module, entryPoint: 'main' },
@@ -146,7 +148,7 @@ export function createProbeOriginSupportRecorder(device: RhiDevice, module: Shad
         probeCount * 16,
         rayCount * 64,
         input.voxels.size,
-        48,
+        GLOBAL_SDF_SETTINGS_BYTES,
         probeCount * PROBE_ORIGIN_SUPPORT_STRIDE,
       ];
       for (let binding = 0; binding < names.length; binding++) {

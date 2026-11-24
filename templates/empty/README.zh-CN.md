@@ -21,15 +21,15 @@ pnpm exec forgeax project package --output release/empty-game-web.zip --json
 
 ## 可选的 View
 
-在游戏根目录打开已安装 Engine 自带的 View：
+在游戏根目录打开 SDK 自带的 View：
 
 ```sh
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+node /absolute/forgeax-sdk/tools/view/start.mjs --project .
 ```
 
 保持终端打开，访问返回的 URL。页面会报告后端和项目的就绪状态；仅得到 URL 不代表已就绪。
-无需安装全局 SDK 或构建 Engine。Agent 指引见 `skills/forgeax-view-start/SKILL.zh-CN.md`；
-旧项目可查看 `node_modules/@forgeax/engine/tools/view/skills/` 中的副本。
+View 只随 SDK 分发；启动器初始化 SDK 自己的运行环境。Agent 指引见 `skills/forgeax-view-start/SKILL.zh-CN.md`；
+旧项目可查看 SDK 的 `tools/view/skills/` 中的副本。
 
 ## 工程边界
 

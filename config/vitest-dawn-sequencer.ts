@@ -151,6 +151,24 @@ function partitionFiles(
 }
 
 export class DawnSequencer extends BaseSequencer {
+  override async sort(files: TestSpecification[]): Promise<TestSpecification[]> {
+    const ordered = await super.sort(files);
+    if (
+      !this.ctx.config.shard ||
+      process.env.FORGEAX_CI_CORE_VALIDATION !== '1' ||
+      process.env.FORGEAX_DAWN_LIGHTWEIGHT !== '1' ||
+      files.some((file) => file.project.name !== 'dawn')
+    ) {
+      return ordered;
+    }
+    // On a cold runner, Vitest sorts uncached tests by driver source size.
+    // Use measured work for ordinary CI so a small driver cannot strand a
+    // complete GPU journey at the end of the shard.
+    const cost = ({ moduleId }: TestSpecification) =>
+      fileSeconds.get(relative(this.ctx.config.root, moduleId).replaceAll('\\', '/')) ?? 0;
+    return ordered.sort((left, right) => cost(right) - cost(left));
+  }
+
   override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
     const shard = this.ctx.config.shard;
     if (
@@ -179,9 +197,11 @@ export class DawnSequencer extends BaseSequencer {
     const owner = `ordinary-${shard.index}`;
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(owner));
     if (lane < 0) throw new Error(`Dawn ordinary owner has no native lane: ${owner}`);
-    // Vitest's resolved project policy overrides root CLI maxWorkers. Plan
-    // the pool that will actually execute these specifications.
-    const workers = files[0]?.project.config.maxWorkers;
+    // An OOM-affected lane can execute serially while every lane still uses
+    // the same admitted partition. The remaining lanes use their project pool.
+    const plannedWorkers = process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+    const workers =
+      plannedWorkers === undefined ? files[0]?.project.config.maxWorkers : Number(plannedWorkers);
     if (workers !== 1 && workers !== 2)
       throw new Error('Dawn project must resolve exactly one or two ordinary workers');
     const selected = planDawnShards(files, this.ctx.config.root, workers)[lane];

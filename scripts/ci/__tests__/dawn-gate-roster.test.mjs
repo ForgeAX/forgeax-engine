@@ -32,7 +32,12 @@ import {
 } from '../run-dawn-gate.mjs';
 
 const root = resolve('.');
-const selectors = ['FORGEAX_DAWN_ISOLATED', 'FORGEAX_DAWN_COMPACT', 'FORGEAX_DAWN_PARTITION'];
+const selectors = [
+  'FORGEAX_DAWN_ISOLATED',
+  'FORGEAX_DAWN_COMPACT',
+  'FORGEAX_DAWN_PARTITION',
+  'FORGEAX_DAWN_SERIAL_ORDINARY',
+];
 const nativeVitest = await createVitest('test', { project: ['dawn'], watch: false });
 let nativeSpecifications;
 let configuredSequencer;
@@ -150,17 +155,28 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
     const ordinary = group.vitestShard !== undefined;
     const env = dawnGroupEnvironment(group, { LP_NUM_THREADS: '8' }, 2);
     const bounded = ordinary || group.limitSoftwareGpuWorkers;
-    assert.equal(env.LP_NUM_THREADS, bounded ? '4' : '8');
+    const rasterThreads = group.softwareGpuHeapRasterThreads ?? (bounded ? 4 : 8);
+    assert.equal(env.LP_NUM_THREADS, String(rasterThreads));
+    assert.equal(
+      env.MALLOC_ARENA_MAX,
+      group.softwareGpuHeapRasterThreads !== undefined ? '2' : undefined,
+    );
+    assert.equal(
+      env.MALLOC_TRIM_THRESHOLD_,
+      group.softwareGpuHeapRasterThreads !== undefined ? '131072' : undefined,
+    );
     assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, bounded ? '1' : undefined);
-    assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
-    assert.equal(args.includes('--pool=forks'), ordinary);
-    assert.equal(args.includes('--fileParallelism=true'), ordinary);
+    const parallel = ordinary && !group.serialOrdinary;
+    assert.ok(args.includes(`--maxWorkers=${parallel ? 2 : 1}`));
+    assert.equal(args.includes('--pool=forks'), parallel);
+    assert.equal(args.includes('--fileParallelism=true'), parallel);
+    assert.equal(env.FORGEAX_DAWN_SERIAL_ORDINARY, group.serialOrdinary ? '2' : undefined);
     assert.equal(args.includes('--reporter=default'), ordinary);
     assert.equal(
-      args.some((arg) => arg.endsWith('/modeling-file-phase-reporter.mjs')),
+      args.some((arg) => arg.replaceAll('\\', '/').endsWith('/modeling-file-phase-reporter.mjs')),
       ordinary,
     );
-    assert.equal(args.includes('--no-file-parallelism'), !ordinary);
+    assert.equal(args.includes('--no-file-parallelism'), !parallel);
     assert.equal(args.includes('--no-isolate'), group.id.startsWith('heavy-'));
   }
 });
@@ -1262,7 +1278,7 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       import { readFileSync } from 'node:fs';
       import { createVitest } from 'vitest/node';
       import ledger from './scripts/ci/dawn-file-seconds.json' with { type: 'json' };
-      import { planDawnShards } from './config/vitest-dawn-sequencer.ts';
+      import { DawnSequencer, planDawnShards } from './config/vitest-dawn-sequencer.ts';
       import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS, dawnNativeLaneReserve } from './scripts/ci/dawn-gate-roster.mjs';
       import { coreValidationFiles } from './scripts/ci/core-validation.mjs';
       import { dawnFileOwnerCosts, dawnPlanningFileCosts, dawnPlanningOwnerCosts } from './config/dawn-timings.ts';
@@ -1285,8 +1301,25 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           .filter((path) => !native.has(path));
         assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
         const added = paths.filter((path) => !declared.includes(path));
+        const quick = files.find(({ moduleId }) => moduleId.endsWith('/integer-readback.dawn.test.ts'));
+        const lighting = files.find(({ moduleId }) => moduleId.endsWith('/lighting-channels.dawn.test.ts'));
+        assert.ok(quick && lighting);
+        const context = { config: { ...v.config, shard: { index: 2, count: 4 } }, cache: v.cache };
+        assert.deepEqual(await new DawnSequencer(context).sort([quick, lighting]), [lighting, quick]);
         const lanes = planDawnShards(files, process.cwd(), 2);
         assert.equal(lanes.length, 4);
+        const serialFiles = files.map(({ moduleId, project }) => ({
+          moduleId,
+          project: { name: project.name, config: { maxWorkers: 1 } },
+        }));
+        process.env.FORGEAX_DAWN_SERIAL_ORDINARY = '2';
+        try {
+          const serialContext = { ...context, config: { ...context.config, shard: { index: 4, count: 4 } } };
+          const serialLane = await new DawnSequencer(serialContext).shard(serialFiles);
+          assert.deepEqual(serialLane.map(({ moduleId }) => moduleId), lanes[3].map(({ moduleId }) => moduleId));
+        } finally {
+          delete process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+        }
         assert.equal(new Set(lanes.flat().map(({ moduleId }) => moduleId)).size, files.length);
         assert.deepEqual(lanes.flat().map(({ moduleId }) =>
           relative(process.cwd(), moduleId).replaceAll('\\\\', '/')).sort(), paths.sort());
@@ -1308,7 +1341,7 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           }, 0) + dawnNativeLaneReserve(DAWN_GATE_GROUPS.filter(group => DAWN_GATE_SHARDS[index].includes(group.id)),
             nativeReserves, 2));
         assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
-        // Replay the original measured population; additions have forecasts, not old observations.
+        // Replay the retained measured population; new files still use forecasts.
         const historical = files.filter(({ moduleId }) =>
           Object.hasOwn(ledger.coreProfile.files, relative(process.cwd(), moduleId).replaceAll('\\\\', '/')));
         const historicalLanes = planDawnShards(historical, process.cwd(), 2);
@@ -1326,8 +1359,12 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
               return sum + (children.has(path) ? 0 : (fileCosts.get(path) ?? 0) / 2);
             }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
             const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-            // Count files that moved out of ordinary discovery exactly once.
-            return sum + (tails[id] ?? 0) + group.files.reduce(
+            // Archived owner timings remain immutable. Charge a partial owner
+            // its whole historical tail, and drop owners absent from current core.
+            const selected = coreValidationFiles(group.files);
+            if (group.files.length > 0 && selected.length === 0) return sum;
+            // Count retained files that moved out of ordinary discovery exactly once.
+            return sum + (tails[id] ?? 0) + selected.reduce(
               (seconds, path) => seconds + (fileCosts.get(path) ?? 0), 0);
           }, 0));
           // Two minutes of the 30-minute target remain for preparation. Older
@@ -1466,7 +1503,7 @@ test('completed cohorts distribute complete native tails before ordinary backfil
       'compact-1',
       'direct-light',
       'feature-depth',
-      'gi-1',
+      'nested-discard',
       'gi-3',
       'heavy-3',
       'modeling-s6',
@@ -1489,7 +1526,7 @@ test('completed cohorts distribute complete native tails before ordinary backfil
       'gi-5',
       'gi-6',
       'heavy-4',
-      'nested-discard',
+      'gi-1',
       'path-tracer',
       'shadow-fields',
       'renderer',

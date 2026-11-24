@@ -609,20 +609,21 @@ function chooseLod(
   lodScale: number,
   treeDepth: number,
   rootOriginXZ: Vec2,
+  maxLod: number,
 ): Readonly<{
   lod: number;
   logicalLod: number;
   height: number;
 }> {
   const scale = leafSize * Math.max(lodScale, 0.5);
-  const height = heightLod(view.observerM[1], waterY, scale, treeDepth);
+  const height = heightLod(view.observerM[1], waterY, scale, maxLod);
   const dx = Math.max(node.x - view.observerM[0], 0, view.observerM[0] - node.x - node.size);
   const dz = Math.max(node.z - view.observerM[2], 0, view.observerM[2] - node.z - node.size);
   const distance = Math.hypot(dx, dz) / scale;
   const distanceLod = distance <= 1 ? 0 : Math.log2(distance);
   const spatialLod = treeDepth - node.depth;
-  let logicalLod = treeDepth;
-  for (let level = spatialLod; level <= treeDepth; level++) {
+  let logicalLod = maxLod;
+  for (let level = spatialLod; level <= maxLod; level++) {
     if (level < Math.floor(height)) continue;
     const size = leafSize * 2 ** level;
     const x = rootOriginXZ[0] + Math.floor((node.x - rootOriginXZ[0]) / size) * size;
@@ -635,7 +636,7 @@ function chooseLod(
     }
   }
   return {
-    lod: Math.min(treeDepth, Math.max(height, distanceLod)),
+    lod: Math.min(maxLod, Math.max(height, distanceLod)),
     logicalLod,
     height,
   };
@@ -648,6 +649,7 @@ function chooseLayerLod(
   lodScale: number,
   treeDepth: number,
   rootOriginXZ: Vec2,
+  maxLod: number,
 ): Readonly<{
   lod: number;
   logicalLod: number;
@@ -661,6 +663,7 @@ function chooseLayerLod(
     lodScale,
     treeDepth,
     rootOriginXZ,
+    maxLod,
   );
   if (layer.transition === undefined) return ownerLod;
   const transitionLod = chooseLod(
@@ -671,6 +674,7 @@ function chooseLayerLod(
     lodScale,
     treeDepth,
     rootOriginXZ,
+    maxLod,
   );
   // Both disjoint transition regions share one tile density; use the finer surface's LOD.
   const finer =
@@ -701,7 +705,8 @@ function tileInstance(
   const lod0 = far ? treeDepth : Math.max(spatialLod, Math.floor(lod));
   const densityCount = Math.max(1, Math.min(tessellationFactor, treeDepth - spatialLod + 1));
   const densityIndex = far ? 0 : Math.min(lod0 - spatialLod, densityCount - 1);
-  const maxMorphLod = Math.max(lod0, Math.min(treeDepth, spatialLod + densityCount - 1));
+  // Partial leaves must share the same terminal lattice as their larger neighbors.
+  const maxMorphLod = Math.max(lod0, Math.min(treeDepth, Math.max(0, tessellationFactor - 1)));
   const waterYM = surface.baseHeightM - (far ? surface.maxWaveHeightM : 0);
   const ownerBounds = bodyYBounds(owner);
   const surfaceBounds = transitionBody === undefined ? ownerBounds : bodyYBounds(transitionBody);
@@ -1119,9 +1124,38 @@ function prepareWaterMeshDomain(input: WaterMeshBuildInput, view: WaterMeshViewI
 
   return ok({ lodScaleM, halfTilesX, halfTilesZ, dimension, treeDepth });
 }
+type WaterMeshBuildState = {
+  root?: Node;
+  paths: WeakMap<Node, Map<WaterMeshBodyInput, PathsD>>;
+  templates: Map<string, Readonly<{ mesh: MeshAsset; vertexCount: number; indexCount: number }>>;
+};
+const meshBuildState = (): WaterMeshBuildState => ({ paths: new WeakMap(), templates: new Map() });
+
+/** Owns immutable geometry preparation while each view still selects and packs its current LOD. */
+export class WaterMeshViewBuilder {
+  readonly #input: WaterMeshBuildInput;
+  readonly #state = meshBuildState();
+
+  constructor(input: WaterMeshBuildInput) {
+    this.#input = structuredClone(input);
+  }
+
+  build(view: WaterMeshViewInput): Result<WaterMeshViewReceipt, AssetError> {
+    return buildWaterMeshViewWithState(this.#input, view, this.#state);
+  }
+}
+
 export function buildWaterMeshView(
   input: WaterMeshBuildInput,
   view: WaterMeshViewInput,
+): Result<WaterMeshViewReceipt, AssetError> {
+  return buildWaterMeshViewWithState(input, view, meshBuildState());
+}
+
+function buildWaterMeshViewWithState(
+  input: WaterMeshBuildInput,
+  view: WaterMeshViewInput,
+  state: WaterMeshBuildState,
 ): Result<WaterMeshViewReceipt, AssetError> {
   const domain = prepareWaterMeshDomain(input, view);
   if (!domain.ok) return domain;
@@ -1178,10 +1212,17 @@ export function buildWaterMeshView(
   const { worldSize, zoneBounds, bounds } = preparedBounds.value;
   const maxLod = treeDepth;
   const selectNearMesh = () => {
-    const root =
-      input.nearMesh === 'gpu'
-        ? undefined
-        : createNode(bounds.min[0], bounds.min[1], worldSize, 0, treeDepth, active, bounds);
+    if (input.nearMesh !== 'gpu' && state.root === undefined)
+      state.root = createNode(
+        bounds.min[0],
+        bounds.min[1],
+        worldSize,
+        0,
+        treeDepth,
+        active,
+        bounds,
+      );
+    const root = state.root;
     const selected: WaterMeshTileInstance[] = [];
     const emitCoverage = (
       node: Node,
@@ -1222,10 +1263,16 @@ export function buildWaterMeshView(
       const layerLods = new Map(
         layers.map((layer) => [
           layer,
-          chooseLayerLod(node, layer, view, input.tileSizeM, input.lodScale, maxLod, [
-            bounds.min[0],
-            bounds.min[1],
-          ]),
+          chooseLayerLod(
+            node,
+            layer,
+            view,
+            input.tileSizeM,
+            input.lodScale,
+            treeDepth,
+            [bounds.min[0], bounds.min[1]],
+            Math.min(treeDepth, Math.max(0, input.tessellationFactor - 1)),
+          ),
         ]),
       );
       const needsFinerChildren = layers.some(
@@ -1237,12 +1284,17 @@ export function buildWaterMeshView(
         subdivideNode(node, treeDepth, active, bounds);
       if (!node.children || (node.full && !needsFinerChildren)) {
         let claimedPaths: PathsD = [];
-        const tilePaths = new Map<WaterMeshBodyInput, PathsD>();
+        let tilePaths = state.paths.get(node);
+        if (tilePaths === undefined) {
+          tilePaths = new Map<WaterMeshBodyInput, PathsD>();
+          state.paths.set(node, tilePaths);
+        }
+        const cachedPaths = tilePaths;
         const pathsFor = (body: WaterMeshBodyInput): PathsD => {
-          let paths = tilePaths.get(body);
+          let paths = cachedPaths.get(body);
           if (paths === undefined) {
             paths = clipBodyToTile(body, node);
-            tilePaths.set(body, paths);
+            cachedPaths.set(body, paths);
           }
           return paths;
         };
@@ -1451,14 +1503,7 @@ export function buildWaterMeshView(
   const grouped = templateGroups.value;
   const prepareOwnerBuckets = () => {
     const buckets: WaterMeshBucket[] = [];
-    const templateCache = new Map<
-      string,
-      Readonly<{
-        mesh: MeshAsset;
-        vertexCount: number;
-        indexCount: number;
-      }>
-    >();
+    const templateCache = state.templates;
     for (const instances of grouped.values()) {
       const first = requireWaterValue(instances[0]);
       const far = first.far;

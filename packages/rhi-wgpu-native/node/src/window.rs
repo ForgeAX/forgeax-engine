@@ -95,6 +95,7 @@ impl NativeWindow {
         power_preference: Option<String>,
         force_fallback_adapter: Option<bool>,
     ) -> Result<Option<NativeAdapter>> {
+        self.ensure_surface()?;
         let surface = self.surface.borrow();
         let surface = surface
             .as_ref()
@@ -116,6 +117,7 @@ impl NativeWindow {
 
     #[napi(catch_unwind)]
     pub fn preferred_format(&self) -> Result<String> {
+        self.ensure_surface()?;
         let surface = self.surface.borrow();
         let surface = surface
             .as_ref()
@@ -140,6 +142,7 @@ impl NativeWindow {
 
     #[napi(catch_unwind)]
     pub fn supported_alpha_modes(&self) -> Result<Vec<String>> {
+        self.ensure_surface()?;
         let surface = self.surface.borrow();
         let surface = surface
             .as_ref()
@@ -162,6 +165,7 @@ impl NativeWindow {
 
     #[napi(catch_unwind)]
     pub fn supported_texture_usages(&self) -> Result<u32> {
+        self.ensure_surface()?;
         let surface = self.surface.borrow();
         let surface = surface
             .as_ref()
@@ -183,53 +187,137 @@ impl NativeWindow {
             usage: u32,
             view_formats: Vec<wgpu::TextureFormat>,
         }
-        let descriptor: Descriptor = serde_json::from_str(&descriptor).map_err(failure)?;
-        let surface = self.surface.borrow();
-        let surface = surface
+        let different_device = self
+            .configured
+            .borrow()
             .as_ref()
-            .ok_or_else(|| failure("native window is closed"))?;
-        let adapter = self.adapter.borrow();
-        let adapter = adapter
-            .as_ref()
-            .ok_or_else(|| failure("request a compatible adapter first"))?;
-        let size = self.with_host(|host| host.facts())?;
-        let mut config = surface
-            .get_default_config(adapter, size.width, size.height)
-            .ok_or_else(|| failure("adapter cannot present to this native surface"))?;
-        let caps = surface.get_capabilities(adapter);
-        let usage = wgpu::TextureUsages::from_bits(descriptor.usage)
-            .ok_or_else(|| failure("invalid native surface texture usage"))?;
-        if size.width == 0
-            || size.height == 0
-            || !caps.formats.contains(&descriptor.format)
-            || !caps.usages.contains(usage)
-        {
-            return Err(failure(
-                "native surface format, usage or extent is unsupported",
-            ));
+            .is_some_and(|current| &current.device != device.surface_device());
+        if different_device {
+            self.unconfigure();
         }
-        config.alpha_mode = match descriptor.alpha_mode.as_str() {
-            "opaque" => wgpu::CompositeAlphaMode::Opaque,
-            "premultiplied" => wgpu::CompositeAlphaMode::PreMultiplied,
-            _ => return Err(failure("invalid native surface alpha mode")),
-        };
-        if !caps.alpha_modes.contains(&config.alpha_mode) {
-            return Err(failure(format!(
-                "native surface alpha mode {} is unsupported; available: {:?}",
-                descriptor.alpha_mode, caps.alpha_modes
+        self.ensure_surface()?;
+        let result = (|| {
+            let descriptor: Descriptor = serde_json::from_str(&descriptor).map_err(failure)?;
+            let surface = self.surface.borrow();
+            let surface = surface
+                .as_ref()
+                .ok_or_else(|| failure("native window is closed"))?;
+            let adapter = self.adapter.borrow();
+            let adapter = adapter
+                .as_ref()
+                .ok_or_else(|| failure("request a compatible adapter first"))?;
+            let size = self.with_host(|host| host.facts())?;
+            let caps = surface.get_capabilities(adapter);
+            let usage = wgpu::TextureUsages::from_bits(descriptor.usage).ok_or_else(|| {
+            failure(format!(
+                "invalid native surface texture usage: requested=0x{:08x}, format={:?}, extent={}x{}, supportedUsages={:?} (0x{:08x})",
+                descriptor.usage,
+                descriptor.format,
+                size.width,
+                size.height,
+                caps.usages,
+                caps.usages.bits(),
+            ))
+        })?;
+            if size.width == 0 || size.height == 0 {
+                return Err(failure(format!(
+                "native surface has zero drawable extent: requested={}x{}, format={:?}, usage={:?} (0x{:08x}), supportedFormats={:?}, supportedUsages={:?} (0x{:08x})",
+                size.width,
+                size.height,
+                descriptor.format,
+                usage,
+                descriptor.usage,
+                caps.formats,
+                caps.usages,
+                caps.usages.bits(),
             )));
+            }
+            if !caps.formats.contains(&descriptor.format) {
+                return Err(failure(format!(
+                "native surface format is unsupported: requested={:?}, usage={:?} (0x{:08x}), extent={}x{}, supportedFormats={:?}, supportedUsages={:?} (0x{:08x})",
+                descriptor.format,
+                usage,
+                descriptor.usage,
+                size.width,
+                size.height,
+                caps.formats,
+                caps.usages,
+                caps.usages.bits(),
+            )));
+            }
+            if !caps.usages.contains(usage) {
+                return Err(failure(format!(
+                "native surface texture usage is unsupported: requested={:?} (0x{:08x}), format={:?}, extent={}x{}, supportedUsages={:?} (0x{:08x}), supportedFormats={:?}",
+                usage,
+                descriptor.usage,
+                descriptor.format,
+                size.width,
+                size.height,
+                caps.usages,
+                caps.usages.bits(),
+                caps.formats,
+            )));
+            }
+            let mut config = surface
+            .get_default_config(adapter, size.width, size.height)
+            .ok_or_else(|| {
+                failure(format!(
+                    "adapter cannot present to the native surface: requestedFormat={:?}, requestedUsage={:?} (0x{:08x}), extent={}x{}, supportedFormats={:?}, supportedUsages={:?} (0x{:08x}), supportedAlphaModes={:?}",
+                    descriptor.format,
+                    usage,
+                    descriptor.usage,
+                    size.width,
+                    size.height,
+                    caps.formats,
+                    caps.usages,
+                    caps.usages.bits(),
+                    caps.alpha_modes,
+                ))
+            })?;
+            config.alpha_mode = match descriptor.alpha_mode.as_str() {
+                "opaque" => wgpu::CompositeAlphaMode::Opaque,
+                "premultiplied" => wgpu::CompositeAlphaMode::PreMultiplied,
+                _ => return Err(failure("invalid native surface alpha mode")),
+            };
+            if !caps.alpha_modes.contains(&config.alpha_mode) {
+                return Err(failure(format!(
+                    "native surface alpha mode {} is unsupported; available: {:?}",
+                    descriptor.alpha_mode, caps.alpha_modes
+                )));
+            }
+            config.format = descriptor.format;
+            config.usage = usage;
+            config.view_formats = descriptor.view_formats;
+            self.frame.borrow_mut().take();
+            device
+            .configure_surface(surface, &config)
+            .map_err(|cause| {
+                let requested_format = config.format;
+                let requested_alpha_mode = config.alpha_mode;
+                let requested_usage = config.usage;
+                let requested_usage_bits = requested_usage.bits();
+                let extent_width = config.width;
+                let extent_height = config.height;
+                let requested_view_formats = &config.view_formats;
+                let supported_formats = &caps.formats;
+                let supported_usages = caps.usages;
+                let supported_usage_bits = caps.usages.bits();
+                let supported_alpha_modes = &caps.alpha_modes;
+                failure(format!(
+                    "native surface configure failed: format={requested_format:?}, alphaMode={requested_alpha_mode:?}, usage={requested_usage:?} (0x{requested_usage_bits:08x}), extent={extent_width}x{extent_height}, viewFormats={requested_view_formats:?}, supportedFormats={supported_formats:?}, supportedUsages={supported_usages:?} (0x{supported_usage_bits:08x}), supportedAlphaModes={supported_alpha_modes:?}: {cause}"
+                ))
+            })?;
+            *self.configured.borrow_mut() = Some(ConfiguredSurface {
+                descriptor: config,
+                device: device.surface_device().clone(),
+                queue: device.surface_queue().clone(),
+            });
+            Ok(())
+        })();
+        if result.is_err() {
+            self.unconfigure();
         }
-        config.format = descriptor.format;
-        config.usage = usage;
-        config.view_formats = descriptor.view_formats;
-        self.frame.borrow_mut().take();
-        device.configure_surface(surface, &config)?;
-        *self.configured.borrow_mut() = Some(ConfiguredSurface {
-            descriptor: config,
-            device: device.surface_device().clone(),
-            queue: device.surface_queue().clone(),
-        });
-        Ok(())
+        result
     }
 
     #[napi(catch_unwind)]
@@ -247,8 +335,7 @@ impl NativeWindow {
         let mut acquired = self.acquire_surface_texture()?;
         if matches!(acquired, wgpu::CurrentSurfaceTexture::Lost) {
             self.surface.borrow_mut().take();
-            let surface = self.with_host(create_surface_for_host)?;
-            *self.surface.borrow_mut() = Some(surface);
+            self.ensure_surface()?;
         }
         if matches!(
             acquired,
@@ -273,7 +360,7 @@ impl NativeWindow {
 
     #[napi(catch_unwind)]
     pub fn present(&self) -> Result<()> {
-        if self.surface.borrow().is_none() {
+        if self.host.borrow().is_none() {
             return Err(failure("native window is closed"));
         }
         if let Some(frame) = self.frame.borrow_mut().take() {
@@ -293,6 +380,9 @@ impl NativeWindow {
     #[napi(catch_unwind)]
     pub fn unconfigure(&self) {
         self.frame.borrow_mut().take();
+        // Dropping only ConfiguredSurface leaves the DX12 swapchain bound to
+        // its original device/present queue. Retire that backing generation.
+        self.surface.borrow_mut().take();
         self.configured.borrow_mut().take();
     }
 
@@ -348,7 +438,6 @@ impl NativeWindow {
     #[napi(catch_unwind)]
     pub fn close(&self) {
         self.unconfigure();
-        self.surface.borrow_mut().take();
         self.adapter.borrow_mut().take();
         self.host.borrow_mut().take();
     }
@@ -362,14 +451,26 @@ impl NativeWindow {
     /// dropped. NativeWindow drops every acquired image and Surface before the host.
     /// No JS number, IPC message or cross-process address may supply these handles.
     pub unsafe fn from_host(host: Box<dyn NativeWindowHost>) -> Result<Self> {
-        let surface = create_surface_for_host(host.as_ref())?;
-        Ok(Self {
+        let window = Self {
             frame: RefCell::new(None),
             configured: RefCell::new(None),
-            surface: RefCell::new(Some(surface)),
+            surface: RefCell::new(None),
             adapter: RefCell::new(None),
             host: RefCell::new(Some(host)),
-        })
+        };
+        window.ensure_surface()?;
+        Ok(window)
+    }
+
+    fn ensure_surface(&self) -> Result<()> {
+        // Host liveness, not the presence of a current Surface, owns close.
+        self.with_host(|_| Ok(()))?;
+        if self.surface.borrow().is_some() {
+            return Ok(());
+        }
+        let surface = self.with_host(create_surface_for_host)?;
+        *self.surface.borrow_mut() = Some(surface);
+        Ok(())
     }
 
     fn with_surface<T>(&self, run: impl FnOnce(&wgpu::Surface<'static>) -> Result<T>) -> Result<T> {

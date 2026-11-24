@@ -65,7 +65,7 @@ struct Result { normal: vec4f, failures: vec4u }
       let channels = select(0xffffffffu ^ (1u << (layer % 32u)), 1u << (layer % 32u), mode == 1u);
       var g = encodeStandardGBuffer(n, n, 0.625, vec3f(0.5), 0.0,
         vec4f(0.04, 0.04, 0.04, 1.0), 1.0, vec3f(0), 1.0, 255u, 0x7fffffu,
-        true, channels, vec4f(0), mode != 0u);
+        true, channels, vec4f(0), mode != 0u, false);
       // The terrain producer owns the existing complete upper byte.
       g.receiver_geometry.x = (g.receiver_geometry.x & 0x00ffffffu) | (layer << 24u);
       let packed = g.receiver_geometry.x;
@@ -73,7 +73,7 @@ struct Result { normal: vec4f, failures: vec4u }
       failures.y += select(0u, 1u, ((g.normal_roughness.x & STANDARD_GBUFFER_V2_DIRECT_DFG_BIT) != 0u) != (mode != 0u));
       failures.z += select(0u, 1u, g.receiver_geometry.y != channels || (packed & 0x7fffffu) != pureNormal);
       failures.w += select(0u, 1u, any(decodeStandardReceiverNormal(packed) != decodeStandardReceiverNormal(pureNormal))
-        || any(g.normal_roughness != encodeStandardGBufferNormal(n, 0.625, 1.0, mode != 0u))
+        || any(g.normal_roughness != (encodeStandardGBufferNormal(n, 0.625, 1.0, mode != 0u) | vec2u(0u, 0x10000u)))
         || g.lighting_context.x != 0xff7fffffu);
     }
   }

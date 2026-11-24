@@ -179,6 +179,8 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-2',
+    // Radiance Cache exhausted the runner even with exclusive admission.
+    softwareGpuHeapRasterThreads: 1,
     // Run 44692964983 took 534 seconds in the complete serial owner.
     // Reserve its observed cost plus startup drift before ordinary backfill.
     placementReserveSeconds: 670,
@@ -195,26 +197,38 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-3',
-    nativeProcessSlots: 1,
+    // Cold GI Coverage approached the 16 GB runner limit with its own worker.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
+    softwareGpuHeapRasterThreads: 4,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-edit.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-gi-coverage.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/global-sdf-gpu-rays.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/global-card-lookup.dawn.test.ts',
     ],
   },
   {
     id: 'gi-4',
-    // Native GI replay exceeded the runner's memory limit alongside another owner.
+    // The cold GI-4 worker reached the 16 GB limit. Preserve exclusive admission
+    // and use the bounded allocator profile for the retained denoise witness.
     nativeProcessSlots: 2,
     limitSoftwareGpuWorkers: true,
+    softwareGpuHeapRasterThreads: 4,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-reflection-denoise.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/irradiance-field-reflection-filter.dawn.test.ts',
     ],
   },
   {
     id: 'gi-5',
-    nativeProcessSlots: 1,
+    // Residency and multiview exhausted the runner with four raster workers.
+    softwareGpuHeapRasterThreads: 1,
+    nativeProcessSlots: 2,
+    // The software GPU workers exceeded the runner's memory limit in CI run 44993818078.
+    limitSoftwareGpuWorkers: true,
     // Run 42122803571 reached this complete journey at minute 37 and
     // interrupted it at the unchanged step deadline. Reserve ten minutes
     // and admit it before ordinary backfill; the test budgets stay fixed.
@@ -229,16 +243,23 @@ export const DAWN_ISOLATED_GROUPS = [
   {
     id: 'gi-6',
     nativeProcessSlots: 1,
-    files: ['packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts'],
+    files: [
+      'packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/irradiance-field-visibility.dawn.test.ts',
+    ],
   },
   {
     id: 'screen-probe',
     // The full capture/replay can exceed the runner's memory limit even alone.
     nativeProcessSlots: 2,
     limitSoftwareGpuWorkers: true,
-    // The same run never reached this owner; retain its complete maximum.
+    softwareGpuHeapRasterThreads: 4,
+    // Retain the complete forecast while core runs the focused history witness.
     placementReserveSeconds: 190.617,
-    files: ['packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts'],
+    files: [
+      'packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/screen-probe-history.dawn.test.ts',
+    ],
   },
 ];
 
@@ -262,13 +283,15 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Separate the serial Surface, Three Surface and GI-4 workloads across lanes.
 // Run 45026514954 reached ordinary-1 after 23 minutes of native owners.
 // Exchange Path Tracer and Compact-1 to use lane four's measured headroom.
+// Exclusive GI-5 changed the ordinary backfill for the full 44152394166 replay.
+// Exchange GI-1 and Nested Discard to recover the existing lane budget.
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
     'compact-1',
     'direct-light',
     'feature-depth',
-    'gi-1',
+    'nested-discard',
     'gi-3',
     'heavy-3',
     'modeling-s6',
@@ -299,7 +322,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'gi-5',
     'gi-6',
     'heavy-4',
-    'nested-discard',
+    'gi-1',
     'path-tracer',
     'shadow-fields',
     'renderer',
@@ -314,6 +337,12 @@ export const DAWN_GATE_GROUPS = [
     env: {},
     retryMode: 'vitest-dawn',
     vitestShard: `${index + 1}/${DAWN_GATE_SHARDS.length}`,
+    // Run 45108873277 recorded OOM kills in ordinary lanes one and four.
+    // Keep both ordinary workers and bound the per-worker software GPU heap.
+    ...(index === 0 || index === 3 ? { softwareGpuHeapRasterThreads: 2 } : {}),
+    // Lane four still hit the 16 GB cap twice in run 45113927856 with
+    // the bounded allocator. Serialize execution without moving any files.
+    ...(index === 3 ? { serialOrdinary: true } : {}),
   })),
   ...Array.from({ length: 3 }, (_, partition) => ({
     id: `compact-${partition + 1}`,

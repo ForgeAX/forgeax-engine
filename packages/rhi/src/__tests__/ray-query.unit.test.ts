@@ -72,6 +72,22 @@ describe('capability gates', () => {
 });
 
 describe('descriptor validation', () => {
+  it('admits explicit non-opaque candidates and rejects a malformed opacity declaration', () => {
+    for (const opaque of [undefined, false, true]) {
+      expect(
+        validateBlasDescriptor(SUPPORTED, {
+          geometries: [{ vertexFormat: 'float32x3', vertexCount: 3, opaque }],
+        }).ok,
+      ).toBe(true);
+    }
+    for (const opaque of [0, null, 'false']) {
+      expect(
+        validateBlasDescriptor(SUPPORTED, {
+          geometries: [{ vertexFormat: 'float32x3', vertexCount: 3, opaque: opaque as never }],
+        }).ok,
+      ).toBe(false);
+    }
+  });
   it('admits triangle lists within the declared limits', () => {
     expect(
       validateBlasDescriptor(SUPPORTED, {

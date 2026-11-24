@@ -5,7 +5,7 @@ import {
 } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine/app/browser';
 import { defineSystem, FixedUpdate, Time, Update } from '@forgeax/engine/ecs';
-import { prepareRuntimePackContent } from '@forgeax/engine/import';
+import { prepareRuntimePackContent, type RuntimePackContent } from '@forgeax/engine/import';
 import { quat } from '@forgeax/engine/math';
 import { AssetGuid, PackageId } from '@forgeax/engine/pack/guid';
 import {
@@ -33,6 +33,8 @@ import {
   ScreenSpaceReflection,
   Skylight,
   TONEMAP_ACES_FILMIC,
+  Visibility,
+  VisibilityStateValue,
 } from '@forgeax/engine/render';
 import {
   publishWaterRiverBake,
@@ -76,7 +78,7 @@ import { requireDemoValue } from '../../runtime-input';
 import { arrangeWaterSettings, waterQualityControl } from '../../settings-panel';
 import { waterStageNavigation } from '../../stage-catalog';
 import { WATER_R7_BAKE_PACKAGE, WATER_R7_PACKAGE, WATER_R7_SCOPE } from './identity';
-import { loadBakeSnapshot, saveBakeSnapshot } from './storage';
+import { loadBakeContent, saveBakeContent } from './storage';
 import './style.css';
 import '../../settings-panel.css';
 
@@ -249,16 +251,16 @@ async function main() {
       })
       .unwrap();
   };
+  let bakeContent: RuntimePackContent | undefined;
   let restored = false,
     bakeOrigin = '实时场',
     bakeVersion = '--',
     bakeStatus = '尚未烘焙';
   try {
-    const saved = await loadBakeSnapshot();
+    const saved = await loadBakeContent();
     if (saved !== undefined) {
-      (
-        await runtime.producer.restore(saved as Parameters<typeof runtime.producer.restore>[0])
-      ).unwrap();
+      (await runtime.producer.admit(saved)).unwrap();
+      bakeContent = saved;
       restored = true;
       bakeOrigin = '冷启动恢复';
       bakeStatus = '已恢复';
@@ -552,6 +554,17 @@ async function main() {
         data: { enabled: definition.group === 'rotation' },
       })
       .unwrap();
+    world
+      .addComponent(entity, {
+        component: Visibility,
+        data: {
+          state:
+            definition.group === 'rotation'
+              ? VisibilityStateValue.visible
+              : VisibilityStateValue.hidden,
+        },
+      })
+      .unwrap();
     return { ...definition, entity };
   });
   const pawn = spawn('sphere', 'yellow', [-32, 0.15, 0], [1.2, 1.2, 1.2]);
@@ -634,8 +647,9 @@ async function main() {
       }),
     )
     .unwrap();
-  const sourceMarker = spawn('ring', 'teal', [0, 0.25, -10], [1.1, 1.1, 1.1], [Math.PI / 2, 0, 0]);
-  const sinkMarker = spawn('ring', 'red', [0, 0.25, 10], [1.1, 1.1, 1.1], [Math.PI / 2, 0, 0]);
+  const sourceMarker = spawn('box', 'teal', [0, 0.55, -10], [0.6, 1.1, 0.6]);
+  const sinkMarker = spawn('box', 'red', [0, 0.55, 10], [0.6, 1.1, 0.6]);
+  for (const z of [-10, 10]) spawn('box', 'metal', [0, -1.25, z], [0.18, 2.5, 0.18]);
   world
     .spawn({
       component: DirectionalLight,
@@ -865,7 +879,7 @@ async function main() {
     let saved = false;
     try {
       bakeStatus = '已发布，正在保存';
-      await saveBakeSnapshot(runtime.producer.snapshot());
+      await saveBakeContent(requireDemoValue(bakeContent, 'accepted bake content'));
       saved = true;
       await publishBaked();
       bakeStatus = '已持久化';
@@ -917,6 +931,7 @@ async function main() {
           : runtime.producer.admit(content))
       ).unwrap();
       acceptedBake = published.publication;
+      bakeContent = content;
       simulation.finishBake(request);
       operation('Bake publication', 'river');
       await persistBake();
@@ -1152,12 +1167,12 @@ async function main() {
             .unwrap();
           world
             .set(sourceMarker, Transform, {
-              scale: checked('source') ? [1.1, 1.1, 1.1] : [0.15, 0.15, 0.15],
+              scale: checked('source') ? [0.6, 1.1, 0.6] : [0.3, 0.55, 0.3],
             })
             .unwrap();
           world
             .set(sinkMarker, Transform, {
-              scale: checked('sink') ? [1.1, 1.1, 1.1] : [0.15, 0.15, 0.15],
+              scale: checked('sink') ? [0.6, 1.1, 0.6] : [0.3, 0.55, 0.3],
             })
             .unwrap();
           if (simulation.inspect().bake.status === 'captured' && !bakePublishing)
@@ -1191,9 +1206,15 @@ async function main() {
           if (checked('rigid-motion')) rigidAngle += world.getResource(Time).delta * 0.65;
           const selected = node<HTMLSelectElement>('rigid-fixture').value;
           for (const fixture of rigidFixtures) {
+            const active = selected === 'all' || selected === fixture.group;
             world
               .set(fixture.entity, WaterShallowCollider, {
-                enabled: selected === 'all' || selected === fixture.group,
+                enabled: active,
+              })
+              .unwrap();
+            world
+              .set(fixture.entity, Visibility, {
+                state: active ? VisibilityStateValue.visible : VisibilityStateValue.hidden,
               })
               .unwrap();
             const rotation =
@@ -1274,11 +1295,30 @@ async function main() {
     operation('Native sphere launch requested', 'shallow');
   };
   let oceanRequestSequence = 0;
-  const requestOcean = async () => {
+  let oceanRequestPending = false;
+  const refreshOceanRequest = () => {
+    const state = water().oceanPatch()?.inspect().state;
+    const initializing = state?.status === 'initializing' || state?.status === 'stale';
+    const busy = oceanRequestPending || initializing;
+    const button = node<HTMLButtonElement>('request-ocean');
+    button.disabled = busy;
+    button.setAttribute('aria-busy', String(busy));
+    button.textContent = oceanRequestPending
+      ? '加载海面资源…'
+      : initializing
+        ? '正在创建海面…'
+        : state?.status === 'ready' || state?.status === 'paused'
+          ? '重建海面'
+          : '创建海面';
+  };
+  const requestOcean = async (restart = false) => {
     const request = ++oceanRequestSequence;
     const recipeGuid = guid(checked('ocean-grid') ? 'recipe/ocean-grid' : 'recipe/ocean');
-    const recipeHandle = (await assets.load(recipeGuid, 'water-simulation-recipe')).unwrap();
+    oceanRequestPending = true;
+    refreshOceanRequest();
+    let recipeHandle: AssetHandle<'water-simulation-recipe'> | undefined;
     try {
+      recipeHandle = (await assets.load(recipeGuid, 'water-simulation-recipe')).unwrap();
       if (request !== oceanRequestSequence) return;
       const recipe: WaterAdvancedRecipe = {
         guid: recipeGuid,
@@ -1286,13 +1326,18 @@ async function main() {
         asset: assets.read(recipeHandle).unwrap() as Recipe,
       };
       if (water().oceanPatch()?.recipe.guid !== recipeGuid) water().removeOceanPatch();
+      else if (restart) water().oceanPatch()?.reset();
       const ocean = water().requestOceanPatch(recipe).unwrap();
       node<HTMLInputElement>('ocean-enabled').checked = true;
       ocean.setEnabled(true);
       ocean.setPaused(checked('ocean-pause'));
-      operation('FFT first request', 'ocean');
+      operation(restart ? 'FFT rebuild requested' : 'FFT first request', 'ocean');
     } finally {
-      assets.release(recipeHandle).unwrap();
+      if (recipeHandle) assets.release(recipeHandle).unwrap();
+      if (request === oceanRequestSequence) {
+        oceanRequestPending = false;
+        refreshOceanRequest();
+      }
     }
   };
   const setOceanGrid = async (enabled: boolean) => {
@@ -1317,6 +1362,7 @@ async function main() {
       group: fixture.group,
       mesh: fixture.mesh,
       optedIn: world.get(fixture.entity, WaterShallowCollider).unwrap().enabled,
+      visible: world.get(fixture.entity, Visibility).unwrap().state !== VisibilityStateValue.hidden,
       accepted: world
         .getResource<PhysicsWorld>(PhysicsWorldResource)
         .getCommittedColliderPrimitives?.(fixture.entity),
@@ -1430,7 +1476,7 @@ async function main() {
           initializing: '初始化',
           ready: '运行中',
           paused: '已暂停',
-          stale: '分辨率已申请',
+          stale: '正在生成海面',
           unsupported: '设备不支持',
           unavailable: '输入不可用',
         }[ocean.status]
@@ -1502,8 +1548,7 @@ async function main() {
         : ocean?.status === 'initializing'
           ? `${ocean.allocation === 'initial-1x1' ? 1 : ocean.requestedSize} × ${ocean.allocation === 'initial-1x1' ? 1 : ocean.requestedSize}`
           : '未申请';
-    node<HTMLButtonElement>('request-ocean').disabled =
-      ocean !== undefined && !['not-requested', 'disabled', 'unavailable'].includes(ocean.status);
+    refreshOceanRequest();
     const refreshQueries = () => {
       const queries = node('queries');
       queries.replaceChildren();
@@ -1594,7 +1639,7 @@ async function main() {
     node('request-ocean').addEventListener(
       'click',
       () => {
-        void requestOcean().catch(report);
+        void requestOcean(true).catch(report);
       },
       options,
     );

@@ -7,11 +7,12 @@ import type { RenderSystemInternals } from '../record/render-context';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { CardCaptureSlice } from './card-capture-schedule';
 import {
-  createGlobalSdfCompositionRecorder,
+  type createGlobalSdfCompositionRecorder,
   GLOBAL_SDF_COMPOSE_WGSL,
   type GlobalSdfCompositionInputs,
   type GlobalSdfGrid,
   packGlobalSdfComposition,
+  prepareGlobalSdfCompositionRecorder,
 } from './global-sdf';
 import {
   createGlobalSdfQueryRecorder,
@@ -25,13 +26,35 @@ import {
 } from './probe-origin-support';
 import { createProbeRayRecorder, PROBE_RAYS_WGSL } from './probe-rays';
 import { type ProbeCardCapture, prepareProbeCards } from './renderer-probe-cards';
-import { SceneFieldRows, type SceneFieldSource } from './scene-field-projection';
+import {
+  SceneFieldRows,
+  type SceneFieldSource,
+  sceneFieldSourceEpoch,
+} from './scene-field-projection';
 import { SDF_INSTANCE_STRIDE, type SdfMeshInstance } from './sdf-query';
+import type { SdfSurfacePlacement } from './sdf-surface-storage';
+import type { CardCapturePhase } from './surface-cards';
+import {
+  WORLD_BOUNDS_HEADER_BYTES,
+  WORLD_BOUNDS_POOL_MAX_BYTES,
+  WORLD_BOUNDS_ROW_BYTES,
+  type WorldBoundsIndexCoverage,
+} from './world-bounds-pool';
 
 export interface ProbeGlobalSource {
   readonly scene: PersistentGpuDrivenState;
   readonly sourceScope: RenderResourceScope;
   readonly lease: RenderReadLease | undefined;
+}
+/** One immutable CPU image of the canonical placement generation. Mesh regions are shared facts. */
+export interface ProbeGlobalPlacementSnapshot {
+  readonly instances: readonly SdfMeshInstance[];
+  readonly instanceData: Uint8Array;
+  readonly surface: SdfSurfacePlacement;
+  readonly boundsIndex?: {
+    readonly sourceEpoch: number;
+    readonly coverage: WorldBoundsIndexCoverage;
+  };
 }
 export interface ProbeGlobalRegion {
   readonly retained: NonNullable<PersistentGpuDrivenState['retained']>;
@@ -40,45 +63,45 @@ export interface ProbeGlobalRegion {
   readonly sources: readonly SceneFieldSource[];
   /** The projected instance rows behind `input`, indexed by Global instance id. */
   readonly instances: readonly SdfMeshInstance[];
+  /** Region-owned current image; publication replaces it, never mutating held snapshots. */
+  readonly placement: { current: ProbeGlobalPlacementSnapshot };
   readonly grid: GlobalSdfGrid;
   readonly input: GlobalSdfCompositionInputs;
   readonly cards?: ProbeCardCapture;
   readonly voxelCount: number;
   readonly lifetime: ResidencyLifetime;
   readonly compose: Extract<
-    ReturnType<typeof createGlobalSdfCompositionRecorder>,
+    Awaited<ReturnType<typeof createGlobalSdfCompositionRecorder>>,
     { ok: true }
   >['value']['record'];
   readonly query: Extract<
-    ReturnType<typeof createGlobalSdfQueryRecorder>,
+    Awaited<ReturnType<typeof createGlobalSdfQueryRecorder>>,
     { ok: true }
   >['value']['record'];
   readonly rays: Extract<
-    ReturnType<typeof createProbeRayRecorder>,
+    Awaited<ReturnType<typeof createProbeRayRecorder>>,
     { ok: true }
   >['value']['record'];
   readonly support: Extract<
-    ReturnType<typeof createProbeOriginSupportRecorder>,
+    Awaited<ReturnType<typeof createProbeOriginSupportRecorder>>,
     { ok: true }
   >['value']['record'];
   /** Becomes true on actual physical submission, independently of publication. */
   composed: boolean;
-  /** Present when the region was sized for in-place instance adds. */
+  /** Reserved canonical allocation facts; additions require a complete rebuild. */
   readonly headroom?: ProbeGlobalHeadroom;
 }
 /**
- * Spare Global SDF rows and field words behind an editable region. Freed rows are
- * reused; field words only grow. Exhausting either means the caller rebuilds.
+ * Spare allocation behind an editable region. The versioned surface pool still
+ * requires a complete rebuild for additions or geometry changes. Removal keeps
+ * its row as a zero-mask tombstone rather than compacting canonical addresses.
  */
 interface ProbeGlobalHeadroom {
   readonly rows: IndexAllocator;
   /** Field word high-water mark and its fixed capacity. */
   fieldWords: number;
   readonly fieldCapacity: number;
-  /** Cooked field -> word offset, so instances of one mesh share their samples. */
-  readonly fieldOffsets: Map<object, number>;
-  readonly geometryIds: Map<object, number>;
-  /** Live instance count written to settings.w (the composition loop bound). */
+  /** Canonical row high-water mark written to settings.w, including tombstones. */
   instanceCount: number;
 }
 interface ProbeGlobalBuffers {
@@ -99,6 +122,7 @@ interface PreparedProbeCards {
   /** Records {@link captureSlice} (clearing an edited slice first) into the atlas pass. */
   readonly capture: (
     pass: Parameters<ProbeCardCapture['capture']['clearTiles']>[0],
+    phase: CardCapturePhase,
   ) => ReturnType<ProbeCardCapture['capture']['recordPass']>;
   readonly lookup: ProbeCardCapture['lookup'];
   readonly support: ProbeCardCapture['support'];
@@ -206,21 +230,33 @@ export async function prepareProbeGlobalRegion(
   const fieldRevision = fields.revision;
   if (!retained.isSourceCurrent())
     throw new Error('probe Global source changed during synchronous resource admission');
-  const packed = packGlobalSdfComposition(projected.instances, profile.grid).unwrap();
+  const count = projected.instances.length;
+  const rows = editable ? Math.max(count, Math.min(1024, profile.maxInstances)) : count;
+  const device = runtime.device;
+  const sourceEpoch = sceneFieldSourceEpoch(fieldRevision).unwrap();
+  const packed = packGlobalSdfComposition(projected.instances, profile.grid, {
+    sourceEpoch,
+    capacity: rows,
+    // Spare rows do not make the admitted roster stale. Placement edits can
+    // retain the same cell lists only while their original coverage holds.
+    index: true,
+    maxBytes: Math.min(
+      WORLD_BOUNDS_POOL_MAX_BYTES,
+      device.limits.maxBufferSize,
+      device.limits.maxStorageBufferBindingSize,
+    ),
+  }).unwrap();
   // Validate query-specific spacing/dimensions before allocating the region.
   packGlobalSdfQuerySettings(packed.grid, profile).unwrap();
   const compile = runtime.createShaderModule;
   if (compile === undefined)
     throw new Error('probe Global preparation requires the Renderer shader module adapter');
-  const device = runtime.device;
   const owned: Buffer[] = [];
   let cards: ProbeCardCapture | undefined;
   const lifetime = new ResidencyLifetime(() => {
     for (const buffer of owned) device.destroyBuffer(buffer);
     cards?.release();
   });
-  const count = projected.instances.length;
-  const rows = editable ? Math.max(count, Math.min(1024, profile.maxInstances)) : count;
   const words = packed.data.fields.byteLength / 4;
   const fieldCapacity = editable
     ? Math.max(words, Math.min(4_194_304, words + Math.ceil(profile.maxFieldBytes / 4)))
@@ -228,31 +264,16 @@ export async function prepareProbeGlobalRegion(
   const sizes: Partial<Record<keyof typeof packed.data, number>> = editable
     ? {
         instances: Math.max(1, rows) * SDF_INSTANCE_STRIDE,
-        bounds: Math.max(1, rows) * 48,
+        bounds: WORLD_BOUNDS_HEADER_BYTES + Math.max(1, rows) * WORLD_BOUNDS_ROW_BYTES,
         fields: fieldCapacity * 4,
       }
     : {};
   let headroom: ProbeGlobalHeadroom | undefined;
   if (editable) {
-    const view = new DataView(
-      packed.data.instances.buffer,
-      packed.data.instances.byteOffset,
-      packed.data.instances.byteLength,
-    );
-    const fieldOffsets = new Map<object, number>();
-    const geometryIds = new Map<object, number>();
-    for (const s of projected.sources) {
-      const offset = view.getUint32(s.firstInstance * SDF_INSTANCE_STRIDE + 80, true);
-      if (offset !== 0xffffffff) fieldOffsets.set(s.field, offset);
-      const instance = projected.instances[s.firstInstance];
-      if (instance !== undefined) geometryIds.set(s.mesh, instance.geometryId);
-    }
     headroom = {
       rows: createIndexAllocator(Math.max(1, rows), count),
       fieldWords: words,
       fieldCapacity,
-      fieldOffsets,
-      geometryIds,
       instanceCount: count,
     };
   }
@@ -278,6 +299,15 @@ export async function prepareProbeGlobalRegion(
         return [name, { buffer, size }];
       }),
     ) as unknown as GlobalSdfCompositionInputs;
+    // The accepted binding spans include actual editable headroom. They are
+    // not the geometry usedWords or the unexpanded cold byte-array lengths.
+    device.queue
+      .writeBuffer(
+        input.settings.buffer,
+        48,
+        Uint32Array.from([input.instances.size / 4, input.fields.size / 4, count, sourceEpoch]),
+      )
+      .unwrap();
     if (profile.cards !== undefined)
       cards = await prepareProbeCards(
         runtime,
@@ -302,15 +332,26 @@ export async function prepareProbeGlobalRegion(
       ...(cards === undefined ? {} : { cards }),
       sources: projected.sources,
       instances: projected.instances,
+      placement: {
+        current: {
+          instances: projected.instances,
+          instanceData: packed.data.instances,
+          surface: packed.surface,
+          ...(packed.boundsIndexCoverage === undefined
+            ? {}
+            : { boundsIndex: { sourceEpoch, coverage: packed.boundsIndexCoverage } }),
+        },
+      },
       grid: packed.grid,
       input,
       voxelCount: packed.voxelCount,
       lifetime,
       composed: false,
-      compose: createGlobalSdfCompositionRecorder(device, compositionModule).unwrap().record,
-      query: createGlobalSdfQueryRecorder(device, queryModule).unwrap().record,
-      rays: createProbeRayRecorder(device, raysModule).unwrap().record,
-      support: createProbeOriginSupportRecorder(device, supportModule).unwrap().record,
+      compose: (await prepareGlobalSdfCompositionRecorder(device, compositionModule)).unwrap()
+        .record,
+      query: (await createGlobalSdfQueryRecorder(device, queryModule)).unwrap().record,
+      rays: (await createProbeRayRecorder(device, raysModule)).unwrap().record,
+      support: (await createProbeOriginSupportRecorder(device, supportModule)).unwrap().record,
       ...(headroom === undefined ? {} : { headroom }),
     };
   } catch (cause) {

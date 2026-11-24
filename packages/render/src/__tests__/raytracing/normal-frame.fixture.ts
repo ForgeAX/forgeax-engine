@@ -146,11 +146,11 @@ export async function verifyNormalFrame(path: RayPathFixture, fixture: SdfCardsF
   const captured = recorder.captureFrame();
   (await recorder.frameBoundary()).unwrap();
   const encoder = device.createCommandEncoder({}).unwrap();
-  tracer.recordSample(encoder).unwrap(); // works 0..4
-  cards.record(encoder).unwrap(); // works 5..10
-  query.record(encoder).unwrap(); // work 11
-  lookup.record(encoder).unwrap(); // work 12
-  stale.record(encoder).unwrap(); // work 13
+  tracer.recordSample(encoder).unwrap();
+  cards.record(encoder).unwrap();
+  query.record(encoder).unwrap();
+  lookup.record(encoder).unwrap();
+  stale.record(encoder).unwrap();
   device.queue.submit([encoder.finish().unwrap()]).unwrap();
   const inputBytes = await readBuffer(device, tracer.buffers.inputs, 64 * 224);
   const surfaceBytes = await readBuffer(device, tracer.buffers.surfaces, 64 * 96);
@@ -229,33 +229,62 @@ export async function verifyNormalFrame(path: RayPathFixture, fixture: SdfCardsF
   raw.destroy();
   const tape = decodeTape(bytes).unwrap(),
     model = buildFrameModel(tape);
-  expect(model.works).toHaveLength(14);
+  const shade = model.works.find((work) =>
+    work.pipeline.shaders.some((shader) => shader.entryPoint === 'shade'),
+  );
+  const passWorks = (label: string) =>
+    model.works.filter((work) => {
+      const start = tape.events[model.passes[work.passIndex]?.beginEventIndex ?? -1];
+      return (
+        (start?.kind === 'beginRenderPass' || start?.kind === 'beginComputePass') &&
+        start.desc?.label === label
+      );
+    });
+  const material = passWorks('cards.capture');
+  const identity = passWorks('cards.capture-identity');
+  const [mappedWork, staleWork] = passWorks('cards.lookup');
+  const firstCard = material.at(0);
+  const lastCard = material.at(-1);
+  assert(shade && mappedWork && staleWork && firstCard && lastCard);
+  expect(passWorks('cards.lookup')).toHaveLength(2);
+  expect(
+    identity.map(
+      (work) => work.pipeline.shaders.find((shader) => shader.stage === 'fragment')?.entryPoint,
+    ),
+  ).toEqual([
+    ...material.map(() => 'fs_clear_identity'),
+    ...material.map(() => 'fs_card_identity'),
+  ]);
+  const firstIdentity = identity.at(0);
+  const lastIdentity = identity.at(-1);
+  assert(firstIdentity && lastIdentity);
+  expect(lastCard.workIndex).toBeLessThan(firstIdentity.workIndex);
+  expect(lastIdentity.workIndex).toBeLessThan(mappedWork.workIndex);
   const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const replay = (
     await openReplay(tape, { device: fresh, createShaderModule: webgpu.createShaderModule })
   ).unwrap();
   try {
     for (const [work, binding, expected] of [
-      [3, 4, inputBytes],
-      [3, 5, surfaceBytes],
-      [3, 3, pathBytes],
-      [12, 2, lookupBytes],
-      [13, 2, staleBytes],
+      [shade, 4, inputBytes],
+      [shade, 5, surfaceBytes],
+      [shade, 3, pathBytes],
+      [mappedWork, 2, lookupBytes],
+      [staleWork, 2, staleBytes],
     ] as const) {
-      const resource = model.works[work]?.bindings.find((b) => b.binding === binding)?.resourceId;
+      const resource = work.bindings.find((b) => b.binding === binding)?.resourceId;
       assert(resource);
-      expect(Array.from((await replay.readResourceAtWork(resource, work)).unwrap().bytes)).toEqual(
-        Array.from(expected),
-      );
+      const captured = (await replay.readResourceAtWork(resource, work.workIndex)).unwrap();
+      expect(Array.from(captured.bytes)).toEqual(Array.from(expected));
     }
     // The first card cannot contain the later +Z raster result. Replay must honor work prefixes.
-    const depth = model.works[12]?.bindings.find((b) => b.binding === 7)?.resourceId;
+    const depth = mappedWork.bindings.find((b) => b.binding === 7)?.resourceId;
     assert(depth);
     const before = new Float32Array(
-      (await replay.readResourceAtWork(depth, 5)).unwrap().bytes.slice().buffer,
+      (await replay.readResourceAtWork(depth, firstCard.workIndex)).unwrap().bytes.slice().buffer,
     );
     const after = new Float32Array(
-      (await replay.readResourceAtWork(depth, 10)).unwrap().bytes.slice().buffer,
+      (await replay.readResourceAtWork(depth, lastCard.workIndex)).unwrap().bytes.slice().buffer,
     );
     const columns = cards.width / cards.resolution;
     const pixel = (Math.floor(4 / columns) * 16 + 8) * cards.width + (4 % columns) * 16 + 8;

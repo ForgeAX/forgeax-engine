@@ -137,7 +137,7 @@ PR 创建后，每次后续更新都必须采用此流程。初始 CI 运行建�
 | 无法复用 | 检查资格拒绝原因；在下次推送前修正声明或基线，并报告缺失的历史或产物。保留符合资格的成功结果，让其他检查按契约重新执行。 |
 | 资格验收 | 最终提交通过完整的新执行或合格继承，取得受保护审查后正常合并。下次更新前，将基线推进至本次已完成的运行。 |
 
-Coverage core 通过经过审查的共享排除清单延后六套扩展 Modeling 示例，仍保留实测 Modeling 文件耗时的 79.8%、核心算子、标称 S6 和原阈值。producer 与合并必须选择同一 profile；现有 full-profile Nightly 恢复全部六套。成员变化后重新验证四个 coverage 分片，保留历史预留，不能将旧子任务时间称为新测量。
+Coverage core 保留 Modeling 内核测试、标称 S6，以及代表性的运动和网格发布集成测试。CI 运行指南列出移出的示例及其保留用例。产出和合并使用同一 profile。现有四个 job 跑 12 个 Modeling 分区，full profile 跑 16 个。成员变化后重新验证四个 Coverage 分片，旧分区耗时仅供原清单回放。
 
 运行 43802933357 的不同失败分别交给对应 owner：SDK source-export guard 之前执行已有的锁定安装；冷 authoring publication 使用已有独占 coverage 准入；portable VFX core carrier 将冗余点阴影方向交给 unrestricted carrier，保留纹理限制、超时、IBL、深度和回放断言。kernel 与 WebGL loss owner 在原 batch 内排空 GPU 邻居。新增 Browser 文件留下尾部单文件组时，在原 batch 数量和成本界限内调整，保留完整发现、独占 runner 准入和 planner 回归。morph 的四个 backend/skin 用例继续使用已有单文件独占组，保留十五秒准备限制。混合 native/Three 阴影就绪问题用新进程运行 interop 文件并排空 GPU 邻居，保留二十秒界限、60 个完成帧及原生捕获、像素和回放检查。Renderer/Host optimizer HTTP fixture 区分回环传输错误、非 200 Vite 响应与优化依赖字节变化。Modeling 面板截图已经验证真实高亮；没有新增判定依据时，无需重复 CLI 截图。将终止归因到 GPU 或 shader 之前，记录阶段信号与 cgroup OOM 增量。
 

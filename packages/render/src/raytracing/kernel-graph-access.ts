@@ -34,7 +34,11 @@ export function kernelGraphAccess(
       return { resource: resource as GraphBuffer, usage: 'storage-read' };
     case 'storage':
       return { resource: resource as GraphBuffer, usage: storage };
+    case 'storage-rgba16float':
+    case 'storage-r32float':
+      return { resource: resource as GraphTextureView, usage: 'storage-write' };
     case 'float':
+    case 'filtered-float':
     case 'depth':
     case 'uint':
       return { resource: resource as GraphTextureView, usage: 'sampled-read' };
@@ -55,6 +59,9 @@ export function resolveKernelBinding(
     case 'storage':
       return { buffer: resources.buffer(handle as GraphBuffer).unwrap() };
     case 'float':
+    case 'filtered-float':
+    case 'storage-rgba16float':
+    case 'storage-r32float':
     case 'depth':
     case 'uint':
       return resources.textureView(handle as GraphTextureView).unwrap();

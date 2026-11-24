@@ -316,9 +316,11 @@ it('keeps global query resource ownership and mask admission at the composed-reg
 
 it('records only exact aligned borrowed query ranges without writing, submitting or releasing them', async () => {
   const device = await queryTestDevice();
-  const recorder = createGlobalSdfQueryRecorder(
-    device,
-    (await createShaderModule(device, { code: '' })).unwrap(),
+  const recorder = (
+    await createGlobalSdfQueryRecorder(
+      device,
+      (await createShaderModule(device, { code: '' })).unwrap(),
+    )
   ).unwrap();
   const range = (size: number) => ({
     buffer: device.createBuffer({ size: size + 512, usage: 0xcc }).unwrap(),
@@ -327,7 +329,7 @@ it('records only exact aligned borrowed query ranges without writing, submitting
   });
   const input = {
     voxels: range(64 * 16),
-    grid: range(48),
+    grid: range(64),
     rays: range(65 * 48),
     hits: range(65 * 64),
     settings: range(16),
@@ -389,7 +391,7 @@ it('checks query capabilities and limits before dispatch and cleans owned buffer
     return result;
   };
   for (const caps of [{ compute: false }, { storageBuffer: false }])
-    expect(createGlobalSdfQueryRecorder(limited({}, caps), module)).toMatchObject({
+    expect(await createGlobalSdfQueryRecorder(limited({}, caps), module)).toMatchObject({
       ok: false,
       error: { code: 'rhi-not-available' },
     });
@@ -402,7 +404,7 @@ it('checks query capabilities and limits before dispatch and cleans owned buffer
     { maxComputeWorkgroupSizeX: 63 },
     { maxComputeInvocationsPerWorkgroup: 63 },
   ])
-    expect(createGlobalSdfQueryRecorder(limited(limits), module)).toMatchObject({
+    expect(await createGlobalSdfQueryRecorder(limited(limits), module)).toMatchObject({
       ok: false,
       error: { code: 'limit-exceeded' },
     });
@@ -430,7 +432,7 @@ it('checks query capabilities and limits before dispatch and cleans owned buffer
   const buffer = device.createBuffer({ size: 13 ** 3 * 16, usage: 0xcc }).unwrap();
   const input = {
     voxels: { buffer, size: 13 ** 3 * 16 },
-    grid: { buffer, size: 48 },
+    grid: { buffer, size: 64 },
     rays: { buffer, size: 65 * 48 },
     hits: { buffer, size: 65 * 64 },
     settings: { buffer, size: 16 },
@@ -441,7 +443,7 @@ it('checks query capabilities and limits before dispatch and cleans owned buffer
     { maxStorageBufferBindingSize: 1024 },
     { maxBufferSize: 1024 },
   ]) {
-    const query = createGlobalSdfQueryRecorder(limited(limits), module).unwrap();
+    const query = (await createGlobalSdfQueryRecorder(limited(limits), module)).unwrap();
     expect(query.record(pass, input, 65)).toMatchObject({
       ok: false,
       error: { code: 'limit-exceeded' },

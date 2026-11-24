@@ -46,9 +46,12 @@ export type CameraExposure =
   | { readonly kind: 'manual'; readonly multiplier: number }
   | {
       readonly kind: 'auto';
+      /** UE's linear/exponential transition in scene luminance EV. */
+      readonly adaptation?: 'ue-eye-adaptation';
       readonly fallback: number;
       readonly compensationEv: number;
       readonly rangeEv: readonly [min: number, max: number];
+      /** For UE adaptation these are stops per second for brighter/darker scene luminance. */
       readonly rates: readonly [up: number, down: number];
     };
 
@@ -61,6 +64,8 @@ export const CAMERA_EXPOSURE_MODE_MANUAL = 0;
  * re-meters when the sun or sky brightness changes at runtime.
  */
 export const CAMERA_EXPOSURE_MODE_AUTO = 1;
+/** GPU-adapted exposure with UE's EV transition and view-history reset. */
+export const CAMERA_EXPOSURE_MODE_AUTO_UE = 2;
 
 /** Product-supported white-balance temperature range in Kelvin. */
 export const CAMERA_TEMPERATURE_MIN = 1000;
@@ -150,6 +155,15 @@ export function validateCameraExposure(exposure: CameraExposure): CameraExposure
     return exposure;
   }
   if (exposure.kind === 'auto') {
+    if (exposure.adaptation !== undefined && exposure.adaptation !== 'ue-eye-adaptation') {
+      throw cameraError(
+        'camera-exposure-invalid',
+        'adaptation',
+        exposure.adaptation,
+        'ue-eye-adaptation when specified',
+        'choose the supported eye adaptation profile',
+      );
+    }
     const [min, max] = exposure.rangeEv;
     const [up, down] = exposure.rates;
     if (
@@ -761,9 +775,11 @@ export function cameraExposureFromColumns(
   if (input.exposureMode === CAMERA_EXPOSURE_MODE_MANUAL) {
     return validateCameraExposure({ kind: 'manual', multiplier: input.exposure });
   }
-  if (input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO) {
+  const ue = input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO_UE;
+  if (input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO || ue) {
     return validateCameraExposure({
       kind: 'auto',
+      ...(ue ? { adaptation: 'ue-eye-adaptation' } : {}),
       fallback: input.exposure,
       compensationEv: input.compensationEv,
       rangeEv: [input.rangeEv[0] ?? -8, input.rangeEv[1] ?? 8],
@@ -774,12 +790,13 @@ export function cameraExposureFromColumns(
     'camera-exposure-mode-invalid',
     'exposureMode',
     input.exposureMode,
-    `${CAMERA_EXPOSURE_MODE_MANUAL} or ${CAMERA_EXPOSURE_MODE_AUTO}`,
+    `${CAMERA_EXPOSURE_MODE_MANUAL}, ${CAMERA_EXPOSURE_MODE_AUTO} or ${CAMERA_EXPOSURE_MODE_AUTO_UE}`,
     'set Camera.exposureMode to the manual or auto encoding',
   );
 }
 
-function cameraExposureColumns(
+/** Encode exposure for Camera creation or a Camera component patch. */
+export function cameraExposureColumns(
   exposure: CameraExposure,
 ): Pick<CameraData, 'exposureMode' | 'exposure' | 'compensationEv' | 'rangeEv' | 'rates'> {
   const checked = validateCameraExposure(exposure);
@@ -793,7 +810,10 @@ function cameraExposureColumns(
     };
   }
   return {
-    exposureMode: CAMERA_EXPOSURE_MODE_AUTO,
+    exposureMode:
+      checked.adaptation === 'ue-eye-adaptation'
+        ? CAMERA_EXPOSURE_MODE_AUTO_UE
+        : CAMERA_EXPOSURE_MODE_AUTO,
     exposure: checked.fallback,
     compensationEv: checked.compensationEv,
     rangeEv: new Float32Array(checked.rangeEv),

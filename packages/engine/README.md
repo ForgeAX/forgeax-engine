@@ -24,28 +24,18 @@ import { Transform } from '@forgeax/engine/scene';
 
 ## Open View
 
+View is an optional SDK tool. The Engine npm package and game dependencies do
+not include View. Start the matching SDK's launcher with the game as its project:
+
 ```sh
-# From the game root, using its installed Engine:
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-# From another directory:
-node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+node /absolute/forgeax-sdk/tools/view/start.mjs --project /absolute/game
 ```
 
-View is optional and owns this startup file. Agent guidance lives beside it at
-`tools/view/skills/forgeax-view-start/SKILL.md` in the installed package.
-No global SDK, separate View package or Engine build is required. View resolves
-its matching Engine and Host Pack from
-its own installation. Complete npm Engine and SDK installations include the file
-at `tools/view/start.mjs`; source checkouts use the same location. It calls Engine's
-public backend API directly. Default startup reuses one shared
-backend workspace under the system temporary directory per installation.
-`--new-instance` allocates an independent temporary workspace; `--root H` can
-select an explicit instance. The returned H addresses subsequent instance
-controls with an explicit `--root H`. Omitting `--project` opens project selection or adopts the existing
-project. Keep the foreground terminal open while using its returned URL.
-The URL establishes Shell availability; project and renderer readiness are
-reported separately in the page. Ctrl+C closes this presentation; Backend keeps
-its independent lifetime. Missing View does not prevent ordinary Engine CLI work.
+The SDK initializes its own tool runtime on first use and resolves Engine from
+that installation, independently of the game's dependencies and current directory.
+Read the SDK's `tools/view/skills/forgeax-view-start/SKILL.md` for instance and
+shutdown controls. Keep the foreground terminal open and verify project and
+renderer readiness in the returned page.
 
 ## Game authoring workflow
 

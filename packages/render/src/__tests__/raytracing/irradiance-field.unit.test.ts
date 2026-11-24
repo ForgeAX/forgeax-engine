@@ -64,6 +64,7 @@ describe('irradiance field GPU layouts', () => {
     new Uint32Array(query.buffer)[0] = 96;
     new Float32Array(query.buffer)[1] = 0.5;
     const bytes = packIrradianceFieldFrame({
+      worldSource: { traversal: 'global-sdf', expected: [36, 24, 1, 8] },
       probeBudget: 32,
       raysPerProbe: 64,
       frameIndex: 7,
@@ -94,11 +95,12 @@ describe('irradiance field GPU layouts', () => {
     expect(u[24]).toBe(96);
     expect(f[25]).toBe(0.5);
     expect([...f.subarray(26, 28)]).toEqual([12, 0.25]);
+    expect([...u.subarray(28, 32)]).toEqual([36, 24, 1, 8]);
   });
 
   it('shares one Frame/Field declaration across every kernel', () => {
     const frame =
-      'struct Frame { schedule: vec4u, cards: vec4u, atlas: vec4u, environment: vec4f, trace: vec4f, gather: vec4u, query: vec4u }';
+      'struct Frame { schedule: vec4u, cards: vec4u, atlas: vec4u, environment: vec4f, trace: vec4f, gather: vec4u, query: vec4u, expectedSource:vec4u }';
     for (const traversal of ['global-sdf', 'ray-query'] as const)
       for (const source of Object.values(irradianceFieldKernelWgsl(traversal)))
         expect(source.split(frame).length).toBe(2);
@@ -118,7 +120,9 @@ describe('irradiance field GPU layouts', () => {
     expect(kernels.updateProbes).toContain(`${IRRADIANCE_FIELD_RELOCATION.clearance}*spacing`);
     // A near-surface start that runs past its surface retraces one SDF voxel off it;
     // Ray Query has no sub-voxel blind band and never lifts.
-    expect(kernels.traceProbes).toContain('hit=traceWorld(Ray(origin+surface.xyz*surface.w');
+    expect(kernels.traceProbes).toContain('tracedRay.origin=origin+surface.xyz*surface.w');
+    expect(kernels.traceProbes).toContain('hit=traceWorld(tracedRay,frame.query.x');
+    expect(kernels.traceProbes).toContain('worldCardRadiance(hit,frame.trace.w,true,tracedRay)');
     expect(irradianceFieldKernelWgsl('ray-query').traceProbes).toContain(
       'fn probeSurface(p: vec3f) -> vec4f { return vec4f(0); }',
     );
@@ -129,7 +133,7 @@ describe('irradiance field GPU layouts', () => {
     expect(sample).toContain(
       `const IRRADIANCE_FIELD_PROBE_ACTIVE = ${IrradianceFieldProbeState.active}u;`,
     );
-    expect(sample).toContain('+ irradianceFieldProbeOffset(state)');
+    expect(sample).toContain('+ irradianceFieldProbeOffset(state, spacing)');
     // The relocated origin stays inside its own cell, so trilinear weights stay valid.
     expect(IRRADIANCE_FIELD_RELOCATION.limit).toBeLessThan(0.5);
     expect(IRRADIANCE_FIELD_RELOCATION.clearance).toBeLessThan(IRRADIANCE_FIELD_RELOCATION.limit);

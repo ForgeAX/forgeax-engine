@@ -931,6 +931,7 @@ function ShellBottomDock({
 }
 
 export function ViewerShell({
+  engineVersion,
   slotRegistry,
   pageRegistry,
   pageHost,
@@ -942,6 +943,7 @@ export function ViewerShell({
   onSelectPageType,
   responsiveAutoTuck = true,
 }: {
+  engineVersion?: string;
   slotRegistry: SlotRegistry;
   pageRegistry: PageRegistry;
   pageHost?: PageHost;
@@ -1543,6 +1545,7 @@ export function ViewerShell({
         resolveDropDock={resolveDropDock}
         onCrossDockDrop={onCrossDockDrop}
       />
+      {engineVersion && <footer className="fx-view-version" aria-label={`Engine ${engineVersion}`}>Engine {engineVersion}</footer>}
     </div>
   );
 }

@@ -235,6 +235,7 @@ function stageAutoExposureState(
       fallback: exposure.fallback,
       generation: state.targetGeneration,
       historyIdentity: autoExposureHistoryIdentity(internals, camera),
+      ...(exposure.adaptation === undefined ? {} : { adaptation: exposure.adaptation }),
     });
     if (!parameterWrite.ok) {
       internals.errorRegistry.fire(parameterWrite.error);

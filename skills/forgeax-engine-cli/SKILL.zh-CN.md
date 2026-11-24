@@ -39,7 +39,7 @@
 > [!IMPORTANT]
 > forgeax 是 Engine 命令入口。逐层使用 help 发现命令；help --tree --json 返回完整结构化命令树。ToolContribution、ToolClient、ToolRun 是 CLI 内部组合契约，不是其他产品入口。
 
-可选 View 拥有独立文件启动器。交互式场景/资产审查读取游戏的 `skills/forgeax-view-start/SKILL.zh-CN.md` 或安装副本 `node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.zh-CN.md`。游戏根执行 `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`，无需全局 SDK 或手动启动 Backend。冷启动 forgeax help 不发现此启动器，普通 Engine 命令无需 View。
+可选 View 只随 SDK 分发，不进入游戏的 Engine npm 依赖。交互式场景/资产审查读取 SDK 的 `tools/view/skills/forgeax-view-start/SKILL.md` 或游戏中复制的技能。游戏根执行 `node /absolute/forgeax-sdk/tools/view/start.mjs --project .`，入口初始化 SDK 自己的运行环境并解析匹配的 Engine。冷启动 forgeax help 不发现此启动器，普通 Engine 命令无需 View。
 
 --json 默认紧凑：较大字段概括并列入 omitted.fields。仅决策需要时加 --detail，例如 project build --detail --json 查看全部产物摘要（也在 dist/forgeax-dist.json），dev status --detail --json 查看完整执行报告。
 

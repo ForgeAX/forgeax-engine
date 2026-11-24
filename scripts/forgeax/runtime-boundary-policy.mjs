@@ -67,6 +67,10 @@ export const SOURCE_ASSET_PRODUCERS = new Map([
     'Shader tsup text loader owns velocity WGSL inlining',
   ],
   ['packages/shader/src/tsr-source.ts', 'Shader tsup text loader owns TSR WGSL inlining'],
+  [
+    'packages/shader/src/screen-probe-candidate-source.ts',
+    'Shader tsup text loader owns shared Screen candidate WGSL inlining',
+  ],
 ]);
 
 export const TOOL_SOURCE_SCOPES = new Map([

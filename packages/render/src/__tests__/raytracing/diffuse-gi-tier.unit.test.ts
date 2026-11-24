@@ -54,14 +54,49 @@ describe('diffuse GI quality tiers', () => {
     const fields = (['medium', 'high', 'epic'] as const).map(
       (tier) => DIFFUSE_GI_TIER_BUDGETS[tier].field,
     );
-    for (const key of ['raysPerProbe', 'probeBudget', 'cardBudget'] as const) {
+    for (const key of ['raysPerProbe', 'cardBudget'] as const) {
       const values = fields.map((field) => field?.[key] ?? 0);
       expect(values[0]).toBeLessThan(values[1] ?? 0);
       expect(values[1]).toBeLessThan(values[2] ?? 0);
     }
-    expect(DIFFUSE_GI_TIER_BUDGETS.high.probes?.downsample).toBeGreaterThan(
-      DIFFUSE_GI_TIER_BUDGETS.epic.probes?.downsample ?? 0,
-    );
+  });
+
+  it('applies the aligned Lumen settings without overriding authored Card texel density', () => {
+    const framing = { ...scene, cardResolution: 32 };
+    const medium = resolveDiffuseGiTier('medium', framing, gpu).unwrap().profile.diffuseGi;
+    const high = resolveDiffuseGiTier('high', framing, gpu).unwrap().profile.diffuseGi;
+    const epic = resolveDiffuseGiTier('epic', framing, gpu).unwrap().profile.diffuseGi;
+    expect([medium, high, epic].map((gi) => fieldOf(gi).probeBudget)).toEqual([100, 100, 150]);
+    expect(fieldOf(medium).radiosity).toBe(true);
+    expect(fieldOf(high).cards).toMatchObject({
+      resolution: 32,
+      radiosity: { probeSpacing: 8, hemisphereResolution: 3, updateFactor: 128 },
+    });
+    expect(fieldOf(epic).cards.radiosity).toEqual({
+      probeSpacing: 4,
+      hemisphereResolution: 4,
+      updateFactor: 64,
+    });
+    expect(DIFFUSE_GI_TIER_BUDGETS.high.probes).toMatchObject({
+      downsample: 32,
+      adaptiveFraction: 0.5,
+      adaptiveCandidates: 16,
+      screenTrace: { maxSteps: 50, thickness: 0.02 },
+      filterPasses: 3,
+      irradiance: 'probe-octahedral',
+      integration: 'screen-space',
+      interpolation: 'stochastic',
+      shortRangeAoMode: 'half-scalar',
+      maxFrames: 10,
+    });
+    expect(DIFFUSE_GI_TIER_BUDGETS.epic.probes?.downsample).toBe(16);
+    expect(DIFFUSE_GI_TIER_BUDGETS.epic.probes?.adaptiveCandidates).toBe(8);
+    expect(DIFFUSE_GI_TIER_BUDGETS.epic.probes).toMatchObject({
+      irradiance: 'probe-sh3',
+      integration: 'screen-space',
+      shortRangeAoMode: 'full-bent',
+    });
+    expect(Object.isFrozen(fieldOf(high).cards.radiosity)).toBe(true);
   });
 
   it('defaults the Card capture ceiling to the planner maximum', () => {

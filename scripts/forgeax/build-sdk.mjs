@@ -427,7 +427,6 @@ const engineBundle = await sdkStage('bundle complete npm Engine', () =>
       .filter((entry) => entry.name.startsWith('@forgeax/engine-'))
       .map((entry) => ({ ...entry, archive: tarballs.get(entry.name).path })),
     version,
-    viewTool: { root: resolve(stage, 'tools/view'), dependencySource: viewRoot },
   }),
 );
 // Bare SDK package contracts remain inspectable. Only complete delivery units

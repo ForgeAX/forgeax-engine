@@ -7,6 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
+import { prepareRenderPipeline } from './prepare-pipeline';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's G-buffer, response and the matching world radiance. */
@@ -30,7 +31,7 @@ const ADDITIVE = {
 };
 
 /** Adds world specular into linear HDR and the SSR-replaceable reflection fallback. */
-export function createRayReflectionComposite(
+export async function createRayReflectionComposite(
   device: RhiDevice,
   module: ShaderModule,
   signal: 'raw' | 'reconstructed' | 'field',
@@ -48,7 +49,7 @@ export function createRayReflectionComposite(
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createRenderPipeline({
+  const pipeline = await prepareRenderPipeline(device, {
     label: 'ray-reflection.composite',
     layout: pipelineLayout.value,
     vertex: { module, entryPoint: 'vs_ray_reflection', buffers: [] },

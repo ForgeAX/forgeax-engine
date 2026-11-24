@@ -108,6 +108,18 @@ fn encodeSceneVelocity(temporal : vec4<f32>) -> u32 {
   return xy.x | (xy.y << 16u);
 }
 
+
+// A zero depth word is the cleared pixel. Written pixels with an invalid
+// prior point are distinct from a valid projected far-plane depth of zero.
+const SCENE_VELOCITY_INVALID_DEPTH = 0xffffffffu;
+
+fn encodeSceneVelocityWithDepth(temporal: vec4<f32>, previousClip: vec4<f32>) -> vec2<u32> {
+  let xy = encodeSceneVelocity(temporal);
+  let depth = previousClip.z / previousClip.w;
+  let valid = xy != 0u && previousClip.w > 0.0 && previousClip.w < 1e30 && depth >= 0.0 && depth <= 1.0;
+  let word = select(SCENE_VELOCITY_INVALID_DEPTH, bitcast<u32>(depth) + 1u, valid);
+  return vec2<u32>(xy, word);
+}
 fn decodeSceneVelocity(word : u32) -> vec2<f32> {
   let xy = vec2<f32>(f32(word & 65535u), f32(word >> 16u));
   let curved = ((xy - 32767.0) / 65535.0) / 0.2495;

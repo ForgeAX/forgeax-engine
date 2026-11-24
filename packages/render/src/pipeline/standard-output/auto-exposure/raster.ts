@@ -1,4 +1,4 @@
-import type { GraphTextureView, RenderGraphError } from '@forgeax/engine-render-graph';
+import type { GraphBuffer, GraphTextureView, RenderGraphError } from '@forgeax/engine-render-graph';
 import { RenderGraphError as GraphError } from '@forgeax/engine-render-graph';
 import { AUTO_EXPOSURE_FRAGMENT_WGSL } from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -86,12 +86,11 @@ export function addAutoExposureFragmentPasses(
     adapt = false,
   ): Result<void, RenderGraphError> => {
     let state: RasterState | undefined;
-    const uniformInputs = adapt
-      ? [
-          { binding: 3, buffer: projection.resources.state },
-          { binding: 4, buffer: projection.resources.parameters },
-        ]
-      : [];
+    const uniformInputs: { binding: number; buffer: GraphBuffer }[] = [];
+    if (adapt) uniformInputs.push({ binding: 3, buffer: projection.resources.state });
+    if (adapt || sourceBinding === 0) {
+      uniformInputs.push({ binding: 4, buffer: projection.resources.parameters });
+    }
     return graph.addRasterPass(name, {
       accesses: [
         { resource: source, usage: 'sampled-read' },

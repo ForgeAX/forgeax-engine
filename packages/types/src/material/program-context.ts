@@ -19,16 +19,17 @@ export interface MaterialCookRasterContext {
 }
 
 /** The authored Surface evaluated at a ray hit or Card capture. */
-export interface MaterialCookRayContext {
+export type MaterialCookRayContext = {
   readonly backend: 'webgpu' | 'wgpu-native';
   readonly capability: 'storage-buffer';
   readonly pipeline: 'ray';
   readonly geometry: 'mesh';
-  readonly pass: 'ray-hit' | 'card-capture';
-  readonly profile: 'forgeax-material-ray-v1';
   readonly toolchain: 'naga-oil';
   readonly instrumentation: 'none';
-}
+} & (
+  | { readonly pass: 'ray-hit'; readonly profile: 'forgeax-material-ray-v1' }
+  | { readonly pass: 'card-capture'; readonly profile: 'forgeax-material-card-v4' }
+);
 
 export type MaterialCookProgramContext = MaterialCookRasterContext | MaterialCookRayContext;
 

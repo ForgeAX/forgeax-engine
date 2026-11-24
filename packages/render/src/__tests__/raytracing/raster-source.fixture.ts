@@ -182,10 +182,13 @@ export async function verifyRasterRaySource(
       expect(accumulated[c]).toBeCloseTo([2, 1, 0.5][c] ?? NaN, 5);
       expect(accumulated[6 * 20 + c]).toBeCloseTo([2, 1, 0.5][c] ?? NaN, 5);
     }
-    const composite = createRayDiffuseComposite(
-      device,
-      (await recorder.backend.createShaderModule(device, { code: compositeKernel })).unwrap(),
-      'raw',
+    const composite = (
+      await createRayDiffuseComposite(
+        device,
+        (await recorder.backend.createShaderModule(device, { code: compositeKernel })).unwrap(),
+        'raw',
+        'add',
+      )
     ).unwrap();
     const color = device
       .createTexture({

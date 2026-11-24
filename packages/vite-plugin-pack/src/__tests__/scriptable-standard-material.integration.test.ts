@@ -71,14 +71,16 @@ it('publishes selectable ray-hit and Card programs for compiled direct Standard 
   if (ready.status !== 'Ready')
     throw new Error('Standard material must pass the production loader');
   const projection = projectMaterialRecord(ready.record);
-  for (const pass of ['ray-hit', 'card-capture'] as const) {
+  for (const context of [
+    { pass: 'ray-hit', profile: 'forgeax-material-ray-v1' },
+    { pass: 'card-capture', profile: 'forgeax-material-card-v4' },
+  ] as const) {
     const selected = selectMaterialPassProgram(projection, 'forward', {
       backend: 'webgpu',
       capability: 'storage-buffer',
       pipeline: 'ray',
       geometry: 'mesh',
-      pass,
-      profile: 'forgeax-material-ray-v1',
+      ...context,
       toolchain: 'naga-oil',
       instrumentation: 'none',
     });

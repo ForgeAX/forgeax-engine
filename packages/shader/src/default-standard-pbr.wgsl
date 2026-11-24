@@ -46,7 +46,7 @@ enable primitive_index;
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
-#import forgeax_scene_temporal::{encodeSceneVelocity, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef TRANSMISSION_AVAILABLE
 #import forgeax_view::fog::{forward_fog_transmission}
 #else
@@ -2095,6 +2095,10 @@ fn standardGBuffer(in : VsOut, frontFacing : bool, compact : bool
   subsurface = vec4<f32>(material.subsurfaceRadius, material.subsurfaceWeight);
 #endif
   let specular = evaluateStandardSpecular(physicalMaterialUvs(in), clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0), standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
+  var hasDiffuseTransmission = false;
+#ifdef DIFFUSE_TRANSMISSION_AVAILABLE
+  hasDiffuseTransmission = finiteScalar(material.diffuseTransmission, 0.0) > 0.0;
+#endif
   let roughness = specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread);
   let metallic = clamp(surface.metallic, 0.0, 1.0);
   let opacity = materialOutputAlpha(surface.opacity, standardAlphaMode());
@@ -2123,7 +2127,7 @@ fn standardGBuffer(in : VsOut, frontFacing : bool, compact : bool
       metallic, specular.x, surface.occlusion, surface.emissive, opacity,
       vec4<u32>(standardLightingChannels(in), encodeStandardReceiverContext(
         u32(skylight.diffuseScale.w), probeRow, standardReceivesShadows(in)),
-        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u | (directionalLayerBase << 24u), 0u), customData, standardGBufferObjectFlags(in));
+        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u | (directionalLayerBase << 24u), 0u), customData, standardGBufferObjectFlags(in), hasDiffuseTransmission);
 #ifdef VISIBLE_SURFACE_AVAILABLE
     output.compact.visible_surface = identity;
 #endif
@@ -2133,7 +2137,7 @@ fn standardGBuffer(in : VsOut, frontFacing : bool, compact : bool
       surface.baseColor, metallic, specular,
       surface.occlusion, surface.emissive, opacity, u32(skylight.diffuseScale.w), probeRow,
       standardReceivesShadows(in), standardLightingChannels(in), subsurface,
-      useDirectDfgLut);
+      useDirectDfgLut, hasDiffuseTransmission);
   output.full.receiver_geometry.x |= directionalLayerBase << 24u;
 #if WATER_WAVES_AVAILABLE == true
   let temporal = unpackSceneTemporalV1(vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(in.surfaceData.y)));
@@ -2590,10 +2594,10 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
 #if WATER_WAVES_AVAILABLE == true
   if (waterTemporalRejected(in)) { discard; }
 #endif
-  return encodeSceneVelocity(materialTemporal(in));
+  return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);
 }
 #endif

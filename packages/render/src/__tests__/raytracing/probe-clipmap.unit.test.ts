@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitProbeBudget } from '../../raytracing/irradiance-field-plan';
+import { splitProbeBudget } from '../../raytracing/probe-budget';
 import {
   clipmapWindow,
   exposedSlabs,
@@ -185,5 +185,87 @@ describe('ProbeClipmapScheduler', () => {
       scheduler.commit(work);
     }
     expect(updates).toBe(PROBE_EDIT_SWEEPS * probes);
+  });
+
+  const editLeft = { min: [2, 2, 2], max: [2, 2, 2] } as const;
+  const editRight = { min: [3, 2, 2], max: [3, 2, 2] } as const;
+  const editDiagonal = { min: [3, 3, 2], max: [3, 3, 2] } as const;
+
+  it.each([
+    {
+      name: 'repeated accepted generations',
+      batches: [[editLeft], [editLeft], [editLeft]],
+      budget: 8,
+      total: 375,
+      contains: (x: number, y: number, z: number) => x < 5 && y < 5 && z < 5,
+    },
+    {
+      name: 'partly overlapping boxes',
+      batches: [[editLeft, editRight]],
+      budget: 8,
+      total: 450,
+      contains: (_x: number, y: number, z: number) => y < 5 && z < 5,
+    },
+    {
+      name: 'diagonal overlap with a one-probe budget',
+      batches: [[editLeft, editDiagonal]],
+      budget: 1,
+      total: 510,
+      contains: (x: number, y: number, z: number) =>
+        z < 5 && ((x < 5 && y < 5) || (x >= 1 && y >= 1)),
+    },
+  ])('traces each unique edited cell once per sweep for $name', ({
+    batches,
+    budget,
+    total,
+    contains,
+  }) => {
+    const p = plan({ follow: false, levels: 1, dimensions: [6, 6, 6], probeBudget: budget });
+    const scheduler = new ProbeClipmapScheduler(p);
+    for (const [i, batch] of batches.entries()) {
+      scheduler.queueEdit(batch);
+      scheduler.activateEdits();
+      expect(scheduler.pendingPriorityUpdates()).toBe(total);
+      if (i < batches.length - 1) scheduler.commit(scheduler.schedule());
+    }
+
+    const fastCounts = new Map<number, number>();
+    for (let frame = 0; frame < total && scheduler.pendingPriorityUpdates() > 0; frame++) {
+      const work = scheduler.schedule();
+      const indices = [...work.list.subarray(0, work.count)];
+      expect(work.count).toBe(budget);
+      expect(new Set(indices.map((entry) => entry & PROBE_ENTRY_INDEX)).size).toBe(work.count);
+      expect(scheduler.schedule()).toBe(work);
+      for (const entry of indices) {
+        if ((entry & PROBE_ENTRY_FAST) === 0) continue;
+        const slot = entry & PROBE_ENTRY_INDEX;
+        fastCounts.set(slot, (fastCounts.get(slot) ?? 0) + 1);
+      }
+      scheduler.commit(work);
+    }
+    expect(scheduler.pendingPriorityUpdates()).toBe(0);
+    let accepted = 0;
+    for (let slot = 0; slot < p.probeCount; slot++) {
+      const count = fastCounts.get(slot) ?? 0;
+      expect(count).toBe(
+        contains(slot % 6, Math.floor(slot / 6) % 6, Math.floor(slot / 36)) ? PROBE_EDIT_SWEEPS : 0,
+      );
+      accepted += count;
+    }
+    expect(accepted).toBe(total);
+  });
+
+  it('does not restart in-window edit sweeps when a new edit misses every active cell', () => {
+    const p = plan({ follow: false, levels: 1, dimensions: [6, 6, 6], probeBudget: 8 });
+    const scheduler = new ProbeClipmapScheduler(p);
+    scheduler.queueEdit([editLeft]);
+    scheduler.activateEdits();
+    scheduler.commit(scheduler.schedule());
+    const pending = scheduler.pendingPriorityUpdates();
+    const current = scheduler.schedule();
+    scheduler.queueEdit([{ min: [20, 20, 20], max: [21, 21, 21] }]);
+    scheduler.activateEdits();
+    expect(scheduler.pendingPriorityUpdates()).toBe(pending);
+    expect(scheduler.schedule()).toBe(current);
   });
 });

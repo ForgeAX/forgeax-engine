@@ -14,6 +14,13 @@ Identify the expensive owner, remove redundant work at its actual change
 frequency, and verify the requested workload. Follow the checkout's
 [delivery and rendering gates](../../AGENTS.md).
 
+For moving CPU WaterMesh views, reuse `WaterMeshViewBuilder` only for identical
+immutable geometry inputs. Keep LOD, visibility, morph and observer-relative
+packing current on every view; generation/domain changes replace preparation.
+Publication equality must retain exact packed bytes and source identity, rather
+than relying only on short layout hashes. Camera-follow controls must release
+their temporary ownership on every exit path.
+
 Separate compressed publication size from decoded and per-owner transport copies.
 The native LOD carrier shares one owned URL for original plain/zstd bytes across
 independent Renderers, then revokes it after disposal. Preserve the exact shader

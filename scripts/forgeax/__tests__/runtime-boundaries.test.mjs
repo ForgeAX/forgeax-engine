@@ -276,6 +276,7 @@ test('source asset transforms require an owned producer and may not survive into
   for (const file of [
     'packages/shader/src/auto-exposure-source.ts',
     'packages/shader/src/tsr-source.ts',
+    'packages/shader/src/screen-probe-candidate-source.ts',
     'packages/render/src/terrain/layer-bake.ts',
   ]) {
     assert.deepEqual(codes(source, { file }), []);

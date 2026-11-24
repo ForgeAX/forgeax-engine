@@ -131,6 +131,10 @@ accepted static-map GUID/versions and effective material switches with the
 view graph's reflected FoamRT consumer and initializer. Static BeachFoam maps,
 optional fluid RT and Baked refs are independent inputs. Disabling an R6
 producer retains the default no-simulation semantic target and static maps.
+Use `foamVelocityMPerSec` for authored foam-detail advection; keep simulation
+coverage and history coordinates anchored to their producer. For local Shallow
+fluid over terrain, configuration version `2` emits free-surface displacement
+and retains signed compression. Version `1` preserves legacy kernel semantics.
 
 Use the mounted Engine Content `EngineContent.water.materials` GUIDs or author
 ordinary root/child assets with `buildWaterMaterialFamily`; Body slots and the

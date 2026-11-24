@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -268,13 +268,24 @@ test('release CLI proves older source ancestry from a shallow checkout without a
     }
     const client = join(root, 'rc');
     git(root, 'clone', '--depth=1', '--branch', 'rc', pathToFileURL(origin).href, client);
+    git(client, 'config', 'fetch.recurseSubmodules', 'true');
+    const fetchTrace = join(root, 'rc-fetch.jsonl');
     const runRc = (sha) =>
       execFileSync(process.execPath, [script, '0.4.2-rc.1', sha], {
         cwd: client,
+        env: { ...process.env, GIT_TRACE2_EVENT: fetchTrace },
         encoding: 'utf8',
         stdio: 'pipe',
       });
     assert.match(runRc(cut), new RegExp(`source_sha=${cut}\\nsource_branch=rc\\nchannel=rc\\n`));
+    const fetches = readFileSync(fetchTrace, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === 'start' && event.argv[1] === 'fetch');
+    assert.equal(fetches.length, 2);
+    for (const { argv } of fetches)
+      assert.ok(argv.includes('--no-recurse-submodules'), argv.join(' '));
     assert.throws(
       () => runRc(qualified),
       (error) => error.stderr.includes('release-rc-missing-stable'),

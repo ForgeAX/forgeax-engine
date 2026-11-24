@@ -20,6 +20,64 @@ import {
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
+function runTraceCase(name: string, width: number): boolean {
+  return width !== 1024 || !['receiver', 'oblique', 'smooth-normal'].includes(name);
+}
+
+function traceSeedEntryPoint(name: string): string {
+  switch (name) {
+    case 'receiver':
+      return 'seed_receiver_depth';
+    case 'smooth-normal':
+      return 'seed_smoothed_depth';
+    case 'oblique':
+      return 'seed_oblique_depth';
+    default:
+      return 'seed_depth';
+  }
+}
+
+function traceNormal(name: string, x: number, z: number, coverage: number): number[] {
+  if (name === 'receiver' && x === 4) return [0.5, 1, 0.5, coverage];
+  const normalX =
+    name === 'oblique'
+      ? 0.5 - 0.5 * Math.SQRT1_2
+      : name === 'smooth-normal'
+        ? 0.75 + x * 0.01
+        : 0.5;
+  return [normalX, 0.5, z, coverage];
+}
+
+function traceDepthLevel(width: number, level: number, levelWidth: number): Float32Array {
+  // The small fixture uses a conservative near bound so its Water path
+  // reaches the exact surface tests for every authored plane variant.
+  const levelData = new Float32Array(levelWidth).fill(width === 1024 ? 3.402823e38 : 1);
+  if (width === 1024) {
+    const wallCell = Math.min(levelWidth - 1, Math.floor(598 / 2 ** (level + 1)));
+    levelData[wallCell] = 2.9 / (3 - 598.5 / 1024);
+  }
+  return levelData;
+}
+
+function expectWaterSurfaceMatches(
+  name: string,
+  width: number,
+  pixels: Float32Array,
+  expectUv: (actual: number | undefined, expected: number) => void,
+): void {
+  for (let ray = 0; ray < (width === 1024 ? 1 : 10); ray++) {
+    const waterOffset = (16 + ray) * 4;
+    const opaqueOffset = (width === 1024 ? 0 : ray) * 4;
+    expect(pixels[waterOffset], `${name}: Water ray ${ray} must retain the exact surface`).toBe(
+      pixels[opaqueOffset],
+    );
+    if (pixels[waterOffset] === 1) {
+      expectUv(pixels[waterOffset + 1], pixels[opaqueOffset + 1] ?? NaN);
+      expectUv(pixels[waterOffset + 2], pixels[opaqueOffset + 2] ?? NaN);
+    }
+  }
+}
+
 it.each([
   [8, 0],
   [1024, 0],
@@ -38,6 +96,11 @@ it.each([
   const compiled = await compiler.compileShader(
     `${shader('ssr-trace')}
 @group(1) @binding(0) var<storage, read_write> crossingProbe: array<vec4<f32>>;
+fn probe_water(index: u32, origin: vec3<f32>, direction: vec3<f32>) {
+  let receiver = WaterSsrReceiver(true, origin, vec3<f32>(0.0, 1.0, 0.0), -direction, 0.0);
+  let hit = traceWaterWorldRay(receiver);
+  crossingProbe[16u + index] = vec4<f32>(select(0.0, 1.0, hit.found), hit.uv, hit.depth);
+}
 @compute @workgroup_size(1) fn probe_crossing() {
   if (${width}u == 1024u) {
     // A 921.6-pixel projected span: a 512-step march skips texel 598.
@@ -46,6 +109,7 @@ it.each([
       vec2<u32>(${width}u, 3u), 1.2, ${pyramidMaxMip}u);
     crossingProbe[0] = vec4<f32>(hit.hit, hit.uv, hit.thickness);
     crossingProbe[10] = vec4<f32>(hit.reactivity);
+    probe_water(0u, vec3<f32>(-0.8, 0.0, -1.0), normalize(vec3<f32>(1.0, 0.0, -0.2)));
     // Exercise the rescue fraction helper on both projected axes and signs;
     // the trace itself is intentionally horizontal in this fixture.
     crossingProbe[11] = vec4<f32>(
@@ -63,15 +127,18 @@ it.each([
       vec3<f32>(x, 0.0, -sqrt(1.0 - x*x)), 6.0, 0.2, vec2<u32>(8u, 3u), 2.8, 0u);
     crossingProbe[i] = vec4<f32>(hit.hit, hit.uv, hit.thickness);
     crossingProbe[10u + i] = vec4<f32>(hit.reactivity);
+    probe_water(i, vec3<f32>(0.0, 0.0, -1.0), vec3<f32>(x, 0.0, -sqrt(1.0 - x*x)));
   }
   let nearHit = traceScreenRay(vec3<f32>(0.101, 0.0, -1.01),
     vec3<f32>(0.6, 0.0, -0.8), 6.0, 0.2, vec2<u32>(8u, 3u), 1.01, 0u);
   crossingProbe[6] = vec4<f32>(nearHit.hit, nearHit.uv, nearHit.thickness);
+  probe_water(6u, vec3<f32>(0.101, 0.0, -1.01), vec3<f32>(0.6, 0.0, -0.8));
   // Subpixel receiver shifts must not alter confidence on the same plane.
   for (var i = 0u; i < 3u; i++) {
     let shifted = traceScreenRay(vec3<f32>((f32(i) - 1.0) * 0.02, 0.0, -1.0),
       vec3<f32>(0.6, 0.0, -0.8), 6.0, 0.2, vec2<u32>(8u, 3u), 2.8, 0u);
     crossingProbe[7u + i] = vec4<f32>(shifted.hit, shifted.uv, shifted.thickness);
+    probe_water(7u + i, vec3<f32>((f32(i) - 1.0) * 0.02, 0.0, -1.0), vec3<f32>(0.6, 0.0, -0.8));
   }
 }`,
     {
@@ -141,13 +208,13 @@ it.each([
     .unwrap();
   const output = device
     .createBuffer({
-      size: 256,
+      size: 512,
       usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
     })
     .unwrap();
   const readback = device
     .createBuffer({
-      size: 256,
+      size: 512,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
@@ -160,6 +227,7 @@ it.each([
     payload.set(projection, 0);
     payload.set(inverse, 44);
     payload.set([1, 10, 0, 0], 228);
+    payload.set([6, 0.2, 1, 1], 236);
     device.queue.writeBuffer(view, 0, payload).unwrap();
     const seed = createShaderModuleImmediate(device, {
       code: `
@@ -200,10 +268,11 @@ it.each([
           depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
         })
         .unwrap();
-    const seedPipeline = seedPipelineFor('seed_depth');
-    const receiverSeedPipeline = seedPipelineFor('seed_receiver_depth');
-    const smoothedSeedPipeline = seedPipelineFor('seed_smoothed_depth');
-    const obliqueSeedPipeline = seedPipelineFor('seed_oblique_depth');
+    const seedPipelines = new Map(
+      ['seed_depth', 'seed_receiver_depth', 'seed_smoothed_depth', 'seed_oblique_depth'].map(
+        (entry) => [entry, seedPipelineFor(entry)],
+      ),
+    );
     const module = createShaderModuleImmediate(device, { code: compiled.value.wgsl }).unwrap();
     const inputLayout = device
       .createBindGroupLayout({
@@ -290,18 +359,13 @@ it.each([
       ['receiver', 1, 1],
       ['oblique', 0.5 + 0.5 * Math.SQRT1_2, 1],
     ] as const) {
-      if (width === 1024 && (name === 'receiver' || name === 'oblique' || name === 'smooth-normal'))
-        continue;
+      if (!runTraceCase(name, width)) continue;
       // Mirror the production minimum hierarchy for this long-ray probe:
       // the wall is in mip 0 texel 299 and in each ancestor selected by the
       // reduction chain. The trace must descend it back to source x=598.
       for (let level = 0; level < pyramidMipLevels; level += 1) {
         const levelWidth = Math.max(1, pyramidWidth >> level);
-        const levelData = new Float32Array(levelWidth).fill(3.402823e38);
-        if (width === 1024) {
-          const wallCell = Math.min(levelWidth - 1, Math.floor(598 / 2 ** (level + 1)));
-          levelData[wallCell] = 2.9 / (3 - 598.5 / 1024);
-        }
+        const levelData = traceDepthLevel(width, level, levelWidth);
         device.queue
           .writeTexture(
             { texture: pyramid, mipLevel: level },
@@ -335,18 +399,7 @@ it.each([
       const normalData = new Float32Array(
         Array.from({ length: width * 3 }, (_, index) => {
           const x = index % width;
-          return name === 'receiver' && x === 4
-            ? [0.5, 1, 0.5, coverage]
-            : [
-                name === 'oblique'
-                  ? 0.5 - 0.5 * Math.SQRT1_2
-                  : name === 'smooth-normal'
-                    ? 0.75 + x * 0.01
-                    : 0.5,
-                0.5,
-                normalZ,
-                coverage,
-              ];
+          return traceNormal(name, x, normalZ, coverage);
         }).flat(),
       );
       device.queue
@@ -368,15 +421,9 @@ it.each([
           depthStoreOp: 'store',
         },
       });
-      raster.setPipeline(
-        name === 'receiver'
-          ? receiverSeedPipeline
-          : name === 'smooth-normal'
-            ? smoothedSeedPipeline
-            : name === 'oblique'
-              ? obliqueSeedPipeline
-              : seedPipeline,
-      );
+      const seedPipeline = seedPipelines.get(traceSeedEntryPoint(name));
+      if (seedPipeline === undefined) throw new Error(`Missing depth fixture: ${name}`);
+      raster.setPipeline(seedPipeline);
       raster.draw(3);
       raster.end();
       const pass = encoder.beginComputePass();
@@ -385,11 +432,12 @@ it.each([
       pass.setBindGroup(1, outputGroup);
       pass.dispatchWorkgroups(1);
       pass.end();
-      encoder.copyBufferToBuffer(output, 0, readback, 0, 256);
+      encoder.copyBufferToBuffer(output, 0, readback, 0, 512);
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       const mapped = (await readback.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
       const pixels = new Float32Array(mapped.getMappedRange().unwrap().slice(0));
       mapped.unmap();
+      expectWaterSurfaceMatches(name, width, pixels, expectUv);
       for (const ray of width === 1024 ? [0] : [0, 3]) {
         expect(
           pixels[(10 + ray) * 4],

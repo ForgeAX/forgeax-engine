@@ -1,7 +1,7 @@
 import type { FieldVec3, MeshDistanceField } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
 
-/** Combined indirection and f32 payload budget, independent of virtual volume size. */
+/** Combined derived artifact budget, independent of virtual volume size. */
 export const MAX_DISTANCE_FIELD_BYTES = 32 * 1024 * 1024;
 
 /** First lattice sample of brick `index`; bricks hold 4^3 samples in x-fastest order. */
@@ -33,15 +33,25 @@ export function fieldBrickLane(
 export class FieldBrickBuilder {
   readonly bricks: Uint32Array;
   private readonly dimensions: FieldVec3;
+  private readonly maximumBytes: number;
   private values: Float32Array;
   private words: Uint32Array;
   private used = 0;
   private readonly chains = new Map<number, number[]>();
 
-  constructor(dimensions: FieldVec3) {
+  constructor(dimensions: FieldVec3, maximumBytes = MAX_DISTANCE_FIELD_BYTES) {
     this.dimensions = dimensions;
     this.bricks = new Uint32Array(dimensions.reduce((n, v) => n * Math.ceil(v / 4), 1));
-    this.values = new Float32Array(1024);
+    this.maximumBytes =
+      Number.isInteger(maximumBytes) && maximumBytes >= 0
+        ? Math.min(maximumBytes, MAX_DISTANCE_FIELD_BYTES)
+        : 0;
+    this.values = new Float32Array(
+      Math.min(
+        1024,
+        Math.max(0, Math.floor((this.maximumBytes - this.bricks.byteLength) / 256) * 64),
+      ),
+    );
     this.words = new Uint32Array(this.values.buffer);
   }
 
@@ -71,12 +81,12 @@ export class FieldBrickBuilder {
         }
       }
     const end = this.used + 64;
-    if (this.bricks.byteLength + end * 4 > MAX_DISTANCE_FIELD_BYTES) return false;
+    if (this.bricks.byteLength + end * 4 > this.maximumBytes) return false;
     if (end > this.values.length) {
       const grown = new Float32Array(
         Math.min(
           this.values.length * 2,
-          Math.floor((MAX_DISTANCE_FIELD_BYTES - this.bricks.byteLength) / 256) * 64,
+          Math.floor((this.maximumBytes - this.bricks.byteLength) / 256) * 64,
         ),
       );
       grown.set(this.values);

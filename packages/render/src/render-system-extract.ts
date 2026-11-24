@@ -1815,8 +1815,9 @@ export function materialSurfaceProgramsForMaterial(
         capability: 'storage-buffer',
         pipeline: 'ray',
         geometry: 'mesh',
-        pass: surfaceContext,
-        profile: 'forgeax-material-ray-v1',
+        ...(surfaceContext === 'ray-hit'
+          ? ({ pass: 'ray-hit', profile: 'forgeax-material-ray-v1' } as const)
+          : ({ pass: 'card-capture', profile: 'forgeax-material-card-v4' } as const)),
         toolchain: context.toolchain,
         instrumentation: 'none',
       });

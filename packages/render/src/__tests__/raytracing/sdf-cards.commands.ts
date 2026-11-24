@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { buildMeshDistanceField } from '../../../../geometry/src/distance-field';
+import type { MeshDistanceField } from '../../../../geometry/src/index';
 import {
   decodeMeshBinary,
   decodeMeshDistanceField,
@@ -46,9 +47,17 @@ function loadedLayout(
   if (!loaded) throw new Error('mesh-bin must preserve the cooked card layout before GPU capture');
   return loaded;
 }
-export async function prepareSdfCardsBaseFixture() {
+type CookedRay = Extract<Awaited<ReturnType<typeof cookRayMaterial>>, { ok: true }>['value'];
+interface BaseFixture {
+  layout: MeshCardLayout;
+  field: MeshDistanceField;
+  card: CookedRay;
+  ray: CookedRay;
+  sources: Extract<ReturnType<typeof buildMaterialSourceCatalog>, { ok: true }>['value'];
+}
+export async function prepareSdfCardsBaseFixture(): Promise<BaseFixture> {
   const layout = (await buildMeshCardLayout(sdfCubePositions, sdfCubeIndices)).unwrap();
-  const field = (
+  const field: MeshDistanceField = (
     await buildMeshDistanceField(sdfCubePositions, sdfCubeIndices, { resolution: 24 })
   ).unwrap();
   const directory = fileURLToPath(new URL('../../../../shader/src/', import.meta.url));

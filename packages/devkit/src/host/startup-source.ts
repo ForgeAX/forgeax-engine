@@ -1,16 +1,14 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
+
+import { renderStartupCover, STARTUP_COVER_STYLES } from '@forgeax/engine-app';
 import {
   DEFAULT_LOAD_PROGRESS_LABELS,
-  encodeBase64,
   type LoadProgressLabels,
   resolveLoadProgressLabels,
 } from '@forgeax/engine-types';
-import forgeaxLogo from './forgeax-logo.svg?raw';
 import { type StartupCacheIdentity, startupCacheSource } from './startup-cache-source.js';
 import type { StartupUiOptions, StartupUiTemplate } from './startup-ui.js';
 import type { HostVersions } from './versions.js';
-
-const FORGEAX_LOGO_DATA_URI = `data:image/svg+xml;base64,${encodeBase64(new TextEncoder().encode(forgeaxLogo))}`;
 
 function escapeHtml(value: string): string {
   return value
@@ -48,7 +46,6 @@ export function hostStartupDocument(
   ui: StartupUiOptions = {},
 ): string {
   const labels = resolveLoadProgressLabels(input);
-  const status = labels.phases['engine-code'] ?? labels.loading;
   const html = `<!doctype html>
 <html lang="${escapeHtml(labels.lang)}">
   <head>
@@ -64,25 +61,7 @@ export function hostStartupDocument(
       #game-ui { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
       #forgeax-status { display: none; position: absolute; left: 10px; bottom: 8px; max-width: calc(100% - 20px); z-index: 2147483645; color: #fff; opacity: 0.5; font: 400 10px/14px system-ui, sans-serif; pointer-events: none; user-select: none; }
       #forgeax-fps-history { position: absolute; left: clamp(12px,3vw,32px); top: clamp(12px,3vh,24px); width: 276px; max-width: calc(100% - 24px); height: auto; z-index: 2147483645; pointer-events: none; background: #101e23eb; border: 1px solid #e9d4a869; border-radius: 9px; }
-      #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #07090d; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
-      #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
-      #forgeax-loading-content { position: absolute; inset: 0; }
-      #forgeax-loading-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; }
-      #forgeax-loading-logo { display: block; flex: 0 0 auto; width: 28px; height: auto; }
-      #forgeax-loading-brand-name { color: rgb(245 247 250 / 82%); font-size: 16px; font-weight: 600; letter-spacing: 0.02em; line-height: 1; }
-      #forgeax-loading-title { position: absolute; top: 50%; right: 24px; left: 24px; margin: 0; color: #f5f7fa; font-size: clamp(26px, 4vw, 38px); font-weight: 600; letter-spacing: 0.01em; line-height: 1.2; overflow-wrap: anywhere; transform: translateY(-50%); }
-      #forgeax-loading-progress-content { position: absolute; right: clamp(16px, 4vw, 64px); bottom: clamp(22px, 6vh, 52px); left: clamp(16px, 4vw, 64px); display: grid; gap: 12px; text-align: left; }
-      #forgeax-loading-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; column-gap: 16px; }
-      #forgeax-loading-summary { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; min-width: 0; white-space: nowrap; font-size: 13px; line-height: 1.6; }
-      #forgeax-loading-status { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); }
-      #forgeax-loading-detail { flex: 0 1 auto; min-width: 1em; margin: 0; overflow: hidden; color: rgb(230 235 245 / 42%); }
-      #forgeax-loading-detail:empty { display: none; }
-      #forgeax-loading-meta { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); font-variant-numeric: tabular-nums; }
-      #forgeax-loading-progress { width: 100%; height: 3px; border-radius: 2px; overflow: hidden; background: rgb(230 235 245 / 11%); }
-      #forgeax-loading-fill { width: 0; height: 100%; background: #c6764f; transition: width 200ms linear; }
-      #forgeax-loading-slow, #forgeax-loading-reload { margin: 0; justify-self: end; }
-      #forgeax-loading-slow, #forgeax-loading-reload { display: none; }
-      #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+${STARTUP_COVER_STYLES}      #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
       #forgeax-fatal { position: absolute; inset: 0; z-index: 2147483647; display: none; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #0b0d10; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; }
       #forgeax-fatal-content { display: grid; gap: 12px; width: min(680px, 100%); text-align: left; }
       #forgeax-fatal-message { margin: 0; font-size: 18px; }
@@ -90,51 +69,12 @@ export function hostStartupDocument(
       #forgeax-fatal-diagnostics-title { margin: 0; font-size: 15px; font-weight: 600; }
       #forgeax-fatal-copy-status { min-height: 1.5em; margin: 0; color: rgb(230 235 245 / 68%); font-size: 12px; }
       #forgeax-fatal-details { min-width: 0; max-height: 45vh; margin: 0; padding: 12px; border: 1px solid rgb(230 235 245 / 16%); border-radius: 5px; background: rgb(0 0 0 / 24%); overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
-      @media (max-width: 600px) {
-        #forgeax-loading-row { column-gap: 10px; }
-        #forgeax-loading-brand { gap: 5px; }
-        #forgeax-loading-logo { width: 18px; }
-        #forgeax-loading-brand-name { font-size: 12px; }
-        #forgeax-loading-summary { gap: 3px; font-size: clamp(8px, 2.6vw, 13px); }
-      }
-      @media (max-width: 360px) {
-        #forgeax-loading-brand { gap: 4px; }
-        #forgeax-loading-logo { width: 16px; }
-        #forgeax-loading-brand-name { font-size: 10px; }
-      }
-      @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } }
     </style>
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
     <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">Render FPS --</span> <span id="forgeax-frame-gap"></span></div>
-${startupMarkup(
-  'forgeax-loading',
-  'status',
-  ui.loading,
-  `    <div id="forgeax-loading" role="status" aria-live="polite" aria-atomic="true">
-      <div id="forgeax-loading-content">
-        <h1 id="forgeax-loading-title">${escapeHtml(title)}</h1>
-        <div id="forgeax-loading-progress-content">
-          <div id="forgeax-loading-row">
-            <div id="forgeax-loading-brand">
-              <img id="forgeax-loading-logo" src="${FORGEAX_LOGO_DATA_URI}" alt="" aria-hidden="true" />
-              <span id="forgeax-loading-brand-name">ForgeAX</span>
-            </div>
-            <div id="forgeax-loading-summary">
-              <p id="forgeax-loading-status">${escapeHtml(status)}</p>
-              <p id="forgeax-loading-detail"></p>
-              <p id="forgeax-loading-meta">0% · ${escapeHtml(labels.elapsed.replace('{seconds}', '0'))}</p>
-            </div>
-          </div>
-          <div id="forgeax-loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="forgeax-loading-status"><div id="forgeax-loading-fill"></div></div>
-          <p id="forgeax-loading-slow">${escapeHtml(labels.slow)}</p>
-          <button id="forgeax-loading-reload" type="button">${escapeHtml(labels.reload)}</button>
-        </div>
-      </div>
-    </div>
-`,
-)}
+${startupMarkup('forgeax-loading', 'status', ui.loading, renderStartupCover(title, labels))}
 ${startupMarkup(
   'forgeax-fatal',
   'alert',

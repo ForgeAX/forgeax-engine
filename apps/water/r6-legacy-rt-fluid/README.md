@@ -1,7 +1,11 @@
 # R6 local fluid basins
 
 Run `pnpm dev` and open port 5386. Two stone basins compare ripple and shallow
-fluid with the same Terrain-derived depth. Authored injector, obstacle and gauge
+fluid. The left Ripple solver uses constant depth; the right Shallow solver uses
+Terrain-derived depth, with gravity-driven velocity and wet/dry boundaries.
+Both explicitly select fluid kernel version 2. Its Shallow displacement uses
+free-surface elevation, so the sloping bed does not tilt the resting surface.
+Authored injector, obstacle and gauge
 assemblies keep the source location and waterline visible. Controls expose the
 accepted recipe, injection, collision, material and camera parameters. The
 runtime panel follows mounted entities and counts only completed ready frames.

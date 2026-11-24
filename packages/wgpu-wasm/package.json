@@ -28,6 +28,7 @@
     "dist",
     "pkg/package.json",
     "pkg/README.md",
+    "pkg/README.zh-CN.md",
     "pkg/provenance.json",
     "pkg/wgpu_wasm.js",
     "pkg/wgpu_wasm.d.ts",

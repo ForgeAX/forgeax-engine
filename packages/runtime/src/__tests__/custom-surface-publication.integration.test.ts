@@ -1,16 +1,18 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import {
   createRuntimePackPublication,
   encodeMaterialProgramWire,
 } from '@forgeax/engine-pack/runtime';
 import { Materials, materialContribution } from '@forgeax/engine-render';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { describe, expect, it, vi } from 'vitest';
-import { AssetRegistry } from '../../../assets-runtime/src/asset-registry';
 import {
+  type MaterialRenderProjection,
   materialParametersToParamSchema,
   selectMaterialPassProgram,
 } from '../../../assets-runtime/src/material/runtime-shader';
@@ -18,13 +20,13 @@ import { normaliseForPack } from '../../../import/src/pack-value';
 import { AssetGuid } from '../../../pack/src/guid';
 import {
   type CookedMaterialRecord,
+  type MaterialCookProgram,
   validateCookedMaterialRecord,
 } from '../../../pack/src/material-cook';
 import {
   materialProgramKeysForMaterial,
   materialSceneIndexProgramKeysForMaterial,
 } from '../../../render/src/render-system-extract';
-import { ShaderRegistry } from '../../../shader/src/index';
 import { derive, type MaterialAsset, selectMaterialStaticContract } from '../../../types/src/index';
 
 const GUID = '019f0000-0000-7000-8000-0000000007a1';
@@ -167,6 +169,74 @@ function parseGuid(value: string) {
   return parsed.value;
 }
 
+type SurfaceSelection = MaterialCookProgram['selections'][number];
+
+function expectPublishedRayVariants(
+  ray: readonly SurfaceSelection[],
+  scratchStorage: 'private' | 'local',
+) {
+  expect(ray.map((selection) => selection.context.pass).sort()).toEqual(
+    scratchStorage === 'private' ? ['ray-hit'] : ['card-capture', 'ray-hit'],
+  );
+  const rayHit = ray.find((selection) => selection.context.pass === 'ray-hit');
+  const card = ray.find((selection) => selection.context.pass === 'card-capture');
+  expect(rayHit).toMatchObject({
+    pass: 'Forward',
+    entry: 'cs_surface',
+    context: { profile: 'forgeax-material-ray-v1' },
+  });
+  if (scratchStorage === 'private') expect(card).toBeUndefined();
+  else
+    expect(card).toMatchObject({
+      pass: 'Forward',
+      entry: 'vs_card',
+      context: { profile: 'forgeax-material-card-v4' },
+    });
+  return { rayHit, card };
+}
+
+function assertUniformPublications(
+  projection: MaterialRenderProjection,
+  forward: readonly SurfaceSelection[],
+  shadow: readonly SurfaceSelection[],
+  uniformRowBytes: number,
+) {
+  for (const backend of ['webgpu', 'webgl2']) {
+    for (const [pass, selections] of [
+      ['Forward', forward],
+      ['Occluder', shadow],
+    ] as const) {
+      for (const viewClipping of [false, true]) {
+        const uniform = selections.filter(
+          ({ context }) =>
+            context.pipeline !== 'ray' &&
+            context.backend === backend &&
+            context.capability === 'uniform-fallback' &&
+            (context.viewClipping === true) === viewClipping,
+        );
+        expect(uniform.map((selection) => selection.address)).toEqual(['direct', 'direct']);
+        const uniformContext = uniform[0]?.context;
+        if (uniformContext === undefined) throw new Error('missing uniform publication');
+        for (const color of [false, true]) {
+          const selected = selectMaterialPassProgram(
+            projection,
+            pass,
+            uniformContext,
+            'direct',
+            color,
+          );
+          expect(selected.entry).toBe('vs_main');
+          expect(selected.abi?.sceneIndexEntry).toBeUndefined();
+          expect(selected.abi?.materialRow.byteLength).toBe(uniformRowBytes);
+          expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
+            color,
+          );
+        }
+      }
+    }
+  }
+}
+
 describe('custom Surface publication path', () => {
   it('routes the declared ShadowCaster pass by semantic tag', () => {
     const shadowPass = material.passes[1];
@@ -185,17 +255,26 @@ describe('custom Surface publication path', () => {
     expect(surfaceHelperOther).toContain('struct LocalSample');
   });
 
-  it('cooks, transports, loads and selects the producer scene-index ABI', {
+  it.each([
+    'private',
+    'local',
+  ] as const)('cooks, transports and selects Surface variants with %s scratch storage', {
     timeout: 30_000,
-  }, async () => {
+  }, async (scratchStorage) => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-custom-surface-publication-'));
     const sourcePath = join(root, 'custom-surface.wgsl');
     const helperPath = join(root, 'surface-helper.wgsl');
     const helperOtherPath = join(root, 'surface-helper-other.wgsl');
     const materialPath = join(root, 'custom-surface.material.json');
     await writeFile(sourcePath, customSurface);
-    await writeFile(helperPath, surfaceHelper);
-    await writeFile(helperOtherPath, surfaceHelperOther);
+    const helperSource = (helper: string) =>
+      scratchStorage === 'private'
+        ? helper
+        : helper
+            .replace('var<private> scratch: f32;\n', '')
+            .replace('  let sample =', '  var scratch: f32;\n  let sample =');
+    await writeFile(helperPath, helperSource(surfaceHelper));
+    await writeFile(helperOtherPath, helperSource(surfaceHelperOther));
     await writeFile(materialPath, '{}');
     const previousFetch = globalThis.fetch;
     try {
@@ -218,10 +297,11 @@ describe('custom Surface publication path', () => {
       const shadow = cooked.programs.flatMap((program) =>
         program.selections.filter((selection) => selection.pass === 'Occluder'),
       );
-      expect(ray).toHaveLength(1);
-      expect(ray[0]).toMatchObject({ pass: 'Forward', entry: 'cs_surface' });
-      expect(ray[0]?.address).toBeUndefined();
-      expect(ray[0]?.abi).toBeUndefined();
+      const { rayHit, card } = expectPublishedRayVariants(ray, scratchStorage);
+      for (const selection of ray) {
+        expect(selection.address).toBeUndefined();
+        expect(selection.abi).toBeUndefined();
+      }
       expectStorageRasterCoverage('Forward', forward, [false, true]);
       expectStorageRasterCoverage('Occluder', shadow, [false]);
       expect(
@@ -351,40 +431,7 @@ describe('custom Surface publication path', () => {
       const uniformRowBytes = derive(
         materialParametersToParamSchema(selectMaterialStaticContract(material).parameters ?? []),
       ).totalBytes;
-      for (const backend of ['webgpu', 'webgl2']) {
-        for (const [pass, selections] of [
-          ['Forward', forward],
-          ['Occluder', shadow],
-        ] as const) {
-          for (const viewClipping of [false, true]) {
-            const uniform = selections.filter(
-              ({ context }) =>
-                context.pipeline !== 'ray' &&
-                context.backend === backend &&
-                context.capability === 'uniform-fallback' &&
-                (context.viewClipping === true) === viewClipping,
-            );
-            expect(uniform.map((selection) => selection.address)).toEqual(['direct', 'direct']);
-            const uniformContext = uniform[0]?.context;
-            if (uniformContext === undefined) throw new Error('missing uniform publication');
-            for (const color of [false, true]) {
-              const selected = selectMaterialPassProgram(
-                projection,
-                pass,
-                uniformContext,
-                'direct',
-                color,
-              );
-              expect(selected.entry).toBe('vs_main');
-              expect(selected.abi?.sceneIndexEntry).toBeUndefined();
-              expect(selected.abi?.materialRow.byteLength).toBe(uniformRowBytes);
-              expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
-                color,
-              );
-            }
-          }
-        }
-      }
+      assertUniformPublications(projection, forward, shadow, uniformRowBytes);
 
       const context = forward[0]?.context;
       expect(context).toBeDefined();
@@ -412,12 +459,23 @@ describe('custom Surface publication path', () => {
       assertRasterAddressSelections();
       const direct = selectMaterialPassProgram(projection, 'Forward', context, 'direct');
       const scene = selectMaterialPassProgram(projection, 'Forward', context, 'scene-index');
-      const rayContext = ray[0]?.context;
+      const rayContext = rayHit?.context;
       if (rayContext === undefined) throw new Error('missing published ray context');
       const rayProgram = selectMaterialPassProgram(projection, 'Forward', rayContext);
       expect(rayProgram.entry).toBe('cs_surface');
       expect(rayProgram.abi).toBeUndefined();
       expect(rayProgram.specializationKey).not.toBe(scene.specializationKey);
+      if (scratchStorage === 'local') {
+        if (card === undefined) throw new Error('missing published Card context');
+        const cardProgram = selectMaterialPassProgram(projection, 'Forward', card.context);
+        expect(cardProgram.entry).toBe('vs_card');
+        expect(cardProgram.specializationKey).not.toBe(rayProgram.specializationKey);
+      } else
+        expect(
+          projection.passes.flatMap((pass) =>
+            pass.programs.filter((program) => program.context.pass === 'card-capture'),
+          ),
+        ).toEqual([]);
       expect(scene.abi?.receiptIdentity).toBe(direct.abi?.receiptIdentity);
       expect(scene.entry).toBe('vs_scene_index');
       const shadowContext = shadow[0]?.context;

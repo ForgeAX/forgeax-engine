@@ -105,6 +105,17 @@ fn cardTexel(i: u32) -> u32 {
   cardLit[texel] = vec4f(radiance, f32(s.valid));
 }
 
+// Closed direct-only path. Preserve the feedback-off output, including alpha
+// from the surface validity rather than the independent direct-light alpha.
+@compute @workgroup_size(64) fn copyDirectCards(@builtin(global_invocation_id) gid: vec3u,
+    @builtin(num_workgroups) groups: vec3u) {
+  let res = fieldFrame.atlas.y;
+  let i = fieldLinearId(gid, groups);
+  if (i >= fieldFrame.cards.y * res * res) { return; }
+  let texel = cardTexel(i);
+  cardLit[texel] = vec4f(cardDirect[texel].xyz, f32(cardSurfaces[texel].valid));
+}
+
 fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   let uv = (vec2f(pixel) + vec2f(0.5)) / vec2f(extent);
   let p = view.inverseViewProj * vec4f(uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), depth, 1.0);
@@ -127,7 +138,8 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   gathered[i] = vec4f(0.0);
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  // Reverse-Z depth 1 is the valid near plane; depth 0 remains the clear value.
+  if (!(depth > 0.0 && depth <= 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
   let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let toView = view.cameraPos - position;
@@ -151,7 +163,7 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let pixel = vec2u(i % extent.x, i / extent.x);
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  if (!(depth > 0.0 && depth <= 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
   let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let size = fieldFrame.gather.xy;
@@ -185,6 +197,7 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   upsampled[i] = select(vec4f(0.0), vec4f(value.xyz, 1.0), value.w > 0.0);
 }
 
+#ifdef IRRADIANCE_FIELD_VISIBILITY
 // UE LumenCombineReflectionsAlpha: the traced share of the reflection signal.
 fn reflectionTracedFraction(roughness: f32) -> f32 {
   let limit = bitcast<f32>(fieldFrame.query.z);
@@ -211,7 +224,7 @@ fn reflectionTracedFraction(roughness: f32) -> f32 {
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let pixel = vec2u(i % extent.x, i / extent.x);
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  if (!(depth > 0.0 && depth <= 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
   let surface = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel));
   let n = surface.xyz;
@@ -406,3 +419,4 @@ fn reflectionHistoryUv(position: vec3f, distance: f32, surfaceUv: vec2f) -> vec2
   reflectionDenoised[i] = vec4f(
     mix(center.radiance.xyz, filtered, reflectionLobeBlend(center.normalRoughness.w)), 1.0);
 }
+#endif

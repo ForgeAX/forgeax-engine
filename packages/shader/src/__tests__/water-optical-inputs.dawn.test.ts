@@ -122,6 +122,71 @@ async function dispatch(
   }
 }
 
+it('Water temporal entries distinguish animated shading normals from a frozen or static Surface', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('Water shading history requires a Dawn adapter');
+  const device = await adapter.requestDevice();
+  const entry = (name: string) =>
+    functionSource(water, name)
+      .replace('@builtin(front_facing) ', '')
+      .replace('@location(0) ', '')
+      // This compute probe covers every sample; fragment discard is outside its contract.
+      .replace('if (!waterCoverage(input, surface)) { discard; }', '')
+      .replace(/^#.*$/gm, '');
+  const helper = water.includes('fn waterShadingReactivity(')
+    ? functionSource(water, 'waterShadingReactivity')
+    : '';
+  try {
+    const values = await dispatch(
+      device,
+      `
+struct SingleLayerWaterSurfaceInput { frameTime: f32, normalRate: f32 }
+struct SingleLayerWaterSurfaceData { normalWS: vec3<f32>, roughness: f32, coverage: f32 }
+struct WaterVertexOutput {
+  bodyIndex: u32, maskAndVertexFlow: vec3<f32>, currentClip: vec4<f32>, previousClip: vec4<f32>,
+}
+struct WaterPrepassOutput { normalRoughness: vec4<u32>, coverage: vec4<f32>, temporal: vec4<f32> }
+struct Body { timeAndMask: vec4<f32> }
+struct View { temporalProjection: vec4<f32> }
+const view = View(vec4<f32>(0.1, 100.0, 0.0, 0.0));
+const waterBodyData = array<Body, 3>(
+  Body(vec4<f32>(1.0, 0.984375, 0.1, 0.0)),
+  Body(vec4<f32>(1.0, 1.0, 0.1, 0.0)),
+  Body(vec4<f32>(1.0, 0.984375, 0.0, 0.0)),
+);
+fn waterSurfaceInput(input: WaterVertexOutput, frontFacing: bool) -> SingleLayerWaterSurfaceInput {
+  let sample = waterBodyData[input.bodyIndex].timeAndMask;
+  return SingleLayerWaterSurfaceInput(sample.x, sample.z);
+}
+fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurfaceData {
+  return SingleLayerWaterSurfaceData(normalize(vec3<f32>(input.frameTime * input.normalRate, 1.0, 0.0)), 0.05, 1.0);
+}
+fn waterCoverage(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData) -> bool { return true; }
+fn encodeStandardNormalRoughness(normal: vec3<f32>, roughness: f32) -> u32 { return 0u; }
+fn packSceneTemporalV1(current: vec4<f32>, previous: vec4<f32>, projection: vec4<f32>, reactive: f32) -> vec4<f32> {
+  return vec4<f32>(0.0, 0.0, 1.0, reactive);
+}
+${helper}
+${entry('fs_water_prepass')}
+${entry('fs_water_velocity')}
+@group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let input = WaterVertexOutput(id.x, vec3<f32>(1.0), vec4<f32>(0.0), vec4<f32>(0.0));
+  result[id.x * 2u] = fs_water_prepass(input, true).temporal;
+  result[id.x * 2u + 1u] = fs_water_velocity(input, true);
+}`,
+      [],
+      3,
+      2,
+    );
+    expect(values[3], 'animated shading must not look stationary to TAA').toBeGreaterThan(0);
+    expect(values[7]).toBe(values[3]);
+    expect(Array.from(values.slice(8)).filter((_, index) => index % 4 === 3)).toEqual([0, 0, 0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
+
 function directionAtlas(device: GPUDevice, blueOffset: number): GPUTexture {
   const width = 336;
   const height = 64;
@@ -165,7 +230,9 @@ function directionAtlas(device: GPUDevice, blueOffset: number): GPUTexture {
   return texture;
 }
 
-it('SLW hit history uses motion only from the opaque hit layer', async () => {
+it.each([
+  0, 0.03125, -0.03125,
+])('SLW hit history uses unjittered coordinates and opaque-layer motion (jitter=%f)', async (jitterUv) => {
   const trace = readFileSync(new URL('ssr-trace.wgsl', root), 'utf8');
   const temporal = readFileSync(new URL('scene-temporal.wgsl', root), 'utf8').replace(
     /^#define_import_path[^\n]*\n/m,
@@ -244,6 +311,8 @@ fn rawDepth(distance: f32) -> f32 {
         ? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, far - near, 0, 0, 0, -far, 1]
         : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, (far - near) / (near * far), 0, 0, -1, 1 / far];
       const previous = [...projection];
+      inverse[12] = -2 * jitterUv;
+      inverse[13] = 2 * jitterUv;
       if (orthographic) {
         previous[12] = 0.125;
         previous[13] = -0.25;
@@ -355,13 +424,13 @@ ${functionSource(trace, 'waterHitPreviousScreen')}
         for (const [index, sample] of cases.entries()) {
           const uv = (index + 0.5) / cases.length;
           expect(result[index * 4], `orthographic=${orthographic}, case=${index}, x`).toBeCloseTo(
-            uv + (sample.acceptsMotion ? -0.125 : 0.0625),
+            uv - jitterUv + (sample.acceptsMotion ? -0.125 : 0.0625),
             5,
           );
           expect(
             result[index * 4 + 1],
             `orthographic=${orthographic}, case=${index}, y`,
-          ).toBeCloseTo(0.5 + (sample.acceptsMotion ? 0.0625 : 0.125), 5);
+          ).toBeCloseTo(0.5 - jitterUv + (sample.acceptsMotion ? 0.0625 : 0.125), 5);
         }
       } finally {
         sceneTemporal.destroy();

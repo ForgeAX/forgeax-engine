@@ -1,5 +1,6 @@
 import {
   type AssetRegistry,
+  findMaterialPassProgram,
   type MaterialRenderProjection,
   materialPassOwnsProgram,
   runtimeMaterialShaderId,
@@ -17,6 +18,7 @@ import {
   type MaterialAsset,
   type MaterialPass,
   type MeshAsset,
+  type MeshDistanceFieldSurface,
   ok,
   type Result,
 } from '@forgeax/engine-types';
@@ -38,8 +40,40 @@ import { standardDisplacementRadius } from '../standard-displacement-bounds';
 import type { FieldEditInput } from './field-edit';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 import type { SdfMeshInstance } from './sdf-query';
+import { deriveSdfSurfaceCoverage, type SdfSurfaceCoverage } from './sdf-surface-coverage';
 
 type AttachedField = NonNullable<MeshAsset['distanceField']>;
+
+/** One nonzero representation of the existing row revision, not another clock. */
+export function sceneFieldSourceEpoch(revision: number): Result<number, RayReferenceError> {
+  if (!Number.isSafeInteger(revision) || revision < 0)
+    return rayReferenceFailure('canonical field source revision must be a nonnegative integer');
+  if (revision >= 0xffffffff)
+    return rayReferenceFailure(
+      'canonical field source revision exceeds the nonzero u32 epoch domain',
+      true,
+    );
+  return ok(revision + 1);
+}
+
+/** structuredClone retains whole backing allocations and preserves aliases. */
+function fieldSnapshotBytes(field: AttachedField): number {
+  const buffers = new Set<ArrayBufferLike>([field.bricks.buffer, field.values.buffer]);
+  const surface = field.surface;
+  if (surface !== undefined) {
+    const channels: Record<keyof MeshDistanceFieldSurface, ArrayBufferLike> = {
+      positions: surface.positions.buffer,
+      indices: surface.indices.buffer,
+      triangleSidedness: surface.triangleSidedness.buffer,
+      nodes: surface.nodes.buffer,
+      primitiveOrder: surface.primitiveOrder.buffer,
+    };
+    for (const buffer of Object.values(channels)) buffers.add(buffer);
+  }
+  let bytes = 0;
+  for (const buffer of buffers) bytes += buffer.byteLength;
+  return bytes;
+}
 interface FieldQualification {
   readonly revision: number;
   readonly result: Result<never, RayReferenceError> | undefined;
@@ -71,12 +105,33 @@ export interface SceneFieldSource extends RenderSceneRecord {
     readonly handle: number;
     readonly payload: MaterialAsset;
     readonly projection: MaterialRenderProjection | undefined;
-    /** MASK retains sampled geometry only; the field does not evaluate alpha. */
+    /** MASK or unproved custom coverage retains geometry; the field does not evaluate alpha. */
     readonly alphaCoverageOmitted: boolean;
     readonly facts: MaterialFacts;
     /** The accepted complete material snapshot; capture never re-resolves author values. */
     readonly snapshot: MaterialSnapshot;
   }[];
+}
+
+/** A raster alpha test qualifies only its submitted pixel, never the whole
+ * primitive's opacity. Custom coverage needs its own local witness. */
+export type SceneFieldReceiverProof = 'opaque-primitive' | 'raster-alpha-local';
+export function sceneFieldReceiverProof(
+  material: SceneFieldSource['materials'][number],
+): SceneFieldReceiverProof | undefined {
+  if (!material.alphaCoverageOmitted) return 'opaque-primitive';
+  if (hasCustomPlacementSurface(material.projection)) return undefined;
+  const color = (material.projection?.passes ?? material.payload.passes ?? []).filter(isColorPass);
+  if (
+    color.some(
+      (pass) =>
+        (material.facts.renderState?.frontFace ?? pass.renderState?.frontFace ?? 'ccw') !== 'ccw',
+    )
+  )
+    return undefined;
+  const values = { ...materialFieldValues(material.payload), ...material.facts.paramSnapshot };
+  const cutoff = materialScalar(values, 'alphaCutoff', 0);
+  return cutoff > 0 && cutoff <= 1 ? 'raster-alpha-local' : undefined;
 }
 
 function fieldTransform(source: ArrayLike<number>): Result<Float32Array, RayReferenceError> {
@@ -180,9 +235,13 @@ interface FieldRow {
   readonly field: AttachedField;
   readonly instances: SceneFieldSource['instances'];
   readonly materials: readonly FieldMaterial[];
+  readonly coverage: SdfSurfaceCoverage;
   /** Admitted world transform of each instance ordinal. */
   readonly transforms: readonly Float32Array[];
 }
+
+/** Borrowed qualified source facts, read only after the field adopted this row revision. */
+export type SceneFieldReceiverSource = Omit<FieldRow, 'kind' | 'coverage'>;
 
 type FieldRowEntry =
   | FieldRow
@@ -255,6 +314,11 @@ export class SceneFieldRows {
   /** Increments whenever an admitted entry changed. */
   get revision(): number {
     return this.#rows.revision;
+  }
+
+  /** Existing admitted rows, not a second roster or a re-admission of live assets. */
+  *receiverSources(): IterableIterator<SceneFieldReceiverSource> {
+    for (const [, entry] of this.#rows.entries()) if (entry.kind === 'field') yield entry;
   }
 
   /** Clear every derived entry; the next update admits every scene row again. */
@@ -368,12 +432,12 @@ export class SceneFieldRows {
     const field = entry.field;
     let refs = this.#snapshots.get(field);
     if (refs === undefined) {
-      refs = { count: 0, bytes: field.bricks.byteLength + field.values.byteLength };
+      refs = { count: 0, bytes: fieldSnapshotBytes(field) };
       this.#snapshots.set(field, refs);
       this.#fieldBytes += refs.bytes;
     }
     if (direction > 0) {
-      const bytes = field.bricks.byteLength + field.values.byteLength;
+      const bytes = fieldSnapshotBytes(field);
       this.#fieldBytes += bytes - refs.bytes;
       refs.bytes = bytes;
     }
@@ -414,6 +478,7 @@ export class SceneFieldRows {
         mask: 255,
         transform,
         field: snapshot,
+        surfaceCoverage: entry.coverage,
       });
     sources.push({
       ...entry.record,
@@ -454,7 +519,7 @@ export class SceneFieldRows {
       const field = entry.field;
       let snapshot = field === undefined ? undefined : snapshots.get(field);
       if (field !== undefined && snapshot === undefined) {
-        const bytes = field.bricks.byteLength + field.values.byteLength;
+        const bytes = fieldSnapshotBytes(field);
         if (bytes > budget.maxFieldBytes - fieldBytes)
           return rayReferenceFailure(
             'complete unique retained field snapshots exceed the byte budget',
@@ -534,13 +599,7 @@ export class SceneFieldRows {
         FieldStage.Source,
         rayReferenceFailure('complete retained field roster exceeds its instance budget', true),
       );
-    if (
-      source.instances !== undefined &&
-      (source.instances.transforms.length !== count * 16 ||
-        source.instances.generations?.length !== count ||
-        new Set(source.instances.generations).size !== count ||
-        source.instances.generations.some((v) => v === 0))
-    )
+    if (!completeFieldInstances(source, count))
       return fail(
         FieldStage.Roster,
         rayReferenceFailure(
@@ -552,15 +611,8 @@ export class SceneFieldRows {
     if (geometry !== undefined) return fail(FieldStage.Geometry, geometry, { count });
     const qualified = this.#qualifyField(field, assetRevision);
     if (qualified !== undefined) return fail(FieldStage.Field, qualified, { count });
-    const shared = rows.meshes.get(source.assetHandle);
-    const bindings =
-      shared === undefined
-        ? source
-        : effectiveMeshMaterials(source, shared, meshMaterialGeometry(source));
-    const materials = sectionMaterials(source, bindings, mesh, field, scope, assets, rows, read);
-    if (!materials.ok) return fail(FieldStage.Placement, materials, { count, field });
-    const transforms = instanceTransforms(source, count);
-    if (!transforms.ok) return fail(FieldStage.Placement, transforms, { count, field });
+    const placement = qualifyFieldPlacement(source, mesh, field, count, scope, assets, rows, read);
+    if (!placement.ok) return fail(FieldStage.Placement, placement, { count, field });
     return {
       kind: 'field',
       record: {
@@ -574,8 +626,9 @@ export class SceneFieldRows {
       mesh,
       field,
       instances: detachedInstanceIdentity(source),
-      materials: materials.value,
-      transforms: transforms.value,
+      materials: placement.value.materials,
+      coverage: placement.value.coverage,
+      transforms: placement.value.transforms,
     };
   }
 
@@ -611,6 +664,48 @@ export class SceneFieldRows {
     this.#fields.set(field, { revision, result });
     return result;
   }
+}
+
+function completeFieldInstances(source: FieldSceneSource, count: number): boolean {
+  const instances = source.instances;
+  return (
+    instances === undefined ||
+    (instances.transforms.length === count * 16 &&
+      instances.generations?.length === count &&
+      new Set(instances.generations).size === count &&
+      !instances.generations.some((value) => value === 0))
+  );
+}
+
+function qualifyFieldPlacement(
+  source: FieldSceneSource,
+  mesh: MeshAsset,
+  field: AttachedField,
+  count: number,
+  scope: RenderResourceScope,
+  assets: FieldContext['assets'],
+  rows: ProjectedRows,
+  read: ReadAsset,
+): Result<Pick<FieldRow, 'materials' | 'coverage' | 'transforms'>, RayReferenceError> {
+  const shared = source.assetHandle === undefined ? undefined : rows.meshes.get(source.assetHandle);
+  const bindings =
+    shared === undefined
+      ? source
+      : effectiveMeshMaterials(source, shared, meshMaterialGeometry(source));
+  const materials = sectionMaterials(source, bindings, mesh, field, scope, assets, rows, read);
+  if (!materials.ok) return materials;
+  if (field.surface === undefined)
+    return rayReferenceFailure('surface coverage requires canonical geometry');
+  const coverage = deriveSdfSurfaceCoverage(
+    mesh,
+    materials.value,
+    field.surface.indices.length / 3,
+  );
+  if (!coverage.ok) return coverage;
+  const transforms = instanceTransforms(source, count);
+  return transforms.ok
+    ? ok({ materials: materials.value, coverage: coverage.value, transforms: transforms.value })
+    : transforms;
 }
 
 /** One cold projection of a fixed composition; persistent consumers keep a {@link SceneFieldRows}. */
@@ -702,7 +797,9 @@ function sectionMaterial(
   const color = (projection?.passes ?? payload.value.passes ?? []).filter((pass) =>
     isColorPass(pass),
   );
-  const values = materialFieldValues(payload.value);
+  // The accepted snapshot is the same parameter authority consumed by raster.
+  // A same-program withParameters resource can differ from its asset payload.
+  const values = { ...materialFieldValues(payload.value), ...material.paramSnapshot };
   const coverage = admitRayMaterialValues(values, String(handle), 'retained-mesh-field');
   if (!coverage.ok) return rayReferenceFailure(coverage.error.detail.requirement);
   const alphaCutoff = materialScalar(values, 'alphaCutoff', 0),
@@ -736,7 +833,7 @@ function sectionMaterial(
     handle,
     payload: payload.value,
     projection,
-    alphaCoverageOmitted: alphaCutoff > 0,
+    alphaCoverageOmitted: alphaCutoff > 0 || hasCustomPlacementSurface(projection),
     snapshot: material,
     facts: structuredClone({
       materialShaderId,
@@ -960,7 +1057,10 @@ function matchesFieldSidedness(
 
 /** Qualify accepted producer provenance, never a cooked hash or ABI resemblance. */
 export function isNativePlacementMaterial(
-  material: Pick<MaterialSnapshot, 'materialShaderId' | 'materialProgramKeys'>,
+  material: Pick<
+    MaterialSnapshot,
+    'materialShaderId' | 'materialProgramKeys' | 'materialSurfacePrograms'
+  >,
   projection: MaterialRenderProjection | undefined,
   source?: {
     readonly passes?: readonly MaterialPass[] | undefined;
@@ -1015,9 +1115,8 @@ export function isNativePlacementMaterial(
       const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
       return (
         runtimeMaterialShaderId(pass.module, pass.name) === 'forgeax::default-standard-pbr' &&
-        (pass.moduleSlots?.surface ??
-          projection.surface?.module ??
-          DEFAULT_STANDARD_SURFACE_MODULE) === DEFAULT_STANDARD_SURFACE_MODULE &&
+        (placementSurface(pass, projection) === DEFAULT_STANDARD_SURFACE_MODULE ||
+          acceptedCardSurface(material, projection, pass)) &&
         tags?.SurfaceKind !== 'full-custom' &&
         (key === undefined
           ? material.materialShaderId === 'forgeax::default-standard-pbr'
@@ -1025,4 +1124,46 @@ export function isNativePlacementMaterial(
       );
     })
   );
+}
+
+function placementSurface(
+  pass: MaterialRenderProjection['passes'][number],
+  projection: MaterialRenderProjection,
+): string {
+  return pass.moduleSlots?.surface ?? projection.surface?.module ?? DEFAULT_STANDARD_SURFACE_MODULE;
+}
+
+function hasCustomPlacementSurface(projection: MaterialRenderProjection | undefined): boolean {
+  return (
+    projection?.passes.some(
+      (pass) =>
+        isColorPass(pass) && placementSurface(pass, projection) !== DEFAULT_STANDARD_SURFACE_MODULE,
+    ) ?? false
+  );
+}
+
+/** Both keys belong to this accepted publication; the Registry owns source/ABI validation. */
+function acceptedCardSurface(
+  material: Pick<MaterialSnapshot, 'materialProgramKeys' | 'materialSurfacePrograms'>,
+  projection: MaterialRenderProjection,
+  pass: MaterialRenderProjection['passes'][number],
+): boolean {
+  const cardKey = material.materialSurfacePrograms?.['card-capture']?.programKey;
+  const rasterKey = material.materialProgramKeys?.[pass.name];
+  if (cardKey === undefined || rasterKey === undefined) return false;
+  const raster = pass.programs.find(
+    (program) => program.specializationKey === rasterKey && program.context?.pipeline !== 'ray',
+  );
+  if (raster?.context === undefined || raster.context.backend === 'webgl2') return false;
+  const card = findMaterialPassProgram(projection, pass.name, {
+    backend: raster.context.backend,
+    capability: 'storage-buffer',
+    pipeline: 'ray',
+    geometry: 'mesh',
+    pass: 'card-capture',
+    profile: 'forgeax-material-card-v4',
+    toolchain: raster.context.toolchain,
+    instrumentation: 'none',
+  });
+  return card?.specializationKey === cardKey;
 }

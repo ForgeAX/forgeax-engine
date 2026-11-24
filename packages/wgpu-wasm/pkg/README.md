@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-wgpu-wasm
 
 ## Native host binding
@@ -52,14 +55,14 @@ dependency closure must enter the target publication inventory. Simulator RHI
 initialization and clear pixels have passed; a complete DevKit game remains a
 separate integration gate.
 
-> Merged wgpu 30 + naga 30 wasm-bindgen crate. **AI 用户不应 import 此包** —— 仅对 `@forgeax/engine-rhi-wgpu` + `@forgeax/engine-naga` 两薄壳暴露 raw bindings。
+> Merged wgpu 30 + naga 30 wasm-bindgen crate. **AI engine users should not import this package.** Raw bindings serve only the `@forgeax/engine-rhi-wgpu` and `@forgeax/engine-naga` wrappers.
 
-## 命题（charter 命题 1 渐进披露 + 命题 5 一致抽象）
+## Charter Propositions: Progressive Disclosure and Consistent Abstractions
 
-本包是 wgpu RHI + naga 三段 shader pipeline 的物理底层 — 一份 wasm artefact 同时持两条独立的 wasm-bindgen surface：
+This package supplies the physical foundation for wgpu RHI and naga's three-stage shader pipeline. One WASM artifact exposes two independent wasm-bindgen surfaces:
 
-- `rhi.rs` → wgpu 30 RHI raw bindings（14 opaque handle + 17 描述符 + factory 入口 + queue / command-encoder 段）；上层由 `@forgeax/engine-rhi-wgpu` TS 薄壳包装为 `@forgeax/engine-rhi` 接口形态。
-- `naga.rs` → naga 三段函数（parse / validate / emit_reflection）；上层由 `@forgeax/engine-naga` TS 薄壳包装为 `Result<T, ShaderError>` 形态，再由 `@forgeax/engine-shader-compiler` 在 build-time 消费。
+- `rhi.rs`: wgpu 30 RHI raw bindings (14 opaque handles, 17 descriptors, factory entry and queue / command-encoder operations), adapted by `@forgeax/engine-rhi-wgpu` to `@forgeax/engine-rhi` interfaces.
+- `naga.rs`: three naga functions (parse / validate / emit_reflection), adapted by `@forgeax/engine-naga` to `Result<T, ShaderError>` and consumed by `@forgeax/engine-shader-compiler` at build time.
 
 `getCompilerFingerprint()` exposes the existing provenance fingerprint of the
 successfully initialized native owner. It shares the `ensureReady()` load and
@@ -91,11 +94,11 @@ expire. A real unfinished-request regression bounds cleanup to two seconds in
 the existing CI contract job. Both real Worker transport cases retain their
 original initialization and test deadlines.
 
-合并的工程理由（research F-3）：两侧底层共享 wgpu 与 naga（Cargo dedup 保证同版本 naga 唯一实例），合并后单 wasm 体积估算 0.66–0.9 MB gzip，相对独立两包总和小 10–15%。AI 引擎用户在主路径（`navigator.gpu` 探测成功）下根本不下载这份 wasm（rhi-webgpu thin shim 直传 navigator.gpu），lazy-load 仅在非浏览器场景或显式 escape hatch 触发。
+The engineering rationale (research F-3): both sides share wgpu and naga; Cargo deduplicates the same naga version. The merged WASM was estimated at 0.66-0.9 MB gzip, 10-15% below two separate packages. The main browser path with successful `navigator.gpu` detection never downloads this WASM: the rhi-webgpu shim forwards directly to navigator.gpu. Lazy loading occurs only outside browsers or through an explicit escape hatch.
 
-## 不向 AI 用户暴露的理由
+## Why It Is Hidden From AI Engine Users
 
-AI 引擎用户的工程模型是「`Engine.create({ canvas })` → `world.spawn(5 component)` → `renderer.draw(world)`」三步串联，对 wasm raw bindings 一无所知也应正常工作（charter 命题 1 渐进披露 + 命题 5 一致抽象红线）。本包的 `wasm.requestAdapter() / wasm.parse(source)` 等顶层符号是 thin shell 的实现细节，不进 AGENTS.md `## Packages` 表的发现入口（feat-20260511-naga-rhi-wgpu-merge 兑现）。
+AI users' model is `Engine.create({ canvas })` → `world.spawn(5 component)` → `renderer.draw(world)`. It must work without knowledge of raw WASM bindings (charter propositions 1 and 5). Symbols such as `wasm.requestAdapter()` / `wasm.parse(source)` are wrapper implementation details, excluded from the AGENTS.md package discovery entry (feat-20260511-naga-rhi-wgpu-merge).
 
 ## Implemented Methods
 
@@ -196,31 +199,31 @@ limitation. No mapping bytes persist in a parallel buffer catalogue.
 
 `RhiWgpuInstance`, `RhiWgpuAdapter`, `RhiWgpuDevice`, `RhiWgpuQueue`, `RhiWgpuBuffer`, `RhiWgpuTexture`, `RhiWgpuSampler`, `RhiWgpuBindGroupLayout`, `RhiWgpuPipelineLayout`, `RhiWgpuBindGroup`, `RhiWgpuRenderPipeline`, `RhiWgpuComputePipeline`, `RhiWgpuShaderModule`, `RhiWgpuCommandEncoder`, `RhiWgpuRenderPass`, `RhiWgpuQuerySet`, `RhiWgpuRenderBundleEncoder`, `RhiWgpuCommandBuffer`, `RhiWgpuSurface`, `RhiWgpuSurfaceTexture`
 
-## 构建 / 获取 pkg/
+## Building or Fetching pkg/
 
-`pkg/`（`wgpu_wasm_bg.wasm` + `wgpu_wasm.js` glue + 两个 `.d.ts` + `package.json`）是 wasm-pack 产物，**不入 git**（ufbx 式 release，对齐 `packages/fbx/`）。两条获取路径：
+`pkg/` contains wasm-pack output (`wgpu_wasm_bg.wasm`, `wgpu_wasm.js` glue, two `.d.ts` files and `package.json`) and is **not tracked in Git**, following the ufbx-style release model in `packages/fbx/`. Two preparation paths exist:
 
-包的 `files` 明确列出这组产物及 README、provenance。wasm-pack 生成的
-`pkg/.gitignore` 会排除整个目录；只声明 `"pkg"` 无法保证 npm 发布或独立运行快照
-包含绑定。逐文件声明保持原生成目录和忽略规则，同时交付完整的 JS/WASM 闭包。
+The package's `files` explicitly lists these artifacts plus README and provenance.
+wasm-pack's generated `pkg/.gitignore` ignores the entire directory; listing only
+`"pkg"` cannot guarantee bindings in npm publication or standalone snapshots. Explicit file entries retain the generated directory/ignore rules while delivering the complete JS/WASM closure.
 
 ```bash
-# A. 有 Rust 工具链 —— 本地构建（首次或 src/*.rs / Cargo.* 改动后）
-bash packages/wgpu-wasm/build.sh            # 或 pnpm -F @forgeax/engine-wgpu-wasm build:wasm
+# A. With Rust: build locally on first use or after src/*.rs / Cargo.* changes.
+bash packages/wgpu-wasm/build.sh            # or pnpm -F @forgeax/engine-wgpu-wasm build:wasm
 
-# B. 无 Rust 工具链 —— 从 wasm-artifacts release 拉预构建 bundle
+# B. Without Rust: fetch a prebuilt bundle from the wasm-artifacts release.
 pnpm -F @forgeax/engine-wgpu-wasm fetch-wasm
 ```
 
-路径 A 需 Rust ≥ 1.93 + `wasm32-unknown-unknown` target + `wasm-pack`（详见 CONTRIBUTING.md §Rust toolchain）。`rust-toolchain.toml` 在本目录 pin 1.93，rustup 通常自动应用；若未生效，跑 `rustup show` 检查。
+Path A requires Rust >= 1.93, target `wasm32-unknown-unknown` and `wasm-pack` (see CONTRIBUTING.md, Rust toolchain). Local `rust-toolchain.toml` pins 1.93; rustup normally applies it automatically. Check `rustup show` if it does not.
 
-路径 B 由根 `postinstall` 在 `pkg/` 缺失时**非致命**自动执行（离线 / 私仓无 `GITHUB_TOKEN` / bundle 未发布时仅告警，不阻断 `pnpm install`）。共享下载器先用 Node `fetch`，握手失败时依次尝试 `gh` 和平台原生 `curl`（Windows 为 `curl.exe`）；所有路径仍锁定当前仓库、`wasm-artifacts` tag 和 content-keyed asset。release 资产按内容 hash 命名（`scripts/content-key.mjs` 覆盖 `src/**/*.rs` + `Cargo.{toml,lock}` + `rust-toolchain.toml` + `build.sh`），CI `publish-wgpu-wasm-release` job 在 main push 时打包发布——源码改一次，asset 名随之变，**旧 stale `pkg/` 无从被服务**（根治 `.d.ts` 与 `rhi.rs` 漂移）。
+Path B runs automatically and nonfatally from postinstall when `pkg/` is missing: offline access, private repositories without `GITHUB_TOKEN` or unpublished bundles warn without blocking `pnpm install`. The shared downloader tries Node `fetch`, then `gh` and native `curl` (`curl.exe` on Windows) on handshake failure. Every path remains pinned to this repository, the `wasm-artifacts` tag and a content-keyed asset. Asset names include the source hash from `scripts/content-key.mjs`, covering `src/**/*.rs`, `Cargo.{toml,lock}`, `rust-toolchain.toml` and `build.sh`. CI's `publish-wgpu-wasm-release` job publishes on main pushes. Source changes alter the asset name so stale `pkg/` output cannot be served, preventing `.d.ts` / `rhi.rs` drift.
 
-> `pnpm -F @forgeax/engine-wgpu-wasm build`（无 `:wasm`）只跑 `tsc -b` + tsup，围绕已存在的 `pkg/` 重建 JS shim；不生成 `pkg/`——先经路径 A 或 B 备好。
+> `pnpm -F @forgeax/engine-wgpu-wasm build` (without `:wasm`) runs only `tsc -b` and tsup, rebuilding JS wrappers around existing `pkg/`. It does not generate `pkg/`; prepare that through path A or B first.
 
-## 体积承诺
+## Bundle Size Contract
 
-`forgeax.metrics.bundle-size` 阈值 5 MB（gzip），与 `@forgeax/engine-rhi-wgpu` 旧 baseline 同源（feat-20260511-rhi-wgpu-impl 实测 0.51 MB → 本闭环合并 naga 后预计 0.66–0.9 MB；超 1 MB 触发 RK-3 评审 wasm-opt -Oz override，超 5 MB 触发 fail-fast block）。
+The `forgeax.metrics.bundle-size` limit is 5 MB gzip, derived from the former `@forgeax/engine-rhi-wgpu` baseline (feat-20260511-rhi-wgpu-impl measured 0.51 MB; the naga merge estimated 0.66-0.9 MB). Above 1 MB, RK-3 requires review of a wasm-opt -Oz override; above 5 MB, the gate fails fast.
 
 ## Render bundle lifetime
 

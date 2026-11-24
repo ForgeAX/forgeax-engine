@@ -15,6 +15,7 @@ import {
   tlasTransform,
   triangleFaceNormals,
 } from '../../raytracing/world-acceleration';
+import { WORLD_ACCELERATION_TABLE_LAYOUT } from '../../raytracing/world-acceleration-coverage';
 import {
   WORLD_CARD_RADIANCE_WGSL,
   WORLD_TRAVERSAL_ROSTER,
@@ -38,7 +39,8 @@ async function device(rayQuery = false): Promise<RhiDevice> {
 /**
  * The parity kernel the native Ray Query test runs: one module per traversal, same body.
  * `settings` keeps the production layout (x = Card count, y = resolution, z = residency
- * pending) plus w = max steps; `parity` is x = projection margin, y = min step factor.
+ * pending) plus w = max steps. Parity keeps its original trace vec4 and an
+ * independent source-owner tuple; it never reads its expectation from Grid.
  */
 function parityKernel(traversal: WorldTraversal): string {
   return `${worldTraversalWgsl(traversal)}
@@ -47,7 +49,9 @@ function parityKernel(traversal: WorldTraversal): string {
 @group(0) @binding(7) var<storage,read> rays: array<Ray>;
 struct Traced { hit: Hit, radiance: vec4f }
 @group(0) @binding(8) var<storage,read_write> traced: array<Traced>;
-@group(0) @binding(9) var<uniform> parity: vec4f;
+struct Parity { trace:vec4f, expectedSource:vec4u }
+@group(0) @binding(9) var<uniform> parity: Parity;
+fn worldSceneExpected()->vec4u{return parity.expectedSource;}
 @group(0) @binding(10) var<uniform> settings: vec4u;
 @group(0) @binding(11) var albedo: texture_2d<f32>;
 @group(0) @binding(12) var normal: texture_2d<f32>;
@@ -57,8 +61,8 @@ struct Traced { hit: Hit, radiance: vec4f }
 ${WORLD_CARD_RADIANCE_WGSL}
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3u) {
  if(gid.x>=arrayLength(&rays)){return;}
- let hit=traceWorld(rays[gid.x],settings.w,parity.y);
- traced[gid.x]=Traced(hit,worldCardRadiance(hit,parity.x,false));
+ let hit=traceWorld(rays[gid.x],settings.w,parity.trace.y);
+ traced[gid.x]=Traced(hit,worldCardRadiance(hit,parity.trace.x,false,rays[gid.x]));
 }
 `;
 }
@@ -68,6 +72,7 @@ const FIXTURES = resolve(
   '../../../../rhi-wgpu-native/src/__tests__/fixtures/world-traversal',
 );
 const GENERATED: Readonly<Record<string, string>> = {
+  'ray-query-layout.json': `${JSON.stringify(WORLD_ACCELERATION_TABLE_LAYOUT, null, 2)}\n`,
   'global-sdf.wgsl': parityKernel('global-sdf'),
   'ray-query.wgsl': parityKernel('ray-query'),
   'compose.wgsl': GLOBAL_SDF_COMPOSE_WGSL,
@@ -138,9 +143,11 @@ describe('world traversal seam', () => {
     });
     expect(acceleration.ok ? undefined : acceleration.error.code).toBe('feature-not-enabled');
     const module = createShaderModuleImmediate(d, { code: '' }).unwrap();
-    const kernel = createIrradianceFieldKernel(d, 'traceProbes', module, 'ray-query');
+    const kernel = await createIrradianceFieldKernel(d, 'traceProbes', module, 'ray-query');
     expect(kernel.ok ? undefined : kernel.error.code).toBe('feature-not-enabled');
-    expect(createIrradianceFieldKernel(d, 'traceProbes', module, 'global-sdf').ok).toBe(true);
+    expect((await createIrradianceFieldKernel(d, 'traceProbes', module, 'global-sdf')).ok).toBe(
+      true,
+    );
   });
 });
 
@@ -204,7 +211,8 @@ describe('world acceleration', () => {
       tlasBuilt: 1,
       bytesBuilt: 72 + 64,
       rowsWritten: 2,
-      bytesUploaded: 72 + 32 + 32,
+      bytesUploaded: 72 + 32 + 32 + 64,
+      coverageBytesUploaded: 0,
     });
     expect(update()).toEqual({
       pending: 0,
@@ -212,7 +220,8 @@ describe('world acceleration', () => {
       tlasBuilt: 1,
       bytesBuilt: 72 + 128,
       rowsWritten: 2,
-      bytesUploaded: 72 + 32 + 32,
+      bytesUploaded: 72 + 32 + 32 + 64,
+      coverageBytesUploaded: 0,
     });
     expect(update()).toEqual({
       pending: 0,
@@ -221,6 +230,7 @@ describe('world acceleration', () => {
       bytesBuilt: 0,
       rowsWritten: 0,
       bytesUploaded: 0,
+      coverageBytesUploaded: 0,
     });
     // A move patches one record and one row; the GPU rebuild still consumes both records.
     world.move(7, translated(1)).unwrap();
@@ -230,7 +240,8 @@ describe('world acceleration', () => {
       tlasBuilt: 1,
       bytesBuilt: 128,
       rowsWritten: 1,
-      bytesUploaded: 16,
+      bytesUploaded: 16 + 64,
+      coverageBytesUploaded: 0,
     });
     const layout = d
       .createBindGroupLayout({

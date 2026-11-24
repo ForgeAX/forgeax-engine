@@ -8,7 +8,7 @@
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture, packSceneTemporal}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #import forgeax_view::fog::{forward_fog, vertex_height_fog}
-#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity, sceneViewZ}
+#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, packSceneTemporalV1WithValidity, sceneViewZ}
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #import forgeax_standard::cluster::{evaluateStandardClusterLights}
 #endif
@@ -321,7 +321,7 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
   if (spriteTemporalRejected(in)) { discard; }
-  return encodeSceneVelocity(materialTemporal(in));
+  return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);
 }

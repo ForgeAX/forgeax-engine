@@ -14,7 +14,7 @@
 #endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
-#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, packSceneTemporalV1WithValidity}
 #import forgeax_material::alpha_hash::{alphaHashThreshold, alphaCoverageValue, materialOutputAlpha, materialOutputColor}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{forward_fog}
@@ -666,8 +666,8 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
   let coverage = unlitTemporalCoverage(in);
   if (coverage.rejected) { discard; }
-  return encodeSceneVelocity(materialTemporal(in, coverage.opacity));
+  return encodeSceneVelocityWithDepth(materialTemporal(in, coverage.opacity), in.previousClip);
 }

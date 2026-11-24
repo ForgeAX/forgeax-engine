@@ -11,12 +11,13 @@ description: >-
 [Simplified Chinese](SKILL.zh-CN.md)
 
 For startup, first use [View startup](../forgeax-view-start/SKILL.md): run the
-game's installed `tools/view/start.mjs` with explicit `--project`. The operations
+matching SDK's `tools/view/start.mjs` with explicit `--project`. The operations
 below target a running View on the returned Backend root H. They are not the
 ordinary one-file startup route and may be absent from cold Engine CLI help.
-Run the examples through the game's installed CLI as `pnpm exec forgeax ...`
-from the game root, always passing the returned `--root H`. The tables abbreviate
-this as `forgeax`. Do not select a global SDK's CLI for another Engine instance.
+Run the examples through the same SDK's CLI as
+`node /absolute/forgeax-sdk/bin/forgeax.mjs ...`, always passing the returned
+`--root H`. The tables abbreviate this as `forgeax`. Do not select the game's
+CLI or another SDK for this Engine instance.
 
 > [!IMPORTANT]
 > The resident workspace API is authoritative. The browser and CLI are clients

@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": true,
+    "emitDeclarationOnly": false,
+    "noEmit": true,
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": ["scripts/native-sponza-renderer.mjs", "scripts/__tests__/native-sponza-host.types.ts"]
+}

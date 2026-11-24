@@ -47,6 +47,7 @@ export type {
   FieldVec3,
   GeometricDistanceField,
   MeshDistanceField,
+  MeshDistanceFieldSurface,
 } from './distance-field';
 export {
   buildMeshDistanceField,

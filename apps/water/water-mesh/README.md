@@ -5,7 +5,11 @@ entry: one App, World and Renderer contains a 960 m textured arc-shaped island T
 an elevated lake at 30 m, a descending River and its ordinary River-to-Ocean
 transition. The terminal continuity reach includes the full authored estuary
 edge and its paired grid triangles; the transition shares Ocean optics while
-the upstream River keeps its flow detail. The Ocean extends 10 km. The timber bridge, lake jetty and shore
+the upstream River keeps its flow detail. The tidal material disables the stock
+velocity-masked transition waves because explicit terminal continuity already
+supplies the shared wave deformation. Both River material regions therefore
+retain equal base deformation where the numeric support fades.
+The Ocean extends 10 km. The timber bridge, lake jetty and shore
 vegetation give the watershed human scale. Camera buttons keep the entire
 watershed mounted while moving between overview, lake, river, mouth and sea.
 
@@ -23,6 +27,17 @@ The Terrain producer shares exact coordinate samples within one Pack build
 across both variants and their slope neighbors. Shore bounds reject impossible
 nearest segments before projection; crossing parity stays independent. Both
 full-resolution Terrain closures and all four Water bodies remain authored.
+The riverbed follows the same Hermite route and tangents as the visible River.
+Its cross-section embeds the surface edges in raised valley banks, with an open
+lake outlet and banks tapering into the estuary. Bank raising fades within the
+island's coastal band; outside the island it only carves the existing seabed,
+so it cannot build a sand barrier across the River-to-Ocean connection.
+The terminal bed descends below the sea plane before the tidal surface blend,
+keeping the full centre channel submerged through the transition.
+This is authored containment;
+the spline surface does not solve lateral flooding. Regression checks sample both
+Terrain variants between grid vertices to keep the bed submerged and banks above
+the descending water surface.
 
 Select an actual Body before changing its water level, conservative wave bound,
 priority or surface optics. Geometry edits prepare and atomically adopt a

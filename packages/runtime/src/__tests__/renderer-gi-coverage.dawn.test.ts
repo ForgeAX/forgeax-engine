@@ -14,6 +14,7 @@ import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-s
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { coverageBindings, coverageSoftwareFrame } from './renderer-gi-coverage-bindings.fixture';
 import {
   createIrradianceFieldHarness,
   irradianceFieldGi,
@@ -29,23 +30,6 @@ const ALPHA_BLEND = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
 } as const;
-/** Kernel bindings 0-6 and 9-15 are the Renderer's live world-trace resources. */
-const BINDINGS: readonly (readonly [number, string])[] = [
-  [0, 'probe-global.voxels'],
-  [1, 'probe-global.settings'],
-  [2, 'probe-global.instances'],
-  [3, 'probe-global.fields'],
-  [4, 'probe-global.bounds'],
-  [5, 'probe-global.card-projections'],
-  [6, 'irradiance-field.card-lit'],
-  [9, 'irradiance-field.frame'],
-  [10, 'probe-global.card-settings'],
-  [11, 'cards.albedoRoughness'],
-  [12, 'cards.normals'],
-  [13, 'cards.emissionMetallic'],
-  [14, 'cards.f0Validity'],
-  [15, 'cards.depth'],
-];
 
 interface Coverage {
   readonly status: number;
@@ -92,6 +76,18 @@ function trackFieldResources(device: GPUDevice) {
     target.destroy();
     return bytes;
   };
+  const softwareFrame = async () => {
+    const bytes = coverageSoftwareFrame(
+      await readBuffer(buffer('irradiance-field.frame')),
+      await readBuffer(buffer('irradiance-field.visibility-inputs')),
+      await readBuffer(buffer('probe-global.settings')),
+      buffer('probe-global.instances').size,
+      buffer('probe-global.fields').size,
+    );
+    const frame = device.createBuffer({ size: bytes.byteLength, usage: 64 | 8 });
+    device.queue.writeBuffer(frame, 0, bytes);
+    return frame;
+  };
   return {
     readBuffer: (label: string) => readBuffer(buffer(label)),
     /** rgba16float atlas plane as rows of `width * 8` bytes. */
@@ -136,16 +132,20 @@ function trackFieldResources(device: GPUDevice) {
         size: rays.length * IRRADIANCE_FIELD_COVERAGE_BYTES,
         usage: 0x80 | 4,
       });
+      const diagnosticFrame = await softwareFrame();
       const group = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
           { binding: 7, resource: { buffer: rayBuffer } },
           { binding: 8, resource: { buffer: out } },
-          ...BINDINGS.map(([binding, label]) => ({
+          ...(await coverageBindings(IRRADIANCE_FIELD_COVERAGE_WGSL)).map(([binding, label]) => ({
             binding,
-            resource: label.startsWith('cards.')
-              ? texture(label).createView()
-              : { buffer: buffer(label) },
+            resource:
+              binding === 9
+                ? { buffer: diagnosticFrame }
+                : label.startsWith('cards.')
+                  ? texture(label).createView()
+                  : { buffer: buffer(label) },
           })),
         ],
       });
@@ -161,6 +161,7 @@ function trackFieldResources(device: GPUDevice) {
       const bytes = await readBuffer(out);
       rayBuffer.destroy();
       out.destroy();
+      diagnosticFrame.destroy();
       const records = new Uint32Array(bytes.buffer);
       const floats = new Float32Array(bytes.buffer);
       return rays.map((_, i): Coverage => {
@@ -238,6 +239,7 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     ];
     const truth = [1, 2.875 * Math.hypot(0.7, 0.7, 1)];
     const white = await field.classify(rays);
+    result.initialCoverage = white;
     for (const [i, record] of white.entries()) {
       expect(record.status).toBe(GlobalSdfQueryStatus.hit);
       expect(record.lookup).toBe(CardLookupStatus.mapped);
@@ -331,7 +333,8 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
       // Only the one row reading the edited material is re-admitted.
       projectedSources: beforeAssetEdit.projectedSources + 1,
       materialRootUpdates: beforeAssetEdit.materialRootUpdates + 1,
-      materialDrawVisits: beforeAssetEdit.materialDrawVisits + 6,
+      // Six tiles, each recorded once for material and once for receiver identity.
+      materialDrawVisits: beforeAssetEdit.materialDrawVisits + 2 * 6,
       materialUniformUploads: beforeAssetEdit.materialUniformUploads + 1,
       pendingTiles: 0,
     });
@@ -433,7 +436,8 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         rematerializedInstances: edits.rematerializedInstances,
         assetRootUpdates: edits.assetRootUpdates + 1,
         materialBindingRefreshes: edits.materialBindingRefreshes + 1,
-        materialDrawVisits: edits.materialDrawVisits + (kind === 'texture' ? 12 : 6),
+        // A rejected texture submission still records both passes before retry.
+        materialDrawVisits: edits.materialDrawVisits + 2 * 6 * (kind === 'texture' ? 2 : 1),
         materialUniformUploads: edits.materialUniformUploads,
         pendingTiles: 0,
       });

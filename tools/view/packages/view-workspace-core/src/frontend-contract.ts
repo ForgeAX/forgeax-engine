@@ -94,7 +94,7 @@ export type ResourceIdentity = {
   PROPERTIES_SLOT: string; PROPERTIES_TITLE_I18N_KEY: string; PROPERTIES_ICON: string; PROPERTIES_LAYOUT: PanelLayout; PROPERTIES_PANEL: string;
 };
 export type ViewLayoutConfig = { responsiveAutoTuck?: boolean };
-export type FrontendConfig = { pageHost?: PageHost; panelHost?: PanelHost; document?: Document; layout?: ViewLayoutConfig };
+export type FrontendConfig = { /** Engine package version of the hosting View installation. */ engineVersion?: string; pageHost?: PageHost; panelHost?: PanelHost; document?: Document; layout?: ViewLayoutConfig };
 
 declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {

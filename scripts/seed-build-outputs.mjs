@@ -11,7 +11,7 @@
 // and rebuilds whatever differs. Existing paths in the target are never replaced.
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 const TASK_CACHE = 'node_modules/.cache/forgeax-build';
 // Toolchain installs and Rust scratch are per-checkout; neither is a build output.
@@ -25,6 +25,23 @@ const SEEDED_ROOTS = new Set([
 ]);
 
 const canonical = (path) => (existsSync(path) ? realpathSync.native(path) : resolve(path));
+
+function isBuildOutputPath(source, path) {
+  const parts = path.split('/');
+  // Only the declared receipt root may live inside node_modules. Its nested
+  // workspace installs are still mutable inputs, just like those inside apps.
+  const outputParts =
+    path === TASK_CACHE || path.startsWith(`${TASK_CACHE}/`)
+      ? parts.slice(TASK_CACHE.split('/').length)
+      : parts;
+  return (
+    !outputParts.some((part) => EXCLUDED_SEGMENTS.has(part)) &&
+    !parts.some(
+      (part, index) =>
+        part === 'target' && existsSync(join(source, ...parts.slice(0, index), 'Cargo.toml')),
+    )
+  );
+}
 
 function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 28 });
@@ -65,7 +82,7 @@ export function buildOutputPaths(source) {
     .filter(Boolean)
     .filter((path) => {
       const parts = path.split('/');
-      return SEEDED_ROOTS.has(parts[0] ?? '') && !parts.some((part) => EXCLUDED_SEGMENTS.has(part));
+      return SEEDED_ROOTS.has(parts[0] ?? '') && isBuildOutputPath(source, path);
     });
   return [...ignored, TASK_CACHE].sort();
 }
@@ -86,7 +103,12 @@ export function seedBuildOutputs({ root, from, dryRun = false, log = console.err
       kept.push(path);
       continue;
     }
-    if (!dryRun) cpSync(from, to, { recursive: true, preserveTimestamps: true });
+    if (!dryRun)
+      cpSync(from, to, {
+        recursive: true,
+        preserveTimestamps: true,
+        filter: (path) => isBuildOutputPath(source, relative(source, path).replaceAll('\\', '/')),
+      });
     copied.push(path);
   }
   log(

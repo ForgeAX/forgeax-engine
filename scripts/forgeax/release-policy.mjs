@@ -155,6 +155,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       git(
         'fetch',
         '--no-tags',
+        '--no-recurse-submodules',
         ...(Object.keys(tips).length === 0 ? history : []),
         'origin',
         `+refs/heads/${branch}:refs/remotes/origin/${branch}`,

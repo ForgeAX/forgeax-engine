@@ -31,23 +31,18 @@ Agent 指引：[forgeax-view-start](skills/forgeax-view-start/SKILL.zh-CN.md)。
 
 ### 单文件启动
 
-使用完整 Engine 或 SDK 安装中自带的 View 文件。源码检出也使用同一位置：
+View 仅随 SDK 分发，不进入 Engine npm 包或游戏 npm 依赖。已准备好的源码检出也保留相同入口：
 
 ```sh
-# Ordinary npm game, from its root:
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-# Explicit SDK or source installation:
-node /path/to/forgeax-engine/tools/view/start.mjs
+node /path/to/forgeax-sdk/tools/view/start.mjs --project /path/to/game
+node /path/to/forgeax-sdk/tools/view/start.mjs
 node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
-node /path/to/forgeax-engine/tools/view/start.mjs --new-instance --project /path/to/another-game
 ```
 
-View 从自身安装位置解析匹配的 Engine，并读取自己的 `host.pack.json`。
-发布产物已经完成构建。源码贡献者可通过
-`node tools/view/skills/forgeax-view-start/scripts/start-view.mjs [--project G]`
-准备缺失产物；常规启动使用已准备好产物的根入口文件。
-源码准备和原生宿主集成见[贡献者指南](skills/forgeax-view-start/CONTRIBUTOR.md)。
-发布的启动 Skill 只包含消费者指引；无需全局 SDK 或游戏级启动器。
+SDK 入口通过既有 launcher 初始化 `.forgeax/cli-runtime`，再从其中解析匹配的 Engine 和 View Host Pack；不会使用游戏的 Engine 托管 View。发布产物已构建完成。
+源码贡献者的准备与原生宿主集成见[贡献者指南](skills/forgeax-view-start/CONTRIBUTOR.md)。
+
+页面右下角显示宿主 Engine 包的实际版本，例如 `Engine 0.5.2`，准备连接和离线时也保留。View 自己的包版本和所选游戏不决定这个版本号。
 
 初始 JSON 包含 `enginePackage`、`viewRoot`、`hostPack`、请求的 `project`、`url`、后端 `root` 和 `phase: preparing`。
 这是启动公告，不是实时状态。`--help` 不启动服务；不加 `--json` 也会输出 JSON。

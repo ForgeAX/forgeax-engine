@@ -33,6 +33,7 @@ import {
   validateSurfaceSource,
 } from './surface-contract.js';
 import type { MaterialVariantContext } from './variant-context.js';
+import { tokenizeWgsl, type WgslToken } from './wgsl-tokens.js';
 
 // Source identity uses the same UTF-8 digest in tool and browser consumers.
 // Host selection must not turn importing the pure composer into a Node load.
@@ -193,13 +194,6 @@ export function isImportedWgslSymbol(source: string, symbol: string): boolean {
   );
 }
 
-interface WgslToken {
-  readonly kind: 'identifier' | 'symbol';
-  readonly text: string;
-  readonly start: number;
-  readonly end: number;
-}
-
 interface WgslScope {
   parent: number;
   readonly locals: Map<string, number>;
@@ -219,79 +213,6 @@ const TOP_LEVEL_DECLARATION_KEYWORDS = new Set([
   'struct',
   'var',
 ]);
-
-/** Tokenize just enough WGSL to bind identifiers without touching comments, strings, or directives. */
-function tokenizeWgsl(source: string): readonly WgslToken[] {
-  const tokens: WgslToken[] = [];
-  let index = 0;
-  let lineStart = true;
-  while (index < source.length) {
-    const character = source[index] ?? '';
-    if (character === '\n') {
-      index += 1;
-      lineStart = true;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      index += 1;
-      continue;
-    }
-    if (lineStart && character === '#') {
-      while (index < source.length && source[index] !== '\n') index += 1;
-      lineStart = false;
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index += 2;
-      while (index < source.length && source[index] !== '\n') index += 1;
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index += 2;
-      let commentDepth = 1;
-      while (index < source.length && commentDepth > 0) {
-        if (source[index] === '/' && source[index + 1] === '*') {
-          commentDepth++;
-          index += 2;
-        } else if (source[index] === '*' && source[index + 1] === '/') {
-          commentDepth--;
-          index += 2;
-        } else {
-          if (source[index] === '\n') lineStart = true;
-          index++;
-        }
-      }
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      const quote = character;
-      index += 1;
-      while (index < source.length) {
-        if (source[index] === '\\') {
-          index += 2;
-          continue;
-        }
-        const closed = source[index] === quote;
-        index += 1;
-        if (closed) break;
-      }
-      lineStart = false;
-      continue;
-    }
-    const identifier = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(index));
-    if (identifier !== null) {
-      const text = identifier[0];
-      tokens.push({ kind: 'identifier', text, start: index, end: index + text.length });
-      index += text.length;
-      lineStart = false;
-      continue;
-    }
-    tokens.push({ kind: 'symbol', text: character, start: index, end: index + 1 });
-    index += 1;
-    lineStart = false;
-  }
-  return tokens;
-}
 
 /** After conditional projection, WGSL enables precede injected declarations. */
 export function hoistWgslEnables(source: string): string {
@@ -606,7 +527,7 @@ function removeCanonicalImports(
   return { source: result, aliases };
 }
 
-const SURFACE_INPUT_FIELDS = [
+export const SURFACE_INPUT_FIELDS = [
   ['positionOS', 'vec3<f32>'],
   ['positionWS', 'vec3<f32>'],
   ['geometricNormalWS', 'vec3<f32>'],
@@ -625,6 +546,7 @@ const SURFACE_INPUT_FIELDS = [
   ['frontFacing', 'bool'],
   ['uvFootprint0', 'vec4<f32>'],
   ['uvFootprint1', 'vec4<f32>'],
+  ['objectToWorld', 'mat3x3<f32>'],
   ['frameTime', 'f32'],
 ] as const;
 

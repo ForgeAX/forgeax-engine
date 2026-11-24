@@ -1656,10 +1656,27 @@ describe('typed built-in pipeline topology', () => {
   });
 
   it.each([
-    { compactGbuffer: undefined, decals: false, label: 'full' },
-    { compactGbuffer: 'standard-gbuffer/4', decals: false, label: 'Default' },
-    { compactGbuffer: 'standard-gbuffer/4', decals: true, label: 'Default with decals' },
-  ] as const)('feeds SSR source reactivity to TAA ($label)', ({ compactGbuffer, decals }) => {
+    { compactGbuffer: undefined, decals: false, water: false, label: 'full' },
+    { compactGbuffer: 'standard-gbuffer/4', decals: false, water: false, label: 'Default' },
+    {
+      compactGbuffer: 'standard-gbuffer/4',
+      decals: true,
+      water: false,
+      label: 'Default with decals',
+    },
+    { compactGbuffer: undefined, decals: false, water: true, label: 'full Water' },
+    { compactGbuffer: 'standard-gbuffer/4', decals: false, water: true, label: 'Default Water' },
+    {
+      compactGbuffer: 'standard-gbuffer/4',
+      decals: true,
+      water: true,
+      label: 'Default Water with decals',
+    },
+  ] as const)('feeds SSR source reactivity to TAA ($label)', ({
+    compactGbuffer,
+    decals,
+    water,
+  }) => {
     const ssr = admitSsrSpatial({
       camera: {
         projection: 'perspective',
@@ -1694,6 +1711,7 @@ describe('typed built-in pipeline topology', () => {
         ...(decals ? { projectedDecals: [[]] } : {}),
         reflectionFallback: { enabled: true },
         ssr,
+        water,
       }),
     ).unwrap();
     const info = compiled.inspect();
@@ -1705,6 +1723,21 @@ describe('typed built-in pipeline topology', () => {
       resource: 'ssr-hit-reactivity',
       usage: 'storage-write',
     });
+    for (const name of water ? ['water-ssr-trace'] : []) {
+      expect(info.passes.find((pass) => pass.name === name)?.accesses).toEqual(
+        expect.arrayContaining([
+          {
+            resource: decals
+              ? 'decal-surface-normal'
+              : compactGbuffer === undefined
+                ? 'gbuffer-normal-roughness'
+                : 'gbuffer-a',
+            usage: 'sampled-read',
+          },
+          { resource: 'reflection-fallback-linear-hdr', usage: 'sampled-read' },
+        ]),
+      );
+    }
     if (compactGbuffer !== undefined) {
       expect(info.passes.find((p) => p.name === 'ssr-scene-temporal')?.accesses).toContainEqual({
         resource: 'scene-velocity',

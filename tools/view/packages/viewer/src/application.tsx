@@ -50,6 +50,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
   let workspaceClient: WorkspaceRecoveryClient | undefined;
   let hostConnection: HostConnection = { phase: 'connecting', onReconnect: startConnection };
   let responsiveAutoTuck = false;
+  let engineVersion: string | undefined;
 
   if (panels) {
     window.__forgeaxViewPanelsPromise = panels;
@@ -98,6 +99,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
             hostConnection={hostConnection}
             launcher={launcher}
             responsiveAutoTuck={responsiveAutoTuck}
+            engineVersion={engineVersion}
           />
         </ThemeProvider>
       </OverlayRootProvider></ClipboardProvider></StrictMode>
@@ -116,12 +118,16 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
       frontendEndpoint?: string;
       token?: string;
       frontendTicket?: string;
-      frontendConfig?: Pick<ViewFrontendConfig, 'layout'>;
+      frontendConfig?: Pick<ViewFrontendConfig, 'layout' | 'engineVersion'>;
     };
     try {
       const response = await platform.fetch('/__forgeax/view/bootstrap', { cache: 'no-store', signal });
+      config = await response.json();
+      if (signal.aborted) return;
+      engineVersion = config.frontendConfig?.engineVersion;
+      renderApp();
       if (!response.ok) {
-        const payload = await response.json().catch(() => undefined) as { phase?: unknown; reason?: unknown; launcher?: boolean } | undefined;
+        const payload = config as typeof config & { phase?: unknown };
         if (payload?.launcher) launcher ??= createServiceViewLauncher(platform.fetch);
         if (response.status === 503 && payload?.phase === 'offline') {
           window.__forgeaxViewReady = { unconfigured: true, reason: typeof payload.reason === 'string' ? payload.reason : 'Backend offline' };
@@ -135,7 +141,6 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
         }
         throw new Error(`View bootstrap failed (${response.status})`);
       }
-      config = await response.json();
     } catch (error) {
       if (signal.aborted) return;
       throw error;

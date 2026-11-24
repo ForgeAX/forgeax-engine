@@ -56,7 +56,10 @@ retain every measured cohort and qualify the actual added native owner.
 When new Browser files fail the roster or core-ratio guards, update the file cost
 table from successful, complete Linux Browser children. Include each file's
 share of positive process overhead, and preserve the retention thresholds and
-all original cases. See the [Browser timing procedure](../../scripts/ci/README.md).
+all original cases. A failed parent job may supply a successful complete child;
+identify that child's exact source, roster and process receipt. Do not use the
+failed child's passing prefix as a timing sample.
+See the [Browser timing procedure](../../scripts/ci/README.md).
 
 For Browser module-fetch failures before test collection, inspect the Vite transform
 error before retrying the browser. Windows OXC may misresolve automatic composite
@@ -881,12 +884,12 @@ and complete merged thresholds. Missing or unqualified group evidence executes
 fresh. For View, Dawn and Browser roster changes, use the retained native
 owners and full-profile rules in [Core validation](../../scripts/ci/README.md#core-validation-policy).
 
-Coverage core validation defers seven expanded Modeling example suites through
-the shared reviewed exclusion list. The measured file roster retains approximately
-78% of Modeling time, core operators, nominal S6 and original thresholds.
-Producers and merge select the same profile. The owning Modeling suites and the
-full Engine profile run the original cases. Requalify all four coverage shards
-after changing membership and preserve historical reservations.
+Coverage core validation retains Modeling kernel suites, nominal S6 and
+representative consuming motion and publication tests. The CI guide lists the
+reviewed showcase exclusions and retained owners. Producers and merge select the
+same profile. Core uses twelve Modeling partitions across four existing jobs.
+Full-profile Coverage uses sixteen. Requalify all four shards after membership
+changes and reserve unmeasured partition costs without reusing historical timings.
 
 For run 43802933357's distinct failures, preserve their individual owners:
 SDK source-export guards need the existing locked install first; cold authoring
@@ -1833,6 +1836,11 @@ For Editor Assistance readiness in Dawn, select the renderer group with
 Dawn Focus. Its mesh, line, depth and outline checks consume the ordinary
 ready-frame helper with the original 15-second frame deadline.
 
+For 16 GB Dawn GI runs, verify which complete Renderer journeys the Native
+Ray Query matrix already owns. Keep the independent Dawn shader and reflection
+checks in core. For full software traversal, select the Dawn owner explicitly
+or use the full profile. See [Core validation](../../scripts/ci/README.md#core-validation-policy).
+
 For a native job cancellation, inspect the actual test-step verdict and setup
 cost before changing test membership or timing forecasts. Optional artifact
 transport loss can trigger a complete source rebuild. Dawn keeps a 40-minute
@@ -1958,7 +1966,7 @@ For Modeling Dawn collection or stale-frame guards, retain the self-contained de
 
 For a Modeling `R-internal-C` failure, rename the marked internal member and its typed callers in the kernel owner, run the complete candidate gate, merge the kernel PR, then bump the Engine pin. Preserve the naming gate; [source preparation](../../scripts/ci/README.md#modeling-source-preparation) describes candidate admission.
 
-For a Modeling coverage long tail, check the sixteen native project partitions across four jobs and their exact manifest membership. Preserve every test, aggregate threshold and deadline. For C-410 region-query timeouts, retain the complete brute-force connectivity oracle and original geometry falsifiers. For S7 playback timeouts, profile label inspection and preserve the complete animation case and its 600-second bound. For capture heap mismatches, verify the budgeted Node host: inherited V8 flags override Worker resource limits. See [coverage execution](../../scripts/ci/README.md#coverage-execution).
+For a Modeling coverage long tail, check the active profile's native project partitions across four jobs and their exact manifest membership. Preserve the retained test oracles, aggregate thresholds and deadlines. For C-410 region-query timeouts, retain the complete brute-force connectivity oracle and original geometry falsifiers. For S7 playback timeouts, profile label inspection and preserve the complete animation case and its 600-second bound. For capture heap mismatches, verify the budgeted Node host: inherited V8 flags override Worker resource limits. See [coverage execution](../../scripts/ci/README.md#coverage-execution).
 
 For declared-material publication timeouts in an already exclusive coverage
 child, check whether a file-wide spy setting disabled the normal Node material

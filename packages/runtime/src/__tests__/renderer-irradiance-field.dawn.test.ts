@@ -6,6 +6,7 @@ import {
   buildFrameModel,
   decodeTape,
   openReplay,
+  type RecorderAttachment,
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
@@ -21,6 +22,8 @@ import {
 import { planIrradianceField } from '../../../render/src/raytracing/irradiance-field-plan';
 import {
   createIrradianceFieldHarness,
+  expectFieldTopologyRebuild,
+  fieldInspection,
   IRRADIANCE_FIELD_CARD_PASSES,
   irradianceFieldGi,
 } from './renderer-irradiance-field.fixture';
@@ -49,10 +52,23 @@ const L = 0.5;
 /** Card texels per tile at the fixture's `cards.resolution` (16). */
 const CARD_TEXELS = 16 * 16;
 
-function fieldInspection(h: Awaited<ReturnType<typeof createIrradianceFieldHarness>>) {
-  const state = h.inspection();
-  assert('gather' in state && state.gather === 'irradiance-field');
-  return state;
+async function furnaceSeries(
+  h: Awaited<ReturnType<typeof createIrradianceFieldHarness>>,
+  recorder: RecorderAttachment,
+) {
+  const series: number[] = [];
+  for (let i = 0; i < 24; i++) {
+    const pending = i === 22 ? recorder.captureFrame() : undefined;
+    if (pending) (await recorder.frameBoundary()).unwrap();
+    const image = await h.image();
+    series.push(image.mean);
+    if (pending) {
+      (await recorder.frameBoundary()).unwrap();
+      save('furnace-frame-22.rhitape', (await pending).unwrap().bytes);
+      save('furnace-frame-22.f32', new Uint8Array(image.red.buffer));
+    }
+  }
+  return series;
 }
 
 /** Lattice point, relocated position and classification of every level-0 probe. */
@@ -76,7 +92,7 @@ async function probePlacement(h: Awaited<ReturnType<typeof createIrradianceField
       halfFloat.f16ToF32(z & 0xffff),
       halfFloat.f16ToF32(z >>> 16),
       halfFloat.f16ToF32(w & 0xffff),
-    ];
+    ].map((value) => value * plan.spacing);
     return {
       lattice,
       offset,
@@ -125,16 +141,13 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     });
 
     // Offscreen emitter behind the camera lights the wall through the field only.
-    const emptyGeneration = fieldInspection(h).generation;
+    const empty = fieldInspection(h);
     const emitter = h.spawn(h.emitterMesh, h.emissive, [0, 0, 1]);
     await h.settle();
-    // Adding a field source is an in-place edit of the prepared field on both
-    // lanes; a Ray Query field builds the new mesh's BLAS and rebuilds its TLAS.
+    // A new identity requires a complete canonical pool before publication.
+    const added = fieldInspection(h);
+    expectFieldTopologyRebuild(empty, added, 1, 1);
     const rayQuery = fieldInspection(h).traversal === 'ray-query';
-    expect(fieldInspection(h)).toMatchObject({
-      generation: emptyGeneration,
-      edits: { addedInstances: 1, pendingTiles: 0 },
-    });
     const addedAcceleration = fieldInspection(h).acceleration;
     if (rayQuery) expect(addedAcceleration).toMatchObject({ pending: 0, settled: true });
     const bleed = await h.image();
@@ -145,6 +158,8 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     h.world.despawn(emitter).unwrap();
     const hidden = h.spawn(h.emitterMesh, h.emissive, [0, 0, -5]);
     await h.settle();
+    const hiddenState = fieldInspection(h);
+    expectFieldTopologyRebuild(added, hiddenState, 0, 0);
     const blocked = await h.image();
     const lit = (await h.read('irradiance')).reduce((max, value) => Math.max(max, value), 0);
     expect(lit).toBeGreaterThan(0.5);
@@ -159,26 +174,25 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     await h.settle(24);
     expect(fieldInspection(h)).toMatchObject({
       generation: beforeRemoval,
-      // The emitter moved behind the wall as one removal plus one add, then the removal.
+      // Replacing the emitter rebuilt the pool; this generation has one removal.
       edits: {
-        addedInstances: 2,
-        removedInstances: 2,
+        applied: 1,
+        addedInstances: 0,
+        removedInstances: 1,
         pendingTiles: 0,
         pendingPriorityUpdates: 0,
       },
     });
     if (rayQuery) {
-      // The re-added emitter reuses its mesh's BLAS and each roster change rebuilds
-      // the TLAS only; the emitter's final removal releases its BLAS.
-      assert(addedAcceleration);
+      // Within the rebuilt hidden scene, removal rebuilds only the TLAS and
+      // releases the emitter BLAS; no BLAS is rebuilt for the surviving wall.
+      assert(hiddenState.acceleration);
       expect(fieldInspection(h).acceleration).toMatchObject({
-        geometries: addedAcceleration.geometries - 1,
-        blasBuilt: addedAcceleration.blasBuilt,
+        geometries: hiddenState.acceleration.geometries - 1,
+        blasBuilt: hiddenState.acceleration.blasBuilt,
+        tlasBuilt: hiddenState.acceleration.tlasBuilt + 1,
         settled: true,
       });
-      expect(fieldInspection(h).acceleration?.tlasBuilt).toBeGreaterThan(
-        addedAcceleration.tlasBuilt,
-      );
     }
     const ghost = (await h.image()).red.reduce((max, value) => Math.max(max, value), 0);
     expect(ghost).toBeLessThan(1e-3 * bleed.center);
@@ -192,9 +206,9 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     const single = await h.image();
     h.setGi(irradianceFieldGi({ environment: [L, L, L] }));
     await h.settle(0);
-    const series: number[] = [];
-    for (let i = 0; i < 24; i++) series.push((await h.image()).mean);
+    const series = await furnaceSeries(h, recorder);
     const furnace = await h.image();
+    save('furnace-series.json', { L, single: single.mean, mean: furnace.mean, series });
     for (let i = 1; i < series.length; i++)
       expect(series[i] ?? NaN).toBeGreaterThan((series[i - 1] ?? NaN) - 0.01 * L);
     expect(furnace.mean).toBeGreaterThan(single.mean + 0.01 * L);
@@ -274,31 +288,36 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     );
     expect(computeEntries).toEqual(
       expect.arrayContaining([
+        'prepareCardRadiosityBounce',
         'placeProbes',
         'traceProbes',
         'updateProbes',
         'deriveProbes',
-        'radiateCards',
+        'placeCardRadiosity',
+        'traceCardRadiosity',
+        'visibilityCardRadiosity',
+        'filterCardRadiosity',
+        'integrateCardRadiosity',
+        'resolveCardRadiosity',
         'gatherField',
         'upsampleField',
       ]),
     );
-    // Static lights and scene: Card direct light is current, so the settled frame
-    // re-surfaces and relights nothing; radiosity re-gathers a rotating fraction of tiles
-    // (all of them here: one probe sweep fits in a frame, see irradianceFieldRadiosityPeriod).
+    // Static direct light stays current. Radiosity updates a rotating probe
+    // subset, then resolves the retained SH data over every Card texel.
     expect(computeEntries).not.toContain('cardSurface');
     expect(computeEntries).not.toContain('lightCards');
     const steady = fieldInspection(h);
     assert(steady.cards);
     expect(steady.cards).toMatchObject({ relit: 0, radiated: steady.cards.perFrame });
-    const radiate = model.works.find((work) =>
-      work.pipeline.shaders.some((shader) => shader.entryPoint === 'radiateCards'),
+    const resolve = model.works.find((work) =>
+      work.pipeline.shaders.some((shader) => shader.entryPoint === 'resolveCardRadiosity'),
     );
-    assert(radiate, 'frame contains the radiosity dispatch');
-    const groups = radiate.drawCall as { x: number; y: number };
-    const radiosityThreads = groups.x * groups.y * 64;
-    expect(radiosityThreads).toBeGreaterThanOrEqual(steady.cards.radiated * CARD_TEXELS);
-    expect(radiosityThreads).toBeLessThan((steady.cards.radiated + 1) * CARD_TEXELS);
+    assert(resolve, 'frame contains the Card radiosity resolve dispatch');
+    const groups = resolve.drawCall as { x: number; y: number };
+    const resolveThreads = groups.x * groups.y * 64;
+    expect(resolveThreads).toBeGreaterThanOrEqual(steady.cards.tiles * CARD_TEXELS);
+    expect(resolveThreads).toBeLessThan((steady.cards.tiles + 1) * CARD_TEXELS);
     const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
     const device = (
       await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
@@ -319,7 +338,7 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
       works: model.works.length,
       exact: true,
       cards: steady.cards,
-      radiosityThreads,
+      resolveThreads,
     };
     h.world.despawn(block).unwrap();
     await h.settle(24);

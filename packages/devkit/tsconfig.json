@@ -33,6 +33,7 @@
     { "path": "../tool-runtime" },
     { "path": "../shader-compiler" },
     { "path": "../types" },
+    { "path": "../ui-blitz" },
     { "path": "../vfx-compiler" },
     { "path": "../vite-plugin-pack" },
     { "path": "../vite-plugin-rhi-debug" },

@@ -420,7 +420,12 @@ function admitDeferredTemporal(
   if (!admission.ok) return admission;
   if (demand.targetCount !== 1) return ok({ targets: undefined, inGBuffer: false });
   if (topology.compactGbuffer !== undefined) {
-    const velocity = createDefaultVelocityTarget(context.graph, renderInternalSize(topology));
+    const velocity = createDefaultVelocityTarget(
+      context.graph,
+      renderInternalSize(topology),
+      topology.standardProfile?.diffuseGi?.gather === 'screen-probe' &&
+        topology.standardProfile.diffuseGi.probes.integration === 'screen-space',
+    );
     return velocity.ok
       ? ok({ targets: undefined, inGBuffer: false, velocity: velocity.value })
       : velocity;
@@ -856,6 +861,7 @@ function addSceneDataConsumers(
       f0: surfaces.f0,
       ...(targets.visibleSurface === undefined ? {} : { identity: targets.visibleSurface }),
       motion: temporalTargets.temporal,
+      ...(temporal.velocity?.format === 'rg32uint' ? { motionWithDepth: temporal.velocity } : {}),
       depthPyramid: () => {
         const pyramid = depthViews.closestPyramid();
         return pyramid.ok ? ok(pyramid.value.pyramid.pyramid) : pyramid;
@@ -1262,6 +1268,7 @@ function addDeferredTranslucency(
   water: {
     readonly temporal: StandardSceneDataTargets | undefined;
     readonly depthViews: DeferredDepthViews;
+    readonly targets: DeferredSceneTargets;
   },
 ): Result<GraphTextureView | undefined, RenderPipelineBuildError> {
   const translucent = (scene: DeferredForwardScene) =>
@@ -1280,6 +1287,20 @@ function addDeferredTranslucency(
     context,
     color: forward.color,
     depth: forward.depth,
+    ...(water.targets.reflection.fallback === undefined
+      ? {}
+      : {
+          opaqueSurface: {
+            normal: water.targets.normalRoughness,
+            fallback: water.targets.reflection.fallback,
+            gbufferV2: true,
+            ...(water.targets.compactGbuffer === undefined
+              ? {}
+              : {
+                  compactMaterial: water.targets.dielectricSpecular.view,
+                }),
+          },
+        }),
     ...(water.temporal === undefined ? {} : { opaqueTemporal: water.temporal.temporal }),
     receiver: forward.receiver,
     view: view.value,
@@ -1625,7 +1646,7 @@ function addDeferredForwardStages(
     standardTransmissionRoute(topology, targets.scene.sampleCount),
     targets.medium,
     targetCaptures,
-    { temporal: temporal.targets, depthViews },
+    { temporal: temporal.targets, depthViews, targets },
   );
   if (!translucent.ok) return translucent;
   const observed = addDeferredSceneObservations(
@@ -1976,7 +1997,11 @@ export function buildStandardDeferredLane(
     const sceneOutput = addDeferredForwardStages(
       context,
       topology,
-      targets.value,
+      {
+        ...targets.value,
+        normalRoughness: surfaces.value.normal,
+        dielectricSpecular: surfaces.value.f0,
+      },
       sources,
       clouds.value,
       gpuDriven.value,

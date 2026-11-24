@@ -7,15 +7,19 @@ export type {
   FieldBounds,
   FieldVec3,
   MeshDistanceField,
+  MeshDistanceFieldSurface,
 } from '@forgeax/engine-types';
 
 import type { DistanceFieldPolicy, FieldVec3, MeshDistanceField } from '@forgeax/engine-types';
 export const MAX_VISIBILITY_DISTANCE_FIELD_AXIS = 514;
 /** Advance when the builder policy changes, independently of artifact encoding. */
-export const MESH_DISTANCE_FIELD_GENERATION_VERSION = 5;
-export type GeometricDistanceField = MeshDistanceField & {
-  readonly policy: Extract<DistanceFieldPolicy, { readonly errorBound: number }>;
-};
+export const MESH_DISTANCE_FIELD_GENERATION_VERSION = 6;
+export type GeometricDistanceField = Extract<
+  MeshDistanceField,
+  {
+    readonly policy: Extract<DistanceFieldPolicy, { readonly errorBound: number }>;
+  }
+>;
 export interface DistanceFieldError {
   readonly code: 'distance-field-invalid' | 'distance-field-unsupported' | 'distance-field-limit';
   readonly expected: string;

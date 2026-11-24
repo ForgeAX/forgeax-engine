@@ -7,8 +7,8 @@ import {
   lakeOutline,
   lakeShoreDistance,
   RIVER_PATH,
-  watershedHeight,
   WORLD_COLUMNS,
+  watershedHeight,
 } from '../../src/watershed';
 import pack from '../water-mesh.pack';
 
@@ -84,6 +84,13 @@ it('cooks one connected river and all four domain-valid watershed Body products'
   expect(far.asset.staticSwitches?.waterInfo).toBe(false);
   expect(near.asset.staticSwitches?.waterWaves).toBe(true);
   expect(near.asset.staticSwitches?.waterInfo).toBe(true);
+  const tidal = resolveMaterialAsset(
+    AssetGuid.format(AssetGuid.derive(pack.packageId, 'material/transition-ocean')),
+    table,
+  ).unwrap();
+  // Explicit terminal continuity owns the waves on both sides of the River material split.
+  expect(tidal.asset.staticSwitches?.waterWaves).toBe(false);
+  expect(tidal.asset.staticSwitches?.waterTransitionOcean).toBe(false);
   const lake = result.value['body/lake'];
   if (lake?.kind !== 'water-body') throw new Error('Missing lake');
   expect(lake.baseHeightM).toBe(30);

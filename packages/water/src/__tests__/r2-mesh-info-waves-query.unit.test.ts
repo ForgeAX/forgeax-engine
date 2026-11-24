@@ -1038,7 +1038,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       frustumPlanes: [{ normal: [1, 0, 0] as [number, number, number], distance: 100 }],
       waterInfoBoundsXZ: { minM: [-8, -8] as [number, number], maxM: [8, 8] as [number, number] },
     };
-    const build = vi.spyOn(waterMesh, 'buildWaterMeshView');
+    const build = vi.spyOn(waterMesh.WaterMeshViewBuilder.prototype, 'build');
     const render = (input = view) =>
       buildWaterZoneMeshViewForRenderer(system, zoneGuid, 1, zone, input);
     try {
@@ -1049,6 +1049,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       const signatureScopes: string[] = [];
       const copyWorkCounts: number[] = [];
       const digestWorkCounts: number[] = [];
+      const digestInstanceWalks: number[] = [];
       const observe = {
         begin(operation: string) {
           signatureScopes.push(`+${operation}`);
@@ -1067,6 +1068,11 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
             return {
               end: () => {
                 digestWorkCounts.push(serializeProbe.mock.calls.length);
+                digestInstanceWalks.push(
+                  serializeProbe.mock.calls.filter(
+                    ([value]) => value && typeof value === 'object' && 'cameraRelativeXZ' in value,
+                  ).length,
+                );
                 serializeProbe.mockRestore();
                 signatureScopes.push(`-${operation}`);
               },
@@ -1090,6 +1096,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       const digestView = { ...view, viewId: 'digest-scope' };
       expect(system.buildZoneMeshView(zoneGuid, 1, zone, digestView, observe).ok).toBe(true);
       expect(digestWorkCounts[0]).toBeGreaterThan(0);
+      expect(digestInstanceWalks[0], 'publication identity must use packed mesh bytes').toBe(0);
       expect(copyWorkCounts[1]).toBeGreaterThan(0);
       expect(signatureScopes).toEqual([
         '+water/mesh/input-signature-match',
@@ -1771,10 +1778,12 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
           (tile) => tile.heightMorph01 > 0.49 && tile.heightMorph01 < 0.51,
         ),
     ).toBe(true);
-    expect(distantHeight.ok && distantHeight.value.instances).toHaveLength(1);
+    expect(distantHeight.ok && distantHeight.value.instances).toHaveLength(4);
     expect(distantHeight.ok && distantHeight.value.instances[0]).toMatchObject({
-      lod0: 3,
+      lod0: 2,
       lod1: 3,
+      maxMorphLod: 2,
+      shouldMorph: false,
     });
   });
 

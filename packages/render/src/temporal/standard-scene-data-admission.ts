@@ -142,6 +142,8 @@ export function sceneDataSurfaceBindings(
 }
 
 export interface StandardSceneDataContributor {
+  /** The selected Deferred writer has a producer-certified Standard GBuffer ABI. */
+  readonly gbufferWriter?: boolean;
   /** The receiver must retain object-specific probe or shadow selection. */
   readonly compactReceiverContext?: true;
   /** The captured writer and receiver fit a model in the Default GBuffer. */
@@ -420,6 +422,7 @@ function sameContributorProof(
         row.deformation === prior.deformation &&
         row.entryPoint === prior.entryPoint &&
         row.selectedProgram === prior.selectedProgram &&
+        row.gbufferWriter === prior.gbufferWriter &&
         row.compactGbufferWriter === prior.compactGbufferWriter &&
         row.compactReceiverContext === prior.compactReceiverContext &&
         (row.forwardOnly === true) === (prior.forwardOnly === true) &&
@@ -593,6 +596,7 @@ function sameCoverageRow(
       a.deformation === b.deformation &&
       a.entryPoint === b.entryPoint &&
       a.selectedProgram === b.selectedProgram &&
+      a.gbufferWriter === b.gbufferWriter &&
       (a.forwardOnly === true) === (b.forwardOnly === true))
   );
 }
@@ -666,6 +670,10 @@ export function missingStandardSurfaceProducer(view: SurfaceView): StandardScene
   });
 }
 
+function isDeferredAoCompatiblePass(contributor: StandardSceneDataContributor): boolean {
+  return contributor.forwardOnly === true || contributor.gbufferWriter === true;
+}
+
 export function createStandardSceneSurfaceAdmission(
   input: StandardSceneDataAdmissionInput,
   previous?: StandardSceneSurfaceAdmission,
@@ -686,11 +694,13 @@ export function createStandardSceneSurfaceAdmission(
   let rejections = previousCodes;
   let rejectedCount = 0;
   let deferredAoCompatible = renderPath === 'deferred';
+  let deferredGBufferEmpty = renderPath === 'deferred';
   let incompatibleWriter: string | undefined;
   let receiverContext = false;
   let lightingChannels = false;
   for (let index = 0; index < (currentRows ?? input.contributors).length; index++) {
     const contributor = (currentRows ?? input.contributors)[index] as StandardSceneDataContributor;
+    if (contributor.forwardOnly !== true) deferredGBufferEmpty = false;
     if (owned && !identicalRows && !ownedContributors.has(contributor)) owned = false;
     if (renderPath === 'deferred' && ownedContributors.has(contributor)) {
       if (!contributor.forwardOnly && !contributor.compactGbufferWriter)
@@ -710,7 +720,7 @@ export function createStandardSceneSurfaceAdmission(
     if (rejection === undefined) continue;
     rejectedCount++;
     if (
-      contributor.forwardOnly !== true ||
+      !isDeferredAoCompatiblePass(contributor) ||
       contributor.facts?.selectedPassFound !== true ||
       contributor.facts.materialSnapshotMissing !== false
     )
@@ -763,10 +773,7 @@ export function createStandardSceneSurfaceAdmission(
   // Borrowed rows or getters must finish observing their values during this call.
   const value = native ? identity : identity.read();
   const base = {
-    deferredGBufferEmpty:
-      renderPath === 'deferred' &&
-      deferredAoCompatible &&
-      rejectedCount === input.contributors.length,
+    deferredGBufferEmpty: deferredAoCompatible && deferredGBufferEmpty,
     viewIdentity: input.viewIdentity,
     generation: input.generation,
     deviceGeneration: input.deviceGeneration,
@@ -857,6 +864,7 @@ function contributorIdentityFields(
     row.selectedProgram,
     row.forwardOnly === true,
     rejection,
+    row.gbufferWriter === true,
   ];
 }
 
@@ -1281,6 +1289,21 @@ function selectedPassMissingContributor(
   };
 }
 
+function isCertifiedGBufferWriter(
+  snapshot: MaterialResource['snapshot'],
+  pass: MaterialResource['snapshot']['passes'][number],
+  lane: 'forward' | 'deferred',
+  forwardOnly: boolean,
+  entryPoint: string | undefined,
+): boolean {
+  return (
+    lane === 'deferred' &&
+    !forwardOnly &&
+    entryPoint === 'fs_gbuffer' &&
+    snapshot.materialProgramInputs?.[pass.name]?.gbuffer === 'standard-gbuffer/2'
+  );
+}
+
 function selectedPassContributor(
   material: MaterialResource,
   row: ContributorRow | undefined,
@@ -1311,6 +1334,7 @@ function selectedPassContributor(
     retained === undefined
       ? runtimeMaterialShaderId(pass.program.module, pass.name)
       : selectedProgramFact.authoredShaderId;
+  const gbufferWriter = isCertifiedGBufferWriter(snapshot, pass, lane, forwardOnly, entryPoint);
   const compactGbufferWriter =
     lane === 'deferred' && !forwardOnly && fitsCompactGBuffer(snapshot, row, authoredShaderId)
       ? (row?.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT) === LIGHTING_CHANNELS_DEFAULT
@@ -1370,6 +1394,7 @@ function selectedPassContributor(
     return previous;
   const contributor: ProducedContributor = {
     forwardOnly,
+    gbufferWriter,
     ...(compactGbufferWriter === undefined ? {} : { compactGbufferWriter }),
     ...(compactReceiverContext === undefined ? {} : { compactReceiverContext }),
     id,

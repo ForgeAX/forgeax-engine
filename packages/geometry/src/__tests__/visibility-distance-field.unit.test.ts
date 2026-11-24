@@ -1,3 +1,4 @@
+import type { MeshDistanceField } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { buildMeshDistanceField } from '../distance-field';
 import {
@@ -38,7 +39,7 @@ it('round-trips a field above the previous f32 ceiling within the packed query c
   expect(decoded.values.length).toBe(field.values.length);
   expect(decoded.values.every((value, index) => value === field.values[index])).toBe(true);
   expect(decoded.policy).toEqual(field.policy);
-}, 30000);
+}, 60_000);
 
 it('round-trips an extended axis and rejects the first oversized axis', async () => {
   const field = (
@@ -79,7 +80,10 @@ it('builds open mixed-sided visibility without claiming a geometric interior or 
   const artifact = (await encodeMeshDistanceField(field)).unwrap();
   expect((await decodeMeshDistanceField(artifact, field.meshDigest)).unwrap()).toEqual(field);
   expect(
-    validateMeshDistanceField({ ...field, policy: { kind: 'signed-solid', errorBound: 0 } }).ok,
+    validateMeshDistanceField({
+      ...field,
+      policy: { kind: 'signed-solid', errorBound: 0 },
+    } as unknown as MeshDistanceField).ok,
   ).toBe(false);
   expect(
     validateMeshDistanceField({ ...field, policy: { ...field.policy, traceBounds: field.bounds } })

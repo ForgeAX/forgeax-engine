@@ -486,7 +486,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
     expect(deriveStandardLayerPlan(foliage).layers.map((layer) => layer.name)).toEqual([
       'diffuseTransmission',
     ]);
-    const cooked = await cookStandard({
+    const cooked = await cookStorageStandard({
       guid: 'thin-foliage',
       source: {
         kind: 'material',
@@ -500,7 +500,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
           subsurfaceDiffusion: true,
         },
         parameters: foliage,
-        passes,
+        passes: [passes[0]],
         values: { diffuseTransmission: 0.6, diffuseTransmissionColor: [0.6, 0.9, 0.3] },
       },
     });

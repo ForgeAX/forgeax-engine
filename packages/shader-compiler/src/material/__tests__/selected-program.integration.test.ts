@@ -173,7 +173,12 @@ it.each([
   const actual = compileRayMaterialSelection(request, { ...compiler, compile }).unwrap();
   const cooked = (await cookRayMaterial(request)).unwrap();
   expect(actual).toEqual(cooked);
-  expect(compile).toHaveBeenCalledTimes(1);
+  const derivative = `forgeax_material::ray_surface::${context}`;
+  const contracts =
+    context === 'card-capture'
+      ? [derivative, 'forgeax_material::card_parameter_contract']
+      : [derivative];
+  expect(compile.mock.calls.map(([, options]) => options?.id)).toEqual(contracts);
 });
 
 it('reopens source-only Standard publication and compiles one selected context', async () => {

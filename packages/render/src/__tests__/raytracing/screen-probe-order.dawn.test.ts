@@ -5,15 +5,22 @@ import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { compileShader } from '../../../../shader-compiler/src/index';
 import { packIrradianceFieldUniform } from '../../raytracing/irradiance-field';
 import { IRRADIANCE_FIELD_PROBE_STRIDE } from '../../raytracing/irradiance-field-plan';
-import { SCREEN_PROBE_BINDINGS, SCREEN_PROBE_STAGES } from '../../raytracing/screen-probe-kernels';
+import {
+  SCREEN_PROBE_BINDINGS,
+  SCREEN_PROBE_STAGES,
+  SCREEN_PROBE_TRACE_STAGES,
+} from '../../raytracing/screen-probe-kernels';
 import {
   packScreenProbeFrame,
   SCREEN_PROBE_FRAME_BYTES,
   SCREEN_PROBE_RECORD_BYTES,
   SCREEN_PROBE_TEXELS,
+  ScreenProbeRayStatus,
 } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { gbufferNormalPixels } from './gbuffer-normal.fixture';
+import { rayShaderTestImports } from './ray-shader-imports.fixture';
+import { emptyOrderProbeRecords } from './screen-probe-order.fixture';
 
 it('keeps receiver ray samples stable across adaptive allocation order and advances frame jitter', async () => {
   const read = (name: string) =>
@@ -22,12 +29,7 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
   const compiled = (
     await compileShader(source, {
       id: 'screen-probe-order',
-      imports: {
-        'forgeax_view::common': read('common'),
-        'forgeax_pbr::gbuffer': read('standard-gbuffer'),
-        'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
-        'forgeax_ray::irradiance_field_sample': read('ray-irradiance-field-sample'),
-      },
+      imports: await rayShaderTestImports(),
     })
   ).unwrap();
   const adapter = await navigator.gpu.requestAdapter();
@@ -104,6 +106,7 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
     for (const importance of ['uniform', 'brdf'] as const) {
       for (const frameIndex of [0, 1, 47]) {
         const packed = packScreenProbeFrame({
+          worldSource: { traversal: 'unused' },
           layout: {
             width: 16,
             height: 4,
@@ -134,16 +137,16 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
         device.queue.writeBuffer(frame, 0, packed);
         let baseline: Map<number, Uint8Array> | undefined;
         for (const [permutation, pixels] of [
-          [0, [3, 7, 11, 15, 1, 5, 0xffffffff]],
-          [1, [3, 7, 11, 15, 5, 1, 0xffffffff]],
+          [0, [3, 7, 11, 0xffffffff, 1, 5, 9]],
+          [1, [3, 7, 11, 0xffffffff, 5, 1, 9]],
         ] as const) {
           const bytes = new Uint8Array(probes.size);
           const floats = new Float32Array(bytes.buffer),
             words = new Uint32Array(bytes.buffer);
           pixels.forEach((pixel, slot) => {
             const normal = pixel === 5 ? [0, 1, 0] : [0, 0, 1];
-            floats.set([pixel % 16, 0, 0, 1, ...normal], slot * 8);
-            words[slot * 8 + 7] = pixel;
+            floats.set([pixel % 16, 0, 0, 1, ...normal], slot * (SCREEN_PROBE_RECORD_BYTES / 4));
+            words[slot * (SCREEN_PROBE_RECORD_BYTES / 4) + 7] = pixel;
           });
           device.queue.writeBuffer(probes, 0, bytes);
           const encoder = device.createCommandEncoder(),
@@ -158,6 +161,15 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
           await staging.mapAsync(1);
           const actual = new Uint8Array(staging.getMappedRange()).slice();
           staging.unmap();
+          const output = new DataView(actual.buffer);
+          // Slot 3 has no receiver. Slot 6 looks live but lies past the
+          // admitted adaptive count. Neither can hand a stale ray to tracing.
+          for (const slot of [3, 6]) {
+            for (let ray = 0; ray < SCREEN_PROBE_TEXELS; ray++) {
+              const info = output.getUint32((slot * SCREEN_PROBE_TEXELS + ray) * 32 + 12, true);
+              expect((info >> 12) & 7).toBe(ScreenProbeRayStatus.culled);
+            }
+          }
           const selected = new Map(
             pixels.map(
               (pixel, slot) =>
@@ -205,21 +217,135 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
   }
 });
 
-it('compacts adaptive receivers in pixel order across dispatch shapes, overflow and empty controls', async () => {
+it('compacts only live World rays and resets the list before gathering lighting fallbacks', async () => {
+  const source = readFileSync(
+    new URL('../../../../shader/src/ray-screen-probe.wgsl', import.meta.url),
+    'utf8',
+  );
+  const compiled = (
+    await compileShader(source, { id: 'screen-trace-list', imports: await rayShaderTestImports() })
+  ).unwrap();
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('Trace compaction requires a real GPU adapter');
+  const device = await adapter.requestDevice();
+  const owned: GPUBuffer[] = [];
+  try {
+    const uploadBuffer = (words: Uint32Array, usage = 128) => {
+      const buffer = device.createBuffer({ size: words.byteLength, usage: usage | 8 | 4 });
+      owned.push(buffer);
+      device.queue.writeBuffer(buffer, 0, words);
+      return buffer;
+    };
+    const frameWords = new Uint32Array(SCREEN_PROBE_FRAME_BYTES / 4);
+    frameWords.set([2, 2, 16, 0], 4);
+    const probeWords = emptyOrderProbeRecords(4);
+    const probeStride = SCREEN_PROBE_RECORD_BYTES / 4;
+    for (const probe of [0, 2, 3]) probeWords[probe * probeStride + 7] = probe;
+    const rayWords = new Uint32Array(4 * SCREEN_PROBE_TEXELS * 8);
+    const worldSlots = [0, 63, 128, 191];
+    const fallbackSlots = [4, 130];
+    for (const slot of [...worldSlots, 65, 192]) {
+      rayWords[slot * 8 + 3] = (ScreenProbeRayStatus.world << 12) | 512;
+    }
+    rayWords[8 * 8 + 3] = ScreenProbeRayStatus.world << 12;
+    for (const slot of fallbackSlots) {
+      rayWords[slot * 8 + 3] = (ScreenProbeRayStatus.fallback << 12) | 512;
+    }
+    const list = uploadBuffer(new Uint32Array(257));
+    const args = uploadBuffer(new Uint32Array(6));
+    const resources = {
+      frame: uploadBuffer(frameWords, 64),
+      probesIn: uploadBuffer(probeWords),
+      adaptiveCountIn: uploadBuffer(new Uint32Array([1])),
+      raysIn: uploadBuffer(rayWords),
+      fallbackList: list,
+      fallbackListIn: list,
+      traceDispatch: args,
+    };
+    const stride = list.size + args.size;
+    const staging = device.createBuffer({ size: 3 * stride, usage: 1 | 8 });
+    owned.push(staging);
+    const module = device.createShaderModule({ code: compiled.wgsl });
+    const encoder = device.createCommandEncoder();
+    const run = (
+      stage:
+        | 'compactWorldTraces'
+        | 'compactTraceFallbacks'
+        | 'resetTraceList'
+        | 'prepareTraceFallbackDispatch',
+      groups: number,
+    ) => {
+      const pipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: stage },
+      });
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(
+        0,
+        device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: SCREEN_PROBE_TRACE_STAGES[stage].slots.map((slot) => ({
+            binding: SCREEN_PROBE_BINDINGS[slot][0],
+            resource: { buffer: resources[slot] },
+          })),
+        }),
+      );
+      pass.dispatchWorkgroups(groups);
+      pass.end();
+    };
+    const snapshot = (index: number) => {
+      run('prepareTraceFallbackDispatch', 1);
+      encoder.copyBufferToBuffer(list, 0, staging, index * stride, list.size);
+      encoder.copyBufferToBuffer(args, 0, staging, index * stride + list.size, args.size);
+    };
+    run('compactWorldTraces', 4);
+    snapshot(0);
+    run('resetTraceList', 1);
+    run('compactTraceFallbacks', 4);
+    snapshot(1);
+    run('resetTraceList', 1);
+    snapshot(2);
+    device.queue.submit([encoder.finish()]);
+    await staging.mapAsync(1);
+    try {
+      const words = new Uint32Array(staging.getMappedRange());
+      for (const [index, expected] of [worldSlots, fallbackSlots, []].entries()) {
+        const start = (index * stride) / 4;
+        expect(words[start]).toBe(expected.length);
+        expect(
+          Array.from(words.slice(start + 1, start + 1 + expected.length)).sort((a, b) => a - b),
+        ).toEqual(expected);
+        const offset = start + list.size / 4 + 3;
+        expect(Array.from(words.slice(offset, offset + 3))).toEqual([
+          1,
+          expected.length ? 1 : 0,
+          1,
+        ]);
+      }
+    } finally {
+      staging.unmap();
+    }
+  } finally {
+    for (const buffer of owned) buffer.destroy();
+    device.destroy();
+  }
+});
+
+it.each([
+  4, 8, 16,
+] as const)('compacts %i adaptive candidates in pixel order including partial tiles', async (slots) => {
   const read = (name: string) =>
     readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8');
   const source = read('ray-screen-probe');
-  const compiled = (
-    await compileShader(source, {
-      id: 'screen-probe-allocation',
-      imports: {
-        'forgeax_view::common': read('common'),
-        'forgeax_pbr::gbuffer': read('standard-gbuffer'),
-        'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
-        'forgeax_ray::irradiance_field_sample': read('ray-irradiance-field-sample'),
-      },
-    })
-  ).unwrap();
+  const compileEntry = async (computeEntry: string) =>
+    (
+      await compileShader(source, {
+        id: 'screen-probe-allocation',
+        computeEntry,
+        imports: await rayShaderTestImports(),
+      })
+    ).unwrap();
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Adaptive placement requires a real GPU adapter');
   const device = await adapter.requestDevice();
@@ -241,12 +367,38 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
   }[] = [];
   let status = 'running';
   try {
-    // Four candidate workgroups, with eligible receivers in every group. Empty
-    // uniform records force the original geometry-agreement eligibility rule.
-    const width = 64,
-      height = 16,
-      uniformCount = 64,
-      candidates = 256;
+    // Empty uniform records force placement wherever the G-buffer covers.
+    const width = slots === 4 ? 64 : 65;
+    const height = slots === 4 ? 16 : 17;
+    const tilesX = Math.ceil(width / 4),
+      tilesY = Math.ceil(height / 4);
+    const uniformCount = tilesX * tilesY;
+    const candidates = uniformCount * slots;
+    const groups = Math.ceil(candidates / 64);
+    const widthInSamples = slots === 4 ? 2 : 4,
+      heightInSamples = slots / widthInSamples;
+    const stride = tilesX * widthInSamples;
+    const coordinates = (i: number) => {
+      const x = i % stride,
+        y = Math.floor(i / stride);
+      const tileX = Math.floor(x / widthInSamples),
+        tileY = Math.floor(y / heightInSamples);
+      const tileW = Math.min(4, width - tileX * 4),
+        tileH = Math.min(4, height - tileY * 4);
+      const sx = x % widthInSamples,
+        sy = y % heightInSamples;
+      const px = Math.floor(((sx + 0.5) * tileW) / widthInSamples);
+      const py = Math.floor(((sy + 0.5) * tileH) / heightInSamples);
+      const unique =
+        Math.floor(((px + 0.5) * widthInSamples) / tileW) === sx &&
+        Math.floor(((py + 0.5) * heightInSamples) / tileH) === sy;
+      return {
+        px: tileX * 4 + px,
+        py: tileY * 4 + py,
+        unique,
+        slot: (tileY * tilesX + tileX) * slots + sy * widthInSamples + sx,
+      };
+    };
     const frame = buffer(SCREEN_PROBE_FRAME_BYTES, 64);
     const view = buffer(VIEW_UNIFORM_BYTES, 64);
     const viewBytes = new Float32Array(VIEW_UNIFORM_BYTES / 4);
@@ -254,7 +406,7 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
     viewBytes.set([0, 0, 1], 24);
     device.queue.writeBuffer(view, 0, viewBytes);
     const probes = buffer((uniformCount + 64) * SCREEN_PROBE_RECORD_BYTES);
-    const adaptiveCount = buffer(5 * 4);
+    const adaptiveCount = buffer((groups + 1) * 4);
     const tileAdaptive = buffer(candidates * 4);
     const size = probes.size + adaptiveCount.size + tileAdaptive.size;
     const staging = device.createBuffer({ size, usage: 1 | 8 });
@@ -301,9 +453,11 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
       fragment: { module: sparseModule, entryPoint: 'fragment', targets: [] },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
     });
-    const module = device.createShaderModule({ code: compiled.wgsl });
     const stages = ['placeAdaptiveProbes', 'compactAdaptiveProbes'] as const;
-    const kernels = stages.map((entryPoint) => {
+    const kernels: { pipeline: GPUComputePipeline; group: GPUBindGroup }[] = [];
+    for (const entryPoint of stages) {
+      const compiled = await compileEntry(entryPoint);
+      const module = device.createShaderModule({ code: compiled.wgsl });
       const pipeline = device.createComputePipeline({
         layout: 'auto',
         compute: { module, entryPoint },
@@ -315,20 +469,33 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
           resource: resources[slot],
         })),
       });
-      return { pipeline, group };
-    });
+      kernels.push({ pipeline, group });
+    }
     for (const fixture of ['full', 'sparse', 'empty']) {
-      const selected = Array.from({ length: candidates }, (_, i) => i).filter(
-        (i) => fixture === 'full' || (fixture === 'sparse' && i % 32 < 4 && Math.floor(i / 32) < 2),
-      );
+      const selected = Array.from({ length: candidates }, (_, i) => i).filter((i) => {
+        const { px, py, unique } = coordinates(i);
+        return unique && (fixture === 'full' || (fixture === 'sparse' && px < 8 && py < 4));
+      });
+      function verifyTileMapping(words: Uint32Array, selected: number[], liveCount: number): void {
+        const mapping = probes.size / 4 + adaptiveCount.size / 4;
+        for (let i = 0; i < candidates; i++) {
+          const tileSlot = coordinates(i).slot;
+          const ordinal = selected.indexOf(i);
+          expect(words[mapping + tileSlot]).toBe(
+            ordinal >= 0 && ordinal < liveCount ? uniformCount + ordinal : 0xffffffff,
+          );
+        }
+      }
       for (const capacity of [0, 17, 64]) {
         const packed = packScreenProbeFrame({
+          worldSource: { traversal: 'unused' },
           layout: {
             width,
             height,
-            tilesX: 16,
-            tilesY: 4,
+            tilesX,
+            tilesY,
             uniformCount,
+            adaptiveSlots: slots,
             adaptiveCapacity: capacity,
             probeCount: uniformCount + capacity,
           },
@@ -352,15 +519,14 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
         device.queue.writeBuffer(frame, 0, packed);
         let baseline: Uint8Array | undefined;
         for (const shape of [
-          [4, 1],
-          [2, 2],
-          [1, 4],
-          [4, 1],
+          [groups, 1],
+          [Math.ceil(groups / 2), 2],
+          [1, groups],
+          [groups, 1],
         ] as const) {
-          const empty = new Uint32Array(probes.size / 4);
-          for (let i = 0; i < 128; i++) empty[i * 8 + 7] = 0xffffffff;
+          const empty = emptyOrderProbeRecords(probes.size / SCREEN_PROBE_RECORD_BYTES);
           device.queue.writeBuffer(probes, 0, empty);
-          device.queue.writeBuffer(adaptiveCount, 0, new Uint32Array(5));
+          device.queue.writeBuffer(adaptiveCount, 0, new Uint32Array(groups + 1));
           device.queue.writeBuffer(tileAdaptive, 0, new Uint32Array(candidates).fill(0xffffffff));
           const encoder = device.createCommandEncoder();
           const depthPass = encoder.beginRenderPass({
@@ -410,22 +576,14 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
           expect(total).toBe(capacity > 0 ? selected.length : 0);
           for (let i = 0; i < 64; i++) {
             const receiver = selected[i] ?? 0;
-            const pixel = (2 * (receiver % 32) + 1) | ((2 * Math.floor(receiver / 32) + 1) << 16);
-            expect(words[(uniformCount + i) * 8 + 7], `capacity ${capacity}, receiver ${i}`).toBe(
-              i < liveCount ? pixel : 0xffffffff,
-            );
+            const { px, py } = coordinates(receiver);
+            const pixel = px | (py << 16);
+            expect(
+              words[(uniformCount + i) * (SCREEN_PROBE_RECORD_BYTES / 4) + 7],
+              `capacity ${capacity}, receiver ${i}`,
+            ).toBe(i < liveCount ? pixel : 0xffffffff);
           }
-          const mapping = probes.size / 4 + adaptiveCount.size / 4;
-          for (let i = 0; i < candidates; i++) {
-            const x = i % 32,
-              y = Math.floor(i / 32);
-            const tileSlot =
-              (Math.floor(y / 2) * 16 + Math.floor(x / 2)) * 4 + (x & 1) + ((y & 1) << 1);
-            const ordinal = selected.indexOf(i);
-            expect(words[mapping + tileSlot]).toBe(
-              ordinal >= 0 && ordinal < liveCount ? uniformCount + ordinal : 0xffffffff,
-            );
-          }
+          verifyTileMapping(words, selected, liveCount);
           if (baseline) expect(equalBytes(actual, baseline)).toBe(true);
           else baseline = actual;
         }
@@ -438,7 +596,7 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
       process.env.FORGEAX_SCREEN_PROBE_ORDER_ARTIFACT ?? 'artifacts/screen-probe/order';
     mkdirSync(directory, { recursive: true });
     writeFileSync(
-      `${directory}/allocation.json`,
+      `${directory}/allocation-${slots}.json`,
       `${JSON.stringify({ status, backend: process.env.FORGEAX_WEBGPU_NODE ?? 'dawn', sourceSha256: createHash('sha256').update(source).digest('hex'), cases, errors }, null, 2)}\n`,
     );
     for (const value of owned) value.destroy();

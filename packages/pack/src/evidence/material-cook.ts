@@ -1158,7 +1158,9 @@ export function validateMaterialCookProgramContext(
       pipeline: ['ray'],
       geometry: ['mesh'],
       pass: ['ray-hit', 'card-capture'],
-      profile: ['forgeax-material-ray-v1'],
+      profile: [
+        context.pass === 'card-capture' ? 'forgeax-material-card-v4' : 'forgeax-material-ray-v1',
+      ],
       toolchain: ['naga-oil'],
       instrumentation: ['none'],
     };

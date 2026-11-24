@@ -5,27 +5,31 @@
 
 # 打开 ForgeaX View
 
-本技能适用于从已安装的 Engine 启动可选 ForgeaX View、交互浏览游戏资产或场景，以及诊断 View 启动。
+本技能适用于从已安装的 SDK 启动可选 ForgeaX View、交互浏览游戏资产或场景，以及诊断 View 启动。
 
-View 是可选工具。在用户要求或需要交互检查资产、场景时打开，包括创作期间。普通 Engine 命令无需 View 即可执行。本文件和 [View 操作](../forgeax-view-cli/SKILL.zh-CN.md)由 View 维护，并随匹配的 Engine 分发；不需要额外的全局 SDK。
+View 只随 SDK 分发，不进入 Engine npm 包或游戏的 npm 依赖。普通 Engine 命令无需 View。
+本文件和 [View 操作](../forgeax-view-cli/SKILL.zh-CN.md)由 View 维护。
 
-## 已安装 npm 依赖的游戏
+## 已安装 SDK
 
-阅读游戏的 `AGENTS.zh-CN.md`；工具入口仍是 `AGENTS.md`。从游戏根目录运行其安装的 View 文件：
-
-```sh
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-```
-
-从其他工作目录运行时，脚本和游戏都使用绝对路径。解析游戏自身安装的 `@forgeax/engine`，不得悄悄替换为全局 SDK 或其他游戏的 Engine。支持 pnpm 链接，文件会解析其规范安装路径。不要给游戏添加启动包装器或 npm 脚本。
+阅读游戏的 `AGENTS.md`。从游戏根目录运行匹配 SDK 的文件：
 
 ```sh
-node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+node /absolute/forgeax-sdk/tools/view/start.mjs --project .
 ```
 
-已发布的产物已经构建完成。此路径无需执行 `build:engine`、单独安装 View 包或手动启动 Backend。启动文件缺失表示该安装不包含 View：报告包路径及版本，并使用完整且匹配的发行版。构建产物缺失表示安装不完整，不要改用贡献者构建辅助脚本。
+从其他目录运行时，对 SDK 和游戏使用绝对路径：
 
-需要显式打开 SDK 范围的选择器时，使用 `node "$SDK_ROOT/tools/view/start.mjs"`。针对游戏，应优先使用其安装的 Engine，并始终传入 `--project`。省略该参数会打开选择器或保留实例现有工程，不会选择当前工作目录。
+```sh
+node /absolute/forgeax-sdk/tools/view/start.mjs --project /absolute/game
+```
+
+入口从自身位置找到 SDK，复用 SDK launcher 初始化 `.forgeax/cli-runtime`，再从其中解析匹配的 Engine、View 和 Host Pack。支持 pnpm 链接；cwd 和游戏依赖不参与选择宿主 Engine。不要静默换用另一份 SDK，也不要给游戏增加 View 依赖、包装启动器或 npm 脚本。
+
+发布产物已经构建完成，无需 `build:engine`、独立 View 包或手动启动 Backend。缺少产物时保留诊断并修复这份 SDK；源码贡献者使用单独的贡献者指南。
+省略 `--project` 打开选择器或保留已有工程，不会隐式选择 cwd。
+
+页面右下角显示这份 View 所使用的 Engine 版本；例如 SDK Engine 为 `0.5.2`，显示 `Engine 0.5.2`，不是 View 独立包版本或游戏版本。
 
 ## 选项与生命周期
 
@@ -52,4 +56,4 @@ Ctrl+C 关闭当前呈现并取消其启动调用方。Backend 维持自己的�
 
 ## 现有游戏指引
 
-npm 升级更新包内指引，不会更新复制到游戏中的技能或 `AGENTS.md`。对于旧游戏，先阅读已安装包中的技能。用户要求刷新指引时，将这两份官方 View 技能与游戏跟踪的版本比较，更新未被定制的官方内容并保留自定义编辑。将过时的手动 Backend 或构建辅助脚本建议替换为已安装文件命令；保留有效的 Engine 开发、捕获和验收路径。仅在游戏现有 Agent 指南中增加 View 路由。单独安装已有技能挂载不会刷新复制内容。冲突需明确报告，不覆盖整份指南，也不引入新的启动包装器。
+SDK 升级更新包内指引，不会更新复制到游戏中的技能或 `AGENTS.md`。对于旧游戏，先阅读已安装 SDK 中的技能。用户要求刷新指引时，将这两份官方 View 技能与游戏跟踪的版本比较，更新未被定制的官方内容并保留自定义编辑。将过时的手动 Backend 或构建辅助脚本建议替换为已安装文件命令；保留有效的 Engine 开发、捕获和验收路径。仅在游戏现有 Agent 指南中增加 View 路由。单独安装已有技能挂载不会刷新复制内容。冲突需明确报告，不覆盖整份指南，也不引入新的启动包装器。

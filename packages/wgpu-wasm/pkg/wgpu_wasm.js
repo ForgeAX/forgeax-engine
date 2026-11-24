@@ -3188,13 +3188,13 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 6, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 8, ret: RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }, inner_ret: Some(RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 11, ret: RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }, inner_ret: Some(RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -3263,13 +3263,13 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719(arg0, arg1) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312(arg0, arg1) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312(arg0, arg1);
     return RhiWgpuCompletionRequest.__wrap(ret);
 }
 
-function wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b(arg0, arg1, arg2) {

@@ -144,7 +144,44 @@ history, and the resolve publishes the minimum of four bilinear samples.
 Publication metadata shares immutable facts within one admission. Lossless JSON
 row children are coalesced before recursive interning; signed zero, sparse arrays,
 optional values and nonstandard prototypes retain the original structural path.
-All source digests and reflection validation remain required.
+Accessors retain the ordinary admission route without being invoked by the
+sharing preflight. All source digests and reflection validation remain required.
+
+## Conservative surface intersection
+
+`SDF_SURFACE_INTERSECTION_WGSL` owns binding-free canonical-f32 triangle and slab
+interval queries. `SDF_SURFACE_LOCAL_RAY_WGSL` derives the complete module plus
+raw-affine local-ray construction from that same authority; consumers include
+only the latter when they need both. Callers supply forward-derived residual
+certificates for the stored inverse. Its single `SdfSurfaceRay` input preserves
+world-space origin/direction intervals and original parameters. Those intervals
+must already enclose upstream arithmetic; endpoint subtraction must use interval
+operations and must not normalize away the original segment parameter.
+Unsupported words or arithmetic remain unavailable. Only a primitive hit
+certifies intersection, and slab pruning requires its separate certificate.
+
+Private surface pool V4 keeps complete shared Mesh geometry separate from
+placement-owned coverage. Explicit row records describe opaque, unknown or
+shared partial primitive bits; absent or corrupt records remain unavailable.
+An unknown primitive intersection blocks a later or equal hit, while a proven
+miss does not poison another section. Asset V5 and the 144-byte Instance stay
+unchanged. Coverage changes rebuild the retained pool before publication;
+ordinary material values and poses do not rewrite shared coverage payloads.
+
+`SDF_SCENE_TEXTURE_READ_WGSL` adapts a canonical integer texture to the pool
+decoder's word-fetch functions. Its private header snapshot lasts one invocation.
+The allocation capacity stays distinct from `sdfSceneRowLimit()`, the candidate
+traversal upper bound; neither fetch transport nor packet metadata qualifies geometry.
+Call `sdfSceneView()` explicitly before any word or count query and reject its
+invalid state. It initializes the invocation's snapshot once; word functions read
+only that snapshot and expose zero before initialization. Bindings and expected
+facts must stay unchanged for the invocation.
+
+> [!IMPORTANT]
+> Supply `sdfSceneExpected()` from the canonical source owner: instance words,
+> field words, row limit and nonzero epoch. Never derive it from the sampled
+> texture. Complete projection before reads, and keep bindings and expected
+> facts immutable during an invocation. Invalid metadata exposes no source words.
 
 ## Physical atmosphere tables
 
@@ -228,6 +265,9 @@ snapshots. Complete values, own field order,
 optional absence, array multiplicity and signed zero remain distinct. Non-plain
 or cyclic extension data retains the ordinary detached-copy route. This changes
 neither the wire format nor reference/variant validation.
+The Registry's owned JSON route shares the same complete facts without a second
+clone; row validation remains deferred until first read. Accessors and non-plain
+facts retain the ordinary deferred path rather than acquiring shared identity.
 The ordered-fragment source digest remains v4 because source identity is unchanged. `ShaderRegistry.loadManifest()`
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and

@@ -52,6 +52,11 @@ function standard(
     values: { baseColor: color, roughness, metallic },
     passes: [
       {
+        name: 'deferred',
+        program: { module: 'forgeax_material::standard', fragmentEntry: 'fs_gbuffer' },
+        renderState: { tags: { LightMode: 'Deferred' }, queue: 2000 },
+      },
+      {
         name: 'forward',
         program: { module: 'forgeax_material::standard' },
         renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
@@ -134,6 +139,10 @@ export default definePack({
       type: 'river',
       overlapPriority: 2,
       ...waterMaterialFamilySlots(family, 'river'),
+      surfaceMaterialGuid: guid('material/clear/river'),
+      lodMaterialGuid: guid('material/clear/river-lod'),
+      riverToLakeTransitionMaterialGuid: guid('material/clear/river-to-lake'),
+      riverToOceanTransitionMaterialGuid: guid('material/clear/river-to-ocean'),
       spline: {
         closed: false,
         interpolationVersion: 'water-spline/2',
@@ -146,6 +155,8 @@ export default definePack({
       type: 'ocean',
       overlapPriority: 0,
       ...waterMaterialFamilySlots(family, 'ocean'),
+      surfaceMaterialGuid: guid('material/clear/ocean'),
+      lodMaterialGuid: guid('material/clear/ocean-lod'),
       spline: {
         closed: true,
         interpolationVersion: 'water-spline/2',
@@ -164,6 +175,8 @@ export default definePack({
       ...common,
       type: 'custom',
       ...waterMaterialFamilySlots(family, 'custom'),
+      surfaceMaterialGuid: guid('material/clear/custom'),
+      lodMaterialGuid: guid('material/clear/custom-lod'),
       flags: { affectsWaterInfo: false, affectsWaterMesh: false, affectsLandscape: false },
       spline: {
         closed: false,

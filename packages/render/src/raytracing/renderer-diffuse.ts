@@ -64,7 +64,10 @@ export interface PreparedRayDiffuse {
   readonly textures: readonly TexturePreparation[];
   readonly transport: RayPathTracer;
   readonly generate: Extract<ReturnType<typeof createRasterRayGenerator>, { ok: true }>['value'];
-  readonly composite: Extract<ReturnType<typeof createRayDiffuseComposite>, { ok: true }>['value'];
+  readonly composite: Extract<
+    Awaited<ReturnType<typeof createRayDiffuseComposite>>,
+    { ok: true }
+  >['value'];
   readonly reconstruction?: RendererDiffuseReconstruction;
   /** Lite reflections: world specular lane sharing this content snapshot. */
   readonly reflections?: PreparedRayReflections;
@@ -331,10 +334,12 @@ export class RendererRayDiffuse {
         await compile(device, { label: 'ray-diffuse.composite', code: compositeSource })
       ).unwrap();
       const generate = createRasterRayGenerator(device, rasterModule).unwrap();
-      const composite = createRayDiffuseComposite(
-        device,
-        compositeModule,
-        profile.reconstruction === undefined ? 'raw' : 'reconstructed',
+      const composite = (
+        await createRayDiffuseComposite(
+          device,
+          compositeModule,
+          profile.reconstruction === undefined ? 'raw' : 'reconstructed',
+        )
       ).unwrap();
       const transportFor = async (rayBuffer: Buffer, seed: number) =>
         (

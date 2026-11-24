@@ -36,8 +36,16 @@ export class SdfFieldUpload {
     target.set(this.#words, offset);
   }
 }
-/** GPU SNORM16 payloads retain the canonical four-cubed field lattice. */
+/** GPU SNORM16 payloads retain the canonical four-cubed field lattice.
+ * Nearest encoding differs in magnitude by less than band/32767. For finite
+ * |value|<=band, the two binary64 operations have <2^-36 code-unit error;
+ * adding the nearest-integer half unit remains strictly below one whole unit.
+ * This is only quantization error, not the source unsigned-distance certificate. */
 export const SDF_BRICK_EDGE = 4;
+function sampledCode(value: number | undefined, band: number): number | null {
+  if (value === undefined || !Number.isFinite(value) || Math.abs(value) > band) return null;
+  return Math.max(-32767, Math.min(32767, Math.round((value / band) * 32767))) & 65535;
+}
 /** Every table entry addresses a payload; hashes only select exact-comparison buckets. */
 export function packSampledField(
   values: Float32Array,
@@ -47,6 +55,7 @@ export function packSampledField(
 ): Uint32Array | null {
   const table = bricks.length,
     brickWords = 32;
+  if (!(band > 0) || !Number.isFinite(band)) return null;
   if (table + brickWords > maxWords) return null;
   const words = new Uint32Array(Math.min(maxWords, table * (1 + brickWords))),
     brick = new Uint32Array(brickWords),
@@ -54,6 +63,7 @@ export function packSampledField(
   let end = table;
   const encodedOffsets = new Map<number, number>();
   for (const [index, sourceOffset] of bricks.entries()) {
+    if (sourceOffset > values.length || values.length - sourceOffset < 64) return null;
     const prior = encodedOffsets.get(sourceOffset);
     if (prior !== undefined) {
       words[index] = prior;
@@ -61,11 +71,8 @@ export function packSampledField(
     }
     brick.fill(0);
     for (let local = 0; local < 64; local++) {
-      const code =
-        Math.max(
-          -32767,
-          Math.min(32767, Math.round(((values[sourceOffset + local] ?? 0) / band) * 32767)),
-        ) & 65535;
+      const code = sampledCode(values[sourceOffset + local], band);
+      if (code === null) return null;
       brick[local >> 1] = (brick[local >> 1] ?? 0) | (code << ((local & 1) * 16));
     }
     const hash = fnv1a32(brick);

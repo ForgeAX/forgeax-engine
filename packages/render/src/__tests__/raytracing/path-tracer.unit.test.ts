@@ -77,7 +77,7 @@ describe('ray Surface admission and source ownership', () => {
       error: { code: 'ray-material-unsupported' },
     });
   });
-  it('keeps custom ray eligibility independent of canonical Card qualification', () => {
+  it('leaves custom Card context qualification to its cooked Surface program', () => {
     const canonical = Materials.standard({ baseColor: [1, 1, 1, 1] });
     if (canonical.parent !== undefined) throw new Error('expected a root material');
     expect(admitRayMaterial(canonical, 'canonical', 'card-capture').ok).toBe(true);
@@ -94,10 +94,7 @@ describe('ray Surface admission and source ownership', () => {
     };
     expect(admitRayMaterial(custom, 'custom', 'ray-hit').ok).toBe(true);
     expect(admitRayMaterial(custom, 'custom', 'raster-probe').ok).toBe(true);
-    expect(admitRayMaterial(custom, 'custom', 'card-capture')).toMatchObject({
-      ok: false,
-      error: { code: 'ray-material-unsupported', detail: { source: 'game::view_surface' } },
-    });
+    expect(admitRayMaterial(custom, 'custom', 'card-capture').ok).toBe(true);
   });
 
   it('reconstructs indexed source attributes after BVH ordering without borrowing arrays', () => {

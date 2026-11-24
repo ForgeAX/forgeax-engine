@@ -73,10 +73,34 @@ dimensionless, with `physicalIor` independent. The ordinary inherited
 independently of `specular`. Water SSR hit motion must match the exact opaque
 depth texel within its FP16 log-depth precision before replacing matrix
 reprojection; the coarse traced ray depth is not a layer identity.
+Water hit radiance history uses unjittered screen coordinates. Reconstruct its
+current raster hit with the jittered inverse View once, then project through the
+unjittered current/previous matrices before applying matching opaque motion.
+Water temporal entries evaluate time-dependent Surface normals at the two
+accepted Body clocks and publish shading reactivity separately from geometry
+velocity. Use `SingleLayerWaterSurfaceInput.frameTime` for authored animation;
+frozen clocks and static normals retain accumulation. This comparison cannot
+recover old contents of a producer texture that has already advanced.
 Stock Water keeps near-wave current/previous deformation and fragment normals
 at far boundaries. The retained versioned adjacency bits do not automatically
 flatten the surface to a mean plane. Preserve the far material's independent
 wave switches and saved height authority.
+Deferred Water and opaque SSR use the same closest-depth surface traversal and exact
+intersection validation, with explicit SSR iteration budgets. Water builds its
+hit hierarchy from opaque depth and keeps its separate displaced receiver,
+capture/sky suppression, while main AA owns history. This is an intentional departure
+from the UE Water Furthest/16-step cast: stochastic sample locations and coarse
+depth-difference interpolation cannot establish exact surface coordinates or
+retain thin silhouettes. Do not change GPU occlusion's furthest hierarchy or
+restore removed independent SSR temporal rejection or history owners.
+Keep traversal progress independent of a major-axis epsilon: minor-axis cell
+addresses need directional f32 boundary rounding. Screen-ray view depth is
+reciprocal-affine only for perspective; orthographic rays use linear depth and
+the projection's depth derivative for near clipping. A rejected surface
+candidate resumes the ray under the same total iteration/refinement budgets.
+`foamVelocityMPerSec` defaults to `[0, 0]`. It advects only the authored foam
+texture and normal coordinates using scene time; simulation coverage and
+contact history retain their producer mapping and lifetime.
 The connected foam branch's
 graph-owned texture and distinct clamp/wrap samplers follow the existing medium physical tail; only an
 actually declared branch admits and binds it. It is not an authored texture
@@ -290,6 +314,13 @@ Opt into `publication: 'compiled'` for an explicit composed-source contract. See
 Standalone Dawn tests reuse the existing `shaderManifestUrl` fixture, which
 serializes `publishShaderManifest(entries, materialShaders)`. Do not percent-encode
 the expanded builder result.
+
+After rebuilding Engine shader profiles, restart existing preview servers and
+reload their pages before visual acceptance. A running Vite plugin can retain
+its startup manifest while changed Render modules reload; graph labels alone
+do not prove that the executing shader matches the new producer contract.
+For an observed mismatch, inspect the captured pipeline's actual shader and
+bindings through RHI Debug, then verify the repaired scene on the fresh server.
 
 - Material shape: [`forgeax-engine-material`](../forgeax-engine-material/SKILL.md)
 - Asset catalog and pack roots: [`forgeax-engine-assets`](../forgeax-engine-assets/SKILL.md)

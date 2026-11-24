@@ -21,6 +21,8 @@ export interface ReadyFrameOptions {
    * default compilation waits retain 15 s bounds. After signalled pipeline
    * preparation, the first ready GPU completion uses the remaining owner budget. */
   readonly timeoutMs?: number;
+  /** Use the preparation stage for an explicit signal on an otherwise ready frame. */
+  readonly waitForReadyPreparation?: boolean;
   /** Existing archive startup signal; the helper consumes only success or failure. */
   readonly preparationCompleted?: PromiseLike<
     { readonly ok: true } | { readonly ok: false; readonly error: unknown }

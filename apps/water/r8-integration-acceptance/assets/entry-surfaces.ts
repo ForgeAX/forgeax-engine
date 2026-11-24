@@ -44,7 +44,8 @@ export function waterEntrySurface(kind: 'crown' | 'tongue') {
     for (let segment = 0; segment <= segments; segment++) {
       const angle = (segment / segments) * Math.PI * 2;
       const lobes = Math.sin(angle * 7 + 0.4) * 0.07 + Math.sin(angle * 11) * 0.035;
-      const radius = 0.52 * (1 - t) ** 1.35 * (1 + lobes * Math.sin(Math.PI * t));
+      const radius =
+        0.26 * (1 - 0.5 * t) * Math.sqrt(1 - t ** 8) * (1 + lobes * Math.sin(Math.PI * t));
       const bend = kind === 'tongue' ? 0.055 * t * t : 0;
       positions.push(
         ...(kind === 'crown'

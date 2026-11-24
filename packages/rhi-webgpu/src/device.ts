@@ -2275,8 +2275,8 @@ const CANVAS_CONFIG_KEYS = [
  *  GPUCanvasContext satisfies this; the unit-test mock fixture only
  *  implements what is needed (charter proposition 1: progressive disclosure). */
 export interface GpuCanvasContextLike {
-  readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
   readonly supportedTextureUsages?: number | undefined;
+  readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
   configure(configuration: GPUCanvasConfiguration): void;
   unconfigure(): void;
   getConfiguration(): GPUCanvasConfiguration | null;
@@ -2302,11 +2302,11 @@ export interface GpuCanvasContextLike {
  */
 export function makeCanvasContext(rawContext: GpuCanvasContextLike): RhiCanvasContext {
   return {
-    get supportedAlphaModes() {
-      return rawContext.supportedAlphaModes;
-    },
     get supportedTextureUsages() {
       return rawContext.supportedTextureUsages;
+    },
+    get supportedAlphaModes() {
+      return rawContext.supportedAlphaModes;
     },
     configure(desc: CanvasConfiguration): Result<void, RhiError> {
       const fmt = desc.format as GPUTextureFormat | undefined;

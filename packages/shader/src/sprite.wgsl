@@ -7,7 +7,7 @@
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture}
 #import forgeax_view::fog::{forward_fog, vertex_height_fog}
-#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, packSceneTemporalV1WithValidity}
 
 // @forgeax/engine-shader - sprite.wgsl (feat-20260520-2d-sprite-layer-mvp /
 // M-3 / w19). 2D sprite material — third variant of the MaterialAsset
@@ -364,7 +364,7 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
   if (spriteTemporalRejected(in)) { discard; }
-  return encodeSceneVelocity(materialTemporal(in));
+  return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);
 }

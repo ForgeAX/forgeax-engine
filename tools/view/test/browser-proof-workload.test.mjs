@@ -102,7 +102,17 @@ test('the workflow uses every Engine-owned shard and rejects invalid matrix IDs'
   const engineRunner = resolve(enginePackage, '../../scripts/ci/run-view-integration.mjs');
   const plan = (...args) => JSON.parse(execFileSync(process.execPath, [engineRunner, '--candidate', ...args], { encoding: 'utf8' }));
   const ids = execute(plan('--list-shards'));
-  const all = plan('--dry-run').filter(([owner]) => owner !== 'prepare').map(step => JSON.stringify(step)).sort();
+  // Engine #5354 retains these duplicate diagnostics and TS replay as runnable
+  // specialists; they are not part of the four required daily shards.
+  const specialistOwners = ['diagnostic-texture', 'diagnostic-pack-authoring', 'diagnostic-gpu-2d', 'runtime-ts'];
+  const complete = plan('--dry-run');
+  for (const owner of specialistOwners) {
+    const expected = complete.filter(([group]) => group === owner).map(step => JSON.stringify(step));
+    assert.ok(expected.length > 0, `${owner} must remain independently runnable`);
+    const explicit = plan('--group', owner, '--dry-run').filter(([group]) => group !== 'prepare').map(step => JSON.stringify(step));
+    assert.deepEqual(explicit, expected);
+  }
+  const all = complete.filter(([owner]) => owner !== 'prepare' && !specialistOwners.includes(owner)).map(step => JSON.stringify(step)).sort();
   const selected = ids.flatMap(id => plan('--shard', String(id), '--dry-run').filter(([owner]) => owner !== 'prepare').map(step => JSON.stringify(step))).sort();
   assert.deepEqual(selected, all);
   assert.match(workflow, /FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1'/);

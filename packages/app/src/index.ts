@@ -10,6 +10,7 @@ export {
   projectEngineStartup,
 } from './configuration-host';
 export { createEngineConfigurationStore } from './configuration-store';
+export { renderStartupCover, STARTUP_COVER_STYLES } from './startup-cover';
 export type {
   PackDraftField,
   PackDraftReply,

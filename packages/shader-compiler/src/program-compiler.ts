@@ -271,6 +271,9 @@ export function createShaderProgramCompiler(): typeof compileShader {
       ...(options.computeEntry === undefined ? {} : { computeEntry: options.computeEntry }),
       ...(options.renderEntries === undefined ? {} : { renderEntries: options.renderEntries }),
       dynamicOffsets: options.dynamicOffsets ?? [],
+      ...(options.valueMemberReads === undefined
+        ? {}
+        : { valueMemberReads: options.valueMemberReads }),
     };
     const key = `result:${createHash('sha256')
       .update(`${Buffer.byteLength(wgsl)}:`)

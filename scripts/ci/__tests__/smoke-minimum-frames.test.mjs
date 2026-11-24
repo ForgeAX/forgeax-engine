@@ -913,6 +913,31 @@ test('default scene settlement stays bounded across successful preparation waves
   assert.equal(draws, 9);
 });
 
+test('keeps signalled preparation behind a ready picture in the cold owner budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const { promise: preparationCompleted, resolve } = Promise.withResolvers();
+  const receipt = {
+    id: 'initial-direct-picture',
+    presentation: 'ready',
+    completed: Promise.resolve({ ok: true }),
+    preparationCompleted,
+  };
+  let settled = false;
+  const result = completeReadyFrame(() => receipt, {
+    timeoutMs: 90_000,
+    waitForReadyPreparation: true,
+  }).then((frame) => {
+    settled = true;
+    return frame;
+  });
+
+  await new Promise(setImmediate);
+  t.mock.timers.tick(20_000);
+  assert.equal(settled, false);
+  resolve({ ok: true });
+  assert.equal(await result, receipt);
+});
+
 test('a cold owner budget does not lengthen a stalled GPU submission', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const result = completeReadyFrame(async () => new Promise(() => {}), { timeoutMs: 90_000 });

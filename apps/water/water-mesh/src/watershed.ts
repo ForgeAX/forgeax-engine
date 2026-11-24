@@ -38,6 +38,82 @@ export const RIVER_PATH = [
   [135, 0.15, -123, 30],
   [185, 0, -88, 42],
 ] as const;
+export const RIVER_TANGENTS = RIVER_PATH.map((point, index) => {
+  const before = RIVER_PATH[Math.max(0, index - 1)] ?? point;
+  const after = RIVER_PATH[Math.min(RIVER_PATH.length - 1, index + 1)] ?? point;
+  const divisor = index === 0 || index === RIVER_PATH.length - 1 ? 1 : 2;
+  return [0, 1, 2].map((axis) => ((after[axis] ?? 0) - (before[axis] ?? 0)) / divisor) as [
+    number,
+    number,
+    number,
+  ];
+});
+
+// Subdivide the authored Hermite route below Terrain sample spacing, rather than
+// cutting straight chords across the visible River bends.
+const riverSections = RIVER_PATH.slice(0, -1).flatMap((a, index) => {
+  const b = RIVER_PATH[index + 1];
+  const ta = RIVER_TANGENTS[index],
+    tb = RIVER_TANGENTS[index + 1];
+  if (!b || !ta || !tb) throw new Error('Missing river section');
+  const at = (t: number) => ({
+    position: ([0, 1, 2] as const).map(
+      (axis) =>
+        (2 * t ** 3 - 3 * t ** 2 + 1) * a[axis] +
+        (t ** 3 - 2 * t ** 2 + t) * ta[axis] +
+        (-2 * t ** 3 + 3 * t ** 2) * b[axis] +
+        (t ** 3 - t ** 2) * tb[axis],
+    ) as [number, number, number],
+    width: a[3] + (b[3] - a[3]) * t,
+    key: index + t,
+  });
+  return Array.from({ length: 32 }, (_, step) => {
+    const start = at(step / 32),
+      end = at((step + 1) / 32);
+    const dx = end.position[0] - start.position[0],
+      dz = end.position[2] - start.position[2];
+    return { start, end, dx, dz, lengthSquared: dx * dx + dz * dz };
+  });
+});
+
+function riverTerrainHeight(x: number, z: number, height: number) {
+  let nearest: { distance: number; y: number; width: number; key: number } | undefined;
+  for (const section of riverSections) {
+    const { start, end, dx, dz, lengthSquared } = section;
+    const reach = Math.max(start.width, end.width) * 0.5 + 30;
+    if (
+      Math.abs(x - start.position[0]) > reach + Math.abs(dx) ||
+      Math.abs(z - start.position[2]) > reach + Math.abs(dz)
+    )
+      continue;
+    const t = Math.max(
+      0,
+      Math.min(1, ((x - start.position[0]) * dx + (z - start.position[2]) * dz) / lengthSquared),
+    );
+    const distance = Math.hypot(x - start.position[0] - dx * t, z - start.position[2] - dz * t);
+    if (nearest && distance >= nearest.distance) continue;
+    nearest = {
+      distance,
+      y: start.position[1] + (end.position[1] - start.position[1]) * t,
+      width: start.width + (end.width - start.width) * t,
+      key: start.key + (end.key - start.key) * t,
+    };
+  }
+  if (!nearest) return height;
+  const { distance, y, width, key } = nearest;
+  const halfWidth = width * 0.5;
+  const freeboard = 2.2 * (1 - smooth(4, 6, key));
+  const bank = y + freeboard;
+  const valley = Math.max(height, bank);
+  // The tidal reach joins the sea plane before the spline's last elevated control point.
+  const bed = y * (1 - smooth(3.5, 4, key)) - 2.8;
+  const channel = bed + (bank - bed) * smooth(halfWidth * 0.25, halfWidth, distance);
+  const shaped =
+    distance <= halfWidth
+      ? channel
+      : bank + (valley - bank) * smooth(halfWidth, halfWidth + 16, distance);
+  return shaped + (height - shaped) * smooth(halfWidth + 5, halfWidth + 30, distance);
+}
 export function islandOutline(count = 72) {
   const half = Math.floor(count / 2);
   const outer = Array.from({ length: half }, (_, i) => {
@@ -121,17 +197,10 @@ export function watershedHeight(x: number, z: number, variant = 0) {
     h = Math.max(h, rim - smooth(1.25, 2.1, lake) * 9);
   }
   if (lake < 1.3) h = Math.min(h, 26.2 + smooth(0.62, 1.3, lake) * 6.4);
-  for (let i = 0; i < RIVER_PATH.length - 1; i++) {
-    const a = RIVER_PATH[i],
-      b = RIVER_PATH[i + 1];
-    if (!a || !b) continue;
-    const dx = b[0] - a[0],
-      dz = b[2] - a[2],
-      t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[2]) * dz) / (dx * dx + dz * dz)));
-    const width = a[3] + (b[3] - a[3]) * t,
-      d = Math.hypot(x - a[0] - dx * t, z - a[2] - dz * t),
-      y = a[1] + (b[1] - a[1]) * t;
-    if (d < width * 0.5 + 16) h = Math.min(h, y - 2.3 + Math.max(0, d - width * 0.35) * 0.6);
-  }
-  return h + watershedVariantOffset(x, z, variant);
+  const shaped = riverTerrainHeight(x, z, h);
+  // Raised banks belong inland; the estuary may carve, but never fill, the sea floor.
+  const bankWeight = shore.inside ? smooth(0, WORLD_SPACING_M, shore.distance) : 0;
+  const river = Math.min(h, shaped) + Math.max(0, shaped - h) * bankWeight;
+  // Keep the lake's submerged outline open; River banks take over beyond its outlet.
+  return h + (river - h) * smooth(1, 1.12, lake) + watershedVariantOffset(x, z, variant);
 }

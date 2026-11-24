@@ -62,6 +62,8 @@ fi
 # the production lazy-import shape consumed by the TS shim ensureReady wrapper.
 export CARGO_ENCODED_RUSTFLAGS="$(node "$SCRIPT_DIR/../../scripts/lib/rust-build-paths.mjs" "$SCRIPT_DIR/../..")"
 wasm-pack build --target web --out-dir "$SCRIPT_DIR/pkg" --release
+cp "$SCRIPT_DIR/README.md" "$SCRIPT_DIR/pkg/README.md"
+cp "$SCRIPT_DIR/README.zh-CN.md" "$SCRIPT_DIR/pkg/README.zh-CN.md"
 
 # Post-optimise with system binaryen wasm-opt if available (bug-20260512):
 # wasm-pack's bundled binaryen is too old for wgpu multi-table WASM output, so

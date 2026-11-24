@@ -255,7 +255,12 @@ function params(
     52,
   );
   values.set(
-    [(current[0] - previous[0]) / extent[0], (current[2] - previous[2]) / extent[1], 0, 0],
+    [
+      (current[0] - previous[0]) / extent[0],
+      (current[2] - previous[2]) / extent[1],
+      recipe.configurationVersion,
+      0,
+    ],
     56,
   );
   values.set(

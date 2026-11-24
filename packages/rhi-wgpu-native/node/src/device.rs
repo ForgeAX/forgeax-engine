@@ -1,5 +1,9 @@
 //! `NativeDevice`: the per-device resource table, descriptor lowering, and command replay.
 
+use crate::async_pipeline::{
+    ComputePipelineAdoption, ComputePipelineCompletion, ComputePipelineTask, ComputeSnapshot,
+    PipelineOwner,
+};
 use crate::desc::{self, Command, Id};
 use crate::errors::{ErrorKind, ErrorSink};
 use crate::limits;
@@ -8,6 +12,7 @@ use napi_derive::napi;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct BlasEntry {
@@ -35,6 +40,20 @@ pub(crate) enum Res {
 
 type Table = HashMap<Id, Res>;
 type Fallible<T> = std::result::Result<T, String>;
+
+fn compute_snapshot(table: &Table, descriptor: &str) -> Fallible<ComputeSnapshot> {
+    let d: desc::ComputePipelineDesc = parse(descriptor, "GPUComputePipelineDescriptor")?;
+    Ok(ComputeSnapshot {
+        label: d.label,
+        layout: d
+            .layout
+            .map(|id| pipeline_layout(table, id).cloned())
+            .transpose()?,
+        module: shader(table, d.compute.module)?.clone(),
+        entry: d.compute.entry_point,
+        constants: d.compute.constants.into_iter().collect(),
+    })
+}
 
 macro_rules! getter {
     ($name:ident, $variant:ident, $ty:ty, $what:literal) => {
@@ -253,6 +272,7 @@ pub struct NativeDevice {
     next_id: Cell<Id>,
     errors: ErrorSink,
     lost: Arc<Mutex<Option<(String, String)>>>,
+    pipeline_owner: PipelineOwner,
 }
 
 impl NativeDevice {
@@ -293,7 +313,10 @@ impl NativeDevice {
         errors.install(&device);
         let lost = Arc::new(Mutex::new(None));
         let lost_slot = lost.clone();
+        let pipeline_owner = Arc::new(AtomicBool::new(true));
+        let pipeline_alive = pipeline_owner.clone();
         device.set_device_lost_callback(move |reason, message| {
+            pipeline_alive.store(false, Ordering::Release);
             let reason = match reason {
                 wgpu::DeviceLostReason::Destroyed => "destroyed",
                 _ => "unknown",
@@ -309,6 +332,7 @@ impl NativeDevice {
             next_id: Cell::new(1),
             errors,
             lost,
+            pipeline_owner,
         }
     }
 
@@ -915,6 +939,7 @@ impl NativeDevice {
 
     #[napi(catch_unwind)]
     pub fn destroy(&self) {
+        self.pipeline_owner.store(false, Ordering::Release);
         self.device.destroy();
         self.table.borrow_mut().clear();
     }
@@ -1252,27 +1277,40 @@ impl NativeDevice {
     #[napi(catch_unwind)]
     pub fn create_compute_pipeline(&self, descriptor: String) -> u32 {
         self.create(|table| {
-            let d: desc::ComputePipelineDesc = parse(&descriptor, "GPUComputePipelineDescriptor")?;
-            let constants: Vec<(&str, f64)> = d
-                .compute
-                .constants
-                .iter()
-                .map(|(k, v)| (k.as_str(), *v))
-                .collect();
-            Ok(Res::ComputePipeline(self.device.create_compute_pipeline(
-                &wgpu::ComputePipelineDescriptor {
-                    label: d.label.as_deref(),
-                    layout: d.layout.map(|id| pipeline_layout(table, id)).transpose()?,
-                    module: shader(table, d.compute.module)?,
-                    entry_point: d.compute.entry_point.as_deref(),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &constants,
-                        zero_initialize_workgroup_memory: true,
-                    },
-                    cache: None,
-                },
-            )))
+            Ok(Res::ComputePipeline(
+                compute_snapshot(table, &descriptor)?.create(&self.device),
+            ))
         })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn create_compute_pipeline_async(
+        &self,
+        descriptor: String,
+    ) -> AsyncTask<ComputePipelineTask> {
+        let snapshot = compute_snapshot(&self.table.borrow(), &descriptor);
+        AsyncTask::new(ComputePipelineTask::new(
+            self.device.clone(),
+            self.pipeline_owner.clone(),
+            snapshot,
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn adopt_compute_pipeline(
+        &self,
+        completion: ExternalRef<ComputePipelineCompletion>,
+    ) -> ComputePipelineAdoption {
+        match completion.take(&self.pipeline_owner) {
+            Ok(pipeline) => ComputePipelineAdoption {
+                id: self.insert(Res::ComputePipeline(pipeline)),
+                error: None,
+            },
+            Err(error) => ComputePipelineAdoption {
+                id: 0,
+                error: Some(error),
+            },
+        }
     }
 
     #[napi(catch_unwind)]
@@ -1324,7 +1362,7 @@ impl NativeDevice {
                     vertex_count: g.vertex_count,
                     index_format: g.index.as_ref().map(|i| i.format),
                     index_count: g.index.as_ref().map(|i| i.count),
-                    flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+                    flags: g.flags(),
                 })
                 .collect();
             let raw = self.device.create_blas(

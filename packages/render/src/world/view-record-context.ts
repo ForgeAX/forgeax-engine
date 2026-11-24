@@ -1,5 +1,6 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
+import { createScreenReceiverProfile } from '../assembly/renderer-facade';
 import { createViewPipelineState } from '../assembly/view-pipeline-state';
 import { createCaptureViewPipeline } from '../capture/capture-view';
 import type { DeviceScope } from '../lifecycle';
@@ -9,6 +10,7 @@ import type { CubeCaptureGraphState } from '../record/target-capture-graph';
 import type { RenderTarget } from '../targets/contracts';
 import type { FramebufferSnapshotSource } from '../targets/framebuffer-snapshot';
 import { ViewRecorder, type ViewViewport, viewCameraOf } from './render-views';
+import { renderSubmission } from './render-world';
 import { type ViewRecorderState, viewComposition } from './view-output-systems';
 import type { ViewSettlementOwner } from './view-settlement';
 
@@ -19,6 +21,15 @@ export const ViewRecordContext = defineComponent('ViewRecordContext', {
 
 /** The unique component payload owns writable view bindings and capture identity. */
 export class ViewRecordContextState {
+  readonly #profile = createScreenReceiverProfile(() => {
+    const view = this.recorder();
+    return (
+      this.captureView === undefined &&
+      view?.retired === false &&
+      view.scope === this.deviceScope &&
+      view.owner.frameState.irradianceField?.plannedTraversal === 'global-sdf'
+    );
+  });
   readonly local: ReturnType<typeof createViewPipelineState>;
   readonly captureView: RenderSystemInternals['captureView'];
   readonly standardPipeline: RenderSystemInternals['standardPipeline'];
@@ -56,6 +67,18 @@ export class ViewRecordContextState {
     return world
       .resolveUniqueRef<ViewRecorderState>(world.get(this.entity, ViewRecorder).unwrap().state)
       .unwrap();
+  }
+  get standardProfile(): RenderSystemInternals['standardProfile'] {
+    const world = this.root.renderWorld;
+    const view = this.recorder();
+    if (view?.retired === true || (view !== undefined && view.scope !== this.deviceScope))
+      return this.root.standardProfile;
+    return this.#profile(
+      this.root.standardProfile,
+      world === undefined ? -1 : renderSubmission(world).frame,
+      view?.owner.frameState.installedPipelineHandle ?? -1,
+      this.deviceScope.generation,
+    );
   }
   get canvas(): RenderSystemInternals['canvas'] {
     const view = this.recorder();

@@ -40,6 +40,32 @@ test('reviews changed descriptors, new bypasses, WGSL and deleted owner inputs',
   }
 });
 
+test('reviews tracked shader links from checkouts without native symlinks', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gpu-surface-link-'));
+  const git = (args, input) => execFileSync('git', args, { cwd: root, encoding: 'utf8', input });
+  const target = 'packages/shader/src/material.wgsl';
+  const alias = 'apps/hello/src/material.wgsl';
+  const link = '../../../packages/shader/src/material.wgsl';
+  try {
+    git(['init', '-q']);
+    mkdirSync(join(root, 'packages/shader/src'), { recursive: true });
+    mkdirSync(join(root, 'apps/hello/src'), { recursive: true });
+    writeFileSync(join(root, target), '@compute @workgroup_size(1) fn main() {}');
+    writeFileSync(join(root, alias), link);
+    const blob = git(['hash-object', '-w', '--stdin'], link).trim();
+    git(['update-index', '--add', '--cacheinfo', `120000,${blob},${alias}`]);
+    const before = collectSurface(root);
+    assert.equal(before[alias], before[target]);
+    writeFileSync(join(root, target), '@compute @workgroup_size(2) fn main() {}');
+    assert.deepEqual(surfaceChanges(before, collectSurface(root)), [
+      { file: alias, change: 'changed' },
+      { file: target, change: 'changed' },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a partial reviewed snapshot retains every unreviewed change and deletion', () => {
   const previous = {
     'packages/rhi/src/index.ts': 'old-rhi',

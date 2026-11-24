@@ -836,6 +836,11 @@ export interface PipelineDeviceProvider {
   createRenderPipeline(
     descriptor: Record<string, unknown>,
   ): { ok: true; value: unknown } | { ok: false; error: unknown };
+  createRenderPipelineAsync?(
+    descriptor: Record<string, unknown>,
+  ):
+    | ReturnType<PipelineDeviceProvider['createRenderPipeline']>
+    | Promise<ReturnType<PipelineDeviceProvider['createRenderPipeline']>>;
 }
 
 /**
@@ -875,7 +880,15 @@ export function getOrBuildPipeline(
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
-  // Cache miss — validate, build, cache, return.
+  const descriptor = validatedPipelineDescriptor(spec, modules);
+  const result = deviceProvider.createRenderPipeline(descriptor);
+  return completePipelineBuild(key, result, cache);
+}
+
+function validatedPipelineDescriptor(
+  spec: PipelineSpec,
+  modules: Parameters<typeof buildPipelineDescriptor>[1] | undefined,
+): Record<string, unknown> {
   const validation = validateSpec(spec);
   if (!validation.ok) {
     throw new PipelineSpecError({
@@ -885,12 +898,14 @@ export function getOrBuildPipeline(
     });
   }
 
-  const descriptor = buildPipelineDescriptor(
-    spec,
-    modules ?? { vertex: undefined, fragment: undefined },
-  );
-  const result = deviceProvider.createRenderPipeline(descriptor);
+  return buildPipelineDescriptor(spec, modules ?? { vertex: undefined, fragment: undefined });
+}
 
+function completePipelineBuild(
+  key: string,
+  result: ReturnType<PipelineDeviceProvider['createRenderPipeline']>,
+  cache: PipelineCache,
+): unknown {
   if (!result.ok) {
     throw new PipelineSpecError({
       code: 'pipeline-build-failed',
@@ -901,6 +916,24 @@ export function getOrBuildPipeline(
 
   cache.set(key, result.value);
   return result.value;
+}
+
+/** Completion-qualified boot preparation; the cache never contains pending work. */
+export async function getOrBuildPipelineAsync(
+  spec: PipelineSpec,
+  provider: PipelineDeviceProvider,
+  cache: PipelineCache,
+  modules: Parameters<typeof buildPipelineDescriptor>[1],
+): Promise<unknown> {
+  const key = cacheKeyOf(spec);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const descriptor = validatedPipelineDescriptor(spec, modules);
+  const result =
+    provider.createRenderPipelineAsync === undefined
+      ? provider.createRenderPipeline(descriptor)
+      : await provider.createRenderPipelineAsync(descriptor);
+  return completePipelineBuild(key, result, cache);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

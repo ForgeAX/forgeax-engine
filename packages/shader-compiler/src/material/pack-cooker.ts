@@ -891,8 +891,8 @@ export function createMaterialPackCooker(
       context.geometry === 'terrain'
         ? []
         : (['ray-hit', 'card-capture'] as const)) {
-        // Context eligibility is independent: a custom Surface can retain its
-        // raster/ray publication without qualifying for camera-independent Cards.
+        // Base admission checks the material profile; the cooked Surface closure
+        // independently qualifies static-cache inputs before publishing Cards.
         if (!admitRayMaterial(resolvedAsset, normalizedInput.guid, rayContext).ok) continue;
         const cooked = await compilePackVariant.ray(
           {

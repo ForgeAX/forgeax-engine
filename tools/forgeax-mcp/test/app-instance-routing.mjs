@@ -109,7 +109,7 @@ try {
     console.error(`${scope}: selecting ${project}`);
     await pages[scope].bringToFront();
     const state = await entries[scope].workspace.getState();
-    if (state.project) await view(scope).getByRole('button', { name: new RegExp(`${state.project.name}.*running`) }).click();
+    if (state.project) await view(scope).getByRole('button', { name: new RegExp(`${state.project.name}.*(?:Running|运行中)`) }).click();
     await view(scope).getByPlaceholder(/项目目录的绝对路径|Absolute project directory/).fill(project);
     await view(scope).getByRole('button', { name: /^(下一步|Next)$/ }).click();
     await poll(() => entries[scope].workspace.getState(), state => {

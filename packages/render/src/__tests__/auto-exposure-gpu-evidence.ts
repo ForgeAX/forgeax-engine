@@ -1,6 +1,10 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { AUTO_EXPOSURE_METER_WGSL } from '@forgeax/engine-shader';
+import {
+  createAutoExposureGpuResources,
+  writeAutoExposureParameters,
+} from '../pipeline/standard-output/auto-exposure/gpu';
 import { createAutoExposureGraphPlan } from '../pipeline/standard-output/auto-exposure/graph';
 import {
   adaptExposure,
@@ -9,9 +13,7 @@ import {
 } from '../pipeline/standard-output/auto-exposure/oracle';
 
 const BUFFER_USAGE_MAP_READ = 0x0001;
-const BUFFER_USAGE_COPY_SRC = 0x0004;
 const BUFFER_USAGE_COPY_DST = 0x0008;
-const BUFFER_USAGE_STORAGE = 0x0080;
 const TEXTURE_USAGE_COPY_DST = 0x0002;
 const TEXTURE_USAGE_TEXTURE_BINDING = 0x0004;
 
@@ -145,34 +147,8 @@ export async function runAutoExposureGpuEvidence(
       },
     )
     .unwrap();
-  const histogram = device
-    .createBuffer({
-      label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.histogram`,
-      size: plan.histogramBytes,
-      usage: BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC,
-    })
-    .unwrap();
-  const state = device
-    .createBuffer({
-      label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.state`,
-      size: plan.stateBytes,
-      usage: BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC,
-    })
-    .unwrap();
-  const candidate = device
-    .createBuffer({
-      label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.candidate`,
-      size: 16,
-      usage: BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC,
-    })
-    .unwrap();
-  const parameters = device
-    .createBuffer({
-      label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.parameters`,
-      size: 32,
-      usage: BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST,
-    })
-    .unwrap();
+  const resources = createAutoExposureGpuResources(device, 1, 'compute').unwrap();
+  const { histogram, state, candidate, parameters } = resources;
   const readback = device
     .createBuffer({
       label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.readback`,
@@ -180,10 +156,16 @@ export async function runAutoExposureGpuEvidence(
       usage: BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
-  device.queue.writeBuffer(state, 0, new Uint8Array(plan.stateBytes)).unwrap();
-  device.queue
-    .writeBuffer(parameters, 0, new Float32Array([0, -8, 8, 3, 1, 1 / 60, 1, 1]))
-    .unwrap();
+  writeAutoExposureParameters(resources, {
+    compensationEv: 0,
+    rangeMinEv: -8,
+    rangeMaxEv: 8,
+    upRate: 3,
+    downRate: 1,
+    deltaTime: 1 / 60,
+    fallback: 1,
+    generation: 1,
+  }).unwrap();
   const meterModule = await createShaderModule(device, {
     label: `${AUTO_EXPOSURE_GPU_FIXTURE_ID}.meter`,
     code: AUTO_EXPOSURE_METER_WGSL,

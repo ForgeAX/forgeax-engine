@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import modelingDeferred from '../core-coverage-modeling-deferred.json' with { type: 'json' };
 import { coreValidationFiles } from '../core-validation.mjs';
 import deferred from '../core-validation-deferred.json' with { type: 'json' };
 import { dawnAuthoringCapturesOutsideCi } from '../dawn-gate-roster.mjs';
@@ -59,6 +60,65 @@ test('core selection is explicit, preserves new owners and leaves full validatio
       assert.deepEqual(coreValidationFiles([row.retained], core), [row.retained]);
     }
   }
+});
+
+test('core GI reuses complete Renderer journeys in the Native Ray Query matrix', () => {
+  const workflow = parse(readFileSync('.github/workflows/native-ray-query.yml', 'utf8'));
+  const owners = workflow.jobs['native-node-gi'].strategy.matrix.include;
+  const dawnCore = dawnExecutionGroups(undefined, undefined, core).flatMap(({ files }) => files);
+  const dawnFull = dawnExecutionGroups(undefined, undefined, {}).flatMap(({ files }) => files);
+  for (const [group, name] of [
+    ['foundation', 'irradiance-field'],
+    ['foundation', 'irradiance-field-edit'],
+    ['foundation', 'radiance-cache'],
+    ['mutation', 'irradiance-field-add'],
+    ['mutation', 'irradiance-field-clipmap'],
+    ['mutation', 'irradiance-field-residency'],
+    ['mutation', 'gi-coverage'],
+    ['mutation', 'irradiance-field-multiview'],
+    ['gather', 'screen-probe'],
+  ]) {
+    const file = `packages/runtime/src/__tests__/renderer-${name}.dawn.test.ts`;
+    const selected = owners.filter(({ tests }) => tests.split(/\s+/).includes(file));
+    assert.deepEqual(
+      selected.map((owner) => owner.group),
+      [group],
+    );
+    assert.ok(dawnFull.includes(file));
+    assert.ok(!dawnCore.includes(file));
+  }
+  assert.ok(
+    dawnCore.includes('packages/render/src/__tests__/raytracing/screen-probe-history.dawn.test.ts'),
+  );
+  assert.ok(dawnCore.includes('packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts'));
+  assert.ok(
+    dawnCore.includes(
+      'packages/render/src/__tests__/raytracing/irradiance-field-visibility.dawn.test.ts',
+    ),
+  );
+});
+test('Dawn core keeps both software trace and Card lookup with a bounded scene', () => {
+  const group = dawnExecutionGroups(undefined, undefined, core).find(({ id }) => id === 'gi-3');
+  assert.deepEqual(group.files, [
+    'packages/render/src/__tests__/raytracing/global-sdf-gpu-rays.dawn.test.ts',
+    'packages/render/src/__tests__/raytracing/global-card-lookup.dawn.test.ts',
+  ]);
+  assert.ok(
+    dawnExecutionGroups('gi-3', undefined, core)[0].files.includes(
+      'packages/runtime/src/__tests__/renderer-gi-coverage.dawn.test.ts',
+    ),
+  );
+});
+
+test('core Dawn runs the reflection filter while full and Focus retain the live denoise journey', () => {
+  const filter =
+    'packages/render/src/__tests__/raytracing/irradiance-field-reflection-filter.dawn.test.ts';
+  const journey = 'packages/runtime/src/__tests__/renderer-reflection-denoise.dawn.test.ts';
+  const groups = dawnExecutionGroups(undefined, undefined, core);
+  assert.deepEqual(groups.find(({ id }) => id === 'gi-4').files, [filter]);
+  const full = dawnExecutionGroups(undefined, undefined, {});
+  assert.ok(full.find(({ id }) => id === 'gi-4').files.includes(journey));
+  assert.ok(dawnExecutionGroups('gi-4', undefined, core)[0].files.includes(journey));
 });
 
 test('Browser retains approximately eighty percent of measured work', () => {
@@ -127,33 +187,43 @@ test('workflow shell and native descendants inherit a zero core limit', {
   assert.equal(probe.stdout.trim(), '0\n0');
 });
 
-test('coverage core defers expanded Modeling examples while retaining core operators and thresholds', () => {
-  const full = coverageGroups(['@forgeax/engine-modeling'], 8, { environment: {} });
-  const selected = coverageGroups(['@forgeax/engine-modeling'], 8, { environment: core });
-  const excluded = new Set(selected.flatMap((group) => group.excludes));
-  const files = [
-    'packages/modeling/examples/hood-linkage/__tests__/hood.unit.test.ts',
-    'packages/modeling/examples/__tests__/scene-components.unit.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/proportions.perturb.unit.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/s6c-car-form.integration.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/s6c-ranges.unit.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/s7-motion.unit.test.ts',
-    'packages/modeling/examples/maid-whale/__tests__/g6-faceting.unit.test.ts',
-  ];
-  for (const file of files) {
-    assert.ok(excluded.has(file), file);
-    assert.ok(full.every((group) => !group.excludes.includes(file)));
+test('coverage core compacts only reviewed Modeling showcases and uses fresh partition identities', () => {
+  const projects = ['@forgeax/engine-modeling'];
+  const full = coverageGroups(projects, 8, { environment: {} });
+  const coreGroups = coverageGroups(projects, 8, { environment: core });
+  const previous = coverageGroups(projects, 8, { environment: core, historicalModeling: true });
+  const partitionExcludes = (groups) =>
+    new Set(groups.filter((g) => g.shard).flatMap((g) => g.excludes));
+  const selected = partitionExcludes(coreGroups);
+  const previousExcluded = partitionExcludes(previous);
+  const fullExcluded = partitionExcludes(full);
+  const files = modelingDeferred.map(({ file }) => file);
+  assert.equal(new Set(files).size, files.length);
+  for (const { file, retained, reason } of modelingDeferred) {
+    assert.ok(file.startsWith('packages/modeling/examples/'), file);
+    assert.ok(existsSync(file) && existsSync(retained), file);
+    assert.ok(reason.length > 30 && modelingTimings.files[file] > 0, file);
+    assert.ok(!selected.has(retained), retained);
+    assert.ok(
+      !previousExcluded.has(file) || previous.some((group) => group.files.includes(file)),
+      file,
+    );
+    assert.ok(selected.has(file), file);
+    assert.ok(
+      coreGroups.every((group) => !group.files.includes(file)),
+      file,
+    );
+    assert.ok(full.some((group) => group.files.includes(file)) || !fullExcluded.has(file), file);
   }
-  assert.ok(!excluded.has('packages/modeling/src/__tests__/pin-joint.unit.test.ts'));
-  assert.ok(
-    selected.some((group) =>
-      group.files.includes('packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts'),
-    ),
+  assert.deepEqual(
+    [...selected].filter((file) => file.startsWith('packages/modeling/src/')).sort(),
+    [...previousExcluded].filter((file) => file.startsWith('packages/modeling/src/')).sort(),
   );
-  const seconds = Object.values(modelingTimings.files).reduce((sum, value) => sum + value, 0);
-  const retained = 1 - files.reduce((sum, file) => sum + modelingTimings.files[file], 0) / seconds;
-  assert.ok(retained >= 0.78 && retained <= 0.82, String(retained));
-  assert.equal(selected.length, full.length);
+  const oldLabels = new Set(previous.map((group) => group.label));
+  const partitions = coreGroups.filter((group) => group.shard);
+  assert.equal(full.filter((group) => group.shard).length, 16);
+  assert.equal(partitions.length, 12);
+  assert.ok(partitions.every((group) => !oldLabels.has(group.label)));
 });
 
 test('authored Modeling showcases stay outside daily and expanded instrumented rosters', () => {

@@ -1501,10 +1501,10 @@ export interface RhiCanvasSurfacePresentationProof {
 }
 
 export interface RhiCanvasContext {
+  /** Concrete surface usages. Absent retains the WebGPU canvas contract; zero admits none. */
+  readonly supportedTextureUsages?: number | undefined;
   /** Concrete surface composition modes. Absent uses the WebGPU context contract; [] admits none. */
   readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
-  /** Native Surface texture usage flags; omitted by browser canvas contexts. */
-  readonly supportedTextureUsages?: number | undefined;
   /** Backend-produced configure-time presentation proof; absent means fail closed. */
   readonly presentationProof?: RhiCanvasSurfacePresentationProof;
   /**

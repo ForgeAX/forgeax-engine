@@ -183,11 +183,12 @@ export function WorkspaceProjectChooser({ client, connection, launcher, requires
   };
   const visibleProjects = (scope === 'recent' ? projects.slice(0, 8) : projects)
     .filter(project => `${project.name} ${project.root}`.toLowerCase().includes(filter.toLowerCase()));
+  const projectPhase = snapshot.projectStatus?.phase ?? snapshot.projectPhase;
 
   return <>
     {bound && <Button variant="secondary" size="compact" leadingIcon={<FolderOpen className="fx-icon" aria-hidden />}
       onClick={() => { setOpened(true); setError(null); setPath(snapshot.project?.root ?? ''); }}>
-      {snapshot.project?.name} · {snapshot.projectStatus?.phase ?? snapshot.projectPhase ?? ''}
+      {snapshot.project?.name}{projectPhase && <> · {t(`view.projectPhase.${projectPhase}`)}</>}
     </Button>}
     {show && <Dialog open modal={false} dismissible={bound} closeLabel={t('view.close')} onClose={() => { setOpened(false); setListing(undefined); }}
       className="fx-view-project-open" title={offline ? t('view.projectChooser.offlineTitle') : t('view.projectOpen.title')} initialFocusRef={inputRef}>

@@ -1,5 +1,6 @@
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import type { CardCaptureScheduler } from './card-capture-schedule';
+import { rebuildCardOwnerIndex, updateCardProjectionRows } from './card-owner-index';
 import {
   type FieldEdit,
   type FieldEditBounds,
@@ -10,9 +11,9 @@ import type { IndexRun } from './index-allocator';
 import type { SceneFieldSource } from './scene-field-projection';
 import type { SdfMeshInstance } from './sdf-query';
 import {
-  packCardProjection,
   type SurfaceCapture,
   type SurfaceCaptureSource,
+  writeCardLookupProjection,
 } from './surface-cards';
 
 const CARD_PROJECTION_BYTES = 80;
@@ -97,7 +98,7 @@ interface Candidate {
 export class CardResidency {
   readonly #device: RhiDevice;
   readonly #capture: SurfaceCapture;
-  readonly #projections: { readonly buffer: Buffer };
+  readonly #projections: { readonly buffer: Buffer; readonly bytes: Uint8Array };
   readonly #settings: { readonly buffer: Buffer };
   readonly #lower: CardLower;
   readonly #state: FieldEditState;
@@ -110,12 +111,13 @@ export class CardResidency {
   #full = false;
   #evicted = 0;
   #pendingFlag = -1;
+  #membershipDirty = false;
 
   constructor(
     device: RhiDevice,
     cards: {
       readonly capture: SurfaceCapture;
-      readonly projections: { readonly buffer: Buffer };
+      readonly projections: { readonly buffer: Buffer; readonly bytes: Uint8Array };
       readonly settings: { readonly buffer: Buffer };
       readonly lower: CardLower;
     },
@@ -164,26 +166,43 @@ export class CardResidency {
    * One frame of streaming: validate captured installs, then install the best
    * candidates up to `tileLimit` new tiles, evicting outranked residents when a
    * ceiling is hit. Installs queue their tiles on `schedule`.
+   * Returns whether an install or eviction changed the admitted Card roster.
    */
   stream(
     focuses: readonly CardResidencyFocus[],
     schedule: CardCaptureScheduler,
     tileLimit: number,
-  ): void {
+  ): boolean {
     const capture = this.#capture;
+    const high = capture.allocatedTiles;
+    const projectionView = new DataView(
+      this.#projections.bytes.buffer,
+      this.#projections.bytes.byteOffset,
+    );
     this.#capturing = this.#capturing.filter(({ row, run }) => {
       if (!capture.has(row)) return false;
       if (!schedule.covers(run)) return true;
-      for (let tile = run.first; tile < run.end; tile++)
+      for (let tile = run.first; tile < run.end; tile++) {
+        projectionView.setUint32(tile * CARD_PROJECTION_BYTES + 68, 1, true);
         this.#write(this.#projections, tile * CARD_PROJECTION_BYTES + 68, new Uint32Array([1]));
+      }
       return false;
     });
     if (!this.#admitting) this.#install(focuses, schedule, tileLimit);
+    const membershipChanged = this.#membershipDirty;
+    if (membershipChanged) {
+      rebuildCardOwnerIndex(this.#projections.bytes, capture.allocatedTiles);
+      this.#write(this.#projections, 0, this.#projections.bytes);
+      this.#membershipDirty = false;
+    }
+    if (capture.allocatedTiles !== high)
+      this.#write(this.#settings, 0, new Uint32Array([capture.allocatedTiles]));
     const pending = this.inspect().pending > 0;
     if (this.#pendingFlag !== Number(pending)) {
       this.#pendingFlag = Number(pending);
       this.#write(this.#settings, 8, new Uint32Array([this.#pendingFlag]));
     }
+    return membershipChanged;
   }
 
   #install(
@@ -216,7 +235,6 @@ export class CardResidency {
       .sort((a, b) => a.kept - b.kept || b.row - a.row);
     let evictions = 0;
     let tiles = 0;
-    const high = capture.allocatedTiles;
     const evictFor = (candidate: number) => {
       const victim = residents[0];
       if (
@@ -284,8 +302,6 @@ export class CardResidency {
       this.#capturing.push({ row, run });
       tiles += added.value.count;
     }
-    if (capture.allocatedTiles !== high)
-      this.#write(this.#settings, 0, new Uint32Array([capture.allocatedTiles]));
   }
 
   #evict(row: number): void {
@@ -295,7 +311,8 @@ export class CardResidency {
     const view = new DataView(bytes.buffer);
     for (let i = 0; i < removed.value.count; i++)
       view.setUint32(i * CARD_PROJECTION_BYTES + 64, 0xffffffff, true);
-    this.#write(this.#projections, removed.value.first * CARD_PROJECTION_BYTES, bytes);
+    updateCardProjectionRows(this.#projections.bytes, removed.value.first, bytes);
+    this.#membershipDirty = true;
     this.#capturing = this.#capturing.filter((c) => c.row !== row);
     this.#evicted++;
   }
@@ -304,13 +321,11 @@ export class CardResidency {
     const entry = this.#capture.entry(row);
     if (entry === undefined) return;
     const bytes = new Uint8Array((run.end - run.first) * CARD_PROJECTION_BYTES);
-    const view = new DataView(bytes.buffer);
     entry.projections.forEach((p, i) => {
-      bytes.set(packCardProjection(p), i * CARD_PROJECTION_BYTES);
-      view.setUint32(i * CARD_PROJECTION_BYTES + 64, row, true);
-      view.setUint32(i * CARD_PROJECTION_BYTES + 68, valid, true);
+      writeCardLookupProjection(bytes, i, p, row, valid);
     });
-    this.#write(this.#projections, run.first * CARD_PROJECTION_BYTES, bytes);
+    updateCardProjectionRows(this.#projections.bytes, run.first, bytes);
+    this.#membershipDirty = true;
   }
 
   #write(target: { readonly buffer: Buffer }, offset: number, data: ArrayBufferView): void {

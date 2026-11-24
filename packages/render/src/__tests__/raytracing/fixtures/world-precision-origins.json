@@ -1,0 +1,50 @@
+{
+  "scope": "Three actual candidate08 sphere failure capture receiver records, plus independently clear and Card-origin controls. Coarse field positivity is controlled; fine distance comes from the real 32x24 sphere and producer voxelSize .15. Software origins retain the documented field-clearance policy; hardware precision is a separate backend contract.",
+  "cases": [
+    {
+      "name": "recorded-2589",
+      "position": [-0.5749068260192871, 0.13877061009407043, -2.197556495666504],
+      "normal": [-0.5768364071846008, 0.13928769528865814, 0.8048966526985168],
+      "bias": 0.25,
+      "precision": false,
+      "exact": true,
+      "fineClear": false
+    },
+    {
+      "name": "recorded-2842",
+      "position": [0.7442899942398071, 0.148857980966568, -2.3572990894317627],
+      "normal": [0.7485397458076477, 0.14970801770687103, 0.6459688544273376],
+      "bias": 0.25,
+      "precision": false,
+      "exact": true,
+      "fineClear": false
+    },
+    {
+      "name": "recorded-4322",
+      "position": [0.3820452094078064, -0.502690851688385, -2.228956460952759],
+      "normal": [0.3834145963191986, -0.5043219327926636, 0.7737264037132263],
+      "bias": 0.25,
+      "precision": false,
+      "exact": true,
+      "fineClear": false
+    },
+    {
+      "name": "certified-outside-control",
+      "position": [0, 0, 0],
+      "normal": [0, 0, 1],
+      "bias": 0.25,
+      "precision": false,
+      "exact": true,
+      "fineClear": true
+    },
+    {
+      "name": "card-origin-control",
+      "position": [-0.5749068260192871, 0.13877061009407043, -2.197556495666504],
+      "normal": [-0.5768364071846008, 0.13928769528865814, 0.8048966526985168],
+      "bias": 0.25,
+      "precision": false,
+      "exact": false,
+      "fineClear": false
+    }
+  ]
+}

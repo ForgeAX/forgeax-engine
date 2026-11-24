@@ -25,7 +25,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
-const directory = 'artifacts/screen-probe/dawn';
+const directory = process.env.FORGEAX_SCREEN_PROBE_EVIDENCE_DIR ?? 'artifacts/screen-probe/dawn';
 mkdirSync(directory, { recursive: true });
 const save = (name: string, value: unknown) =>
   writeFileSync(
@@ -55,6 +55,31 @@ const PROBE_PASSES = [
 ];
 const L = 0.5;
 const FURNACE_FRAMES = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1' ? 32 : 48;
+
+async function recordedFieldHarness(
+  host?: Record<string, unknown>,
+  captureScreenProbeBuffers = false,
+) {
+  const recorder = attachRecorder(webgpu).unwrap();
+  try {
+    const h = await createIrradianceFieldHarness({
+      rhi: recorder.backend.rhi,
+      captureScreenProbeBuffers,
+      manifest,
+      ...(host === undefined ? {} : { host }),
+      instrumentation: {
+        onDeviceLost: () => recorder.deviceLost(),
+        resolveSurfaceDevice: (
+          device: Parameters<typeof recorder.backend.unwrapDeviceForSurface>[0],
+        ) => ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
+      },
+    });
+    return { h, recorder };
+  } catch (cause) {
+    (await recorder.dispose()).unwrap();
+    throw cause;
+  }
+}
 
 /** The 32x32 view at downsample 8 gives a 4x4 uniform grid plus 8 adaptive slots. */
 const screenProbeGi = (
@@ -114,19 +139,37 @@ const flicker = async (image: () => Promise<FieldImage>, frames: number) => {
 it('lights, blocks, converges, reprojects, replays and recovers in the ordinary Renderer', {
   timeout: 900_000,
 }, async () => {
-  const recorder = attachRecorder(webgpu).unwrap();
-  const h = await createIrradianceFieldHarness({
-    rhi: recorder.backend.rhi,
-    manifest,
-    instrumentation: {
-      onDeviceLost: () => recorder.deviceLost(),
-      resolveSurfaceDevice: (
-        device: Parameters<typeof recorder.backend.unwrapDeviceForSurface>[0],
-      ) => ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
-    },
-  });
+  const captureStages = process.env.FORGEAX_CAPTURE_SCREEN_PROBE_MOTION_BUFFERS === '1';
+  const { h, recorder } = await recordedFieldHarness(undefined, captureStages);
   const result: Record<string, unknown> = {};
   const motionCaptures: Record<string, { digest: string; bytes: number }> = {};
+  const captureLiveTemporal = async (name: string, bytes: Uint8Array) => {
+    const model = buildFrameModel(decodeTape(bytes).unwrap());
+    const work = model.works.find((entry) =>
+      entry.pipeline.shaders.some((shader) => shader.entryPoint === 'temporalScreenProbes'),
+    );
+    assert(work, 'Missing pixel temporal work in the motion capture');
+    await Promise.all(
+      [21, 22, 23, 24, 25].map(async (binding) => {
+        const bound = work.bindings.find(
+          (entry) => entry.groupIndex === 0 && entry.binding === binding,
+        );
+        assert(bound?.resourceId, `Missing temporal binding ${binding}`);
+        assert((bound.bufferOffset ?? 0) + (bound.dynamicOffset ?? 0) === 0);
+        const resource = model.resources.find((entry) => entry.resourceId === bound.resourceId);
+        const descriptor = resource?.descriptor as { desc?: { label?: string } } | undefined;
+        const label = descriptor?.desc?.label;
+        assert(
+          label?.startsWith('screen-probe.'),
+          `Missing temporal resource name at binding ${binding}`,
+        );
+        assert(label);
+        const data = await h.readBuffer(label);
+        expect(data.byteLength).toBe(SIZE * SIZE * 16);
+        save(`motion-${name}-temporal-b${binding}.bin`, new Uint8Array(data.buffer));
+      }),
+    );
+  };
   const captureMotionImage = async (name: string) => {
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
@@ -140,6 +183,7 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     );
     motionCaptures[name] = { digest: encoded.digest, bytes: encoded.bytes.byteLength };
     save('motion-captures.json', motionCaptures);
+    if (captureStages) await captureLiveTemporal(name, encoded.bytes);
     return image;
   };
   const probeState = () => {
@@ -288,7 +332,7 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     h.spawn(h.floorMesh, h.white, [0, -1.5, -2]);
     h.setGi(screenProbeGi({ environment: [L, L, L] }));
     await h.settle(FURNACE_FRAMES);
-    const furnace = await h.image();
+    const furnace = await captureMotionImage('furnace');
     const furnaceMax = furnace.red.reduce((max, value) => Math.max(max, value), 0);
     expect(furnace.mean).toBeGreaterThan(0.85 * L);
     expect(furnace.mean).toBeLessThan(1.05 * L);
@@ -333,20 +377,22 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     const computeEntries = model.works.flatMap((work) =>
       work.pipeline.shaders.filter((shader) => shader.stage === 'compute').map((s) => s.entryPoint),
     );
+    const hardware = probeState().field?.traversal === 'ray-query';
     expect(computeEntries).toEqual(
       expect.arrayContaining([
         'placeUniformProbes',
         'placeAdaptiveProbes',
         'compactAdaptiveProbes',
-        'generateProbeRays',
-        'traceScreenProbes',
+        'generateCachedProbeRays',
+        hardware ? 'traceHardwareScreenProbes' : 'traceScreenProbes',
         'traceWorldProbes',
         'resolveProbeRays',
         'temporalProbeRadiance',
         'filterProbeRadiance',
         'integrateScreenProbes',
         'temporalScreenProbes',
-        'copySceneHistory',
+        'copyDiffuseSceneHistory',
+        ...(hardware ? ['copyScreenTraceDepth'] : []),
       ]),
     );
     const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
@@ -464,20 +510,37 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     h.setGi(screenProbeGi({ environment: [L, L, L] }));
     await h.settle(FURNACE_FRAMES);
     const beforeLoss = await h.image();
+    save('motion-before-loss.red.bin', new Uint8Array(beforeLoss.red.buffer));
 
     const old = h.native();
     h.loseDevice();
     await expect.poll(() => h.renderer.state()).toBe('device-lost');
     h.errors.length = 0;
-    renderValue(await h.renderer.recover());
+    const recoveryStarted = performance.now();
+    const recovery = await h.renderer.recover();
+    save('recovery-result.json', {
+      elapsedMs: performance.now() - recoveryStarted,
+      ok: recovery.ok,
+      ...(recovery.ok ? {} : { error: recovery.error }),
+    });
+    renderValue(recovery);
     old?.destroy();
     expect(Object.is(h.native(), old)).toBe(false);
+    const recoveredFramesStarted = performance.now();
     await h.settle(FURNACE_FRAMES);
     const recovered = await h.image();
+    save('motion-recovered.red.bin', new Uint8Array(recovered.red.buffer));
+    save('motion-recovered-frames.json', {
+      frames: FURNACE_FRAMES,
+      elapsedMs: performance.now() - recoveredFramesStarted,
+      scope:
+        'Complete recovered frame window, including first-use pipeline compilation and readback',
+    });
     expect(Math.abs(recovered.mean - beforeLoss.mean)).toBeLessThan(0.05 * L);
     expect(h.errors).toEqual([]);
     result.recovery = { before: beforeLoss.mean, after: recovered.mean };
     save('result.json', result);
+    save('motion-journey-result.json', result);
   } finally {
     save('latest-state.json', { result, errors: h.errors, inspection: h.renderer.inspect() });
     await h.dispose();
@@ -488,10 +551,8 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
 it('stays within a bounded error of the exact and irradiance-field lanes with the expected GPU passes', {
   timeout: 900_000,
 }, async () => {
-  const h = await createIrradianceFieldHarness({
-    rhi: webgpu.rhi,
-    manifest,
-    host: { gpuPassTiming: { maxPassesPerFrame: 128, maxFramesInFlight: 2, retentionFrames: 8 } },
+  const { h, recorder } = await recordedFieldHarness({
+    gpuPassTiming: { maxPassesPerFrame: 128, maxFramesInFlight: 2, retentionFrames: 8 },
   });
   try {
     h.spawn(h.floorMesh, h.white, [0, -1.5, -2]);
@@ -501,10 +562,38 @@ it('stays within a bounded error of the exact and irradiance-field lanes with th
     const direct = await h.image();
     expect(direct.center).toBeGreaterThan(0.1);
     const environment = [0.25, 0.25, 0.25] as const;
-    const render = async (gi: StandardDiffuseGi) => {
-      h.setGi(gi);
+    const render = async (gi: StandardDiffuseGi, captureName?: string) => {
+      // The authored wall/floor touch the old grid boundary. Global SDF
+      // gradients reserve one voxel there; add two voxels on every side
+      // without changing spacing, ray counts, update budgets or error gates.
+      h.setGi(
+        !('field' in gi)
+          ? gi
+          : {
+              ...gi,
+              field: {
+                ...gi.field,
+                region: {
+                  ...gi.field.region,
+                  grid: {
+                    ...gi.field.region.grid,
+                    origin: [-5, -5, -7],
+                    dimensions: [21, 21, 21],
+                  },
+                },
+              },
+            },
+      );
       await h.settle(32);
-      return h.image();
+      if (captureName === undefined) return h.image();
+      const pending = recorder.captureFrame();
+      (await recorder.frameBoundary()).unwrap();
+      const image = await h.image();
+      (await recorder.frameBoundary()).unwrap();
+      const encoded = (await pending).unwrap();
+      save(`${captureName}.rhitape`, encoded.bytes);
+      save(`${captureName}.red.bin`, new Uint8Array(image.red.buffer));
+      return image;
     };
     const exactGi = (maxBounces: number): Extract<StandardDiffuseGi, { gather: 'exact' }> => ({
       gather: 'exact',
@@ -539,7 +628,14 @@ it('stays within a bounded error of the exact and irradiance-field lanes with th
     const exactOne = await render(exactGi(1));
     const exactMulti = await render(exactGi(4));
     const fieldImage = await render(irradianceFieldGi({ environment, radiosity: false }));
-    const probeImage = await render(screenProbeGi({ environment }));
+    const probeImage = await render(screenProbeGi({ environment }), 'comparison-screen');
+    for (const [name, image] of [
+      ['direct', direct],
+      ['exact-one', exactOne],
+      ['exact-multi', exactMulti],
+      ['field', fieldImage],
+    ] as const)
+      save(`comparison-${name}.red.bin`, new Uint8Array(image.red.buffer));
     // Screen hits read the lit previous frame and the embedded field keeps
     // radiosity, so the probe lane is multi-bounce: its matched reference is
     // the 4-bounce exact lane; the radiosity-free field matches 1 bounce.
@@ -589,5 +685,6 @@ it('stays within a bounded error of the exact and irradiance-field lanes with th
   } finally {
     save('comparison-state.json', { errors: h.errors, inspection: h.renderer.inspect() });
     await h.dispose();
+    (await recorder.dispose()).unwrap();
   }
 });

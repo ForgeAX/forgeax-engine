@@ -985,7 +985,7 @@ export async function buildReadyWebGPU(
   const runtimeLinearLdrMaterialSpecTable = buildLinearLdrMaterialSpecTable(
     swapChainFormats.view,
   ).map((spec) => withMaterialVertexInputs(registry, spec));
-  prewarmMaterialSpecPipelines(
+  await prewarmMaterialSpecPipelines(
     [...runtimeSpecConstTable, ...runtimeLinearLdrMaterialSpecTable],
     shaderModuleMap,
     pipelineDeviceProvider,

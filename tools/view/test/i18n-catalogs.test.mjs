@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createPluginI18n } from '../packages/view-workspace-core/src/plugin-i18n.ts';
-import { registerViewLocaleSink, setViewLocale } from '../packages/view-workspace-core/src/locale-bridge.ts';
+import { getViewLocale, registerViewLocaleSink, setViewLocale } from '../packages/view-workspace-core/src/locale-bridge.ts';
 
 const packages = new URL('../packages/', import.meta.url);
 function flatten(value, prefix = '', result = {}) {
@@ -17,6 +17,21 @@ function flatten(value, prefix = '', result = {}) {
 function placeholders(message) {
   return [...new Set([...message.matchAll(/\{\{(\w+)\}\}/g)].map(match => match[1]))].sort();
 }
+
+test('project lifecycle badges have English and Chinese labels instead of raw phases', () => {
+  const catalogs = new URL('../packages/viewer/src/i18n/locales/', import.meta.url);
+  const en = JSON.parse(readFileSync(new URL('en.json', catalogs), 'utf8'));
+  const zh = JSON.parse(readFileSync(new URL('zh.json', catalogs), 'utf8'));
+  for (const [phase, english, chinese] of [
+    ['preparing', 'Preparing', '准备中'],
+    ['starting', 'Starting', '启动中'],
+    ['running', 'Running', '运行中'],
+    ['failed', 'Failed', '失败'],
+  ]) {
+    assert.equal(en.view.projectPhase?.[phase], english, `English ${phase}`);
+    assert.equal(zh.view.projectPhase?.[phase], chinese, `Chinese ${phase}`);
+  }
+});
 
 for (const entry of readdirSync(packages, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
@@ -36,7 +51,15 @@ for (const entry of readdirSync(packages, { withFileTypes: true })) {
   });
 }
 
+test('uninitialized plugins use the English owner default', () => {
+  const plugin = createPluginI18n({ en: { label: 'English' }, zh: { label: 'Chinese' } });
+  assert.equal(getViewLocale(), 'en');
+  assert.equal(plugin.getLocale(), 'en');
+  assert.equal(plugin.t('label'), 'English');
+});
+
 test('mounted plugin subscriptions observe locale changes and retain interpolation values', () => {
+  setViewLocale('zh');
   const plugin = createPluginI18n({
     en: { source: 'Source {{field}}' }, zh: { source: '源码 {{field}}' },
   });

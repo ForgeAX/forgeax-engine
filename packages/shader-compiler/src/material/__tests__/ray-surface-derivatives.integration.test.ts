@@ -88,7 +88,8 @@ describe('ray qualification of project Surface closures', { timeout: 30_000 }, (
       const record = await cookPack(root);
       const selections = record.programs.flatMap((program) => program.selections);
       expect(selections.some((selection) => selection.pass === 'Forward')).toBe(true);
-      expect(selections.some((selection) => selection.context.pipeline === 'ray')).toBe(false);
+      expect(selections.some((selection) => selection.context.pass === 'ray-hit')).toBe(false);
+      expect(selections.some((selection) => selection.context.pass === 'card-capture')).toBe(true);
       expect(record.programs.some((program) => program.artifact.bytes.byteLength > 0)).toBe(true);
     });
   });

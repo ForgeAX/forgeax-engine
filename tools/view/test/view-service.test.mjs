@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { installedEngineVersion } from '../src/engine-root.ts';
 import { createViewService, serveView } from '../src/view-service.ts';
 
 async function fixture(t) {
@@ -35,7 +36,7 @@ test('synchronous ensure failure publishes offline and admits a retry', async t 
   t.after(service.close);
   assert.deepEqual(await service.start(), { ok: false, error: { code: 'view-launch-failed', hint: 'owner sync failure' } });
   const failed = await fetch(service.server.bootstrapUrl);
-  assert.deepEqual(await failed.json(), { configured: false, phase: 'offline', launcher: true, reason: 'owner sync failure' });
+  assert.deepEqual(await failed.json(), { configured: false, phase: 'offline', launcher: true, reason: 'owner sync failure', frontendConfig: { engineVersion: installedEngineVersion() } });
   assert.equal((await service.start()).ok, true);
   assert.equal((await (await fetch(service.server.bootstrapUrl)).json()).configured, true);
 });

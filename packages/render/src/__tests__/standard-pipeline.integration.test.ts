@@ -9,6 +9,7 @@ import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../er
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
+import { AUTO_EXPOSURE_PARAMETERS_BYTES } from '../pipeline/standard-output/auto-exposure/gpu';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import {
@@ -166,7 +167,9 @@ async function build(
   const histogram = graph.createBuffer('standard-auto-exposure-histogram', { size: 1024 });
   const state = graph.createBuffer('standard-auto-exposure-state', { size: 32 });
   const candidate = graph.createBuffer('standard-auto-exposure-candidate', { size: 16 });
-  const parameters = graph.createBuffer('standard-auto-exposure-parameters', { size: 32 });
+  const parameters = graph.createBuffer('standard-auto-exposure-parameters', {
+    size: AUTO_EXPOSURE_PARAMETERS_BYTES,
+  });
   const lutTexture = graph.createTexture('standard-color-lut-source', {
     format: 'rgba16float',
     size: { width: 2, height: 2, depthOrArrayLayers: 2 },

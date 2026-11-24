@@ -154,10 +154,13 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     assert(gpu);
     const buffers = vi.spyOn(gpu, 'createBuffer');
     const pipelines = vi.spyOn(gpu, 'createComputePipeline');
+    const asyncPipelines = vi.spyOn(gpu, 'createComputePipelineAsync');
     const createdBuffers = (label: string) =>
       buffers.mock.calls.filter(([desc]) => desc.label === label).length;
     const fieldPipelines = () =>
-      pipelines.mock.calls.filter(([desc]) => desc.label?.startsWith('irradiance-field.')).length;
+      [...pipelines.mock.calls, ...asyncPipelines.mock.calls].filter(([desc]) =>
+        desc.label?.startsWith('irradiance-field.'),
+      ).length;
     h.setGi({ gather: 'baked', volume: DARK, resolution: 'half' });
     await h.settle(2);
     const dark = await h.image();

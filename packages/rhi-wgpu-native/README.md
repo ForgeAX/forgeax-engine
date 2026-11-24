@@ -29,6 +29,17 @@ exposes `VK_KHR_ray_query`, so CPU Vulkan runs it:
 with that ICD selected.
 wgpu 30 accepts `refit` (`ALLOW_UPDATE` + `PreferUpdate`) but still performs a full build.
 
+The Node RHI BLAS descriptor accepts per-geometry `opaque` (default true).
+Explicit false lowers to empty geometry flags, exposing real non-opaque triangle
+candidates to Ray Query confirmation. The same flag remains part of the captured
+RHI descriptor. Geometry opacity is fixed at BLAS creation; Render's placement
+coverage is separate from that shared geometry flag.
+
+Native GPU tests print the selected adapter facts before requesting a device.
+`FORGEAX_NATIVE_TEST_EXPECTED_ADAPTER` optionally requires an exact JSON object
+with `backend`, `name`, `vendor`, `device` and `deviceType`; missing, extra or
+mismatched facts fail before device creation and never turn into a skipped test.
+
 The test-only `world_traversal_parity` module runs the render package's generated
 world-trace kernels (`src/__tests__/fixtures/world-traversal/*.wgsl`, kept equal to
 `worldTraversalWgsl` by `world-traversal.unit.test.ts`) on one scene through both
@@ -41,6 +52,20 @@ stays within stated tolerances (all hit, plane distance <= 1 voxel for >= 95 %,
 leaks no Ray Query ray while a masked-out wall leaks every admitted ray (falsifier):
 `FORGEAX_REQUIRE_NATIVE_RAY_QUERY=1 cargo test --manifest-path packages/rhi-wgpu-native/Cargo.toml world_traversal -- --nocapture`
 with the lavapipe 25.2 ICD selected.
+
+The contract job first runs
+`pnpm exec node packages/rhi-wgpu-native/scripts/prepare-world-parity-fixtures.mjs`
+at the repository root. The coordinator
+builds the ordinary Geometry/Shader/Assets Runtime dependency closure, exports the original Rust
+scene on that host, and uses the production visibility-field and scene packers.
+Set absolute `FORGEAX_NATIVE_WORLD_PARITY_INPUTS` and
+`FORGEAX_NATIVE_WORLD_PARITY_PAYLOAD` paths in one new owned directory outside the
+checkout. It records the required digest environment in `preparation.json` and
+exports it through `GITHUB_ENV` in Actions; local wrappers apply `requiredEnv`
+before the original Cargo owner. Rust checks the same-host authored f32 bits,
+typed lengths and the digest of each actual upload before creating a device.
+Missing or changed preparation fails; generated WGSL equality alone is not Native
+GPU evidence. Keep Windows and Linux trigonometric results separately identified.
 
 ## Node binding (napi-rs)
 
@@ -69,6 +94,13 @@ test roster could not run unchanged over it.
   `destroy()` drops them eagerly. Id 0 is the invalid object of a failed creation; its error
   already went through the device's error scopes.
 - Descriptors cross as JSON.
+- `createComputePipelineAsync` snapshots owned shader/layout handles and constants on the JS
+  thread, then uses a napi-rs `AsyncTask` for wgpu creation. Worker-local error scopes report
+  validation/internal pipeline errors without holding the JS error-scope stack across a
+  pending promise. Only the originating live device can adopt the opaque completion, once.
+  Destroyed/lost devices reject pending completions. Synchronous pipeline methods and
+  `createRenderPipelineAsync` retain their existing behavior. Moving compute work off the JS
+  thread does not establish parallel driver compilation or reduce cold compilation cost.
 - Command encoders and render bundles record in TypeScript and replay in one N-API call per
   `finish()`, so there are no per-draw crossings.
 - `queue.submit` takes the finished ids.

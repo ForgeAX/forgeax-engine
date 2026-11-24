@@ -95,6 +95,7 @@ export {
   createSdfCardLookup,
   type SdfCardLookup,
 } from './raytracing/card-lookup';
+export { rebuildCardOwnerIndex } from './raytracing/card-owner-index';
 export {
   createDiffuseGi,
   type DiffuseGi,

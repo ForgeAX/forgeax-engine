@@ -137,8 +137,9 @@ export function rayMaterialProgram(
     capability: 'storage-buffer',
     pipeline: 'ray',
     geometry: 'mesh',
-    pass: program.context,
-    profile: 'forgeax-material-ray-v1',
+    ...(program.context === 'ray-hit'
+      ? ({ pass: 'ray-hit', profile: 'forgeax-material-ray-v1' } as const)
+      : ({ pass: 'card-capture', profile: 'forgeax-material-card-v4' } as const)),
     toolchain: 'naga-oil',
     instrumentation: 'none',
   } as const;

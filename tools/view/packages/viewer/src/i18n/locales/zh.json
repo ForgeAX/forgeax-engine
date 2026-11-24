@@ -1,5 +1,11 @@
 {
   "view": {
+    "projectPhase": {
+      "preparing": "准备中",
+      "starting": "启动中",
+      "running": "运行中",
+      "failed": "失败"
+    },
     "preparation": {
       "project": "正在准备项目输入",
       "vite": "正在准备项目服务",

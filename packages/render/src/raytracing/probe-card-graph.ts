@@ -11,10 +11,11 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 import type { CardAtlasCapture } from './card-capture-schedule';
 import { CARD_LOOKUP_STRIDE } from './card-lookup';
 import { GLOBAL_CARD_CANDIDATE_STRIDE, type GlobalSdfCardLookupInputs } from './global-card-lookup';
+import { GLOBAL_SDF_SETTINGS_BYTES } from './global-sdf';
 import { PROBE_CARD_SUPPORT_STRIDE } from './probe-card-support';
 import type { ProbeCardCapture } from './renderer-probe-cards';
 import type { PreparedProbeGlobal } from './renderer-probe-global';
-import { CARD_PLANES, CARD_TEXTURES } from './surface-cards';
+import { CARD_PLANES, CARD_TEXTURES, type CardCapturePhase } from './surface-cards';
 
 export function probeCardGraphShape(global: PreparedProbeGlobal) {
   const value = global.cards;
@@ -58,7 +59,7 @@ export function addProbeCardPasses(
     expected.region,
     expected.region.schedule.mode(),
     (frame) => current(frame).region,
-    (frame, pass) => current(frame).capture(pass).unwrap(),
+    (frame, pass, phase) => current(frame).capture(pass, phase).unwrap(),
   );
   if (!atlasPasses.ok) return atlasPasses;
   const { atlas, projections: cards } = atlasPasses.value;
@@ -112,7 +113,7 @@ export function addProbeCardPasses(
           instances: range(shared.region.instances, global.region.input.instances.size),
           fields: range(shared.region.fields, global.region.input.fields.size),
           bounds: range(shared.region.bounds, global.region.input.bounds.size),
-          grid: range(shared.region.settings, 48),
+          grid: range(shared.region.settings, GLOBAL_SDF_SETTINGS_BYTES),
           cards: range(cards, value.region.projections.size),
           candidates: range(candidates, rayCount * GLOBAL_CARD_CANDIDATE_STRIDE),
           output: range(samples, rayCount * 4 * CARD_LOOKUP_STRIDE),
@@ -164,11 +165,12 @@ export function addCardAtlasPasses(
   region: ProbeCardCapture,
   captureMode: CardAtlasCapture,
   current: (frame: RenderPipelineFrame) => ProbeCardCapture,
-  record: (frame: RenderPipelineFrame, pass: RhiRenderPassEncoder) => void,
+  record: (frame: RenderPipelineFrame, pass: RhiRenderPassEncoder, phase: CardCapturePhase) => void,
 ): Result<
   {
     readonly atlas: Record<(typeof CARD_TEXTURES)[number], GraphTextureView>;
     readonly projections: GraphBuffer;
+    readonly primitiveIndex: GraphTextureView;
   },
   RenderGraphError
 > {
@@ -257,6 +259,24 @@ export function addCardAtlasPasses(
       ];
     }),
   ) as Record<(typeof CARD_TEXTURES)[number], GraphTextureView>;
+  const primitiveTexture = graph
+    .importTexture(
+      `${label}.primitiveIndex`,
+      {
+        format: 'r32uint',
+        size: { width: capture.width, height: capture.height },
+        usage: 21,
+      },
+      (frame) => current(frame).capture.primitiveIndex.texture,
+    )
+    .unwrap();
+  const primitiveIndex = graph
+    .importView(
+      primitiveTexture,
+      { dimension: '2d' },
+      (frame) => current(frame).capture.primitiveIndex.view,
+    )
+    .unwrap();
   if (captureMode !== undefined) {
     const reads = capture.bufferReads.map((read, index) => ({
       resource: graph
@@ -294,9 +314,30 @@ export function addCardAtlasPasses(
         depthStoreOp: 'store',
         depthClearValue: 1,
       },
-      encodeDirect: (pass, frame, _graphresources) => record(frame, pass),
+      encodeDirect: (pass, frame, _graphresources) => record(frame, pass, 'material'),
     });
     if (!captured.ok) return err(captured.error);
+    // The retained depth atlas is never globally cleared by the second phase.
+    // A viewport/scissor clear quad rebuilds depth only for this coherent tile slice.
+    const identity = graph.addRasterPass(`${label}.capture-identity`, {
+      accesses: [
+        ...reads,
+        ...materialViews.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+        { resource: primitiveIndex, usage: 'color-attachment' },
+        { resource: atlas.depth, usage: 'depth-stencil-write' },
+      ],
+      colorAttachments: [
+        {
+          view: primitiveIndex,
+          loadOp: captureMode,
+          storeOp: 'store',
+          clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 },
+        },
+      ],
+      depthStencilAttachment: { view: atlas.depth, depthLoadOp: 'load', depthStoreOp: 'store' },
+      encodeDirect: (pass, frame) => record(frame, pass, 'identity'),
+    });
+    if (!identity.ok) return err(identity.error);
   }
   const projections = graph
     .importBuffer(
@@ -305,5 +346,5 @@ export function addCardAtlasPasses(
       (frame) => current(frame).projections.buffer,
     )
     .unwrap();
-  return ok({ atlas, projections });
+  return ok({ atlas, projections, primitiveIndex });
 }

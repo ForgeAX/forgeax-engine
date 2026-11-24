@@ -8,7 +8,11 @@ import {
   weightedLuminanceHistogram,
 } from '../pipeline/standard-output/auto-exposure/oracle';
 import type { DepthPyramidShaderSources } from '../render-contract';
-import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
+import {
+  runPortableExposure,
+  runPortablePyramid,
+  runUeExposureMeterFixture,
+} from './portable-kernel-expansion-gpu';
 import {
   runSsrGpuDispatch,
   type SsrProbeShaderSources,
@@ -164,6 +168,71 @@ it.each([
     expected = adaptExposure(expected, target, dt, 3, 1);
     expect(exposure.timeline[index]).toBeCloseTo(expected, 6);
   }
+});
+
+it.each([
+  'compute',
+  'fragment',
+] as const)('adopts the first valid UE exposure and adapts subsequent frames on %s', async (execution) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const factory = (descriptor: GPUShaderModuleDescriptor) =>
+    createShaderModuleImmediate(device, descriptor);
+  const pixel = (value: number) => new Float32Array(4 * 4 * 4).fill(value);
+  const dark = pixel(1 / 32);
+  const bright = pixel(1 / 2);
+  const near = pixel(1 / 24);
+  const step = 1 / 60;
+  const result = await runPortableExposure(
+    device,
+    factory,
+    execution,
+    4,
+    4,
+    bright,
+    Array(6).fill(step),
+    [
+      undefined,
+      { ue: true, pixels: pixel(0) },
+      { ue: true, pixels: dark },
+      { ue: true, pixels: bright },
+      { ue: true, pixels: near },
+      { ue: true, pixels: pixel(0) },
+    ],
+  );
+  const target = (luminance: number) => {
+    const position = ((Math.log2(luminance) + 10) * 63) / 30;
+    const low = Math.floor(position);
+    const lowerMass = 1 - (position - low);
+    const keptUpper = 0.9 - Math.max(0.1, Math.min(lowerMass, 0.9));
+    const averageLog = -10 + ((low + keptUpper / 0.8) * 30) / 63;
+    return 0.18 * 2 ** -averageLog;
+  };
+  const adopted = target(1 / 32);
+  const afterBrightEv = Math.log2(adopted) - 3 * step;
+  // At the calibration step, the exponential weight reduces to rate * dt / 1.5.
+  const afterNearEv =
+    afterBrightEv + (Math.log2(target(1 / 24)) - afterBrightEv) * ((3 * step) / 1.5);
+  expect(result.timeline[1]).toBe(1);
+  expect(result.timeline[2]).toBeCloseTo(adopted, 5);
+  expect(result.timeline[3]).toBeCloseTo(2 ** afterBrightEv, 5);
+  expect(result.timeline[4]).toBeCloseTo(2 ** afterNearEv, 5);
+  expect(result.timeline[5]).toBeCloseTo(2 ** afterNearEv, 5);
+});
+
+it.each([
+  'compute',
+  'fragment',
+] as const)('uses UE histogram clipping with an unweighted meter on %s', async (execution) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const factory = (descriptor: GPUShaderModuleDescriptor) =>
+    createShaderModuleImmediate(device, descriptor);
+  const { maxBucketError, gainErrorEv } = await runUeExposureMeterFixture(
+    device,
+    factory,
+    execution,
+  );
+  expect(maxBucketError).toBeLessThanOrEqual(32);
+  expect(gainErrorEv).toBeLessThan(2e-6);
 });
 
 it('runs the full SSR graph for 60 completed frames with compute and raster spatial plans', async () => {

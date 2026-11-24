@@ -51,7 +51,8 @@ export function dawnVitestArgs(group, { ordinaryWorkers = 1 } = {}) {
   if (ordinaryWorkers !== 1 && ordinaryWorkers !== 2) {
     throw new Error('Dawn ordinary workers must be exactly 1 or 2');
   }
-  const parallel = group.vitestShard !== undefined && ordinaryWorkers === 2;
+  const parallel =
+    group.vitestShard !== undefined && ordinaryWorkers === 2 && !group.serialOrdinary;
   return [
     VITEST,
     'run',
@@ -148,19 +149,27 @@ export function dawnGroupEnvironment(group, environment, ordinaryWorkers, native
   const rasterThreads = Number(environment.LP_NUM_THREADS);
   const limitSoftwareGpuWorkers =
     group.limitSoftwareGpuWorkers || (nativeConcurrency === 2 && group.nativeProcessSlots === 1);
+  const rasterThreadLimit =
+    group.softwareGpuHeapRasterThreads ?? (limitSoftwareGpuWorkers ? 4 : undefined);
   return {
     ...environment,
     ...group.env,
+    ...(group.serialOrdinary ? { FORGEAX_DAWN_SERIAL_ORDINARY: String(ordinaryWorkers) } : {}),
     ...(group.vitestShard !== undefined && ordinaryWorkers === 2
       ? { LP_NUM_THREADS: '4', FORGEAX_SHADER_COMPILE_WORKERS: '1' }
       : {}),
-    ...(limitSoftwareGpuWorkers
-      ? {
+    ...(rasterThreadLimit === undefined
+      ? {}
+      : {
           LP_NUM_THREADS: String(
-            Number.isInteger(rasterThreads) && rasterThreads > 0 ? Math.min(4, rasterThreads) : 4,
+            Number.isInteger(rasterThreads) && rasterThreads > 0
+              ? Math.min(rasterThreadLimit, rasterThreads)
+              : rasterThreadLimit,
           ),
-          FORGEAX_SHADER_COMPILE_WORKERS: '1',
-        }
+        }),
+    ...(limitSoftwareGpuWorkers ? { FORGEAX_SHADER_COMPILE_WORKERS: '1' } : {}),
+    ...(group.softwareGpuHeapRasterThreads !== undefined
+      ? { MALLOC_ARENA_MAX: '2', MALLOC_TRIM_THRESHOLD_: '131072' }
       : {}),
   };
 }
@@ -221,6 +230,7 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
       'FORGEAX_DAWN_COMPACT',
       'FORGEAX_DAWN_PARTITION',
       'FORGEAX_DAWN_PARTITION_SCOPE',
+      'FORGEAX_DAWN_SERIAL_ORDINARY',
     ])
       delete environment[name];
     return environment;

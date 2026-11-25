@@ -301,7 +301,7 @@ function projectViewLightingInspection(
   const probePlacement = want('probePlacement') ? viewProbePlacement(inspected) : undefined;
   const diffuseGi = want('diffuseGi') ? viewDiffuseGi(inspected) : undefined;
   const iblBinding = want('iblBinding')
-    ? projectIblBindingInspection(inspected.frameState.iblBindingInspection)
+    ? projectIblBindingInspection(inspected.frameState.iblBindings?.inspect())
     : undefined;
   const dynamicResolution = want('dynamicResolution')
     ? inspected.frameState.dynamicResolution?.inspect()

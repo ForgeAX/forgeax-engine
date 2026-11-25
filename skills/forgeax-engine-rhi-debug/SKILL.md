@@ -26,12 +26,11 @@ description: >-
 > with live evidence (`dev capture` screenshots, `dev eval` state, debug draw) on the
 > real backend. Do not retry replay or block delivery on it.
 >
-> macOS and Windows hosts have no prebuilt `dawn.node` by design (it is built from an
-> Engine source checkout with `pnpm --filter @forgeax/engine-dawn-node build:native`),
-> so replay is normally absent there. Everything structural still works without it:
-> `rhi summary` (including `--passes` and `--label`) and `rhi inspect` with the default
-> `pipeline`/`bindings` fields read the tape only. Only `pixels`, `outputs`, `rhi read`
-> and `rhi timing` replay.
+> The Node GPU workflows use the optional upstream Dawn prebuild. Install
+> `upstream-webgpu@npm:webgpu@0.6.2` in the game and use its local CLI for replay.
+> `rhi summary` (including `--passes` and `--label`) and `rhi inspect` with the
+> default `pipeline`/`bindings` fields read the tape only. `pixels`, `outputs`,
+> `rhi read`, and `rhi timing` replay.
 
 | Symptom | First check |
 |:--|:--|
@@ -383,6 +382,26 @@ the exact command or browser path used.
 
 The core must not import DOM, Node filesystem APIs, PNG encoders, or Viewer
 state. The Vite bridge serves one raw tape in development only.
+
+## Screen Probe Dawn handoff
+
+The full thin-wall support test runs in Dawn's exclusive `screen-probe-support` owner.
+On a failing lane, the `dawn-screen-probe-failure-*` artifact preserves its
+handoff JSON and raw GPU readbacks when available, including failures that
+occur before motion captures are emitted.
+
+| File | Evidence |
+|:--|:--|
+| `handoff-result.json` | Test status, completed controls, GPU errors and phase timings |
+| `handoff-raw-<side>-<mode>.bin` | Unmodified Screen/World ray and receiver readback for a completed control |
+| `motion-captures.json` and `*.rhitape` | Renderer motion and inspection captures when produced |
+
+Read the timing and result fields in `handoff-result.json`.
+`jq '.controls | keys' handoff-result.json` lists completed controls. Inspect
+the matching raw file against the test's
+readback layout in `screen-probe-support.dawn.test.ts`; the JSON also carries
+the downstream production-support result. Keep the 180-second case bound and
+all original controls. See the [CI artifact contract](../../scripts/ci/README.md#screen-probe-dawn-failure-evidence).
 
 ## Verification
 

@@ -35,6 +35,7 @@ const STANDARD_COVERAGE_UNUSED_AXES = [
   'PROBE_BLEND_AVAILABLE',
   'PROJECTOR_AVAILABLE',
   'REFLECTION_FALLBACK_AVAILABLE',
+  'FORWARD_INLINE_SSR',
   'TRANSMISSION_AVAILABLE',
   'VISIBLE_SURFACE_AVAILABLE',
   'WATER_INFO_RGBA16',
@@ -47,6 +48,24 @@ export function projectStandardCoverageDefines(defines: Record<string, boolean>)
 }
 
 export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
+  {
+    axis: 'FORWARD_INLINE_SSR',
+    value: false,
+    when: { EXTENDED_LIGHTING_AVAILABLE: false },
+    reason: 'inline SSR needs the extended View texture contract',
+  },
+  {
+    axis: 'FORWARD_INLINE_SSR',
+    value: false,
+    when: { REFLECTION_FALLBACK_AVAILABLE: true },
+    reason: 'reflection fallback MRT selects the separate SSR route',
+  },
+  {
+    axis: 'FORWARD_INLINE_SSR',
+    value: false,
+    when: { VISIBLE_SURFACE_AVAILABLE: true },
+    reason: 'visible-surface geometry uses the deferred G-buffer',
+  },
   {
     axis: 'WATER_WAVES_AVAILABLE',
     value: false,

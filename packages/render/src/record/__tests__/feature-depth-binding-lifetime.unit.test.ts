@@ -267,10 +267,10 @@ it.each([
     Array.from(groups.mock.calls[0]?.[0].entries ?? [])
       .map((entry) => entry.binding)
       .sort((a, b) => a - b),
-  ).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 10, 17]);
+  ).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 17]);
   expect(resolved).toMatchObject({
     handle: expect.anything(),
-    dynamicOffsets: [translucentViewOffset('additive'), 0],
+    dynamicOffsets: [translucentViewOffset('additive')],
   });
 });
 
@@ -451,7 +451,7 @@ it('reuses Standard VFX depth views and groups while observing physical resource
     return result;
   };
   const first = resolve();
-  expect(first).toMatchObject({ handle: expect.anything(), dynamicOffsets: [0, 0] });
+  expect(first).toMatchObject({ handle: expect.anything(), dynamicOffsets: [0] });
   f.device.queue.writeBuffer(f.buffer, 0, new Float32Array([1, 2, 3, 4])).unwrap();
   expect(resolve().handle).toBe(first?.handle);
   expect(groups).toHaveBeenCalledTimes(1);
@@ -459,7 +459,7 @@ it('reuses Standard VFX depth views and groups while observing physical resource
   Object.assign(f.input.binding, { fogComposition: 'additive' });
   expect(resolve()).toMatchObject({
     handle: first?.handle,
-    dynamicOffsets: [translucentViewOffset('additive'), 0],
+    dynamicOffsets: [translucentViewOffset('additive')],
   });
   f.setDepth(f.makeDepth());
   const replacement = resolve();

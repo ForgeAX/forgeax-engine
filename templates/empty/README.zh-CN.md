@@ -3,7 +3,9 @@
 
 # ForgeAX 空游戏模板
 
-这是 SDK 的最小 author 起点：一个资产目录、一份零实体的原生场景包，以及一个可按需扩展的插件组合入口。
+Engine 和创作工具随项目固定的 `@forgeax/engine` 提供。先阅读 [AGENTS.zh-CN.md](AGENTS.zh-CN.md)。
+
+这是 Engine 的最小创作起点，一个资产目录、一份零实体的原生场景包，以及一个可按需扩展的插件组合入口。
 它面向 2D 或其他类型游戏，提供中性的内容起点。
 需要添加逻辑时，把每个功能作为 `assets/` 下的原生 Cordis Plugin，并在 `forge.json#roots`
 中声明工程入口；运行时由这一入口统一组合。
@@ -21,15 +23,7 @@ pnpm exec forgeax project package --output release/empty-game-web.zip --json
 
 ## 可选的 View
 
-在游戏根目录打开 SDK 自带的 View：
-
-```sh
-node /absolute/forgeax-sdk/tools/view/start.mjs --project .
-```
-
-保持终端打开，访问返回的 URL。页面会报告后端和项目的就绪状态；仅得到 URL 不代表已就绪。
-View 只随 SDK 分发；启动器初始化 SDK 自己的运行环境。Agent 指引见 `skills/forgeax-view-start/SKILL.zh-CN.md`；
-旧项目可查看 SDK 的 `tools/view/skills/` 中的副本。
+在游戏根目录运行 `pnpm exec forgeax project view --json`，打开返回的 URL 并确认所选项目。
 
 ## 工程边界
 
@@ -39,7 +33,7 @@ View 只随 SDK 分发；启动器初始化 SDK 自己的运行环境。Agent �
 | `assets/` | 唯一内容根；放场景、`*.pack.ts`、`*.pack.json`、外部文件与其 `.meta.json`。 |
 | `assets/__tests__/` | 与 author source 就近的 Vitest 测试。 |
 | `assets/world/world.scene.pack.json` | 可直接加载的零实体场景资产，作为 2D 或其他类型游戏的内容起点。 |
-| `docs/feedback.md` | 开发期间确认的 Engine、SDK、构建、资产或浏览器问题。 |
+| `docs/feedback.md` | 开发期间确认的 Engine、构建、资产或浏览器问题。 |
 
 `pack-index.json`、cooked packages、DDC 和 `dist/` 都由构建流程从 author source 重建。外部图片、
 glTF、字体、音频等文件的稳定身份放在同目录 `.meta.json`；程序化内容优先由 `*.pack.ts`

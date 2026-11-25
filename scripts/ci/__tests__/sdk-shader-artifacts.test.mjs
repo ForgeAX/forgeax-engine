@@ -581,6 +581,7 @@ test('only PR SDK packaging opts into Three and declaration reuse', () => {
       '--version',
       'pr-version',
       '--reuse-core-build',
+      '--emit-engine-package',
       ...(profile === 'pr-consumer' ? ['--skip-game-3d-template-cache'] : []),
     ]);
   }
@@ -624,7 +625,7 @@ test('same-head Core only seeds missing declaration inputs without importing JS 
   }
 });
 
-test('Three material preparation projects the admitted cooked publications without loading the compiler', () => {
+test('Three material preparation reuses admitted cooked and template publications', () => {
   const root = mkdtempSync(join(tmpdir(), 'sdk-three-materials-'));
   try {
     const recipe = join(root, 'scripts', 'build-materials.mjs');
@@ -634,13 +635,10 @@ test('Three material preparation projects the admitted cooked publications witho
     writeFileSync(recipe, readFileSync('packages/three/scripts/build-materials.mjs'));
     const inputs = new Map([
       ['materials.mjs', 'materialPrograms'],
-      ['physical.mjs', 'physicalIndex'],
+      ['physical.mjs', 'physicalTemplates'],
     ]);
     for (const [file, name] of inputs)
-      writeFileSync(
-        join(core, file),
-        `export const ${name} = ${name === 'physicalIndex' ? '{"forgeax-three-physical":"KLUv/AAAA"}' : '"KLUv/AAAA"'};\n`,
-      );
+      writeFileSync(join(core, file), `export const ${name} = "KLUv/AAAA";\n`);
     const run = () =>
       execFileSync(process.execPath, [recipe], {
         env: { ...process.env, FORGEAX_THREE_PROGRAM_INPUT: core },
@@ -650,13 +648,10 @@ test('Three material preparation projects the admitted cooked publications witho
     for (const [file, name] of inputs)
       assert.ok(
         readFileSync(join(root, 'src/generated', file), 'utf8').includes(
-          `export const ${name} = ${name === 'physicalIndex' ? '{"forgeax-three-physical":"KLUv/AAAA"}' : '"KLUv/AAAA"'};`,
+          `export const ${name} = "KLUv/AAAA";`,
         ),
       );
-    writeFileSync(
-      join(core, 'physical.mjs'),
-      'export const physicalIndex = {"forgeax-three-physical":"invalid"};\n',
-    );
+    writeFileSync(join(core, 'physical.mjs'), 'export const physicalTemplates = "invalid";\n');
     assert.throws(run, /Invalid prepared Three program publication/);
   } finally {
     rmSync(root, { recursive: true, force: true });

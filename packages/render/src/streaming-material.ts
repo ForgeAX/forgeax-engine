@@ -1,10 +1,10 @@
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { materialSurfaceModel } from './material-program-selection';
 import {
   materialUsesSpriteGeometry,
   runtimeMaterialShaderIdForMaterial,
 } from './material-resource';
 import { isMediumMaterial } from './record/material-pass-selection';
-import { materialSurfaceModel } from './render-system-extract';
 import { standardTransmissionValue } from './transmission/projection';
 
 export type StreamingMaterialRejection =

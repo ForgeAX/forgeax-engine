@@ -334,7 +334,9 @@ async function fixture(storageBuffer: boolean, published = false) {
   }
   expect(initialReady, JSON.stringify(errors)).toBe(true);
   expect(
-    uploads.some((row) => row.values.length === 32),
+    uploads.some(
+      (row) => row.label === 'skin-task-data' && row.values.length === (storageBuffer ? 72 : 32),
+    ),
     'Ordinary baseline must actually request the two-joint Skin palette',
   ).toBe(true);
   return {
@@ -680,7 +682,8 @@ it('roundtrips owned Worker mesh buffers/static Skin facts and records only the 
     expect(prepared.recordStageLane(after, f.entity).unwrap()).toBeDefined();
     expect(
       f.uploads.some(
-        (row) => row.label === 'skin-task-data' && row.values.length === 32 && row.values[12] === 4,
+        (row) =>
+          row.label === 'skin-task-data' && row.values.length === 72 && row.values[8 + 12] === 4,
       ),
     ).toBe(true);
     expect(prepared.recordStageLane(before, f.entity).ok).toBe(false);
@@ -735,7 +738,8 @@ it.each([
     });
     expect(
       f.uploads.some(
-        (row) => row.label === 'skin-task-data' && row.values.length === 32 && row.values[12] === 4,
+        (row) =>
+          row.label === 'skin-task-data' && row.values.length === 72 && row.values[8 + 12] === 4,
       ),
     ).toBe(true);
   } finally {

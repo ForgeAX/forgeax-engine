@@ -299,18 +299,33 @@ describe('main-pass material pipeline cache', () => {
         undefined,
         projection,
       );
+    // A device callback may resolve an unrelated draw while this specialization is pending.
+    lookup.mockImplementationOnce(() => {
+      expect(
+        requests.resolveMaterialPipeline(
+          'test::nested',
+          {},
+          'triangle-list',
+          'uint16',
+          undefined,
+          undefined,
+          projection,
+        ),
+      ).toBe(general);
+      return null;
+    });
     // A frame that just turned simple (e.g. the light stopped casting) is not held.
     expect(resolve()).toBe(general);
     const requested = lookup.mock.calls.map((call) => String(call[5]));
     expect(requested[0]).toContain(`DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}`);
     expect(requested[0]).toContain(`LEAN_LIGHTING=${leanLighting}`);
-    expect(requested[1]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
-    expect(requested[1]).not.toContain('LEAN_LIGHTING=true');
+    expect(requested[2]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(requested[2]).not.toContain('LEAN_LIGHTING=true');
     // The fallback is not memoized under the simple key.
     simpleReady = true;
     expect(resolve()).toBe(simple);
     expect(resolve()).toBe(simple);
-    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(lookup).toHaveBeenCalledTimes(4);
   });
 });
 

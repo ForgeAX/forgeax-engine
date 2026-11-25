@@ -28,7 +28,10 @@ export interface RenderResourceScope extends AssetReader {
   readonly world?: World;
   /** Current accepted packet revision, present on a publication receiver. */
   readonly revision?: number;
-  readonly drawParameters?: ((entity: number) => readonly number[] | undefined) | undefined;
+  /** Native readers may fill the caller's eight-word scratch. Always consume the returned row. */
+  readonly drawParameters?:
+    | ((entity: number, into?: number[]) => readonly number[] | undefined)
+    | undefined;
   assetRevision(handle: number): number | undefined;
   resolveMaterialTemplate?(
     handle: number,
@@ -69,10 +72,7 @@ export function worldRenderResources(world: World): RenderResourceScope {
             }),
           )
         : records.resolveAsset(handle, revision),
-    assetRevision: (handle) => {
-      const version = records?.version(handle);
-      return version?.ok ? version.value : undefined;
-    },
+    assetRevision: (handle) => records?.revisionOf(handle),
     get time() {
       return world.getResource(Time);
     },
@@ -103,11 +103,11 @@ export function worldRenderResources(world: World): RenderResourceScope {
   };
   worldResources.set(world, view);
   return view;
-  function readParameters(entity: number): readonly number[] | undefined {
+  function readParameters(entity: number, into?: number[]): readonly number[] | undefined {
     const component = drawParameterComponent(world);
     return component === undefined
       ? undefined
-      : readDrawParameters(world, component, entity as EntityHandle);
+      : readDrawParameters(world, component, entity as EntityHandle, into);
   }
 }
 

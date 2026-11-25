@@ -55,19 +55,13 @@ function updateSnapshot(value: RenderableSnapshot) {
   };
 }
 
-it('selects the typed AO input pipeline for material-normal rasterization', () => {
-  const pipelineFor = vi.fn();
-  const aoInputPipelineFor = vi.fn();
-  const aoInputMsaaPipelineFor = vi.fn();
-  const batch = {
-    pipelines: { pipelineFor, aoInputPipelineFor, aoInputMsaaPipelineFor },
-  } as unknown as ProjectedRasterClass;
-
-  expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
-  expect(selectRasterPipeline(batch, 'fs_ao_input_msaa', false)).toBe(aoInputMsaaPipelineFor);
+it('selects the dedicated colorless coverage pipeline', () => {
+  const predepthPipelineFor = vi.fn();
+  const batch = { pipelines: { predepthPipelineFor } } as unknown as ProjectedRasterClass;
+  expect(selectRasterPipeline(batch, 'fs_depth_masked', false)).toBe(predepthPipelineFor);
 });
 
-it('keeps an authored Forward program without AO entries out of the GPU scene prepasses', () => {
+it('keeps an authored Forward program without proven depth coverage out of the GPU scene prepasses', () => {
   const cls = {
     artifact: {
       material: 'game::filmic',
@@ -80,10 +74,9 @@ it('keeps an authored Forward program without AO entries out of the GPU scene pr
     batch: { visibleCapacity: 1, batchId: 0, key: {} },
   } as unknown as import('../gpu-driven/live-raster').LiveRasterBatch;
   const classes = new Map([['test', cls]]);
-  expect(rasterClassFor(classes, true, live, undefined, 'fs_ao_input')).toBeUndefined();
-  expect(rasterClassFor(classes, true, live, undefined, 'fs_ao_input_msaa')).toBeUndefined();
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_depth_masked')).toBeUndefined();
   expect(rasterClassFor(classes, true, live, undefined, 'fs_main')).toBe(cls);
-  expect(rasterClassFor(classes, false, live, undefined, 'fs_ao_input')).toBe(cls);
+  expect(rasterClassFor(classes, false, live, undefined, 'fs_depth_masked')).toBe(cls);
 });
 
 it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {

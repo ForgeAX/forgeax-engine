@@ -1201,7 +1201,7 @@ export interface RenderOutputInspection {
   readonly surfaceProfile?: 'dual-view' | 'raw-only';
   /** Requested vs effective output colour space; a fallback carries its structured cause. */
   readonly colorSpace: OutputColorSpaceReport;
-  /** Pass names from the same committed graph as the output facts. */
+  /** Ordered declarations in the committed output graph, including subgraph declarations. */
   readonly graphPassNames: readonly string[];
   /** Detached descriptor for the graph-owned output target, when present. */
   readonly standardOutputColor?: RenderStandardOutputColorInspection;
@@ -1414,6 +1414,7 @@ export interface RenderInspection {
   readonly meshMaterialBindings: readonly MeshMaterialBindingObservation[];
   /** Final-submit Standard IBL binding-chain receipt when a Standard pass is recorded. */
   readonly iblBinding?: IblBindingInspection;
+  /** Work issued by the last submitted frame, including native commands issued inside a subgraph. */
   readonly perFramePassNames: readonly string[];
   readonly bindGroupCounts: {
     readonly createBindGroup: number;

@@ -1,11 +1,11 @@
 import type {
   GraphBuffer,
+  GraphTextureView,
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
-  BindGroupLayout,
   BindGroupLayoutEntry,
   PipelineLayout,
   RenderPipeline,
@@ -28,6 +28,7 @@ import {
   type RenderPipelineFrame,
   type RenderPipelineTarget,
 } from '../render-pipeline';
+import { SCREEN_AO_UNIFORM_BYTES } from '../ssao-uniform';
 import { forwardPunctualShadowPlan } from './forward-punctual-shadow-plan';
 import {
   currentForwardShadowReceiver,
@@ -46,12 +47,18 @@ interface ForwardShadowProjectionInput {
   readonly admission: Extract<ForwardShadowAdmission, { mode: 'screen' }>;
   readonly depth: RenderPipelineTarget;
   readonly ao?: RenderPipelineTarget | undefined;
+  readonly inlineAo?: ForwardInlineSsao | undefined;
   readonly directional?: RenderPipelineTarget | undefined;
   readonly point?: RenderPipelineTarget | undefined;
   readonly spot?: RenderPipelineTarget | undefined;
   readonly lightData?: GraphBuffer | undefined;
   readonly sunSize: number;
   readonly spotSize: number;
+}
+
+export interface ForwardInlineSsao {
+  readonly parameters: GraphBuffer;
+  readonly hzb: GraphTextureView;
 }
 
 /** Dimensions and mask inputs belong to the installed Pass. Filtering and view fade
@@ -71,16 +78,20 @@ export function addForwardDirectionalShadow(
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const { admission, lightData } = input;
   const ao = admission.ambientOcclusion ? input.ao : undefined;
-  const neutral = input.directional === undefined && lightData === undefined;
+  const inlineAo = admission.ambientOcclusion ? input.inlineAo : undefined;
+  const neutral =
+    input.directional === undefined &&
+    !admission.contact &&
+    lightData === undefined &&
+    ao === undefined &&
+    inlineAo === undefined;
   const output = createRenderPipelineTarget(graph, FORWARD_DIRECTIONAL_SHADOW_PASS, {
     format: admission.format,
-    size: neutral && ao === undefined ? { width: 1, height: 1 } : admission,
+    size: neutral ? { width: 1, height: 1 } : admission,
   });
   if (!output.ok) return output;
-  const projectAo =
-    ao === undefined ? undefined : recordProjectionAo(neutral ? undefined : input.depth.format);
-  if (neutral) return addNeutralProjectionMask(graph, output.value, ao, projectAo);
-  return addShadowProjection(graph, input, output.value, ao, projectAo);
+  if (neutral) return addNeutralProjectionMask(graph, output.value);
+  return addShadowProjection(graph, input, output.value, ao, inlineAo);
 }
 
 function addShadowProjection(
@@ -88,23 +99,20 @@ function addShadowProjection(
   input: ForwardShadowProjectionInput,
   output: RenderPipelineTarget,
   ao: RenderPipelineTarget | undefined,
-  projectAo: ReturnType<typeof recordProjectionAo> | undefined,
+  inlineAo: ForwardInlineSsao | undefined,
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const { admission, point, spot, lightData } = input;
+  const drawFullscreen = admission.contact === true || inlineAo !== undefined || ao !== undefined;
   const depth = graph.view(input.depth.texture, { dimension: '2d', aspect: 'depth-only' });
   if (!depth.ok) return depth;
   const view = sceneViewImport(graph)();
   if (!view.ok) return view;
-  const casterPolicy =
-    input.directional === undefined
-      ? undefined
-      : graph.importBuffer(
-          'forward-shadow-caster-policy',
-          uniformDescriptor(SHADOW_CASTER_BUFFER_SIZE),
-          (frame) =>
-            (frame as _InternalRenderPipelineContext).pipelineState.shadowCasterCascadeBuffer,
-        );
-  if (casterPolicy?.ok === false) return casterPolicy;
+  const casterPolicy = graph.importBuffer(
+    'forward-shadow-caster-policy',
+    uniformDescriptor(SHADOW_CASTER_BUFFER_SIZE),
+    (frame) => (frame as _InternalRenderPipelineContext).pipelineState.shadowCasterCascadeBuffer,
+  );
+  if (!casterPolicy.ok) return casterPolicy;
   const shadowParams =
     !admission.punctual?.point && admission.punctual?.spot !== 'uniform'
       ? undefined
@@ -124,7 +132,17 @@ function addShadowProjection(
     accesses: [{ resource: matrixBuffer.value, usage: 'copy-dst' }],
     encodeDirect: (_encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
-      const staging = matrices.update(internal, recordingShadowAdmission(internal, admission));
+      const active = recordingShadowAdmission(internal, admission);
+      const staging = matrices.update(internal, active);
+      staging.set(
+        [
+          Number(input.directional !== undefined),
+          Number(active.contact === true),
+          (frame.camera.temporal?.temporalFrameIndex ?? 0) % 64,
+          inlineAo !== undefined ? 1 : ao !== undefined ? 2 : 0,
+        ],
+        staging.length - 4,
+      );
       frame.runtime.device.queue
         .writeBuffer(resources.buffer(matrixBuffer.value).unwrap(), 0, staging)
         .unwrap();
@@ -136,9 +154,13 @@ function addShadowProjection(
     accesses: [
       { resource: view.value, usage: 'uniform-read' },
       { resource: matrixBuffer.value, usage: 'uniform-read' },
-      ...(casterPolicy === undefined
+      { resource: casterPolicy.value, usage: 'uniform-read' },
+      ...(inlineAo === undefined
         ? []
-        : [{ resource: casterPolicy.value, usage: 'uniform-read' as const }]),
+        : [
+            { resource: inlineAo.parameters, usage: 'uniform-read' as const },
+            { resource: inlineAo.hzb, usage: 'sampled-read' as const },
+          ]),
       ...[input.directional, point, spot, ao].flatMap((target) =>
         target === undefined ? [] : [{ resource: target.view, usage: 'sampled-read' as const }],
       ),
@@ -165,17 +187,16 @@ function addShadowProjection(
     },
     encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
-      program ??= prepareForwardShadowProjection(internal, input);
+      program ??= prepareForwardShadowProjection(internal, input, drawFullscreen);
       const current = program;
       const device = frame.runtime.device;
       const viewBuffer = resources.buffer(view.value).unwrap();
-      const casterBuffer =
-        casterPolicy === undefined ? undefined : resources.buffer(casterPolicy.value).unwrap();
+      const casterBuffer = resources.buffer(casterPolicy.value).unwrap();
       const directional =
         input.directional === undefined
-          ? undefined
+          ? internal.pipelineState.shadowArrayFallbackTextureView
           : resources.textureView(input.directional.view).unwrap();
-      if (directional !== undefined)
+      if (input.directional !== undefined)
         internal.frameState.frameOutputs.directionalShadowView = directional;
       const sceneDepth = resources.textureView(depth.value).unwrap();
       const pointDepth =
@@ -186,11 +207,26 @@ function addShadowProjection(
         shadowParams === undefined ? undefined : resources.buffer(shadowParams.value).unwrap();
       const rowBuffer = lightData === undefined ? undefined : resources.buffer(lightData).unwrap();
       const screenToShadow = resources.buffer(matrixBuffer.value).unwrap();
+      const aoParameters =
+        inlineAo === undefined ? screenToShadow : resources.buffer(inlineAo.parameters).unwrap();
+      const aoTexture =
+        inlineAo !== undefined
+          ? resources.textureView(inlineAo.hzb).unwrap()
+          : ao === undefined
+            ? frame.pipelineState.defaultWhiteTextureView
+            : resources.textureView(ao.view).unwrap();
       const viewGroup = getOrCreateFromChain(
         current.viewGroups,
-        [viewBuffer, casterBuffer, directional, pointDepth, spotDepth, params].filter(
-          (resource) => resource !== undefined,
-        ),
+        [
+          viewBuffer,
+          casterBuffer,
+          directional,
+          pointDepth,
+          spotDepth,
+          params,
+          aoParameters,
+          aoTexture,
+        ].filter((resource) => resource !== undefined),
         'forward-shadow-projection-view',
         () =>
           device
@@ -205,15 +241,22 @@ function addShadowProjection(
                   },
                 },
                 { binding: 4, resource: { kind: 'sampler', value: current.sampler } },
-                ...(directional === undefined || casterBuffer === undefined
-                  ? []
-                  : [
-                      textureEntry(3, directional),
-                      {
-                        binding: 7,
-                        resource: { kind: 'buffer' as const, value: { buffer: casterBuffer } },
-                      },
-                    ]),
+                textureEntry(3, directional),
+                {
+                  binding: 7,
+                  resource: {
+                    kind: 'buffer',
+                    value: { buffer: casterBuffer, size: SHADOW_CASTER_BUFFER_SIZE },
+                  },
+                },
+                {
+                  binding: 14,
+                  resource: {
+                    kind: 'buffer',
+                    value: { buffer: aoParameters, size: SCREEN_AO_UNIFORM_BYTES },
+                  },
+                },
+                textureEntry(16, aoTexture),
                 ...(pointDepth === undefined ? [] : [textureEntry(5, pointDepth)]),
                 ...(spotDepth === undefined ? [] : [textureEntry(8, spotDepth)]),
                 ...(params === undefined
@@ -242,17 +285,10 @@ function addShadowProjection(
               entries: [
                 textureEntry(0, sceneDepth),
                 { binding: 1, resource: { kind: 'buffer', value: { buffer: screenToShadow } } },
-                ...(current.projectionDepthSampler === undefined
-                  ? []
-                  : [
-                      {
-                        binding: 3,
-                        resource: {
-                          kind: 'sampler' as const,
-                          value: current.projectionDepthSampler,
-                        },
-                      },
-                    ]),
+                {
+                  binding: 3,
+                  resource: { kind: 'sampler', value: current.projectionDepthSampler },
+                },
                 ...(rowBuffer === undefined
                   ? []
                   : [
@@ -269,7 +305,14 @@ function addShadowProjection(
       pass.setBindGroup(0, viewGroup, [internal.viewBindGroupDynamicOffset ?? 0]);
       pass.setBindGroup(1, geometryGroup);
       if (current.directional !== undefined) {
-        pass.setViewport(0, 0, admission.width, admission.height, matrices.farDepth(internal), 1);
+        pass.setViewport(
+          0,
+          0,
+          admission.width,
+          admission.height,
+          drawFullscreen ? 0 : matrices.farDepth(internal),
+          1,
+        );
         pass.setPipeline(current.directional);
         pass.draw(3);
       }
@@ -282,11 +325,6 @@ function addShadowProjection(
           matrices,
           bounds,
         );
-      if (ao !== undefined && projectAo !== undefined) {
-        pass.setViewport(0, 0, admission.width, admission.height, 0, 1);
-        pass.setScissorRect(0, 0, admission.width, admission.height);
-        projectAo(pass, internal, resources.textureView(ao.view).unwrap());
-      }
     },
   });
   return added.ok ? ok(output) : added;
@@ -295,14 +333,9 @@ function addShadowProjection(
 function addNeutralProjectionMask(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   output: RenderPipelineTarget,
-  ao: RenderPipelineTarget | undefined,
-  projectAo: ReturnType<typeof recordProjectionAo> | undefined,
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const pass = graph.addRasterPass(FORWARD_DIRECTIONAL_SHADOW_PASS, {
-    accesses: [
-      ...(ao === undefined ? [] : [{ resource: ao.view, usage: 'sampled-read' as const }]),
-      { resource: output.view, usage: 'color-attachment' },
-    ],
+    accesses: [{ resource: output.view, usage: 'color-attachment' }],
     colorAttachments: [
       {
         view: output.view,
@@ -311,66 +344,9 @@ function addNeutralProjectionMask(
         clearValue: { r: 1, g: 1, b: 1, a: 1 },
       },
     ],
-    encodeDirect: (encoder, frame, resources) => {
-      if (ao !== undefined && projectAo !== undefined)
-        projectAo(
-          encoder,
-          frame as _InternalRenderPipelineContext,
-          resources.textureView(ao.view).unwrap(),
-        );
-    },
+    encodeDirect: () => {},
   });
   return pass.ok ? ok(output) : pass;
-}
-
-function recordProjectionAo(depth: RenderPipelineTarget['format'] | undefined) {
-  let program: { pipeline: RenderPipeline; layout: BindGroupLayout } | undefined;
-  const groups = new WeakMap<object, BindGroup>();
-  const label = 'forward-shadow-ao-alpha';
-  return (pass: RhiRenderPassEncoder, frame: _InternalRenderPipelineContext, ao: TextureView) => {
-    const { device } = frame.runtime;
-    if (program === undefined) {
-      const module = forwardShadowProjectionModule(frame);
-      const layout = device
-        .createBindGroupLayout({
-          entries: [{ binding: 9, visibility: 2, texture: { sampleType: 'unfilterable-float' } }],
-        })
-        .unwrap();
-      const pipeline = device
-        .createRenderPipeline({
-          label,
-          layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
-          vertex: { module, entryPoint: 'vs_main', buffers: [] },
-          fragment: {
-            module,
-            entryPoint: 'fs_ao_alpha',
-            targets: [{ format: 'rgba8unorm', writeMask: 0x8 }],
-          },
-          ...(depth === undefined
-            ? {}
-            : {
-                depthStencil: {
-                  format: depth,
-                  depthWriteEnabled: false,
-                  depthCompare: 'always' as const,
-                },
-              }),
-        })
-        .unwrap();
-      program = { pipeline, layout };
-    }
-    const { pipeline, layout } = program;
-    const group = getOrCreateFromChain(
-      groups,
-      [ao],
-      label,
-      () => device.createBindGroup({ layout, entries: [textureEntry(9, ao)] }).unwrap(),
-      frame.bindGroupCounts,
-    );
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, group);
-    pass.draw(3);
-  };
 }
 
 function uniformDescriptor(size: number) {
@@ -389,16 +365,14 @@ function viewEntries(input: ForwardShadowProjectionInput): BindGroupLayoutEntry[
       buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: VIEW_UNIFORM_BYTES },
     },
     { binding: 4, visibility: 2, sampler: { type: 'comparison' } },
-    ...(input.directional === undefined
-      ? []
-      : [
-          {
-            binding: 3,
-            visibility: 2,
-            texture: { sampleType: 'depth' as const, viewDimension: '2d-array' as const },
-          },
-          { binding: 7, visibility: 2, buffer: { type: 'uniform' as const } },
-        ]),
+    { binding: 3, visibility: 2, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
+    { binding: 7, visibility: 2, buffer: { type: 'uniform' } },
+    {
+      binding: 14,
+      visibility: 2,
+      buffer: { type: 'uniform', minBindingSize: SCREEN_AO_UNIFORM_BYTES },
+    },
+    { binding: 16, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
     ...(input.point === undefined
       ? []
       : [
@@ -452,7 +426,11 @@ function makeProjectionPipeline(
       depthStencil: {
         format: depthFormat,
         depthWriteEnabled: false,
-        depthCompare: always ? 'always' : writeMask === undefined ? 'less-equal' : 'greater-equal',
+        depthCompare: always
+          ? 'always'
+          : fragment === 'fs_main' || fragment === 'fs_directional_rgba'
+            ? 'less-equal'
+            : 'greater-equal',
       },
     })
     .unwrap();
@@ -477,6 +455,7 @@ function forwardShadowProjectionModule(frame: _InternalRenderPipelineContext) {
 function prepareForwardShadowProjection(
   frame: _InternalRenderPipelineContext,
   input: ForwardShadowProjectionInput,
+  drawFullscreen: boolean,
 ) {
   const sampler = frame.pipelineState.perPassResources.shadowSampler;
   if (sampler === null)
@@ -488,12 +467,9 @@ function prepareForwardShadowProjection(
   const device = frame.runtime.device;
   const module = forwardShadowProjectionModule(frame);
   const view = device.createBindGroupLayout({ entries: viewEntries(input) }).unwrap();
-  const projectionDepthSampler =
-    input.directional === undefined
-      ? undefined
-      : device
-          .createSampler({ addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
-          .unwrap();
+  const projectionDepthSampler = device
+    .createSampler({ addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
+    .unwrap();
   const geometry = device
     .createBindGroupLayout({
       entries: [
@@ -503,9 +479,7 @@ function prepareForwardShadowProjection(
           visibility: 3,
           buffer: { type: 'uniform', minBindingSize: FORWARD_SHADOW_MATRIX_BYTES },
         },
-        ...(projectionDepthSampler === undefined
-          ? []
-          : [{ binding: 3, visibility: 2, sampler: { type: 'non-filtering' as const } }]),
+        { binding: 3, visibility: 2, sampler: { type: 'non-filtering' } },
         ...(input.lightData === undefined
           ? []
           : [{ binding: 2, visibility: 3, buffer: { type: 'read-only-storage' as const } }]),
@@ -515,7 +489,7 @@ function prepareForwardShadowProjection(
   const layout = device.createPipelineLayout({ bindGroupLayouts: [view, geometry] }).unwrap();
   const { format } = input.admission;
   const directional =
-    input.directional === undefined
+    input.directional === undefined && !drawFullscreen
       ? undefined
       : makeProjectionPipeline(
           device,
@@ -525,6 +499,9 @@ function prepareForwardShadowProjection(
           'vs_main',
           format === 'r8unorm' ? 'fs_main' : 'fs_directional_rgba',
           input.depth.format,
+          format === 'r8unorm' ? 0x1 : 0x9,
+          'none',
+          drawFullscreen,
         );
   const local = new Map<string, RenderPipeline>();
   const punctual = (

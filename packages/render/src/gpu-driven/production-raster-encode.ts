@@ -16,6 +16,11 @@ import { viewForPipeline } from '../environment/bindings';
 import { materialLayoutSlotKey, standardPipelineMaterialLayoutIndex } from '../pbr-pipeline';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import {
+  bindRasterOffset,
+  EMPTY_GEOMETRY_OFFSETS,
+  rasterMaterialOffset,
+} from '../record/geometry-bind-offsets';
+import {
   type PrimitiveReflection,
   samePrimitiveReflection,
 } from '../reflection/primitive-bindings';
@@ -39,6 +44,7 @@ import {
 } from './production-raster-classes';
 import type { ProjectedRasterGraph } from './production-raster-frame';
 import type { RasterMeshBinding } from './raster-mesh-bindings';
+import { pipelineRasterWindow } from './raster-window-layout';
 import type {
   FixedRasterInputs,
   RasterRunRecording,
@@ -59,12 +65,6 @@ function requireViewSkinTask(view: GpuDrivenView) {
   return task;
 }
 
-const ZERO_OFFSET = Object.freeze([0]);
-
-function meshDynamicOffsets(deformation: 'rigid' | 'skin', view: GpuDrivenView): readonly number[] {
-  return deformation === 'skin' ? [requireViewSkinTask(view).auxiliaryOffset] : [];
-}
-
 /**
  * The bindings one indirect encode has already set on its pass. Without a
  * bundle descriptor every change is set directly on the pass; with one, the
@@ -75,10 +75,12 @@ function meshDynamicOffsets(deformation: 'rigid' | 'skin', view: GpuDrivenView):
 export class IndirectPassBindings {
   private boundPipeline: RenderPipeline | undefined;
   private material: BindGroup | undefined;
-  private materialOffset = -1;
-  private dynamicMaterialOffset?: Uint32Array;
+  private materialOffset: number | undefined;
+  private offsetWords?: Uint32Array;
   private mesh: BindGroup | undefined;
   private deformation: 'rigid' | 'skin' | undefined;
+  private boundSkinOffset: number | undefined;
+  private skinOffsets: number[] | undefined;
   private visible: BindGroup | undefined;
   private vertexKey: GraphBuffer | Buffer | undefined;
   private indexKey: GraphBuffer | Buffer | undefined;
@@ -154,22 +156,25 @@ export class IndirectPassBindings {
     if (this.direct) {
       this.pass.setPipeline(pipeline);
       if (previous !== this.projectedView)
-        this.pass.setBindGroup(0, this.projectedView, [this.viewOffset, 0]);
+        bindRasterOffset(
+          this.pass,
+          0,
+          this.projectedView,
+          this.viewOffset,
+          this.wordsFor(this.viewOffset),
+        );
     }
     this.boundPipeline = pipeline;
   }
 
-  bindMaterial(group: BindGroup, offset: number): void {
+  private wordsFor(offset: number | undefined): Uint32Array | undefined {
+    if (offset !== undefined && offset !== 0) this.offsetWords ??= new Uint32Array(1);
+    return this.offsetWords;
+  }
+
+  bindMaterial(group: BindGroup, offset: number | undefined): void {
     if (this.material === group && this.materialOffset === offset) return;
-    if (this.direct) {
-      if (offset === 0) this.pass.setBindGroup(1, group, ZERO_OFFSET);
-      else {
-        this.dynamicMaterialOffset ??= new Uint32Array(1);
-        const offsets = this.dynamicMaterialOffset;
-        offsets[0] = offset;
-        this.pass.setBindGroup(1, group, offsets, 0, 1);
-      }
-    }
+    if (this.direct) bindRasterOffset(this.pass, 1, group, offset, this.wordsFor(offset));
     this.material = group;
     this.materialOffset = offset;
   }
@@ -202,9 +207,10 @@ export class IndirectPassBindings {
   observeRunMaterial(
     slot: number,
     group: BindGroup,
-    offset: number,
+    offset: number | undefined,
     program: string,
     reflection: PrimitiveReflection | undefined,
+    uniformRequired?: boolean,
   ): void {
     const run = this.run;
     if (run === undefined) return;
@@ -212,12 +218,13 @@ export class IndirectPassBindings {
     if (
       prior !== undefined &&
       (prior.program !== program ||
+        prior.uniformRequired !== uniformRequired ||
         prior.group !== group ||
         prior.offset !== offset ||
         !samePrimitiveReflection(prior.reflection, reflection))
     )
       run.materialConflict = true;
-    run.materials.set(slot, { group, offset, program, reflection });
+    run.materials.set(slot, { group, offset, program, reflection, uniformRequired });
   }
 
   /** Current pass identities already witness Skin buffers, ranges and offsets. */
@@ -236,10 +243,22 @@ export class IndirectPassBindings {
   }
 
   bindMesh(group: BindGroup, deformation: 'rigid' | 'skin', view: GpuDrivenView): void {
-    if (this.mesh === group && this.deformation === deformation) return;
-    if (this.direct) this.pass.setBindGroup(2, group, meshDynamicOffsets(deformation, view));
+    const offset = deformation === 'skin' ? requireViewSkinTask(view).auxiliaryOffset : undefined;
+    if (this.mesh === group && this.deformation === deformation && this.boundSkinOffset === offset)
+      return;
+    if (this.direct) this.pass.setBindGroup(2, group, this.meshOffsets(offset));
     this.mesh = group;
     this.deformation = deformation;
+    this.boundSkinOffset = offset;
+  }
+
+  // A direct command reads synchronously; retained recordings take their own offset snapshot.
+  private meshOffsets(skinOffset: number | undefined): readonly number[] {
+    if (skinOffset === undefined) return EMPTY_GEOMETRY_OFFSETS;
+    this.skinOffsets ??= [0];
+    const words = this.skinOffsets;
+    words[0] = skinOffset;
+    return words;
   }
 
   /** Stock recording binds live residency-owned meshes like direct draws. */
@@ -364,7 +383,9 @@ export class IndirectPassBindings {
     observed.material = material;
     observed.materialOffset = this.materialOffset;
     observed.mesh = mesh;
-    observed.meshOffsets = meshDynamicOffsets(deformation, view);
+    observed.meshOffsets = this.meshOffsets(
+      deformation === 'skin' ? requireViewSkinTask(view).auxiliaryOffset : undefined,
+    );
     observed.vertex = vertex;
     observed.vertexStreams = this.physicalVertexStreams;
     observed.index = this.drawIndex;
@@ -443,12 +464,14 @@ export function visibleWindowsFor(
   live: LiveRasterBatch,
   batch: ProjectedRasterClass,
   call: RasterEncodeCall,
+  pipeline: RenderPipeline,
 ): readonly BindGroup[] {
   return preparedVisibleWindows(
     live,
     batch,
     call.phase === 'late' ? 'late' : 'early',
     call.visibleRegionBase,
+    pipeline,
   );
 }
 
@@ -457,8 +480,12 @@ export function preparedVisibleWindows(
   batch: ProjectedRasterClass,
   windowPhase: 'early' | 'late',
   visibleBase: number,
+  pipeline: RenderPipeline,
 ): readonly BindGroup[] {
-  const retained = live.visibleBindGroups?.[windowPhase];
+  const layout = pipelineRasterWindow(pipeline);
+  const variants = live.visibleBindGroups;
+  const phaseWindows = variants?.get(layout);
+  const retained = phaseWindows?.[windowPhase];
   if (retained !== undefined) return retained;
   const levelStride = batchLevelStride(live.batch);
   const levelCount = batchLodLevelCount(live.batch);
@@ -467,13 +494,16 @@ export function preparedVisibleWindows(
     const resolved = batch.raster.visibleWindowBindGroup(
       visibleBase + live.batch.visibleBase + level * levelStride,
       live.batch.visibleAllocationCapacity ?? live.batch.visibleCapacity,
+      undefined,
+      layout,
     );
     if (!resolved.ok) throw resolved.error;
     resolvedWindows.push(resolved.value);
   }
-  live.visibleBindGroups ??= {};
   const windows = prepareRasterWindows(resolvedWindows);
-  live.visibleBindGroups[windowPhase] = windows;
+  const next = new Map(variants);
+  next.set(layout, { ...phaseWindows, [windowPhase]: windows });
+  live.visibleBindGroups = next;
   return windows;
 }
 
@@ -631,20 +661,22 @@ export function bindMaterialSlot(
       hint: 'keep GPU-driven material selection on the main-pass producer contract',
     });
   }
+  const uniformRequired = batch.artifact.program.materialUniformRequired;
+  const offset = rasterMaterialOffset(
+    prepared.byteOffset,
+    prepared.dynamicOffsetCount,
+    uniformRequired,
+  );
   bindings.observeRunMaterial(
     materialLayoutSlotKey(globalMaterialSlot, standardMaterialLayoutIndex),
     prepared.group,
-    prepared.byteOffset,
+    offset,
     program,
     prepared.reflection,
+    uniformRequired,
   );
-  const offset = rasterMaterialOffset(batch, prepared.byteOffset);
   bindings.bindMaterial(prepared.group, offset);
   return prepared;
-}
-
-export function rasterMaterialOffset(batch: ProjectedRasterClass, byteOffset: number): number {
-  return batch.artifact.program.materialUniformRequired === false ? 0 : byteOffset;
 }
 
 /** One stock pass's ordered physical facts; storage migration uses the same layout. */

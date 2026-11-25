@@ -112,7 +112,7 @@ export async function createMaterialPanel(input: {
     (['normal', 'river-normal'] as const).map(async (key) => ({
       key,
       guid: EngineContent.water.textures[key],
-      handle: (await assets.load(EngineContent.water.textures[key], 'texture')).unwrap(),
+      handle: (await assets.load(EngineContent.water.textures[key], 'gpu-texture')).unwrap(),
     })),
   );
   const originals = new Map(

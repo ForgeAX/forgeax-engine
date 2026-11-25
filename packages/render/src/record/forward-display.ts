@@ -5,10 +5,14 @@ import { renderInternalSize } from '../pipeline/render-extent';
 import {
   addForwardSsao,
   declareForwardSceneTargets,
+  type ForwardSceneTargets,
+  forwardSceneAttachments,
   prepareForwardShadowProjection,
 } from '../pipeline/standard-forward-lane';
-import { finishPremultipliedForwardOutput } from '../pipeline/standard-forward-output';
-import { standardForwardReceiverInputs } from '../pipeline/standard-forward-receiver';
+import {
+  type StandardForwardReceiverInputs,
+  standardForwardReceiverInputs,
+} from '../pipeline/standard-forward-receiver';
 import {
   encodeStandardClusterMembership,
   importForwardShadowLightData,
@@ -19,7 +23,10 @@ import {
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import { addStandardPost } from '../pipeline/standard-post';
 import { standardTopology } from '../pipeline/standard-profile';
-import { addCurrentStandardTranslucency } from '../pipeline/standard-transparency';
+import {
+  addCurrentStandardTranslucency,
+  addStandardTransparentPasses,
+} from '../pipeline/standard-transparency';
 import {
   importRenderPipelineSurface,
   type RenderPipelineBuildError,
@@ -39,7 +46,7 @@ import { addCurrentReflectionProbeFilters } from './reflection-probe-pmrem';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { SceneColorDraws } from './scene-color-draws';
 
-/** Ordered production for a single-sample Forward surface. Cluster storage belongs to
+/** Ordered production for a Forward surface and its resolved scene color. Cluster storage belongs to
  * the current light owner, and all material-dependent phases read the issuing draw rows.
  * The view owns two scene attachments and imports the current display. */
 export function buildForwardDisplay(
@@ -54,7 +61,6 @@ export function buildForwardDisplay(
   capabilities: Pick<import('@forgeax/engine-rhi').RhiCaps, 'rgba16floatRenderable'>,
 ): Result<RenderPipelineGpuDrivenProjection | undefined, RenderPipelineBuildError> {
   const topology = forwardOutput === 'standard' ? standardTopology(input) : input;
-  const observeDisplay = ports.observedTarget !== undefined;
   const endpoint = importRenderPipelineSurface(graph, topology);
   if (!endpoint.ok) return endpoint;
   const size = renderInternalSize(topology);
@@ -63,14 +69,21 @@ export function buildForwardDisplay(
     projectGpuDriven: () => ok(undefined),
     contributeFeatures: () => ok(undefined),
     readOutputDither: currentOutputDither,
-    currentMaterialDepth: true as const,
+    directFinalColor: true as const,
+    ...(ports.samples === 1 ? { currentMaterialDepth: true as const } : {}),
     ...(forwardOutput === 'standard' ? {} : { forwardOutput }),
     capabilities,
     observationCaptureDomains: ports.captureDomains,
   };
-  const scene = declareForwardSceneTargets(context, topology, endpoint.value, false, size);
+  const scene = declareForwardSceneTargets(
+    context,
+    topology,
+    endpoint.value,
+    ports.samples > 1,
+    size,
+  );
   if (!scene.ok) return scene;
-  const { color, depth } = scene.value;
+  const { depth, resolved, msaa } = scene.value;
   const probes = addCurrentReflectionProbeFilters(graph);
   if (!probes.ok) return probes;
   const shadows = addTypedShadowPasses(graph, topology, {
@@ -107,7 +120,11 @@ export function buildForwardDisplay(
       ? ok(undefined)
       : currentGpuRaster(
           graph,
-          { format: ports.color, sampleCount: 1, lateOcclusion: ports.geometry === 'occlusion' },
+          {
+            format: ports.color,
+            sampleCount: ports.samples,
+            lateOcclusion: ports.geometry === 'occlusion',
+          },
           frameState,
           retainIndirectBundles,
         );
@@ -124,13 +141,20 @@ export function buildForwardDisplay(
     needsShadowDepth ? undefined : 'prepass',
   );
   if (!ao.ok) return ao;
-  const receivers = forwardDisplayReceivers(graph, topology, depth, ports.shadowLightBytes, {
-    shadows: shadows.value,
-    ssao: ao.value.ao,
-    cloudShadow: undefined,
-    materialSceneDepth: true,
-    clusterReads: tables.value === null ? [] : standardClusterReadAccesses(tables.value),
-  });
+  const receivers = forwardDisplayReceivers(
+    graph,
+    topology,
+    depth,
+    ports.shadowLightBytes,
+    ao.value.inlineAo,
+    {
+      shadows: shadows.value,
+      ssao: ao.value.ao,
+      cloudShadow: undefined,
+      materialSceneDepth: !msaa,
+      clusterReads: tables.value === null ? [] : standardClusterReadAccesses(tables.value),
+    },
+  );
   if (!receivers.ok) return receivers;
   // The first color raster clears the current background and issues any sky
   // before geometry. Its depth attachment loads only when an early writer ran.
@@ -138,8 +162,7 @@ export function buildForwardDisplay(
     ...receivers.value.opaque,
     fragmentEntryPoint: receivers.value.fragment,
     name: 'main',
-    color,
-    depth,
+    ...forwardSceneAttachments(scene.value),
     colorLoadOp: 'clear',
     depthLoadOp: 'load',
     colorStoreOp: 'store',
@@ -153,30 +176,48 @@ export function buildForwardDisplay(
     gpuDrivenFilter: 'opaque',
   });
   if (!opaque.ok) return opaque;
-  const writer = new SceneColorDraws(color.view, depth.view);
-  const translucent = addCurrentStandardTranslucency(graph, {
-    color,
-    depth,
+  const translucent = addDisplayTranslucency(
+    graph,
+    scene.value,
     size,
-    template: { ...receivers.value.transparent, writer, colorStoreOp: 'store' },
+    receivers.value.transparent,
+    ports,
+    topology,
+  );
+  if (!translucent.ok) return translucent;
+  const output =
+    forwardOutput === 'standard'
+      ? addStandardPost(context, topology, resolved, depth, endpoint.value)
+      : forwardOutput.build(context, topology, resolved, depth, endpoint.value);
+  return output.ok ? projected : output;
+}
+
+/** Single-sample draws share a physical writer. Multisampled draws declare their resolve target. */
+function addDisplayTranslucency(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  scene: ForwardSceneTargets,
+  size: ReturnType<typeof renderInternalSize>,
+  receiver: StandardForwardReceiverInputs,
+  ports: DisplayPorts,
+  topology: RenderPipelineTopology,
+) {
+  if (scene.msaa)
+    return addStandardTransparentPasses(graph, {
+      ...forwardSceneAttachments(scene),
+      size,
+      template: { ...receiver, colorStoreOp: 'auto' },
+      transparency: topology.transparency,
+    });
+  const writer = new SceneColorDraws(scene.color.view, scene.depth.view);
+  const translucent = addCurrentStandardTranslucency(graph, {
+    color: scene.color,
+    depth: scene.depth,
+    size,
+    template: { ...receiver, writer, colorStoreOp: 'store' },
     transparency: undefined,
     currentTransparency: ports.weighted,
   });
-  if (!translucent.ok) return translucent;
-  const ordered = writer.install(graph, 'forward-display-draws');
-  if (!ordered.ok) return ordered;
-  const output =
-    forwardOutput === 'standard'
-      ? addStandardPost(context, topology, color, depth, endpoint.value)
-      : finishPremultipliedForwardOutput(
-          graph,
-          color,
-          endpoint.value.storage,
-          forwardOutput.targetName,
-          true,
-          observeDisplay,
-        );
-  return output.ok ? projected : output;
+  return translucent.ok ? writer.install(graph, 'forward-display-draws') : translucent;
 }
 
 /** Opaque receivers sample the depth-matched mask; later transparent draws sample their own shadows. */
@@ -185,9 +226,9 @@ function forwardDisplayReceivers(
   topology: RenderPipelineTopology,
   depth: RenderPipelineTarget,
   lightBytes: number,
+  inlineAo: import('../pipeline/forward-directional-shadow').ForwardInlineSsao | undefined,
   inputs: Parameters<typeof standardForwardReceiverInputs>[0],
 ) {
-  const transparent = standardForwardReceiverInputs(inputs);
   const lightData = lightBytes === 0 ? undefined : importForwardShadowLightData(graph, lightBytes);
   if (lightData !== undefined && !lightData.ok) return lightData;
   const mask = prepareForwardShadowProjection(
@@ -197,8 +238,13 @@ function forwardDisplayReceivers(
     inputs.shadows,
     lightData?.value,
     inputs.ssao,
+    inlineAo,
   );
   if (!mask.ok) return mask;
+  const transparent = standardForwardReceiverInputs({
+    ...inputs,
+    ssao: inlineAo === undefined ? inputs.ssao : mask.value,
+  });
   if (mask.value === undefined)
     return ok({ transparent, opaque: transparent, fragment: undefined });
   const opaque = standardForwardReceiverInputs({ ...inputs, projectedDirectional: mask.value });

@@ -110,7 +110,7 @@ it('retains receiver-owned inputs through native publication, scene ownership an
         clustered: false,
         reflectionFallback: false,
         probeBlend: false,
-        shadowViews: true,
+        demand: 'forward-and-shadow' as const,
       });
     };
     const initial = collect();

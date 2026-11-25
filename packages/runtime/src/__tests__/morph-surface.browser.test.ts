@@ -7,7 +7,6 @@ import { commands, page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { base64Bytes } from './helpers/forward-gtao-capture';
 import { describeForwardGtaoFailure } from './helpers/forward-gtao-failure';
-import { createForwardGtaoSceneDataConsumer } from './helpers/forward-gtao-scene-data';
 import { MorphOriginalFrame } from './helpers/morph-original-frame';
 import { MORPH_SURFACE_SIZE, verifyMorphSurface } from './helpers/morph-surface';
 
@@ -22,11 +21,9 @@ it.each([
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = MORPH_SURFACE_SIZE;
   document.body.append(canvas);
-  const surfaceNormal = createForwardGtaoSceneDataConsumer(MORPH_SURFACE_SIZE, MORPH_SURFACE_SIZE);
   const recorder = attachRecorder(backend === 'webgpu' ? webgpu : wgpu).unwrap();
   const created = await constructRuntimeRendererHost(canvas, {
     rhi: recorder.backend.rhi,
-    features: [surfaceNormal.feature],
     rhiInstrumentation: {
       resolveSurfaceDevice: (device) =>
         ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
@@ -44,7 +41,6 @@ it.each([
     expect(created.value.renderer.inspect().capabilities.backendKind).toBe(backend);
     await verifyMorphSurface(
       created.value,
-      surfaceNormal,
       async (name, facts) => {
         await commands.writeFile(
           `artifacts/webgl2-six/morph/${backend}-${name}.json`,

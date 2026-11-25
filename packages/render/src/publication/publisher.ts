@@ -7,6 +7,10 @@ import {
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { readPresentationWorldMatrix } from '@forgeax/engine-scene';
+import {
+  collectPresentationTransformSpans,
+  type PresentationSpan,
+} from '@forgeax/engine-scene/internal';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import { planarCaptureDemanded } from '../capture/planar-material';
 import { MeshFilter } from '../components/mesh-filter';
@@ -47,7 +51,7 @@ import {
   type WaterMeshViewFacts,
 } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
-import { CapturedSceneTransform } from '../scene/captured-transform';
+import { CapturedSceneTransform, copyScenePose } from '../scene/captured-transform';
 import {
   createGlobalTransformChangeQuery,
   createRenderSourceState,
@@ -63,7 +67,7 @@ import { type CanvasTextureSource, isCanvasTextureSource } from '../textures/can
 import { isExternalTextureSource } from '../textures/external-texture';
 import { renderTextureSourceKey } from '../textures/source-token';
 import { PublishedAssetClosure } from './asset-closure';
-import { type PublishedCanvasFrame, publicationCanvasFrames } from './canvas';
+import { CanvasFramePublisher, type PublishedCanvasFrame } from './canvas';
 import {
   type RenderPublication,
   RenderPublicationError,
@@ -92,11 +96,7 @@ import { renderableTemplateSnapshot } from './renderable-template';
 import { worldRenderResources } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
-import {
-  materialCanvasSources,
-  materialVideoClips,
-  projectTextureConsumers,
-} from './texture-consumers';
+import { projectTextureConsumers, TextureConsumerEdits } from './texture-consumers';
 import { publicationVideoFrames } from './video';
 
 const EMPTY_ASSET_ROWS: readonly (readonly [number, Asset, number])[] = Object.freeze([]);
@@ -319,8 +319,9 @@ export function createRenderPublisher(
   >();
   const dependencies = new PublishedAssetConsumers();
   const pending = new Set<number>();
-  let canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
-  let videoConsumers = new Map<number, readonly number[]>();
+  const canvasPublication = new CanvasFramePublisher();
+  const canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
+  const videoConsumers = new Map<number, readonly number[]>();
   // One consuming frame and a bounded number of sealed successors.
   const flights = new Map<number, SourceFeatureFlight>();
   const skinJoints = new SkinJointReferences();
@@ -411,7 +412,13 @@ export function createRenderPublisher(
     readonly invalidated = new Set<number>();
     readonly assetBatch: ReturnType<ReturnType<typeof assetObserver.read>['unwrap']>;
     readonly observedAssetRevision: number;
-    readonly matrixRows = new Map<number, ArrayLike<number> | CapturedSceneTransform>();
+    // Numeric entries address the ordered changed spans. An upsert replaces its
+    // value in place with the producer's matrix, preserving packet order.
+    private readonly matrixRows = new Map<
+      number,
+      number | ArrayLike<number> | CapturedSceneTransform
+    >();
+    private readonly transformSpans: PresentationSpan[] = [];
     canvasFrames: readonly PublishedCanvasFrame[] = [];
     videoFrames: RenderPublication['videoFrames'] = [];
     // Dispatch entries share their material's parameter snapshot. Intern
@@ -506,15 +513,22 @@ export function createRenderPublisher(
     }
 
     private collectTransformRows(): void {
-      transforms.forEach((row) => {
-        const entity = row.entity;
-        skinJoints.mark(entity);
-        if (members.has(entity) && !this.removed.has(entity)) {
-          const matrix = readPresentationWorldMatrix(world, entity);
-          if (matrix !== undefined) this.matrixRows.set(entity, matrix);
-          pending.add(entity);
+      collectPresentationTransformSpans(world, transforms, this.transformSpans, (entities) => {
+        for (let i = 0; i < entities.length; i++) {
+          const entity = entities[i] as number;
+          skinJoints.mark(entity);
+          if (members.has(entity) && !this.removed.has(entity)) pending.add(entity);
         }
       });
+      let start = 0;
+      for (const span of this.transformSpans) {
+        for (let i = 0; i < span.entities.length; i++) {
+          const entity = span.entities[i] as number;
+          if (members.has(entity) && !this.removed.has(entity))
+            this.matrixRows.set(entity, start + i);
+        }
+        start += span.entities.length;
+      }
     }
 
     private readonly keyValue = (key: string, value: unknown): unknown =>
@@ -684,20 +698,14 @@ export function createRenderPublisher(
           this.removed.add(entity);
       for (const entity of this.removed) this.matrixRows.delete(entity);
       this.prepareJointUpdates(frame);
-      const nextVideoConsumers = projectTextureConsumers(
+      const consumers = projectTextureConsumers(
         videoConsumers,
-        this.removed,
-        frame.renderables,
-        materialVideoClips,
-      );
-      this.videoFrames = publicationVideoFrames(world, nextVideoConsumers);
-      const nextCanvasConsumers = projectTextureConsumers(
         canvasConsumers,
         this.removed,
         frame.renderables,
-        materialCanvasSources,
       );
-      this.canvasFrames = publicationCanvasFrames(nextCanvasConsumers);
+      this.videoFrames = publicationVideoFrames(world, consumers.videos);
+      this.canvasFrames = canvasPublication.prepare(consumers.canvases);
       const {
         renderables: _rows,
         waterMeshOwnerRefreshes: _waterMeshOwnerRefreshes,
@@ -810,8 +818,9 @@ export function createRenderPublisher(
             });
             storage = spareStorage.pop();
             closeFrames(this.videoFrames, this.canvasFrames);
-            videoConsumers = nextVideoConsumers;
-            canvasConsumers = nextCanvasConsumers;
+            if (consumers.videos instanceof TextureConsumerEdits) consumers.videos.accept();
+            canvasPublication.accept(this.canvasFrames, revision);
+            if (consumers.canvases instanceof TextureConsumerEdits) consumers.canvases.accept();
             frameDependencies = nextFrameDependencies;
             this.commitMembership();
             if (this.nextWaterMeshOwners !== undefined) {
@@ -876,8 +885,7 @@ export function createRenderPublisher(
       const demanded = planarCaptureDemanded(world);
       if (planarDemand === demanded) return;
       planarDemand = demanded;
-      for (const { cache } of caches.values())
-        cache.collectPlanarChanges(demanded, this.invalidated);
+      for (const { cache } of caches.values()) cache.collectPlanarReceivers(this.invalidated);
     }
 
     private republishInvalidatedMaterials(): void {
@@ -1470,8 +1478,8 @@ export function createRenderPublisher(
 
     private updateJointMatrix(joint: number): void {
       if (!(this.references?.has(joint) ?? skinJoints.has(joint))) return;
-      const matrix =
-        this.matrixRows.get(joint) ?? readPresentationWorldMatrix(world, joint as EntityHandle);
+      if (this.matrixRows.has(joint)) return;
+      const matrix = readPresentationWorldMatrix(world, joint as EntityHandle);
       if (matrix === undefined) {
         this.retiredJoints ??= new Set();
         this.retiredJoints.add(joint);
@@ -1494,10 +1502,23 @@ export function createRenderPublisher(
       let index = 0;
       for (const entity of this.removed) columns.removed[index++] = entity;
       index = 0;
+      let spanIndex = 0;
+      let spanStart = 0;
       this.matrixRows.forEach((matrix, entity) => {
         columns.transformEntities[index] = entity;
-        CapturedSceneTransform.writeStorage(columns.transforms, 16 * index++, matrix);
+        if (typeof matrix === 'number') {
+          // Changed identities were inserted in span order. Replacements and
+          // removals keep the remaining numeric addresses monotonic.
+          let span = this.transformSpans[spanIndex] as PresentationSpan;
+          while (matrix >= spanStart + span.entities.length) {
+            spanStart += span.entities.length;
+            span = this.transformSpans[++spanIndex] as PresentationSpan;
+          }
+          copyScenePose(columns.transforms, index * 16, span.worlds, (matrix - spanStart) * 16);
+        } else CapturedSceneTransform.writeStorage(columns.transforms, index * 16, matrix);
+        index++;
       });
+      this.transformSpans.length = 0;
       index = 0;
       for (const joint of this.retiredJoints ?? EMPTY_IDENTITIES)
         columns.retiredJoints[index++] = joint;
@@ -1973,6 +1994,7 @@ export function createRenderPublisher(
       pending.clear();
       videoConsumers.clear();
       canvasConsumers.clear();
+      canvasPublication.clear();
       flights.clear();
       spareStorage.length = 0;
       storage = undefined;

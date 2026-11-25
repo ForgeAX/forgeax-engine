@@ -1,11 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
 import { ok } from '@forgeax/engine-types';
-import { assert, expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../render-scene-view';
 import { PreviousPoseRows } from '../scene-pose-admission';
 import { SceneRows, type WorldTransformSpan } from '../scene-rows';
+import { SceneSlots } from '../scene-slots';
 
 function fixture(count = 128) {
   const material = MaterialResource.from(defaultMaterialSnapshot());
@@ -71,6 +72,44 @@ it('matches ordinary merging for offsets, duplicates, parity, missing rows and h
   assert(updated);
   expect(result.previous.get(updated)).toBe(old);
   expect(world.memoryStats().arena.active).toBe(false);
+});
+
+it('publishes disjoint local presentation runs with previous poses and exact winding changes', () => {
+  const initial = fixture(192);
+  const local = new RenderScene();
+  local.apply(
+    [...initial.entities].map((entityKey) => ({
+      kind: 'update',
+      entityKey,
+      snapshot: initial.rows.lookup(entityKey)?.snapshot as RenderableSnapshot,
+    })),
+  );
+  const held = local.slot(64);
+  const spans = [
+    { entities: initial.entities.subarray(64), worlds: initial.worlds.subarray(64 * 16) },
+    { entities: initial.entities.subarray(0, 64), worlds: initial.worlds.subarray(0, 64 * 16) },
+    { entities: Uint32Array.of(999), worlds: new Float32Array(16) },
+  ];
+  for (const entity of initial.entities) {
+    if (entity % 3 !== 0) initial.worlds[entity * 16 + 12] = 2;
+    if (entity % 17 === 0) initial.worlds[entity * 16] = -1;
+  }
+  const direct = local.applyPresentationSpans(spans);
+  const merged = initial.rows.apply([], spans, true);
+  expect(direct.updatedSlots.map((row) => row.entityKey)).toEqual(
+    merged.updatedSlots.map((row) => row.entityKey),
+  );
+  expect(direct.contentUpdatedSlots.map((row) => row.entityKey)).toEqual(
+    merged.contentUpdatedSlots.map((row) => row.entityKey),
+  );
+  expect(direct.ignoredLateUpdates).toBe(1);
+  const moved = local.slot(64);
+  assert(moved);
+  expect(direct.previous.get(moved)).toBe(held);
+  expect(local.applyPresentationSpans(spans).updated).toBe(0);
+  initial.worlds.fill(9);
+  expect(local.slot(64)?.snapshot.transform.world[12]).toBe(2);
+  expect(held?.snapshot.transform.world[12]).toBe(0);
 });
 
 it('addresses prior poses by commit order when changed slots arrive out of order', () => {
@@ -213,4 +252,32 @@ it('uses the source World arena for local view movement and reconciles overlappi
   expect(view.slot(7)?.snapshot.assetHandle).toBe(17);
   expect(view.slot(7)?.snapshot.transform.world[12]).toBe(45);
   expect(held.snapshot.transform.world[12]).toBe(107);
+});
+
+it('routes a mixed pose span only to live or newly admitted draws', () => {
+  const f = fixture(2);
+  const original = f.rows.lookup(0);
+  assert(original);
+  const entities = Uint32Array.from([4001, 4002, 0, 1, 2, 4001]);
+  const worlds = new Float32Array(entities.length * 16);
+  for (let i = 0; i < entities.length; i++) {
+    worlds.set(original.snapshot.transform.world, i * 16);
+    worlds[i * 16 + 12] = i + 1;
+  }
+  const locate = vi.spyOn(SceneSlots.prototype, 'slotOf');
+  try {
+    const delta = f.rows.apply(
+      [
+        { kind: 'remove', entityKey: 1 },
+        { kind: 'update', entityKey: 2, snapshot: { ...original.snapshot, entityKey: 2 } },
+      ],
+      [{ entities, worlds }],
+    );
+    expect(delta).toMatchObject({ created: 1, updated: 1, removed: 1, ignoredLateUpdates: 4 });
+    expect(delta.createdSlots[0]?.snapshot.transform.world[12]).toBe(5);
+    expect(delta.updatedSlots[0]?.snapshot.transform.world[12]).toBe(3);
+    expect(locate.mock.calls.filter(([id]) => id >= 4000)).toEqual([[4001], [4002], [4001]]);
+  } finally {
+    locate.mockRestore();
+  }
 });

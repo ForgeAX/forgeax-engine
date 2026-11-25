@@ -1,4 +1,5 @@
 import {
+  findMaterialShaderEntry,
   type MaterialShaderArtifact,
   STANDARD_ORM_REUSE_BIT,
   STANDARD_ORM_REUSE_OVERRIDE,
@@ -66,8 +67,10 @@ export function colorlessFragmentEntry(
   alphaToCoverageEnabled = false,
 ): string | null | undefined {
   if (!colorless) return fragmentEntry;
-  const effects = program?.entryPoints?.find(
-    (entry) => entry.stage === 'fragment' && entry.name === (fragmentEntry ?? 'fs_main'),
+  const effects = findMaterialShaderEntry(
+    program?.entryPoints,
+    fragmentEntry ?? 'fs_main',
+    'fragment',
   )?.effects;
   // Missing legacy facts are not proof that a stage can be removed. Keep
   // authored depth/mask/storage effects and fixed-function alpha coverage.
@@ -89,14 +92,13 @@ export function colorlessFragmentEntry(
   )
     return null;
   return fragmentEntry === 'fs_ao_input' &&
-    program?.entryPoints?.some(
-      (entry) => entry.stage === 'fragment' && entry.name === COLORLESS_COVERAGE_FRAGMENT_ENTRY,
-    ) === true
+    findMaterialShaderEntry(program?.entryPoints, COLORLESS_COVERAGE_FRAGMENT_ENTRY, 'fragment') !==
+      undefined
     ? COLORLESS_COVERAGE_FRAGMENT_ENTRY
     : fragmentEntry;
 }
 
-/** Standard fragment entry that only runs the coverage gate and writes no color. */
+/** Standard fragment entry which writes only depth. */
 export const COLORLESS_COVERAGE_FRAGMENT_ENTRY = 'fs_depth_masked';
 
 /** Only a View with proven shadow demand (or its absence) specializes reception. */
@@ -168,22 +170,16 @@ export function materialAbiRasterConstants(
     standardShadowReception === undefined
   )
     return undefined;
-  return {
-    ...(standardTextureMask === undefined
-      ? {}
-      : {
-          [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask % STANDARD_ORM_REUSE_BIT,
-          ...(standardTextureMask >= STANDARD_ORM_REUSE_BIT
-            ? { [STANDARD_ORM_REUSE_OVERRIDE]: 1 }
-            : {}),
-        }),
-    ...(standardSurfaceDiscards === undefined
-      ? {}
-      : { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscards }),
-    ...(standardShadowReception === undefined
-      ? {}
-      : { [STANDARD_SHADOW_RECEPTION_OVERRIDE]: standardShadowReception }),
-  };
+  const constants: Record<string, number> = {};
+  if (standardTextureMask !== undefined) {
+    constants[STANDARD_TEXTURE_MASK_OVERRIDE] = standardTextureMask % STANDARD_ORM_REUSE_BIT;
+    if (standardTextureMask >= STANDARD_ORM_REUSE_BIT) constants[STANDARD_ORM_REUSE_OVERRIDE] = 1;
+  }
+  if (standardSurfaceDiscards !== undefined)
+    constants[STANDARD_SURFACE_DISCARDS_OVERRIDE] = standardSurfaceDiscards;
+  if (standardShadowReception !== undefined)
+    constants[STANDARD_SHADOW_RECEPTION_OVERRIDE] = standardShadowReception;
+  return constants;
 }
 
 /** Keep only specialization values the binary Standard entry can observe. */

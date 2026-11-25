@@ -87,8 +87,7 @@ function surfaceAvailability(
   if (
     (schema === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA &&
       admission?.renderPath !== 'deferred') ||
-    (schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA &&
-      admission?.renderPath === 'deferred')
+    schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
   )
     return { status: 'unavailable', reason: 'producer-missing' };
   const viewIdentity = options.viewIdentity ?? options.featureIdentity;

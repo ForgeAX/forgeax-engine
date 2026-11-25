@@ -5,7 +5,11 @@ import type { FrameList } from '../scene/frame-list';
 import { FrameListBase, FrameProjection } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { changes, type Node, nodes, put, remove } from '../scene/frame-tree';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import {
+  type AcceptedMaterial,
+  MaterialFrame,
+  usesAcceptedSpriteGeometry,
+} from '../scene/material-dispatch';
 import type { MaterialBinding, MaterialBindingSlots, MaterialTable } from './fold-buckets';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
@@ -28,8 +32,29 @@ export function acceptedMaterialSnapshot(
   material: MaterialResource,
   frame: MaterialFrame | undefined,
   source?: import('../render-system-extract').RenderableSnapshot,
+  versions?: AcceptedMaterial[],
 ): MaterialSnapshot {
   if (frame === undefined) return material.snapshot;
+  const accepted = requireAcceptedMaterial(material, frame, source);
+  versions?.push(accepted);
+  return accepted.snapshot;
+}
+
+export function usesSubmittedSpriteGeometry(
+  material: MaterialResource,
+  frame: MaterialFrame | undefined,
+  source?: ValidatedRenderable['source'],
+): boolean {
+  return frame === undefined
+    ? materialUsesSpriteGeometry(material.snapshot)
+    : usesAcceptedSpriteGeometry(requireAcceptedMaterial(material, frame, source));
+}
+
+function requireAcceptedMaterial(
+  material: MaterialResource,
+  frame: MaterialFrame,
+  source?: import('../render-system-extract').RenderableSnapshot,
+): AcceptedMaterial {
   const accepted = frame.get(material);
   if (accepted === undefined)
     throw new RhiError({
@@ -58,7 +83,7 @@ export function acceptedMaterialSnapshot(
         },
       },
     });
-  return accepted.snapshot;
+  return accepted;
 }
 
 const PAGE_SIZE = 64;
@@ -106,12 +131,20 @@ export class MaterialRelationFrame extends FrameListBase<Tuple> {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
     if (index < 0 || index >= this.length) return undefined;
+    return this.tupleAt(index);
+  }
+
+  /** Current physical row; check the sealed entity even when callers reuse a mutable source. */
+  tupleAt(index: number, entity?: number): Tuple | undefined {
     const key = Math.floor(index / PAGE_SIZE);
     if (this.readPage !== key) {
       this.readPage = key;
       this.readValue = pageAt(this.root, key);
     }
-    return this.readValue?.materials[index % PAGE_SIZE];
+    const lane = index % PAGE_SIZE;
+    const page = this.readValue;
+    if (entity !== undefined && page?.identities[lane * IDS] !== entity) return undefined;
+    return page?.materials[lane];
   }
 
   *[Symbol.iterator](): IterableIterator<Tuple> {
@@ -184,14 +217,34 @@ export class MaterialRelations {
     return page;
   }
 
+  /** A pose or compact-address edit keeps its sealed relation until the actual
+   * entity or selected material slots change. Mutable authored tuples are compared by value. */
+  move(index: number, row: ValidatedRenderable): void {
+    const source = row.source;
+    const primary = source.material;
+    const issued = this.frame.tupleAt(index, source.entityKey);
+    const sprite = this.sprite(primary);
+    const authored = source.materials;
+    const same =
+      sprite || authored.length === 0
+        ? issued?.length === 1 && issued[0] === primary
+        : issued === authored || (issued !== undefined && sameTuple(issued, authored));
+    if (!same) this.write(index, row);
+  }
+
+  private sprite(primary: MaterialResource): boolean {
+    let sprite = this.sprites.get(primary);
+    if (sprite === undefined) {
+      sprite = usesSubmittedSpriteGeometry(primary, this.materials);
+      this.sprites.set(primary, sprite);
+    }
+    return sprite;
+  }
+
   write(index: number, row: ValidatedRenderable): void {
     const source = row.source;
     const primary = source.material;
-    let sprite = this.sprites.get(primary);
-    if (sprite === undefined) {
-      sprite = materialUsesSpriteGeometry(acceptedMaterialSnapshot(primary, this.materials));
-      this.sprites.set(primary, sprite);
-    }
+    const sprite = this.sprite(primary);
     let tuple = source.materials;
     if (sprite || tuple.length === 0) {
       const existing = this.singletons.get(primary);
@@ -306,11 +359,17 @@ export class MaterialBindingIndex {
     shadows: DrawRows,
     materials: MaterialFrame,
     rows: DrawRows,
+    issuedShadow?: MaterialRelationFrame,
   ): MaterialTable {
-    this.shadows.begin(materials);
-    for (let index = 0; index < shadows.length; index++)
-      this.shadows.write(index, shadows.at(index) as ValidatedRenderable);
-    const shadow = this.shadows.finish(shadows.length);
+    let shadow = issuedShadow;
+    if (shadow === undefined) {
+      this.shadows.begin(materials);
+      for (let index = 0; index < shadows.length; index++)
+        this.shadows.write(index, shadows.at(index) as ValidatedRenderable);
+      shadow = this.shadows.finish(shadows.length);
+    } else {
+      this.shadows.clear();
+    }
     const segments: Segment[] = [];
     let offset = 0;
     for (const frame of frames) {
@@ -326,27 +385,28 @@ export class MaterialBindingIndex {
       })
     )
       this.adopt(new Relations(segments));
-    const snapshots = this.resources.map((resource) =>
-      acceptedMaterialSnapshot(resource, materials),
-    );
+    const fixed = MaterialFrame.fixedProgramRoot(materials);
+    const versions = this.resources.map((resource) => requireAcceptedMaterial(resource, materials));
     // This descriptor belongs to this submission: capacity clipping and shared
     // GPU bindings may replace/append its small resource tables independently.
+    const bindings = this.resources.map((resource, slot): MaterialBinding => {
+      const first = this.firstReaders[slot] as number;
+      const row = first < rows.length ? rows.at(first) : shadows.at(first - rows.length);
+      if (row === undefined) throw new Error('Material reader has no submitted row');
+      return {
+        material: resource,
+        resourceClass: '',
+        ...(row.world === undefined ? {} : { world: row.world }),
+        entityKey: row.source.entityKey,
+      };
+    });
     return {
       slotIndices: this.slots,
-      slots: snapshots,
-      bindings: this.resources.map((resource, slot): MaterialBinding => {
-        const first = this.firstReaders[slot] as number;
-        const row = first < rows.length ? rows.at(first) : shadows.at(first - rows.length);
-        if (row === undefined) throw new Error('Material reader has no submitted row');
-        return {
-          material: resource,
-          resourceClass: '',
-          ...(row.world === undefined ? {} : { world: row.world }),
-          entityKey: row.source.entityKey,
-        };
-      }),
+      ...(fixed === undefined ? {} : { accepted: { frame: fixed, slots: versions } }),
+      slots: versions.map((value) => value.snapshot),
+      bindings,
       bindingSlots: this.bindingSlots,
-      slotCount: snapshots.length,
+      slotCount: versions.length,
     };
   }
 

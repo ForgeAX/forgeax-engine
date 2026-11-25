@@ -20,7 +20,7 @@ import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { RowViews, SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
+import { SceneSlotFrame, SceneSlotPage, SceneSlots } from '../scene/scene-slots';
 import { standardSceneDataContributorForDispatch } from '../temporal/standard-scene-data-admission';
 import { standardSceneDataContributorAt } from '../world/feature-view-systems';
 
@@ -401,7 +401,7 @@ test('SceneData-only contributor reads leave pose, Mesh draw and temporal rows l
   const counters = { hits: 0, misses: 0 };
   const rows = scene.materializeTemporal(counters, new MaterialFrame(undefined).with(material));
   const dispatch = surfaceDispatch(material);
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     const contributor = standardSceneDataContributorAt(rows, dispatch, 'forward');
     expect(contributor?.facts?.sourceTuple).toEqual([7, dispatch.materialHandle, 0]);
@@ -426,7 +426,7 @@ test('surface columns retain rank holes, captured generations and consecutive po
   scene.apply([{ kind: 'remove', entityKey: 2 }]);
   const held = scene.materialize();
   const dispatch = surfaceDispatch(material, 1);
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     for (let frame = 0; frame < 4; frame++) {
       scene.apply([

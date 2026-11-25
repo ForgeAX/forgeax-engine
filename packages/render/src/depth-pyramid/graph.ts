@@ -22,9 +22,9 @@ import type { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import type { BindGroupCounts } from '../record/frame-snapshot';
 import {
-  bindGroupChainLeaf2,
   bindGroupChainLeaf3,
   findFromChain,
+  getOrCreateFromChain,
   rememberBindGroup,
 } from '../record/mesh-ssbo';
 import type { NativeGraphInputs } from '../record/native-graph-inputs';
@@ -52,8 +52,8 @@ export type DepthPyramidReduction = 'closest' | 'furthest';
 const REDUCTION_NAMES: Readonly<
   Record<DepthPyramidReduction, { readonly graph: string; readonly entry: string }>
 > = {
-  closest: { graph: 'depth-pyramid', entry: '' },
-  furthest: { graph: 'occlusion-depth-pyramid', entry: '_furthest' },
+  closest: { graph: 'hzb-closest', entry: '' },
+  furthest: { graph: 'hzb', entry: '_furthest' },
 };
 
 /** Both preparation and encoding issue bindings through this original program cache. */
@@ -61,42 +61,32 @@ function reductionNativeBinding(
   device: RhiDevice,
   counts: BindGroupCounts,
   state: ComputeState,
-  sourceView: TextureView,
-  targetView: TextureView,
+  views: readonly TextureView[],
   current?: () => boolean,
 ): BindGroup {
   if (current?.() === false) throw computePipelineError('current depth pyramid reduction binding');
-  const leaf = bindGroupChainLeaf2(state.bindGroups, sourceView, targetView);
-  const cached = leaf.get(state.label);
-  if (cached !== undefined) return cached;
-  const group = device
-    .createBindGroup({
-      layout: state.layout,
-      entries: [
-        { binding: 0, resource: { kind: 'textureView', value: sourceView } },
-        { binding: 1, resource: { kind: 'textureView', value: targetView } },
-      ],
-    })
-    .unwrap();
-  if (current?.() === false) throw computePipelineError('current depth pyramid reduction binding');
-  return rememberBindGroup(leaf, state.label, group, counts);
-}
-function reductionBindGroup(
-  frame: RenderGraphFrame,
-  state: ComputeState,
-  resources: GraphResourceResolver,
-  source: GraphTextureView,
-  target: GraphTextureView,
-): BindGroup {
-  const context = frame as _InternalRenderPipelineContext;
-  return reductionNativeBinding(
-    context.runtime.device,
-    context.bindGroupCounts,
-    state,
-    resolvedGraphView(resources, source),
-    resolvedGraphView(resources, target),
+  return getOrCreateFromChain(
+    state.bindGroups,
+    views,
+    state.label,
+    () => {
+      const group = device
+        .createBindGroup({
+          layout: state.layout,
+          entries: views.map((value, binding) => ({
+            binding,
+            resource: { kind: 'textureView' as const, value },
+          })),
+        })
+        .unwrap();
+      if (current?.() === false)
+        throw computePipelineError('current depth pyramid reduction binding');
+      return group;
+    },
+    counts,
   );
 }
+
 function seedNativeBinding(
   device: RhiDevice,
   counts: BindGroupCounts,
@@ -169,21 +159,20 @@ interface DepthPyramidGraphInputBase {
   readonly execution?: 'compute' | 'fragment';
   /** Shared View UBO; its projection range linearizes depth. */
   readonly view?: GraphBuffer;
-  /** A native consumer also uses mip zero as a full-resolution linear depth source. */
-  readonly fullResolutionSeed?: true;
   readonly mipLevelLimit?: number;
+  /** Pad a Standard screen hierarchy to fixed two-pixel cells in viewport space. */
+  readonly paddedView?: true;
   readonly width: number;
   readonly height: number;
 }
 
 /**
- * Only the furthest reduction seeds from multisampled depth: occlusion needs
- * every sample, while screen-space tracers read the resolved depth.
+ * Furthest screen depth can resolve each MSAA pixel inline. Occlusion reads every sample.
  */
 export type DepthPyramidGraphInputs = DepthPyramidGraphInputBase &
   (
-    | { readonly reduction?: 'closest' }
-    | { readonly reduction: 'furthest'; readonly multisampled?: boolean }
+    | { readonly reduction: 'closest' }
+    | { readonly reduction?: 'furthest'; readonly multisampled?: boolean | 'nearest' }
   );
 
 export interface DepthPyramidProjection {
@@ -231,6 +220,12 @@ const REDUCE_ENTRIES = [
   },
 ] as const;
 
+const BATCHED_REDUCE_ENTRIES = [
+  ...REDUCE_ENTRIES,
+  { ...REDUCE_ENTRIES[1], binding: 2 },
+  { ...REDUCE_ENTRIES[1], binding: 3 },
+] as const;
+
 /** This module owns the complete plain-data layout trees. */
 function freezeDepthLayout<T>(value: T): T {
   if (typeof value !== 'object' || value === null) return value;
@@ -239,7 +234,12 @@ function freezeDepthLayout<T>(value: T): T {
 }
 
 const PROGRAM_LAYOUTS = new Map<readonly unknown[], string>();
-for (const entries of [SEED_ENTRIES, SEED_MULTISAMPLED_ENTRIES, REDUCE_ENTRIES]) {
+for (const entries of [
+  SEED_ENTRIES,
+  SEED_MULTISAMPLED_ENTRIES,
+  REDUCE_ENTRIES,
+  BATCHED_REDUCE_ENTRIES,
+]) {
   freezeDepthLayout(entries);
   PROGRAM_LAYOUTS.set(entries, JSON.stringify(entries));
 }
@@ -262,6 +262,12 @@ function halfExtent(extent: DepthPyramidExtent): DepthPyramidExtent {
 export function planViewDepthPyramid(extent: DepthPyramidExtent): DepthPyramidPlan {
   // Full-resolution depth already exists. Store only its reduced hierarchy.
   return buildDepthPyramidPlan(halfExtent(extent));
+}
+
+/** UE screen HZB rounds each viewport axis up independently before halving. */
+export function planPaddedViewDepthPyramid(extent: DepthPyramidExtent): DepthPyramidPlan {
+  const mip0 = (size: number) => 2 ** Math.max(0, Math.ceil(Math.log2(size)) - 1);
+  return buildDepthPyramidPlan({ width: mip0(extent.width), height: mip0(extent.height) });
 }
 
 /** Descriptor bytes of one view pyramid, derived from the same plan as allocation. */
@@ -315,6 +321,12 @@ function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
  * The caller adds it only when an admitted consumer reads it, so a frame with
  * no consumer allocates nothing and records no pass.
  */
+function seedVariant(input: DepthPyramidGraphInputs) {
+  if (input.reduction === 'closest') return 'seed';
+  if (input.multisampled === 'nearest') return 'seed_furthest_resolve_msaa';
+  return input.multisampled ? 'seed_furthest_multisampled' : 'seed_furthest';
+}
+
 function seedPreparation(
   input: DepthPyramidGraphInputs,
   target: GraphTextureView,
@@ -334,10 +346,7 @@ function seedPreparation(
         native,
         source,
         entries,
-        `${input.reduction === 'furthest' ? 'seed_furthest' : 'seed'}${multisampled ? '_multisampled' : ''}` as
-          | 'seed'
-          | 'seed_furthest'
-          | 'seed_furthest_multisampled',
+        seedVariant(input),
         current,
         PROGRAM_LAYOUTS.get(entries),
       );
@@ -373,9 +382,36 @@ function seedPreparation(
   };
 }
 
-function reductionPreparation(
+interface ReductionStep {
+  readonly firstOutput: number;
+  readonly views: readonly GraphTextureView[];
+  readonly variant: 'reduce' | 'reduce_furthest' | 'reduce_furthest_batch';
+  readonly entries: typeof REDUCE_ENTRIES | typeof BATCHED_REDUCE_ENTRIES;
+}
+
+function reductionSteps(
   input: DepthPyramidGraphInputs,
   levels: readonly GraphTextureView[],
+): ReductionStep[] {
+  const steps: ReductionStep[] = [];
+  const furthest = input.reduction !== 'closest';
+  for (let level = 1; level < levels.length; ) {
+    const batch = furthest && input.paddedView && level + 2 < levels.length;
+    const count = batch ? 3 : 1;
+    steps.push({
+      firstOutput: level,
+      views: levels.slice(level - 1, level + count),
+      variant: batch ? 'reduce_furthest_batch' : furthest ? 'reduce_furthest' : 'reduce',
+      entries: batch ? BATCHED_REDUCE_ENTRIES : REDUCE_ENTRIES,
+    });
+    level += count;
+  }
+  return steps;
+}
+
+function reductionPreparation(
+  input: DepthPyramidGraphInputs,
+  steps: readonly ReductionStep[],
 ): GraphPassPreparation {
   const native = input.nativeInputs;
   if (native === undefined) return {};
@@ -387,38 +423,42 @@ function reductionPreparation(
       const source = native.depthPyramidShaders?.reduce;
       if (source === undefined)
         throw computePipelineError('published depth pyramid reduction source');
-      const program = yield* prepareDepthPyramidProgram(
-        native,
-        source,
-        REDUCE_ENTRIES,
-        input.reduction === 'furthest' ? 'reduce_furthest' : 'reduce',
-        current,
-        PROGRAM_LAYOUTS.get(REDUCE_ENTRIES),
-      );
       const bindings: (() => boolean)[] = [];
-      for (let level = 1; level < levels.length; level++) {
-        const from = levels[level - 1],
-          to = levels[level];
-        if (from === undefined || to === undefined)
-          throw computePipelineError('actual depth pyramid reduction levels');
-        const a = resources.createdTextureView(from),
-          b = resources.createdTextureView(to);
-        if (a === undefined || b === undefined)
-          throw computePipelineError('actual created depth pyramid reduction views');
+      const programs = new Map<
+        ReductionStep['variant'],
+        { state: ComputeState; isCurrent: () => boolean }
+      >();
+      for (const { views, variant, entries } of steps) {
+        let prepared = programs.get(variant);
+        if (prepared === undefined) {
+          prepared = yield* prepareDepthPyramidProgram(
+            native,
+            source,
+            entries,
+            variant,
+            current,
+            PROGRAM_LAYOUTS.get(entries),
+          );
+          programs.set(variant, prepared);
+        }
+        const program = prepared;
+        const handles = views.map((view) => {
+          const texture = resources.createdTextureView(view);
+          if (texture === undefined)
+            throw computePipelineError('actual created depth pyramid reduction views');
+          return texture;
+        });
         const inputsCurrent = () =>
           program.isCurrent() &&
           native.depthPyramidShaders?.reduce === source &&
-          resources.createdTextureView(from) === a &&
-          resources.createdTextureView(to) === b;
+          views.every((view, index) => resources.createdTextureView(view) === handles[index]);
         const group = reductionNativeBinding(
           native.device,
           native.counts,
           program.state,
-          a,
-          b,
+          handles,
           () => current() && inputsCurrent(),
         );
-        const handles = [a, b];
         bindings.push(
           () =>
             inputsCurrent() &&
@@ -426,10 +466,7 @@ function reductionPreparation(
         );
         yield;
       }
-      prepared = () =>
-        program.isCurrent() &&
-        native.depthPyramidShaders?.reduce === source &&
-        bindings.every((binding) => binding());
+      prepared = () => bindings.every((binding) => binding());
       if (!current() || !prepared())
         throw computePipelineError('current prepared depth pyramid reduction');
     },
@@ -440,34 +477,29 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   input: DepthPyramidGraphInputs,
 ): Result<DepthPyramidProjection, RenderGraphError> {
-  if (
-    input.execution === 'fragment' &&
-    input.reduction === 'furthest' &&
-    input.multisampled === true
-  )
+  if (input.execution === 'fragment' && input.reduction !== 'closest' && input.multisampled)
     return err(
       new DepthGraphError({
         code: 'resource-descriptor-invalid',
         expected: 'single-sampled depth for the portable pyramid',
         hint: 'retain the conservative compute seed for multisampled occlusion depth',
         detail: {
-          resourceLabel: 'occlusion-depth-pyramid',
+          resourceLabel: 'occlusion-hzb',
           field: 'multisampled',
           expected: 'false',
           actual: 'true',
         },
       }),
     );
-  const reduction = input.reduction ?? 'closest';
+  const reduction = input.reduction ?? 'furthest';
   const names = REDUCTION_NAMES[reduction];
   const label = input.label ?? names.graph;
-  const multisampled = input.reduction === 'furthest' && input.multisampled === true;
+  const multisampled = input.reduction !== 'closest' && Boolean(input.multisampled);
   const seedPass = `${label}-seed`;
   const reducePass = `${label}-reduce-chain`;
-  const fullPlan =
-    input.fullResolutionSeed === true && input.execution !== 'fragment'
-      ? buildDepthPyramidPlan(input)
-      : planViewDepthPyramid(input);
+  const fullPlan = input.paddedView
+    ? planPaddedViewDepthPyramid(input)
+    : planViewDepthPyramid(input);
   const mipLevelCount = Math.min(
     fullPlan.mipLevelCount,
     input.mipLevelLimit ?? fullPlan.mipLevelCount,
@@ -483,7 +515,8 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const created = createDepthPyramid(graph, plan, label, reduction);
   if (!created.ok) return created;
   const pyramid = created.value;
-  if (input.execution === 'fragment') return addFragmentDepthPyramidPasses(graph, input, pyramid);
+  if (input.execution === 'fragment')
+    return addFragmentDepthPyramidPasses(graph, input, pyramid, label);
   const { depth, view } = input;
   const mip0 = pyramid.levels[0] as GraphTextureView;
   const passNames: string[] = [];
@@ -507,10 +540,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
         frame,
         source,
         multisampled ? SEED_MULTISAMPLED_ENTRIES : SEED_ENTRIES,
-        `seed${names.entry}${multisampled ? '_multisampled' : ''}` as
-          | 'seed'
-          | 'seed_furthest'
-          | 'seed_furthest_multisampled',
+        seedVariant(input),
       );
       pass.setPipeline(seedState.pipeline);
       pass.setBindGroup(
@@ -529,8 +559,9 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
 
   const levels = pyramid.levels;
   if (levels.length > 1) {
+    const steps = reductionSteps(input, levels);
     const reduced = graph.addComputePass(reducePass, {
-      ...reductionPreparation(input, levels),
+      ...reductionPreparation(input, steps),
       accesses: levels.map((resource, level) => ({
         resource,
         usage:
@@ -543,24 +574,21 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       encodeDirect: (pass, frame, resources) => {
         const source = shaderSource(frame, 'reduce');
         if (source === undefined) return;
-        const reduceState = program(
-          frame,
-          source,
-          REDUCE_ENTRIES,
-          `reduce${names.entry}` as 'reduce' | 'reduce_furthest',
-        );
-        pass.setPipeline(reduceState.pipeline);
-        // Compute dispatches are ordered usage scopes. Each dispatch reads
-        // only the completed preceding mip and writes a disjoint next mip.
-        for (let level = 1; level < levels.length; level++) {
-          const sourceLevel = levels[level - 1];
-          const target = levels[level];
-          const extent = pyramid.plan.levels[level];
-          if (sourceLevel === undefined || target === undefined || extent === undefined)
-            throw computePipelineError('depth pyramid mip chain');
+        const context = frame as RenderGraphFrame as _InternalRenderPipelineContext;
+        const programs = new Map<ReductionStep['variant'], ComputeState>();
+        for (const { firstOutput, views, variant, entries } of steps) {
+          const extent = pyramid.plan.levels[firstOutput];
+          if (extent === undefined) throw computePipelineError('depth pyramid mip chain');
+          let state = programs.get(variant);
+          if (state === undefined) {
+            state = program(frame, source, entries, variant);
+            programs.set(variant, state);
+          }
+          const handles = views.map((view) => resolvedGraphView(resources, view));
+          pass.setPipeline(state.pipeline);
           pass.setBindGroup(
             0,
-            reductionBindGroup(frame, reduceState, resources, sourceLevel, target),
+            reductionNativeBinding(context.runtime.device, context.bindGroupCounts, state, handles),
           );
           pass.dispatchWorkgroups(Math.ceil(extent.width / 8), Math.ceil(extent.height / 8), 1);
         }
@@ -594,7 +622,7 @@ export function addCurrentCameraOcclusion(
   let image: ReturnType<CurrentOcclusionDepth['write']> | undefined;
   const seed: RenderGraphNativePass = {
     kind: 'compute',
-    name: 'occlusion-depth-pyramid-seed',
+    name: 'occlusion-hzb-seed',
     encode(pass) {
       const source = active?.depthPyramidShaders?.seed;
       const target = image?.levels[0];
@@ -630,7 +658,7 @@ export function addCurrentCameraOcclusion(
   };
   const reduce: RenderGraphNativePass = {
     kind: 'compute',
-    name: 'occlusion-depth-pyramid-reduce-chain',
+    name: 'occlusion-hzb-reduce-chain',
     encode(pass) {
       const source = active?.depthPyramidShaders?.reduce;
       if (active === undefined || source === undefined || image === undefined)
@@ -645,7 +673,7 @@ export function addCurrentCameraOcclusion(
           throw computePipelineError('current camera depth mips');
         pass.setBindGroup(
           0,
-          reductionNativeBinding(active.runtime.device, active.bindGroupCounts, state, from, to),
+          reductionNativeBinding(active.runtime.device, active.bindGroupCounts, state, [from, to]),
         );
         pass.dispatchWorkgroups(Math.ceil(extent.width / 8), Math.ceil(extent.height / 8));
       }

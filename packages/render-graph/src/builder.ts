@@ -89,6 +89,11 @@ const TEXTURE_USAGE = {
 
 const NO_TEXTURE_WRITES = Object.freeze([]);
 const NO_CONSUMER_READS: readonly GraphAccess[] = Object.freeze([]);
+
+function consumerReadRole(usage: GraphAccessUsage): number {
+  return usage === 'vertex-read' ? 1 : usage === 'sampled-read' ? 2 : 0;
+}
+
 type TextureRecord<Frame extends RenderGraphFrame> = Extract<
   ResourceRecord<Frame>,
   { kind: 'texture' }
@@ -293,7 +298,13 @@ function textureUsage(access: GraphTextureAccess): number {
 }
 
 export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
-  private readonly consumerReadGroups = new Map<string, GraphAccess[]>();
+  private readonly consumerReadGroups = new Map<
+    string,
+    {
+      reads: GraphAccess[];
+      readonly roles: Map<GraphAccess['resource'], number>;
+    }
+  >();
   /** Share the exact graph handle with a later native consumer pass. This is
    * topology metadata, not a second resource allocation or execution callback. */
   publishConsumerRead(
@@ -304,25 +315,43 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     if (this.sealed) return err(this.sealedError());
     const data = handleData(resource);
     if (data?.owner !== this.owner) return err(this.foreignHandleError());
-    let reads = this.consumerReadGroups.get(group);
-    if (!reads) {
-      reads = [];
-      this.consumerReadGroups.set(group, reads);
+    let current = this.consumerReadGroups.get(group);
+    if (current === undefined) {
+      current = { reads: [], roles: new Map() };
+      this.consumerReadGroups.set(group, current);
     }
-    if (!reads.some((read) => read.resource === resource && read.usage === usage)) {
-      // A previously published snapshot may still be held by another pass.
-      if (Object.isFrozen(reads)) {
-        reads = reads.slice();
-        this.consumerReadGroups.set(group, reads);
-      }
-      reads.push(Object.freeze({ resource, usage }) as GraphAccess);
+    const role = consumerReadRole(usage);
+    const prior = current.roles.get(resource) ?? 0;
+    if ((prior & role) === 0) {
+      if (Object.isFrozen(current.reads)) current.reads = current.reads.slice();
+      current.reads.push(Object.freeze({ resource, usage }) as GraphAccess);
+      current.roles.set(resource, prior | role);
     }
     return ok(undefined);
   }
+
   consumerReads(group: string): readonly GraphAccess[] {
-    const reads = this.consumerReadGroups.get(group);
-    return reads === undefined ? NO_CONSUMER_READS : Object.freeze(reads);
+    const current = this.consumerReadGroups.get(group);
+    return current === undefined ? NO_CONSUMER_READS : Object.freeze(current.reads);
   }
+
+  /** Merge a published group into the consumer's own pass, preserving both declaration orders. */
+  appendConsumerReads(group: string, accesses: GraphAccess[]): void {
+    const reads = this.consumerReadGroups.get(group)?.reads;
+    if (reads === undefined) return;
+    let present: Map<GraphAccess['resource'], number> | undefined;
+    for (const access of accesses) {
+      const role = consumerReadRole(access.usage);
+      if (role === 0) continue;
+      present ??= new Map();
+      present.set(access.resource, (present.get(access.resource) ?? 0) | role);
+    }
+    // The producer has already admitted each (resource, role) pair exactly once.
+    for (const read of reads)
+      if (((present?.get(read.resource) ?? 0) & consumerReadRole(read.usage)) === 0)
+        accesses.push(read);
+  }
+
   private readonly owner = Object.freeze({});
   private slotsByLabel: Map<string, number> | undefined = new Map();
   private readonly declarations: (ResourceRecord<FrameCtx> | TextureViewRecord<FrameCtx>)[] = [];
@@ -657,6 +686,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     } finally {
       // Callbacks and external inspection may keep a sealed builder alive.
       // The compiled graph has taken the actual records and its label map.
+      for (const group of this.consumerReadGroups.values()) group.roles.clear();
       this.declarations.length = 0;
       this.deferredPasses.length = 0;
       this.placements?.clear();

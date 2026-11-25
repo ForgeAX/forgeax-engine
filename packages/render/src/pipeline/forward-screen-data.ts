@@ -21,7 +21,6 @@ import {
   type RenderPipelineFrame,
   type RenderPipelineTarget,
 } from '../render-pipeline';
-import type { StandardSceneSurfaceDataTargets } from '../temporal/standard-scene-data';
 
 /** Four surface-data tiles share the existing Forward sampled transport. */
 export const FORWARD_SCREEN_TILE_AXIS = 2;
@@ -40,8 +39,7 @@ function screenLayout(program: ScreenProgram, inputCount: number): BindGroupLayo
   if (program === 'forwardContact')
     return [
       { binding: 0, visibility: 2, texture: { sampleType: 'depth', viewDimension: '2d' } },
-      { binding: 1, visibility: 2, texture: { sampleType: 'uint', viewDimension: '2d' } },
-      { binding: 2, visibility: 2, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: 2, buffer: { type: 'uniform' } },
       {
         binding: 3,
         visibility: 2,
@@ -163,10 +161,10 @@ function addScreenRaster(graph: RenderGraphBuilder<RenderPipelineFrame>, work: S
         work.program === 'forwardContact'
           ? [
               ...textures.map((value, index) => ({
-                binding: index < 2 ? index : index + 1,
+                binding: index === 0 ? 0 : index + 2,
                 resource: { kind: 'textureView' as const, value },
               })),
-              { binding: 2, resource: { kind: 'buffer' as const, value: { buffer } } },
+              { binding: 1, resource: { kind: 'buffer' as const, value: { buffer } } },
             ]
           : [
               { binding: 0, resource: { kind: 'buffer' as const, value: { buffer } } },
@@ -300,7 +298,7 @@ export function addForwardScreenData(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: {
     readonly size: { readonly width: number; readonly height: number };
-    readonly surface: StandardSceneSurfaceDataTargets;
+    readonly depth: RenderPipelineTarget;
     readonly contact: boolean;
     readonly capsules?: boolean;
     readonly decals: ProjectedDecalChannels | undefined;
@@ -337,7 +335,7 @@ export function addForwardScreenData(
     });
     if (!made.ok) return made;
     contact = made.value;
-    const depth = graph.view(input.surface.depth.texture, {
+    const depth = graph.view(input.depth.texture, {
       dimension: '2d',
       aspect: 'depth-only',
     });
@@ -345,12 +343,7 @@ export function addForwardScreenData(
     const rendered = addScreenRaster(graph, {
       program: 'forwardContact',
       name: 'forward-contact-shadow',
-      inputs: [
-        depth.value,
-        input.surface.normal.view,
-        capsuleTextures.value.capsules,
-        capsuleTextures.value.tiles,
-      ],
+      inputs: [depth.value, capsuleTextures.value.capsules, capsuleTextures.value.tiles],
       output: contact.view,
       format: contact.format,
       parameters: (frame) =>

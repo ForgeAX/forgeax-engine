@@ -125,6 +125,80 @@ it('rejects material table preparation if native creation issues another variant
   }
 });
 
+it('tracks the material that issued a shared physical group when another material retires', async () => {
+  const f = await fixture();
+  const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
+  const entry = [...cache.values()][0];
+  const handle = entry?.material.materialHandle;
+  assert(entry && handle !== undefined);
+  const source = worldRenderResources(f.f.world).identity;
+  const shader = entry.material.materialShaderId;
+  const second = { ...entry, bindingsCurrent: () => true };
+  cache.set(source, handle + 1, shader, undefined, second);
+  const current = cache.captureBindingCurrent(source, handle + 1, shader, undefined, 0, second);
+  assert(current);
+  expect(current()).toBe(true);
+  cache.releaseBinding(handle, entry);
+  expect(current()).toBe(true);
+  cache.releaseBinding(handle + 1, second);
+  expect(current()).toBe(false);
+});
+
+it('keeps retired rows absent when another binding retires them during publication', async () => {
+  const f = await fixture();
+  const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
+  const entry = [...cache.values()][0];
+  const handle = entry?.material.materialHandle;
+  assert(entry && handle !== undefined);
+  const source = worldRenderResources(f.f.world).identity;
+  let retire = false;
+  const survivor = {
+    ...entry,
+    bindingsCurrent: () => {
+      if (retire) cache.releaseBinding(handle, entry);
+      return true;
+    },
+  };
+  cache.set(source, handle + 1, entry.material.materialShaderId, undefined, survivor);
+  const prepared = cache.prepareTableBindings(f.runtime, f.target, () => true).unwrap();
+  retire = true;
+  expect(prepared.publish().ok).toBe(false);
+  expect([...cache.values()]).toEqual([survivor]);
+  prepared.release();
+  cache
+    .prepareTableBindings(f.runtime, f.target, () => true)
+    .unwrap()
+    .publish()
+    .unwrap();
+  expect([...cache.values()][0]?.sceneMaterialBuffer).toBe(f.target.materialBuffer);
+});
+
+it('prepares changed scene tables with linear material readiness checks', async () => {
+  const f = await fixture();
+  const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
+  const entry = [...cache.values()][0];
+  const handle = entry?.material.materialHandle;
+  assert(entry && handle !== undefined);
+  const source = worldRenderResources(f.f.world).identity;
+  const current = vi.fn(() => true);
+  const count = 32;
+  for (let i = 0; i < count; i++) {
+    cache.set(source, handle, entry.material.materialShaderId, i, {
+      ...entry,
+      bindingsCurrent: current,
+      bindGroup: f.runtime.device.createBindGroup(entry.descriptor).unwrap(),
+    });
+  }
+  const prepared = cache.prepareTableBindings(f.runtime, f.target, () => true).unwrap();
+  try {
+    expect(prepared.isCurrent()).toBe(true);
+    prepared.publish().unwrap();
+    expect(current.mock.calls.length).toBeLessThanOrEqual(count * 8);
+  } finally {
+    prepared.release();
+  }
+});
+
 it('rebinds current material assemblies even after a different material lifetime has retired', async () => {
   const f = await fixture();
   const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;
@@ -198,7 +272,6 @@ it.each([
     materialSlice: MATERIAL_UNIFORM_BYTES,
     videoHighPerfAvailable: false,
     skylightResources: entry.skylightResources,
-    materialBgShared: new Map(),
     materialBgAssemblyCache: cache,
     sceneMaterialBuffer: f.f.scene.materialBuffer,
     transmissionBackdropView: a.view,

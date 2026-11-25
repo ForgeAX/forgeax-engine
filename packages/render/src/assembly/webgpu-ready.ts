@@ -1,3 +1,4 @@
+import { nowMs } from '@forgeax/engine-platform';
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { ShadowViewResources } from '../record/shadow-view-resources';
 import { resolveMaterialShaderVariantSet, type SeedShaderModule } from './material-shader-policy';
@@ -24,9 +25,15 @@ import {
   materialShaderSource,
   type PipelineGroup2Contract,
   type ShaderCatalog,
+  TAA_SCENE_VELOCITY_WGSL,
 } from '@forgeax/engine-shader';
 import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
+import { sceneVelocityComputeSource } from '../features/motion-blur/scene-velocity-motion-blur';
+import {
+  SCENE_VELOCITY_TEMPORAL_LABEL,
+  SCENE_VELOCITY_TEMPORAL_WGSL,
+} from '../temporal/default-gbuffer-velocity';
 import type { RhiBackendPack } from './backend-contract';
 import {
   prewarmSsrWithDepthPyramid,
@@ -59,6 +66,7 @@ import type {
   VolumetricFogShaderSources,
 } from '../render-contract';
 import { type PipelineState, selectSwapChainFormat } from '../render-system';
+import { TRANSMISSION_MERGE_LABEL, TRANSMISSION_MERGE_WGSL } from '../transmission/merge';
 import { createExtendedLightingFallbackResources } from './extended-lighting-fallback';
 import { createLayeredTextureFallbackViews } from './layered-texture-fallback';
 import { prewarmRequiredMaterialShaders } from './material-shader-prewarm';
@@ -197,11 +205,11 @@ export async function prepareBackgroundPipelineLibrary(
       modules.add(pipeline.vertex.module);
       if (pipeline.fragment !== undefined) modules.add(pipeline.fragment.module);
     }
-    let slice = performance.now();
+    let slice = nowMs();
     for (const module of modules) {
-      if (performance.now() - slice >= BACKGROUND_ANALYSIS_SLICE_MS) {
+      if (nowMs() - slice >= BACKGROUND_ANALYSIS_SLICE_MS) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        slice = performance.now();
+        slice = nowMs();
       }
       if (!active()) return;
       const descriptor = manifest.shaders[module];
@@ -547,6 +555,12 @@ export async function buildReadyWebGPU(
         computeStorageTexture ? 'compute' : 'fragment',
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
+      const merge = await compileUtilityShader(
+        TRANSMISSION_MERGE_LABEL,
+        TRANSMISSION_MERGE_WGSL,
+        'stock transmission',
+      );
+      seedShaderModule(TRANSMISSION_MERGE_LABEL, merge, TRANSMISSION_MERGE_WGSL);
     }
     const scenePrograms = await prepareStandardSceneSources(
       registry,
@@ -725,10 +739,42 @@ export async function buildReadyWebGPU(
     // These single utility programs can enter a live temporal graph directly.
     // Seed the validated modules so recorders without a synchronous compiler
     // can encode the first temporal frame on the same path as other devices.
-    if (entries.motionBlur !== undefined)
+    if (entries.motionBlur !== undefined) {
       await prewarmTemporal(entries.motionBlur, 'forgeax.motion-blur');
-    if (entries.taaResolve !== undefined)
+      if (rhiDevice.caps.compute && rhiDevice.caps.storageBuffer && rhiDevice.caps.storageTexture) {
+        const motionBlurVelocitySource = sceneVelocityComputeSource();
+        const label = 'motion-blur-tile-summary';
+        const module = await compileModule(
+          motionBlurVelocitySource,
+          label,
+          'scene-velocity Motion Blur compute shader module compiles before the first temporal frame',
+          'inspect the Motion Blur depth, velocity and scene-view bindings',
+        );
+        seedShaderModule(label, module, motionBlurVelocitySource);
+        seedShaderModule('motion-blur', module, motionBlurVelocitySource);
+      }
+    }
+    if (entries.taaResolve !== undefined) {
       await prewarmTemporal(entries.taaResolve, 'forgeax.taa-resolve');
+      const taaVelocitySource = TAA_SCENE_VELOCITY_WGSL;
+      const taaVelocityLabel = postProcessShaderModuleLabel(taaVelocitySource);
+      const taaVelocityModule = await compileModule(
+        taaVelocitySource,
+        taaVelocityLabel,
+        'scene-velocity TAA resolve shader module compiled before the first temporal frame',
+        'inspect the TAA scene-velocity bindings and device.features',
+      );
+      seedShaderModule(taaVelocityLabel, taaVelocityModule, taaVelocitySource);
+      const label = SCENE_VELOCITY_TEMPORAL_LABEL;
+      const source = SCENE_VELOCITY_TEMPORAL_WGSL;
+      const module = await compileModule(
+        source,
+        label,
+        'scene velocity reconstruction compiles before the first temporal frame',
+        'inspect the Standard depth and packed velocity bindings',
+      );
+      seedShaderModule(label, module, source);
+    }
     await prewarmDepthOfField(manifestEntries, prewarmTemporal, registerBuiltinDepthOfField);
     const { motionBlur, taaResolve } = entries;
     registerBuiltinTemporalPostProcesses({

@@ -72,6 +72,7 @@ export function addOutlinePasses(
   depth: RenderPipelineTarget,
   internalSize: GraphTextureDescriptor['size'],
   options: {
+    readonly premultipliedScene?: true;
     readonly prefix?: string;
     readonly programPrefix?: string;
     readonly selection?: (frame: RenderPipelineFrame) => OutlineSnapshot | undefined;
@@ -141,12 +142,16 @@ export function addOutlinePasses(
   const output = createRenderPipelineTarget(graph, label('outline-color'), {
     format: 'rgba16float',
     size: 'surface',
-    domain: 'linear-ldr',
+    domain: options.premultipliedScene ? 'linear-hdr' : 'linear-ldr',
   });
   if (!output.ok) return output;
   const composite = addTypedFullscreenPass(graph, {
     name: label('outline-composite'),
-    shader: program('forgeax.outline.composite'),
+    shader: program(
+      options.premultipliedScene
+        ? 'forgeax.outline.composite.premultiplied'
+        : 'forgeax.outline.composite',
+    ),
     input,
     outputs: [output.value],
     additionalReads: [

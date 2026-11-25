@@ -262,12 +262,15 @@ export const nativeOutputShaderFixture = await nativeUtilityFixture(
   fixtureInputs.imports,
 );
 const deferredDefines = [false, true].flatMap((cluster) =>
-  [false, true].flatMap((extended) =>
-    [false, true].map((projector) => ({
-      CLUSTER_FORWARD_AVAILABLE: cluster,
-      EXTENDED_LIGHTING_AVAILABLE: extended,
-      PROJECTOR_AVAILABLE: projector,
-    })),
+  [false, true].flatMap((screenAo) =>
+    [false, true].flatMap((extended) =>
+      [false, true].map((projector) => ({
+        CLUSTER_FORWARD_AVAILABLE: cluster,
+        DEFERRED_SCREEN_AO_AVAILABLE: screenAo,
+        EXTENDED_LIGHTING_AVAILABLE: extended,
+        PROJECTOR_AVAILABLE: projector,
+      })),
+    ),
   ),
 );
 const nativeDeferredShaderFixture = await nativeUtilityFixture(
@@ -317,6 +320,12 @@ const materialShaders = [
 export function renderLifecycleManifestUrl(
   options: { readonly waterWaves?: boolean } = {},
 ): string {
+  return `data:application/json,${encodeURIComponent(renderLifecycleManifestJson(options))}`;
+}
+
+export function renderLifecycleManifestJson(
+  options: { readonly waterWaves?: boolean } = {},
+): string {
   const fixtureMaterials = options.waterWaves
     ? materialShaders.map((shader) =>
         shader.identifier === 'forgeax::default-standard-pbr'
@@ -324,7 +333,5 @@ export function renderLifecycleManifestUrl(
           : shader,
       )
     : materialShaders;
-  return `data:application/json,${encodeURIComponent(
-    JSON.stringify({ entries, materialShaders: fixtureMaterials }),
-  )}`;
+  return JSON.stringify({ entries, materialShaders: fixtureMaterials });
 }

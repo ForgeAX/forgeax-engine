@@ -6,6 +6,7 @@ import {
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
   materialShaderAxes,
+  preferredMaterialShaderTemplateVariant,
 } from '@forgeax/engine-shader';
 import type { MaterialShaderArtifactRequest } from './assembly';
 
@@ -72,61 +73,6 @@ function nativeMatch(
     : undefined;
 }
 
-/** Lowest publication key among legal completions of this exact preference score. */
-function firstNativeKey(
-  entry: MaterialShaderManifestEntry,
-  constraints: Record<string, boolean>,
-  axes: readonly string[],
-) {
-  let selected = nativeMatch(entry, constraints);
-  if (selected === undefined || selected.definesKey === '') return selected;
-  for (const axis of [...axes].sort()) {
-    if (Object.hasOwn(constraints, axis)) continue;
-    if (selected.defines[axis] === false) {
-      constraints[axis] = false;
-      continue;
-    }
-    const lower = nativeMatch(entry, { ...constraints, [axis]: false });
-    constraints[axis] = lower === undefined;
-    if (lower !== undefined) selected = lower;
-  }
-  return selected;
-}
-
-function preferredNativeVariant(
-  entry: MaterialShaderManifestEntry,
-  constraints: Record<string, boolean>,
-  axes: readonly string[],
-) {
-  // Only seven scoring fields branch (at most 128 small constraint records).
-  // Unscored feature axes are queried lazily; no family variant table is read.
-  let choices = [constraints];
-  for (const [axis] of VARIANT_PREFERENCES) {
-    if (!axes.includes(axis) || Object.hasOwn(constraints, axis)) continue;
-    choices = choices.flatMap((choice) => [
-      { ...choice, [axis]: false },
-      { ...choice, [axis]: true },
-    ]);
-  }
-  const ranked = choices
-    .map((defines) => ({ defines, score: variantScore(defines) }))
-    .sort((a, b) => b.score - a.score);
-  let selected: MaterialShaderManifestVariant | undefined;
-  let score = -1;
-  for (const choice of ranked) {
-    if (choice.score < score) break;
-    const candidate = firstNativeKey(entry, { ...choice.defines }, axes);
-    if (
-      candidate !== undefined &&
-      (selected === undefined || candidate.definesKey.localeCompare(selected.definesKey) < 0)
-    ) {
-      selected = candidate;
-      score = choice.score;
-    }
-  }
-  return selected;
-}
-
 function selectNativeVariant(
   entry: MaterialShaderManifestEntry,
   options: MaterialShaderArtifactRequest,
@@ -148,7 +94,7 @@ function selectNativeVariant(
   }
   if (axes.includes('COVERAGE_ONLY') && !Object.hasOwn(constraints, 'COVERAGE_ONLY'))
     constraints.COVERAGE_ONLY = false;
-  return preferredNativeVariant(entry, constraints, axes);
+  return preferredMaterialShaderTemplateVariant(entry, constraints, VARIANT_PREFERENCES);
 }
 
 export function selectPublishedVariant(

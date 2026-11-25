@@ -1,7 +1,10 @@
 import { assert, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import { runtimeTerrainFixture } from '../../__tests__/terrain/runtime-fixture';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { DispatchEntry } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
+import { TerrainSourceCache } from '../../terrain/source';
 import { buildDispatchPlan } from '../fold-buckets';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { MeshDrawSlots } from '../mesh-draw-slots';
@@ -22,6 +25,18 @@ function terrainSource(source: ValidatedRenderable['source'], _count: number) {
 
 function terrainRows(row: ValidatedRenderable, count: number): ValidatedRenderable[] {
   const source = terrainSource(row.source, count);
+  const fixture = runtimeTerrainFixture({
+    columns: count + 1,
+    rows: 2,
+    spacing: 1,
+    subsectionVertices: 2,
+    heights: new Float32Array((count + 1) * 2),
+  });
+  const terrain = new TerrainSourceCache().resolve(
+    worldRenderResources(fixture.world),
+    fixture.handle,
+  );
+  fixture.assets.dispose();
   return Array.from({ length: count }, (_, index) => ({
     ...row,
     source: {
@@ -30,15 +45,7 @@ function terrainRows(row: ValidatedRenderable, count: number): ValidatedRenderab
         index,
         lod: 0,
         neighbors: [0, 0, 0, 0],
-        source: {
-          version: 0,
-          asset: { columns: 1, rows: 1, spacing: 1, subsectionVertices: 2, heightRange: [0, 1] },
-          layers: [],
-          activeLayers: [],
-          grids: [],
-          sectionCount: count,
-          sections: undefined,
-        },
+        source: terrain,
       },
     },
   }));
@@ -127,13 +134,13 @@ it('retains the physical addresses of immutable native rows until the allocator 
   const source = rows[0];
   const peer = rows[1];
   assert(source && peer);
-  const input = [{ ...source, meshSlot: undefined }];
+  const input = [{ ...source, meshSlot: -1 }];
   const address = vi.spyOn(scene, 'meshDrawSlot');
   const plan = () =>
     buildDispatchPlan(internals, input, [], [], [], undefined, false, undefined, scene, true);
   const first = plan().validatedOrdered;
   expect(first.at(0)?.meshSlot).toBe(0);
-  expect(input[0]?.meshSlot).toBeUndefined();
+  expect(input[0]?.meshSlot).toBe(-1);
   expect(plan().validatedOrdered).toBe(first);
   expect(address).toHaveBeenCalledTimes(1);
 

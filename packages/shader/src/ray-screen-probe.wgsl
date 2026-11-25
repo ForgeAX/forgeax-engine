@@ -1,14 +1,14 @@
 #define_import_path forgeax_ray::screen_probe
 #import forgeax_view::common::{View}
 #import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid, decodeStandardGBufferNormal, standardGBufferValid, STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT, STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT, STANDARD_GBUFFER_SCREEN_TRACE_MASK, decodeStandardReflectance, decodeCompactBaseColor}
-#import forgeax_depth_pyramid::sample::{depthPyramidCell, depthPyramidDepthOrEmpty, depthPyramidLevelSize}
+#import forgeax_depth_pyramid::sample::{depthPyramidCell, depthPyramidDepthOrEmpty, depthPyramidLevelSize, projectViewDepth}
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, sampleRadianceCacheAt, irradianceFieldOctWrap, prepareIrradianceFieldProbeVisibility}
 #ifdef IRRADIANCE_FIELD_RADIANCE_ATLAS
 #import forgeax_ray::irradiance_field_sample::{ScreenRadianceCoverage, screenRadianceCoverage, screenRadianceCoverageFromTrace, sampleScreenRadianceCache}
 #endif
 #import forgeax_ray::screen_candidate::{RAY_SCREEN_CANDIDATE, screenCandidatePack}
 #import forgeax_ray::screen_reconstruction::{spCurrentSupport, spReconstructionConfidence, spReconstructionSignal, spReconstructionSource, spReconstructionTemporalAlpha}
-#import forgeax_scene_temporal::{decodeSceneVelocity, sceneTemporalUv, SCENE_VELOCITY_INVALID_DEPTH, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{decodeSceneVelocity, sceneTemporalUv, sceneVelocityPreviousDepth, SCENE_VELOCITY_INVALID_DEPTH, unpackSceneTemporalV1}
 #ifdef IRRADIANCE_FIELD_VISIBILITY
 #import forgeax_ray::irradiance_field_sample::{fieldSegmentVisibility}
 #endif
@@ -327,7 +327,6 @@ fn probePolicyCullProjectedBound(texel:u32,normal:vec3f)->f32 {
 @group(0) @binding(48) var<storage, read> probeMovingIn: array<f32>;
 @group(0) @binding(49) var<storage, read_write> pixelMovingOut: array<u32>;
 @group(0) @binding(50) var<storage, read> pixelMovingIn: array<u32>;
-@group(0) @binding(51) var shortRangeAoFurthestDepthOut: texture_storage_2d<r32float, write>;
 @group(0) @binding(16) var<storage, read> radianceIn: array<ProbeRadiance>;
 // w is directional support, including an admitted retained cache estimate.
 // Ray status still distinguishes actual resolved rays from cache reconstruction.
@@ -1198,7 +1197,7 @@ fn traceHardwareScreenProbeVelocity(i: u32, receiverMotion: vec2f) {
     let currentRaster = view.temporalCurrentViewProj * raster;
     let previousRaster = probeFrame.previousViewProj * raster;
     if (!(currentRaster.w > 0.0 && previousRaster.w > 0.0)) { return; }
-    let previousRasterZ = bitcast<f32>(velocity.y - 1u);
+    let previousRasterZ = sceneVelocityPreviousDepth(velocity.y);
     let uvCorrection = sceneTemporalUv(currentRaster) - decodeSceneVelocity(velocity.x) - sceneTemporalUv(previousRaster);
     previous += vec3f(uvCorrection, previousRasterZ - previousRaster.z / previousRaster.w);
   }
@@ -2217,28 +2216,11 @@ fn spAoExtent() -> vec2u { return (extentSize() + vec2u(spAoFactor() - 1u)) / sp
 fn spAoPixel(cell: vec2u) -> vec2u {
   return min(cell * spAoFactor() + vec2u(spAoFactor() / 2u), extentSize() - vec2u(1u));
 }
-// Short-range AO in the half-resolution tier samples the first Furthest HZB
-// level. Keep reverse-Z device depth so reconstruction uses the original ray.
-@compute @workgroup_size(64)
-fn seedScreenProbeFurthestDepth(@builtin(global_invocation_id) gid: vec3u,
-    @builtin(num_workgroups) groups: vec3u) {
-  let extent = textureDimensions(shortRangeAoFurthestDepthOut);
-  let i = spLinearId(gid, groups);
-  if (i >= extent.x * extent.y) { return; }
-  let cell = vec2u(i % extent.x, i / extent.x);
-  let base = cell * 2u;
-  let edge = textureDimensions(gbufferDepth) - vec2u(1u);
-  var farthest = 1.0;
-  for (var tap = 0u; tap < 4u; tap++) {
-    let q = min(base + vec2u(tap & 1u, tap >> 1u), edge);
-    farthest = min(farthest, textureLoad(gbufferDepth, vec2i(q), 0));
-  }
-  textureStore(shortRangeAoFurthestDepthOut, vec2i(cell), vec4f(farthest, 0.0, 0.0, 1.0));
-}
-
 fn spAoDepth(pixel: vec2u) -> f32 {
-  if (spAoFactor() == 1u) { return textureLoad(gbufferDepth, vec2i(pixel), 0); }
-  return textureLoad(depthPyramid, vec2i(pixel / 2u), 0).x;
+  let size = textureDimensions(gbufferDepth);
+  let uv = (vec2f(pixel) + 0.5) / vec2f(size);
+  let cell = depthPyramidCell(uv, textureDimensions(depthPyramid, 0));
+  return projectViewDepth(textureLoad(depthPyramid, vec2i(cell), 0).x, view.temporalProjection);
 }
 
 fn spAoSlicePrimitive(h: f32, normalAngle: f32) -> f32 {
@@ -2851,7 +2833,7 @@ fn screenProbePreviousWorld(ndc: vec3f) -> vec4f {
     return;
   }
   if (word.y == SCENE_VELOCITY_INVALID_DEPTH || word.y == 0u || word.x == 0u) { return; }
-  let z = bitcast<f32>(word.y - 1u);
+  let z = sceneVelocityPreviousDepth(word.y);
   if (!(z >= 0.0 && z <= 1.0)) { return; }
   let uv = sceneTemporalUv(clip) - decodeSceneVelocity(word.x);
   let previous = screenProbePreviousWorld(vec3f(uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), z));
@@ -2939,7 +2921,7 @@ fn temporalScreenProbeAt(i: u32, currentAo: vec3f, velocity: vec2u, pixelMoving:
         // Match the jitter lattice of the retained history, while excluding
         // raster jitter from the geometry writer's motion vector.
         uv += currentUnjittered - previousUnjittered - decodeSceneVelocity(velocity.x);
-        expected = screenProbeDepthFromPreviousDeviceZ(bitcast<f32>(velocity.y - 1u));
+        expected = screenProbeDepthFromPreviousDeviceZ(sceneVelocityPreviousDepth(velocity.y));
       }
     }
     if (clip.w > 0.0 && expected > 0.0 && expected < 1e30 &&

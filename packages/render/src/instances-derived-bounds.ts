@@ -15,6 +15,7 @@ const fingerprintBits = new Uint32Array(fingerprintScalar.buffer);
 export interface DerivedInstancesUnionBoundsInput {
   readonly meshAabb: ArrayLike<number> | undefined;
   readonly entityWorld: ArrayLike<number>;
+  readonly entityWorldOffset?: number;
   readonly transforms: ArrayLike<number> | undefined;
 }
 
@@ -37,9 +38,13 @@ export type InstanceBoundsCacheInput = InstanceBoundsCacheKey & DerivedInstances
  * Float32 bits are hashed rather than decimal text so a real matrix/AABB
  * change invalidates the projection without keeping another mutable ledger.
  */
-export function fingerprintNumericArray(values: ArrayLike<number>): number {
+export function fingerprintNumericArray(
+  values: ArrayLike<number>,
+  offset = 0,
+  count = values.length - offset,
+): number {
   let hash = 0x811c9dc5;
-  for (let index = 0; index < values.length; index += 1) {
+  for (let index = offset, end = offset + count; index < end; index += 1) {
     fingerprintScalar[0] = Number(values[index]);
     hash = Math.imul(hash ^ (fingerprintBits[0] ?? 0), 0x01000193) >>> 0;
   }
@@ -237,8 +242,12 @@ const transformedScratch = new Float32Array(6);
 export function deriveInstancesUnionBounds(
   input: DerivedInstancesUnionBoundsInput,
 ): Float32Array | undefined {
-  const { meshAabb, entityWorld, transforms } = input;
-  if (!isFiniteBounds3(meshAabb) || !finiteMatrix(entityWorld) || transforms === undefined) {
+  const { meshAabb, entityWorld, entityWorldOffset = 0, transforms } = input;
+  if (
+    !isFiniteBounds3(meshAabb) ||
+    !finiteMatrix(entityWorld, entityWorldOffset) ||
+    transforms === undefined
+  ) {
     return undefined;
   }
   if (transforms.length === 0 || transforms.length % 16 !== 0) return undefined;
@@ -249,7 +258,7 @@ export function deriveInstancesUnionBounds(
   let initialized = false;
   for (let offset = 0; offset < transforms.length; offset += 16) {
     if (!finiteMatrix(transforms, offset)) return undefined;
-    mat4.multiply(composed, entityWorld, transforms, offset);
+    mat4.multiply(composed, entityWorld, transforms, offset, entityWorldOffset);
     if (!finiteMatrix(composed) || !transformAabb(transformed, local, composed)) return undefined;
     initialized = includeBox(union, transformed, initialized);
   }

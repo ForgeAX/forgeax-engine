@@ -9,13 +9,13 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { decodeMaterialNormalX12Y12 } from '../../../../render/src/__tests__/gtao-reference';
 import {
   GPU_BUFFER_USAGE_COPY_SRC,
   GPU_BUFFER_USAGE_STORAGE,
 } from '../../../../render/src/gpu-usage';
 import {
   byteErrorMetrics,
+  captureForwardGtaoBuffer,
   captureForwardGtaoTarget,
   type ForwardGtaoCaptureHost,
 } from './forward-gtao-capture';
@@ -29,7 +29,7 @@ import {
 
 export const UNLIT_AO_SIZE = 64;
 
-/** Real color/depth/normal coverage, on both direct and scene-index submissions. */
+/** Real color and depth coverage, on both direct and scene-index submissions. */
 export async function verifyUnlitAo(
   host: RendererHostAssembly,
   recorder: RecorderAttachment,
@@ -131,25 +131,39 @@ export async function verifyUnlitAo(
       throw new Error(JSON.stringify(describeForwardGtaoFailure(cause)), { cause });
     }
   };
-  const centerNormal = (capture: Awaited<ReturnType<typeof captureForwardGtaoTarget>>) => {
-    expect(capture.format).toBe('r32uint');
-    const pixel = Math.floor(capture.height / 2) * capture.width + Math.floor(capture.width / 2);
-    const bytes = new DataView(
-      capture.bytes.buffer,
-      capture.bytes.byteOffset,
-      capture.bytes.byteLength,
-    );
-    return decodeMaterialNormalX12Y12(bytes.getUint32(pixel * 4, true));
-  };
-  const nearNormal = (actual: readonly number[], expected: readonly number[]) => {
-    for (let axis = 0; axis < 3; axis++) expect(actual[axis]).toBeCloseTo(expected[axis] ?? NaN, 1);
-  };
   const expectNormal = async (lane: 'automatic' | 'direct', expected: readonly number[]) => {
-    if (surface === undefined) return;
-    const normal = await captureForwardGtaoTarget(debug, 'standard-scene-surface-normal', () =>
-      draw(lane),
+    if (surface === undefined || observationBuffer === undefined) return;
+    await draw(lane);
+    const bytes = await captureForwardGtaoBuffer(
+      debug,
+      observationBuffer,
+      surface.observationBytes,
     );
-    nearNormal(centerNormal(normal), expected);
+    const depth = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const size = UNLIT_AO_SIZE;
+    const center = Math.floor(size / 2);
+    const position = (x: number, y: number) => {
+      const deviceZ = depth.getFloat32((y * size + x) * 4, true);
+      const distance = 0.1 / (deviceZ + (1 - deviceZ) * (0.1 / 30));
+      const scale = distance * Math.tan(Math.PI / 6);
+      return [
+        (((x + 0.5) / size) * 2 - 1) * scale,
+        (1 - ((y + 0.5) / size) * 2) * scale,
+        -distance,
+      ] as const;
+    };
+    const centerPosition = position(center, center);
+    const right = position(center + 1, center);
+    const down = position(center, center + 1);
+    const dx = right.map((value, axis) => value - (centerPosition[axis] ?? 0));
+    const dy = down.map((value, axis) => value - (centerPosition[axis] ?? 0));
+    const [a = 0, b = 0, c = 0] = dx;
+    const [d = 0, e = 0, f = 0] = dy;
+    const normal = [e * c - f * b, f * a - d * c, d * b - e * a];
+    const length = Math.hypot(...normal);
+    for (let axis = 0; axis < 3; axis++)
+      expect((normal[axis] ?? NaN) / length).toBeCloseTo(expected[axis] ?? NaN, 1);
+    expect(debug.getCurrentGraphTarget('standard-scene-surface-normal')).toBeUndefined();
   };
   const captureAo = (lane: 'automatic' | 'direct') =>
     captureForwardGtaoTarget(debug, 'ssao-calc', () => draw(lane));
@@ -164,10 +178,6 @@ export async function verifyUnlitAo(
       for (const geometryLane of ['automatic', 'direct'] as const) {
         // No authored normal texture: AO must see the rotated mesh surface.
         for (let frame = 0; frame < 60; frame++) await draw(geometryLane);
-        const _capture = () =>
-          captureForwardGtaoTarget(debug, 'standard-scene-surface-normal', () =>
-            draw(geometryLane),
-          );
         await expectNormal(geometryLane, [Math.sin(angle), 0, Math.cos(angle)]);
         const opaqueAo = await captureForwardGtaoTarget(debug, 'ssao-calc', () =>
           draw(geometryLane),
@@ -194,7 +204,7 @@ export async function verifyUnlitAo(
         });
       }
     }
-    // Standard PBR-Skin must retain its posed surface normal alongside Unlit AO.
+    // Standard PBR-Skin must contribute its posed depth to AO.
     const skinMaterial = assets
       .create(standardPbrSkinMaterial(Materials.standard({ baseColor: [0.8, 0.3, 0.1, 1] })))
       .unwrap();

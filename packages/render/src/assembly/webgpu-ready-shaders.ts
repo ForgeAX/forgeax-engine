@@ -4,7 +4,11 @@ import {
   type ShaderSource,
   shaderSourceDescriptor,
 } from '@forgeax/engine-types';
-import { DEFERRED_PCF_LIGHTING_FEATURE } from '../pipeline/standard-deferred-lighting';
+import {
+  DEFERRED_CAPSULE_SHADOW_FEATURE,
+  DEFERRED_PCF_LIGHTING_FEATURE,
+  DEFERRED_SCREEN_AO_FEATURE,
+} from '../pipeline/standard-deferred-lighting';
 import type { SeedShaderModule } from './material-shader-policy';
 // Engine shader roster for one ready device generation: device variant axes,
 // manifest entry classification, capability variant patching and the eager
@@ -649,8 +653,13 @@ export async function prepareStandardSceneSources(
       extendedLighting: !pcf && caps.extendedLighting,
       projector: !pcf && caps.projector,
     };
+    const optionalBindings = {
+      DEFERRED_SCREEN_AO_AVAILABLE: (features & DEFERRED_SCREEN_AO_FEATURE) !== 0,
+      DEFERRED_CAPSULE_SHADOW_AVAILABLE: (features & DEFERRED_CAPSULE_SHADOW_FEATURE) !== 0,
+    };
     const variant = isShaderTemplateManifestRow(deferred)
       ? findVariantByDefines(deferred, {
+          ...optionalBindings,
           CLUSTER_FORWARD_AVAILABLE: clustered,
           DIRECT_DFG_LUT_AVAILABLE: directDfgLut,
           ...(materialShaderAxes(deferred).includes('DEFERRED_DIFFUSE_GI_AVAILABLE') ||
@@ -667,6 +676,9 @@ export async function prepareStandardSceneSources(
       : deferred.variants.find(
           (candidate) =>
             isDeferredLightingVariant(candidate.defines, clustered, directDfgLut, lightingCaps) &&
+            Object.entries(optionalBindings).every(
+              ([axis, value]) => (candidate.defines[axis] ?? false) === value,
+            ) &&
             (candidate.defines.DEFERRED_DIFFUSE_GI_AVAILABLE ?? false) === ((features & 1) !== 0) &&
             (candidate.defines.DEFERRED_LIGHT_PROBE_AVAILABLE ?? false) === ((features & 2) !== 0),
         );

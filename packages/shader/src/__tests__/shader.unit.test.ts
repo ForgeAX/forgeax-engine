@@ -855,6 +855,7 @@ import {
         '#pragma variant_axis PROJECTOR_AVAILABLE',
         '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
         '#pragma variant_axis REFLECTION_FALLBACK_AVAILABLE',
+        '#pragma variant_axis FORWARD_INLINE_SSR',
         '#pragma variant_axis COVERAGE_ONLY',
         '#pragma variant_axis VISIBLE_SURFACE_AVAILABLE',
         '#pragma variant_axis ALPHA_MASK',

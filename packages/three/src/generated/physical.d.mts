@@ -1,1 +1,1 @@
-export declare const physicalIndex: Readonly<Record<string, string>>;
+export declare const physicalTemplates: string;

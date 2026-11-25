@@ -49,25 +49,34 @@ export async function createRayReflectionComposite(
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = await prepareRenderPipeline(device, {
-    label: 'ray-reflection.composite',
-    layout: pipelineLayout.value,
-    vertex: { module, entryPoint: 'vs_ray_reflection', buffers: [] },
-    fragment: {
-      module,
-      entryPoint:
-        signal === 'raw'
-          ? 'fs_ray_reflection'
-          : signal === 'field'
-            ? 'fs_ray_reflection_field'
-            : 'fs_ray_reflection_reconstructed',
-      targets: [ADDITIVE, ADDITIVE],
-    },
-    primitive: { topology: 'triangle-list' },
-  });
-  if (!pipeline.ok) return pipeline;
+  const prepare = (writeScene: boolean) =>
+    prepareRenderPipeline(device, {
+      label: 'ray-reflection.composite',
+      layout: pipelineLayout.value,
+      vertex: { module, entryPoint: 'vs_ray_reflection', buffers: [] },
+      fragment: {
+        module,
+        entryPoint:
+          signal === 'raw'
+            ? 'fs_ray_reflection'
+            : signal === 'field'
+              ? 'fs_ray_reflection_field'
+              : 'fs_ray_reflection_reconstructed',
+        targets: [writeScene ? ADDITIVE : { ...ADDITIVE, writeMask: 0 }, ADDITIVE],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+  const sceneAndFallback = await prepare(true);
+  if (!sceneAndFallback.ok) return sceneAndFallback;
+  const fallbackOnly = await prepare(false);
+  if (!fallbackOnly.ok) return fallbackOnly;
   return ok({
-    record(pass: RhiRenderPassEncoder, input: RayReflectionCompositeInputs, pixelCount: number) {
+    record(
+      pass: RhiRenderPassEncoder,
+      input: RayReflectionCompositeInputs,
+      pixelCount: number,
+      deferScene = false,
+    ) {
       if (
         !Number.isInteger(pixelCount) ||
         pixelCount < 1 ||
@@ -108,7 +117,7 @@ export async function createRayReflectionComposite(
         ],
       });
       if (!bindings.ok) return bindings;
-      pass.setPipeline(pipeline.value);
+      pass.setPipeline(deferScene ? fallbackOnly.value : sceneAndFallback.value);
       pass.setBindGroup(0, bindings.value);
       pass.draw(3);
       return ok(undefined);

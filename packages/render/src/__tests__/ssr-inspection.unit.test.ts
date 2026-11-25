@@ -65,7 +65,7 @@ describe('SSR bounded spatial inspection', () => {
     const inspection = projectSsrSpatialInspection(admission, {
       status: 'structural-only',
       history: { state: 'not-owned', bytes: 128, resetCount: 2 },
-      passRoster: ['depth-pyramid-seed', 'ssr-trace', 'ssr-compose'],
+      passRoster: ['hzb-seed', 'ssr-trace', 'ssr-compose'],
       fallbackSource: 'probe',
       coverage: { hitCount: 3, fallbackCount: 1, excludedCount: 2 },
     });
@@ -73,7 +73,7 @@ describe('SSR bounded spatial inspection', () => {
       status: 'structural-only',
       history: { state: 'not-owned', bytes: 128, resetCount: 2 },
       coverage: { hitCount: 3, fallbackCount: 1, excludedCount: 2 },
-      passRoster: ['depth-pyramid-seed', 'ssr-trace', 'ssr-compose'],
+      passRoster: ['hzb-seed', 'ssr-trace', 'ssr-compose'],
       fallbackSource: 'probe',
     });
     expect(Object.isFrozen(inspection)).toBe(true);

@@ -1,4 +1,5 @@
 import { decodeDocumentText } from '@forgeax/engine-codec';
+import { nowMs } from '@forgeax/engine-platform';
 import {
   isMaterialProgramAbi,
   isShaderBuiltinRole,
@@ -303,7 +304,7 @@ export interface ShaderRegistryDevice {
  */
 export const FORGEAX_RESERVED_PATH_PREFIX = 'forgeax::' as const;
 
-/** Stable build-time module ids for the shared closest-depth pyramid producer. */
+/** Stable build-time module ids for the shared depth pyramid producer. */
 export const DEPTH_PYRAMID_SHADER_MODULES = Object.freeze({
   seed: 'forgeax_depth_pyramid::seed',
   reduce: 'forgeax_depth_pyramid::reduce',
@@ -618,10 +619,12 @@ export class ShaderRegistry {
     return ok({ raw, wire });
   }
 
-  async #initializeProgramCompiler(): Promise<ShaderResult<ShaderProgramCompiler, ShaderError>> {
+  async #initializeProgramCompiler(
+    fallback?: ShaderRegistryOptions['prepareProgramCompiler'],
+  ): Promise<ShaderResult<ShaderProgramCompiler, ShaderError>> {
     if (this.#programCompiler !== undefined) return ok(this.#programCompiler);
     if (this.#initializingProgramCompiler !== undefined) return this.#initializingProgramCompiler;
-    const initialize = this.#prepareProgramCompiler;
+    const initialize = this.#prepareProgramCompiler ?? fallback;
     if (initialize === undefined)
       return err(
         manifestMalformed({
@@ -657,8 +660,9 @@ export class ShaderRegistry {
   /** Admit source and its portable compiler before Render selects any pass or target. */
   async prepareMaterialTemplate(
     template: MaterialShaderTemplate,
+    fallback?: ShaderRegistryOptions['prepareProgramCompiler'],
   ): Promise<ShaderResult<PreparedMaterialShaderTemplate, ShaderError>> {
-    const compiler = await this.#initializeProgramCompiler();
+    const compiler = await this.#initializeProgramCompiler(fallback);
     if (!compiler.ok) return compiler;
     return this.prepareMaterialTemplateFromInitializedCompiler(template);
   }
@@ -689,9 +693,9 @@ export class ShaderRegistry {
         };
         const counts = this.#sourceMaterialCompiles[address];
         counts.requests++;
-        const started = performance.now();
+        const started = nowMs();
         const selected = selectAddress(request, address);
-        counts.compileMs += performance.now() - started;
+        counts.compileMs += nowMs() - started;
         if (!selected.ok) counts.failures++;
         else if (selected.value === undefined) counts.unavailable++;
         else counts.completed++;
@@ -1248,9 +1252,9 @@ export class ShaderRegistry {
             hint: 'shader preparation is pending. Await the selected program before requesting its source',
           }),
       );
-    const started = performance.now();
+    const started = nowMs();
     const compiled = compiler.compile(admitted.template, selected.defines);
-    this.#templateCompileMs += performance.now() - started;
+    this.#templateCompileMs += nowMs() - started;
     return compiled.ok ? ok(this.#storeTemplateProgram(key, compiled.value)) : compiled;
   }
 

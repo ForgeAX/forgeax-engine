@@ -735,11 +735,10 @@ Black emissive/sheen colors still disable their contribution; physical sheen
 still needs its static switch. Explicit zero intensity remains zero.
 Emissive is scene-linear and passes through exposure and the tone curve: under
 ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
-use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
-(SDK runtime-light-emissive).
+use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources.
 Glow meshes (beams, light pillars) add light: emission-only Surface (`return surfaceEmissionOnly(input, color, opacity)` from `forgeax_material::surface_v1`: the template still lights an additive Surface, the helper zeroes sun Fresnel glare and sky reflection), `one / one`
 colour blend, `zero / one` alpha (`ADDITIVE_BLEND` from `@forgeax/engine-render/authoring`, UE `BLEND_Additive`; `Materials.unlit(color, { blendMode: 'additive' })` also turns off depth writes, uses the Transparent queue and premultiplies colour by opacity), peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
-height on an open tapered mesh (SDK beam-pillar).
+height on an open tapered mesh.
 
 A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, Skylight environment reflection, fog; render README "Sea sun and sky").
 

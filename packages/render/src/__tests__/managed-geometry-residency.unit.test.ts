@@ -62,3 +62,37 @@ it('keeps one table for a fixed plan and never keeps an earlier plan reachable',
   gc();
   expect(released.deref()).toBeUndefined();
 });
+
+it('reads changing batch membership once and publishes independent physical mesh bindings', () => {
+  const world = worldRenderResources(new World());
+  const residents = new Map([[19, { contentEpoch: 1 } as MeshGpuHandles]]);
+  const getMeshGpuHandles = vi.fn((handle: number) => residents.get(handle));
+  const internals = { gpuStore: { getMeshGpuHandles } } as unknown as RenderSystemInternals;
+  const bindings = [19, 23, 19].map((assetHandle) => ({ assetHandle }) as GpuDrivenBatchBinding);
+  const [a, b, c] = bindings;
+  assert(a && b && c);
+  let reads = 0;
+  const batches = bindings.map((binding) => ({
+    get binding() {
+      reads++;
+      return binding;
+    },
+  }));
+  const scene = { plan: { batches } } as unknown as PersistentGpuDrivenState;
+  const read = () => gpuDrivenMeshesForFrame(internals, world, scene, 'resident-only');
+  const first = read();
+  expect([...first.keys()]).toEqual([a, c]);
+  residents.set(19, { contentEpoch: 2 } as MeshGpuHandles);
+  residents.set(23, { contentEpoch: 3 } as MeshGpuHandles);
+  reads = 0;
+  getMeshGpuHandles.mockClear();
+  const changed = read();
+  expect(reads).toBe(3);
+  expect(getMeshGpuHandles.mock.calls.map(([handle]) => handle)).toEqual([19, 23]);
+  expect([...changed.keys()]).toEqual([a, b, c]);
+  expect(first.get(a)?.contentEpoch).toBe(1);
+  expect(changed.get(c)?.contentEpoch).toBe(2);
+  batches.splice(1, 1);
+  expect([...read().keys()]).toEqual([a, c]);
+  expect(changed.get(b)?.contentEpoch).toBe(3);
+});

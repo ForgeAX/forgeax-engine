@@ -14,7 +14,7 @@
 #import forgeax_pbr::lighting_probe::{applyStandardProbeIrradiance}
 #endif
 #import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer, CompactGBufferOutput, StandardGBufferPassOutput, encodeCompactStandardGBuffer, encodeStandardReceiverContext, compactSubsurfaceCustomData}
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardReceiverNormal}
+#import forgeax_pbr::gbuffer::{encodeStandardReceiverNormal}
 
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
@@ -30,7 +30,7 @@
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
-#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{encodeSceneVelocityRaster, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_ssr::forward::{forwardSsrOpaque}
 #import forgeax_view::common::{spotModifierSampler, iesProfileTexture, cookieTexture, cookieMatrices}
@@ -69,6 +69,7 @@
 #pragma variant_axis PROJECTOR_AVAILABLE
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #pragma variant_axis REFLECTION_FALLBACK_AVAILABLE
+#pragma variant_axis FORWARD_INLINE_SSR
 #pragma variant_axis COVERAGE_ONLY
 #pragma variant_axis ALPHA_MASK
 #pragma variant_axis CLIPPING_PLANES
@@ -127,7 +128,7 @@
 #endif
 
 // Preserve filtering reflection for resources passed to the shared sampler.
-#ifdef EXTENDED_LIGHTING_AVAILABLE
+#ifdef FORWARD_INLINE_SSR
 @group(0) @binding(27) var forwardHiZ: texture_2d<f32>;
 @group(0) @binding(28) var forwardSsrColor: texture_2d<f32>;
 #endif
@@ -790,6 +791,7 @@ struct StandardPbrOutput {
   // The detached producer names this second target S_fallback.
   @location(1) reflectionFallback : vec4<f32>,
   @location(2) reflectionResponse : vec4<f32>,
+  @location(3) reflectionSurface : vec4<f32>,
 #endif
 };
 
@@ -806,6 +808,7 @@ struct StandardForwardLit {
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   reflectionFallback : vec4<f32>,
   reflectionResponse : vec4<f32>,
+  reflectionSurface : vec4<f32>,
 #endif
 };
 
@@ -815,6 +818,7 @@ fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> Standar
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = lit.reflectionFallback;
   output.reflectionResponse = lit.reflectionResponse;
+  output.reflectionSurface = lit.reflectionSurface;
 #endif
   return output;
 }
@@ -1021,7 +1025,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool,
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   var reflectionResponse = environment.response.rgb * (vec3<f32>(1.0) - coatF) * materialSpecularAo;
 #endif
-#ifdef EXTENDED_LIGHTING_AVAILABLE
+#ifdef FORWARD_INLINE_SSR
   if (standardSsrCoverage() > 0.0 && standardAlphaMode() < 2.0) {
     let reflection = forwardSsrOpaque(forwardHiZ, forwardSsrColor, view, standardPositionWS,
       physicalNormal, v, iblRoughness);
@@ -1237,6 +1241,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool,
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   lit.reflectionFallback = vec4<f32>(reflectionFallback, standardSsrCoverage());
   lit.reflectionResponse = vec4<f32>(reflectionResponse, environment.response.a);
+  lit.reflectionSurface = vec4<f32>(physicalNormal, iblRoughness);
 #endif
   return lit;
 }
@@ -1339,8 +1344,8 @@ fn fs_gbuffer_compact(in : VsOut, @builtin(front_facing) frontFacing : bool) -> 
   return skinGBuffer(standardParallaxInput(in), frontFacing, true).compact;
 }
 
-// Forward AO sees the deformed, skinned and material-normal-mapped Surface.
-fn standardAoInput(in : VsOut, frontFacing : bool) -> u32 {
+@fragment
+fn fs_depth_masked(in : VsOut, @builtin(front_facing) frontFacing : bool) {
   standardPositionWS = standardFragmentPosition(in);
   let rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
   let receiverNormal = select(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), rawGeometry,
@@ -1348,17 +1353,6 @@ fn standardAoInput(in : VsOut, frontFacing : bool) -> u32 {
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
   alphaTestSurface(surface);
-  return encodeStandardNormalRoughness(surface.normalWS, 1.0);
-}
-
-@fragment
-fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
-  return standardAoInput(in, frontFacing);
-}
-
-@fragment
-fn fs_ao_input_msaa(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<u32> {
-  return (vec4<u32>(standardAoInput(in, frontFacing)) >> vec4<u32>(0u, 8u, 16u, 24u)) & vec4<u32>(255u);
 }
 
 // Deformed draws publish no visible-surface rows (their posed triangles have no
@@ -1716,7 +1710,12 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_temporal_depth(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  return materialTemporal(in);
+}
+
+@fragment
 fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
-  return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);
+  return encodeSceneVelocityRaster(materialTemporal(in), in.previousClip);
 }
 #endif

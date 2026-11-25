@@ -50,8 +50,15 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
     world.update(1 / 60).unwrap();
     return renderer.draw({ source: attached });
   };
+  const drawCompleted = async () => {
+    const frame = draw();
+    if (!frame.ok) return false;
+    if (frame.value === undefined) throw new Error('Missing frame receipt');
+    expect((await frame.value.completed).ok).toBe(true);
+    return true;
+  };
   try {
-    for (let frame = 0; frame < 60; frame++) expect(draw().ok).toBe(true);
+    for (let frame = 0; frame < 60; frame++) expect(await drawCompleted()).toBe(true);
     expect(renderer.inspect().dynamicResolution).toMatchObject({
       status: 'unavailable',
       gpuMs: undefined,
@@ -62,15 +69,15 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
       throw new Error('missing observation capability');
     const requested = renderer.requestObservation(['final-display']);
     if (!requested.ok) throw requested.error;
-    expect(draw().ok).toBe(true);
+    expect(await drawCompleted()).toBe(true);
     expect(renderer.inspect().perFramePassNames).toContain('final-display-observation');
     const accepted = renderer.inspect().dynamicResolution?.extent;
     world.set(camera, DynamicResolution, { minScale: 0.5, maxScale: 0.5 }).unwrap();
     failSubmit = true;
-    expect(draw().ok).toBe(false);
+    expect(await drawCompleted()).toBe(false);
     expect(renderer.inspect().dynamicResolution?.extent).toEqual(accepted);
     failSubmit = false;
-    expect(draw().ok).toBe(true);
+    expect(await drawCompleted()).toBe(true);
     expect(renderer.inspect().dynamicResolution?.extent?.internalWidth).toBe(64);
 
     const fault = rejectMainViewBinding();
@@ -78,18 +85,18 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
     try {
       // A retained reduced graph cannot be submitted as a native frame, even
       // if rebuilding fails repeatedly after the component has disappeared.
-      expect(draw().ok).toBe(false);
-      expect(draw().ok).toBe(false);
+      expect(await drawCompleted()).toBe(false);
+      expect(await drawCompleted()).toBe(false);
     } finally {
       fault.restore();
     }
-    expect(draw().ok).toBe(true);
-    expect(renderer.inspect().dynamicResolution).toBeUndefined();
-    expect(renderer.inspect().temporalTarget?.descriptor).toMatchObject({
-      width: 128,
-      height: 128,
-    });
-    expect(renderer.inspect().perFramePassNames).not.toContain('standard-scene-coverage');
+    expect(await drawCompleted()).toBe(true);
+    const restored = renderer.inspect();
+    expect(restored.dynamicResolution).toBeUndefined();
+    expect(restored.temporal.mode).toBe('taa');
+    expect(restored.perFramePassNames).toContain('standard-depth-velocity');
+    expect(restored.perFramePassNames).toContain('taa-resolve');
+    expect(restored.perFramePassNames).not.toContain('standard-scene-coverage');
   } finally {
     attached.dispose();
     await renderer.dispose();

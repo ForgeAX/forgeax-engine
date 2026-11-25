@@ -33,17 +33,19 @@ import type { ShadowMapSettings } from './shadow';
 import type { projectJoints } from './skinning';
 import type { SceneChanges } from './source-changes';
 
+export const EMPTY_SOURCE_TRANSFORM: readonly number[] = Object.freeze([]);
+
 export interface PoseRecord {
   readonly entity: EntityHandle;
-  transform: number[];
+  transform: readonly number[] | Float64Array;
   parent?: EntityHandle | undefined;
   localVersion?: number | undefined;
   skinWorldRevision?: number | undefined;
 }
 
 export interface NodeRecord extends PoseRecord, Partial<Record<WalkSlot, number>> {
+  readonly object: Object3D;
   groupOrder?: number;
-  orderedTransparency?: boolean;
   renderReady?: true;
   /** View-dependent and axis-converted draws keep a separate authored hierarchy pose. */
   sourcePose?: PoseRecord | undefined;
@@ -115,6 +117,7 @@ export interface FrameMeshPlans {
 
 /** Working collections for one source projection. Their entries expire before sync returns. */
 export class ScenePreparationLists {
+  readonly trackingSettings: unknown[] = [];
   readonly transformParents = new Map<Object3D, Object3D | null>();
   readonly transformAnchors = new Map<Object3D, boolean>();
   readonly pendingCasters: Renderable[] = [];
@@ -170,6 +173,7 @@ export class ScenePreparationLists {
   ];
 
   release(): void {
+    this.trackingSettings.fill(undefined);
     this.pendingCasters.length = 0;
     this.transparentObjects.length = 0;
     for (const collection of this.collections) if (collection.size) collection.clear();

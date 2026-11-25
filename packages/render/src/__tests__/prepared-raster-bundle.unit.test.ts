@@ -24,7 +24,23 @@ function fixture() {
   const create = vi.fn(() =>
     ok({
       ...Object.fromEntries(
-        methods.map((method) => [method, (...args: unknown[]) => trace.push([method, ...args])]),
+        methods.map((method) => [
+          method,
+          (...args: unknown[]) => {
+            const [index, group, offsets, start, count] = args;
+            if (method === 'setBindGroup' && offsets instanceof Uint32Array) {
+              const begin = Number(start);
+              trace.push([
+                method,
+                index,
+                group,
+                Array.from(offsets.subarray(begin, begin + Number(count))),
+              ]);
+            } else if (method === 'setBindGroup' && Array.isArray(offsets)) {
+              trace.push([method, index, group, [...offsets]]);
+            } else trace.push([method, ...args]);
+          },
+        ]),
       ),
       finish: () => ok({}),
     }),
@@ -135,7 +151,7 @@ describe('private streaming prepared raster recording', () => {
     const f = fixture();
     const unjittered = { ...f.bindings, viewOffset: 1280 };
     const first = f.resolve(unjittered);
-    expect(f.trace).toContainEqual(['setBindGroup', 0, f.bindings.view, [1280, 0]]);
+    expect(f.trace).toContainEqual(['setBindGroup', 0, f.bindings.view, [1280]]);
     expect(f.resolve({ ...unjittered })).toBe(first);
     expect(f.resolve({ ...unjittered, viewOffset: 0 })).not.toBe(first);
   });
@@ -293,7 +309,7 @@ describe('prepared raster batch physical closure', () => {
       ['drawIndexedIndirect', f.bindings.indirect, 80],
     ]);
     expect(f.trace.filter(([method]) => method === 'setBindGroup')).toEqual([
-      ['setBindGroup', 0, f.bindings.view, [0, 0]],
+      ['setBindGroup', 0, f.bindings.view, [0]],
       ['setBindGroup', 1, f.bindings.material, [256]],
       ['setBindGroup', 2, f.bindings.mesh, [0]],
       ['setBindGroup', 3, f.bindings.windows[0]],

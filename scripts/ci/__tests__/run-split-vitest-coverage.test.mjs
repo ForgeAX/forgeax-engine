@@ -39,13 +39,28 @@ const standardAliasFile =
   'packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts';
 const materialCompilerSplitFile =
   'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts';
+const meshIoFormatFile = 'packages/mesh-io/src/__tests__/formats.integration.test.ts';
+const devkitBootstrapCommandsFile = 'packages/devkit/src/__tests__/bootstrap-commands.test.ts';
+const previouslySharedFiles = new Set([meshIoFormatFile, devkitBootstrapCommandsFile]);
+
+function restoreHistoricalSharedCoverage(groups) {
+  // Historical coverage receipts include these suites in their shared children.
+  return groups
+    .filter((group) => !group.files.some((file) => previouslySharedFiles.has(file)))
+    .map((group) => ({
+      ...group,
+      excludes: group.excludes.filter((file) => !previouslySharedFiles.has(file)),
+    }));
+}
 
 function coverageGroupsForHistoricalReceipts(projects, size, options) {
-  const groups = coverageGroups(projects, size, {
-    ...options,
-    includeLocalShowcases: true,
-    historicalModeling: true,
-  });
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(projects, size, {
+      ...options,
+      includeLocalShowcases: true,
+      historicalModeling: true,
+    }),
+  );
   const split = groups.find((group) => group.files.includes(materialCompilerSplitFile));
   const ledger =
     options?.completed ??
@@ -1057,8 +1072,8 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    7,
-    'native, Vite build and live startup owners drain neighboring coverage work',
+    8,
+    'native, Vite build, bootstrap and live startup owners drain neighboring coverage work',
   );
   assert.equal(active.size, 0);
 });
@@ -1119,7 +1134,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 19);
+  assert.equal(exclusiveRuns, 20);
 });
 
 test('asset-library catalogs share the complete exclusive bootstrap owner with their original deadline', () => {
@@ -1155,9 +1170,19 @@ test('asset-library catalogs share the complete exclusive bootstrap owner with t
   assert.match(readFileSync(file, 'utf8'), /}, 120_000\);/);
 });
 
-test('cold large-scene contracts execute once without competing coverage children', () => {
-  const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-render'], 8);
+test('cold scene, format and bootstrap contracts execute once in exclusive coverage children', () => {
+  const groups = coverageGroups(
+    [
+      '@forgeax/engine-scene',
+      '@forgeax/engine-render',
+      '@forgeax/engine-mesh-io',
+      '@forgeax/engine-devkit',
+    ],
+    8,
+  );
   for (const file of [
+    meshIoFormatFile,
+    devkitBootstrapCommandsFile,
     'packages/scene/src/__tests__/flat-propagation.contract.test.ts',
     'packages/render/src/__tests__/managed-production-batches.unit.test.ts',
   ]) {
@@ -2514,6 +2539,7 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     bootstrapFile,
     libraryFile,
     publicationFile,
+    devkitBootstrapCommandsFile,
     sceneFile,
     ...nativeFiles.slice(0, 2),
     liveProcessFile,
@@ -2537,6 +2563,12 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       {
         projects: ['@forgeax/engine-devkit'],
         files: [bootstrapFile, libraryFile, publicationFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [devkitBootstrapCommandsFile],
         excludes: [],
         gpuLease: false,
       },
@@ -2998,10 +3030,12 @@ test('the completed split compiler cohort fits the daily Coverage replay target'
     readFileSync('scripts/ci/coverage-completed-child-seconds.json', 'utf8'),
   );
   const receipt = ledger.replayRuns.find((run) => run.runId === 44949779826);
-  const groups = coverageGroups(allProjectNames(), 8, {
-    historicalModeling: true,
-    environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
-  });
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(allProjectNames(), 8, {
+      historicalModeling: true,
+      environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+    }),
+  );
   assert.equal(receipt.originalJobs.length, 4);
   assert.ok(receipt.originalJobs.every((job) => !job.inherited));
   assert.deepEqual(
@@ -3022,10 +3056,12 @@ test('the timeout cohort moves complete Coverage work off the overrun lane', () 
     readFileSync('scripts/ci/coverage-completed-child-seconds.json', 'utf8'),
   );
   const receipt = ledger.replayRuns.find(({ runId }) => runId === 44984141441);
-  const groups = coverageGroups(allProjectNames(), 8, {
-    historicalModeling: true,
-    environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
-  });
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(allProjectNames(), 8, {
+      historicalModeling: true,
+      environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+    }),
+  );
   assert.equal(Object.keys(receipt.completedSeconds).length, 61);
   assert.equal(Object.keys(receipt.reservedSeconds).length, 6);
   assert.ok(receipt.originalJobs.every((job) => !job.inherited && job.runId === receipt.runId));

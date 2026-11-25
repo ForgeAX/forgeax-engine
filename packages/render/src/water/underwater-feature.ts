@@ -24,6 +24,7 @@ import type {
 import { captureFeatureSourceAssetVersion } from '../features/source';
 import type { RenderFeature, RenderFeatureExtractContext } from '../features/types';
 import { materialProgramInputs, waterProgramEntryPoints } from '../material-program-inputs';
+import { materialProgramSelectionsForMaterial } from '../material-program-selection';
 import {
   captureMaterialSource,
   type MaterialSourceReferences,
@@ -33,7 +34,6 @@ import {
 } from '../material-source';
 import { worldRenderResources } from '../publication/resource-scope';
 import { cameraNearPlaneCornerDistanceM } from '../record/helpers';
-import { materialProgramSelectionsForMaterial } from '../render-system-extract';
 import {
   requireWaterBodyBakedSources,
   waterMaterialEntryPointReferences,

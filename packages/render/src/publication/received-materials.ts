@@ -1,5 +1,16 @@
 import { ownDetachedMaterialSnapshot } from '../material-resource';
+import type { MaterialSnapshot } from '../render-system-extract';
 import type { RenderPublicationMessage } from './record';
+
+/** The transport detached program data. Keep the received wire record intact for repeated receipts. */
+export function adoptWorkerMaterialSnapshot(value: MaterialSnapshot): MaterialSnapshot {
+  const baseColor = value.baseColor;
+  return ownDetachedMaterialSnapshot({
+    ...value,
+    baseColor:
+      baseColor.buffer instanceof ArrayBuffer ? baseColor : (baseColor.slice() as typeof baseColor),
+  });
+}
 
 /** A Worker message already owns its cloned values. Only shared memory can still alias the sender. */
 export function adoptWorkerPublicationMaterials(
@@ -12,18 +23,10 @@ export function adoptWorkerPublicationMaterials(
     ...message,
     side: {
       ...side,
-      materials: materials.map((material) => {
-        const value = material.value;
-        const baseColor = value.baseColor;
-        return {
-          ...material,
-          value: ownDetachedMaterialSnapshot(
-            baseColor.buffer instanceof ArrayBuffer
-              ? value
-              : { ...value, baseColor: baseColor.slice() as typeof baseColor },
-          ),
-        };
-      }),
+      materials: materials.map((material) => ({
+        ...material,
+        value: adoptWorkerMaterialSnapshot(material.value),
+      })),
     },
   };
 }

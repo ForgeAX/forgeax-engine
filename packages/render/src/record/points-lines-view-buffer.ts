@@ -1,6 +1,6 @@
 import { type Buffer, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { DeviceScope } from '../lifecycle';
-import { POINTS_LINES_VIEW_SLOT_COUNT, POINTS_LINES_VIEW_SLOT_STRIDE } from './view-ubo';
+import { POINTS_LINES_VIEW_SLOT_STRIDE } from './view-ubo';
 
 /** A view's draw parameters grow before recording; replaced buffers retire after submitted work. */
 export function createPointsLinesViewBuffer(device: RhiDevice, scope?: DeviceScope) {
@@ -14,14 +14,18 @@ export function createPointsLinesViewBuffer(device: RhiDevice, scope?: DeviceSco
     void device.queue.onSubmittedWorkDone().then(destroy, destroy);
   };
   const owner = {
-    get buffer(): Buffer {
-      if (buffer === undefined) throw new Error('Points/Lines view buffer is not allocated');
+    get buffer(): Buffer | undefined {
       return buffer;
     },
     ensureCapacity(slots: number): void {
       if (disposed) throw new Error('Points/Lines view buffer is disposed');
+      if (slots === 0 && buffer !== undefined) {
+        release(buffer);
+        buffer = undefined;
+        capacity = 0;
+      }
       if (slots <= capacity) return;
-      const next = Math.max(POINTS_LINES_VIEW_SLOT_COUNT, 2 ** Math.ceil(Math.log2(slots)));
+      const next = 2 ** Math.ceil(Math.log2(slots));
       const size = next * POINTS_LINES_VIEW_SLOT_STRIDE;
       if (!Number.isSafeInteger(size) || size > device.limits.maxBufferSize)
         throw new RhiError({
@@ -47,7 +51,6 @@ export function createPointsLinesViewBuffer(device: RhiDevice, scope?: DeviceSco
       buffer = undefined;
     },
   };
-  owner.ensureCapacity(1);
   scope?._adopt('buffer', owner, (value) => value.dispose());
   return owner;
 }

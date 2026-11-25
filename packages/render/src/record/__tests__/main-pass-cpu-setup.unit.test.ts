@@ -1,8 +1,10 @@
-import { err, RhiError } from '@forgeax/engine-rhi';
+import { type BindGroup, err, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { createViewportHitCapture } from '../../assembly/viewport-hit-proxy';
-import { MaterialResource } from '../../material-resource';
+import * as environment from '../../environment/bindings';
+import { IndirectPassBindings } from '../../gpu-driven/production-raster-encode';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import type { DispatchEntry } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { FirstEntryMap } from '../first-entry-map';
@@ -10,11 +12,67 @@ import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { flushMeshDrawUploads, MESH_PER_ENTITY_STRIDE, prepareMeshDraw } from '../mesh-ssbo';
 import type { RenderBundleCounters } from '../render-bundle-cache';
+import { ShadowDirectCommands } from '../shadow-direct-commands';
 import {
   CPU_SETUP_SHADER,
   cpuSetupFixture,
+  fixtureMaterialBinding,
   nativeGeometryFixture,
 } from './main-pass-cpu-setup-fixture';
+
+it.each([
+  'forgeax::default-unlit',
+  'game::paint',
+])('selects %s once across uniform-only materials and keeps both binding addresses', async (shader) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const native = nativeGeometryFixture(f);
+  for (const pass of f.c.dispatch ?? []) Object.assign(pass, { materialShaderId: shader });
+  const second = f.entries[1]?.source.material;
+  if (second === undefined) throw new Error('missing second material');
+  const programRead = vi.fn(
+    (_id: string, _request?: { readonly alphaMask?: boolean }) => undefined,
+  );
+  Object.assign(f.c.runtime, { getMaterialShaderArtifact: programRead });
+  const record = () => {
+    f.acceptMaterials();
+    const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+    const addresses: number[] = [];
+    programRead.mockClear();
+    try {
+      native.record(pass, (slot) => {
+        addresses.push(slot);
+        return 0;
+      });
+      expect(addresses).toEqual([0, 1]);
+      return programRead.mock.calls.filter(([, request]) => request?.alphaMask !== undefined)
+        .length;
+    } finally {
+      pass.end();
+    }
+  };
+  try {
+    for (const row of f.entries) {
+      const resource = row.source.material;
+      resource.adopt(
+        captureMaterialSnapshot({
+          ...resource.snapshot,
+          materialShaderId: shader,
+          roughness: row.renderableIndex,
+        }),
+      );
+    }
+    const shared = record();
+    second.adopt(
+      captureMaterialSnapshot({ ...second.snapshot, paramSnapshot: { alphaCutoff: 0.5 } }),
+    );
+    const masked = record();
+    expect([shared, masked]).toEqual([1, 2]);
+  } finally {
+    f.dispose();
+  }
+});
 
 it.each([
   true,
@@ -77,7 +135,7 @@ it.each([
       1,
       f.meshGroup,
       f.meshGroup,
-      (slot) => ({ group: f.materialGroup, byteOffset: slot * 256, dynamicOffsetCount: 1 }),
+      fixtureMaterialBinding(f.materialGroup, (slot) => slot * 256),
       'forward',
       selected,
     );
@@ -278,16 +336,26 @@ it.each([
     for (let frame = 0; frame < 60; frame++) {
       const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
       const materialOffsets: number[] = [];
+      const meshOffsets: number[] = [];
+      let addressWord: Uint32Array | undefined;
       const set = pass.setBindGroup.bind(pass);
-      pass.setBindGroup = (index, group, offsets, start, count) => {
-        if (index === 1) materialOffsets.push(offsets?.[start ?? 0] ?? 0);
-        return set(index, group, offsets, start, count);
-      };
+      vi.spyOn(pass, 'setBindGroup').mockImplementation((...args: Parameters<typeof set>) => {
+        const [index, , offsets, start, count] = args;
+        if (index === 1 || index === 2) {
+          expect(offsets).toBeInstanceOf(Uint32Array);
+          expect([start, count]).toEqual([0, 1]);
+          addressWord ??= offsets as Uint32Array;
+          expect(offsets).toBe(addressWord);
+          (index === 1 ? materialOffsets : meshOffsets).push(addressWord[0] as number);
+        }
+        return set(...args);
+      });
       const offset = frame % 2 === 0 ? 0 : 512;
       f.receipts.length = 0;
       prepared.record(pass, (slot) => (slot === 0 ? offset : 0));
       pass.end();
       expect(materialOffsets).toEqual([offset, 256]);
+      expect(meshOffsets).toEqual([0, MESH_PER_ENTITY_STRIDE]);
       expect(f.receipts).toEqual([
         { entity: 1, submesh: 0 },
         { entity: 2, submesh: 0 },
@@ -438,13 +506,22 @@ it('prepares the retained mesh slot once and draws every submesh when nothing is
   const writes = vi.spyOn(device.queue, 'writeBuffer');
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   const vertex = vi.spyOn(pass, 'setVertexBuffer');
-  const groups = vi.spyOn(pass, 'setBindGroup');
+  const meshOffsets: number[][] = [];
+  const set = pass.setBindGroup.bind(pass);
+  vi.spyOn(pass, 'setBindGroup').mockImplementation((...args: Parameters<typeof set>) => {
+    const [index, , offsets, start, count] = args;
+    if (index === 2) {
+      const begin = start ?? 0;
+      meshOffsets.push(
+        Array.from(offsets ?? []).slice(begin, begin + (count ?? offsets?.length ?? 0)),
+      );
+    }
+    return set(...args);
+  });
   try {
     f.record(pass);
     expect(vertex).toHaveBeenCalledTimes(1);
-    expect(
-      groups.mock.calls.filter(([slot]) => slot === 2).map(([, , offsets]) => offsets),
-    ).toEqual([[7 * 256]]);
+    expect(meshOffsets).toEqual([[7 * 256]]);
     expect(writes.mock.calls.filter(([buffer]) => buffer !== f.meshUniformBuffer)).toHaveLength(1);
     expect(writes.mock.calls.filter(([buffer]) => buffer === f.meshUniformBuffer)).toHaveLength(1);
     expect(f.receipts.map(({ submesh }) => submesh)).toEqual([0, 1, 2]);
@@ -475,7 +552,7 @@ it.each([
       1,
       f.meshGroup,
       f.meshGroup,
-      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       filter === 'dispatch' ? [] : undefined,
     );
@@ -667,7 +744,7 @@ it('keeps Points/Lines parameter addresses distinct across local Pass rosters', 
         1,
         f.meshGroup,
         f.meshGroup,
-        () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+        fixtureMaterialBinding(f.materialGroup),
       );
       pass.end();
     }
@@ -745,7 +822,7 @@ it.each([
         1,
         f.meshGroup,
         f.meshGroup,
-        () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+        fixtureMaterialBinding(f.materialGroup),
         kind,
         selected,
       );
@@ -904,7 +981,7 @@ it.each(
       1,
       f.meshGroup,
       f.meshGroup,
-      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       selected,
     );
@@ -1001,13 +1078,7 @@ it('requests later material pipelines without binding an earlier pending pipelin
     throw new Error('pending material must not bind');
   });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
-  const record = (
-    resolveBinding: () => {
-      group: typeof f.materialGroup;
-      byteOffset: number;
-      dynamicOffsetCount: 0 | 1;
-    },
-  ) =>
+  const record = (resolveBinding: Parameters<typeof recordGeometryDraws>[7]) =>
     recordGeometryDraws(
       f.c,
       pass,
@@ -1035,11 +1106,7 @@ it('requests later material pipelines without binding an earlier pending pipelin
     delete f.c.frameState.pipelinePreparationPending;
     delete f.c.frameState.pipelinePreparationPendingReason;
     prepare.mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
-    const readyBinding = vi.fn(() => ({
-      group: f.materialGroup,
-      byteOffset: 0,
-      dynamicOffsetCount: 1 as const,
-    }));
+    const readyBinding = vi.fn(fixtureMaterialBinding(f.materialGroup));
     record(readyBinding);
     expect(readyBinding).toHaveBeenCalledTimes(2);
     expect(f.receipts).toEqual([
@@ -1049,6 +1116,75 @@ it('requests later material pipelines without binding an earlier pending pipelin
     expect(f.c.frameState.pipelinePreparationPending).toBeUndefined();
     expect(f.errors).toEqual([]);
   } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('consumes alternating physical material addresses in direct and shadow encoders', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, submeshes: 1 });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const addresses: { slot: number; value: number[] | undefined }[] = [];
+  const inputs = new Set<Uint32Array>();
+  const bind = pass.setBindGroup.bind(pass);
+  vi.spyOn(pass, 'setBindGroup').mockImplementation(
+    (
+      slot: number,
+      group: BindGroup,
+      data?: Uint32Array | readonly number[],
+      start?: number,
+      count?: number,
+    ) => {
+      if (data instanceof Uint32Array) {
+        inputs.add(data);
+        addresses.push({
+          slot,
+          value: Array.from(data.subarray(start, (start ?? 0) + (count ?? data.length))),
+        });
+        bind(slot, group, data, start ?? 0, count ?? data.length);
+      } else {
+        addresses.push({ slot, value: data === undefined ? undefined : [...data] });
+        bind(slot, group, data);
+      }
+    },
+  );
+  const projected = vi.spyOn(environment, 'viewForPipeline').mockReturnValue(f.meshGroup);
+  try {
+    const direct = new IndirectPassBindings(pass, f.viewGroup, undefined, undefined, 768);
+    direct.bindPipeline(f.pipeline, device);
+    const offsets = [undefined, 0, 256, 512, 0, undefined];
+    for (const address of offsets) direct.bindMaterial(f.materialGroup, address);
+    const observed = offsets.map((address) => (address === undefined ? undefined : [address]));
+    expect(addresses).toEqual([
+      { slot: 0, value: [768] },
+      ...observed.map((value) => ({ slot: 1, value })),
+    ]);
+    expect(inputs.size).toBe(1);
+    expect([...inputs][0]?.length).toBe(1);
+    addresses.length = 0;
+    inputs.clear();
+    const shadow = new ShadowDirectCommands(pass, null);
+    for (const address of offsets)
+      shadow.draw(
+        f.pipeline,
+        entry.mesh,
+        f.materialGroup,
+        address,
+        { group: f.meshGroup, offsets: [0] },
+        f.viewGroup,
+        { first: 0, count: 3, baseVertex: 0 },
+        1,
+        0,
+      );
+    expect(addresses.filter(({ slot }) => slot === 1).map(({ value }) => value)).toEqual(observed);
+    expect(shadow.count).toBe(offsets.length);
+    expect(inputs.size).toBe(1);
+    expect([...inputs][0]?.length).toBe(1);
+  } finally {
+    projected.mockRestore();
     pass.end();
     f.dispose();
   }

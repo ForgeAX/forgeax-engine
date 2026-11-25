@@ -356,38 +356,47 @@ function sphereReachesFroxel(
 }
 
 /**
- * Cone (apex, unit axis, half-angle < 90 deg, slant `range`) against the
- * froxel's bounding sphere (Wronski, "Cull that cone"). Conservative.
+ * Use the tangent plane facing the cell center (UE LightGridInjection).
+ * A rejected box is wholly outside the emitting cone or hemisphere.
  */
-function coneReachesFroxel(
+function emissionReachesFroxel(
   box: Float64Array,
-  apexX: number,
-  apexY: number,
-  apexZ: number,
-  range: number,
-  axisX: number,
-  axisY: number,
-  axisZ: number,
-  cos: number,
+  words: Float32Array,
+  at: number,
+  rect: boolean,
 ): boolean {
-  const cxm = ((box[0] ?? 0) + (box[3] ?? 0)) * 0.5;
-  const cym = ((box[1] ?? 0) + (box[4] ?? 0)) * 0.5;
-  const czm = ((box[2] ?? 0) + (box[5] ?? 0)) * 0.5;
-  const rr =
-    0.5 *
-    Math.hypot(
-      (box[3] ?? 0) - (box[0] ?? 0),
-      (box[4] ?? 0) - (box[1] ?? 0),
-      (box[5] ?? 0) - (box[2] ?? 0),
-    );
-  const vx = cxm - apexX;
-  const vy = cym - apexY;
-  const vz = czm - apexZ;
-  const lenSq = vx * vx + vy * vy + vz * vz;
-  const along = vx * axisX + vy * axisY + vz * axisZ;
-  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
-  const closest = cos * Math.sqrt(Math.max(0, lenSq - along * along)) - along * sin;
-  return !(closest > rr || along > rr + range || along < -rr);
+  const x = (box[0] as number) + (box[3] as number);
+  const y = (box[1] as number) + (box[4] as number);
+  const z = (box[2] as number) + (box[5] as number);
+  const vx = x * 0.5 - (words[at + 12] as number);
+  const vy = y * 0.5 - (words[at + 13] as number);
+  const vz = z * 0.5 - (words[at + 14] as number);
+  const ax = words[at + 16] as number;
+  const ay = words[at + 17] as number;
+  const az = words[at + 18] as number;
+  let nx = -ax;
+  let ny = -ay;
+  let nz = -az;
+  if (!rect) {
+    const along = vx * ax + vy * ay + vz * az;
+    const rx = vx - along * ax;
+    const ry = vy - along * ay;
+    const rz = vz - along * az;
+    const length = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    const cos = words[at + 19] as number;
+    const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+    if (length > 1e-6) {
+      const scale = cos / length;
+      nx = rx * scale - ax * sin;
+      ny = ry * scale - ay * sin;
+      nz = rz * scale - az * sin;
+    }
+  }
+  const extent =
+    Math.abs(nx) * ((box[3] as number) - (box[0] as number)) * 0.5 +
+    Math.abs(ny) * ((box[4] as number) - (box[1] as number)) * 0.5 +
+    Math.abs(nz) * ((box[5] as number) - (box[2] as number)) * 0.5;
+  return vx * nx + vy * ny + vz * nz <= extent;
 }
 
 /**
@@ -433,6 +442,7 @@ export const PRODUCER_RESERVATION_END_WORD = 6;
 export const PRODUCER_BOUNDS_STRIDE_WORDS = 20;
 const PRODUCER_FLAG_UNBOUNDED = 1;
 const PRODUCER_FLAG_CONE = 2;
+const PRODUCER_FLAG_RECT = 4;
 
 export function producerBoundsInt32Length(lightSlots: number): number {
   return PRODUCER_BOUNDS_HEADER_WORDS + lightSlots * PRODUCER_BOUNDS_STRIDE_WORDS;
@@ -455,6 +465,7 @@ export function encodeProducerBounds(
     readonly position: Vec3;
     readonly range: number;
     readonly cone?: BinningCone | undefined;
+    readonly rectNormal?: Vec3 | undefined;
   }>,
   lightBounds: Int32Array,
   view: Mat4,
@@ -503,7 +514,12 @@ export function encodeProducerBounds(
     );
     const coneFlags =
       light.cone === undefined ? 0 : encodeLightCone(light.cone, view, centre, words, at, scale);
-    output[at + 6] = sphereFlags | coneFlags;
+    const rectFlags =
+      light.rectNormal !== undefined && encodeEmissionAxis(light.rectNormal, view, words, at)
+        ? PRODUCER_FLAG_RECT
+        : 0;
+    if (rectFlags !== 0) words.set(centre, at + 12);
+    output[at + 6] = sphereFlags | coneFlags | rectFlags;
   }
 }
 
@@ -537,25 +553,28 @@ function encodeLightCone(
 ): number {
   if (cone.cosOuter <= 0 || !Number.isFinite(cone.range)) return 0;
   const apexRange = viewSpaceBinningSphere(cone.apex, cone.range, view, centre, scale);
-  const dx = entry(cone.direction, 0),
-    dy = entry(cone.direction, 1),
-    dz = entry(cone.direction, 2);
+  if (!encodeEmissionAxis(cone.direction, view, words, at)) return 0;
+  words.set(centre, at + 12);
+  // The bounding sector is the broad phase. The apex sphere clips the actual range.
+  words[at + 15] = apexRange * (1 + 1e-4);
+  // Widen the half-angle slightly (cos down) for the same reason.
+  words[at + 19] = Math.max(0, Math.min(1, cone.cosOuter) - 1e-4);
+  return PRODUCER_FLAG_CONE;
+}
+
+function encodeEmissionAxis(axis: Vec3, view: Mat4, words: Float32Array, at: number): boolean {
+  const dx = entry(axis, 0);
+  const dy = entry(axis, 1);
+  const dz = entry(axis, 2);
   const ax = rotatedLane(view, dx, dy, dz, 0);
   const ay = rotatedLane(view, dx, dy, dz, 1);
   const az = rotatedLane(view, dx, dy, dz, 2);
   const length = Math.hypot(ax, ay, az);
-  if (length <= 1e-8 || scale <= 0) return 0;
-  words[at + 12] = entry(centre, 0);
-  words[at + 13] = entry(centre, 1);
-  words[at + 14] = entry(centre, 2);
-  // Relative pad mirrors spotBinningSphere: boundary fragments stay in.
-  words[at + 15] = apexRange * (1 + 1e-4);
+  if (!(length > 1e-8)) return false;
   words[at + 16] = ax / length;
   words[at + 17] = ay / length;
   words[at + 18] = az / length;
-  // Widen the half-angle slightly (cos down) for the same reason.
-  words[at + 19] = Math.max(0, Math.min(1, cone.cosOuter) - 1e-4);
-  return PRODUCER_FLAG_CONE;
+  return true;
 }
 
 /** One lane of the view rotation, retaining double precision through normalization. */
@@ -616,17 +635,19 @@ function producerKeeps(
     )
   )
     return false;
-  if ((flags & PRODUCER_FLAG_CONE) === 0 || !bounded) return true;
-  return coneReachesFroxel(
-    box,
-    words[at + 12] ?? 0,
-    words[at + 13] ?? 0,
-    words[at + 14] ?? 0,
-    words[at + 15] ?? 0,
-    words[at + 16] ?? 0,
-    words[at + 17] ?? 0,
-    words[at + 18] ?? 0,
-    words[at + 19] ?? 0,
+  if (!bounded || (flags & (PRODUCER_FLAG_CONE | PRODUCER_FLAG_RECT)) === 0) return true;
+  const rect = (flags & PRODUCER_FLAG_RECT) !== 0;
+  return (
+    (rect ||
+      sphereReachesFroxel(
+        box,
+        true,
+        words[at + 12] as number,
+        words[at + 13] as number,
+        words[at + 14] as number,
+        words[at + 15] as number,
+      )) &&
+    emissionReachesFroxel(box, words, at, rect)
   );
 }
 
@@ -728,6 +749,119 @@ function forEachBoxCell(
       for (let cx = x0 ?? 0; cx <= (x1 ?? -1); cx++) visit(cx, cy, cz);
     }
   }
+}
+
+export interface TextureClusterMembershipScratch {
+  runs?: Uint32Array;
+  slots?: Uint32Array;
+  box?: Float64Array;
+}
+
+/** Build compact CPU texture runs with the same cell tests and ordering as the GPU. */
+export function refineTextureClusterMembership(
+  payload: Int32Array,
+  lightCount: number,
+  grid: ClusterGridSize,
+  reservation: Uint32Array,
+  capacity: number,
+  near: number,
+  far: number,
+  uncapped: Uint32Array | undefined,
+  scratch: TextureClusterMembershipScratch = {},
+): { readonly grid: Uint32Array; readonly indices: Uint32Array } {
+  const words = new Float32Array(payload.buffer, payload.byteOffset, payload.length);
+  const projection = payloadProjection(words);
+  if (scratch.runs?.length !== reservation.length)
+    scratch.runs = new Uint32Array(reservation.length);
+  if (scratch.slots === undefined || scratch.slots.length < capacity)
+    scratch.slots = new Uint32Array(capacity);
+  scratch.box ??= new Float64Array(6);
+  const { runs, slots, box } = scratch;
+  let end = 0;
+  for (let z = 0; z < grid.z; z++) {
+    for (let y = 0; y < grid.y; y++) {
+      for (let x = 0; x < grid.x; x++) {
+        const offset = ((z * grid.y + y) * grid.x + x) * 2;
+        const limit = reservation[offset + 1] as number;
+        runs[offset] = end;
+        runs[offset + 1] = 0;
+        if (limit === 0) continue;
+        const bounded = froxelViewAabb(x, y, z, projection, grid.x, grid.y, grid.z, near, far, box);
+        const count =
+          uncapped === undefined
+            ? writeRefinedCell(payload, words, lightCount, box, bounded, x, y, z, slots, end, limit)
+            : filterReservedCell(
+                payload,
+                words,
+                uncapped,
+                reservation[offset] as number,
+                limit,
+                box,
+                bounded,
+                slots,
+                end,
+              );
+        runs[offset + 1] = count;
+        end += count;
+      }
+    }
+  }
+  return { grid: runs, indices: slots.subarray(0, end) };
+}
+
+function filterReservedCell(
+  payload: Int32Array,
+  words: Float32Array,
+  candidates: Uint32Array,
+  offset: number,
+  count: number,
+  box: Float64Array,
+  bounded: boolean,
+  slots: Uint32Array,
+  start: number,
+): number {
+  let end = start;
+  for (let i = 0; i < count; i++) {
+    const light = candidates[offset + i] as number;
+    if (producerKeeps(payload, words, light, box, bounded)) slots[end++] = light;
+  }
+  return end - start;
+}
+
+// A capped reservation stores only a prefix of the broad candidates. Visit the
+// whole list so a rejected candidate does not consume the slot of a later light.
+function writeRefinedCell(
+  payload: Int32Array,
+  words: Float32Array,
+  lightCount: number,
+  box: Float64Array,
+  bounded: boolean,
+  x: number,
+  y: number,
+  z: number,
+  slots: Uint32Array,
+  start: number,
+  limit: number,
+): number {
+  let count = 0;
+  for (let light = 0; light < lightCount && count < limit; light++) {
+    const at = PRODUCER_BOUNDS_HEADER_WORDS + light * PRODUCER_BOUNDS_STRIDE_WORDS;
+    const left = payload[at] as number;
+    if (
+      left >= 0 &&
+      left <= x &&
+      x <= (payload[at + 3] as number) &&
+      (payload[at + 1] as number) <= y &&
+      y <= (payload[at + 4] as number) &&
+      (payload[at + 2] as number) <= z &&
+      z <= (payload[at + 5] as number) &&
+      producerKeeps(payload, words, light, box, bounded)
+    ) {
+      slots[start + count] = light;
+      count++;
+    }
+  }
+  return count;
 }
 
 /**

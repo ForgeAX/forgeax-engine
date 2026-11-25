@@ -1,5 +1,6 @@
 import type {
   BindGroup,
+  BindGroupEntry,
   BindGroupLayout,
   Buffer,
   Result,
@@ -7,6 +8,7 @@ import type {
   RhiError,
 } from '@forgeax/engine-rhi';
 import type { GpuSceneInputPreparation, GpuSceneInputs } from '../gpu-scene-inputs';
+import { type RasterWindowLayout, retainRasterWindow } from './raster-window-layout';
 import type { ViewStorageTarget } from './view-gpu';
 
 export type RasterInputDemand =
@@ -107,29 +109,60 @@ export function createRasterWindowBinding(
   base: number,
   capacity: number,
   shadow: boolean,
+  projection?: RasterWindowLayout,
 ): Result<BindGroup, RhiError> {
   const whole = device.caps.firstInstanceIndirect;
   const window = () => (whole ? binding(visible) : binding(visible, base * 16, capacity * 16));
-  const tables = storage.tables;
-  return device.createBindGroup({
+  const slots = projection?.slots ?? FULL_RASTER_WINDOW_SLOTS;
+  const entries = slots.map(
+    (slot): BindGroupEntry => ({
+      binding: slot,
+      resource: rasterWindowResource(storage, visible, shadow, window, slot),
+    }),
+  );
+  const result = device.createBindGroup({
     label: `standard-pbr-gpu-driven-visible-window-${base}`,
-    layout,
-    entries: [
-      { binding: 0, resource: binding(tables.instanceBuffer, 0, tables.instanceBytes) },
-      {
-        binding: 1,
-        resource: shadow || storage.probe === undefined ? window() : binding(storage.probe),
-      },
-      { binding: 2, resource: window() },
-      { binding: 3, resource: binding(storage.dynamicInput) },
-      { binding: 4, resource: binding(storage.dynamicFrame) },
-      { binding: 5, resource: binding(storage.sharedFrame) },
-      { binding: 6, resource: binding(tables.primitiveBuffer, 0, tables.primitiveBytes) },
-      { binding: 7, resource: binding(tables.visibleSurfaceRows ?? visible) },
-      { binding: 8, resource: binding(tables.sceneInputs ?? visible) },
-      { binding: 9, resource: binding(tables.transformBuffer, 0, tables.transformBytes) },
-    ],
+    layout: projection?.layout ?? layout,
+    entries,
   });
+  if (result.ok && projection !== undefined) retainRasterWindow(result.value, projection);
+  return result;
+}
+
+const FULL_RASTER_WINDOW_SLOTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+
+function rasterWindowResource(
+  storage: RasterWindowStorage,
+  visible: Buffer,
+  shadow: boolean,
+  window: () => ReturnType<typeof binding>,
+  slot: number,
+): BindGroupEntry['resource'] {
+  const tables = storage.tables;
+  switch (slot) {
+    case 0:
+      return binding(tables.instanceBuffer, 0, tables.instanceBytes);
+    case 1:
+      return shadow || storage.probe === undefined ? window() : binding(storage.probe);
+    case 2:
+      return window();
+    case 3:
+      return binding(storage.dynamicInput);
+    case 4:
+      return binding(storage.dynamicFrame);
+    case 5:
+      return binding(storage.sharedFrame);
+    case 6:
+      return binding(tables.primitiveBuffer, 0, tables.primitiveBytes);
+    case 7:
+      return binding(tables.visibleSurfaceRows ?? visible);
+    case 8:
+      return binding(tables.sceneInputs ?? visible);
+    case 9:
+      return binding(tables.transformBuffer, 0, tables.transformBytes);
+    default:
+      throw new Error('Unknown GPU Scene raster window slot');
+  }
 }
 
 /** Late windows move with their original View's reserved mirror, not with unrelated numeric addresses. */

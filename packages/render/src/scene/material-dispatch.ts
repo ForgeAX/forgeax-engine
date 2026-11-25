@@ -1,17 +1,25 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { DEFAULT_STANDARD_SURFACE_MODULE, isEngineMaterialModule } from '@forgeax/engine-shader';
+import {
+  DEFAULT_STANDARD_SURFACE_MODULE,
+  isEngineMaterialModule,
+  STANDARD_ORM_REUSE_BIT,
+} from '@forgeax/engine-shader';
 import {
   assertRenderResidencySelection,
   type RenderResidencyGroup,
   type RenderResidencySelection,
 } from '../gpu-driven/batch-residency';
+import { materialAlphaMask } from '../material-alpha-mask';
 import {
-  type MaterialResource,
+  type MaterialDispatchPass,
+  MaterialResource,
   materialUsesSpriteGeometry,
+  ownedMaterialPassDeclaration,
   ownedMaterialValues,
 } from '../material-resource';
 import type { MaterialSourceSnapshot } from '../material-source';
 import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
+import { renderStateHash } from '../pipeline-spec';
 import { getOpaqueResourceIdentity, type ValidatedRenderable } from '../record/frame-snapshot';
 import { isMediumMaterial, matchesRecordMode } from '../record/material-pass-selection';
 import {
@@ -48,15 +56,14 @@ import {
 /** Ordered frame work; arrays and shared execution groups have the same consumption surface. */
 export type DispatchList = FrameList<DispatchEntry>;
 
-export type MaterialDispatchPass = Omit<
-  DispatchEntry,
-  'entityIndex' | 'renderableIndex' | 'layer' | 'materialShaderId'
-> & { readonly materialShaderId: string };
+export type { MaterialDispatchPass } from '../material-resource';
+
 type Pass = MaterialDispatchPass;
-const passes = new WeakMap<MaterialSnapshot, readonly Pass[]>();
+const snapshotPasses = new WeakMap<MaterialSnapshot, readonly Pass[]>();
 
 export function materialPasses(snapshot: MaterialSnapshot): readonly MaterialDispatchPass[] {
-  const cached = passes.get(snapshot);
+  const declaration = ownedMaterialPassDeclaration(snapshot);
+  const cached = declaration === undefined ? snapshotPasses.get(snapshot) : declaration.prepared;
   if (cached !== undefined) return cached;
   const entries: DispatchEntry[] = [];
   appendMaterialDispatchEntries(
@@ -73,10 +80,16 @@ export function materialPasses(snapshot: MaterialSnapshot): readonly MaterialDis
     ({ entityIndex: _entity, renderableIndex: _index, layer: _layer, ...pass }) => {
       if (pass.materialShaderId === undefined)
         throw new Error('Accepted material Pass has no program identity');
-      return { ...pass, materialShaderId: pass.materialShaderId };
+      const result = { ...pass, materialShaderId: pass.materialShaderId };
+      if (declaration !== undefined) {
+        Object.freeze(result.tags);
+        Object.freeze(result);
+      }
+      return result;
     },
   );
-  passes.set(snapshot, prepared);
+  if (declaration === undefined) snapshotPasses.set(snapshot, prepared);
+  else declaration.prepared = Object.freeze(prepared);
   return prepared;
 }
 
@@ -218,11 +231,31 @@ interface QueryWork {
   passes: readonly Pass[];
 }
 
+/** Executable pass lists in declaration order, shared by raster lanes and light views. */
+export interface MaterialPrograms {
+  readonly spriteGeometry: boolean;
+  readonly passes: readonly Pass[];
+  readonly snapshot: MaterialSnapshot;
+  readonly materialHandle: number;
+  readonly forward: readonly Pass[];
+  readonly shadow: readonly Pass[];
+  readonly prepareShadow: readonly Pass[];
+  readonly stockShadow?: StockShadowProgram;
+}
+
+/** The physical inputs from one published material version used by stock shadow preparation. */
+export interface StockShadowProgram {
+  readonly state: string | null;
+  readonly alphaMask: boolean;
+  readonly textureMask: number | undefined;
+}
+
 export interface AcceptedMaterial {
   readonly resource: MaterialResource;
   readonly snapshot: MaterialSnapshot;
   readonly passes: readonly MaterialDispatchPass[];
   readonly bindings: number;
+  readonly programs?: MaterialPrograms;
 }
 
 /** Follow authored module ownership even for content-addressed cooked keys. */
@@ -243,6 +276,73 @@ export function shadowDispatchRequiresPreparation(
     (program.moduleSlots?.surface !== undefined &&
       program.moduleSlots.surface !== DEFAULT_STANDARD_SURFACE_MODULE)
   );
+}
+
+function stockShadowProgram(
+  snapshot: MaterialSnapshot,
+  state: string | null,
+  previous?: StockShadowProgram,
+): StockShadowProgram {
+  const alphaMask = materialAlphaMask(snapshot.paramSnapshot);
+  const mask = snapshot.standardTextureMask;
+  const textureMask = mask === undefined ? undefined : mask % STANDARD_ORM_REUSE_BIT;
+  if (
+    previous !== undefined &&
+    previous.alphaMask === alphaMask &&
+    Object.is(previous.textureMask, textureMask)
+  )
+    return previous;
+  return Object.freeze({ state, alphaMask, textureMask });
+}
+
+export function selectMaterialPrograms(
+  snapshot: MaterialSnapshot,
+  passes: readonly Pass[],
+): MaterialPrograms {
+  const forward: Pass[] = [];
+  const shadow: Pass[] = [];
+  const prepareShadow: Pass[] = [];
+  const medium = isMediumMaterial(snapshot);
+  for (const pass of passes) {
+    if (pass.materialShaderId === undefined) continue;
+    if (pass.tags.LightMode === 'ShadowCaster') {
+      shadow.push(pass);
+      if (shadowDispatchRequiresPreparation(snapshot, pass)) prepareShadow.push(pass);
+    } else if (medium || pass.tags.LightMode === 'Forward') forward.push(pass);
+  }
+  const caster = prepareShadow.length === 1 ? prepareShadow[0] : undefined;
+  const stock =
+    caster?.materialShaderId === SHADOW_CASTER_SHADER_ID ||
+    caster?.materialShaderId === 'forgeax::default-standard-pbr';
+  return Object.freeze({
+    snapshot,
+    materialHandle: snapshot.materialHandle ?? -1,
+    passes,
+    spriteGeometry: materialUsesSpriteGeometry(snapshot),
+    forward: Object.freeze(forward),
+    shadow: Object.freeze(shadow),
+    prepareShadow: Object.freeze(prepareShadow),
+    ...(stock && caster !== undefined && ownedMaterialPassDeclaration(snapshot) !== undefined
+      ? {
+          stockShadow: stockShadowProgram(
+            snapshot,
+            caster.renderState === undefined ? null : renderStateHash(caster.renderState),
+          ),
+        }
+      : {}),
+  });
+}
+
+/** The selected geometry follows the accepted shader declaration. Borrowed programs remain live. */
+export function usesAcceptedSpriteGeometry(material: AcceptedMaterial): boolean {
+  return material.programs?.spriteGeometry ?? materialUsesSpriteGeometry(material.snapshot);
+}
+
+/** Borrowed declarations read live tags without materializing a filtered array per draw. */
+export function hasShadowPasses(material: AcceptedMaterial): boolean {
+  return material.programs === undefined
+    ? material.passes.some((pass) => pass.tags.LightMode === 'ShadowCaster')
+    : material.programs.shadow.length > 0;
 }
 
 interface MaterialDemandCounts {
@@ -293,9 +393,12 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
     borrowed: owned ? 0 : 1,
     // Zero-binding accepted entries can still be consumed by actual Pass queries.
     foldableSprites:
-      owned && snapshot.transparent === true && materialUsesSpriteGeometry(snapshot) ? 1 : 0,
+      owned && snapshot.transparent === true && usesAcceptedSpriteGeometry(material) ? 1 : 0,
     shadowPreparation:
-      owned && material.passes.some((pass) => shadowDispatchRequiresPreparation(snapshot, pass))
+      owned &&
+      (material.programs === undefined
+        ? material.passes.some((pass) => shadowDispatchRequiresPreparation(snapshot, pass))
+        : material.programs.prepareShadow.length > 0)
         ? 1
         : 0,
   };
@@ -350,9 +453,20 @@ function sameMaterialPasses(previous: MaterialSnapshot, next: MaterialSnapshot):
   );
 }
 
+const MATERIAL_PAGE_WIDTH = 16;
+type MaterialPage = readonly (AcceptedMaterial | undefined)[];
+
+interface PublishedMaterialChanges {
+  /** Both frames share only the lane masks. Each owns references to its own pages. */
+  readonly masks: number[];
+  readonly pages: (MaterialPage | undefined)[];
+}
+
 /** Fixed shared material roots; capturing or adopting a version never copies bindings. */
 export class MaterialFrame {
   readonly #programRoot = true;
+  private incoming?: PublishedMaterialChanges;
+  private outgoing?: PublishedMaterialChanges;
 
   static provesNoShadowPreparation(frame: unknown): boolean {
     return MaterialFrame.fixedProgramRoot(frame)?.counts.shadowPreparation === 0;
@@ -377,7 +491,7 @@ export class MaterialFrame {
 
   readonly transmissionDemand: import('../transmission/projection').TransmissionDemand;
   constructor(
-    private readonly root: Node<AcceptedMaterial> | undefined,
+    private readonly root: Node<MaterialPage> | undefined,
     private readonly counts: MaterialDemandCounts = EMPTY_DEMAND,
   ) {
     this.transmissionDemand = Object.freeze({
@@ -411,19 +525,45 @@ export class MaterialFrame {
     if (previous?.snapshot === snapshot && previous.bindings === count) return this;
     // Each resource owns its execution order, even if two resources started
     // with the same payload. Parameter-only adoption retains the same Passes.
+    const fixedPrograms = ownedMaterialPassDeclaration(snapshot) !== undefined;
     const passes =
-      previous !== undefined && sameMaterialPasses(previous.snapshot, snapshot)
+      previous !== undefined &&
+      (!fixedPrograms || previous.programs !== undefined) &&
+      sameMaterialPasses(previous.snapshot, snapshot)
         ? previous.passes
         : materialPasses(snapshot).map((pass) => {
             const owned = { ...pass };
             getOpaqueResourceIdentity(owned);
-            return owned;
+            return fixedPrograms ? Object.freeze(owned) : owned;
           });
-    const next = { resource: material, snapshot, passes, bindings: count };
-    return new MaterialFrame(
-      put(this.root, next, 0, getOpaqueResourceIdentity(material), 1),
-      replaceDemand(this.counts, previous, next),
-    );
+    const programs = !fixedPrograms
+      ? undefined
+      : previous?.programs !== undefined &&
+          previous.passes === passes &&
+          isMediumMaterial(previous.snapshot) === isMediumMaterial(snapshot)
+        ? Object.freeze({
+            ...previous.programs,
+            ...(previous.programs.stockShadow === undefined
+              ? {}
+              : {
+                  stockShadow: stockShadowProgram(
+                    snapshot,
+                    previous.programs.stockShadow.state,
+                    previous.programs.stockShadow,
+                  ),
+                }),
+            snapshot,
+            materialHandle: snapshot.materialHandle ?? -1,
+          })
+        : selectMaterialPrograms(snapshot, Object.freeze(passes));
+    const captured = {
+      resource: material,
+      snapshot,
+      passes,
+      bindings: count,
+      ...(programs === undefined ? {} : { programs }),
+    };
+    return this.replaceMaterial(material, previous, captured);
   }
   /** Adopt already fixed input during actual Pass assembly, without a live read. */
   withAccepted(accepted: AcceptedMaterial, bindings = accepted.bindings): MaterialFrame {
@@ -434,20 +574,53 @@ export class MaterialFrame {
       previous.bindings === bindings
     )
       return this;
-    const next = accepted.bindings === bindings ? accepted : { ...accepted, bindings };
-    return new MaterialFrame(
-      put(this.root, next, 0, getOpaqueResourceIdentity(accepted.resource), 1),
-      replaceDemand(this.counts, previous, next),
-    );
+    // A producer may spread an old leaf before replacing its snapshot or pass list.
+    const programs = accepted.programs;
+    const next =
+      programs !== undefined &&
+      (programs.snapshot !== accepted.snapshot || programs.passes !== accepted.passes)
+        ? {
+            resource: accepted.resource,
+            snapshot: accepted.snapshot,
+            passes: accepted.passes,
+            bindings,
+          }
+        : accepted.bindings === bindings
+          ? accepted
+          : { ...accepted, bindings };
+    return this.replaceMaterial(accepted.resource, previous, next);
   }
   without(material: MaterialResource): MaterialFrame {
     const previous = this.get(material);
-    if (previous === undefined) return this;
-    return new MaterialFrame(
-      remove(this.root, 0, getOpaqueResourceIdentity(material)),
-      replaceDemand(this.counts, previous, undefined),
-    );
+    return previous === undefined ? this : this.replaceMaterial(material, previous, undefined);
   }
+
+  private page(key: number): Node<MaterialPage> | undefined {
+    let node = this.root;
+    while (node !== undefined && node.key !== key) node = key < node.key ? node.left : node.right;
+    return node;
+  }
+
+  private replaceMaterial(
+    material: MaterialResource,
+    previous: AcceptedMaterial | undefined,
+    next: AcceptedMaterial | undefined,
+  ): MaterialFrame {
+    const address = MaterialResource._frameAddress(material);
+    const key = Math.floor(address / MATERIAL_PAGE_WIDTH);
+    const page = this.page(key);
+    const weight =
+      (page?.weight ?? 0) + Number(next !== undefined) - Number(previous !== undefined);
+    let root: Node<MaterialPage> | undefined;
+    if (weight === 0) root = remove(this.root, 0, key);
+    else {
+      const values = page?.value.slice() ?? [];
+      values[address % MATERIAL_PAGE_WIDTH] = next;
+      root = put<MaterialPage>(this.root, values, 0, key, weight);
+    }
+    return new MaterialFrame(root, replaceDemand(this.counts, previous, next));
+  }
+
   /** Project actual draw work from this fixed frame, independent of current Scene bindings. */
   project(
     draws: readonly {
@@ -530,13 +703,31 @@ export class MaterialFrame {
   }
 
   get(material: MaterialResource): AcceptedMaterial | undefined {
-    const key = getOpaqueResourceIdentity(material);
-    let current = this.root;
-    while (current !== undefined && key !== undefined) {
-      if (current.key === key) return current.value;
-      current = key < current.key ? current.left : current.right;
-    }
-    return undefined;
+    const address = MaterialResource._frameAddress(material);
+    return this.page(Math.floor(address / MATERIAL_PAGE_WIDTH))?.value[
+      address % MATERIAL_PAGE_WIDTH
+    ];
+  }
+
+  /** Seal the changed lanes once for all readers of these two issued versions. */
+  publishChangesSince(previous: MaterialFrame): void {
+    if (previous === this) return;
+    const masks: number[] = [];
+    const beforePages: (MaterialPage | undefined)[] = [];
+    const afterPages: (MaterialPage | undefined)[] = [];
+    changes(previous.root, this.root, (before, after) => {
+      let mask = 0;
+      const length = Math.max(before?.length ?? 0, after?.length ?? 0);
+      for (let lane = 0; lane < length; lane++)
+        if (before?.[lane] !== after?.[lane]) mask |= 1 << lane;
+      if (mask !== 0) {
+        masks.push(mask);
+        beforePages.push(before);
+        afterPages.push(after);
+      }
+    });
+    previous.outgoing = { masks, pages: beforePages };
+    this.incoming = { masks, pages: afterPages };
   }
 
   /** Shared subtrees are identical evidence; only changed asset paths are visited. */
@@ -544,7 +735,30 @@ export class MaterialFrame {
     previous: MaterialFrame,
     visit: (before: AcceptedMaterial | undefined, after: AcceptedMaterial | undefined) => void,
   ): void {
-    changes(previous.root, this.root, visit);
+    if (this === previous) return;
+    const after = this.incoming;
+    const before = previous.outgoing;
+    if (after !== undefined && before?.masks === after.masks) {
+      for (let page = 0; page < after.masks.length; page++) {
+        let mask = after.masks[page] as number;
+        const left = before.pages[page];
+        const right = after.pages[page];
+        while (mask !== 0) {
+          const lane = 31 - Math.clz32(mask & -mask);
+          visit(left?.[lane], right?.[lane]);
+          mask &= mask - 1;
+        }
+      }
+      return;
+    }
+    changes(previous.root, this.root, (before, after) => {
+      const length = Math.max(before?.length ?? 0, after?.length ?? 0);
+      for (let lane = 0; lane < length; lane++) {
+        const prior = before?.[lane];
+        const next = after?.[lane];
+        if (prior !== next) visit(prior, next);
+      }
+    });
   }
 }
 
@@ -892,6 +1106,12 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     return false;
   }
 
+  visitCasterMaterials(visit: (material: MaterialResource) => void): void {
+    for (const { value: work } of nodes(this.root))
+      if (work.pass.tags.LightMode === 'ShadowCaster' && work.groups.count > 0)
+        visit(work.resource);
+  }
+
   /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
   *passWork(): Generator<DispatchPassWork> {
     for (const { value: work } of nodes(this.root)) yield this.passWorkOf(work);
@@ -1160,26 +1380,14 @@ export function dispatchPassWork(list: DispatchList):
     : undefined;
 }
 
-const casterMaterialCache = new WeakMap<DispatchList, ReadonlySet<MaterialResource>>();
-
-/**
- * Materials that at least one shadow-casting member draws with; `undefined`
- * for a flat list, which carries no Pass rosters.
- */
-export function dispatchCasterMaterials(
+/** Visit occupied caster passes in order; flat dispatches require the batch-binding route. */
+export function visitCapturedCasterMaterials(
   list: DispatchList,
-): ReadonlySet<MaterialResource> | undefined {
-  if (!(list instanceof FrameDispatch)) return undefined;
-  let materials = casterMaterialCache.get(list);
-  if (materials === undefined) {
-    const collected = new Set<MaterialResource>();
-    for (const work of list.passWork())
-      if (work.pass.tags.LightMode === 'ShadowCaster' && work.count > 0)
-        collected.add(work.resource);
-    materials = collected;
-    casterMaterialCache.set(list, materials);
-  }
-  return materials;
+  visit: (material: MaterialResource) => void,
+): boolean {
+  if (!(list instanceof FrameDispatch)) return false;
+  list.visitCasterMaterials(visit);
+  return true;
 }
 
 type MaterialBinding = Pick<
@@ -1397,7 +1605,20 @@ class MaterialDemandProjection {
   materialFrame = new MaterialFrame(undefined);
   selection: RenderResidencySelection | undefined;
 
+  private lastIssued?: WeakRef<MaterialFrame>;
+
   constructor(readonly phase: RenderResidencySelection['phase']) {}
+
+  issueMaterials(): MaterialFrame {
+    const current = this.materialFrame;
+    const previous = this.lastIssued?.deref();
+    if (previous !== current) {
+      if (previous !== undefined) current.publishChangesSince(previous);
+      this.lastIssued = new WeakRef(current);
+    }
+    return current;
+  }
+
   invalidate(): void {
     this.queryDirty = true;
     this.queryRoot = undefined;
@@ -1526,26 +1747,26 @@ export class MaterialDispatch {
   }
 
   materials(): MaterialFrame {
-    return this.active.materialFrame;
+    return this.active.issueMaterials();
   }
 
   /** Exact sources of the current accepted bindings, including hidden preparation. */
-  *materialSources(): Iterable<{
-    readonly worldId: number;
-    readonly source: MaterialSourceSnapshot;
-  }> {
-    for (const group of this.groups.values()) {
-      for (const resource of this.active.groupResources.get(group) ??
+  visitMaterialSources(visit: (source: MaterialSourceSnapshot) => void): void {
+    this.groups.forEach((group) => {
+      const resources =
+        this.active.groupResources.get(group) ??
         this.resident.groupResources.get(group) ??
-        group.held) {
+        group.held;
+      for (let i = 0; i < resources.length; i++) {
+        const resource = resources[i] as MaterialResource;
         const source = (
           this.active.materialFrame.get(resource) ??
           this.resident.materialFrame.get(resource) ??
           this.sourceMaterials.get(resource)
         )?.snapshot.sourceAssets;
-        if (source !== undefined) yield { worldId: group.worldId, source };
+        if (source !== undefined) visit(source);
       }
-    }
+    });
   }
 
   /** Mesh topology changes reach the live binding expressions that consume that Mesh. */
@@ -1851,7 +2072,7 @@ export class MaterialDispatch {
   ): ResidentMaterialDemand {
     assertRenderResidencySelection(selection, 'resident');
     const dispatch = this.queryDemand(this.resident, slots, meshes, validate, selection);
-    const materials = this.resident.materialFrame,
+    const materials = this.resident.issueMaterials(),
       revision = this.revision;
     return Object.freeze({
       dispatch,
@@ -1965,7 +2186,7 @@ export class MaterialDispatch {
     )
       throw new Error('Pass sources changed during material query');
     validateInputs();
-    for (const { contexts, geometry, value } of pendingBindings) contexts.set(geometry, value);
+    for (const { contexts, geometry, value } of pendingBindings) contexts[geometry] = value;
     projection.queryRoot = root;
     projection.materialFrame = materials;
     projection.queryWork = work;
@@ -2047,7 +2268,7 @@ export class MaterialDispatch {
     )
       throw new Error('Pass sources changed during material query');
     validate?.();
-    for (const { contexts, geometry, value } of pendingBindings) contexts.set(geometry, value);
+    for (const { contexts, geometry, value } of pendingBindings) contexts[geometry] = value;
     for (const resource of affected.keys()) {
       const value = work.get(resource);
       if (value === undefined) projection.queryWork.delete(resource);

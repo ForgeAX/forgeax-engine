@@ -67,8 +67,10 @@ function counts(
 }
 
 /** Push `boxes[offset..offset+6)` onto `out`. */
-function pushBox(out: number[], boxes: Float32Array, offset: number): void {
+function pushBox(out: number[], boxes: Float32Array, offset: number, maxWords: number): boolean {
+  if (out.length >= maxWords) return false;
   for (let i = 0; i < 6; i += 1) out.push(boxes[offset + i] as number);
+  return true;
 }
 
 /**
@@ -222,16 +224,19 @@ export class GpuSceneContentBoxes {
   /**
    * Boxes changed after `since`, skipping `ignored` slots and, when supplied,
    * slots absent from the retained owner's `observed` membership. Consumers
-   * pass their existing membership without copying it.
+   * pass their existing membership without copying it. A finite limit requests
+   * complete bounds only when they fit the caller's rectangle budget.
    */
   changedSince(
     since: SceneContentCursor,
     current: SceneContentCursor,
     ignored?: ReadonlySet<number>,
     observed?: Membership,
+    maxBoxes = Number.POSITIVE_INFINITY,
   ): GpuSceneChangedBounds {
     if (since === current) return EMPTY;
     const merged: number[] = [];
+    const maxWords = maxBoxes * 6;
     let unbounded = since.journal !== current.journal;
     if (!unbounded) {
       const visited = current.journal.visitContent(
@@ -241,8 +246,7 @@ export class GpuSceneContentBoxes {
           if ((flags & CONTENT_WHOLE) !== 0) return false;
           if (!counts(slot, ignored, observed)) return true;
           if ((flags & CONTENT_UNBOUNDED) !== 0) return false;
-          if ((flags & CONTENT_BOX) !== 0) pushBox(merged, boxes, offset);
-          return true;
+          return (flags & CONTENT_BOX) === 0 || pushBox(merged, boxes, offset, maxWords);
         },
       );
       unbounded = visited !== 'done';
@@ -332,10 +336,12 @@ export class GpuSceneContentBoxes {
     since: SceneContentCursor,
     current: SceneContentCursor,
     slots: Iterable<number>,
+    maxBoxes = Number.POSITIVE_INFINITY,
   ): GpuSceneChangedBounds {
-    const wanted = new Set(slots);
+    const wanted = slots instanceof Set ? slots : new Set(slots);
     if (wanted.size === 0) return EMPTY;
-    if (since.journal !== current.journal) return 'unbounded';
+    if (wanted.size > maxBoxes || since.journal !== current.journal) return 'unbounded';
+    const maxWords = maxBoxes * 6;
     const merged: number[] = [];
     const found = new Set<number>();
     const visited =
@@ -350,8 +356,7 @@ export class GpuSceneContentBoxes {
               if ((flags & CONTENT_UNBOUNDED) !== 0) return false;
               if ((flags & CONTENT_BOX) === 0) return true;
               found.add(slot);
-              pushBox(merged, boxes, offset);
-              return true;
+              return pushBox(merged, boxes, offset, maxWords);
             },
           );
     if (visited !== 'done') return 'unbounded';
@@ -360,7 +365,7 @@ export class GpuSceneContentBoxes {
       const state = page?.state[slot & (PAGE_ROWS - 1)];
       if (state === UNBOUNDED) return 'unbounded';
       if (state === BOXED && page?.values !== undefined) {
-        pushBox(merged, page.values, boxOffset(slot));
+        if (!pushBox(merged, page.values, boxOffset(slot), maxWords)) return 'unbounded';
       } else if (!found.has(slot)) {
         return 'unbounded';
       }

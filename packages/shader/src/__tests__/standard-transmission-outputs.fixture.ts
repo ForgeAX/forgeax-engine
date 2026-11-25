@@ -86,6 +86,14 @@ function createBatchCompiler(template: ShaderProgramTemplate, maxRows: number) {
 
 function expectResources(row: Row, code: string): void {
   const { defines, definesKey: key } = row;
+  for (const binding of [27, 28]) {
+    expect(
+      new RegExp(
+        `@group\\(0\\)\\s*@binding\\(${binding}\\)\\s*var\\s+\\w+\\s*:\\s*texture_2d<f32>`,
+      ).test(code),
+      `${key}: Forward SSR binding ${binding}`,
+    ).toBe(defines.FORWARD_INLINE_SSR);
+  }
   const extended = defines.CLUSTER_FORWARD_AVAILABLE && defines.EXTENDED_LIGHTING_AVAILABLE;
   for (const resource of ['iesProfileTexture', 'cookieTexture', 'ltcGgxTexture']) {
     const sampled = Boolean(
@@ -114,23 +122,36 @@ function expectProgramChoice(row: Row, code: string, choices: Map<string, string
   if (defines.LEAN_LIGHTING || unusedProjector) {
     expect(code, key).not.toMatch(/textureSampleLevel\(projectorTexture\w*,/);
   }
-  // Extended lighting still binds the Forward SSR inputs on lean unclustered rows.
-  const choice = unusedProjector
-    ? key.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*')
-    : key;
+  let choice = key;
+  if (unusedProjector)
+    choice = choice.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*');
+  // Extended lighting has no consumer in these unclustered rows once Inline SSR is off.
+  if (
+    defines.STORAGE_BUFFER_AVAILABLE &&
+    defines.PROJECTOR_AVAILABLE &&
+    !defines.COVERAGE_ONLY &&
+    !defines.CLUSTER_FORWARD_AVAILABLE &&
+    !defines.ATMOSPHERE_AVAILABLE &&
+    !defines.FORWARD_INLINE_SSR
+  )
+    choice = choice.replace(
+      /EXTENDED_LIGHTING_AVAILABLE=(true|false)/,
+      'EXTENDED_LIGHTING_AVAILABLE=*',
+    );
   const digest = createHash('sha256').update(code).digest('hex');
   const previous = choices.get(digest);
   if (previous !== undefined) expect(choice, key).toBe(previous);
   choices.set(digest, choice);
 }
 
-// Lighting resource assertions depend on these four flags. For the wet
+// Resource assertions depend on these flags. For the wet
 // slices, cross each remaining define with every reachable resource path.
 // The dry slice still compiles every row for its full program-identity oracle.
 function resourceWitnesses(rows: readonly Row[]): Row[] {
   const resourceFlags = [
     'CLUSTER_FORWARD_AVAILABLE',
     'EXTENDED_LIGHTING_AVAILABLE',
+    'FORWARD_INLINE_SSR',
     'LEAN_LIGHTING',
     'STORAGE_BUFFER_AVAILABLE',
   ];
@@ -174,7 +195,10 @@ export async function testStandardTransmissionOutputs(
       defines: selectShaderProgramDefines(program, defines).unwrap().defines,
       definesKey,
     }));
-  expect(rows).toHaveLength(expectedRows);
+  expect(rows.filter(({ defines }) => !defines.FORWARD_INLINE_SSR)).toHaveLength(expectedRows);
+  expect(rows.filter(({ defines }) => defines.FORWARD_INLINE_SSR)).toHaveLength(
+    !waves && rgba16 ? 96 : 544,
+  );
   const witnesses = waves || rgba16 ? resourceWitnesses(rows) : rows;
   expect(witnesses.length).toBeGreaterThan(0);
   const choices = new Map<string, string>();
@@ -208,12 +232,15 @@ export async function testStandardTransmissionOutputs(
       await compiler?.close();
       expect(compiled.size).toBe(witnesses.length);
       if (!waves && !rgba16) {
-        // The identity oracle skips the 96 full-shadow lean rows. The dry
+        // The identity oracle skips 96 baseline and 24 SSR full-shadow lean rows. The dry
         // no-storage color slice aliases one projector pair per alpha/clip,
         // vertex color and reflection choice. Coverage keys stay distinct.
-        const fullShadowLeanRows = 96;
+        const fullShadowLeanRows = 96 + 24;
         const unusedProjectorPairs = 4 * 2 * 2;
-        expect(choices.size).toBe(expectedRows - fullShadowLeanRows - unusedProjectorPairs);
+        const unusedExtendedLightingPairs = 420;
+        expect(choices.size).toBe(
+          rows.length - fullShadowLeanRows - unusedProjectorPairs - unusedExtendedLightingPairs,
+        );
       }
     });
   });

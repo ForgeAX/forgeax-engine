@@ -203,10 +203,12 @@ it('publishes sibling GUIDs once and reuses the complete Pack after Chromium res
         }),
     );
     await browser.close();
-    builds = 0;
     browser = await openBrowser();
     const reopened = await browser.newPage();
-    reopened.on('console', countBuilds);
+    let reopenedBuilds = 0;
+    reopened.on('console', (message: { text(): string }) => {
+      if (message.text() === `authored-pack-build:${packageId}`) reopenedBuilds++;
+    });
     await reopened.goto(url);
     const warm = await reopened.evaluate(() => {
       const run = (globalThis as unknown as { run: () => Promise<Record<string, unknown>> }).run;
@@ -218,7 +220,7 @@ it('publishes sibling GUIDs once and reuses the complete Pack after Chromium res
     ]);
     expect(warm.executions).toEqual(result.executions);
     expect(warm.afterFailure).not.toHaveProperty('publication');
-    expect(builds).toBe(0);
+    expect(reopenedBuilds).toBe(0);
     await reopened.evaluate(
       () =>
         new Promise<void>((resolve, reject) => {

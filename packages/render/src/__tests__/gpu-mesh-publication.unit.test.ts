@@ -1,13 +1,19 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { materialBindingLayout } from '../gpu-driven/fixed-task-plan';
 import { MeshBatchProjection } from '../gpu-driven/mesh-batches';
 import { MaterialResource } from '../material-resource';
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
-import { captureMaterialOverrides, prepareMeshMaterialBindings } from '../scene/mesh-materials';
+import {
+  captureMaterialOverrides,
+  effectiveMeshMaterials,
+  prepareMeshMaterialBindings,
+} from '../scene/mesh-materials';
 import { RenderScene } from '../scene/render-scene';
 import { receiptRow } from './gpu-draw-selection-fixture';
+import { collectWeakOwners } from './weak-owner-collection-fixture';
 
 it.each([
   64, 1024,
@@ -96,7 +102,7 @@ it('uses the accepted Mesh material query for execution after a default-slot edi
     () => medium,
     pending,
   );
-  for (const write of pending) write.contexts.set(write.geometry, write.value);
+  for (const write of pending) write.contexts[write.geometry] = write.value;
   const current = windows.query(source, edited).active;
   expect(accepted.material).toBe(medium);
   expect(current.batches.at(0)?.binding?.material).toBe(accepted.material);
@@ -117,6 +123,29 @@ it('captures a canonical override table without retaining a caller-mutable array
   expect(Object.isFrozen(captured)).toBe(true);
   overrides.length = 0;
   expect(captured).toEqual([original.material]);
+});
+
+it('releases retired override combinations while the materials and a current binding remain live', async () => {
+  const source = receiptRow().source.material.snapshot;
+  const resources = Array.from({ length: 32 }, () => new MaterialResource(source));
+  const current = captureMaterialOverrides([resources[0], undefined, resources[1]]);
+  const mesh = new MeshFrame().with(7, createPrimitiveMesh('cube').unwrap()).get(7);
+  if (mesh === undefined) throw new Error('missing fixture mesh');
+  const original = receiptRow().source;
+  const retired = resources.slice(2).flatMap((material) => {
+    const overrides = captureMaterialOverrides([material, undefined, resources[1]]);
+    const binding = effectiveMeshMaterials({ ...original, materialOverrides: overrides }, mesh);
+    return [new WeakRef<object>(overrides), new WeakRef<object>(binding)];
+  });
+  await collectWeakOwners();
+  expect(retired.filter((binding) => binding.deref() !== undefined)).toHaveLength(0);
+  expect(captureMaterialOverrides([resources[0], undefined, resources[1], undefined])).toBe(
+    current,
+  );
+  expect(current[0]).toBe(resources[0]);
+  expect(effectiveMeshMaterials({ ...original, materialOverrides: current }, mesh).material).toBe(
+    resources[0],
+  );
 });
 
 it.each([
@@ -174,6 +203,7 @@ it.each([
   const materials = dispatch.materials();
   expect(materials.get(first)).toBeUndefined();
   const current = windows.query(changed, meshes, materials).active;
+  expect(materialBindingLayout(current.batches)).not.toBe(materialBindingLayout(previous.batches));
   const actual = current.batches.at(0)?.binding?.material;
   expect(actual).toBe(resolved);
   if (actual === undefined) throw new Error('missing execution material');

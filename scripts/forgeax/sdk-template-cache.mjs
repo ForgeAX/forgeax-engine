@@ -1,14 +1,10 @@
-import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, readdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-/**
- * Project-local Pack product cache, relative to a project root. `project new`
- * copies every template file, so entries shipped here seed each new project.
- */
-export const TEMPLATE_BUILD_CACHE = '.forgeax/ddc/build-cache';
-// Only cooked products are portable template inputs. Transport projections bind
-// the consumer's publication URLs and may be rebuilt without cooking any asset.
+export const SDK_BUILD_CACHE_SEED = 'build-cache';
+
+// Publication heads and native computation caches depend on the consuming host.
+// Only immutable Pack products and their discovery rows seed consumers.
 const PRODUCT_STORES = ['scriptable-pack-product-kinds', 'scriptable-pack-products'];
 
 async function directoryNames(path) {
@@ -23,9 +19,8 @@ async function directoryNames(path) {
   }
 }
 
-/** Published entries (`<store>/<key>`) of a project's Pack product cache. */
-export async function buildCacheEntries(projectRoot) {
-  const cache = resolve(projectRoot, TEMPLATE_BUILD_CACHE);
+/** Published entries (`<store>/<key>`) in a Pack product cache. */
+export async function buildCacheEntries(cache) {
   const rows = [];
   for (const store of PRODUCT_STORES) {
     for (const key of await directoryNames(join(cache, store, 'entries'))) {
@@ -35,36 +30,35 @@ export async function buildCacheEntries(projectRoot) {
   return rows;
 }
 
-/**
- * Cook an installed SDK template once and keep only its published Pack
- * products. Keys are relative to the project root and bind the Engine release,
- * so a project created from this template with the same Engine and Node hits
- * them on its first `dev start` / `project play`; edited sources re-cook.
- * Every other build output (dist, generated host, project DDC, staging
- * directories and raw native-computation caches) is removed again, leaving the
- * template's files unchanged. Cooked native outputs already belong to Pack products.
- */
+/** Cook a template against an existing shared build cache and discard its transient state. */
 export async function seedTemplateBuildCache(template, build) {
   const before = new Set(await readdir(template));
   if (before.has('.forgeax')) throw new Error(`sdk-template-build-cache-preexisting: ${template}`);
-  await build();
-  const cache = resolve(template, TEMPLATE_BUILD_CACHE);
-  const keep = await mkdtemp(join(tmpdir(), 'forgeax-sdk-template-cache-'));
   try {
-    for (const store of PRODUCT_STORES) {
-      const entries = join(cache, store, 'entries');
-      if ((await directoryNames(entries)).length === 0) continue;
-      await cp(entries, join(keep, store, 'entries'), { recursive: true });
-    }
+    await build();
+  } finally {
     for (const name of await readdir(template)) {
       if (!before.has(name)) await rm(resolve(template, name), { recursive: true, force: true });
     }
-    await cp(keep, cache, { recursive: true });
-  } finally {
-    await rm(keep, { recursive: true, force: true });
   }
-  const entries = await buildCacheEntries(template);
-  if (!entries.some((entry) => entry.startsWith('scriptable-pack-products/')))
-    throw new Error(`sdk-template-build-cache-empty: ${template}`);
-  return entries;
+}
+
+export async function stageSdkBuildCache(cache, destination, excludedGuids = new Set()) {
+  const selected = await Promise.all(
+    (await buildCacheEntries(cache)).map(async (entry) => {
+      const [store, key] = entry.split('/');
+      const path = join(store, 'entries', key);
+      if (excludedGuids.size > 0) {
+        const receipt = JSON.parse(await readFile(join(cache, path, 'entry.json'), 'utf8')).receipt;
+        if (excludedGuids.has(receipt.guid)) return undefined;
+      }
+      return { entry, path };
+    }),
+  );
+  const entries = selected.filter((row) => row !== undefined);
+  if (!entries.some(({ entry }) => entry.startsWith('scriptable-pack-products/')))
+    throw new Error('sdk-build-cache-empty');
+  for (const { path } of entries)
+    await cp(join(cache, path), join(destination, path), { recursive: true });
+  return entries.map(({ entry }) => entry);
 }

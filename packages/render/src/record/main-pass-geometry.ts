@@ -1,12 +1,20 @@
-import type { MeshVertexStreamRange } from '@forgeax/engine-geometry';
+import {
+  MaterialPipelineRequestCache,
+  type MaterialPipelineRequestFacts,
+} from '../assembly/material/pipeline-request-cache';
 import type { ViewportHitDraw } from '../assembly/viewport-hit-proxy';
-import { bindMeshVertexStreams, meshVertexStreamsForPipeline } from '../device/mesh-vertex-streams';
+import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
 import { viewForPipeline } from '../environment/bindings';
+import { isDepthVelocityEntry } from '../gpu-driven/raster-selection';
+import { issuedSectionIndex } from '../gpu-driven/source-draw-indices';
 import { materialAlphaMask } from '../material-alpha-mask';
+import { MATERIAL_RASTER_ALPHA_MASK, ownedMaterialRasterFlags } from '../material-resource';
 import { materialRasterSource } from '../pipeline-builder';
+import { pipelineStripIndexFormat, renderStateHash } from '../pipeline-spec';
 import { createPrimitiveBindGroup, primitiveForPipeline } from '../reflection/primitive-bindings';
 import { CapturedSceneTransform } from '../scene/captured-transform';
 import type { DrawRows } from './frame-snapshot';
+import { bindGeometryOffsets, rasterMaterialOffset } from './geometry-bind-offsets';
 import {
   createGeometryPipelineRequests,
   drawVertexLayout,
@@ -83,8 +91,6 @@ import {
   instancePreviousPairing,
   planInstanceUpload,
 } from '../instances';
-import { preparedMaterialLayoutIdentity } from '../material-layout-facts';
-
 import {
   classifyOitDraw,
   OIT_FRAGMENT_ENTRY,
@@ -97,10 +103,10 @@ import {
   projectedStandardMaterialLayout,
   standardPipelineMaterialLayoutIndex,
 } from '../pbr-pipeline';
-
 import type { PointsLinesRecordPlan } from '../points-lines/record';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderRecordPhase } from '../render-contract';
+import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type {
   DispatchEntry,
   DispatchList,
@@ -125,7 +131,11 @@ import type { ValidatedRenderable } from './frame-snapshot';
 
 import { getOpaqueResourceIdentity, instanceCollectionCacheKey } from './frame-snapshot';
 import { type RenderableDrawReceipt, selectSubmittedMaterialProgram } from './gpu-draw-receipts';
-import { type MainPassMaterialBindingResolver, selectMaterialGroup2 } from './main-pass-material';
+import {
+  type MainPassMaterialBindingResolver,
+  type RasterMaterialAddress,
+  selectMaterialGroup2,
+} from './main-pass-material';
 
 import { materialFromSubmittedSlots, submittedMaterialRow } from './material-pass-selection';
 import {
@@ -244,103 +254,36 @@ function gpuDrivenDrawIndicesBySubmesh(
   return indices;
 }
 
-type IblReceipt = NonNullable<_InternalRenderPipelineContext['frameState']['iblBindingInspection']>;
-
-const NO_IBL_ERRORS: readonly string[] = Object.freeze([]);
-
-/** The material's skylight entries, in binding order, name exactly the frame's IBL resources. */
-function skylightEntriesMatch(
-  material: NonNullable<IblReceipt['material']>,
-  resources: IblReceipt['resources'],
-): boolean {
-  const { entries, skylightBindingStart } = material;
-  let index = 0;
-  while (index < entries.length && (entries[index]?.binding ?? 0) < skylightBindingStart) index++;
-  return (
-    entries[index]?.resourceIdentity === resources.irradiance.viewIdentity &&
-    entries[index + 1]?.resourceIdentity === resources.irradiance.samplerIdentity &&
-    entries[index + 2]?.resourceIdentity === resources.prefilter.viewIdentity &&
-    entries[index + 3]?.resourceIdentity === resources.prefilter.samplerIdentity &&
-    entries[index + 4]?.resourceIdentity === resources.brdfLut.viewIdentity &&
-    entries[index + 5]?.resourceIdentity === resources.intensityBufferIdentity
-  );
-}
-
 export function recordIblPipelineBinding(
   c: _InternalRenderPipelineContext,
   material: MaterialSnapshot,
   pipeline: RenderPipeline,
   materialGroup: BindGroup,
+  layoutIndex?: number,
+  raster?: MaterialShaderPipelineEntry['rasterMaterialLayout'],
 ): void {
-  const receipt = c.frameState.iblBindingInspection;
-  if (receipt === undefined || !isStandardPbrMaterialShader(material.materialShaderId)) return;
+  const observation = c.frameState.iblBindings;
+  if (observation === undefined || !isStandardPbrMaterialShader(material.materialShaderId)) return;
   const materialBgl =
+    (raster !== undefined && raster.shader === material.materialShaderId
+      ? raster.layout
+      : undefined) ??
     projectedStandardMaterialLayout(
       c.pipelineState.materialBindGroupLayout,
-      standardPipelineMaterialLayoutIndex(pipeline),
+      layoutIndex ?? standardPipelineMaterialLayoutIndex(pipeline),
     ) ??
     c.runtime.getMaterialBindGroupLayout?.(
       material.materialShaderId ?? 'forgeax::default-standard-pbr',
     ) ??
     c.pipelineState.materialBindGroupLayout;
-  const last = c.frameState.iblDrawBinding;
-  if (
-    last?.receipt === receipt &&
-    last.pipeline === pipeline &&
-    last.group === materialGroup &&
-    last.layout === materialBgl &&
-    last.shader === material.materialShaderId &&
-    last.schema === material.materialParamSchema
-  )
-    return;
-  const materialReceipt = receipt.material;
-  const materialBglIdentity = getOpaqueResourceIdentity(materialBgl as object);
-  const bindGroupIdentity = getOpaqueResourceIdentity(materialGroup as object);
-  let errors: string[] | undefined;
-  if (materialReceipt !== undefined) {
-    if (materialReceipt.materialBglIdentity !== materialBglIdentity)
-      errors = ['material-pipeline-bgl-identity-mismatch'];
-    if (materialReceipt.bindGroupIdentity !== bindGroupIdentity) {
-      errors ??= [];
-      errors.push('material-bind-group-identity-mismatch');
-    }
-    if (!skylightEntriesMatch(materialReceipt, receipt.resources)) {
-      errors ??= [];
-      errors.push('material-ibl-resource-identity-mismatch');
-    }
-  }
-  c.frameState.iblBindingInspection = {
-    ...receipt,
-    pipeline: {
-      pipelineIdentity: getOpaqueResourceIdentity(pipeline as object),
-      effectiveMaterialLayoutIdentity: preparedMaterialLayoutIdentity(
-        material.materialShaderId ?? 'forgeax::default-standard-pbr',
-        material.materialParamSchema,
-      ),
-      materialBglIdentity,
-      bindGroupIdentity,
-      drawFrameId: c.frameState.frameNumber,
-    },
-    status: errors === undefined ? 'binding-chain-consistent' : 'binding-chain-mismatch',
-    errors: errors ?? NO_IBL_ERRORS,
-  };
-  if (last === undefined) {
-    c.frameState.iblDrawBinding = {
-      receipt: c.frameState.iblBindingInspection,
-      pipeline,
-      group: materialGroup,
-      layout: materialBgl,
-      shader: material.materialShaderId,
-      schema: material.materialParamSchema,
-    };
-  } else {
-    last.receipt = c.frameState.iblBindingInspection;
-    last.pipeline = pipeline;
-    last.group = materialGroup;
-    last.layout = materialBgl;
-    last.shader = material.materialShaderId;
-    last.schema = material.materialParamSchema;
-  }
+  observation.draw(
+    getOpaqueResourceIdentity(pipeline),
+    getOpaqueResourceIdentity(materialBgl as object),
+    getOpaqueResourceIdentity(materialGroup),
+    material.materialShaderId ?? 'forgeax::default-standard-pbr',
+    material.materialParamSchema,
+    c.frameState.frameNumber,
+  );
 }
 
 function geometryRecordPhase(
@@ -512,16 +455,10 @@ export function waterGeometryGroup2(
   };
 }
 
+/** Cached answer for a draw class that the pass never shades. */
+const SKIPPED_DRAW = Symbol('skipped-draw');
+
 interface DrawPipelineSelection {
-  readonly flags: number;
-  readonly layout: object;
-  readonly indexFormat: string;
-  readonly topology: PrimitiveTopology;
-  readonly shaderId: string | undefined;
-  readonly renderState: MaterialSnapshot['renderState'];
-  readonly vertexEntry: string | undefined;
-  readonly fragmentEntry: string | undefined;
-  readonly variantSet: string | undefined;
   readonly pipeline: RenderPipeline | null;
   readonly material: MaterialShaderPipelineEntry | null;
   readonly probeBlend: boolean;
@@ -532,28 +469,21 @@ interface DrawPipelineSelection {
   viewGroup: BindGroup | null | undefined;
 }
 
-/** Compare borrowed draw facts without allocating a per-draw key. */
-function matchesDrawPipelineSelection(
-  cached: DrawPipelineSelection,
-  flags: number,
-  entry: import('./frame-snapshot').ValidatedRenderable,
-  topology: PrimitiveTopology,
-  shaderId: string | undefined,
-  renderState: MaterialSnapshot['renderState'],
-  vertexEntry: string | undefined,
-  fragmentEntry: string | undefined,
-  variantSet: string | undefined,
-): boolean {
+/** The per-draw facts, beyond the program and layout, that select a draw's pipeline. */
+function drawClassFlags(
+  source: import('./frame-snapshot').ValidatedRenderable['source'],
+  oitAccumulateDraw: boolean,
+  sceneDirect: boolean,
+  hasSelectedPass: boolean,
+): number {
   return (
-    cached.flags === flags &&
-    cached.layout === drawVertexLayout(entry) &&
-    cached.indexFormat === entry.mesh.indexFormat &&
-    cached.topology === topology &&
-    cached.shaderId === shaderId &&
-    cached.renderState === renderState &&
-    cached.vertexEntry === vertexEntry &&
-    cached.fragmentEntry === fragmentEntry &&
-    cached.variantSet === variantSet
+    (source.skinBinding !== undefined ? 1 : 0) |
+    (source.probeBlendRecord !== undefined ? 2 : 0) |
+    (CapturedSceneTransform.reflected(source.transform) ? 4 : 0) |
+    (source.spriteInstances !== undefined ? 8 : 0) |
+    (oitAccumulateDraw ? 16 : 0) |
+    (sceneDirect ? 32 : 0) |
+    (hasSelectedPass ? 64 : 0)
   );
 }
 
@@ -786,6 +716,7 @@ export function recordGeometryDraws(
   depthPrepass = false,
   opaqueDepthPrimed = false,
   materialSceneDepth?: TextureView,
+  gpuDrivenFilter?: RenderPipelineGpuDrivenFilter,
 ): void {
   const observe = observeGeometryRecording(c, pass, passKind, coverageOnly, surfacePass, oit);
   let recordedDraws = 0;
@@ -809,8 +740,6 @@ export function recordGeometryDraws(
   // identity is only a resource result; using it to infer the shader lane
   // would silently fall back to URP when the clustered resource is missing.
   let lastViewGroup = viewBindGroup;
-  let lastVertexBuffer: Buffer | null = null;
-  let lastVertexStreams: readonly MeshVertexStreamRange[] | undefined;
   let lastIndexBuffer: Buffer | null = null;
   let lastIndexFormat: GPUIndexFormat | undefined;
   let lastMeshGroup: BindGroup | undefined;
@@ -833,7 +762,9 @@ export function recordGeometryDraws(
     pipelineState.sceneDirectPipelineLayout != null &&
     !coverageOnly &&
     (passKind === 'forward' || passKind === 'temporal');
-  const materialGroup1DynamicOffsets = new Uint32Array(1);
+  let pointsLinesDynamicOffsets: Uint32Array | undefined;
+  const bindOffsetWord = new Uint32Array(1);
+  const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
   const meshGroup2DynamicOffsets = [0];
   let lastStencilReference: number | null = null;
   let lastViewOffset = viewBindGroupDynamicOffset;
@@ -866,7 +797,11 @@ export function recordGeometryDraws(
   );
   const { resolvePointsLinesPipeline, resolveDrawPipeline, pipelineSelection, viewOffsetForBlend } =
     pipelineRequests;
-  const drawPipelines = new Map<MaterialSnapshot, DrawPipelineSelection[]>();
+  // This index dies with the pass and has at most one leaf per occupied draw class.
+  const drawPipelines = new MaterialPipelineRequestCache<
+    DrawPipelineSelection | typeof SKIPPED_DRAW
+  >(Infinity);
+  const drawFacts: MaterialPipelineRequestFacts = [];
   const resolveSharedDrawPipeline = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     smTopology: PrimitiveTopology,
@@ -881,43 +816,40 @@ export function recordGeometryDraws(
     sceneDirect: boolean,
   ): DrawPipelineSelection | boolean => {
     const source = entry.source;
-    const hasWaterOwner =
-      (source as typeof source & { readonly waterOwner?: unknown }).waterOwner !== undefined;
-    const flags =
-      (source.skinBinding !== undefined ? 1 : 0) |
-      (source.probeBlendRecord !== undefined ? 2 : 0) |
-      (CapturedSceneTransform.reflected(source.transform) ? 4 : 0) |
-      (source.spriteInstances !== undefined ? 8 : 0) |
-      (oitAccumulateDraw ? 16 : 0) |
-      (sceneDirect ? 32 : 0) |
-      (selectedPass !== undefined ? 64 : 0);
-    const candidates = hasWaterOwner ? undefined : drawPipelines.get(submeshMaterial);
-    if (candidates !== undefined) {
-      for (let index = 0; index < candidates.length; index++) {
-        const cached = candidates[index] as DrawPipelineSelection;
-        if (
-          matchesDrawPipelineSelection(
-            cached,
-            flags,
-            entry,
-            smTopology,
-            selectedShaderId,
-            selectedRenderState,
-            vertexEntry,
-            fragmentEntry,
-            authoredVariantSet,
-          )
-        ) {
-          pipelineSelection.pipeline = cached.pipeline;
-          pipelineSelection.material = cached.material;
-          pipelineSelection.probeBlend = cached.probeBlend;
-          pipelineSelection.viewOffset = cached.viewOffset;
-          pipelineSelection.shader = cached.shader;
-          pipelineSelection.sceneDirect = cached.sceneDirect;
-          pipelineSelection.variantSet = cached.variantSet;
-          return cached;
-        }
-      }
+    const materialFlags =
+      prepared === undefined ? undefined : ownedMaterialRasterFlags(submeshMaterial);
+    const flags = drawClassFlags(
+      source,
+      oitAccumulateDraw,
+      sceneDirect,
+      selectedPass !== undefined,
+    );
+    let issued: MaterialPipelineRequestFacts | undefined;
+    if (source.waterOwner === undefined) {
+      // Captured draws share the selected program and its raster inputs, across material
+      // handles and uniform values. Borrowed snapshots retain their own identity.
+      drawFacts[0] = materialFlags === undefined ? submeshMaterial : undefined;
+      drawFacts[1] = flags;
+      drawFacts[2] = drawVertexLayout(entry);
+      drawFacts[3] = pipelineStripIndexFormat(smTopology, entry.mesh.indexFormat);
+      drawFacts[4] = smTopology;
+      drawFacts[5] = selectedShaderId;
+      drawFacts[6] =
+        materialFlags !== undefined && selectedRenderState !== undefined
+          ? renderStateHash(selectedRenderState)
+          : selectedRenderState;
+      drawFacts[7] = vertexEntry;
+      drawFacts[8] = fragmentEntry;
+      drawFacts[9] = authoredVariantSet;
+      if (materialFlags !== undefined) {
+        drawFacts[10] = submeshMaterial.standardTextureMask;
+        drawFacts[11] = submeshMaterial.surfaceModel;
+        drawFacts[12] = materialFlags;
+      } else drawFacts.length = 10;
+      const selection = drawPipelines.get(drawFacts);
+      if (selection !== undefined) return selection === SKIPPED_DRAW ? false : selection;
+      // Nested device callbacks may issue another draw before this request returns.
+      issued = drawFacts.slice();
     }
     pipelineRequests.reported = false;
     const resolved = resolveDrawPipeline(
@@ -933,7 +865,13 @@ export function recordGeometryDraws(
       authoredVariantSet,
       false,
       sceneDirect,
+      materialFlags === undefined ? undefined : (materialFlags & MATERIAL_RASTER_ALPHA_MASK) !== 0,
     );
+    // A pass that never shades this program skips every draw of the class alike.
+    if (!resolved && pipelineSelection.skipped && !pipelineRequests.reported) {
+      if (issued !== undefined) drawPipelines.set(issued, SKIPPED_DRAW);
+      return false;
+    }
     // A fallback without a material pipeline entry may still be pending.
     if (
       !resolved ||
@@ -943,17 +881,8 @@ export function recordGeometryDraws(
     )
       return resolved;
     // Each water body resolves its own pipeline selection.
-    if (hasWaterOwner) return true;
+    if (issued === undefined) return true;
     const selection: DrawPipelineSelection = {
-      flags,
-      layout: drawVertexLayout(entry),
-      indexFormat: entry.mesh.indexFormat,
-      topology: smTopology,
-      shaderId: selectedShaderId,
-      renderState: selectedRenderState,
-      vertexEntry,
-      fragmentEntry,
-      variantSet: authoredVariantSet,
       pipeline: pipelineSelection.pipeline,
       material: pipelineSelection.material,
       probeBlend: pipelineSelection.probeBlend,
@@ -962,8 +891,7 @@ export function recordGeometryDraws(
       sceneDirect: pipelineSelection.sceneDirect,
       viewGroup: undefined,
     };
-    if (candidates === undefined) drawPipelines.set(submeshMaterial, [selection]);
-    else candidates.push(selection);
+    drawPipelines.set(issued, selection);
     return selection;
   };
 
@@ -997,11 +925,12 @@ export function recordGeometryDraws(
 
   // Preparation shares the exact resolver but never opens or binds a raster pass.
   if (pass === undefined) return;
+  const vertexBindings = new PassMeshVertexBindings(pass);
   const bindMeshGroup = (group: BindGroup, offsets: readonly number[]): void => {
     // Ordinary geometry uses one offset in mutable scratch. Snapshot the value at encode.
     const offset = offsets.length === 1 ? offsets[0] : undefined;
     if (offset !== undefined && group === lastMeshGroup && offset === lastMeshOffset) return;
-    pass.setBindGroup(2, group, offsets);
+    bindGeometryOffsets(pass, 2, group, offsets, bindOffsetWord);
     lastMeshGroup = group;
     lastMeshOffset = offset;
   };
@@ -1028,6 +957,8 @@ export function recordGeometryDraws(
   let entityDrawIndices: readonly (number | undefined)[] | undefined;
   let addressedEntityDraws = false;
   const compactDrawAt = (entry: ValidatedRenderable, submesh: number) => {
+    const index = issuedSectionIndex(entry.source.gpuDrivenDraws, submesh);
+    if (index !== undefined) return index < 0 ? undefined : index;
     if (!addressedEntityDraws) {
       entityDrawIndices = gpuDrivenDrawIndicesBySubmesh(
         entry.source,
@@ -1084,6 +1015,7 @@ export function recordGeometryDraws(
       pointsLinesMaterial,
       entry.source.entityKey,
       entry.world ?? c.world,
+      materialAddress,
       POINTS_LINES_MATERIAL_SHADER_ID,
     );
     const pointsLinesPipelineEntry = resolvePointsLinesPipeline(
@@ -1093,10 +1025,12 @@ export function recordGeometryDraws(
     );
     if (pointsLinesPipelineEntry === null) return;
     const pointsLinesPipeline = pointsLinesPipelineEntry.pipeline;
-    if (pipelineState.pointsLinesViewBuffer === undefined) return;
+    const pointsLinesBuffer = pipelineState.pointsLinesViewBuffer;
+    if (pointsLinesBuffer === undefined)
+      throw new Error('Points/Lines draw has no prepared View buffer');
     writePointsLinesViewUbo(
       runtime.device.queue,
-      pipelineState.pointsLinesViewBuffer,
+      pointsLinesBuffer,
       c.camera,
       c.targetW,
       c.targetH,
@@ -1104,29 +1038,33 @@ export function recordGeometryDraws(
       style,
       pointsLinesOffset,
     );
+    pointsLinesDynamicOffsets ??= new Uint32Array(2);
+    const offsets = pointsLinesDynamicOffsets;
+    offsets[0] = viewOffsetForBlend(
+      pointsLinesMaterial.renderState?.blend,
+      pointsLinesMaterial.renderState?.fog,
+    );
+    offsets[1] = pointsLinesOffset;
     pass.setBindGroup(
       0,
-      viewBindGroup as BindGroup,
-      new Uint32Array([
-        viewOffsetForBlend(
-          pointsLinesMaterial.renderState?.blend,
-          pointsLinesMaterial.renderState?.fog,
-        ),
-        pointsLinesOffset,
-      ]),
+      viewForPipeline(
+        runtime.device,
+        pointsLinesPipeline,
+        viewBindGroup as BindGroup,
+        pointsLinesBuffer,
+      ),
+      offsets,
       0,
-      2,
+      offsets.length,
     );
     pass.setPipeline(pointsLinesPipeline);
     bindingState.pipeline = pointsLinesPipeline;
-    pass.setVertexBuffer(0, submission.vertexBuffer);
+    vertexBindings.bindSingle(submission.vertexBuffer);
     pass.setIndexBuffer(submission.indexBuffer, 'uint32');
-    lastVertexBuffer = submission.vertexBuffer;
-    lastVertexStreams = undefined;
     lastIndexBuffer = submission.indexBuffer;
     lastIndexFormat = 'uint32';
-    materialGroup1DynamicOffsets[0] = pointsLinesBinding.byteOffset;
-    pass.setBindGroup(1, pointsLinesBinding.group, materialGroup1DynamicOffsets, 0, 1);
+    bindOffsetWord[0] = materialAddress.byteOffset;
+    pass.setBindGroup(1, pointsLinesBinding, bindOffsetWord, 0, materialAddress.dynamicOffsetCount);
     lastMaterialGroup = undefined;
     const pointsLinesMeshGroup =
       pipelineState.meshStorageBuffer.pages === undefined
@@ -1154,7 +1092,7 @@ export function recordGeometryDraws(
     if (observe !== undefined && submission.plan.drawCount !== 0) recordedDraws++;
     viewportHit?.reject('geometry-coverage');
     c.onRenderableDraw?.(entry);
-    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
+    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset]);
     lastViewOffset = viewBindGroupDynamicOffset;
     lastViewGroup = viewBindGroup;
   };
@@ -1197,14 +1135,8 @@ export function recordGeometryDraws(
       }
       vertexBuffer = output.buffer;
     }
-    if (
-      (gpuVertex !== undefined || entry.mesh.vertexStreams === undefined) &&
-      (vertexBuffer !== lastVertexBuffer || lastVertexStreams !== undefined)
-    ) {
-      pass.setVertexBuffer(0, vertexBuffer);
-      lastVertexBuffer = vertexBuffer;
-      lastVertexStreams = undefined;
-    }
+    if (gpuVertex !== undefined || entry.mesh.vertexStreams === undefined)
+      vertexBindings.bindSingle(vertexBuffer);
     // feat-20260604 M4 / w11: vertex-only meshes (indexed === false) carry no
     // index buffer; skip setIndexBuffer entirely and dispatch via pass.draw
     // below. Indexed meshes keep the existing setIndexBuffer path unchanged.
@@ -1235,9 +1167,8 @@ export function recordGeometryDraws(
 
   /**
    * Per-submesh material bind group (group 1). Texture views resolve from the
-   * submesh's own material slot; identical-texture-set submeshes, on the same
-   * or different entities, share one group via the shaderId-outer
-   * `materialBgShared` cache.
+   * submesh's own material slot; submeshes with the same physical layout, resources
+   * and ranges share one issued group across entities.
    */
   let hitMaterialOffset: number | undefined;
   const bindSubmeshMaterial = (
@@ -1246,7 +1177,8 @@ export function recordGeometryDraws(
     submeshMaterial: MaterialSnapshot,
     selectedShaderId: string | undefined,
     standardMaterialLayoutIndex: number,
-  ): import('./main-pass-material').MainPassMaterialBinding => {
+    selectedLayout: MaterialShaderPipelineEntry['rasterMaterialLayout'],
+  ): BindGroup => {
     const materialSlot = entityBindingSlots?.[sourceSlot] ?? entityBindingSlots?.[0] ?? 0;
     const binding =
       c.profilePhase === undefined
@@ -1255,8 +1187,10 @@ export function recordGeometryDraws(
             submeshMaterial,
             entry.source.entityKey,
             entry.world ?? c.world,
+            materialAddress,
             selectedShaderId,
             standardMaterialLayoutIndex,
+            selectedLayout,
           )
         : profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
             resolveMaterialBinding(
@@ -1264,28 +1198,23 @@ export function recordGeometryDraws(
               submeshMaterial,
               entry.source.entityKey,
               entry.world ?? c.world,
+              materialAddress,
               selectedShaderId,
               standardMaterialLayoutIndex,
+              selectedLayout,
             ),
           );
-    const offset = binding.dynamicOffsetCount === 0 ? undefined : binding.byteOffset;
+    const offset = rasterMaterialOffset(
+      materialAddress.byteOffset,
+      materialAddress.dynamicOffsetCount,
+    );
     // The native recorder owns the consecutive rows and the pass state. Use
     // the resolved physical group and dynamic offset, including no-offset
     // layouts, rather than inferring equivalence from a material ID.
-    if (
-      prepared === undefined ||
-      lastMaterialGroup !== binding.group ||
-      lastMaterialOffset !== offset
-    ) {
-      materialGroup1DynamicOffsets[0] = binding.byteOffset;
-      pass.setBindGroup(
-        1,
-        binding.group,
-        materialGroup1DynamicOffsets,
-        0,
-        binding.dynamicOffsetCount,
-      );
-      lastMaterialGroup = binding.group;
+    if (prepared === undefined || lastMaterialGroup !== binding || lastMaterialOffset !== offset) {
+      bindOffsetWord[0] = materialAddress.byteOffset;
+      pass.setBindGroup(1, binding, bindOffsetWord, 0, materialAddress.dynamicOffsetCount);
+      lastMaterialGroup = binding;
       lastMaterialOffset = offset;
     }
     if (viewportHit !== undefined) hitMaterialOffset = offset;
@@ -1301,10 +1230,11 @@ export function recordGeometryDraws(
     smIdx: number,
     submeshMaterial: MaterialSnapshot,
     probeBlendAvailable: boolean,
+    sceneDirect: boolean,
   ): readonly GeometryInstanceDraw[] | null => {
     // A pending scene-direct build draws this submesh from packed instances.
     const resolvedInstanceDraws =
-      probeBlendAvailable || (entitySceneDirect && !pipelineSelection.sceneDirect)
+      probeBlendAvailable || (entitySceneDirect && !sceneDirect)
         ? instanceBindings.resolve(entry, probeBlendAvailable)
         : entityInstanceDraws;
     if (resolvedInstanceDraws == null) return null;
@@ -1613,7 +1543,7 @@ export function recordGeometryDraws(
               ? null
               : { buffer: mesh.indexBuffer.handle, format: mesh.indexFormat },
           bindings: [
-            { group: drawViewGroup, offsets: [viewOffset, 0] },
+            { group: drawViewGroup, offsets: [viewOffset] },
             {
               group: perSubmeshBg,
               offsets: hitMaterialOffset === undefined ? [] : [hitMaterialOffset],
@@ -1643,9 +1573,10 @@ export function recordGeometryDraws(
     smIdx: number,
     submeshMaterial: MaterialSnapshot,
     selectedPass: DispatchEntry | undefined,
-    binding: import('./main-pass-material').MainPassMaterialBinding,
+    perSubmeshBg: BindGroup,
     meshBinding: ReturnType<typeof meshSsboBufferBinding>,
     smPipelineHandle: RenderPipeline,
+    layoutIndex: number,
     selection: DrawPipelineSelection | undefined,
   ): void => {
     const {
@@ -1653,15 +1584,21 @@ export function recordGeometryDraws(
       probeBlend: probeBlendAvailable,
       viewOffset,
       shader: smMaterialShaderId,
-    } = pipelineSelection;
-    const perSubmeshBg = binding.group;
+      sceneDirect,
+    } = selection ?? pipelineSelection;
     const drawViewGroup = admittedViewGroup(selection, smPipelineHandle, smMaterialShaderId);
     if (viewOffset !== lastViewOffset || drawViewGroup !== lastViewGroup) {
-      pass.setBindGroup(0, drawViewGroup as BindGroup, [viewOffset, 0]);
+      pass.setBindGroup(0, drawViewGroup as BindGroup, [viewOffset]);
       lastViewOffset = viewOffset;
       lastViewGroup = drawViewGroup;
     }
-    const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, probeBlendAvailable);
+    const instanceDraws = submeshInstanceDraws(
+      entry,
+      smIdx,
+      submeshMaterial,
+      probeBlendAvailable,
+      sceneDirect,
+    );
     if (instanceDraws === null) return;
     const materialGroup2Contract = materialPipelineEntry?.group2Contract;
     if (materialGroup2Contract === undefined) return;
@@ -1673,7 +1610,7 @@ export function recordGeometryDraws(
       runtime.device,
       smPipelineHandle,
       meshGroup2,
-      binding.reflection,
+      materialAddress.reflection,
     );
     let selectedGroup2Offsets = group2DynamicOffsets;
     const layout = materialPipelineEntry?.waterGroup2Layout;
@@ -1735,18 +1672,20 @@ export function recordGeometryDraws(
         layout !== undefined,
       );
     profileGeometrySegment(c, passKind, 'draw-submit', submitPreparedSubmesh);
-    recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
+    recordIblPipelineBinding(
+      c,
+      submeshMaterial,
+      smPipelineHandle,
+      perSubmeshBg,
+      layoutIndex,
+      materialPipelineEntry?.rasterMaterialLayout,
+    );
   };
 
   const bindSubmeshVertexStreams = (entry: ValidatedRenderable, pipeline: RenderPipeline) => {
     if (entry.mesh.vertexStreams === undefined || entry.source.gpuVertexSource !== undefined)
       return;
-    const streams = meshVertexStreamsForPipeline(pipeline, entry.mesh.vertexStreams);
-    if (entry.mesh.vertexBuffer.handle === lastVertexBuffer && streams === lastVertexStreams)
-      return;
-    bindMeshVertexStreams(pass, entry.mesh.vertexBuffer.handle, streams);
-    lastVertexBuffer = entry.mesh.vertexBuffer.handle;
-    lastVertexStreams = streams;
+    vertexBindings.bind(entry.mesh.vertexBuffer.handle, entry.mesh.vertexStreams, pipeline);
   };
 
   /** Record one selected material pass of a submesh; false aborts the entity. */
@@ -1762,7 +1701,7 @@ export function recordGeometryDraws(
     const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;
     let fragmentEntry =
       passKind === 'temporal'
-        ? fragmentEntryPoint === 'fs_scene_velocity'
+        ? isDepthVelocityEntry(fragmentEntryPoint)
           ? fragmentEntryPoint
           : undefined
         : selectStandardForwardScreenEntry(fragmentEntryPoint, selectedPass?.fragmentEntry);
@@ -1825,9 +1764,10 @@ export function recordGeometryDraws(
       entitySceneDirect,
     );
     if (!resolvedPipeline) return true;
-    const smPipelineHandle = pipelineSelection.pipeline;
+    const selected = resolvedPipeline === true ? pipelineSelection : resolvedPipeline;
+    const smPipelineHandle = selected.pipeline;
     if (smPipelineHandle === null) {
-      const shader = pipelineSelection.shader;
+      const shader = selected.shader;
       markPipelinePreparationPending(c.frameState, {
         code: 'material-pipeline-preparation',
         entity: entry.source.entityKey,
@@ -1838,16 +1778,19 @@ export function recordGeometryDraws(
     }
     // A general fallback cannot supply the requested material's group contract.
     // The resolver keeps its pending/error classification; it still draws nothing.
-    if (pipelineSelection.material === null) return true;
+    if (selected.material === null) return true;
     bindSubmeshVertexStreams(entry, smPipelineHandle);
     // A pending PSO needs no material binding. Continue requesting later draws
     // instead of suspending their preparation behind this binding's readiness.
+    const raster = selected.material.rasterMaterialLayout;
+    const layoutIndex = raster?.index ?? standardPipelineMaterialLayoutIndex(smPipelineHandle);
     const materialBinding = bindSubmeshMaterial(
       entry,
       sm.materialSlot,
       submeshMaterial,
       selectedShaderId,
-      standardPipelineMaterialLayoutIndex(smPipelineHandle),
+      layoutIndex,
+      raster,
     );
     submitSubmeshPass(
       entry,
@@ -1857,6 +1800,7 @@ export function recordGeometryDraws(
       materialBinding,
       entityMeshBinding,
       smPipelineHandle,
+      layoutIndex,
       resolvedPipeline === true ? undefined : resolvedPipeline,
     );
     return true;
@@ -1880,7 +1824,7 @@ export function recordGeometryDraws(
     if (matchedHandles !== undefined && !matchedHandles.has(materialHandle)) return true;
     if (
       c.gpuDrivenSelection !== undefined &&
-      gpuDrivenOwnsSubmesh(c, entry, compactDrawAt(entry, smIdx), passKind)
+      gpuDrivenOwnsSubmesh(c, entry, compactDrawAt(entry, smIdx), passKind, gpuDrivenFilter)
     )
       return true;
     const draws = submeshMaterialDraws(
@@ -2054,13 +1998,15 @@ function gpuDrivenOwnsSubmesh(
   entry: ValidatedRenderable,
   compactDrawIndex: number | undefined,
   passKind: PassKind,
+  filter: RenderPipelineGpuDrivenFilter | undefined,
 ): boolean {
   if (passKind !== 'forward' && passKind !== 'deferred' && passKind !== 'temporal') return false;
   if (compactDrawIndex === undefined) return false;
   const sourceDraw = entry.source.gpuDrivenDraws?.[compactDrawIndex];
   return (
     sourceDraw !== undefined &&
-    c.gpuDrivenSelection?.owns(entry.source, sourceDraw, compactDrawIndex, passKind) === true
+    c.gpuDrivenSelection?.owns(entry.source, sourceDraw, compactDrawIndex, passKind, filter) ===
+      true
   );
 }
 

@@ -254,7 +254,7 @@ it('records Features only from the input render-feature-views prepared', async (
   }
 });
 
-it('installs motion blur at construction and plans it only in render-motion-blur-plan', async () => {
+it('keeps the native scene-velocity Motion Blur route without the Feature planner', async () => {
   const created: EcsWorld[] = [];
   const realCreate = renderWorldModule.createRenderWorld;
   const spy = vi.spyOn(renderWorldModule, 'createRenderWorld').mockImplementation(() => {
@@ -304,7 +304,15 @@ it('installs motion blur at construction and plans it only in render-motion-blur
       .unwrap();
     expect(world.update().ok).toBe(true);
     const frame = { source: lease };
-    expect(renderer.draw(frame).ok).toBe(true);
+    const drawCompletedFrame = async () => {
+      const drawn = renderer.draw(frame);
+      if (!drawn.ok) throw drawn.error;
+      if (drawn.value === undefined) throw new Error('Missing frame receipt');
+      const completed = await drawn.value.completed;
+      expect(completed.ok).toBe(true);
+      return drawn.value.frameId;
+    };
+    const firstFrameId = await drawCompletedFrame();
     expect(renderer.perFramePassNames).not.toContain('motion-blur');
     const before = schedule();
 
@@ -315,21 +323,28 @@ it('installs motion blur at construction and plans it only in render-motion-blur
       })
       .unwrap();
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frame).ok).toBe(true);
+    const plannedFrameId = await drawCompletedFrame();
+    expect(plannedFrameId).toBeGreaterThan(firstFrameId);
     expect(renderer.inspect().motionBlur?.execution?.program).toBe('motion-blur-compute');
+    const plannedExecutionFrameId = renderer.inspect().motionBlur?.execution?.frameId;
+    expect(plannedExecutionFrameId).toBeDefined();
     // The first demanding frame neither installs a Feature nor rebuilds the schedule.
     expect(schedule()).toEqual(before);
 
-    // Recording never re-plans motion blur: without the system the Feature sees no input.
+    // The native Standard route owns this pass even when the optional Feature
+    // planner is absent.
     expect(
       renderWorld.removeSystem(
         RenderPrepare,
         registeredSystem(renderWorld, RenderPrepare, 'render-motion-blur-plan'),
       ).ok,
     ).toBe(true);
-    expect(renderer.draw(frame).ok).toBe(true);
-    expect(renderer.inspect().motionBlur?.execution).toBeUndefined();
-    expect(renderer.inspect().motionBlur?.passCount).toBe(0);
+    expect(schedule().flatMap(([, systems]) => systems)).not.toContain('render-motion-blur-plan');
+    await drawCompletedFrame();
+    expect(renderer.perFramePassNames).toContain('motion-blur');
+    expect(renderer.inspect().motionBlur?.execution?.frameId).toBeGreaterThan(
+      plannedExecutionFrameId ?? -1,
+    );
   } finally {
     renderer.dispose();
   }

@@ -165,6 +165,7 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
     const probeBlendRecordBuffer = device
       .createBuffer({ size: 4096, usage: GPU_BUFFER_USAGE_STORAGE })
       .unwrap();
+    const buffersBeforeAdapter = device.createdBuffers.length;
     const adapter = MaterialAbiRasterAdapter.create({
       device,
       pipelineState,
@@ -172,6 +173,8 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
       visibleBuffer,
       probeBlendRecordBuffer,
     }).unwrap();
+    // The adapter starts with its instance fallback and the original address stripe.
+    expect(device.createdBuffers).toHaveLength(buffersBeforeAdapter + 2);
     const allocationAtCreate = adapter.resourceAllocation;
     expect(allocationAtCreate).toMatchObject({
       unit: 'engine-allocation-bytes',
@@ -290,7 +293,7 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
       allocationWithPendingPages.liveBytes + allocationWithPendingPages.pendingRetirementBytes,
     );
     await queue.drain();
-    expect(destroyCount(device, initial)).toBe(1);
+    expect(destroyCount(device, initial)).toBe(0);
     expect(destroyCount(device, bufferA)).toBe(1);
     expect(adapter.surfaceDynamicInputBuffer).toBe(bufferB);
     expect(surfaceBuffers.has(bufferA)).toBe(false);
@@ -304,14 +307,14 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
     prepare(pageC);
     const bufferC = adapter.surfaceDynamicInputBuffer;
     expect(bufferC).not.toBe(bufferB);
-    expect(device.bookkeeper.isDestroyed(initial)).toBe(true);
+    expect(device.bookkeeper.isDestroyed(initial)).toBe(false);
     expect(device.bookkeeper.isDestroyed(bufferA)).toBe(true);
     expect(device.bookkeeper.isDestroyed(bufferB)).toBe(false);
 
     await queue.drain();
-    expect(destroyCount(device, initial)).toBe(1);
+    expect(destroyCount(device, initial)).toBe(0);
     expect(destroyCount(device, bufferB)).toBe(1);
-    expect(surfaceBuffers.has(initial)).toBe(false);
+    expect(surfaceBuffers.has(initial)).toBe(true);
     expect(surfaceBuffers.has(bufferA)).toBe(false);
     expect(surfaceBuffers.has(bufferB)).toBe(false);
 

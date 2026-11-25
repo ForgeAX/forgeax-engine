@@ -142,6 +142,7 @@ import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
 import { projectSourceRoots, scanProjectSources } from './project-source-scan.js';
+import { readSdkBuildCache } from './sdk.js';
 import { DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import { traceDevStartup } from './startup-timing.js';
 import { projectToolProjection } from './tools/project-tools.js';
@@ -3234,6 +3235,16 @@ function sharedProjectPages(
   return serving && preview ? host?.pages : undefined;
 }
 
+function createProjectPackProductCache(
+  seedRoot: string | undefined,
+  options: Parameters<typeof createScriptablePackProductCache>[0],
+) {
+  return createScriptablePackProductCache({
+    ...options,
+    ...(seedRoot === undefined ? {} : { seedRoot }),
+  });
+}
+
 export async function createViteConfig(
   facts: ProjectFacts,
   command: 'serve' | 'build',
@@ -3351,8 +3362,10 @@ export async function createViteConfig(
           : [],
       ),
     ).versions();
-    const productCache = await createScriptablePackProductCache({
-      root: devKitDdcRoots(facts.root).buildCacheRoot,
+    const ddc = devKitDdcRoots(facts.root);
+    const buildCacheSeedRoot = await readSdkBuildCache(facts.root);
+    const productCache = await createProjectPackProductCache(buildCacheSeedRoot, {
+      root: ddc.buildCacheRoot,
       identityRoot: facts.root,
       outputVersions,
       cookers: [...builtinCookers, ...defaultCookers],
@@ -3387,7 +3400,7 @@ export async function createViteConfig(
       },
       {
         inventory: sourceInventory,
-        buildCacheRoot: devKitDdcRoots(facts.root).buildCacheRoot,
+        buildCacheRoot: ddc.buildCacheRoot,
         defaultCookers,
       },
     );
@@ -3569,7 +3582,7 @@ export async function createViteConfig(
       // their physical identity and the Pack fallback policy.
       sourceIdentityFor,
       ...devPackReadinessOptions(facts),
-      ddc: devKitDdcRoots(facts.root),
+      ddc: { ...ddc, buildCacheSeedRoot },
       watch: false,
       importers: [...importerSession.importers, ...cookerSession.importers],
       producerIdentity: cookerSession.producerIdentity,

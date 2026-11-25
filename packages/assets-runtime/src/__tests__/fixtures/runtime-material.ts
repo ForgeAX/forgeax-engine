@@ -9,18 +9,27 @@ import { prepareRuntimeAssetPublication, publishRuntimeAssets } from './runtime-
 
 /** Use the same source artifact and verified Catalog route as a Scriptable Pack. */
 export async function prepareRuntimeMaterialTemplate(guid: string, source: MaterialAsset) {
+  return prepareRuntimeMaterialTemplates([{ guid, source }]);
+}
+
+export async function prepareRuntimeMaterialTemplates(
+  inputs: readonly { guid: string; source: MaterialAsset }[],
+) {
   const { createMaterialPackCooker } = await import(
     '../../../../shader-compiler/src/material/pack-cooker'
   );
-  const draft = await createMaterialPackCooker().cook({ guid, source, publication: 'templates' });
-  const { template: input } = draft.payload as { template: unknown };
-  const template = validateMaterialTemplatePublication(input).unwrap();
-  const { path, digest } = template.sourceArtifact;
-  const artifact = draft.artifacts[path];
-  if (artifact === undefined) throw new Error('Material source template artifact unavailable');
-  return prepareRuntimeAssetPublication(
-    [
-      {
+  const cooker = createMaterialPackCooker();
+  const blobs: Record<string, Uint8Array> = {};
+  const entries = await Promise.all(
+    inputs.map(async ({ guid, source }) => {
+      const draft = await cooker.cook({ guid, source, publication: 'templates' });
+      const { template: input } = draft.payload as { template: unknown };
+      const template = validateMaterialTemplatePublication(input).unwrap();
+      const { path, digest } = template.sourceArtifact;
+      const artifact = draft.artifacts[path];
+      if (artifact === undefined) throw new Error('Material source template artifact unavailable');
+      blobs[path] = artifact.bytes;
+      return {
         guid,
         asset: draft.payload as MaterialAsset,
         refs: draft.refs,
@@ -28,15 +37,15 @@ export async function prepareRuntimeMaterialTemplate(guid: string, source: Mater
           [path]: {
             path,
             mediaType: artifact.mediaType,
-            contentEncoding: 'identity',
+            contentEncoding: 'identity' as const,
             byteLength: artifact.bytes.byteLength,
-            integrity: { algorithm: 'sha256', digest },
+            integrity: { algorithm: 'sha256' as const, digest },
           },
         },
-      },
-    ],
-    { [path]: artifact.bytes },
+      };
+    }),
   );
+  return prepareRuntimeAssetPublication(entries, blobs);
 }
 
 /** Admit the same cooked record through the ordinary source, decoder and runtime owner. */

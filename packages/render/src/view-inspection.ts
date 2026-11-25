@@ -201,7 +201,7 @@ export function viewSsr(owner: ViewSettlementOwner): SsrSpatialInspection {
   const passRoster =
     admitted && graph !== undefined
       ? graph.passes
-          .filter((pass) => pass.name.startsWith('ssr-') || pass.name.startsWith('depth-pyramid-'))
+          .filter((pass) => /^(ssr-|hzb-(seed|reduce-))/.test(pass.name))
           .map((pass) => pass.name)
       : [];
   const dependencies = resolveViewSsrDependencies(owner, frameState.ssrRequested === true);

@@ -24,6 +24,8 @@ export interface StandardLocalLightInput {
    * it with each cluster cell in addition to the binning sphere.
    */
   readonly cone?: BinningCone;
+  /** Emitting front of a one-sided rectangle, in world space. */
+  readonly rectNormal?: Vec3;
   /** Whether the shadow producer admitted this local light to its atlas. */
   readonly shadowed: boolean;
   /**

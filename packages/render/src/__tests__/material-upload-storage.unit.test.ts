@@ -1,5 +1,5 @@
 import { vec3 } from '@forgeax/engine-math';
-import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
+import type { Buffer, RhiQueue, Sampler, TextureView } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { assert, describe, expect, it, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
@@ -7,6 +7,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { PerSubmeshMaterialBgDeps } from '../record/main-pass-material';
 import {
   MaterialUniformRecording,
+  materialBindingUniformResources,
   materialUniformResources,
   materialUniformSlot,
   prepareMaterialUniform,
@@ -66,6 +67,43 @@ describe('draw-owned shared material storage', () => {
     expect(writeBuffer).toHaveBeenCalledTimes(1);
   });
 
+  it('completes a reserved address after an unrelated lower slot retires', () => {
+    const { deps, world } = fixture();
+    const retired = material();
+    const active = material();
+    let frame = new MaterialFrame(undefined).with(retired);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    frame = frame.with(active);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    const reserved = materialUniformSlot(deps.runtime, active.snapshot);
+    expect(reserved).toBeGreaterThan(materialUniformSlot(deps.runtime, retired.snapshot));
+    prepareMaterialUniformFrame(deps.runtime, frame.without(retired));
+    expect(prepareMaterialUniform(deps, active.snapshot, world, materialUniformResources([]))).toBe(
+      reserved,
+    );
+  });
+
+  it('uses the same ordered identity for assembled user and physical bindings', () => {
+    const buffer = {} as Buffer;
+    const sampler = {} as Sampler;
+    const view = {} as TextureView;
+    const physicalView = {} as TextureView;
+    const entries = [
+      { binding: 0, resource: { kind: 'buffer' as const, value: { buffer } } },
+      { binding: 1, resource: { kind: 'sampler' as const, value: sampler } },
+      { binding: 2, resource: { kind: 'textureView' as const, value: view } },
+    ];
+    const physical = [{ slot: 0, sampler, view: physicalView }];
+    expect(materialBindingUniformResources(entries, physical)).toBe(
+      materialUniformResources([sampler, view, sampler, physicalView]),
+    );
+    expect(materialBindingUniformResources([], [])).toBe(materialUniformResources([]));
+    physical[0] = { slot: 0, sampler, view };
+    expect(materialBindingUniformResources(entries, physical)).toBe(
+      materialUniformResources([sampler, view, sampler, view]),
+    );
+  });
+
   it('native resource tuples invalidate only the actually changed root', () => {
     const { deps, world, writeBuffer } = fixture();
     const roots = Array.from({ length: 1000 }, () => material());
@@ -104,6 +142,27 @@ describe('draw-owned shared material storage', () => {
     const bytes = writeBuffer.mock.calls.at(-1)?.[2] as Uint8Array;
     expect(Array.from(new Float32Array(bytes.buffer).slice(0, 3))).toEqual([1, 0, 0]);
     expect(deps.frameState.materialUboCounters?.packMisses).toBe(2);
+  });
+
+  it('keeps simultaneous texture tuples addressable until each recording completes', () => {
+    const { deps, world } = fixture();
+    const snapshot = material().snapshot;
+    const first = new MaterialUniformRecording();
+    const second = new MaterialUniformRecording();
+    const a = {},
+      b = {},
+      c = {};
+    const bind = (tuple: object) => prepareMaterialUniform(deps, snapshot, world, tuple);
+    const slotA = first.run(() => bind(a));
+    const slotB = second.run(() => bind(b));
+    const slotC = bind(c);
+    expect(new Set([slotA, slotB, slotC]).size).toBe(3);
+    expect(first.run(() => bind(a))).toBe(slotA);
+    first.complete();
+    expect(second.run(() => bind(b))).toBe(slotB);
+    expect(bind(c)).toBe(slotC);
+    second.complete();
+    expect(bind(c)).toBe(slotC);
   });
 
   it('retries all overlapping physical pages after a partial failure and admits new pages', () => {

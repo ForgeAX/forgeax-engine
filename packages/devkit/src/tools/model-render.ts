@@ -844,8 +844,8 @@ export function isSoftwareAdapter(info: RendererAdapter): boolean {
   return SOFTWARE_ADAPTER_MARKERS.some((marker) => text.includes(marker));
 }
 
-async function modelRenderGpu() {
-  const gpu = await nodeGpu();
+async function modelRenderGpu(projectRoot: string) {
+  const gpu = await nodeGpu(projectRoot);
   return gpu.ok
     ? gpu
     : fail('model-render-backend-unavailable', gpu.error.expected, gpu.error.hint, {
@@ -1660,7 +1660,7 @@ export function createModelRenderTool(projectRoot: string): ToolContribution {
         args.materials === 'auto' ? report.materials : undefined,
       );
       if ('ok' in plan) return plan;
-      const gpu = await modelRenderGpu();
+      const gpu = await modelRenderGpu(projectRoot);
       if (!gpu.ok) return gpu;
       const mode = args.mode ?? 'material';
       const analysis = analysisOf(args, payload);
@@ -1845,7 +1845,7 @@ export function createModelReplayTool(projectRoot: string): ToolContribution {
           ),
         [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
       ) as unknown as Bounds;
-      const gpu = await modelRenderGpu();
+      const gpu = await modelRenderGpu(projectRoot);
       if (!gpu.ok) return gpu;
       const rendered = await renderStates(
         gpu.value,

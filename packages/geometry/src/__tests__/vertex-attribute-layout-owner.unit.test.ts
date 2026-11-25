@@ -9,6 +9,8 @@ import {
   packInterleavedVertexAttributes,
   prepareStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
+  vertexLayoutHasColor,
+  visitVertexUvAliases,
 } from '@forgeax/engine-geometry';
 import type { VertexAttributeMap } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -310,6 +312,26 @@ describe('vertex attribute layout owner', () => {
         ],
       },
     ]);
+  });
+
+  it('reads physical inputs from a foreign roster even when it declares a known mask', () => {
+    const layout = deriveVertexLayoutProjection({
+      position: new Float32Array(),
+      uv: new Float32Array(),
+      color: new Float32Array(),
+    });
+    const attributes = layout.attributes.filter((attribute) => attribute.key === 'position');
+    const foreign = { ...layout, attributes };
+    expect(vertexLayoutHasColor(layout)).toBe(true);
+    expect(vertexLayoutHasColor(foreign)).toBe(false);
+    const aliases: number[] = [];
+    visitVertexUvAliases(foreign, 2, (_key, location) => aliases.push(location));
+    expect(aliases).toEqual([2, 6]);
+    attributes.push(...layout.attributes.filter((attribute) => attribute.key !== 'position'));
+    aliases.length = 0;
+    expect(vertexLayoutHasColor(foreign)).toBe(true);
+    visitVertexUvAliases(foreign, 2, (_key, location) => aliases.push(location));
+    expect(aliases).toEqual([6]);
   });
 
   it('aliases UV sets of a UV-less mesh inside its uploaded stride', () => {

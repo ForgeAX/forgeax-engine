@@ -221,10 +221,12 @@ describe('PersistentRenderScene shared Skin lifecycle', () => {
       expect(newTasks.paletteUploadBytes).toBe(128);
       const upload = required(
         writes.mock.calls.find(
-          ([buffer, offset]) => buffer === task.data && offset === (storage ? 32 : task.dataOffset),
+          ([buffer, offset]) => buffer === task.data && offset === task.dataOffset,
         ),
       );
-      expect(new Float32Array(upload[2] as ArrayBuffer, upload[3] ?? 0, 16)[12]).toBe(3);
+      expect(
+        new Float32Array(upload[2] as ArrayBuffer, (upload[3] ?? 0) + (storage ? 32 : 0), 16)[12],
+      ).toBe(3);
       await newTasks.complete();
       writes.mockRestore();
     } finally {

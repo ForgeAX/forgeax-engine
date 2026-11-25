@@ -19,12 +19,63 @@ import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { sdkGpuStage } from './sdk-stage.mjs';
 
-export const SDK_MANIFEST_VERSION = '1.11.0';
+export const SDK_MANIFEST_VERSION = '1.12.0';
 export const SDK_NPM_PACKAGE_NAMES = Object.freeze(['@forgeax/engine', '@forgeax/engine-sdk']);
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
 /** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
 export const SDK_ZIP_ONLY_PATHS = Object.freeze(['store', 'packages', 'toolchain/wasm']);
+
+// The installer uses the pnpm store. Retain the package inventory even
+// when the exact package file is physically stored in the editable source.
+export function referenceSdkPackageCopies(artifacts) {
+  const source = new Map(
+    artifacts
+      .filter(({ path }) => path.startsWith(`${SDK_SOURCE_ROOT}/packages/`))
+      .map((entry) => [entry.path, entry]),
+  );
+  return artifacts.map((entry) => {
+    if (!entry.path.startsWith('packages/')) return entry;
+    const copy = source.get(`${SDK_SOURCE_ROOT}/${entry.path}`);
+    return copy?.sha256 === entry.sha256 && copy.bytes === entry.bytes
+      ? { ...entry, sourceCopy: true }
+      : entry;
+  });
+}
+
+export async function verifySdkArchiveInventory(root, artifacts) {
+  const physical = new Set(
+    (await filesUnder(root)).map((path) => relative(root, path).split(sep).join('/')),
+  );
+  physical.delete('sdk-manifest.json');
+  const inventory = new Map(artifacts.map((entry) => [entry.path, entry]));
+  if (inventory.size !== artifacts.length) throw new Error('sdk-artifact-duplicate-path');
+  for (const entry of artifacts) {
+    if (entry.enginePath !== undefined) throw new Error(`sdk-archive-carrier-path: ${entry.path}`);
+    if (entry.sourceCopy === true) {
+      const source = inventory.get(`${SDK_SOURCE_ROOT}/${entry.path}`);
+      if (
+        !entry.path.startsWith('packages/') ||
+        physical.has(entry.path) ||
+        source?.sourceCopy === true ||
+        source?.sha256 !== entry.sha256 ||
+        source?.bytes !== entry.bytes
+      )
+        throw new Error(`sdk-artifact-source-copy: ${entry.path}`);
+    } else if (!physical.delete(entry.path)) {
+      throw new Error(`sdk-artifact-missing: ${entry.path}`);
+    }
+  }
+  if (physical.size !== 0) throw new Error('sdk-unmanifested-artifact');
+  await mapConcurrent(
+    artifacts.filter((entry) => entry.sourceCopy !== true),
+    async (expected) => {
+      const actual = await artifact(root, resolve(root, expected.path));
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+        throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
+    },
+  );
+}
 
 /** Stage the online SDK from the same immutable inventory as the offline ZIP. */
 export async function stageSdkCarrier(sdkRoot, destination, engineArchive) {

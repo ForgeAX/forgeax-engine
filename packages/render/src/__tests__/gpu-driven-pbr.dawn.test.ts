@@ -650,7 +650,6 @@ function createAlphaMaskViews(
         { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-        { binding: 10, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
       ],
     })
     .unwrap();
@@ -674,10 +673,6 @@ function createAlphaMaskViews(
           },
           { binding: 7, resource: { kind: 'buffer', value: { buffer: cascadeBuffer } } },
           { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-          {
-            binding: 10,
-            resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
-          },
         ],
       })
       .unwrap();
@@ -1185,7 +1180,7 @@ function addAlphaMaskShadowDepthRasters(
             depthStoreOp: 'store',
           },
           encode: ({ pass }) => {
-            pass.setBindGroup(0, shadowViewGroup, [0, 0]);
+            pass.setBindGroup(0, shadowViewGroup, [0]);
             recordGpuDrivenShadowIndirect(pass, submission);
           },
         },

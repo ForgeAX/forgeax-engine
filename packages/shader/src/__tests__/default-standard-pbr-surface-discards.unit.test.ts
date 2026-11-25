@@ -62,7 +62,7 @@ describe('Standard surface discard override', () => {
     expect(temporal).toMatch(/\n {2}applyViewClipping\(in\.clippingPositionWS, false\);/);
     expect(temporal).toMatch(/\n {2}applyLodCoverage\(in\.clip\.xy, in\.temporal\.z\);/);
     const packedVelocity =
-      'return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);';
+      'return encodeSceneVelocityRaster(materialTemporal(in), in.previousClip);';
     expect(temporal).toContain(packedVelocity);
     const skin = read('default-standard-pbr-skin.wgsl');
     expect(skin).toContain(packedVelocity);
@@ -78,8 +78,6 @@ describe('Standard surface discard override', () => {
       'fs_oit_premultiplied',
       'fs_gbuffer',
       'fs_depth_masked',
-      'fs_ao_input',
-      'fs_ao_input_msaa',
     ]) {
       const start = shader.indexOf(`fn ${entry}(`);
       expect(start, entry).toBeGreaterThanOrEqual(0);

@@ -155,6 +155,32 @@ describe('render-view-frame', () => {
     );
   });
 
+  it.each([
+    { primary: true, cameraEntityKey: 7, useAdoption: true },
+    { primary: true, cameraEntityKey: 8, useAdoption: false },
+    { primary: false, cameraEntityKey: 7, useAdoption: false },
+  ])('selects the local source frame by view role and camera ($primary, $cameraEntityKey)', ({
+    primary,
+    cameraEntityKey,
+    useAdoption,
+  }) => {
+    const frame = { cameras: [], renderables: [] } as unknown as ExtractedFrame;
+    const { world, staged, source, sourceWorld, lease, owner } = setup(() => frame);
+    world.addComponent(staged, { component: RenderView, data: { primary } }).unwrap();
+    source.stage([], [], sourceWorld, { cameraEntityKey }, lease, undefined);
+    const adoption = world.getResource(RenderSceneDelta);
+    adoption.localFrame = frame;
+    beginRenderFrame(world, 1);
+    expect(owner.scene.followAdoption).toHaveBeenCalledWith(
+      adoption,
+      useAdoption ? undefined : expect.any(Function),
+      undefined,
+    );
+    expect(viewFrameOf(world, staged)?.result).toEqual({ ok: true, value: frame });
+    expect(adoption.localFrame).toBeUndefined();
+    endRenderFrame(world);
+  });
+
   it('routes the primary display WaterMesh projection through its selected publication camera', () => {
     const camera = { entityKey: 7 } as CameraSnapshot;
     const frame = { cameras: [camera], renderables: [] } as unknown as ExtractedFrame;

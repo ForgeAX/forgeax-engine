@@ -26,7 +26,7 @@ test('retains ordinary Content sources in a Git projection without private Asset
       .filter((file) => file && existsSync(resolve(repositoryRoot, file)));
     assert.ok(files.includes('packages/content/assets/checker.pack.ts'));
     assert.ok(files.includes('packages/content/assets/water/materials.pack.ts'));
-    assert.ok(files.includes('packages/content/assets/water/texture-pixels.ts'));
+    assert.ok(files.includes('packages/content/assets/water/surface-textures.pack.ts'));
     assert.ok(files.includes('packages/content/assets/water/impulse-noise.pack.ts'));
     assert.ok(files.includes('packages/content/assets/water/volume-noise.pack.ts'));
     assert.equal(

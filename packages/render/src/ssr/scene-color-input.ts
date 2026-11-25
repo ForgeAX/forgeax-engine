@@ -1,24 +1,9 @@
-import { mipDimension, numMipLevels } from '@forgeax/engine-types';
+import { mipDimension } from '@forgeax/engine-types';
 
 type ColorExtent = { readonly width: number; readonly height: number };
 
 export function ssrColorExtent(scene: ColorExtent): ColorExtent {
   return { width: mipDimension(scene.width, 1), height: mipDimension(scene.height, 1) };
-}
-
-export function ssrColorMipCount(size: ColorExtent): number {
-  return Math.min(4, numMipLevels(size));
-}
-
-/** Level zero is already owned by the scene or retained color producer. */
-export function ssrColorMipTailTexels(
-  size: ColorExtent,
-  mipCount = ssrColorMipCount(size),
-): number {
-  let texels = 0;
-  for (let level = 1; level < mipCount; level += 1)
-    texels += mipDimension(size.width, level) * mipDimension(size.height, level);
-  return texels;
 }
 
 /** Metadata belongs to the selected scene-color producer, independently of SSR history. */

@@ -4,13 +4,11 @@ import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import { SceneDataUnavailableError } from '../errors/render';
 import {
-  deriveRenderFeaturePassAccess,
-  type RenderFeatureDerivedAccess,
   type RenderFeaturePlannedFrame,
   type RenderFeatureWorkPlan,
-  renderFeaturePlanDeclarations,
+  visitRenderFeaturePlanAccess,
 } from '../features/plan';
-import type { MaterialResource } from '../material-resource';
+import { type MaterialResource, ownedMaterialPassDeclaration } from '../material-resource';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
@@ -36,6 +34,7 @@ import {
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataSchemaId,
   type SceneDataSurfaceBinding,
+  type SceneDataTarget,
   sceneDataTargetOwner,
 } from './scene-data';
 
@@ -52,13 +51,11 @@ export function sceneDataTopologyFields(
   };
 }
 
-function sceneDataOwnerForAccess(
+function sceneDataOwnerForTarget(
   planned: RenderFeaturePlannedFrame,
-  access: RenderFeatureDerivedAccess,
+  target: SceneDataTarget,
   admission: StandardSceneSurfaceAdmission | undefined,
-): { readonly schema: SceneDataSchemaId; readonly owner: SceneDataBindingOwner } | undefined {
-  if (access.usage !== 'sampled-read' || !isSceneDataTarget(access.resource)) return undefined;
-  const target = access.resource;
+): SceneDataBindingOwner | undefined {
   const owner = sceneDataTargetOwner(target);
   const surfaceSchema = target.schema !== SCENE_DATA_TEMPORAL_V1_SCHEMA;
   const plannedView = typeof planned.scope === 'string' ? undefined : planned.scope.view;
@@ -82,7 +79,7 @@ function sceneDataOwnerForAccess(
   ) {
     return undefined;
   }
-  return { schema: target.schema, owner };
+  return owner;
 }
 
 function sceneDataOwnerKey(owner: SceneDataBindingOwner, schema: SceneDataSchemaId): string {
@@ -111,24 +108,29 @@ function declaresSceneDataTarget(plan: RenderFeatureWorkPlan): boolean {
   );
 }
 
+const NO_SCENE_DATA_BINDINGS: readonly SceneDataSurfaceBinding[] = Object.freeze([]);
+
 export function sceneDataSurfaceBindings(
   plans: readonly RenderFeaturePlannedFrame[],
   admission?: StandardSceneSurfaceAdmission,
 ): readonly SceneDataSurfaceBinding[] {
-  const owners = new Map<SceneDataSchemaId, Map<string, SceneDataBindingOwner>>();
+  let owners: Map<SceneDataSchemaId, Map<string, SceneDataBindingOwner>> | undefined;
   for (const planned of plans) {
     if (!declaresSceneDataTarget(planned.plan)) continue;
-    const declarations = renderFeaturePlanDeclarations(planned.plan);
-    for (const pass of planned.plan.passes) {
-      for (const access of deriveRenderFeaturePassAccess(planned.plan, pass, declarations)) {
-        const binding = sceneDataOwnerForAccess(planned, access, admission);
-        if (binding === undefined) continue;
-        const schemaOwners = owners.get(binding.schema) ?? new Map();
-        schemaOwners.set(sceneDataOwnerKey(binding.owner, binding.schema), binding.owner);
-        owners.set(binding.schema, schemaOwners);
+    visitRenderFeaturePlanAccess(planned.plan, (resource, usage) => {
+      if (usage !== 'sampled-read' || !isSceneDataTarget(resource)) return;
+      const owner = sceneDataOwnerForTarget(planned, resource, admission);
+      if (owner === undefined) return;
+      owners ??= new Map();
+      let schemaOwners = owners.get(resource.schema);
+      if (schemaOwners === undefined) {
+        schemaOwners = new Map();
+        owners.set(resource.schema, schemaOwners);
       }
-    }
+      schemaOwners.set(sceneDataOwnerKey(owner, resource.schema), owner);
+    });
   }
+  if (owners === undefined) return NO_SCENE_DATA_BINDINGS;
   return Object.freeze(
     [...owners.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
@@ -680,7 +682,7 @@ export function createStandardSceneSurfaceAdmission(
 ): StandardSceneSurfaceAdmission {
   const renderPath = standardSurfaceProducerPath(input);
   if (renderPath === undefined) return missingStandardSurfaceProducer(input);
-  const expectedEntry = renderPath === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
+  const expectedEntry = renderPath === 'deferred' ? 'fs_gbuffer' : 'fs_depth_masked';
   const previousCoverage = SurfaceAdmissionReceipt.coverage(previous);
   const previousCodes =
     previousCoverage?.rows.length === input.contributors.length
@@ -916,7 +918,7 @@ function surfaceContributorRejection(
   const facts = contributor.facts;
   const authoredShaderId = facts?.authoredShaderId ?? contributor.materialShaderId;
   const unlitForward =
-    expectedEntry === 'fs_ao_input' &&
+    expectedEntry === 'fs_depth_masked' &&
     (authoredShaderId === 'forgeax::default-unlit' ||
       authoredShaderId === 'forgeax_material::unlit');
   if (facts?.materialSnapshotMissing === true) return MATERIAL_SNAPSHOT_MISSING;
@@ -1106,25 +1108,30 @@ export function standardSceneDataContributorForDispatch(
   return standardSceneDataContributorFromColumns(row, row, entityKey, dispatch, lane, previous);
 }
 
-// One material pass owns this selection for the duration of its member walk.
+/** Only receiver-owned values and program metadata can describe every member of one Pass. */
 export function selectSceneDataDispatchPass(
   material: MaterialResource,
   dispatch: StandardSceneDataDispatch,
   lane: 'forward' | 'deferred',
-): {
-  readonly material: MaterialResource;
-  readonly snapshot: MaterialResource['snapshot'];
-  readonly required: boolean;
-  readonly pass: MaterialResource['snapshot']['passes'][number] | undefined;
-  readonly observation: ReturnType<MaterialResource['programObservation']> | undefined;
-} {
+):
+  | {
+      readonly material: MaterialResource;
+      readonly snapshot: MaterialResource['snapshot'];
+      readonly required: boolean;
+      readonly pass: MaterialResource['snapshot']['passes'][number] | undefined;
+      readonly observation: ReturnType<MaterialResource['programObservation']> | undefined;
+    }
+  | undefined {
+  const snapshot = material.snapshot;
+  if (!material.ownsValues(snapshot) || ownedMaterialPassDeclaration(snapshot) === undefined)
+    return undefined;
   const required = isRequiredSurfaceDispatch(material, dispatch.tags, lane);
   const pass = required
     ? passForDispatch(material, dispatch.materialShaderId, dispatch.tags)
     : undefined;
   return {
     material,
-    snapshot: material.snapshot,
+    snapshot,
     required,
     pass,
     observation: pass === undefined ? undefined : material.programObservation(pass),
@@ -1158,7 +1165,7 @@ export function standardSceneDataContributorFromColumns(
     return undefined;
   const prior = previous !== undefined && ownedContributors.has(previous) ? previous : undefined;
   const sourceTuple = contributorSourceTuple(prior, entityKey, materialHandle, passIndex);
-  const expectedFragmentEntry = lane === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
+  const expectedFragmentEntry = lane === 'deferred' ? 'fs_gbuffer' : 'fs_depth_masked';
   if (material === undefined)
     return ownContributor(
       missingSnapshotContributor(row, sourceTuple, materialShaderId, expectedFragmentEntry),
@@ -1317,23 +1324,13 @@ function selectedPassContributor(
   observation = material.programObservation(pass),
 ): StandardSceneDataContributor {
   const snapshot = material.snapshot;
-  const retained = observation.identity === undefined ? undefined : observation;
   const selectedProgramFact = observation.fact;
   const forwardOnly = lane === 'deferred' && matchPass(tags, FORWARD_PASS_SELECTOR);
-  // Publishing fs_gbuffer in the same WGSL module does not select a GBuffer
-  // draw. The later Forward-only pass cannot certify that producer's coverage.
-  const entryPoint = contributorFragmentEntry(
-    snapshot,
-    pass,
-    selectedProgramFact,
-    retained !== undefined,
-    forwardOnly,
-    expectedFragmentEntry,
-  );
-  const authoredShaderId =
-    retained === undefined
-      ? runtimeMaterialShaderId(pass.program.module, pass.name)
-      : selectedProgramFact.authoredShaderId;
+  const entryPoint =
+    !forwardOnly && selectedProgramFact.fragmentEntryPoints.includes(expectedFragmentEntry)
+      ? expectedFragmentEntry
+      : undefined;
+  const authoredShaderId = selectedProgramFact.authoredShaderId;
   const gbufferWriter = isCertifiedGBufferWriter(snapshot, pass, lane, forwardOnly, entryPoint);
   const compactGbufferWriter =
     lane === 'deferred' && !forwardOnly && fitsCompactGBuffer(snapshot, row, authoredShaderId)
@@ -1348,19 +1345,14 @@ function selectedPassContributor(
       : undefined;
   const id =
     previous?.facts?.sourceTuple === sourceTuple ? previous.id : JSON.stringify(sourceTuple);
-  const publication =
-    retained?.publication ??
-    JSON.stringify([
-      snapshot.materialPublication?.identity ?? null,
-      snapshot.materialProgramKeys?.[pass.name] ?? materialShaderId,
-    ]);
+  // The observation captures this call's publication and entries even on a live material.
+  const publication = observation.publication;
   const geometry = snapshot.materialContext?.geometry ?? 'unknown';
   const deformation = deformationForContributor(
     row,
     snapshot.materialContext?.geometry ?? 'unknown',
   );
-  const selectedProgram =
-    retained?.selectedProgram ?? JSON.stringify(selectedProgramFact.program ?? null);
+  const selectedProgram = observation.selectedProgram;
   const dispatchProgramKey = materialShaderId ?? '';
   const authoredModule = pass.program.module;
   const publishedFragmentEntries = selectedProgramFact.fragmentEntryPoints;
@@ -1368,12 +1360,13 @@ function selectedPassContributor(
   const selectedPass = pass.name;
   const publicationIdentity = selectedProgramFact.publicationIdentity;
   const selectedProgramFacts = selectedProgramFact.program;
-  const programCandidates = retained?.candidates ?? [selectedProgramFact];
+  const programCandidates = observation.candidates;
   const morphWeightsPresent = row?.morph !== undefined;
   const skinBindingPresent = row?.skinBinding !== undefined;
   if (
     previous !== undefined &&
-    retained !== undefined &&
+    observation.identity !== undefined &&
+    previous.gbufferWriter === gbufferWriter &&
     previous.compactGbufferWriter === compactGbufferWriter &&
     previous.compactReceiverContext === compactReceiverContext &&
     matchesSelectedContributor(
@@ -1422,26 +1415,8 @@ function selectedPassContributor(
       selectedPassFound: true,
     },
   };
-  if (retained !== undefined) contributor[contributorProgram] = selectedProgramFact;
+  if (observation.identity !== undefined) contributor[contributorProgram] = selectedProgramFact;
   return contributor;
-}
-
-function contributorFragmentEntry(
-  snapshot: MaterialResource['snapshot'],
-  pass: MaterialResource['snapshot']['passes'][number],
-  selectedProgramFact: StandardSceneDataContributorProgramFact,
-  retained: boolean,
-  forwardOnly: boolean,
-  expectedFragmentEntry: string,
-): string | undefined {
-  if (forwardOnly) return undefined;
-  if (retained)
-    return selectedProgramFact.fragmentEntryPoints.includes(expectedFragmentEntry)
-      ? expectedFragmentEntry
-      : undefined;
-  return (snapshot.materialProgramInputs?.[pass.name]?.entryPoints ?? []).find(
-    (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
-  )?.name;
 }
 
 /** Complete current observations, compared only against a producer-owned prior. */

@@ -60,7 +60,7 @@ export interface WorkloadOptions {
   readonly capsuleShadow: boolean;
   /** Capsule shadows are a Deferred lighting term; Forward keeps the cascade raster. */
   readonly renderPath: RenderPathMode;
-  /** Two-phase HZB occlusion of the main GPU-driven view; `gpuOcclusion=0` is the A/B baseline. */
+  /** Two-phase HZB occlusion of the Deferred GPU-driven view; `gpuOcclusion=0` is the A/B baseline. */
   readonly gpuOcclusion: boolean;
   /** Individual casters each pushed once per `occasionalPeriod` frames, staggered. */
   readonly occasionalCount: number;

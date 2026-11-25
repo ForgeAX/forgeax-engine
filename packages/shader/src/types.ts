@@ -128,6 +128,11 @@ export function sealMaterialShaderVariants(entry: MaterialShaderManifestEntry): 
   admittedVariantAxes.set(entry, Object.freeze(collectVariantAxes(entry)));
 }
 
+/** A template declares its axes directly. Its legacy variants array enumerates the whole family. */
+export function materialShaderHasVariants(entry: MaterialShaderManifestEntry): boolean {
+  return (templateManifestAxes(entry)?.length ?? entry.variants.length) > 0;
+}
+
 /** Axes are source declarations; inspecting them never composes a program or expands permutations. */
 export function materialShaderAxes(entry: MaterialShaderManifestEntry): readonly string[] {
   return templateManifestAxes(entry) ?? admittedVariantAxes.get(entry) ?? collectVariantAxes(entry);

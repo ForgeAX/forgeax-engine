@@ -1,6 +1,11 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import type { EntityHandle, QueryRow, World } from '@forgeax/engine-ecs';
+import {
+  createEntityLookup,
+  type EntityLookupColumns,
+  isQueryIterating,
+} from '@forgeax/engine-ecs/internal';
 import {
   readArrayRangesChangedSince,
   readMutationEpoch,
@@ -22,12 +27,11 @@ import {
   ChildOf,
   GlobalTransform,
   Mobility,
-  MobilityKindValue,
   MorphWeights,
   readPresentationWorldMatrix,
-  Transform,
   WaterBodyInstance,
 } from '@forgeax/engine-scene';
+import { mobilityFromRow } from '@forgeax/engine-scene/internal';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
   JointCountMismatchError,
@@ -54,7 +58,6 @@ import { materialRasterSourceFacts } from './assembly/material/assembly';
 import { buildCameraFrusta } from './camera-frusta';
 import { setPlanarCaptureDemand } from './capture/planar-material';
 import {
-  CapsuleShadow,
   Instances,
   Layer,
   Lines,
@@ -96,6 +99,10 @@ import { renderFeatureViewIdentity } from './features/view';
 import { extractGlyphSources } from './glyph-source';
 import { type InstanceProjectionStore, validateInstanceTransforms } from './instances';
 import { deriveInstancesUnionBounds } from './instances-derived-bounds';
+import {
+  type MaterialProgramSelection,
+  materialProgramSelectionsForMaterial,
+} from './material-program-selection';
 import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
 import { captureMaterialSource, materialSourceMatchesCurrent } from './material-source';
 import {
@@ -117,7 +124,6 @@ import type {
   ExtractedFrame,
   InstancesSnapshot,
   LightRoster,
-  MaterialProgramSelection,
   MaterialSnapshot,
   MaterialSnapshotCache,
   MaterialSnapshotCacheEntry,
@@ -143,7 +149,6 @@ import {
   DEFAULT_FORWARD_PASS,
   defaultMaterialSnapshot,
   fogState,
-  materialProgramSelectionsForMaterial,
   materialSnapshotContext,
   prepareExtractContext,
   prepareMaterialSnapshot,
@@ -158,6 +163,7 @@ import {
 } from './render-system-extract';
 import { ScenePoseWriter } from './scene/captured-transform';
 import { captureMaterialOverrides } from './scene/mesh-materials';
+import { renderSourceLayout } from './scene/render-source';
 import { buildShadowFrusta } from './scene/shadow-visibility';
 import { sharedAabb } from './scene/shared-aabb';
 import type { SkinBindingInput } from './scene/skin-scene-inputs';
@@ -670,9 +676,9 @@ export function extractInactiveMeshMember(
     [],
     1,
   );
-  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
   scope.preparedPose = true;
-  extractMeshRendererRow(scope, entity, skin);
+  const source = meshExtractionSource(world);
+  extractMeshRendererRow(scope, entity, new MeshRendererRowRead(source));
   return {
     renderables: scope.renderables,
     dispatch: scope.dispatch,
@@ -680,79 +686,133 @@ export function extractInactiveMeshMember(
   };
 }
 
-// tweak-20260611 M1: MeshRenderer renderable archetype walk routes through one
-// World-owned Query. Variable-length array reads (`MeshRenderer.materials`,
-// SpriteInstances arrays) still flow through `_getArrayView`; explicit
-// Instances bytes come from the renderer-owned collection store.
-function queryMeshRenderers(world: World, skinComponent: typeof Skin) {
-  return world
-    .query({
-      read: [MeshRenderer],
-      optional: [
-        Transform,
-        GlobalTransform,
-        MeshFilter,
-        Instances,
-        skinComponent,
-        Layer,
-        MorphWeights,
-        SpriteRegionOverride,
-        SpriteInstances,
-        Points,
-        Lines,
-        SortKey,
-      ],
-    })
-    .unwrap();
+// The query owns admission and order. Archetype membership is shared with source observation.
+function queryMeshRenderers(world: World) {
+  return world.query({ read: [MeshRenderer] }).unwrap();
+}
+
+// Each named field addresses one scalar column in the ECS lookup.
+const meshFieldLayout: (readonly [number, string])[] = [];
+function meshField(component: number, field: string): number {
+  return meshFieldLayout.push([component, field]) - 1;
+}
+const MeshField = {
+  lightingChannels: meshField(0, 'lightingChannels'),
+  renderLayers: meshField(0, 'renderLayers'),
+  frustumCulled: meshField(0, 'frustumCulled'),
+  preparePipelines: meshField(0, 'preparePipelines'),
+  cast: meshField(1, 'cast'),
+  receive: meshField(1, 'receive'),
+  shadowChannels: meshField(1, 'channels'),
+  mesh: meshField(2, 'assetHandle'),
+  skeleton: meshField(3, 'skeleton'),
+  sortKey: meshField(4, 'value'),
+  layer: meshField(5, 'value'),
+  mobility: meshField(6, 'kind'),
+  parent: meshField(7, 'parent'),
+};
+
+/** The World owns component identity and table storage. Only column addresses survive extraction. */
+function createMeshExtractionSource(world: World, skin: typeof Skin) {
+  const lookup = createEntityLookup(
+    world,
+    [MeshRenderer, ShadowParticipation, MeshFilter, skin, SortKey, Layer, Mobility, ChildOf],
+    meshFieldLayout,
+  );
+  let query: ReturnType<typeof queryMeshRenderers> | undefined;
+  return {
+    skin,
+    lookup,
+    layout: renderSourceLayout(world),
+    query() {
+      query ??= queryMeshRenderers(world);
+      return isQueryIterating(query) ? queryMeshRenderers(world) : query;
+    },
+  };
+}
+
+type MeshExtractionSource = ReturnType<typeof createMeshExtractionSource>;
+const meshExtractionSources = new WeakMap<World, MeshExtractionSource>();
+const EMPTY_MESH_FIELDS: EntityLookupColumns['fields'] = [];
+
+function meshExtractionSource(world: World): MeshExtractionSource {
+  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  let source = meshExtractionSources.get(world);
+  if (source?.skin !== skin) {
+    source = createMeshExtractionSource(world, skin);
+    meshExtractionSources.set(world, source);
+  }
+  return source;
 }
 
 /** Walk MeshRenderer rows in query order, or in the requested partial entity order. */
-function extractMeshRenderers(scope: WorldExtraction): void {
-  const skinComponent =
-    (scope.world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const query = queryMeshRenderers(scope.world, skinComponent);
-  const requested = scope.context.renderableEntities;
-  if (requested === undefined) {
-    for (const row of query) extractMeshRendererRow(scope, row.entity, skinComponent);
-    return;
-  }
-  for (const entity of requested) {
-    const row = query.at(entity as EntityHandle);
-    if (row !== undefined) extractMeshRendererRow(scope, row.entity, skinComponent);
-  }
+function extractMeshRenderers(
+  scope: WorldExtraction,
+  requested = scope.context.renderableEntities,
+): void {
+  const source = meshExtractionSource(scope.world);
+  const query = source.query();
+  const read = new MeshRendererRowRead(source);
+  const visit = (row: QueryRow) => extractMeshRendererRow(scope, row.entity, read);
+  if (requested === undefined) query.forEach(visit);
+  else query.forEachAt(requested as ReadonlySet<EntityHandle>, visit);
 }
 
 /** Terrain, glyph and tilemap producers append to the same renderable/dispatch lists. */
 function extractDerivedRenderSources(scope: WorldExtraction): void {
   const { world, context, renderables, visibility, explicitlyHidden } = scope;
-  if (scope.assets != null)
+  const requested = context.renderableEntities;
+  let terrain: Set<number> | undefined,
+    glyph: Set<number> | undefined,
+    tilemap: Set<number> | undefined;
+  if (requested !== undefined) {
+    const read = renderSourceLayout(world);
+    for (const entity of requested) {
+      const layout = read(entity as EntityHandle);
+      if (layout?.terrain) {
+        terrain ??= new Set();
+        terrain.add(entity);
+      }
+      if (layout?.glyph) {
+        glyph ??= new Set();
+        glyph.add(entity);
+      }
+      if (layout?.tilemap) {
+        tilemap ??= new Set();
+        tilemap.add(entity);
+      }
+    }
+  }
+  if (scope.assets != null && (requested === undefined || terrain !== undefined))
     extractTerrainSources(
       world,
       scope.assets,
       context.materialContext,
       renderables,
       scope.dispatch,
-      context.renderableEntities,
+      terrain,
       visibility,
       context.retainHidden,
       explicitlyHidden,
     );
-  extractGlyphSources(
-    world,
-    renderables,
-    context.renderableEntities,
-    visibility,
-    context.retainHidden,
-    explicitlyHidden,
-  );
-  extractTilemapSources(
-    world,
-    renderables,
-    context.renderableEntities,
-    visibility,
-    context.retainHidden,
-    explicitlyHidden,
-  );
+  if (requested === undefined || glyph !== undefined)
+    extractGlyphSources(
+      world,
+      renderables,
+      glyph,
+      visibility,
+      context.retainHidden,
+      explicitlyHidden,
+    );
+  if (requested === undefined || tilemap !== undefined)
+    extractTilemapSources(
+      world,
+      renderables,
+      tilemap,
+      visibility,
+      context.retainHidden,
+      explicitlyHidden,
+    );
 }
 
 type WaterOwnerMeshDraw =
@@ -896,13 +956,7 @@ function extractMissingWaterOwnerMeshRows(
       renderableEntities: missing,
     },
   });
-  const skinComponent =
-    (scope.world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const query = queryMeshRenderers(scope.world, skinComponent);
-  for (const entity of missing) {
-    const row = query.at(entity as EntityHandle);
-    if (row !== undefined) extractMeshRendererRow(scope, row.entity, skinComponent);
-  }
+  extractMeshRenderers(scope, missing);
 }
 
 function validWaterMeshViewFacts(
@@ -1906,41 +1960,9 @@ function collectPostProcessParams(
 function extractMeshRendererRow(
   scope: WorldExtraction,
   entity: EntityHandle,
-  skinComponent: typeof Skin,
+  read: MeshRendererRowRead,
 ): void {
-  // The required query component owns this scalar. Read it without
-  // materialising MeshRenderer's unrelated variable-length materials array.
-  const lightingChannels = scope.world[worldRead].getFieldValue(
-    entity,
-    MeshRenderer,
-    'lightingChannels',
-  ) as number;
-  if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels')) return;
-  const renderLayers = scope.world[worldRead].getFieldValue(
-    entity,
-    MeshRenderer,
-    'renderLayers',
-  ) as number;
-  if (!admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers'))
-    return;
-  const participation = readShadowParticipation(scope.world, entity);
-  if (
-    participation !== undefined &&
-    !admitChannelMask(
-      scope,
-      validateChannelMask(participation.channels, 'shadowChannels'),
-      'shadow-channels',
-    )
-  )
-    return;
-  const read = readMeshRendererRow(
-    scope,
-    entity,
-    skinComponent,
-    lightingChannels,
-    renderLayers,
-    participation,
-  );
+  if (!read.load(scope, entity)) return;
   if (!read.authorVisible) scope.explicitlyHidden.add(entity);
   if (!read.authorVisible && !scope.context.retainHidden) return;
   // A scalar shared<T> field uses slot 0 as the schema-level unbound
@@ -1951,7 +1973,8 @@ function extractMeshRendererRow(
   // Dispatch entries are staged locally and flushed into the shared list only
   // when the entity survives culling, so a culled entity never leaves entries
   // whose renderableIndex aliases a later visible entity (PR #598).
-  const pending: DispatchEntry[] = [];
+  const pending = read.pending;
+  pending.length = 0;
   const materialsView = scope.worldInternal._getArrayView(entity, MeshRenderer, 'materials') as
     | Uint32Array
     | undefined;
@@ -1977,130 +2000,99 @@ function admitChannelMask(
   return false;
 }
 
-function readShadowParticipation(world: World, entity: EntityHandle) {
-  if (!world.hasComponent(entity, ShadowParticipation)) return undefined;
-  const read = world[worldRead];
-  return {
-    cast: read.getFieldValue(entity, ShadowParticipation, 'cast') === 1,
-    receive: read.getFieldValue(entity, ShadowParticipation, 'receive') === 1,
-    channels: read.getFieldValue(entity, ShadowParticipation, 'channels') as number,
-  };
-}
-
-/**
- * Blended surfaces (light beams, glows, glass, additive VFX) do not occlude
- * light by default: an entity whose every material blends drops its
- * ShadowCaster work unless ShadowParticipation is authored on it, which
- * remains the explicit opt-in (`cast: true`) or opt-out.
+/** One synchronous extraction owns the working row and its unpublished passes.
+ * Snapshots and dispatch entries copy the values they publish. Nested extraction gets its own row.
  */
-function withBlendedShadowDefault(
-  read: MeshRendererRowRead,
-  materials: readonly MaterialSnapshot[],
-): MeshRendererRowRead {
-  if (read.shadowParticipationAuthored || read.shadowCastDisabled) return read;
-  if (!materials.every((material) => material.transparent === true)) return read;
-  return { ...read, shadowCastDisabled: true };
-}
+class MeshRendererRowRead {
+  readonly pending: DispatchEntry[] = [];
+  entity!: EntityHandle;
+  layout: ReturnType<MeshExtractionSource['layout']>;
+  preparationMesh: PreparedExtractContext['preparationMesh'];
+  meshHandle: number | undefined;
+  lightingChannels = 0;
+  renderLayers = 0;
+  authorVisible = true;
+  frustumCulled = true;
+  isRenderable = false;
+  preparePipelines = false;
+  skinSkeleton: number | undefined;
+  morphWeights: ReturnType<WorldInternalView['_getArrayView']>;
+  shadowChannels: number | undefined;
+  shadowCastDisabled = false;
+  shadowParticipationAuthored = false;
+  shadowReceiveDisabled = false;
+  mobilityStatic = false;
+  sortKey: number | undefined;
+  pointsLinesComponent: 'Points' | 'Lines' | undefined;
+  layer = 0;
+  archVersion = 0;
 
-/** Ancestors one Mobility lookup climbs before treating the entity as movable. */
-const MOBILITY_INHERIT_DEPTH = 64;
+  constructor(readonly source: MeshExtractionSource) {}
 
-/**
- * An entity without its own Mobility takes its nearest ancestor's: declaring a
- * placed scene root static declares its whole subtree, and a descendant that
- * moves on its own opts out with `Mobility 'movable'`. Absence everywhere on
- * the path is movable.
- */
-function readMobilityStatic(world: World, entity: EntityHandle): boolean {
-  const read = world[worldRead];
-  let current = entity;
-  for (let depth = 0; depth <= MOBILITY_INHERIT_DEPTH; depth += 1) {
-    const kind = read.getFieldValue(current, Mobility, 'kind');
-    if (kind !== undefined) return kind === MobilityKindValue.static;
-    const parent = read.getFieldValue(current, ChildOf, 'parent');
-    if (parent === undefined || parent === ENTITY_NULL_RAW) return false;
-    current = parent as EntityHandle;
-  }
-  return false;
-}
-
-/**
- * Presence and scalar reads of one MeshRenderer row. A missing optional
- * component surfaces as an absent bundle key; presence-only checks use
- * QueryRow.has so array-bearing components are not materialised.
- */
-function readMeshRendererRow(
-  scope: WorldExtraction,
-  entity: EntityHandle,
-  skinComponent: typeof Skin,
-  lightingChannels: number,
-  renderLayers: number,
-  participation: ReturnType<typeof readShadowParticipation>,
-) {
-  const preparationMesh =
-    !scope.preparedPose && scope.context.preparationMesh?.entity === entity
-      ? scope.context.preparationMesh
+  load(scope: WorldExtraction, entity: EntityHandle): boolean {
+    const lookup = this.source.lookup;
+    const fields = lookup.get(entity) ? lookup.columns.fields : EMPTY_MESH_FIELDS;
+    const row = lookup.row;
+    const lightingChannels = fields[MeshField.lightingChannels]?.view[row] as number;
+    if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels'))
+      return false;
+    const renderLayers = fields[MeshField.renderLayers]?.view[row] as number;
+    if (
+      !admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers')
+    )
+      return false;
+    const shadowChannels = fields[MeshField.shadowChannels]?.view[row];
+    const hasParticipation = fields[MeshField.cast] !== undefined;
+    if (
+      hasParticipation &&
+      !admitChannelMask(
+        scope,
+        validateChannelMask(shadowChannels as number, 'shadowChannels'),
+        'shadow-channels',
+      )
+    )
+      return false;
+    const layout = this.source.layout(entity);
+    const meshHandle = fields[MeshField.mesh]?.view[row];
+    this.entity = entity;
+    this.layout = layout;
+    this.preparationMesh =
+      !scope.preparedPose && scope.context.preparationMesh?.entity === entity
+        ? scope.context.preparationMesh
+        : undefined;
+    this.meshHandle = this.preparationMesh?.meshHandle ?? meshHandle;
+    this.isRenderable = layout?.transform === true && meshHandle !== undefined;
+    this.authorVisible = !(this.isRenderable && scope.visibility?.effective(entity) === 'hidden');
+    this.lightingChannels = lightingChannels;
+    this.renderLayers = renderLayers;
+    this.frustumCulled = fields[MeshField.frustumCulled]?.view[row] !== 0;
+    this.preparePipelines =
+      this.preparationMesh !== undefined || fields[MeshField.preparePipelines]?.view[row] === 1;
+    this.skinSkeleton = fields[MeshField.skeleton]?.view[row];
+    this.morphWeights = layout?.morph
+      ? scope.worldInternal._getArrayView(entity, MorphWeights, 'weights')
       : undefined;
-  const scalar = scope.world[worldRead];
-  const meshHandle = scalar.getFieldValue(entity, MeshFilter, 'assetHandle');
-  const hasInstances = scope.world.hasComponent(entity, Instances);
-  const hasSpriteInstances = scope.world.hasComponent(entity, SpriteInstances);
-  const hasPoints = scope.world.hasComponent(entity, Points);
-  const hasLines = scope.world.hasComponent(entity, Lines);
-  const pointsLinesComponent: 'Points' | 'Lines' | undefined = hasPoints
-    ? 'Points'
-    : hasLines
-      ? 'Lines'
-      : undefined;
-  const isRenderable = scope.world.hasComponent(entity, Transform) && meshHandle !== undefined;
-  return {
-    entity,
-    authorVisible: !(isRenderable && scope.visibility?.effective(entity) === 'hidden'),
-    lightingChannels,
-    renderLayers,
-    frustumCulled: scalar.getFieldValue(entity, MeshRenderer, 'frustumCulled') !== 0,
-    preparationMesh,
-    preparePipelines:
-      preparationMesh !== undefined ||
-      scope.world[worldRead].getFieldValue(entity, MeshRenderer, 'preparePipelines') === 1,
-    // The resolved world transform is read from `GlobalTransform.world`; keep
-    // the defensive Transform check because an owner can explicitly remove a
-    // required component during recovery.
-    isRenderable,
-    meshHandle: preparationMesh?.meshHandle ?? meshHandle,
-    hasInstances,
-    skinSkeleton: scalar.getFieldValue(entity, skinComponent, 'skeleton'),
-    skinComponent,
-    morphWeights: scope.worldInternal._getArrayView(entity, MorphWeights, 'weights'),
-    capsuleShadowRequested: scope.world.hasComponent(entity, CapsuleShadow),
-    shadowChannels:
-      participation === undefined || participation.channels === 0xffffffff
-        ? undefined
-        : participation.channels,
-    shadowCastDisabled: participation?.cast === false,
-    shadowParticipationAuthored: participation !== undefined,
-    shadowReceiveDisabled: participation?.receive === false,
-    mobilityStatic: readMobilityStatic(scope.world, entity),
-    // SpriteInstances validation fires structured EcsErrors at extraction
-    // (D-6 fail-fast at the render domain entry, not at ECS spawn-time).
-    hasSpriteInstances,
-    sortKey: scalar.getFieldValue(entity, SortKey, 'value'),
-    pointsLinesComponent,
-    // Layer is folded into each DispatchEntry so transparent sorting uses it
-    // as the primary key without a second ECS round-trip.
-    layer: scalar.getFieldValue(entity, Layer, 'value') ?? 0,
-    // SpriteRegionOverride displaces the asset-side `values.region` for this
-    // entity only; 9-slice logic measures slices against the effective region.
-    hasSpriteRegionOverride: scope.world.hasComponent(entity, SpriteRegionOverride),
-    // Only the two instance-bearing paths consume the version in their cache key.
-    archVersion:
-      hasInstances || hasSpriteInstances
+    this.shadowChannels =
+      !hasParticipation || shadowChannels === 0xffffffff ? undefined : shadowChannels;
+    this.shadowCastDisabled = hasParticipation && fields[MeshField.cast]?.view[row] !== 1;
+    this.shadowParticipationAuthored = hasParticipation;
+    this.shadowReceiveDisabled = hasParticipation && fields[MeshField.receive]?.view[row] !== 1;
+    this.mobilityStatic =
+      mobilityFromRow(
+        scope.world,
+        fields[MeshField.mobility]?.view[row],
+        fields[MeshField.parent]?.view[row],
+      ) === 'static';
+    this.sortKey = fields[MeshField.sortKey]?.view[row];
+    this.pointsLinesComponent = layout?.points ? 'Points' : layout?.lines ? 'Lines' : undefined;
+    this.layer = fields[MeshField.layer]?.view[row] ?? 0;
+    this.archVersion =
+      layout?.instances || layout?.spriteInstances
         ? spriteInstancesArchVersion(scope.worldInternal, entity)
-        : 0,
-  };
+        : 0;
+    return true;
+  }
 }
-
-type MeshRendererRowRead = ReturnType<typeof readMeshRendererRow>;
 
 /**
  * QueryRow deliberately exposes component data, not an archetype version.
@@ -2316,7 +2308,7 @@ function materialLaneFor(
   const geometry: MaterialCookRasterContext['geometry'] =
     read.skinSkeleton !== undefined
       ? 'skinned'
-      : read.hasSpriteInstances
+      : read.layout?.spriteInstances
         ? 'sprite-instances'
         : 'mesh';
   const key = `${geometry}:${vertexColorAvailable}`;
@@ -2427,7 +2419,9 @@ function resolveFreshMaterial(
     throw error;
   }
   const world = worldRenderResources(scope.world);
+  const declarationLayout = lane.persistent.get(handle)?.declarationLayout ?? {};
   const snapshot = prepareMaterialSnapshot({
+    declarationLayout,
     handle,
     world,
     assets,
@@ -2442,7 +2436,14 @@ function resolveFreshMaterial(
   });
   if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programSelections))
     return undefined;
-  const stored = storeMaterialSnapshot(lane.persistent, handle, snapshot, world, programSelections);
+  const stored = storeMaterialSnapshot(
+    lane.persistent,
+    handle,
+    snapshot,
+    world,
+    programSelections,
+    declarationLayout,
+  );
   lane.cache.set(handle, stored);
   lane.persistent.set(handle, stored);
   if (read.isRenderable) {
@@ -2595,13 +2596,17 @@ function publishRenderable(
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);
   // Without authored ShadowParticipation, a mesh whose every material blends
   // (transparent, additive) casts no shadow, like Three.js castShadow=false.
-  const castRead = withBlendedShadowDefault(read, submeshMaterials);
-  stageSubmeshDispatch(scope, castRead, materials, submeshMaterials, pending);
-  const geometry = resolveRenderableGeometry(scope, castRead, materials, submeshMaterials);
+  if (
+    !read.shadowParticipationAuthored &&
+    submeshMaterials.every((material) => material.transparent === true)
+  )
+    read.shadowCastDisabled = true;
+  stageSubmeshDispatch(scope, read, materials, submeshMaterials, pending);
+  const geometry = resolveRenderableGeometry(scope, read, materials, submeshMaterials);
   if (geometry === undefined) return;
   const renderable = composeRenderable(
     scope,
-    castRead,
+    read,
     materials,
     submeshMaterials,
     geometry,
@@ -2611,9 +2616,9 @@ function publishRenderable(
   // Material passes stay shared; participation only filters this entity's
   // ShadowCaster work, so every shadow map and cull test sees it absent.
   // Screen-space points and lines have no world-space footprint to cast.
-  if (castRead.shadowCastDisabled || castRead.pointsLinesComponent !== undefined)
+  if (read.shadowCastDisabled || read.pointsLinesComponent !== undefined)
     removeShadowCasterDispatch(pending);
-  const pipelinePreparation = castRead.preparePipelines
+  const pipelinePreparation = read.preparePipelines
     ? pending.map(
         ({ entityIndex: _entityIndex, renderableIndex: _renderableIndex, ...pass }) => pass,
       )
@@ -2621,7 +2626,7 @@ function publishRenderable(
   if (
     !admitFrustumVisibility(
       scope,
-      castRead,
+      read,
       geometry,
       transform,
       pending,
@@ -2631,9 +2636,9 @@ function publishRenderable(
     return;
   // Retain hidden snapshots for incremental composition, but never publish
   // their display or ShadowCaster passes to either record lane.
-  if (!castRead.authorVisible) pending.length = 0;
+  if (!read.authorVisible) pending.length = 0;
   for (const entry of pending) scope.dispatch.push(entry);
-  scope.renderables.push(withMobilityAndPreparation(renderable, castRead, pipelinePreparation));
+  scope.renderables.push(withMobilityAndPreparation(renderable, read, pipelinePreparation));
 }
 
 /**
@@ -2678,7 +2683,7 @@ function resolveSkinBinding(
   const entity = read.entity;
   const worldInternal = scope.worldInternal;
   // Skin + Instances coexistence is forbidden (D-10).
-  if (read.hasInstances) {
+  if (read.layout?.instances) {
     worldInternal._routeError(new SkinInstancesCoexistForbiddenError(entity), {
       severity: Severity.Error,
       systemName: 'RenderSystem.extract (skin-instances-coexist)',
@@ -2696,7 +2701,7 @@ function resolveSkinBinding(
     return false;
   }
   const jointCount = skeletonRes.value.jointCount;
-  const skinJoints = readRenderArrayView(scope.world, entity, read.skinComponent, 'joints');
+  const skinJoints = readRenderArrayView(scope.world, entity, read.source.skin, 'joints');
   if (skinJoints === undefined) return false;
   if (skinJoints.length !== jointCount) {
     // Keep static membership; the fixed-frame demand rejects incompatible resources.
@@ -2706,11 +2711,7 @@ function resolveSkinBinding(
     });
   }
   if (skinJoints.length === 0) return false;
-  const affinePoint = scope.world[worldRead].getFieldValue(
-    entity,
-    read.skinComponent,
-    'affinePoint',
-  );
+  const affinePoint = scope.world[worldRead].getFieldValue(entity, read.source.skin, 'affinePoint');
   return {
     skeleton: skeletonHandle,
     joints: Object.freeze(Array.from(skinJoints, Number)),
@@ -2878,11 +2879,11 @@ function resolveSpriteInstances(
   read: MeshRendererRowRead,
   material: MaterialSnapshot,
 ): SpriteInstancesSnapshot | undefined | false {
-  if (!read.hasSpriteInstances) return undefined;
+  if (!read.layout?.spriteInstances) return undefined;
   const { entity } = read;
   const worldInternal = scope.worldInternal;
   // (1) mutually exclusive with Instances (peers — pick one).
-  if (read.hasInstances) {
+  if (read.layout?.instances) {
     worldInternal._routeError(new SpriteInstancesMutuallyExclusiveWithInstancesError(entity), {
       severity: Severity.Error,
       systemName: 'RenderSystem.extract (sprite-instances-mutually-exclusive)',
@@ -2938,7 +2939,7 @@ function resolveInstancesSnapshot(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
 ): InstancesSnapshot | undefined | false {
-  if (!read.hasInstances) return undefined;
+  if (!read.layout?.instances) return undefined;
   const { world, worldInternal } = scope;
   const { entity } = read;
   const collections = scope.context.instanceCollections;
@@ -2986,7 +2987,7 @@ function composeRenderable(
 ): RenderableSnapshot {
   // Ordinary meshes do not own a GPU producer. Probe membership before the
   // full component read so absence does not allocate an ECS error per draw.
-  const gpuVertex = scope.world.hasComponent(read.entity, GpuMeshVertexSource)
+  const gpuVertex = read.layout?.gpuVertex
     ? scope.world.get(read.entity, GpuMeshVertexSource)
     : undefined;
   return {
@@ -2995,7 +2996,7 @@ function composeRenderable(
           gpuVertexSource: { feature: gpuVertex.value.feature, resource: gpuVertex.value.resource },
         }
       : {}),
-    ...(read.hasSpriteRegionOverride
+    ...(read.layout?.spriteRegion
       ? {
           spriteRegion: spriteUvRegion(
             scope.worldInternal._getArrayView(read.entity, SpriteRegionOverride, 'region'),
@@ -3077,9 +3078,7 @@ function renderableAttachments(
   const water = scope.world.hasResource(WATER_SYSTEM_RESOURCE)
     ? scope.world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
     : undefined;
-  const body = scope.world.hasComponent(read.entity, WaterBodyInstance)
-    ? water?.snapshot(`scene-entity:${read.entity}`)
-    : undefined;
+  const body = read.layout?.water ? water?.snapshot(`scene-entity:${read.entity}`) : undefined;
   const binding = body?.binding;
   const zone =
     binding?.kind === 'bound'
@@ -3111,7 +3110,7 @@ function renderableAttachments(
         }),
     ...(read.authorVisible ? {} : { authorVisible: false }),
     ...(skinBinding === undefined ? {} : { skinBinding }),
-    ...(read.capsuleShadowRequested ? { capsuleShadowRequested: true as const } : {}),
+    ...(read.layout?.capsuleShadow ? { capsuleShadowRequested: true as const } : {}),
     ...(geometry.morph !== undefined ? { morph: geometry.morph } : {}),
     ...(geometry.instances !== undefined ? { instances: geometry.instances } : {}),
     ...(geometry.spriteInstances !== undefined
@@ -3253,7 +3252,8 @@ function admitFrustumVisibility(
         });
   // Missing/malformed derived facts (non-finite producer matrices/AABB) are a
   // conservative no-cull result.
-  if (read.hasInstances && (instances === undefined || instanceBounds === undefined)) return true;
+  if (read.layout?.instances && (instances === undefined || instanceBounds === undefined))
+    return true;
   const worldAabb = worldCullingAabb(geometry.cullingLocalAabb, worldMatrix, instanceBounds);
   scope.frustumTotal += 1;
   if (intersectsAnyFrustum(scope.frustumPlanes, worldAabb)) return true;

@@ -3,12 +3,9 @@ import type { Buffer, Sampler, TextureView } from '@forgeax/engine-rhi';
 import { STANDARD_MATERIAL_PARAM_SCHEMA, standardSurfaceParameters } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { assembleMaterialWithSkylightEntries } from '../ibl/skylight-bind-group.js';
+import { materialProgramKeysForMaterial } from '../material-program-selection';
 import { Materials } from '../materials.js';
-import {
-  materialNormalScale,
-  materialProgramKeysForMaterial,
-  materialStandardTextureMask,
-} from '../render-system-extract';
+import { materialNormalScale, materialStandardTextureMask } from '../render-system-extract';
 
 describe('Materials.standard clearcoat public contract', () => {
   it('samples only authored textures while preserving the shared Surface slot contract', () => {

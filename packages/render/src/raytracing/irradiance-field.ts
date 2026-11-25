@@ -432,19 +432,22 @@ fn traceProbeDirection(probe: u32, updates: u32, ray: u32, rays: u32, far: bool)
   return;
  }
  var tracedRay=Ray(origin,tMin,direction,frame.trace.x,vec4u(1u,0u,0u,0u));
- var hit=traceWorld(tracedRay,frame.query.x,bitcast<f32>(frame.query.y));
- // A start closer than one SDF voxel steps through sub-voxel walls (the trace's
- // self-hit expansion shrinks with the start distance): a ray into the nearby
- // surface that runs past it is retraced from one voxel off that surface.
+ var hit: Hit;
  var liftAlong=0.0;
- if(!far){
+ var retraced=false;
+ // A single call site keeps software GPU compilers from duplicating the SDF marcher.
+ loop {
+  hit=traceWorld(tracedRay,frame.query.x,bitcast<f32>(frame.query.y));
+  if(far||retraced){break;}
+  // A start closer than one SDF voxel can step through a sub-voxel wall.
+  // When the first trace runs past it, retry from one voxel off the surface.
   let surface=probeSurface(origin);let cosine=dot(surface.xyz,direction);
   let voxel=probeVoxel();let expected=(voxel-surface.w)/max(-cosine,1e-4)+voxel;
-  if(cosine<0.0&&surface.w>0.0&&(hit.state.x!=${GlobalSdfQueryStatus.hit}u||hit.metrics.x>expected)){
-   liftAlong=surface.w*cosine;
-   tracedRay.origin=origin+surface.xyz*surface.w;
-   hit=traceWorld(tracedRay,frame.query.x,bitcast<f32>(frame.query.y));
-  }
+  let needsRetrace=cosine<0.0&&surface.w>0.0&&(hit.state.x!=${GlobalSdfQueryStatus.hit}u||hit.metrics.x>expected);
+  if(!needsRetrace){break;}
+  liftAlong=surface.w*cosine;
+  tracedRay.origin=origin+surface.xyz*surface.w;
+  retraced=true;
  }
  var out=ProbeRay(vec4f(0,0,0,clampDistance),vec4f(direction,${IrradianceFieldRayStatus.skip}.0));
  let status=hit.state.x;

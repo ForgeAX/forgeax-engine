@@ -73,6 +73,8 @@ import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 /** Two vec4 lanes shared by the graph allocation and uniform binding layout. */
 export const DEFERRED_PCF_LIGHTING_FEATURE = 1 << 3;
+export const DEFERRED_SCREEN_AO_FEATURE = 1 << 4;
+export const DEFERRED_CAPSULE_SHADOW_FEATURE = 1 << 5;
 
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
@@ -398,7 +400,132 @@ function resolveDeferredSunTable(
   return table === undefined ? undefined : { transmittance: resources.textureView(table).unwrap() };
 }
 
+function createDeferredLightingInputLayout(
+  device: RhiDevice,
+  screenAo: boolean,
+  capsuleBufferCount: number,
+  receiverGeometry: boolean,
+  usesLut: boolean,
+): BindGroupLayout {
+  return device
+    .createBindGroupLayout({
+      label: 'deferred-surface-environment',
+      entries: [
+        ...Array.from({ length: 5 + Number(screenAo) }, (_, binding) => ({
+          binding,
+          visibility: 2,
+          texture: {
+            sampleType:
+              binding < 4
+                ? ('uint' as const)
+                : binding === 4
+                  ? ('depth' as const)
+                  : ('float' as const),
+            viewDimension: '2d' as const,
+          },
+        })),
+        { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
+        {
+          binding: 7,
+          visibility: 2,
+          buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
+        },
+        {
+          binding: 9,
+          visibility: 2,
+          texture: { sampleType: 'float', viewDimension: '2d' },
+        },
+        {
+          binding: 12,
+          visibility: 2,
+          buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
+        },
+        ...Array.from({ length: capsuleBufferCount }, (_, index) => ({
+          binding: 13 + index,
+          visibility: 2,
+          buffer: { type: 'read-only-storage' as const },
+        })),
+        ...(!receiverGeometry
+          ? []
+          : [
+              {
+                binding: 15,
+                visibility: 2,
+                texture: { sampleType: 'uint' as const, viewDimension: '2d' as const },
+              },
+            ]),
+        ...(usesLut
+          ? [
+              {
+                binding: 16,
+                visibility: 2,
+                texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+              },
+            ]
+          : []),
+      ],
+    })
+    .unwrap();
+}
+
+interface DeferredCapsuleInput {
+  readonly resource: GraphBuffer;
+  readonly size: number;
+}
+
+function declareDeferredCapsules(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  size: { readonly width: number; readonly height: number },
+  enabled: boolean,
+): Result<
+  readonly DeferredCapsuleInput[],
+  import('@forgeax/engine-render-graph').RenderGraphError
+> {
+  if (!enabled) return ok([]);
+  const capsules = MAX_FRAME_CAPSULES * WORLD_CAPSULE_STRIDE * 4;
+  const tiles = capsuleTileTableWords(size.width, size.height) * 4;
+  const capsuleBuffer = graph.createBuffer('capsule-shadow-capsules', { size: capsules });
+  if (!capsuleBuffer.ok) return capsuleBuffer;
+  const tileBuffer = graph.createBuffer('capsule-shadow-tiles', { size: tiles });
+  if (!tileBuffer.ok) return tileBuffer;
+  return ok([
+    { resource: capsuleBuffer.value, size: capsules },
+    { resource: tileBuffer.value, size: tiles },
+  ]);
+}
+
+function writeDeferredCapsules(
+  inputs: readonly DeferredCapsuleInput[],
+  frame: ReturnType<typeof buildCapsuleShadowFrame> | undefined,
+  encoder: Pick<import('@forgeax/engine-rhi').RhiCommandEncoder, 'clearBuffer'>,
+  queue: RhiDevice['queue'],
+  resources: GraphResourceResolver,
+): void {
+  if (inputs.length === 0) return;
+  const populated = (frame?.capsules.length ?? 0) > 0;
+  for (const [index, input] of inputs.entries()) {
+    const data = populated ? (index === 0 ? frame?.capsules : frame?.tiles) : undefined;
+    const buffer = resources.buffer(input.resource).unwrap();
+    if (data !== undefined) queue.writeBuffer(buffer, 0, data).unwrap();
+    // Define graph-visible tails for replay; queue uploads precede submission.
+    const used = data?.byteLength ?? 0;
+    if (used < input.size) encoder.clearBuffer(buffer, used, input.size - used);
+  }
+}
+
 /** Geometry initializes emissive; this pass adds deferred lighting radiance. */
+function deferredLightingOverrides(
+  projectedPcf: boolean,
+  subsurface: boolean,
+  composeReflection: boolean | undefined,
+) {
+  return {
+    ...(projectedPcf ? { '64005': 1 } : {}),
+    ...(subsurface ? STANDARD_DEFERRED_SUBSURFACE_CONSTANTS : {}),
+    ...(composeReflection === true ? { '64007': 1 } : {}),
+  };
+}
+
 export function addStandardDeferredLighting(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: {
@@ -410,12 +537,14 @@ export function addStandardDeferredLighting(
     readonly pcfLighting?: boolean;
     readonly depth: GraphTextureView;
     readonly reflectionFallback?: RenderPipelineTarget;
+    readonly composeReflection?: boolean;
     readonly localProbes: boolean;
     readonly lightProbes?: boolean;
     readonly response?: RenderPipelineTarget;
     readonly diffuse?: RenderPipelineTarget;
     readonly diffuseGiBaseline?: GraphBuffer;
     readonly ssao?: RenderPipelineTarget;
+    readonly capsuleShadows?: boolean;
     readonly directionalShadow?: RenderPipelineTarget;
     readonly spotShadow: RenderPipelineTarget | undefined;
     readonly pointShadow?: RenderPipelineTarget;
@@ -433,20 +562,17 @@ export function addStandardDeferredLighting(
     size: DEFERRED_LIGHTING_PARAMS_BYTES,
   });
   if (!params.ok) return params;
-  const capsuleBytes = MAX_FRAME_CAPSULES * WORLD_CAPSULE_STRIDE * 4;
-  const tileBytes = capsuleTileTableWords(input.size.width, input.size.height) * 4;
-  const capsules = graph.createBuffer('capsule-shadow-capsules', { size: capsuleBytes });
-  if (!capsules.ok) return capsules;
-  const capsuleTiles = graph.createBuffer('capsule-shadow-tiles', {
-    size: tileBytes,
-  });
-  if (!capsuleTiles.ok) return capsuleTiles;
+  const capsulePlan = declareDeferredCapsules(graph, input.size, input.capsuleShadows === true);
+  if (!capsulePlan.ok) return capsulePlan;
+  const capsuleBuffers = capsulePlan.value;
   const diffuseGiBaseline = input.diffuseGiBaseline;
   const features =
     Number(diffuseGiBaseline !== undefined) |
     (Number(input.lightProbes === true) << 1) |
     (Number(input.perPixelAtmosphereTransmittance === false) << 2) |
-    (Number(input.pcfLighting === true) * DEFERRED_PCF_LIGHTING_FEATURE);
+    (Number(input.pcfLighting === true) * DEFERRED_PCF_LIGHTING_FEATURE) |
+    (Number(input.ssao !== undefined) * DEFERRED_SCREEN_AO_FEATURE) |
+    (Number(input.capsuleShadows === true) * DEFERRED_CAPSULE_SHADOW_FEATURE);
   const probe = importDeferredLightProbeRecords(graph, input.lightProbes);
   if (!probe.ok) return probe;
   const colors = [
@@ -594,8 +720,7 @@ export function addStandardDeferredLighting(
     accesses: [
       { resource: params.value, usage: 'copy-dst' },
       ...(arrayTable === undefined ? [] : [{ resource: arrayTable, usage: 'copy-dst' as const }]),
-      { resource: capsules.value, usage: 'copy-dst' },
-      { resource: capsuleTiles.value, usage: 'copy-dst' },
+      ...capsuleBuffers.map(({ resource }) => ({ resource, usage: 'copy-dst' as const })),
     ],
     encodeDirect: (encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
@@ -606,7 +731,7 @@ export function addStandardDeferredLighting(
       // Lane y rotates the contact-shadow noise only under temporal
       // accumulation; without it a static pattern avoids visible crawl.
       const noiseFrame = (frame.camera.temporal?.temporalFrameIndex ?? 0) % 64;
-      const light = internal.capsuleShadowLight;
+      const light = capsuleBuffers.length === 0 ? undefined : internal.capsuleShadowLight;
       // Capsule storage has its own budget; scene sources survive release of
       // unused legacy geometry slots in the GPU-driven Shadow lane.
       const capsuleFrame =
@@ -626,26 +751,8 @@ export function addStandardDeferredLighting(
         // Auxiliary capture views shade their own tiles; inspection reports the display view.
         if (frame.camera.captureProjection === undefined)
           internal.frameState.capsuleShadowSubmission = capsuleFrame.submission;
-        if (capsuleFrame.capsules.length > 0) {
-          queue
-            .writeBuffer(resources.buffer(capsules.value).unwrap(), 0, capsuleFrame.capsules)
-            .unwrap();
-          queue
-            .writeBuffer(resources.buffer(capsuleTiles.value).unwrap(), 0, capsuleFrame.tiles)
-            .unwrap();
-        }
       }
-      // The graph declares full storage reads. Define the unused tails too,
-      // including the disabled case, so captured frames need no previous contents.
-      // Queue uploads precede encoder submission: clear only beyond their prefixes.
-      const populated = (capsuleFrame?.capsules.length ?? 0) > 0;
-      for (const [ref, capacity, used] of [
-        [capsules.value, capsuleBytes, populated ? (capsuleFrame?.capsules.byteLength ?? 0) : 0],
-        [capsuleTiles.value, tileBytes, populated ? (capsuleFrame?.tiles.byteLength ?? 0) : 0],
-      ] as const) {
-        if (used < capacity)
-          encoder.clearBuffer(resources.buffer(ref).unwrap(), used, capacity - used);
-      }
+      writeDeferredCapsules(capsuleBuffers, capsuleFrame, encoder, queue, resources);
       queue
         .writeBuffer(
           resources.buffer(params.value).unwrap(),
@@ -765,65 +872,13 @@ export function addStandardDeferredLighting(
           return;
         }
         const module = moduleResult.unwrap();
-        const material = device
-          .createBindGroupLayout({
-            label: 'deferred-surface-environment',
-            entries: [
-              ...Array.from({ length: 6 }, (_, binding) => ({
-                binding,
-                visibility: 2,
-                texture: {
-                  sampleType:
-                    binding < 4
-                      ? ('uint' as const)
-                      : binding === 4
-                        ? ('depth' as const)
-                        : ('float' as const),
-                  viewDimension: '2d' as const,
-                },
-              })),
-              { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
-              {
-                binding: 7,
-                visibility: 2,
-                buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
-              },
-              ...[9, 10].map((binding) => ({
-                binding,
-                visibility: 2,
-                texture: {
-                  sampleType: 'float' as const,
-                  viewDimension: '2d' as const,
-                },
-              })),
-              {
-                binding: 12,
-                visibility: 2,
-                buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
-              },
-              { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
-              { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
-              ...(input.receiverGeometry === undefined
-                ? []
-                : [
-                    {
-                      binding: 15,
-                      visibility: 2,
-                      texture: { sampleType: 'uint' as const, viewDimension: '2d' as const },
-                    },
-                  ]),
-              ...(usesLut
-                ? [
-                    {
-                      binding: 16,
-                      visibility: 2,
-                      texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-                    },
-                  ]
-                : []),
-            ],
-          })
-          .unwrap();
+        const material = createDeferredLightingInputLayout(
+          device,
+          input.ssao !== undefined,
+          capsuleBuffers.length,
+          input.receiverGeometry !== undefined,
+          usesLut,
+        );
         const probeLayout = deferredAuxiliaryLayout(
           device,
           arrayCount,
@@ -850,10 +905,7 @@ export function addStandardDeferredLighting(
           fragment: {
             module,
             entryPoint,
-            constants: {
-              ...(projectedPcf ? { '64005': 1 } : {}),
-              ...(subsurface ? STANDARD_DEFERRED_SUBSURFACE_CONSTANTS : {}),
-            },
+            constants: deferredLightingOverrides(projectedPcf, subsurface, input.composeReflection),
             targets: colors.map((target, index) => ({
               format: target.format,
               ...(index === 0
@@ -968,8 +1020,7 @@ export function addStandardDeferredLighting(
       ...colors.map((target) => ({ resource: target.view, usage: 'color-attachment' as const })),
       { resource: params.value, usage: 'uniform-read' },
       ...deferredAuxiliaryAccesses(probe.value, diffuseGiBaseline, arrayTable),
-      { resource: capsules.value, usage: 'storage-read' },
-      { resource: capsuleTiles.value, usage: 'storage-read' },
+      ...capsuleBuffers.map(({ resource }) => ({ resource, usage: 'storage-read' as const })),
       ...input.extraAccesses,
     ],
     colorAttachments: colors.map((target, index) => ({
@@ -1044,7 +1095,7 @@ export function addStandardDeferredLighting(
           hint: 'repair the frame lighting resources',
         });
       pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, viewBindGroup, [0, 0]);
+      pass.setBindGroup(0, viewBindGroup, [0]);
       const reflectionPlan = environmentPlan(internal);
       if (reflectionPlan === undefined) return;
       const { rows, arrays } = reflectionPlan;
@@ -1071,15 +1122,15 @@ export function addStandardDeferredLighting(
       const surfaces = [
         ...input.gbuffer.map((target) => resources.textureView(target.view).unwrap()),
         resources.textureView(input.depth).unwrap(),
-        view(input.ssao) ?? internal.pipelineState.defaultWhiteTextureView,
+        ...(input.ssao === undefined ? [] : [resources.textureView(input.ssao.view).unwrap()]),
       ];
       const paramsBuffer = resources.buffer(params.value).unwrap();
       const receiverView =
         input.receiverGeometry === undefined
           ? undefined
           : resources.textureView(input.receiverGeometry.view).unwrap();
-      const capsuleBuffers = [capsules.value, capsuleTiles.value].map((ref) =>
-        resources.buffer(ref).unwrap(),
+      const capsuleResources = capsuleBuffers.map(({ resource }) =>
+        resources.buffer(resource).unwrap(),
       );
       for (const env of environments) {
         const keys = [
@@ -1087,9 +1138,8 @@ export function addStandardDeferredLighting(
           ...(receiverView === undefined ? [] : [receiverView]),
           env.irradianceSampler,
           paramsBuffer,
-          ...capsuleBuffers,
+          ...capsuleResources,
           env.prefilterView,
-          env.brdfLutView,
           env.intensityBuffer,
           ...(directDfgLut === undefined ? [] : [directDfgLut.view]),
         ];
@@ -1130,14 +1180,10 @@ export function addStandardDeferredLighting(
                     resource: { kind: 'textureView' as const, value: env.prefilterView },
                   },
                   {
-                    binding: 10,
-                    resource: { kind: 'textureView' as const, value: env.brdfLutView },
-                  },
-                  {
                     binding: 12,
                     resource: { kind: 'buffer' as const, value: { buffer: env.intensityBuffer } },
                   },
-                  ...capsuleBuffers.map((buffer, index) => ({
+                  ...capsuleResources.map((buffer, index) => ({
                     binding: 13 + index,
                     resource: { kind: 'buffer' as const, value: { buffer } },
                   })),

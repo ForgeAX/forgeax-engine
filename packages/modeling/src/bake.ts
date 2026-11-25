@@ -8,12 +8,16 @@ import {
   allRows,
   BAKE_MAP_KINDS,
   type BakeRows,
+  bakeRows,
   diagonalOf,
   finishBake,
+  finishBakeWithFilter,
   gridOf,
   prepareBake,
   tsBakeBackend,
 } from './compute/bake-ts';
+import { filterBakeTexture } from './compute/bake-webgpu';
+import { prepareBakeOcclusion } from './compute/bake-webgpu-ao';
 import {
   type BakeCage,
   type BakeClipCluster,
@@ -479,6 +483,65 @@ export function bakeMaps(options: BakeOptions): Result<BakeResult, ModelingError
   });
   if (!job.ok) return job;
   return bakeResult(options, request.value, job.value);
+}
+
+/**
+ * Bake with host-owned WebGPU texture filtering. The CPU still owns sampling and
+ * diagnostics. Unsupported atlas shapes fall back to the ordinary CPU filter.
+ */
+export async function bakeMapsWithGpu(
+  options: BakeOptions,
+  device: GPUDevice,
+): Promise<Result<BakeResult, ModelingError>> {
+  if (options.compute === 'native' || options.compute === 'ts') return bakeMaps(options);
+  const request = bakeRequest(options);
+  if (!request.ok) return request;
+  const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
+  const prepared = prepareBake(request.value, work);
+  if (!prepared.ok) return prepared;
+  const params = request.value.params;
+  const grid = gridOf(params);
+  const ao =
+    options.budget === undefined &&
+    params.target === 'texture' &&
+    !grid.u &&
+    !grid.v &&
+    !params.maps.includes('opacity')
+      ? prepareBakeOcclusion(device, prepared.value, grid.w, grid.h)
+      : undefined;
+  const rows =
+    params.target === 'texture'
+      ? bakeRows(prepared.value, allRows(params), work, ao?.sampleGroups)
+      : ok(undefined);
+  if (!rows.ok) return rows;
+  let backendIdentity = tsBakeBackend.identity;
+  if (ao !== undefined && rows.value !== undefined) {
+    await ao.apply(rows.value);
+    backendIdentity += '/webgpu-ao/1';
+  }
+  const out = await finishBakeWithFilter(
+    prepared.value,
+    rows.value === undefined ? [] : [rows.value],
+    work,
+    async (input) => {
+      const filtered = await filterBakeTexture(device, input);
+      if (filtered !== undefined) backendIdentity += '/webgpu-uv-filter/1';
+      return filtered;
+    },
+  );
+  if (!out.ok) return out;
+  if (!work.spend(0)) return err(work.failure as ModelingError);
+  const { metrics, ...rest } = out.value;
+  return bakeResult(options, request.value, {
+    ...rest,
+    report: {
+      backend: tsBakeBackend.name,
+      backendIdentity,
+      quality: tsBakeBackend.quality('bake'),
+      cacheKey: computeCacheKey(request.value, backendIdentity),
+      metrics: { ...metrics, work: work.units },
+    },
+  });
 }
 
 /** A failure crossing a thread boundary as plain data; `bakeMapsParallel` rebuilds the `ModelingError`. */

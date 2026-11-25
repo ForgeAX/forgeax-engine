@@ -1,9 +1,11 @@
+import { findMaterialShaderEntry } from '@forgeax/engine-shader';
 import {
   atmosphereViewLayoutEntries,
   FORWARD_HIZ_VIEW_SLOT,
   FORWARD_SSR_COLOR_VIEW_SLOT,
   retainViewLayout,
 } from './environment/bindings';
+import { retainRasterWindowFamily } from './gpu-driven/raster-window-layout';
 import { SKY_SH_BYTES } from './ibl/sky-sh';
 import type { SkinTaskBinding } from './record/skin-tasks';
 // pbr-pipeline.ts -- PBR / unlit pipeline-layout factories (M4 round-4 D-5).
@@ -90,7 +92,7 @@ interface ProjectedStandardLayout {
   readonly material: BindGroupLayout;
   readonly pipelines: WeakMap<
     PipelineLayout,
-    WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, PipelineLayout>>
+    WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, PipelineLayout>>>
   >;
 }
 const standardMaterialLayoutFamilies = new WeakMap<
@@ -150,7 +152,9 @@ export function buildOpaqueStandardPipelineLayout(
   mesh: BindGroupLayout,
   instances: BindGroupLayout,
   reads?: ReadonlySet<number>,
-): { readonly layout: PipelineLayout; readonly index: number } | undefined {
+):
+  | { readonly layout: PipelineLayout; readonly index: number; readonly material: BindGroupLayout }
+  | undefined {
   const owner = standardMaterialLayoutFamilies.get(material);
   if (owner === undefined) return undefined;
   const entries =
@@ -180,15 +184,21 @@ export function buildOpaqueStandardPipelineLayout(
     byPrimitive = new WeakMap();
     pipelines.set(view, byPrimitive);
   }
-  const cached = byPrimitive.get(mesh);
-  if (cached !== undefined) return { layout: cached, index: variant.index };
+  let byInstances = byPrimitive.get(mesh);
+  if (byInstances === undefined) {
+    byInstances = new WeakMap();
+    byPrimitive.set(mesh, byInstances);
+  }
+  const cached = byInstances.get(instances);
+  if (cached !== undefined)
+    return { layout: cached, index: variant.index, material: variant.material };
   const pipeline = device.createPipelineLayout({
     label: 'pbr-opaque-pipeline-layout',
     bindGroupLayouts: [view, variant.material, mesh, instances],
   });
   if (!pipeline.ok) return undefined;
-  byPrimitive.set(mesh, pipeline.value);
-  return { layout: pipeline.value, index: variant.index };
+  byInstances.set(instances, pipeline.value);
+  return { layout: pipeline.value, index: variant.index, material: variant.material };
 }
 
 export function canProjectOpaqueStandardMaterial(
@@ -201,17 +211,11 @@ export function canProjectOpaqueStandardMaterial(
     fragmentEntry !== 'fs_forward_screen' &&
     fragmentEntry !== 'fs_forward_sun_shadow' &&
     fragmentEntry !== 'fs_coverage' &&
-    fragmentEntry !== 'fs_gbuffer' &&
-    fragmentEntry !== 'fs_gbuffer_compact' &&
-    fragmentEntry !== 'fs_gbuffer_uncovered'
+    !isStandardGBufferEntry(fragmentEntry)
   )
     return false;
-  const vertex = entries?.find(
-    (entry) => entry.stage === 'vertex' && entry.name === (vertexEntry ?? 'vs_main'),
-  );
-  const fragment = entries?.find(
-    (entry) => entry.stage === 'fragment' && entry.name === fragmentEntry,
-  );
+  const vertex = findMaterialShaderEntry(entries, vertexEntry ?? 'vs_main', 'vertex');
+  const fragment = findMaterialShaderEntry(entries, fragmentEntry, 'fragment');
   const readsOmittedSlot = ({ group, binding }: { group: number; binding: number }) =>
     group === 1 && standardForwardOmittedBindings.has(binding);
   return (
@@ -219,23 +223,6 @@ export function canProjectOpaqueStandardMaterial(
     fragment !== undefined &&
     !vertex.bindings.some(readsOmittedSlot) &&
     !fragment.bindings.some(readsOmittedSlot)
-  );
-}
-
-export function selectMaterialEntryBindings(
-  entries: readonly import('@forgeax/engine-types').ShaderEntryPointReads[] | undefined,
-  vertex: string | undefined,
-  fragment: string | null | undefined,
-): ReadonlySet<number> | undefined {
-  const vs = entries?.find(
-    (entry) => entry.stage === 'vertex' && entry.name === (vertex ?? 'vs_main'),
-  );
-  const fs = entries?.find((entry) => entry.stage === 'fragment' && entry.name === fragment);
-  if (vs === undefined || fs === undefined) return undefined;
-  return new Set(
-    [...vs.bindings, ...fs.bindings]
-      .filter(({ group }) => group === 1)
-      .map(({ binding }) => binding),
   );
 }
 
@@ -893,8 +880,6 @@ export interface PbrCaps {
  * (bindings 5/6 follow the storage-capable `POINT_SHADOW_AVAILABLE` profile
  * registered in vite-plugin-shader) +
  * feat-20260613-csm-cascaded-shadow-maps M5 / w28 (binding 7 cascade UBO).
- *   binding 10 (Points/Lines viewport UBO; always bound for the shared view
- *   layout and consumed only by the dedicated points-lines shader).
  * Isolated here so M4 round-4 tests can recreate the layout.
  *
  * Local lights are not part of the view group. Standard material variants
@@ -1037,11 +1022,6 @@ export function buildPbrViewBglEntries(caps: PbrCaps): GPUBindGroupLayoutEntry[]
       },
     );
   }
-  entries.push({
-    binding: 10,
-    visibility: GPU_SHADER_STAGE_VERTEX,
-    buffer: { type: 'uniform', hasDynamicOffset: true },
-  });
   // Cloud direct-solar transport is a renderer-owned view resource. The
   // minimum 16-texture profile has no spare sampled texture lane; its shader
   // variant omits the cloud map; atmosphere shares the filtering sampler.
@@ -1184,6 +1164,14 @@ export const SKIN_MATERIAL_SHADER_ID = 'forgeax::pbr-skin' as const;
 /** Skinned G-buffer entry for visible-surface passes: writes the uncovered row 0. */
 export const SKIN_UNCOVERED_GBUFFER_ENTRY = 'fs_gbuffer_uncovered' as const;
 export const SHADOW_CASTER_SHADER_ID = 'forgeax::default-shadow-caster' as const;
+
+export function isStandardGBufferEntry(entry: string | null | undefined): boolean {
+  return (
+    entry === 'fs_gbuffer' ||
+    entry === 'fs_gbuffer_compact' ||
+    entry === SKIN_UNCOVERED_GBUFFER_ENTRY
+  );
+}
 
 // Authored Standard templates are published under a unique module id for each
 // root contract.  Keep the family marker in the id so every downstream render
@@ -1356,13 +1344,13 @@ export function buildGpuDrivenPbrInstancesBindGroupLayout(
   if (!caps.storageBuffer) {
     throw new Error('GPU-driven PBR instances layout requires storage-buffer capability');
   }
-  const result = device.createBindGroupLayout(
-    buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
-      kind: 'pbr-gpu-driven-instances',
-      caps,
-    }),
-  );
+  const descriptor = buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
+    kind: 'pbr-gpu-driven-instances',
+    caps,
+  });
+  const result = device.createBindGroupLayout(descriptor);
   if (!result.ok) throw result.error;
+  retainRasterWindowFamily(result.value, descriptor.entries);
   return result.value;
 }
 
@@ -1666,9 +1654,9 @@ export const SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET = '';
  *    - `'unlit-material'` — 7 entries: base PBR material only (no inject)
  *    - `'hdrp-7-slot'` — Standard rigid mesh window
  * 2. Caps-driven literal shapes (no shader):
- *    - `'pbr-view'` — camera/shadow bindings, optional projector
- *      texture/sampler (11/12), and the Points/Lines UBO (10). Local lights
- *      are carried exclusively by the Standard Cluster group(2).
+ *    - `'pbr-view'` — camera/shadow bindings and optional projector
+ *      texture/sampler (11/12). Local lights are carried exclusively by the
+ *      Standard Cluster group(2); Points/Lines use their own view inputs.
  *      (directional 3/4, point 5/6, cascade 7, spot atlas 8; the former
  *      spot lightViewProj matrices moved into the View UBO)
  *    - `'pbr-mesh-array'` — 1 entry: per-entity mesh SSBO (dynamic-offset)

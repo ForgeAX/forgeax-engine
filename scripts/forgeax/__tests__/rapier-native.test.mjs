@@ -125,6 +125,21 @@ for (const dimension of ['2d', '3d']) {
     const bytes = await readFile(resolve(owner, 'pkg/rapier.wasm'));
     assertPortableRustArtifact(bytes);
     assert.deepEqual(artifact, { bytes: bytes.length, sha256: sha256(bytes) });
+    const scalarPath = resolve(owner, 'pkg/rapier.mjs');
+    const scalar = await readFile(scalarPath, 'utf8');
+    assert.doesNotMatch(scalar, /AGFzbQ/);
+    assert.match(scalar, /new URL\(["']\.\/rapier\.wasm["'],\s*import\.meta\.url\)/);
+    const { default: rapier } = await import(pathToFileURL(scalarPath).href);
+    await rapier.init();
+    const zero = dimension === '2d' ? { x: 0, y: 0 } : { x: 0, y: 0, z: 0 };
+    const world = new rapier.World(zero);
+    try {
+      const body = world.createRigidBody(rapier.RigidBodyDesc.dynamic());
+      world.step();
+      assert.deepEqual({ ...body.translation() }, zero);
+    } finally {
+      world.free();
+    }
   });
 
   test(`native Rapier ${dimension}: bundler selects native glue without compat or base64`, async () => {
@@ -159,7 +174,7 @@ for (const dimension of ['2d', '3d']) {
       Object.keys(browser.metafile.inputs).some((path) =>
         path.endsWith(`/physics-rapier${dimension}/pkg/rapier.mjs`),
       ),
-      'default browser entry must retain self-contained loading of the same backend',
+      'default browser entry must retain the package-owned scalar loader',
     );
   });
 }

@@ -1,21 +1,8 @@
 #define_import_path forgeax_ssr::trace
 #import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardNormalRoughness, loadStandardSceneSurfaceValid, loadCompactGBufferRoughness}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
-#import forgeax_depth_pyramid::sample::{
-  DEPTH_PYRAMID_EMPTY_DEPTH,
-  linearizeViewDepth,
-  depthPyramidCell,
-  depthPyramidDepthOrEmpty,
-  depthPyramidLevelSize,
-}
-
-// The spatial trace is bounded by the public M1 contract.
-const SSR_TRACE_MAX_REFINE_STEPS : u32 = 5u;
-const SSR_TRACE_MAX_HIZ_ITERATIONS : u32 = 64u;
-// Without a depth hierarchy (maxTraceLevel == 0) the traversal degenerates to a
-// texel-by-texel march, so it needs one iteration per texel of the projected span.
-const SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;
-
+#import forgeax_depth_pyramid::sample::{DEPTH_PYRAMID_EMPTY_DEPTH, linearizeViewDepth}
+#import forgeax_ssr::ray::{SsrRayHit, traceSsrRay, ssrReflectionDirection, ssrVignette, ssrClipUv}
 @group(0) @binding(0) var sceneDepth : texture_depth_2d;
 @group(0) @binding(1) var sceneNormal : texture_2d<u32>;
 @group(0) @binding(14) var defaultGBufferB : texture_2d<u32>;
@@ -28,33 +15,17 @@ const SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;
 // This is the existing Standard View UBO, not a second camera state source.
 // The shader only consumes world/inverse projection and the validated SSR
 // parameter tail published by the record stage.
-#import forgeax_view::common::{View, screenSpaceReflectionRoughnessFade, ssrSceneColorLod, sampleSsrSceneColor, sampleSsrSceneColorLevel}
+#import forgeax_view::common::{View, screenSpaceReflectionRoughnessFade, sampleSsrSceneColor}
 @group(0) @binding(5) var<uniform> view : View;
 // RGB belongs to lighting; alpha is its exact Standard material coverage.
 @group(0) @binding(6) var reflectionFallback : texture_2d<f32>;
 @group(0) @binding(7) var sceneTemporal : texture_2d<f32>;
+@group(0) @binding(13) var sceneColorHistory : texture_2d<f32>;
 // Motion at a radiance source invalidates reflection history even when the
 // receiver is stationary. This scalar is reactivity, not reflected velocity.
 #if !PORTABLE_FRAGMENT
 @group(0) @binding(8) var hitReactivityOutput : texture_storage_2d<r32float, write>;
 #endif
-
-// The graph always publishes the complete floor-halved depth chain.
-fn ssrDepthPyramidLevelCount() -> u32 {
-#if PORTABLE_FRAGMENT
-  let size = textureDimensions(depthPyramid, 0);
-  var remaining = max(size.x, size.y);
-  var levels = 0u;
-  for (var bit = 0u; bit < 32u; bit++) {
-    if (remaining == 0u) { break; }
-    levels += 1u;
-    remaining >>= 1u;
-  }
-  return levels;
-#else
-  return textureNumLevels(depthPyramid);
-#endif
-}
 
 #if !PORTABLE_FRAGMENT
 // Water owns receiver facts. Its hit hierarchy comes from opaque depth.
@@ -69,40 +40,10 @@ struct WaterSsrParams {
   hitColorParams: vec4<f32>,
 };
 @group(0) @binding(12) var<uniform> waterParams: WaterSsrParams;
-@group(0) @binding(13) var waterSceneColorHistory: texture_2d<f32>;
 #endif
 
 fn isFinite(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
-}
-
-fn finiteConfidence(value : f32) -> f32 {
-  return select(0.0, clamp(value, 0.0, 1.0), isFinite(value));
-}
-
-fn traceConfidence(
-  hit : f32,
-  thickness : f32,
-  edge : f32,
-  roughness : f32,
-  temporal : f32,
-) -> f32 {
-  let factors = vec2<f32>(hit, thickness);
-  let spatial = vec3<f32>(edge, roughness, temporal);
-  if (!isFinite(factors.x) || !isFinite(factors.y) ||
-      !isFinite(spatial.x) || !isFinite(spatial.y) || !isFinite(spatial.z)) {
-    return 0.0;
-  }
-  return finiteConfidence(factors.x) * finiteConfidence(factors.y) *
-    finiteConfidence(spatial.x) * finiteConfidence(spatial.y) *
-    finiteConfidence(spatial.z);
-}
-
-// UE ComputeHitVignetteFromScreenPos: fade over the outer 20% of screen
-// space per axis, combined radially.
-fn traceEdge(uv : vec2<f32>) -> f32 {
-  let vignette = clamp(abs(uv * 2.0 - 1.0) * 5.0 - 4.0, vec2<f32>(0.0), vec2<f32>(1.0));
-  return clamp(1.0 - dot(vignette, vignette), 0.0, 1.0);
 }
 
 fn reconstructWorldPosition(uv : vec2<f32>, depth : f32) -> vec3<f32> {
@@ -114,95 +55,6 @@ fn reconstructWorldPosition(uv : vec2<f32>, depth : f32) -> vec3<f32> {
   return world.xyz / world.w;
 }
 
-fn projectWorldPosition(worldPosition : vec3<f32>) -> vec2<f32> {
-  let clip = view.worldViewProj * vec4<f32>(worldPosition, 1.0);
-  if (!isFinite(clip.w) || clip.w <= 1e-5) {
-    return vec2<f32>(-1.0);
-  }
-  let ndc = clip.xy / clip.w;
-  return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-}
-
-fn projectWorldViewDistance(worldPosition : vec3<f32>) -> f32 {
-  let clip = view.worldViewProj * vec4<f32>(worldPosition, 1.0);
-  if (!isFinite(clip.w) || clip.w <= 1e-5) {
-    return 0.0;
-  }
-  // The depth pyramid stores positive linear view distance. Perspective clip.w
-  // is that distance; orthographic clip.w is constant and needs the projection
-  // range. Comparing clip.z / clip.w with the pyramid mixes normalized depth and world units
-  // and rejects every visible ray in ordinary scenes more than one unit away.
-  return select(
-    clip.w,
-    view.temporalProjection.y - (clip.z / clip.w) *
-      (view.temporalProjection.y - view.temporalProjection.x),
-    view.temporalProjection.z > 0.5,
-  );
-}
-
-// Trace levels address one depth hierarchy for the march: level 0 is the
-// full-resolution scene depth and level n is depth-pyramid level n - 1.
-fn maxSsrTraceLevel(fullSize : vec2<u32>) -> u32 {
-  let extent = max(fullSize.x, fullSize.y);
-  if (extent <= 1u) {
-    return 0u;
-  }
-  return u32(floor(log2(f32(extent))));
-}
-
-fn sampleSsrTraceDepth(uv : vec2<f32>, traceLevel : u32) -> f32 {
-  if (traceLevel == 0u) {
-    let size = textureDimensions(sceneDepth, 0);
-    let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
-    let depth = textureLoad(sceneDepth, pixel, 0);
-    if (depth <= 0.0 || depth > 1.0) { return DEPTH_PYRAMID_EMPTY_DEPTH; }
-    return linearizeViewDepth(depth, view.temporalProjection);
-  }
-  let level = min(traceLevel - 1u, ssrDepthPyramidLevelCount() - 1u);
-  let cell = depthPyramidCell(uv, depthPyramidLevelSize(depthPyramid, level));
-  return depthPyramidDepthOrEmpty(textureLoad(depthPyramid, vec2<i32>(cell), i32(level)).r);
-}
-
-struct SsrTraceHit {
-  hit : f32,
-  uv : vec2<f32>,
-  thickness : f32,
-  reactivity : f32,
-};
-
-fn ssrRayFraction(uv : vec2<f32>, startUv : vec2<f32>, deltaUv : vec2<f32>,
-  fallback : f32, endFraction : f32) -> f32 {
-  let useX = abs(deltaUv.x) >= abs(deltaUv.y) && abs(deltaUv.x) > 1e-8;
-  let useY = !useX && abs(deltaUv.y) > 1e-8;
-  let xFraction = select(fallback, (uv.x - startUv.x) / deltaUv.x, useX);
-  let yFraction = select(fallback, (uv.y - startUv.y) / deltaUv.y, useY);
-  let fraction = select(xFraction, yFraction, useY);
-  return clamp(select(fallback, fraction, isFinite(fraction)), 0.0, endFraction);
-}
-
-fn ssrTraversalCell(uv : vec2<f32>, size : vec2<u32>,
-  moving : vec2<bool>, towardMax : vec2<bool>) -> vec2<u32> {
-  // At a crossed boundary, the minor-axis displacement can round away even
-  // though t advanced. Round the scaled coordinate one f32 value in the ray's
-  // direction so a boundary belongs to the entering cell. This changes only
-  // address rounding, not the ray interval or the public traversal budget.
-  let scaled = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(size);
-  // Scalar integer selects also lower to legal GLSL ES 3.0; its vector mix
-  // overloads do not admit integer operands on the portable fragment route.
-  let step = vec2<u32>(select(0xffffffffu, 1u, towardMax.x),
-    select(0xffffffffu, 1u, towardMax.y));
-  let rounded = bitcast<vec2<f32>>(bitcast<vec2<u32>>(scaled) + step);
-  return min(vec2<u32>(select(scaled, rounded, moving & (scaled > vec2<f32>(0.0)))),
-    size - vec2<u32>(1u));
-}
-
-fn ssrProjectedRayDepth(start : f32, end : f32, fraction : f32) -> f32 {
-  // Reciprocal view depth is affine in perspective screen space; orthographic
-  // projection preserves linear view depth instead.
-  return select(1.0 / mix(1.0 / start, 1.0 / end, fraction),
-    mix(start, end, fraction), view.temporalProjection.z > 0.5);
-}
-
 fn ssrSourceReactivity(pixel : vec2<i32>) -> f32 {
   let temporal = textureLoad(sceneTemporal, pixel, 0);
   let speed = length(temporal.xy);
@@ -212,412 +64,51 @@ fn ssrSourceReactivity(pixel : vec2<i32>) -> f32 {
   return clamp(max(speed * 64.0, temporal.w), 0.0, 1.0);
 }
 
-fn ssrShadingNormalVaries(pixel : vec2<u32>, normal : vec3<f32>) -> bool {
-  let size = vec2<i32>(textureDimensions(sceneDepth, 0));
-  // Only a locally varying, similarly oriented field makes the tangent plane
-  // uncertain. A flat face ending at sky must retain its exact silhouette;
-  // thickness alone is not permission to extend that face into empty space.
-  for (var axis = 0u; axis < 2u; axis++) {
-    for (var sign = -1; sign <= 1; sign += 2) {
-      var offset = vec2<i32>(0);
-      offset[axis] = sign;
-      let tap = vec2<i32>(pixel) + offset;
-      if (any(tap < vec2<i32>(0)) || any(tap >= size)) { continue; }
-      if (textureLoad(sceneDepth, tap, 0) <= 0.0 ||
-          textureLoad(reflectionFallback, tap, 0).a <= 0.5) { continue; }
-      if (!loadStandardSceneSurfaceValid(sceneNormal, tap)) { continue; }
-      let neighbor = loadStandardNormalRoughness(sceneNormal, tap).xyz;
-      let delta = neighbor - normal;
-      let agreement = dot(neighbor, normal) * inverseSqrt(max(dot(neighbor, neighbor) * dot(normal, normal), 1e-8));
-      if (agreement > 0.9 && dot(delta, delta) > 1e-6) { return true; }
+// Reject motion from a different layer. In particular, SLW may have
+// overwritten a temporal texel while the reflection hit remains opaque.
+fn ssrPreviousHitUv(hit: SsrRayHit, pixel: vec2i) -> vec2f {
+  let hitWorld = vec4f(reconstructWorldPosition(hit.uv, hit.depth), 1.0);
+  let previous = view.temporalPreviousViewProj * hitWorld;
+  if (!(previous.w > 1e-8)) { return vec2f(-1.0); }
+  let motion = unpackSceneTemporalV1(textureLoad(sceneTemporal, pixel, 0));
+  if (motion.validDepth && motion.motionValid && isFinite(motion.motionUv.x) && isFinite(motion.motionUv.y)) {
+    let rawDepth = textureLoad(sceneDepth, pixel, 0);
+    let distance = linearizeViewDepth(rawDepth, view.temporalProjection);
+    let logDepth = log2(1.0 + distance);
+    let exponent = (bitcast<u32>(logDepth) >> 23u) & 255u;
+    let logSpacing = bitcast<f32>((max(exponent, 113u) - 10u) << 23u);
+    let tolerance = (1.0 + distance) * (exp2(logSpacing) - 1.0) + distance * 1e-6;
+    if (distance < DEPTH_PYRAMID_EMPTY_DEPTH && abs(motion.viewDepth - distance) <= tolerance) {
+      // Velocity is authoritative on the full-resolution texel. Unjitter that
+      // texel's surface before applying its motion to the interpolated hit UV.
+      let current = view.temporalCurrentViewProj * hitWorld;
+      if (current.w > 1e-8) { return ssrClipUv(current) - motion.motionUv; }
     }
   }
-  return false;
+  return ssrClipUv(previous);
 }
 
-fn ssrGeometricNormal(pixel : vec2<u32>, normal : vec3<f32>) -> vec3<f32> {
-  // Recover a depth tangent from the nearest same-facing neighbor per axis.
-  // Missing support on either axis retains the original normal; it does not
-  // authorize a depth-only hit through a silhouette or uncovered surface.
-  let size = textureDimensions(sceneDepth, 0);
-  let center = reconstructWorldPosition((vec2<f32>(pixel) + 0.5) / vec2<f32>(size),
-    textureLoad(sceneDepth, vec2<i32>(pixel), 0));
-  var derivatives : array<vec3<f32>, 2>;
-  for (var axis = 0u; axis < 2u; axis++) {
-    var shortest = 3.402823e+38;
-    for (var sign = -1; sign <= 1; sign += 2) {
-      var offset = vec2<i32>(0);
-      offset[axis] = sign;
-      let tap = vec2<i32>(pixel) + offset;
-      if (any(tap < vec2<i32>(0)) || any(tap >= vec2<i32>(size))) { continue; }
-      let depth = textureLoad(sceneDepth, tap, 0);
-      if (!loadStandardSceneSurfaceValid(sceneNormal, tap)) { continue; }
-      let tapNormal = loadStandardNormalRoughness(sceneNormal, tap).xyz;
-      if (depth <= 0.0 || dot(normal, tapNormal) < 0.9) { continue; }
-      let point = reconstructWorldPosition((vec2<f32>(tap) + 0.5) / vec2<f32>(size), depth);
-      let delta = (point - center) * f32(sign);
-      let distance = dot(delta, delta);
-      if (distance < shortest) { shortest = distance; derivatives[axis] = delta; }
-    }
-  }
-  let product = cross(derivatives[0], derivatives[1]);
-  let lengthSquared = dot(product, product);
-  if (lengthSquared <= 1e-16) { return normal; }
-  let geometric = product * inverseSqrt(lengthSquared);
-  return select(-geometric, geometric, dot(geometric, normal) >= 0.0);
+fn ssrHitPixel(uv: vec2f, size: vec2u) -> vec2i {
+  return vec2i(clamp(uv * vec2f(size), vec2f(0.0), vec2f(size - 1u)));
 }
 
-struct SsrSurfaceIntersection {
-  valid : bool,
-  position : vec3<f32>,
-  uv : vec2<f32>,
-  pixel : vec2<u32>,
-  depth : f32,
-  normal : vec3<f32>,
+fn ssrCameraDirection(origin: vec3f) -> vec3f {
+  if (view.temporalProjection.z <= 0.5) { return view.cameraPos - origin; }
+  let near = reconstructWorldPosition(vec2f(0.5), 1.0);
+  let far = reconstructWorldPosition(vec2f(0.5), 0.5);
+  return near - far;
 }
 
-fn ssrIntersectSurface(origin : vec3<f32>, direction : vec3<f32>, maxDistance : f32,
-  fullSize : vec2<u32>, pixel : vec2<u32>, depth : f32,
-  normal : vec3<f32>) -> SsrSurfaceIntersection {
-  var candidate : SsrSurfaceIntersection;
-  // A depth texel describes its center, not the subpixel march coordinate.
-  // Refine against that sample's tangent plane, then validate the projected
-  // intersection against the actual depth buffer. Otherwise a stair-stepped
-  // depth crossing displaces high-frequency reflected texture coordinates.
-  let centerUv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
-  let surface = reconstructWorldPosition(centerUv, depth);
-  let planeDistance = dot(surface - origin, normal) / dot(direction, normal);
-  if (!isFinite(planeDistance) || planeDistance <= 0.0 || planeDistance > maxDistance) { return candidate; }
-  let intersection = origin + direction * planeDistance;
-  let hitUv = projectWorldPosition(intersection);
-  if (any(hitUv < vec2<f32>(0.0)) || any(hitUv >= vec2<f32>(1.0))) { return candidate; }
-  let hitPixel = min(vec2<u32>(hitUv * vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
-  if (!loadStandardSceneSurfaceValid(sceneNormal, vec2<i32>(hitPixel))) { return candidate; }
-  let hitDepth = textureLoad(sceneDepth, vec2<i32>(hitPixel), 0);
-  let hitNormal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(hitPixel)).xyz;
-  if (hitDepth <= 0.0 || dot(hitNormal, -direction) <= 0.0 ||
-      textureLoad(reflectionFallback, vec2<i32>(hitPixel), 0).a <= 0.5) { return candidate; }
-  return SsrSurfaceIntersection(true, intersection, hitUv, hitPixel, hitDepth, hitNormal);
-}
-
-fn ssrValidateSurfaceHit(candidate : SsrSurfaceIntersection, validationNormal : vec3<f32>,
-  thickness : f32, fullSize : vec2<u32>, result : SsrTraceHit) -> SsrTraceHit {
-  if (!candidate.valid) { return result; }
-  // Depth belongs to the texel center. Compare the intersection with that
-  // sample's plane, not a constant-depth point fabricated at its UV. The latter
-  // lowers confidence on an exact oblique-plane hit as jitter moves inside
-  // the texel, periodically exposing fallback beneath a static reflection.
-  let hitCenterUv = (vec2<f32>(candidate.pixel) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
-  let hitSurface = reconstructWorldPosition(hitCenterUv, candidate.depth);
-  let neighbor = reconstructWorldPosition(hitCenterUv + vec2<f32>(1.0 / f32(fullSize.x), 0.0), candidate.depth);
-  let radius = max(thickness, distance(hitSurface, neighbor) * 3.0);
-  let separation = abs(dot(hitSurface - candidate.position, normalize(validationNormal)));
-  if (!isFinite(separation) || separation > radius) { return result; }
-  return SsrTraceHit(1.0, candidate.uv, 1.0, result.reactivity);
-}
-
-// Keep depth-normal recovery outside the flat tangent call graph. Software
-// GPU compilers otherwise expand that recovery inside every coarse ray step,
-// even when a boolean argument disables it at runtime.
-fn ssrRefineHit(origin : vec3<f32>, direction : vec3<f32>, maxDistance : f32,
-  thickness : f32, fullSize : vec2<u32>, pixel : vec2<u32>, depth : f32,
-  normal : vec3<f32>, result : SsrTraceHit) -> SsrTraceHit {
-  let candidate = ssrIntersectSurface(origin, direction, maxDistance, fullSize,
-    pixel, depth, normal);
-  return ssrValidateSurfaceHit(candidate, candidate.normal, thickness, fullSize, result);
-}
-
-fn ssrRefineGeometricHit(origin : vec3<f32>, direction : vec3<f32>, maxDistance : f32,
-  thickness : f32, fullSize : vec2<u32>, pixel : vec2<u32>, depth : f32,
-  normal : vec3<f32>, result : SsrTraceHit) -> SsrTraceHit {
-  let candidate = ssrIntersectSurface(origin, direction, maxDistance, fullSize,
-    pixel, depth, ssrGeometricNormal(pixel, normal));
-  if (!candidate.valid) { return result; }
-  return ssrValidateSurfaceHit(candidate, ssrGeometricNormal(candidate.pixel, candidate.normal),
-    thickness, fullSize, result);
-}
-
-// Algorithm reference: Three.js SSRShader / SSRNode (MIT), inspected 2026-09-08:
-// https://github.com/mrdoob/three.js/blob/4457aa3c5de4a05bbae4e0bee2d99d994c38a2bb/examples/jsm/tsl/display/SSRNode.js
-// Projected-space stepping, reciprocal-depth interpolation, ray-distance
-// thickness, and a separate crossing refinement avoid world-step holes.
-// Mirror rays spend steps in proportion to their projected pixel span, as in
-// Three's non-stochastic path. A small fixed budget stretches samples over
-// thin silhouettes and can jump directly from in-front-of-wall to sky.
-// The Hi-Z iteration and refine bounds, depth pyramid, material coverage, and BRDF owner remain explicit.
-fn traceScreenRay(
-  origin : vec3<f32>,
-  direction : vec3<f32>,
-  maxDistance : f32,
-  thickness : f32,
-  fullSize : vec2<u32>,
-  coarsestDepth : f32,
-  maxTraceLevel : u32,
-) -> SsrTraceHit {
-  var result = SsrTraceHit(0.0, vec2<f32>(0.0), 0.0, 0.0);
-  if (!isFinite(maxDistance) || maxDistance <= 0.0 ||
-      !isFinite(thickness) || thickness <= 0.0 || maxDistance < thickness ||
-      !isFinite(coarsestDepth) || coarsestDepth <= 0.0) { return result; }
-  let startDepth = projectWorldViewDistance(origin);
-  let projectedDirection = view.worldViewProj * vec4<f32>(direction, 0.0);
-  let depthDirection = select(projectedDirection.w,
-    -projectedDirection.z * (view.temporalProjection.y - view.temporalProjection.x),
-    view.temporalProjection.z > 0.5);
-  // Like Unreal's RayCast (WorldTMax = SceneDepth), distant receivers get a
-  // ray at least as long as their view depth; grazing ground keeps its reach.
-  var rayLength = max(maxDistance, startDepth);
-  if (depthDirection < -1e-5) {
-    rayLength = min(rayLength, (startDepth - view.temporalProjection.x * 1.01) / -depthDirection);
-  }
-  if (rayLength <= 0.0) { return result; }
-  let end = origin + direction * rayLength;
-  let endDepth = projectWorldViewDistance(end);
-  let startUv = projectWorldPosition(origin);
-  let deltaUv = projectWorldPosition(end) - startUv;
-  // Clip the projected segment to the viewport before spending the fixed budget.
-  var endFraction = 1.0;
-  if (deltaUv.x > 1e-6) { endFraction = min(endFraction, (1.0 - startUv.x) / deltaUv.x); }
-  if (deltaUv.x < -1e-6) { endFraction = min(endFraction, -startUv.x / deltaUv.x); }
-  if (deltaUv.y > 1e-6) { endFraction = min(endFraction, (1.0 - startUv.y) / deltaUv.y); }
-  if (deltaUv.y < -1e-6) { endFraction = min(endFraction, -startUv.y / deltaUv.y); }
-  let span = abs(deltaUv * endFraction * vec2<f32>(fullSize));
-  let pixelSpan = max(span.x, span.y);
-  let fullPixelSpan = max(abs(deltaUv.x) * f32(fullSize.x), abs(deltaUv.y) * f32(fullSize.y));
-  if (!isFinite(fullPixelSpan) || fullPixelSpan <= 1e-5 || pixelSpan < 1.0) { return result; }
-  let crossEpsilon = 1e-3 / fullPixelSpan;
-  let moving = abs(deltaUv) > vec2<f32>(1e-8);
-  let towardMax = deltaUv > vec2<f32>(0.0);
-  var lower = 0.0;
-  var upper = 0.0;
-  var found = false;
-  // Leave the receiver texel before the first test: start at the exit of the
-  // texel holding the ray origin. A whole pixel of the major axis would skip the
-  // first part of the next texel, which a short or oblique ray may cross in.
-  let originCell = min(vec2<u32>(clamp(startUv, vec2<f32>(0.0), vec2<f32>(1.0)) *
-    vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
-  let originBoundaryUv = (vec2<f32>(originCell) + select(vec2<f32>(0.0), vec2<f32>(1.0), towardMax)) /
-    vec2<f32>(fullSize);
-  let originExits = select(vec2<f32>(endFraction),
-    (originBoundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
-  var t = clamp(min(originExits.x, originExits.y) + crossEpsilon, 0.0, endFraction);
-  var level = 0u;
-  let iterationBudget = select(u32(select(f32(SSR_TRACE_MAX_HIZ_ITERATIONS), view.ssrQuality.y, view.ssrQuality.y > 0.0)), u32(select(f32(SSR_TRACE_MAX_LINEAR_ITERATIONS), view.ssrQuality.z, view.ssrQuality.z > 0.0)),
-    maxTraceLevel == 0u);
-  // Keep the full traversal counter across candidate yields. The tangent-plane
-  // validation stays outside the coarse march so native software compilers do
-  // not expand its struct-return control flow inside every traversal step.
-  var iteration = 0u;
-  loop {
-    var entryFraction : f32;
-    var sampleFraction : f32;
-    var exitFraction : f32;
-    var rayMin : f32;
-    var rayMax : f32;
-    var sampleDepth : f32;
-    var sampleUv : vec2<f32>;
-    var pixel : vec2<u32>;
-    var normal : vec3<f32>;
-    var candidateReady = false;
-    for (; iteration < SSR_TRACE_MAX_LINEAR_ITERATIONS; ) {
-      if (t >= endFraction || iteration >= iterationBudget) { break; }
-      iteration += 1u;
-      entryFraction = t;
-      let uv = startUv + deltaUv * t;
-      var levelSize = fullSize;
-      if (level > 0u) { levelSize = depthPyramidLevelSize(depthPyramid, level - 1u); }
-      let cell = ssrTraversalCell(uv, levelSize, moving, towardMax);
-      let boundaryUv = (vec2<f32>(cell) + select(vec2<f32>(0.0), vec2<f32>(1.0), towardMax)) /
-        vec2<f32>(levelSize);
-      let exitFractions = select(vec2<f32>(endFraction),
-        (boundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
-      exitFraction = clamp(min(exitFractions.x, exitFractions.y), t, endFraction);
-      // Both admitted projections have monotonic view depth on this segment.
-      let entryDepth = ssrProjectedRayDepth(startDepth, endDepth, t);
-      let exitDepth = ssrProjectedRayDepth(startDepth, endDepth, exitFraction);
-      rayMin = min(entryDepth, exitDepth);
-      rayMax = max(entryDepth, exitDepth);
-      let cellCenterUv = (vec2<f32>(cell) + vec2<f32>(0.5)) / vec2<f32>(levelSize);
-      // Closest-depth cells cover their whole integer footprint, so a cell
-      // behind the segment's far end proves no texel in it is crossed.
-      // At full resolution the centre depth is not the texel's depth range (an
-      // oblique plane varies across it), so the exact tests below decide.
-      if (level > 0u && sampleSsrTraceDepth(cellCenterUv, level) > rayMax) {
-        t = exitFraction + crossEpsilon;
-        level = min(level + 1u, maxTraceLevel);
-        continue;
-      }
-      if (level > 0u) {
-        level -= 1u;
-        continue;
-      }
-      // Full-resolution texel whose depth the segment reaches.
-      pixel = cell;
-      sampleDepth = textureLoad(sceneDepth, vec2<i32>(pixel), 0);
-      sampleUv = cellCenterUv;
-      sampleFraction = clamp(ssrRayFraction(sampleUv, startUv, deltaUv, t, endFraction),
-        entryFraction, exitFraction);
-      t = exitFraction + crossEpsilon;
-      // Climb again after every full-resolution texel so empty space is skipped.
-      level = min(1u, maxTraceLevel);
-      if (sampleDepth <= 0.0 || sampleDepth > 1.0 ||
-          textureLoad(reflectionFallback, vec2<i32>(pixel), 0).a <= 0.5) { continue; }
-      let surfaceViewDepth = linearizeViewDepth(sampleDepth, view.temporalProjection);
-      // Already behind this surface for the whole texel: an occluder thicker
-      // than the authored thickness hides what lies beyond, keep marching.
-      if (rayMin > surfaceViewDepth + thickness) { continue; }
-      // A moving occluder can invalidate yesterday's hit even when its back
-      // face or depth separation rejects today's radiance. Preserve that
-      // evidence on misses; sky and samples beyond the ray interval contribute
-      // nothing. This does not admit the occluder as a reflection source.
-      result.reactivity = max(result.reactivity, ssrSourceReactivity(vec2<i32>(pixel)));
-      normal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(pixel)).xyz;
-      if (dot(normal, -direction) <= 0.0) { continue; }
-      candidateReady = true;
-      break;
-    }
-    if (!candidateReady) { break; }
-    // Intersect the texel's tangent plane; accept it when the intersection
-    // stays within one texel of the crossed segment.
-    let planeHit = ssrRefineHit(origin, direction, rayLength, thickness, fullSize,
-      pixel, sampleDepth, normal, result);
-    if (planeHit.hit > 0.0) {
-      let slack = 1.0 / fullPixelSpan;
-      let planeFraction = ssrRayFraction(planeHit.uv, startUv, deltaUv, sampleFraction, endFraction);
-      if (planeFraction >= entryFraction - slack &&
-          planeFraction <= exitFraction + slack) {
-        return planeHit;
-      }
-    }
-    let surface = reconstructWorldPosition(sampleUv, sampleDepth);
-    let neighbor = reconstructWorldPosition(sampleUv + vec2<f32>(1.0 / f32(fullSize.x), 0.0), sampleDepth);
-    // The traversal proved the ray's depth range over this texel contains the
-    // surface (or lies within thickness behind it). A grazing texel spans
-    // that whole depth range, so the perpendicular tolerance scales with it,
-    // like Unreal's slope-scaled CompareTolerance; 1.5 covers the off-axis
-    // camera ray (depth gap / cos).
-    let crossingTolerance = (rayMax - rayMin) * 1.5;
-    let radius = max(max(thickness, distance(surface, neighbor) * 3.0), crossingTolerance);
-    let separation = length(cross(surface - origin, direction));
-    if (!isFinite(separation) || separation > radius) { continue; }
-    lower = entryFraction;
-    upper = exitFraction;
-    found = true;
-    break;
-  }
-  if (!found) { return result; }
-  // Depth crossing refinement is intentionally outside the march loop.
-  for (var refine = 0u; refine < u32(select(f32(SSR_TRACE_MAX_REFINE_STEPS), view.ssrQuality.w, view.ssrQuality.w > 0.0)); refine++) {
-    let middle = (lower + upper) * 0.5;
-    let uv = startUv + deltaUv * middle;
-    let pixel = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) *
-      vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
-    let surfaceDepth = sampleSsrTraceDepth(uv, 0u);
-    let rayDepth = ssrProjectedRayDepth(startDepth, endDepth, middle);
-    // A depth crossing on a rejected surface is not the accepted bracket.
-    // Near contact points, depth-only bisection can walk backward onto the
-    // receiver even though the coarse step correctly found the facing wall.
-    let normal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(pixel)).xyz;
-    let covered = textureLoad(reflectionFallback, vec2<i32>(pixel), 0).a > 0.5;
-    if (rayDepth >= surfaceDepth && covered && dot(normal, -direction) > 0.0) {
-      upper = middle;
-    } else {
-      lower = middle;
-    }
-  }
-  let uv = startUv + deltaUv * upper;
-  let pixel = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) *
-    vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
-  let depth = textureLoad(sceneDepth, vec2<i32>(pixel), 0);
-  let normal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(pixel)).xyz;
-  let covered = textureLoad(reflectionFallback, vec2<i32>(pixel), 0).a > 0.5;
-  if (depth <= 0.0 || dot(normal, -direction) <= 0.0 || !covered) { return result; }
-  // Preserve successful refinement and exact flat-face silhouettes. Smooth
-  // shading can point a failed correction away from the depth surface; retry
-  // with depth geometry, under the same source, facing and thickness checks.
-  let refined = ssrRefineHit(origin, direction, rayLength, thickness, fullSize,
-    pixel, depth, normal, result);
-  if (refined.hit > 0.0 || !ssrShadingNormalVaries(pixel, normal)) {
-    return refined;
-  }
-  return ssrRefineGeometricHit(origin, direction, rayLength, thickness, fullSize,
-    pixel, depth, normal, result);
-}
-
-fn ssrHitTapAdmitted(pixel : vec2<i32>, rayDirection : vec3<f32>) -> bool {
-  if (!loadStandardSceneSurfaceValid(sceneNormal, pixel)) { return false; }
-  let normal = loadStandardNormalRoughness(sceneNormal, pixel).xyz;
-  return textureLoad(reflectionFallback, pixel, 0).a > 0.5 && dot(normal, -rayDirection) > 0.0;
-}
-
-#if PORTABLE_FRAGMENT
-override SSR_SCENE_COLOR_MIP_COUNT : u32 = 1u;
-#endif
-
-fn ssrSceneColorMipCount() -> u32 {
-#if PORTABLE_FRAGMENT
-  return SSR_SCENE_COLOR_MIP_COUNT;
-#else
-  return textureNumLevels(sceneColor);
-#endif
-}
-
-struct SsrHitSample {
-  color : vec3<f32>,
-  coverage : f32,
-  reactivity : f32,
-};
-
-fn sampleSsrHit(uv : vec2<f32>, rayDirection : vec3<f32>, lod : f32) -> SsrHitSample {
-  // Admit source coverage and motion in full-resolution geometry coordinates.
-  let size = vec2<i32>(textureDimensions(sceneNormal, 0));
-  let position = uv * vec2<f32>(size) - vec2<f32>(0.5);
-  let first = vec2<i32>(floor(position));
-  let fraction = fract(position);
-  let last = size - vec2<i32>(1);
-  let weights = vec4<f32>(
-    (1.0 - fraction.x) * (1.0 - fraction.y), fraction.x * (1.0 - fraction.y),
-    (1.0 - fraction.x) * fraction.y, fraction.x * fraction.y
-  );
-  var coverage = 0.0;
-  var reactivity = 0.0;
-  var admitted = 0u;
-  for (var tap = 0u; tap < 4u; tap++) {
-    let pixel = clamp(first + vec2<i32>(i32(tap % 2u), i32(tap / 2u)), vec2<i32>(0), last);
-    if (weights[tap] > 0.0 && ssrHitTapAdmitted(pixel, rayDirection)) {
-      coverage += weights[tap];
-      reactivity = max(reactivity, ssrSourceReactivity(pixel));
-      admitted |= 1u << tap;
-    }
-  }
-  if (coverage <= 0.0) { return SsrHitSample(vec3<f32>(0.0), 0.0, reactivity); }
-  if (coverage > 0.999) {
-    return SsrHitSample(sampleSsrSceneColor(sceneColor, uv, lod), coverage, reactivity);
-  }
-  // At silhouettes, only gather half-resolution level-zero texels that
-  // correspond to admitted full-resolution taps. Preserve missing area for
-  // the receiver's fallback and avoid adding coarse roughness blur there.
-  let colorSize = vec2<i32>(textureDimensions(sceneColor, 0));
-  var color = vec3<f32>(0.0);
-  for (var tap = 0u; tap < 4u; tap++) {
-    if ((admitted & (1u << tap)) != 0u) {
-      let pixel = clamp(first + vec2<i32>(i32(tap % 2u), i32(tap / 2u)), vec2<i32>(0), last);
-      let tapUv = (vec2<f32>(pixel) + 0.5) / vec2<f32>(size);
-      let colorPixel = min(vec2<i32>(tapUv * vec2<f32>(colorSize)), colorSize - 1);
-      color += textureLoad(sceneColor, colorPixel, 0).rgb * weights[tap];
-    }
-  }
-  return SsrHitSample(color / coverage, coverage, reactivity);
+fn ssrStepCount(roughness: f32) -> u32 {
+  let steps = max(8u, u32(view.ssrQuality.y));
+  let rays = max(1u, u32(view.ssrQuality.z));
+  return select(steps, min(24u, steps * rays), rays > 1u && roughness < 0.1);
 }
 
 #if !PORTABLE_FRAGMENT
-fn waterScreenVignette(uv: vec2<f32>) -> f32 {
-  let edge = clamp(abs(uv * 2.0 - vec2<f32>(1.0)) * 5.0 - vec2<f32>(4.0), vec2<f32>(0.0), vec2<f32>(1.0));
-  return clamp(1.0 - dot(edge, edge), 0.0, 1.0);
-}
-
 fn waterReflectionWeight(hitUv: vec2<f32>, colorUv: vec2<f32>, roughness: f32, maximumRoughness: f32) -> f32 {
-  return screenSpaceReflectionRoughnessFade(roughness, maximumRoughness) * waterParams.hitColorParams.z *
-    min(waterScreenVignette(hitUv), waterScreenVignette(colorUv));
+  return screenSpaceReflectionRoughnessFade(roughness, maximumRoughness, view.ssrQuality.w > 0.0) * waterParams.hitColorParams.z *
+    min(ssrVignette(hitUv), ssrVignette(colorUv));
 }
 
 struct WaterSsrReceiver {
@@ -627,26 +118,6 @@ struct WaterSsrReceiver {
   toCamera: vec3<f32>,
   roughness: f32,
 };
-
-fn waterCameraForward() -> vec3<f32> {
-  if (view.temporalProjection.z <= 0.5) {
-    // Perspective clip.w is positive view distance. Its world-space row is
-    // the camera axis and is unaffected by projection jitter.
-    let direction = vec3<f32>(view.worldViewProj[0].w, view.worldViewProj[1].w, view.worldViewProj[2].w);
-    let magnitude = length(direction);
-    if (!isFinite(magnitude) || magnitude < 1e-8) { return vec3<f32>(0.0); }
-    return direction / magnitude;
-  }
-  let nearH = view.inverseViewProj * vec4<f32>(0.0, 0.0, 1.0, 1.0);
-  let farH = view.inverseViewProj * vec4<f32>(0.0, 0.0, 0.5, 1.0);
-  if (!isFinite(nearH.w) || !isFinite(farH.w) || abs(nearH.w) < 1e-8 || abs(farH.w) < 1e-8) {
-    return vec3<f32>(0.0);
-  }
-  let direction = farH.xyz / farH.w - nearH.xyz / nearH.w;
-  let magnitude = length(direction);
-  if (!isFinite(magnitude) || magnitude < 1e-8) { return vec3<f32>(0.0); }
-  return direction / magnitude;
-}
 
 fn waterSsrReceiver(pixel: vec2<i32>, size: vec2<u32>) -> WaterSsrReceiver {
   var result: WaterSsrReceiver;
@@ -658,89 +129,40 @@ fn waterSsrReceiver(pixel: vec2<i32>, size: vec2<u32>) -> WaterSsrReceiver {
       !isFinite(view.ssrParams.w) || view.ssrParams.w <= 0.5 || view.ssrParams.z <= 0.0) { return result; }
   let uv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / vec2<f32>(size);
   let origin = reconstructWorldPosition(uv, depth);
-  let toCamera = select(view.cameraPos - origin, -waterCameraForward(), view.temporalProjection.z > 0.5);
+  let toCamera = ssrCameraDirection(origin);
   let cameraDistance = length(toCamera);
   if (!isFinite(cameraDistance) || cameraDistance < 1e-6) { return result; }
   return WaterSsrReceiver(true, origin, normal.xyz / normalLength, toCamera / cameraDistance, normal.a);
 }
 
-struct WaterSsrHit {
-  found: bool,
-  uv: vec2<f32>,
-  depth: f32,
-};
-
-fn traceWaterWorldRay(receiver: WaterSsrReceiver) -> WaterSsrHit {
-  let miss = WaterSsrHit(false, vec2<f32>(0.0), 0.0);
-  let direction = reflect(-receiver.toCamera, receiver.normal);
-  let size = textureDimensions(sceneDepth);
-  let maxTraceLevel = min(maxSsrTraceLevel(size), ssrDepthPyramidLevelCount());
-  // Water owns the displaced receiver, not a second intersection algorithm.
-  // Closest bounds skip provably clear cells; full-resolution surface tests
-  // retain thin silhouettes and recover the actual radiance coordinate.
-  let hit = traceScreenRay(receiver.origin, direction, view.ssrParams.x, view.ssrParams.y,
-    size, view.temporalProjection.y, maxTraceLevel);
-  if (hit.hit <= 0.0) { return miss; }
-  let hitPixel = min(vec2<u32>(hit.uv * vec2<f32>(size)), size - vec2<u32>(1u));
-  return WaterSsrHit(true, hit.uv, textureLoad(sceneDepth, vec2<i32>(hitPixel), 0));
-}
-
-fn waterHitPreviousScreen(hit: WaterSsrHit) -> vec2<f32> {
-  let rawHitClip = vec4<f32>(hit.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), hit.depth, 1.0);
-  let rasterWorldH = view.inverseViewProj * rawHitClip;
-  let currentNoAaClip = view.temporalCurrentViewProj * rasterWorldH;
-  if (!isFinite(currentNoAaClip.w) || currentNoAaClip.w <= 1e-8) { return vec2<f32>(-1.0); }
-  // Hit depth lives on the current raster grid; retained TAA radiance and
-  // scene motion use unjittered coordinates. Reconstruct the hit only once.
-  let currentUv = currentNoAaClip.xy / currentNoAaClip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  let previousClip = view.temporalPreviousViewProj * rasterWorldH;
-  var previousUv = vec2<f32>(-1.0);
-  if (isFinite(previousClip.w) && previousClip.w > 1e-8) {
-    previousUv = previousClip.xy / previousClip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  }
-  let size = textureDimensions(sceneTemporal);
-  let pixel = clamp(vec2<i32>(hit.uv * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
-  let temporal = unpackSceneTemporalV1(textureLoad(sceneTemporal, pixel, 0));
-  if (temporal.validDepth && temporal.motionValid && isFinite(temporal.motionUv.x) && isFinite(temporal.motionUv.y)) {
-    // Water can replace this shared temporal texel while the hit scene stays opaque.
-    // The coarse ray depth is not the sampled layer's exact depth.
-    let opaqueViewDepth = linearizeViewDepth(textureLoad(sceneDepth, pixel, 0), view.temporalProjection);
-    if (opaqueViewDepth < DEPTH_PYRAMID_EMPTY_DEPTH && isFinite(temporal.viewDepth)) {
-      let logDepth = log2(1.0 + opaqueViewDepth);
-      let exponent = (bitcast<u32>(logDepth) >> 23u) & 255u;
-      let logSpacing = bitcast<f32>((max(exponent, 113u) - 10u) << 23u);
-      // One FP16 log-depth step covers attachment conversion, plus f32 reconstruction.
-      let depthTolerance = (1.0 + opaqueViewDepth) * (exp2(logSpacing) - 1.0)
-        + max(1e-6, opaqueViewDepth * 1e-6);
-      if (abs(temporal.viewDepth - opaqueViewDepth) <= depthTolerance) {
-        previousUv = currentUv - temporal.motionUv;
-      }
-    }
-  }
-  return previousUv;
+fn traceWaterWorldRay(receiver: WaterSsrReceiver, pixel: vec2u, ray: u32) -> SsrRayHit {
+  let direction = ssrReflectionDirection(receiver.normal, receiver.toCamera, receiver.roughness, pixel,
+    u32(view.ssrQuality.w), ray);
+  if (dot(receiver.normal, direction) <= 0.0) { return SsrRayHit(vec2f(0.0), 0.0, false); }
+  return traceSsrRay(depthPyramid, view, textureDimensions(sceneDepth, 0), receiver.origin,
+    direction, receiver.roughness, ssrStepCount(receiver.roughness));
 }
 
 fn waterHitHistoryColor(screenUv: vec2<f32>) -> vec3<f32> {
   let uv = clamp(screenUv * waterParams.hitColorUvScaleBias.xy + waterParams.hitColorUvScaleBias.zw,
     waterParams.hitColorUvClamp.xy, waterParams.hitColorUvClamp.zw);
-  return sampleSsrSceneColorLevel(waterSceneColorHistory, uv, 0u) * waterParams.hitColorParams.y;
+  return sampleSsrSceneColor(sceneColorHistory, uv) * waterParams.hitColorParams.y;
 }
 
-fn waterCurrentReflection(hit: WaterSsrHit, roughness: f32) -> vec4<f32> {
+fn waterCurrentReflection(hit: SsrRayHit, roughness: f32) -> vec4<f32> {
   if (!hit.found) { return vec4<f32>(0.0); }
   let weight = waterReflectionWeight(hit.uv, hit.uv, roughness, view.ssrParams.z);
-  let lod = ssrSceneColorLod(roughness, view.ssrParams.z, ssrSceneColorMipCount());
-  let color = sampleSsrSceneColor(sceneColor, hit.uv, lod);
+  let color = sampleSsrSceneColor(sceneColor, hit.uv);
   if (!all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b))) || !isFinite(weight)) {
     return vec4<f32>(0.0);
   }
   return vec4<f32>(color, 1.0) * weight;
 }
 
-fn waterHistoryReflection(hit: WaterSsrHit, roughness: f32) -> vec4<f32> {
+fn waterHistoryReflection(hit: SsrRayHit, roughness: f32) -> vec4<f32> {
   if (waterParams.hitColorParams.x <= 0.5) { return waterCurrentReflection(hit, roughness); }
   if (!hit.found) { return vec4<f32>(0.0); }
-  let previousScreen = waterHitPreviousScreen(hit);
+  let previousScreen = ssrPreviousHitUv(hit, ssrHitPixel(hit.uv, textureDimensions(sceneTemporal, 0)));
   let weight = waterReflectionWeight(hit.uv, previousScreen, roughness, view.ssrParams.z);
   let color = waterHitHistoryColor(previousScreen);
   if (!all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b))) || !isFinite(weight)) {
@@ -749,28 +171,24 @@ fn waterHistoryReflection(hit: WaterSsrHit, roughness: f32) -> vec4<f32> {
   return vec4<f32>(color, 1.0) * weight;
 }
 
-fn storeWaterCurrentReflection(globalId: vec3<u32>) {
-  let size = textureDimensions(waterOriginDepth);
+fn storeWaterReflection(globalId: vec3u, history: bool) {
+  let size = textureDimensions(waterOriginDepth, 0);
   if (any(globalId.xy >= size)) { return; }
-  let pixel = vec2<i32>(globalId.xy);
-  textureStore(hitReactivityOutput, pixel, vec4<f32>(0.0));
-  var reflection = vec4<f32>(0.0);
+  let pixel = vec2i(globalId.xy);
   let receiver = waterSsrReceiver(pixel, size);
-  if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
-    reflection = waterCurrentReflection(traceWaterWorldRay(receiver), receiver.roughness);
-  }
-  textureStore(traceOutput, pixel, reflection);
-}
-
-fn storeWaterHistoryReflection(globalId: vec3<u32>) {
-  let size = textureDimensions(waterOriginDepth);
-  if (any(globalId.xy >= size)) { return; }
-  let pixel = vec2<i32>(globalId.xy);
-  textureStore(hitReactivityOutput, pixel, vec4<f32>(0.0));
-  var reflection = vec4<f32>(0.0);
-  let receiver = waterSsrReceiver(pixel, size);
-  if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z) > 0.0) {
-    reflection = waterHistoryReflection(traceWaterWorldRay(receiver), receiver.roughness);
+  var reflection = vec4f(0.0);
+  if (receiver.valid && screenSpaceReflectionRoughnessFade(receiver.roughness, view.ssrParams.z, view.ssrQuality.w > 0.0) > 0.0) {
+    let rays = select(1u, max(1u, u32(view.ssrQuality.z)), receiver.roughness >= 0.1);
+    for (var ray = 0u; ray < rays; ray++) {
+      let hit = traceWaterWorldRay(receiver, globalId.xy, ray);
+      if (!hit.found) { continue; }
+      if (history) {
+        reflection += waterHistoryReflection(hit, receiver.roughness);
+      } else {
+        reflection += waterCurrentReflection(hit, receiver.roughness);
+      }
+    }
+    reflection /= f32(rays);
   }
   textureStore(traceOutput, pixel, reflection);
 }
@@ -802,86 +220,51 @@ fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : b
   output.reactivity = 0.0;
   let fullPixel = min(vec2<u32>((vec2<f32>(globalId.xy) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), fullSize - vec2<u32>(1u));
   if (!loadStandardSceneSurfaceValid(sceneNormal, vec2<i32>(fullPixel))) { return output; }
-  let coarsestLevel = ssrDepthPyramidLevelCount() - 1u;
-  let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
-  let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);
-  let coarsestPixel = min(globalId.xy, coarsestSize - vec2<u32>(1u));
-  let depth = textureLoad(sceneDepth, vec2<i32>(fullPixel), 0);
-  var normalData = loadStandardNormalRoughness(sceneNormal, vec2<i32>(fullPixel));
-  if (compact) { normalData.w = loadCompactGBufferRoughness(context, vec2<i32>(fullPixel)); }
-  let coverage = textureLoad(reflectionFallback, vec2<i32>(fullPixel), 0).a;
-  let normalUnnormalized = normalData.xyz;
-  let normalLength = length(normalUnnormalized);
-  if (!isFinite(depth) || depth <= 0.0 || !isFinite(normalLength) || normalLength <= 1e-5 ||
-      coverage <= 0.5 ||
-      !isFinite(view.ssrParams.w) || view.ssrParams.w <= 0.5 ||
-      !isFinite(normalData.a) || normalData.a >= view.ssrParams.z) {
-    output.color = vec4<f32>(0.0);
+  let pixel = vec2i(fullPixel);
+  let depth = textureLoad(sceneDepth, pixel, 0);
+  var surface = loadStandardNormalRoughness(sceneNormal, pixel);
+  if (compact) { surface.w = loadCompactGBufferRoughness(context, pixel); }
+  let normalLength = length(surface.xyz);
+  let glossy = view.ssrQuality.w > 0.0;
+  let fade = screenSpaceReflectionRoughnessFade(surface.w, view.ssrParams.z, glossy);
+  if (!(depth > 0.0 && normalLength > 1e-5 && fade > 0.0 &&
+      view.ssrParams.w > 0.5 && isFinite(view.ssrParams.w)) ||
+      textureLoad(reflectionFallback, pixel, 0).a <= 0.5) {
     return output;
   }
-  let normal = select(
-    vec3<f32>(0.0, 0.0, 1.0),
-    normalUnnormalized / normalLength,
-    isFinite(normalLength) && normalLength > 1e-5,
-  );
-  let coarsestDepth = textureLoad(depthPyramid, vec2<i32>(coarsestPixel), i32(coarsestLevel)).r;
-  let uv = (vec2<f32>(fullPixel) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
-  // The record-side sentinel is deliberately binary: a finite zero means the
-  // authored effect is disabled, while any non-finite value must fail closed.
-  // Do not turn a disabled-but-valid View tail into a one-frame SSR request.
-  let enabled = select(0.0, 1.0, isFinite(view.ssrParams.w) && view.ssrParams.w > 0.5);
-  let maxDistance = enabled * view.ssrParams.x;
-  let thickness = enabled * view.ssrParams.y;
-  let roughness = screenSpaceReflectionRoughnessFade(normalData.a, view.ssrParams.z);
-  let worldPosition = reconstructWorldPosition(uv, depth);
-  let viewDirectionRaw = view.cameraPos - worldPosition;
-  let viewDirectionLength = length(viewDirectionRaw);
-  let viewDirection = select(
-    vec3<f32>(0.0, 0.0, 1.0),
-    viewDirectionRaw / viewDirectionLength,
-    isFinite(viewDirectionLength) && viewDirectionLength > 1e-5,
-  );
-  let reflectionDirection = normalize(reflect(-viewDirection, normal));
-  // Keep the reflected line anchored to the shaded receiver. A normal offset
-  // moves the projected hit across fine source texels. The march starts beyond
-  // the origin and rejects back-facing sources, including this receiver plane.
-  let hitResult = traceScreenRay(
-    worldPosition,
-    reflectionDirection,
-    maxDistance,
-    thickness,
-    fullSize,
-    coarsestDepth,
-    maxTraceLevel,
-  );
-  let edge = traceEdge(hitResult.uv);
-  output.reactivity = hitResult.reactivity;
-  let temporal = 1.0;
-  let confidence = traceConfidence(
-    hitResult.hit,
-    hitResult.thickness,
-    edge,
-    roughness,
-    temporal,
-  );
-  if (confidence <= 0.0) {
-    output.color = vec4<f32>(0.0);
-    return output;
+
+  let uv = (vec2f(fullPixel) + 0.5) / vec2f(fullSize);
+  let world = reconstructWorldPosition(uv, depth);
+  let normal = surface.xyz / normalLength;
+  let toCamera = normalize(ssrCameraDirection(world));
+  let rays = select(1u, max(1u, u32(view.ssrQuality.z)), glossy && surface.w >= 0.1);
+  let steps = ssrStepCount(surface.w);
+  var accum = vec4f(0.0);
+  for (var ray = 0u; ray < rays; ray++) {
+    let direction = ssrReflectionDirection(normal, toCamera, surface.w, fullPixel, u32(view.ssrQuality.w), ray);
+    if (dot(normal, direction) <= 0.0) { continue; }
+    let hit = traceSsrRay(depthPyramid, view, fullSize, world, direction, surface.w, steps);
+    if (!hit.found) { continue; }
+    let sourcePixel = ssrHitPixel(hit.uv, fullSize);
+    var weight = ssrVignette(hit.uv);
+    var color = vec3f(0.0);
+    if (glossy && view.temporalPreviousCameraPos.w > 0.5 && view.ssrParams.w > 3.5) {
+      let previousUv = ssrPreviousHitUv(hit, sourcePixel);
+      weight = min(weight, ssrVignette(previousUv));
+      color = sampleSsrSceneColor(sceneColorHistory, previousUv);
+    } else {
+      color = sampleSsrSceneColor(sceneColor, hit.uv);
+    }
+    if (!(weight > 0.0) || !all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b)))) {
+      continue;
+    }
+    accum += vec4f(ssrLuminanceWeight(color) * weight, weight);
+    output.reactivity = max(output.reactivity, ssrSourceReactivity(sourcePixel));
   }
-  let lod = ssrSceneColorLod(normalData.a, view.ssrParams.z, ssrSceneColorMipCount());
-  let hitSample = sampleSsrHit(hitResult.uv, reflectionDirection, lod);
-  let color = hitSample.color;
-  if (!all(vec3<bool>(isFinite(color.r), isFinite(color.g), isFinite(color.b)))) {
-    return output;
-  }
-  // Unreal SSRTReflections.usf: each reflection ray's hit color is weighted by
-  // 1 / (1 + luminance) before any averaging, and ScreenSpaceReflections
-  // composition inverts it after the filter. Every SSR filter after this
-  // point decodes the weighted radiance; confidence remains its own lane.
-  output.color = vec4<f32>(ssrLuminanceWeight(color), confidence * hitSample.coverage);
-  output.reactivity = max(hitResult.reactivity, hitSample.reactivity);
+  output.color = vec4f(accum.rgb / max(accum.a, 1e-6), fade * accum.a / f32(rays));
   return output;
 }
+
 #if PORTABLE_FRAGMENT
 @vertex fn ssr_fullscreen(@builtin(vertex_index) index : u32) -> @builtin(position) vec4<f32> {
   let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
@@ -913,11 +296,11 @@ fn ssr_trace_compact(@builtin(global_invocation_id) globalId : vec3<u32>) {
 #if !PORTABLE_FRAGMENT
 @compute @workgroup_size(8, 8, 1)
 fn ssr_water_trace(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  storeWaterCurrentReflection(globalId);
+  storeWaterReflection(globalId, false);
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn ssr_water_trace_history(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  storeWaterHistoryReflection(globalId);
+  storeWaterReflection(globalId, true);
 }
 #endif

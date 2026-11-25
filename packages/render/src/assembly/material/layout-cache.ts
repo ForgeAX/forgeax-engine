@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-rhi';
 import {
   findVariantByKey,
+  materialShaderHasVariants,
   PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
   type ShaderCatalog,
   standardPhysicalTextureFields,
@@ -100,7 +101,7 @@ export function createMaterialLayoutCache({
   ): StorageLayout | null => {
     const manifest = getShader().materialShaderManifestEntry(materialShaderId);
     const reflection =
-      variantSet !== undefined && manifest !== undefined && manifest.variants.length > 0
+      variantSet !== undefined && manifest !== undefined && materialShaderHasVariants(manifest)
         ? findVariantByKey(manifest, variantSet)?.reflection
         : manifest?.reflection;
     const reject = () => {

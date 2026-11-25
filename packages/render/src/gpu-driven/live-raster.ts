@@ -7,6 +7,13 @@ import type { FilteredProductionPlan, PreparedBatch } from './production-raster-
 import { type RasterMeshBinding, RasterMeshBindings } from './raster-mesh-bindings';
 
 /** One filtered batch as the compiled raster encoder reads it on each frame. */
+import type { RasterWindowLayout } from './raster-window-layout';
+
+type VisibleWindows = {
+  readonly early?: readonly BindGroup[];
+  readonly late?: readonly BindGroup[];
+};
+
 export interface LiveRasterBatch {
   /** The filtered row this live batch projects; an identical row keeps this owner. */
   readonly prepared?: PreparedBatch;
@@ -17,7 +24,7 @@ export interface LiveRasterBatch {
   readonly meshBinding: RasterMeshBinding;
   readonly materialBindingClass: string;
   /** Complete LOD windows, retained independently for the two visible regions. */
-  visibleBindGroups: { early?: readonly BindGroup[]; late?: readonly BindGroup[] } | undefined;
+  visibleBindGroups: ReadonlyMap<RasterWindowLayout | undefined, VisibleWindows> | undefined;
   readonly bundles: PreparedRasterBundleCache;
   /**
    * Stable while every input a recorded command reads is unchanged; candidate

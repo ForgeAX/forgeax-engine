@@ -8,7 +8,7 @@ import { expect, it } from 'vitest';
 import { Instances, MeshFilter, MeshRenderer } from '../../components';
 import { prepareExtractContext } from '../../render-system-extract';
 import { prepareMeshSourceSteps } from '../../scene/prepared-mesh-source';
-import { encodeClosedLevelRows } from '../closed-level-rows';
+import { encodeClosedLevelRows, sameClosedLevelRows } from '../closed-level-rows';
 import { createRenderPublisher } from '../publisher';
 import { decodeClosedLevelRows, RenderPublicationReceiver } from '../receiver';
 
@@ -100,7 +100,17 @@ it('decodes transferred inactive rows without advancing the ordinary frame or em
         ],
       });
       expect(chunk.transforms.byteLength).toBe(0);
+      const wireBefore = structuredClone(payload);
       const decoded = decodeClosedLevelRows(payload).unwrap();
+      for (const row of decoded) {
+        const material = row.material;
+        const pass = material.snapshot.passes[0];
+        if (pass === undefined) throw new Error('expected a published mesh Pass');
+        const observation = material.programObservation(pass);
+        expect(observation.identity).toBeDefined();
+        expect(material.programObservation(pass)).toBe(observation);
+      }
+      expect(sameClosedLevelRows(payload, wireBefore)).toBe(true);
       payload.transforms.fill(0);
       return decoded;
     });

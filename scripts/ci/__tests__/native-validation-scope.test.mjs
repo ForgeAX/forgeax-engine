@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { unchangedModuleEdges } from '../ci-input-changes.mjs';
+import { DAWN_GATE_GROUPS } from '../dawn-gate-roster.mjs';
 import {
   changedNativeTestLanes,
   nativeMatrices,
@@ -13,6 +14,7 @@ import {
   planMergedNativeValidation,
   planNativeValidation,
 } from '../native-validation-scope.mjs';
+import { dawnGroupEnvironment } from '../run-dawn-gate.mjs';
 
 const fallbackTails = [
   'MSAA paired P2 proof (real OFF/ON captures)',
@@ -121,6 +123,21 @@ test('only explicitly rostered Dawn tests select a single lane', () => {
   const authoring = 'packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts';
   assert.deepEqual(changedNativeTestLanes([edit(path), edit(authoring)]), {});
   assert.deepEqual(nativeMatrices(scope, jobs, source, {}).dawn, nativeValidationLanes.dawn);
+});
+
+test('Screen Probe Support bounds software GPU workers in its exclusive process', () => {
+  const group = DAWN_GATE_GROUPS.find(({ id }) => id === 'screen-probe-support');
+  assert.ok(group);
+  const environment = dawnGroupEnvironment(
+    group,
+    { LP_NUM_THREADS: '8', FORGEAX_SHADER_COMPILE_WORKERS: '7' },
+    2,
+    2,
+  );
+  assert.equal(group.nativeProcessSlots, 2);
+  assert.equal(environment.GALLIVM_PERF, 'nopt');
+  assert.equal(environment.LP_NUM_THREADS, '4');
+  assert.equal(environment.FORGEAX_SHADER_COMPILE_WORKERS, '1');
 });
 
 test('only detached native test edits admit a narrow validation plan', () => {

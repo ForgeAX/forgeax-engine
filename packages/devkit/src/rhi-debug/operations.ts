@@ -565,7 +565,7 @@ export function renderRhiDebugHelp(): string {
     "  forgeax rhi timing --artifact PATH --skip 'shadow' --json   (base and ablated replays interleave; delta is a cost estimate, the ablated image is wrong)",
     "  forgeax rhi timing --artifact PATH --skip-passes '[3]' --skip-works '[120,121]' --isolate --json   (isolate: submit+wait per pass, sum >= real frame)",
     'Records decode rows [first, first+count) of stride bytes inside the selected buffer window (binding range or subresource {offset,size}); a mappable staging buffer returns readback-unsupported, so read the buffer it was copied from.',
-    'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on Dawn, which macOS and Windows build from source (no prebuilt ships).',
+    'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on the optional upstream Dawn Node WebGPU provider.',
     'Replay uses Dawn; a tape that builds acceleration structures needs FORGEAX_WEBGPU_NODE=wgpu-native from a contributor checkout with @forgeax/engine-rhi-wgpu-native built (otherwise replay-backend-unavailable).',
     'Read requests: one of resourceId, binding or output (binding/output need workIndex); records {layout,first,count}; image {format,width,height,offset,bytesPerRow,tile,depth,exposure,range,tonemap,png}.',
     'Optional --digest verifies the file against an expected sha256 digest.',

@@ -1,11 +1,15 @@
+import {
+  materialDepthCoversEntry,
+  materialDepthFragmentEntry,
+  PREDEPTH_FRAGMENT_ENTRY,
+} from '@forgeax/engine-shader';
 import type {
   MaterialProgramAbi,
   MaterialRenderState,
   ShaderEntryPointReads,
 } from '@forgeax/engine-types';
 
-/** Logical depth-pass entry; older stock templates retain their AO coverage entry. */
-export const PREDEPTH_FRAGMENT_ENTRY = 'fs_depth_masked';
+export { PREDEPTH_FRAGMENT_ENTRY } from '@forgeax/engine-shader';
 
 type DepthProgram = {
   readonly receipt?: Pick<MaterialProgramAbi, 'positionBounds' | 'sceneDepth'> | undefined;
@@ -14,11 +18,7 @@ type DepthProgram = {
 };
 
 export function predepthFragmentEntry(artifact: DepthProgram): string {
-  return artifact.program.entryPoints?.some(
-    (entry) => entry.stage === 'fragment' && entry.name === PREDEPTH_FRAGMENT_ENTRY,
-  )
-    ? PREDEPTH_FRAGMENT_ENTRY
-    : 'fs_ao_input';
+  return materialDepthFragmentEntry(artifact.program);
 }
 
 /** Same stock position/Surface coverage, with no duplicated depth/mask/storage effects. */
@@ -27,10 +27,6 @@ export function predepthCoversMaterial(
   state: MaterialRenderState | undefined,
 ): boolean {
   if (
-    (artifact?.fragmentEntry !== undefined &&
-      artifact.fragmentEntry !== 'fs_main' &&
-      artifact.fragmentEntry !== 'fs_opaque' &&
-      artifact.fragmentEntry !== 'fs_forward_screen') ||
     artifact?.receipt?.positionBounds !== 'standard-input' ||
     artifact.receipt.sceneDepth !== undefined ||
     state?.depthWriteEnabled === false ||
@@ -41,27 +37,6 @@ export function predepthCoversMaterial(
     state?.alphaToCoverageEnabled === true
   )
     return false;
-  const entries = artifact.program.entryPoints;
-  if (entries === undefined) return false;
-  const mainEntry = artifact.fragmentEntry ?? 'fs_main';
-  let masked: boolean | undefined;
-  let main: boolean | undefined;
-  let ao: boolean | undefined;
-  let declaresAo = false;
-  for (const entry of entries) {
-    if (entry.name === 'fs_ao_input') declaresAo = true;
-    if (entry.stage !== 'fragment') continue;
-    const { name, effects } = entry;
-    if (name !== mainEntry && name !== PREDEPTH_FRAGMENT_ENTRY && name !== 'fs_ao_input') continue;
-    const pure =
-      effects !== undefined &&
-      !effects.writesDepth &&
-      !effects.writesSampleMask &&
-      !effects.writesStorage;
-    if (name === PREDEPTH_FRAGMENT_ENTRY) masked ??= pure;
-    if (name === mainEntry) main ??= pure;
-    if (name === 'fs_ao_input') ao ??= pure;
-  }
-  // Legacy depth templates use AO coverage. An admitted normal producer also consumes it.
-  return main === true && (masked ?? ao) === true && (!declaresAo || ao === true);
+  if (predepthFragmentEntry(artifact) !== PREDEPTH_FRAGMENT_ENTRY) return false;
+  return materialDepthCoversEntry(artifact.program, artifact.fragmentEntry ?? 'fs_main');
 }

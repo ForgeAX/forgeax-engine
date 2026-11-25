@@ -7,6 +7,8 @@
 
 View 是可选的资产查看器、Pack 创作客户端，以及 Engine AI 运行的只读观察器。AI 是主要用户。Engine 在独立浏览器中拥有执行权，通常无头，并使用固定工程输入。View 拥有自身浏览器资源、工作区 API 客户端、前端插件和呈现。AI Display 从不承载游戏。
 
+Engine 创作包内置与其版本配对的私有 View 工具。在游戏工程中运行 `forgeax project view --json`。源码启动使用已准备的贡献者检出。早期 SDK 版本通过各自的 `.forgeax/cli-runtime` 解析配对的 Engine 和 View。
+
 `node tools/view/start.mjs [--project G]` 在前台保持 View 呈现和借用的启动器存活。它先发布普通 URL，再通过 H 已有进程管理器异步确保 Engine Backend 运行。View 解析匹配的 Engine 和自己的 Host Pack；默认 H 为每个安装共享的系统临时工作区。`--new-instance` 分配唯一临时 H，显式 `--root H` 选择调用方管理的实例。Backend 终止后，Shell 仍可用于重新启动。启动直接调用公开 `ensureDevKitView` API；实例控制显式使用返回的 H。低层 `backend start` 和 `view start` 仍可独立使用。普通文件启动省略 G 时绝不将 H 当游戏：新所属方未绑定，已有工程仍是权威。旧低层 `view start` 要求兼容 Backend，可接收显式 G，或包含 `forge.json` 的 H。
 
 Engine 拥有唯一共享工程与会话；普通 URL 连接采用它，只有选定呈现者放置文档。呈现者交接等待准确旧帧退出；嵌入式工程调用方仅在同一 Engine 运行时借用选定呈现者的 broker。显式工程 URL 是可选且受保护的切换命令。DevKit 拥有持久的已知与最近工程目录及 Node 可见文件夹浏览；View 消费结构化结果。离线、已连接未绑定、已连接已绑定均保留同一 Shell。用户另行打开浏览器；Play 和独立 AI 运行各需单独操作。库路径借用调用方 Page。View 启动器契约由产品所有，H 的进程管理器仍是唯一 Backend 权威。

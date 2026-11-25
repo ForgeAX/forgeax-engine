@@ -1,8 +1,9 @@
 import * as THREE from '@forgeax/engine/three';
 import { WebGLRenderer } from 'three/src/renderers/WebGLRenderer.js';
 import { expect, it } from 'vitest';
+import { commands } from 'vitest/browser';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { featureCases, required } from './features.fixture';
+import { featureCases, physicalSlotsForFeature, required } from './features.fixture';
 import {
   browserRendererFixture,
   comparePixels,
@@ -45,7 +46,14 @@ export function testFeaturePartition(partition: 0 | 1 | 2 | 3): void {
         camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
       camera.position.z = 5;
       const mutate = populate(scene);
-      const renderer = rendererFor({ stencil: name === 'stencil' });
+      const programs =
+        physicalSlotsForFeature(name) === undefined
+          ? undefined
+          : commands.prepareThreePhysicalFeature(name);
+      const renderer = rendererFor(
+        { stencil: name === 'stencil' },
+        programs === undefined ? undefined : { name, programs },
+      );
       await renderer.init();
       for (const phase of ['initial', 'edited'] as const) {
         if (phase === 'edited') mutate();

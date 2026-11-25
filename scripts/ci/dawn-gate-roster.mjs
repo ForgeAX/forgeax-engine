@@ -249,6 +249,43 @@ export const DAWN_ISOLATED_GROUPS = [
     ],
   },
   {
+    id: 'world-card-bounds',
+    // The finite-ray traversal exhausted its 90-second case bound in
+    // ordinary-4. Admit both cases together before ordinary backfill.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
+    softwareGpuHeapRasterThreads: 1,
+    placementReserveSeconds: 120,
+    files: ['packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts'],
+    env: { GALLIVM_PERF: 'nopt' },
+  },
+  {
+    id: 'default-gbuffer-gi',
+    // The host Mesa stack exhausted memory or stalled across both raster profiles.
+    // Use the pinned graphics bundle for this owner's Linux CI process.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
+    softwareGpuHeapRasterThreads: 1,
+    // Run 45372755880 completed this owner in 749.850 seconds before
+    // ordinary-4 timed out. Budget the complete owner before ordinary backfill.
+    placementReserveSeconds: 750,
+    files: ['packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts'],
+    lockedGraphics: true,
+    // Run 45388190303 exceeded the 900 s limit during field settling.
+    // The same locked driver passed the complete case with nopt in 294 s.
+    env: { GALLIVM_PERF: 'nopt' },
+  },
+  {
+    id: 'screen-probe-support',
+    // Run 45412781828 spent 234 s in the first submit with eight raster threads
+    // and seven shader workers. The Linux diagnostic passed with four and one.
+    nativeProcessSlots: 2,
+    limitSoftwareGpuWorkers: true,
+    placementReserveSeconds: 240,
+    files: ['packages/render/src/__tests__/raytracing/screen-probe-support.dawn.test.ts'],
+    env: { GALLIVM_PERF: 'nopt' },
+  },
+  {
     id: 'screen-probe',
     // The full capture/replay can exceed the runner's memory limit even alone.
     nativeProcessSlots: 2,
@@ -285,48 +322,55 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Exchange Path Tracer and Compact-1 to use lane four's measured headroom.
 // Exclusive GI-5 changed the ordinary backfill for the full 44152394166 replay.
 // Exchange GI-1 and Nested Discard to recover the existing lane budget.
+// Run 45372755880's measured Default GBuffer GI reserve shifts ordinary work.
+// Move Path Tracer and Shadow Fields to lanes one and two. Exchange the
+// Surface owners and move Specular AA to preserve the complete-cohort bounds.
+// Move Rect Source to lane two after retiring the old SSR ordinary files.
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
     'compact-1',
     'direct-light',
-    'feature-depth',
+    'shadow-quality',
     'nested-discard',
-    'gi-3',
     'heavy-3',
     'modeling-s6',
-    'rect-source',
-    'three-surface-expression',
+    'path-tracer',
+    'surface-pipelines',
+    'gi-3',
   ]),
   Object.freeze([
     'ordinary-2',
     'compact-2',
     'gi-2',
-    'heavy-2',
-    'specular-aa',
-    'shadow-quality',
-    'surface-pipelines',
+    'alpha-hash',
+    'feature-depth',
     'transmission',
+    'rect-source',
+    'three-surface-expression',
+    'shadow-fields',
+    'world-card-bounds',
+    'gi-6',
   ]),
   Object.freeze([
     'ordinary-3',
-    'alpha-hash',
+    'heavy-2',
     'compact-3',
     'gi-4',
     'heavy-1',
     'modeling-show',
     'screen-probe',
+    'screen-probe-support',
   ]),
   Object.freeze([
     'ordinary-4',
     'gi-5',
-    'gi-6',
     'heavy-4',
     'gi-1',
-    'path-tracer',
-    'shadow-fields',
     'renderer',
     'vfx-depth',
+    'default-gbuffer-gi',
+    'specular-aa',
   ]),
 ]);
 
@@ -350,7 +394,10 @@ export const DAWN_GATE_GROUPS = [
     files: DAWN_COMPACT_TEST_FILES.filter((_file, index) => index % 3 === partition),
     env: { FORGEAX_DAWN_COMPACT: '1' },
   })),
-  ...DAWN_ISOLATED_GROUPS.map((group) => ({ ...group, env: { FORGEAX_DAWN_ISOLATED: '1' } })),
+  ...DAWN_ISOLATED_GROUPS.map((group) => ({
+    ...group,
+    env: { FORGEAX_DAWN_ISOLATED: '1', ...group.env },
+  })),
   {
     id: 'direct-light',
     nativeProcessSlots: 1,

@@ -235,7 +235,7 @@ afterEach(() => vi.restoreAllMocks());
         .map((name) => fs.readFileSync(pathMod.resolve(recordDir, name), 'utf8'))
         .join('\n');
       // The recorder binds the resolved physical material group at slot 1.
-      const matches = source.match(/setBindGroup\s*\(\s*1\s*,\s*binding\.group\b/g);
+      const matches = source.match(/setBindGroup\s*\(\s*1\s*,\s*binding\s*,/g);
       expect(matches).not.toBeNull();
       expect((matches ?? []).length).toBeGreaterThanOrEqual(1);
     });

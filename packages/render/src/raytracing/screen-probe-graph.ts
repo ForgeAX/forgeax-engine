@@ -149,16 +149,16 @@ export function addScreenProbePasses(
   prepared: PreparedScreenProbe,
   target: RayDiffuseTargets,
 ) {
-  if (target.depthPyramid === undefined)
+  if (target.closestHzb === undefined)
     return err(
       new RenderGraphError({
         code: 'dangling-read',
-        expected: 'the view closest-depth pyramid for the screen-probe HZB trace',
-        hint: 'contribute screen-probe GI from the Standard deferred pipeline, which shares its depth pyramid',
-        detail: { resourceKey: 'depth-pyramid', passName: 'screen-probe.trace-screen' },
+        expected: 'the closest HZB for hierarchical screen-probe tracing',
+        hint: 'publish the closest HZB with Deferred screen-probe targets',
+        detail: { resourceKey: 'hzb-closest', passName: 'screen-probe.trace-screen' },
       }),
     );
-  const pyramid = target.depthPyramid();
+  const pyramid = target.closestHzb();
   if (!pyramid.ok) return pyramid;
   return addIrradianceFieldPasses(graph, prepared.field, target, (fieldHandles, far) =>
     addProbePasses(graph, prepared, target, pyramid.value, fieldHandles, far),
@@ -177,7 +177,7 @@ function addProbePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   prepared: PreparedScreenProbe,
   target: RayDiffuseTargets,
-  depthPyramid: GraphTextureView,
+  closestHzb: GraphTextureView,
   field: IrradianceFieldGraphHandles,
   far: FieldRadianceGraphHandles | undefined,
 ) {
@@ -348,7 +348,7 @@ function addProbePasses(
     depth: target.depth,
     normal: target.normal.view,
     albedo: target.albedo.view,
-    depthPyramid,
+    depthPyramid: closestHzb,
     scene: target.scene.view,
     ...(target.reflection === undefined
       ? {}
@@ -738,28 +738,19 @@ function addProbePasses(
   ];
   function addShortRangeAoPasses() {
     if (shortRangeAo === undefined) return ok(undefined);
-    let aoDepthPyramid = depthPyramid;
-    if (aoMode === 'half-scalar') {
-      const texture = graph.createTexture('screen-probe.ao-furthest-depth', {
-        format: 'r32float',
-        size: { width: aoWidth, height: aoHeight },
-      });
-      if (!texture.ok) return texture;
-      const view = graph.view(texture.value);
-      if (!view.ok) return view;
-      const seed = stagePass(
-        'short-range-ao-depth',
-        'seedScreenProbeFurthestDepth',
-        () => aoPixels,
-        {
-          shortRangeAoFurthestDepthOut: view.value,
-        },
+    if (target.sceneHzb === undefined)
+      return err(
+        new RenderGraphError({
+          code: 'dangling-read',
+          expected: 'the opaque view HZB for short-range AO',
+          hint: 'publish the shared view HZB with Deferred screen-probe targets',
+          detail: { resourceKey: 'hzb', passName: 'screen-probe.short-range-ao' },
+        }),
       );
-      if (!seed.ok) return seed;
-      aoDepthPyramid = view.value;
-    }
+    const hzb = target.sceneHzb();
+    if (!hzb.ok) return hzb;
     return stagePass('short-range-ao', 'computeScreenProbeShortRangeAo', () => aoPixels, {
-      depthPyramid: aoDepthPyramid,
+      depthPyramid: hzb.value,
     });
   }
   const ao = addShortRangeAoPasses();

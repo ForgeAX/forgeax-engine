@@ -11,18 +11,18 @@ description: >-
 
 ## Engine Content textures
 
-Author procedural textures as ordinary ScriptablePack sources returning
-`TextureAsset` outputs, following Content's checker texture. Fixed seeds and
-source parameters own the pixels; the standard Pack producer owns cooking,
-content identity, caching and publication. Water textures use this same route.
-Publish their Pack sources and imported source modules through the normal
-Content package source closure.
+Use ordinary Scriptable Packs for Engine Content textures. The checker publishes
+a deterministic byte texture. Water surface, volume and impulse Packs publish
+`texture-generator` and independent `gpu-texture` outputs. The Pack cooker
+publishes programs and descriptors. Renderer generates pixels at residency.
 
-Preserve declared GUIDs, dimensions, color spaces, mip policies and sampler
-contracts when editing texture fields. Review generated appearance and decoded
-pixel changes through ordinary Pack cooking. Do not introduce a Water-specific
-prebuild generator, raw-image staging step, SDK resource whitelist or fallback
-asset loader. See the [Content contract](../../packages/content/README.md).
+For mip selection and authoring, use the [GPU texture Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
+The impulse recipe reads an unsharpened transient pyramid and writes all nine custom levels.
+
+Retain output dimensions, color spaces, mip policies and sampler contracts when
+changing generation. Check stored pixels, mip filtering and the actual material
+consumer. Follow the [Content contract](../../packages/content/README.md) when
+upgrading saved Water surface GUIDs.
 
 ## River Bake Publication
 
@@ -61,7 +61,6 @@ Choose the owner by when the content is known, not by how it is computed:
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
 - For runtime GPU textures, declare `texture-generator` and independent `gpu-texture` outputs (`GpuTextureAsset`) with `gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`. Build prepares programs; Renderer generates pixels and mips. Reuse prepared `programs` in a Runtime Pack; do not cook raw WGSL or read pixels back implicitly. Open either kind in View's native texture preview. See the [Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
 - Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
-- Compiled recipes: procedural props and runtime meshes.
 
 When authorized to adapt a copied author source to a different SDK, retain immutable originals and work outside active asset roots. Update real dependencies and APIs, regenerate locks with the package manager, compile and cook against the target SDK, then export/import the verified source closure with its identities and provenance. A locked-version rejection is not proof that adaptation is unsupported; changing only version labels or cloning GUIDs is not a migration.
 
@@ -156,13 +155,12 @@ not copied Body state. Read the [Water material entry](../../packages/water/READ
 for the source and binding contracts. Distribute their Pack and helper sources
 under Content's Apache-2.0 license.
 
-Local fluid recipes use the same ordinary closure: `impulseNoiseGuid` is a
-required texture reference, including cold Pack/Catalog loading. Reference
-`EngineContent.water.textures['impulse-noise']` for the default producer.
-Its ordinary Pack generates the seeded grayscale field, applies gamma/brightness
-and publishes the complete packed mip chain as a `TextureAsset`. Pixel hashes
-and mip contracts are covered by Content's tests. See the
-[Content contract](../../packages/content/README.md#guids).
+Local fluid recipes require a sampled 2D `impulseNoiseGuid` dependency.
+Use `EngineContent.water.textures['impulse-noise']` for the default generated
+brush. Cold Pack/Catalog loading admits the same GUID and Renderer waits
+for the complete custom chain before consuming an impulse. Authored
+byte-backed 2D brushes remain supported. See the
+[Content contract](../../packages/content/README.md#volume-and-impulse).
 
 Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
 `plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker

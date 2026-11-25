@@ -129,7 +129,7 @@ describe('pass-plan systems', () => {
     });
   });
 
-  it('adds candidate preparation demand to the scene demand', () => {
+  it.each([false, true])('explicitly admits prepared rough refraction (%s)', (roughRefraction) => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);
     const view = world.spawn().unwrap();
@@ -137,10 +137,10 @@ describe('pass-plan systems', () => {
       transmissionDemand: { activeCount: 1, needsRoughMips: true, needsBackPass: true },
       hasMedium: true,
     } as unknown as MaterialFrame;
-    viewPassPlanQueue(world, view).stage(input({ preparation }));
+    viewPassPlanQueue(world, view).stage(input({ preparation, roughRefraction }));
     expect(world.run(RenderQueue).ok).toBe(true);
     expect(viewPassPlanQueue(world, view).take().transmission).toEqual({
-      demand: { activeCount: 3, needsRoughMips: true, needsBackPass: true },
+      demand: { activeCount: 3, needsRoughMips: roughRefraction, needsBackPass: true },
       singleLayerMedium: true,
     });
   });
@@ -150,7 +150,7 @@ describe('pass-plan systems', () => {
     [{ renderPath: 'forward' }, { lane: 'forward', lateOcclusion: false }],
     [
       { renderPath: 'forward', gpuOcclusion: true },
-      { lane: 'forward', lateOcclusion: true },
+      { lane: 'forward', lateOcclusion: false },
     ],
     [
       { renderPath: 'forward', gpuOcclusion: false },

@@ -1,5 +1,5 @@
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal}
-#import forgeax_view::common::{View}
+#import forgeax_view::common::{View, depthSurfaceCameraFacing, reconstructDepthSurface}
 #import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid}
 
 struct DecalParams {
@@ -55,14 +55,13 @@ struct DecalOutput {
   @location(2) roughness : vec4<f32>,
 };
 
-@fragment
-fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
-  let coord = vec2<i32>(pixel.xy);
-  let depth = textureLoad(sceneDepth, coord, 0);
+struct DecalProjection {
+  output : DecalOutput,
+  covered : bool,
+};
 
-  let uvScreen = pixel.xy / vec2<f32>(textureDimensions(sceneDepth));
-  let worldH = view.inverseViewProj * vec4<f32>(uvScreen * vec2<f32>(2,-2) + vec2<f32>(-1,1), depth, 1);
-  let local = (decal.inverse * vec4<f32>(worldH.xyz / worldH.w, 1)).xyz;
+fn projectDecal(world : vec3<f32>, receiverNormal : vec3<f32>, valid : bool) -> DecalProjection {
+  let local = (decal.inverse * vec4<f32>(world, 1)).xyz;
   let uv = vec2<f32>(local.x + 0.5, 0.5 - local.y);
   let uv0 = transformedUv(uv, decal.uv0);
   let uv1 = transformedUv(uv, decal.uv1);
@@ -71,14 +70,12 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
   let dx0 = dpdx(uv0); let dy0 = dpdy(uv0);
   let dx1 = dpdx(uv1); let dy1 = dpdy(uv1);
   let dx2 = dpdx(uv2); let dy2 = dpdy(uv2);
-  if (depth >= 1.0 || any(abs(local) > vec3<f32>(0.5))) { discard; }
-  if (!loadStandardSceneSurfaceValid(sceneNormal, coord)) { discard; }
-  let receiverNormal = loadStandardNormalRoughness(sceneNormal, coord).xyz;
+  if (!valid || any(abs(local) > vec3<f32>(0.5))) { return DecalProjection(DecalOutput(), false); }
   let direction = normalize(decal.transform[2].xyz);
-  if (dot(receiverNormal, direction) < decal.settings.w) { discard; }
+  if (dot(receiverNormal, direction) < decal.settings.w) { return DecalProjection(DecalOutput(), false); }
   let color = textureSampleGrad(colorTexture, colorSampler, uv0, dx0, dy0) * decal.color;
   let alpha = clamp(color.a * decal.weights.w, 0.0, 1.0);
-  if (alpha <= 0.0 || color.a < decal.flags.z) { discard; }
+  if (alpha <= 0.0 || color.a < decal.flags.z) { return DecalProjection(DecalOutput(), false); }
   let tangentCandidate = decal.transform[0].xyz - receiverNormal * dot(receiverNormal, decal.transform[0].xyz);
   var normal = receiverNormal;
   if (decal.flags.x > 0.0 && dot(tangentCandidate, tangentCandidate) > 0.000001) {
@@ -90,7 +87,30 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
   }
   let roughnessSample = textureSampleGrad(roughnessTexture, roughnessSampler, uv2, dx2, dy2);
   let roughness = clamp(decal.settings.x * roughnessSample[u32(decal.flags.y)], 0.04, 1.0);
-  return DecalOutput(vec4<f32>(color.rgb, alpha * decal.weights.x),
+  return DecalProjection(DecalOutput(vec4<f32>(color.rgb, alpha * decal.weights.x),
     vec4<f32>(normal, alpha * decal.weights.y * decal.flags.x),
-    vec4<f32>(roughness, 0, 0, alpha * decal.weights.z));
+    vec4<f32>(roughness, 0, 0, alpha * decal.weights.z)), true);
+}
+
+@fragment
+fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
+  let coord = vec2<i32>(pixel.xy);
+  let depth = textureLoad(sceneDepth, coord, 0);
+  let uv = pixel.xy / vec2<f32>(textureDimensions(sceneDepth));
+  let worldH = view.inverseViewProj * vec4<f32>(uv * vec2<f32>(2, -2) + vec2<f32>(-1, 1), depth, 1);
+  let projection = projectDecal(worldH.xyz / worldH.w, loadStandardNormalRoughness(sceneNormal, coord).xyz,
+    depth < 1.0 && loadStandardSceneSurfaceValid(sceneNormal, coord));
+  if (!projection.covered) { discard; }
+  return projection.output;
+}
+
+@fragment
+fn fs_depth(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
+  let coord = vec2<i32>(pixel.xy);
+  let depth = textureLoad(sceneDepth, coord, 0);
+  let fallback = depthSurfaceCameraFacing(view.worldViewProj, view.temporalProjection.z > 0.5);
+  let surface = reconstructDepthSurface(sceneDepth, coord, depth, view.inverseViewProj, fallback);
+  let projection = projectDecal(surface.position, surface.normal, depth > 0.0);
+  if (!projection.covered) { discard; }
+  return projection.output;
 }

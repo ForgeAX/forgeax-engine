@@ -37,6 +37,8 @@ async function host(
 ) {
   let sceneAdmission: (() => unknown) | undefined;
   let inputAllowed = true;
+  const warn = vi.fn();
+  let audioError: ((error: unknown) => void) | undefined;
   const audioOwners: { destroy: ReturnType<typeof vi.fn> }[] = [];
   const releases: string[] = [];
   const captureLifecycle: string[] = [];
@@ -124,7 +126,7 @@ async function host(
       createGameVfx,
       createGameRenderFeatures,
       AbortController,
-      console: { info: vi.fn(), error: vi.fn() },
+      console: { info: vi.fn(), error: vi.fn(), warn },
       setTimeout,
       clearTimeout,
       wx: { createCanvas: () => canvas, getStorageSync: () => '', setStorageSync() {} },
@@ -149,7 +151,12 @@ async function host(
             inputAllowed = allowed;
           },
         }),
-      createWechatAudioBackend: () => {
+      createWechatAudioBackend: (
+        _source: unknown,
+        _platform: unknown,
+        { onError }: { onError: (error: unknown) => void },
+      ) => {
+        audioError = onError;
         const audio = {
           destroy: vi.fn(() => {
             releases.push('audio');
@@ -278,6 +285,8 @@ async function host(
     sceneAdmission: () => sceneAdmission?.(),
     inputAllowed: () => inputAllowed,
     audioOwners,
+    warn,
+    emitAudioError: (error: unknown) => audioError?.(error),
     releases,
     captures,
     captureLifecycle,
@@ -296,6 +305,18 @@ async function host(
 }
 
 describe('native Host startup failure ownership', () => {
+  it('keeps audio diagnostics out of scene admission and uses the native shader compiler', async () => {
+    const running = await host(async () => ({ dispose: async () => {} }));
+    try {
+      await vi.waitFor(() => expect(running.sceneAdmission()).toBe('scene'));
+      running.emitAudioError(cleanupError);
+      expect(running.warn).toHaveBeenCalledWith('ForgeAX native audio failed', cleanupError);
+      expect(running.sceneAdmission()).toBe('scene');
+    } finally {
+      await running.stop();
+    }
+  });
+
   it.each([
     'none',
     'custom',

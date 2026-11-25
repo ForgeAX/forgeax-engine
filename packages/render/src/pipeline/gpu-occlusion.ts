@@ -71,6 +71,7 @@ export function addGpuLateOcclusion(
   }
   if (addLateOcclusion === undefined) return ok(undefined);
   const pyramid = addDepthPyramidPasses(graph, {
+    label: 'occlusion-hzb',
     nativeInputs: input.nativeInputs,
     depth: input.depth,
     width: input.width,

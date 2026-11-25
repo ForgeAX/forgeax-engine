@@ -24,13 +24,13 @@ describe('_getArrayView count (AC-03 gate)', () => {
       'readPresentationWorldMatrix(world, joint as EntityHandle)',
     );
     expect(readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8')).toContain(
-      'copyPresentationWorldMatrix(world, entity as EntityHandle, this.jointScratch)',
+      'skin.joint(entity, read.values, read.offset)',
     );
     const presentation = readFileSync(
       join(dirname(extractPaths[0]), '..', '..', 'scene', 'src', 'presentation.ts'),
       'utf8',
     );
-    expect(presentation).toContain('return readRenderArrayView(');
+    expect(presentation).toContain('readRenderArrayView(world, entity, GlobalTransform, source)');
     expect(presentation).toContain("state.active.has(entity) ? 'presentation' : 'world'");
     expect(src).toContain("_getArrayView(entity, Instances, 'transforms')");
     expect(src).toContain("_getArrayView(entity, SpriteInstances, 'transforms')");

@@ -26,6 +26,7 @@ import { hasCapturedTaskMembership } from './fixed-task-plan';
 import type { BatchExecutions } from './material-artifacts';
 import {
   type BatchPreparation,
+  meshSupportsBatch,
   type PreparedBatchRows,
   prepareBatchRows,
   rebasePreparedBatchRows,
@@ -84,6 +85,101 @@ interface ContributionRecord {
   readonly proof: ContributionProof;
 }
 const contributionProofs = new WeakMap<ProvisionalBatchContribution, ContributionProof>();
+
+function missingBatchExecution(): GpuDrivenPreparationError {
+  return new GpuDrivenPreparationError('missing-material-receipt', {
+    reason: 'material-receipt-missing',
+    owner: 'material',
+    expected: 'shared material execution for every geometry batch',
+  });
+}
+
+function materialAddressFor(
+  materials: GpuSceneResourceFrame | undefined,
+  binding: GpuDrivenBatchBinding,
+  execution: ActiveExecution,
+): number {
+  const materialAddress = materials?.logicalForResource(binding.material, execution.material);
+  if (materialAddress === undefined)
+    throw new GpuDrivenPreparationError('resource-not-ready', {
+      reason: 'material-resource-missing',
+      owner: 'material',
+      expected: 'resident shared material row for the accepted batch',
+    });
+  return materialAddress;
+}
+
+function geometryAddressFor(
+  materials: GpuSceneResourceFrame | undefined,
+  binding: GpuDrivenBatchBinding,
+  execution: ActiveExecution,
+  geometry: MeshGeometry | undefined,
+): number | undefined {
+  const geometryAddress =
+    execution.route === 'gpu'
+      ? materials?.logicalForGeometry(binding.assetHandle, geometry)
+      : undefined;
+  // Morphed rows carry their own bounds; they hold no shared geometry row.
+  if (
+    geometry !== undefined &&
+    binding.geometry.deformation === 'rigid' &&
+    binding.morph === undefined &&
+    geometryAddress === undefined
+  )
+    throw new GpuDrivenPreparationError('stale-generation', {
+      reason: 'generation-stale',
+      owner: 'geometry',
+      expected: 'resident shared geometry for the accepted frame',
+    });
+  return geometryAddress;
+}
+
+/** A failed artifact publication cannot admit filtered or GPU work. */
+function missingArtifactFor(
+  execution: ActiveExecution,
+  currentBatch: GpuDrivenBatch,
+): GpuDrivenPreparationError | undefined {
+  if (execution.route !== 'gpu') return;
+  const prepared = execution.prepared;
+  if (
+    execution.artifact === undefined &&
+    currentBatch.candidates.length > 0 &&
+    prepared?.receiptIdentity !== undefined
+  ) {
+    return new GpuDrivenPreparationError('missing-material-receipt', {
+      reason: 'material-receipt-missing',
+      owner: 'material',
+      expected: `published artifact for ${prepared.identity.material} (${prepared.receiptIdentity}@${prepared.receiptGeneration})`,
+    });
+  }
+  return undefined;
+}
+
+/** Direct draws retain scene resources but own no indirect raster class, LOD table or commands. */
+export function admitDirectResources(
+  scene: PersistentGpuDrivenState,
+  materials: GpuSceneResourceFrame,
+  executions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
+  meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
+): Result<boolean, GpuDrivenPreparationError> {
+  let missing: GpuDrivenPreparationError | undefined;
+  let usesSceneTable = false;
+  for (const batch of scene.plan.batches) {
+    const binding = batch.binding;
+    if (binding === undefined) throw missingBatchExecution();
+    const execution = executions.get(binding)?.forward;
+    if (execution === undefined) throw missingBatchExecution();
+    if (execution.route === 'none') continue;
+    missing ??= missingArtifactFor(execution, batch);
+    materialAddressFor(materials, binding, execution);
+    if (execution.route !== 'gpu') continue;
+    geometryAddressFor(materials, binding, execution, scene.meshes?.get(binding.assetHandle));
+    const mesh = meshes.get(binding);
+    if (mesh !== undefined && execution.artifact !== undefined && meshSupportsBatch(mesh, batch))
+      usesSceneTable = true;
+  }
+  return missing === undefined ? ok(usesSceneTable) : err(missing);
+}
 
 /** Execution facts one row was validated against; they are retained with it. */
 interface RowExecutionFacts {
@@ -483,18 +579,13 @@ export class BatchRowAssembly {
     const nativeMembership = MemberCandidates.is(sourceBatch.candidates);
     this.fixedMembership &&= nativeMembership;
     const binding = sourceBatch.binding;
-    const execution =
-      binding === undefined ? undefined : this.batchExecutions.get(binding)?.[this.pass];
-    if (binding === undefined || execution === undefined)
-      throw new GpuDrivenPreparationError('missing-material-receipt', {
-        reason: 'material-receipt-missing',
-        owner: 'material',
-        expected: 'shared material execution for every geometry batch',
-      });
+    if (binding === undefined) throw missingBatchExecution();
+    const execution = this.batchExecutions.get(binding)?.[this.pass];
+    if (execution === undefined) throw missingBatchExecution();
     // An absent Pass contributes no work to this view. Direct execution
     // remains in the plan so its real fallback still owns those rows.
     if (execution.route === 'none') return undefined;
-    this.noteMissingArtifact(execution, sourceBatch, undefined);
+    this.missingArtifact ??= missingArtifactFor(execution, sourceBatch);
     const mesh = this.meshByBinding.get(binding);
     const retained = this.preparation.batches.get(sourceBatch.batchId);
     const geometry = this.geometryForRow(
@@ -514,8 +605,8 @@ export class BatchRowAssembly {
       this.sameRows &&= retained.value === this.previous?.batchRows[index];
       return retained.value;
     }
-    const materialAddress = this.materialAddressFor(binding, execution);
-    const geometryAddress = this.geometryAddressFor(binding, execution, geometry);
+    const materialAddress = materialAddressFor(this.materials, binding, execution);
+    const geometryAddress = geometryAddressFor(this.materials, binding, execution, geometry);
     // Signature, execution key and artifact all derive from these captured identities.
     if (
       sameRetained &&
@@ -593,44 +684,6 @@ export class BatchRowAssembly {
     return serialized;
   }
 
-  private materialAddressFor(binding: GpuDrivenBatchBinding, execution: ActiveExecution): number {
-    const materialAddress = this.materials?.logicalForResource(
-      binding.material,
-      execution.material,
-    );
-    if (materialAddress === undefined)
-      throw new GpuDrivenPreparationError('resource-not-ready', {
-        reason: 'material-resource-missing',
-        owner: 'material',
-        expected: 'resident shared material row for the accepted batch',
-      });
-    return materialAddress;
-  }
-
-  private geometryAddressFor(
-    binding: GpuDrivenBatchBinding,
-    execution: ActiveExecution,
-    geometry: MeshGeometry | undefined,
-  ): number | undefined {
-    const geometryAddress =
-      execution.route === 'gpu'
-        ? this.materials?.logicalForGeometry(binding.assetHandle, geometry)
-        : undefined;
-    // Morphed rows carry their own bounds; they hold no shared geometry row.
-    if (
-      geometry !== undefined &&
-      binding.geometry.deformation === 'rigid' &&
-      binding.morph === undefined &&
-      geometryAddress === undefined
-    )
-      throw new GpuDrivenPreparationError('stale-generation', {
-        reason: 'generation-stale',
-        owner: 'geometry',
-        expected: 'resident shared geometry for the accepted frame',
-      });
-    return geometryAddress;
-  }
-
   /** Rows whose identities changed compare their signature, then rebase or rebuild. */
   private signedRow(
     sourceBatch: GpuDrivenBatch,
@@ -696,27 +749,6 @@ export class BatchRowAssembly {
     if (cached.execution !== facts.execution || cached.renderState !== facts.renderState)
       this.store(cached.source.batchId, { ...cached, ...facts });
     return cached.value;
-  }
-
-  /** A failed artifact publication cannot admit filtered or GPU work. */
-  private noteMissingArtifact(
-    execution: ActiveExecution,
-    currentBatch: GpuDrivenBatch,
-    batch: GpuDrivenBatch | undefined,
-  ): void {
-    if (this.missingArtifact !== undefined || execution.route !== 'gpu') return;
-    const prepared = batch !== undefined ? batch.prepared : execution.prepared;
-    if (
-      execution.artifact === undefined &&
-      currentBatch.candidates.length > 0 &&
-      prepared?.receiptIdentity !== undefined
-    ) {
-      this.missingArtifact = new GpuDrivenPreparationError('missing-material-receipt', {
-        reason: 'material-receipt-missing',
-        owner: 'material',
-        expected: `published artifact for ${prepared.identity.material} (${prepared.receiptIdentity}@${prepared.receiptGeneration})`,
-      });
-    }
   }
 }
 

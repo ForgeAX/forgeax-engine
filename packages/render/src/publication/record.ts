@@ -13,8 +13,8 @@ import { OwnedDrawParameterColumns } from './draw-parameters';
  * object graph crosses only for low-frequency rows that actually exist this
  * frame, so an unchanged frame structured-clones three scalars and a buffer.
  */
-/** v11 adds the optional direct draw parameter stream. */
-export const RENDER_PUBLICATION_PROTOCOL = 11;
+/** v12 supports references to an immutable Canvas pixel revision in the same source epoch. */
+export const RENDER_PUBLICATION_PROTOCOL = 12;
 
 /** What crosses the Worker boundary and what a Renderer draws. */
 export interface RenderPublicationMessage extends RenderPublicationIdentity {

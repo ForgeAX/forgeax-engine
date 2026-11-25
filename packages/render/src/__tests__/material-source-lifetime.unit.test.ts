@@ -125,7 +125,7 @@ it('owns only live dependency edges, retries and planar receivers across partial
     expect(collect([{ handle: dependency }])).toEqual([]);
   }
   changed.clear();
-  rows.collectPlanarChanges(false, changed);
+  rows.collectPlanarReceivers(changed);
   expect([...changed]).toEqual([1]);
   const previous = rows.get(1);
   if (previous === undefined) throw new Error('missing material');
@@ -229,6 +229,24 @@ it('SceneComposition owns accepted sources through removal, failed preparation, 
     expect(retained).toHaveBeenCalledTimes(3);
     const last = store.ensureResident(textureHandle, image, fixed).unwrap();
     expect(last.texture.isDestroyed).toBe(false);
+
+    // One new lease succeeds before the next source fails to acquire.
+    const provisional = { track: vi.fn(), release: vi.fn() };
+    retained.mockReturnValueOnce(provisional).mockImplementationOnce(() => {
+      throw new Error('material-source-unavailable');
+    });
+    for (let i = 0; i < 2; i++) {
+      const material = new MaterialResource({
+        ...defaultMaterialSnapshot(),
+        sourceAssets: source(),
+      });
+      const nextEntity = world.spawn({ component: Transform, data: {} }).unwrap();
+      rows.push({ ...row, entityKey: nextEntity, material, materials: [material] });
+    }
+    persistent.shared.invalidate();
+    expect(extract).toThrow('material-source-unavailable');
+    expect(provisional.release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(extract().renderables).toHaveLength(3);
     persistent.dispose();
     expect(last.texture.isDestroyed).toBe(true);
     expect(created.mock.calls.length).toBe(destroyed.mock.calls.length);

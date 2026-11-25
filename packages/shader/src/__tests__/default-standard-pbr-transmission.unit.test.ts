@@ -40,6 +40,7 @@ const STANDARD_AXES = [
   'COVERAGE_ONLY',
   'DIRECTIONAL_SHADOW_SIMPLE',
   'EXTENDED_LIGHTING_AVAILABLE',
+  'FORWARD_INLINE_SSR',
   'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
   'LEAN_LIGHTING',
   'LOD_DITHER',
@@ -72,17 +73,24 @@ function violatesCapabilityTopology(defines: Record<string, boolean>): boolean {
 
 function expectedStandardCombinations(): Map<string, Record<string, boolean>> {
   const expected = new Map<string, Record<string, boolean>>();
-  for (let bits = 0; bits < 2 ** STANDARD_AXES.length; bits++) {
+  const baselineAxes = STANDARD_AXES.filter((axis) => axis !== 'FORWARD_INLINE_SSR');
+  for (let bits = 0; bits < 2 ** baselineAxes.length; bits++) {
     const defines = Object.fromEntries(
-      STANDARD_AXES.map((axis, index) => [axis, (bits & (1 << index)) !== 0]),
+      baselineAxes.map((axis, index) => [axis, (bits & (1 << index)) !== 0]),
     );
     // Combinations the runtime never requests (discard sources, receiver and
     // backend implications) are filtered by the published rule table.
     if (violatesCapabilityTopology(defines) || !isSupportedVariantDefines(defines)) continue;
-    const key = STANDARD_AXES.every((axis) => defines[axis])
-      ? ''
-      : STANDARD_AXES.map((axis) => `${axis}=${defines[axis]}`).join('+');
-    expected.set(key, defines);
+    const baseline: Record<string, boolean> = { ...defines, FORWARD_INLINE_SSR: false };
+    expected.set(STANDARD_AXES.map((axis) => `${axis}=${baseline[axis]}`).join('+'), baseline);
+    if (
+      defines.EXTENDED_LIGHTING_AVAILABLE &&
+      !defines.VISIBLE_SURFACE_AVAILABLE &&
+      !defines.REFLECTION_FALLBACK_AVAILABLE
+    ) {
+      const inlineSsr: Record<string, boolean> = { ...defines, FORWARD_INLINE_SSR: true };
+      expected.set(STANDARD_AXES.map((axis) => `${axis}=${inlineSsr[axis]}`).join('+'), inlineSsr);
+    }
   }
   return expected;
 }
@@ -140,7 +148,10 @@ describe('default Standard PBR transmission manifest contract', () => {
     const ordinary = new Map(
       [...expected].filter(
         ([, defines]) =>
-          !defines.COVERAGE_ONLY && !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
+          !defines.COVERAGE_ONLY &&
+          !defines.FORWARD_INLINE_SSR &&
+          !defines.WATER_WAVES_AVAILABLE &&
+          !defines.WATER_INFO_RGBA16,
       ),
     );
     // Modifier-free lighting now supports the full directional receiver too.
@@ -251,14 +262,21 @@ describe('default Standard PBR transmission manifest contract', () => {
       (row) => row.STORAGE_BUFFER_AVAILABLE && !row.STANDARD_LEAN_INPUTS,
     );
     const leanOrdinary = [...ordinary.values()].filter((row) => row.STANDARD_LEAN_INPUTS);
+    const inlineSsrRows = [...expected.values()].filter((row) => row.FORWARD_INLINE_SSR);
+    expect(inlineSsrRows).toHaveLength(1728);
     expect(expected.size).toBe(
-      ordinary.size + 2 * storageOrdinary.length + 3 * leanOrdinary.length + expectedCoverage.size,
+      ordinary.size +
+        2 * storageOrdinary.length +
+        3 * leanOrdinary.length +
+        expectedCoverage.size +
+        inlineSsrRows.length,
     );
     for (const waves of [true, false]) {
       for (const rgba16 of [true, false]) {
         const leanLane = [...expected.values()].filter(
           (row) =>
             row.STANDARD_LEAN_INPUTS &&
+            !row.FORWARD_INLINE_SSR &&
             row.WATER_WAVES_AVAILABLE === waves &&
             row.WATER_INFO_RGBA16 === rgba16,
         );

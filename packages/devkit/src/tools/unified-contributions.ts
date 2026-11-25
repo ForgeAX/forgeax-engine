@@ -80,6 +80,7 @@ const readyLive = { ...root, ...liveIdentity, ...liveReady };
 const cameraVector = { type: 'array', items: number, minItems: 3 } as const;
 const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'backend.start': schema({ ...root, hostPack: string }),
+  'project.view': schema(root),
   'backend.status': schema(root),
   'backend.stop': schema(root),
   'project.new': schema({
@@ -784,7 +785,7 @@ export function createUnifiedCommandContributions(
     project(
       'project.new',
       'Create project',
-      'Creates a project from an SDK template.',
+      'Creates a project from an Engine template.',
       'newCommand',
     ),
     project(
@@ -811,6 +812,30 @@ export function createUnifiedCommandContributions(
       'Preview project',
       'Serves the built project for inspection.',
       'previewCommand',
+    ),
+    command(
+      'project.view',
+      'Open project in View',
+      'Starts the installed Engine View and opens the selected project.',
+      async (args, context) => {
+        const hostPack = await (await import('../sdk.js')).findBundledViewHost();
+        if (hostPack === undefined)
+          return failCommand(
+            'tool-capability-unavailable',
+            'an Engine installation containing View',
+            'Install the complete Engine package and rerun forgeax project view.',
+            {},
+          );
+        const root = rootArgs(projectRoot, args).root;
+        const startup = await readProjectStartupTimeoutMs(root);
+        if (!startup.ok) return startup;
+        return (await import('../backend-process.js')).ensureDevKitView(root, {
+          hostPack,
+          project: root,
+          signal: context.signal,
+          ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
+        });
+      },
     ),
     project(
       'project.capture',

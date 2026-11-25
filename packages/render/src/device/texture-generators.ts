@@ -22,8 +22,11 @@ import type {
   Sampler,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
-import { TEXTURE_GENERATOR_VERTEX_ENTRY } from '@forgeax/engine-shader';
+import { RhiError, TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT } from '@forgeax/engine-rhi';
+import {
+  TEXTURE_GENERATOR_VERTEX_ENTRY,
+  TEXTURE_GENERATOR_VOLUME_GROUP,
+} from '@forgeax/engine-shader';
 import {
   AssetError,
   deriveTextureLayout,
@@ -35,9 +38,12 @@ import {
   type Result,
   type ShaderReflectionBoundGlobal,
   type ShaderReflectionMember,
-  type TextureGenerationPass,
+  TEXTURE_GENERATOR_VOLUME_ENTRY,
+  type TextureGenerationRasterPass,
+  type TextureGenerationVolumePass,
   type TextureGeneratorAsset,
   type TextureShape,
+  textureGenerationMipShape,
   textureGeneratorParameterLayout,
   validateTextureGenerator,
 } from '@forgeax/engine-types';
@@ -546,18 +552,19 @@ export class TextureGenerators {
           : 0),
       0,
     );
+    const copyBytes = recipe.passes.reduce((total, pass) => {
+      if (pass.kind !== 'compute-volume') return total;
+      const output = required(recipe.outputs[pass.writes[0]], 'a declared volume output');
+      return total + volumeCopyLayout(device, output.shape).size;
+    }, 0);
     const bytes =
       mipBytes +
+      copyBytes +
       [...Object.values(recipe.outputs), ...Object.values(recipe.transient)].reduce(
         (sum, source) =>
           sum +
-          deriveTextureLayout({
-            ...source,
-            mips:
-              'mips' in source
-                ? (source.mips as GeneratedTextureDescriptor['mips'])
-                : { kind: 'none' },
-          }).unwrap().byteLength,
+          deriveTextureLayout(generationDescriptor(source)).unwrap().byteLength *
+            (source.mips?.kind === 'custom' && device.caps.backendKind === 'wgpu-webgl2' ? 2 : 1),
         0,
       );
     if (this.bytes + bytes > MAX_RESIDENT_BYTES)
@@ -588,14 +595,12 @@ export class TextureGenerators {
       const external = importInputs(build);
       await allocateTargets(build, outputs, lifetime, generation);
       for (let index = 0; index < recipe.passes.length; index++) {
-        await addGenerationPass(
-          build,
-          required(recipe.passes[index], 'a finite generation pass'),
-          required(programs[index], 'a prepared program for each pass'),
-          index,
-          external,
-        );
+        const pass = required(recipe.passes[index], 'a finite generation pass');
+        const program = required(programs[index], 'a prepared program for each pass');
+        if (pass.kind === 'compute-volume') await addVolumePass(build, pass, program, index);
+        else await addRasterGenerationPass(build, pass, program, index, external);
       }
+      publishPhysicalMipChains(build);
       const graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
       let settle: Group['settle'] = () => {};
       const accepted = new Promise<boolean>((resolve) => {
@@ -693,6 +698,7 @@ function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset)
   if (
     recipe.passes.some(
       (pass) =>
+        pass.kind === 'raster' &&
         pass.writes.reduce((sum, name) => {
           const format = required(
             Object.hasOwn(recipe.outputs, name) ? recipe.outputs[name] : recipe.transient[name],
@@ -703,7 +709,11 @@ function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset)
     )
   )
     throw failure('generator MRT byte footprint fits the device attachment budget');
-  if (recipe.passes.some((pass) => pass.writes.length > device.caps.maxColorAttachments))
+  if (
+    recipe.passes.some(
+      (pass) => pass.kind === 'raster' && pass.writes.length > device.caps.maxColorAttachments,
+    )
+  )
     throw failure('generator MRT count fits the device');
 }
 
@@ -752,47 +762,31 @@ async function allocateTargets(
   lifetime: ResidencyLifetime,
   generation: number,
 ): Promise<void> {
-  const { device, mipFactory, resources, builder, recipe, label } = build;
+  const { device, mipFactory, recipe } = build;
   for (const [name, source] of [
     ...Object.entries(recipe.outputs),
     ...Object.entries(recipe.transient),
   ]) {
-    const descriptor: GeneratedTextureDescriptor =
-      'mips' in source
-        ? (source as GeneratedTextureDescriptor)
-        : { ...source, colorSpace: 'linear', mips: { kind: 'none' } };
-    const layout = deriveTextureLayout(descriptor).unwrap();
+    const descriptor = generationDescriptor(source);
+    const target = allocateGenerationTarget(build, name, descriptor);
+    const { texture, bytes } = target;
     const shape = descriptor.shape;
-
-    const raw = device
-      .createTexture({
-        label: `${label}/${name}`,
-        ...textureExtent(shape),
-        format: descriptor.format,
-        usage: USAGE,
-        mipLevelCount: layout.levels.length,
-      })
-      .unwrap();
-    const texture = new GpuTexture(device, raw);
-    const graph = builder
-      .importTexture(
-        name,
-        {
-          format: descriptor.format,
-          ...textureExtent(shape),
-          usage: USAGE,
-          mipLevelCount: layout.levels.length,
-        },
-        () => raw,
-      )
-      .unwrap();
-    resources.set(name, { texture, descriptor, bytes: layout.byteLength, graph });
+    if (descriptor.mips.kind === 'custom' && device.caps.backendKind === 'wgpu-webgl2') {
+      for (let level = 0; level < descriptor.mips.levelCount; level++)
+        allocateGenerationTarget(build, physicalMipKey(name, level), {
+          ...descriptor,
+          shape: textureGenerationMipShape(shape, level),
+          mips: { kind: 'none' },
+        });
+    }
     if (Object.hasOwn(recipe.outputs, name)) {
-      const view = device.createTextureView(raw, { dimension: shape.viewDimension }).unwrap();
+      const view = device
+        .createTextureView(texture.handle, { dimension: shape.viewDimension })
+        .unwrap();
       outputs.set(name, {
         texture,
         descriptor,
-        bytes: layout.byteLength,
+        bytes,
         generation,
         view,
         // Sibling binding invalidation cannot retire the accepted group.
@@ -812,7 +806,84 @@ async function allocateTargets(
   }
 }
 
-function generatorLayoutEntry(global: ShaderReflectionBoundGlobal): BindGroupLayoutEntry {
+function generationDescriptor(
+  source: GeneratedTextureDescriptor | TextureGeneratorAsset['transient'][string],
+): GeneratedTextureDescriptor {
+  return 'colorSpace' in source
+    ? source
+    : { ...source, colorSpace: 'linear', mips: source.mips ?? { kind: 'none' } };
+}
+
+function allocateGenerationTarget(
+  build: GenerationBuild,
+  name: string,
+  descriptor: GeneratedTextureDescriptor,
+): GenerationTarget {
+  const { device, builder, label, resources } = build;
+  const layout = deriveTextureLayout(descriptor).unwrap();
+  const allocation = {
+    ...textureExtent(descriptor.shape),
+    format: descriptor.format,
+    usage: USAGE,
+    mipLevelCount: layout.levels.length,
+  };
+  const raw = device.createTexture({ label: `${label}/${name}`, ...allocation }).unwrap();
+  const texture = new GpuTexture(device, raw);
+  const graph = builder.importTexture(name, allocation, () => raw).unwrap();
+  const target = { texture, descriptor, bytes: layout.byteLength, graph };
+  resources.set(name, target);
+  return target;
+}
+
+function physicalMipKey(name: string, mip: number): string {
+  return `${name}/physical-mip/${mip}`;
+}
+
+function localMip(build: GenerationBuild, name: string, mip: number) {
+  const physical = build.resources.get(physicalMipKey(name, mip));
+  return physical === undefined
+    ? { resource: required(build.resources.get(name), 'a declared target'), baseMipLevel: mip }
+    : { resource: physical, baseMipLevel: 0 };
+}
+
+// WebGL2 mip views share a physical texture's sampling state. Each write
+// targets a separate image, and published outputs are copied after generation.
+function publishPhysicalMipChains(build: GenerationBuild): void {
+  if (build.device.caps.backendKind !== 'wgpu-webgl2') return;
+  for (const [name, descriptor] of Object.entries(build.recipe.outputs)) {
+    if (descriptor.mips.kind !== 'custom') continue;
+    const destination = required(build.resources.get(name), 'the published mip chain');
+    for (let level = 0; level < descriptor.mips.levelCount; level++) {
+      const source = required(build.resources.get(physicalMipKey(name, level)), 'a physical mip');
+      const { size } = textureExtent(source.descriptor.shape);
+      const sourceView = build.builder
+        .view(source.graph, { baseMipLevel: 0, mipLevelCount: 1 })
+        .unwrap();
+      const destinationView = build.builder
+        .view(destination.graph, { baseMipLevel: level, mipLevelCount: 1 })
+        .unwrap();
+      build.builder
+        .addCopyPass(`${name}/publish-mip/${level}`, {
+          accesses: [
+            { resource: sourceView, usage: 'copy-src' },
+            { resource: destinationView, usage: 'copy-dst' },
+          ],
+          encodeDirect: (encoder) =>
+            encoder.copyTextureToTexture(
+              { texture: source.texture.handle },
+              { texture: destination.texture.handle, mipLevel: level },
+              size,
+            ),
+        })
+        .unwrap();
+    }
+  }
+}
+
+function generatorLayoutEntry(
+  global: ShaderReflectionBoundGlobal,
+  unfilterable: boolean,
+): BindGroupLayoutEntry {
   const base = { binding: global.binding, visibility: 2 };
   if (global.resourceKind === 'buffer' && global.addressSpace === 'uniform')
     return {
@@ -828,7 +899,7 @@ function generatorLayoutEntry(global: ShaderReflectionBoundGlobal): BindGroupLay
     return {
       ...base,
       texture: {
-        sampleType: global.sampleType ?? 'float',
+        sampleType: unfilterable ? 'unfilterable-float' : (global.sampleType ?? 'float'),
         viewDimension: global.viewDimension ?? '2d',
         multisampled: false,
       },
@@ -839,7 +910,7 @@ function generatorLayoutEntry(global: ShaderReflectionBoundGlobal): BindGroupLay
 function createLayerBindings(
   build: GenerationBuild,
   globals: readonly ShaderReflectionBoundGlobal[],
-  pass: TextureGenerationPass,
+  pass: TextureGenerationRasterPass,
   target: GeneratedTextureDescriptor['shape'],
   layer: number,
   external: ReadonlyMap<string, GraphTexture>,
@@ -847,7 +918,7 @@ function createLayerBindings(
   bindings: BindGroupEntry[];
   accesses: { resource: GraphTextureView; usage: 'sampled-read' }[];
 } {
-  const { device, builder, inputs, resources } = build;
+  const { device, builder, inputs } = build;
   const bindings: BindGroupEntry[] = [];
   const accesses: { resource: GraphTextureView; usage: 'sampled-read' }[] = [];
   for (const global of globals) {
@@ -857,7 +928,10 @@ function createLayerBindings(
     }
     const read = global.name === undefined ? undefined : pass.reads[global.name];
     if (read === undefined) throw failure(`explicit read binding ${global.name}`);
-    const resource = read.kind === 'input' ? inputs.get(read.name) : resources.get(read.name);
+    const local =
+      read.kind === 'local' ? localMip(build, read.name, read.mipLevel ?? 0) : undefined;
+    const resource = local?.resource ?? inputs.get(read.name);
+    const baseMipLevel = local?.baseMipLevel ?? 0;
     if (resource === undefined) throw failure(`loaded read resource ${read.name}`);
     if ('kind' in resource && resource.kind === 'sampler') {
       if (global.resourceKind !== 'sampler') throw failure(`sampler binding ${global.name}`);
@@ -877,10 +951,10 @@ function createLayerBindings(
               dimension: '2d' as const,
               baseArrayLayer: resource.descriptor.shape.viewDimension === '2d-array' ? layer : 0,
               arrayLayerCount: 1,
-              baseMipLevel: 0,
+              baseMipLevel,
               mipLevelCount,
             }
-          : { dimension, baseMipLevel: 0, mipLevelCount };
+          : { dimension, baseMipLevel, mipLevelCount };
       const view = device.createTextureView(resource.texture.handle, viewDescriptor).unwrap();
       bindings.push({
         binding: global.binding,
@@ -899,9 +973,9 @@ function createLayerBindings(
   return { bindings, accesses };
 }
 
-async function addGenerationPass(
+async function addRasterGenerationPass(
   build: GenerationBuild,
-  pass: TextureGenerationPass,
+  pass: TextureGenerationRasterPass,
   program: ManifestEntry,
   index: number,
   external: ReadonlyMap<string, GraphTexture>,
@@ -922,7 +996,13 @@ async function addGenerationPass(
   );
   if (globals.some((global) => global.group !== 0))
     throw failure('generator resources use bind group 0');
-  const entries = globals.map(generatorLayoutEntry);
+  const entries = globals.map((global) => {
+    const read = global.name === undefined ? undefined : pass.reads[global.name];
+    const resource = read?.kind === 'local' ? resources.get(read.name) : undefined;
+    const unfilterable =
+      resource?.descriptor.format === 'r32float' && !device.caps.float32Filterable;
+    return generatorLayoutEntry(global, unfilterable);
+  });
   const bindLayout = device
     .createBindGroupLayout({ label: `${label}/bindings/${index}`, entries })
     .unwrap();
@@ -947,10 +1027,12 @@ async function addGenerationPass(
     await (device.createRenderPipelineAsync?.(pipelineDescriptor) ??
       device.createRenderPipeline(pipelineDescriptor))
   ).unwrap();
-  const target = required(
-    resources.get(required(pass.writes[0], 'a target name')),
-    'a declared target',
-  ).descriptor.shape;
+  const mip = pass.mipLevel ?? 0;
+  const target = textureGenerationMipShape(
+    required(resources.get(required(pass.writes[0], 'a target name')), 'a declared target')
+      .descriptor.shape,
+    mip,
+  );
   const volume = target.viewDimension === '3d';
   for (let layer = 0; layer < imageCount(target); layer++) {
     const { bindings, accesses } = createLayerBindings(
@@ -964,20 +1046,23 @@ async function addGenerationPass(
     const group: BindGroup = device
       .createBindGroup({ layout: bindLayout, entries: bindings })
       .unwrap();
-    const attachments = pass.writes.map((name) => ({
-      view: builder
-        .view(required(resources.get(name), 'a declared target').graph, {
-          baseMipLevel: 0,
-          mipLevelCount: 1,
-          ...(volume
-            ? { dimension: '3d' as const }
-            : { dimension: '2d' as const, baseArrayLayer: layer, arrayLayerCount: 1 }),
-        })
-        .unwrap(),
-      ...(volume ? { depthSlice: layer } : {}),
-      loadOp: 'clear' as const,
-      storeOp: 'store' as const,
-    }));
+    const attachments = pass.writes.map((name) => {
+      const { resource, baseMipLevel } = localMip(build, name, mip);
+      return {
+        view: builder
+          .view(resource.graph, {
+            baseMipLevel,
+            mipLevelCount: 1,
+            ...(volume
+              ? { dimension: '3d' as const }
+              : { dimension: '2d' as const, baseArrayLayer: layer, arrayLayerCount: 1 }),
+          })
+          .unwrap(),
+        ...(volume ? { depthSlice: layer } : {}),
+        loadOp: 'clear' as const,
+        storeOp: 'store' as const,
+      };
+    });
     builder
       .addRasterPass(`${label}/${index}/${layer}`, {
         accesses: [
@@ -996,6 +1081,111 @@ async function addGenerationPass(
       })
       .unwrap();
   }
+}
+
+function volumeCopyLayout(device: RhiDevice, shape: GeneratedTextureDescriptor['shape']) {
+  if (shape.viewDimension !== '3d') throw failure('a 3D volume output');
+  const { width, height, depth } = shape.extent;
+  const alignment = TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT;
+  const bytesPerRow = Math.ceil(width / alignment) * alignment;
+  const size = bytesPerRow * height * depth;
+  const group = TEXTURE_GENERATOR_VOLUME_GROUP;
+  const x = Math.ceil(width / (4 * group));
+  const y = Math.ceil(height / group);
+  const z = Math.ceil(depth / group);
+  const limits = device.limits;
+  if (
+    size > limits.maxStorageBufferBindingSize ||
+    size > limits.maxBufferSize ||
+    Math.max(x, y, z) > limits.maxComputeWorkgroupsPerDimension
+  )
+    throw failure('volume dispatch and temporary copy buffer fit the device limits');
+  return { bytesPerRow, size, x, y, z, height, width, depth };
+}
+
+async function addVolumePass(
+  build: GenerationBuild,
+  pass: TextureGenerationVolumePass,
+  program: ManifestEntry,
+  index: number,
+): Promise<void> {
+  const { device, mipFactory, resources, builder, buffers, label } = build;
+  const target = required(resources.get(pass.writes[0]), 'a declared volume target');
+  const copy = volumeCopyLayout(device, target.descriptor.shape);
+  const name = `${label}/${index}`;
+  const bufferDescriptor = { size: copy.size, usage: 0x80 | 0x04 };
+  const data = device.createBuffer({ label: `${name}/packed`, ...bufferDescriptor }).unwrap();
+  buffers.push(data);
+  const params = device
+    .createBuffer({ label: `${name}/extent`, size: 16, usage: 0x40 | 0x08 })
+    .unwrap();
+  buffers.push(params);
+  device.queue
+    .writeBuffer(
+      params,
+      0,
+      new Uint32Array([copy.width, copy.height, copy.depth, copy.bytesPerRow / 4]),
+    )
+    .unwrap();
+
+  const bindLayout = device
+    .createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: 4, buffer: { type: 'storage' } },
+        { binding: 1, visibility: 4, buffer: { type: 'uniform', minBindingSize: 16 } },
+      ],
+    })
+    .unwrap();
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [bindLayout] }).unwrap();
+  const module = (
+    await mipFactory(device, { label: pass.program.module, code: program.wgsl })
+  ).unwrap();
+  const descriptor = {
+    label: name,
+    layout,
+    compute: { module, entryPoint: TEXTURE_GENERATOR_VOLUME_ENTRY },
+  };
+  const pipeline = (
+    await (device.createComputePipelineAsync?.(descriptor) ??
+      device.createComputePipeline(descriptor))
+  ).unwrap();
+  const bindings = device
+    .createBindGroup({
+      layout: bindLayout,
+      entries: [
+        { binding: 0, resource: { kind: 'buffer', value: { buffer: data } } },
+        { binding: 1, resource: { kind: 'buffer', value: { buffer: params } } },
+      ],
+    })
+    .unwrap();
+  const buffer = builder.importBuffer(`${name}/packed`, bufferDescriptor, () => data).unwrap();
+  builder
+    .addComputePass(`${name}/generate`, {
+      accesses: [{ resource: buffer, usage: 'storage-write' }],
+      encodeDirect: (encoder) => {
+        encoder.setPipeline(pipeline);
+        encoder.setBindGroup(0, bindings);
+        encoder.dispatchWorkgroups(copy.x, copy.y, copy.z);
+      },
+    })
+    .unwrap();
+  const view = builder
+    .view(target.graph, { dimension: '3d', baseMipLevel: 0, mipLevelCount: 1 })
+    .unwrap();
+  builder
+    .addCopyPass(`${name}/publish`, {
+      accesses: [
+        { resource: buffer, usage: 'copy-src' },
+        { resource: view, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder) =>
+        encoder.copyBufferToTexture(
+          { buffer: data, bytesPerRow: copy.bytesPerRow, rowsPerImage: copy.height },
+          { texture: target.texture.handle },
+          { width: copy.width, height: copy.height, depthOrArrayLayers: copy.depth },
+        ),
+    })
+    .unwrap();
 }
 
 function selectAllocation(state: State, output: string): Result<GeneratedAllocation, AssetError> {

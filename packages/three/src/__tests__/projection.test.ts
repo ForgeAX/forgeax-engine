@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import type { EntityHandle } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { readArrayRangesChangedSince, readMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import {
@@ -34,6 +34,7 @@ import {
   DirectionalLight,
   Float32BufferAttribute,
   Group,
+  HemisphereLight,
   InstancedMesh,
   LineBasicMaterial,
   LineSegments,
@@ -57,7 +58,7 @@ import {
   Texture,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contributions';
 import { cameraData } from '../camera';
 import * as sourceGeometry from '../geometry';
@@ -68,7 +69,8 @@ import { SceneProjection } from '../scene';
 import { SharedAssets } from '../shared-assets';
 import { setThreeSceneTracking } from '../source-changes';
 import { MeshUvs } from '../uv-projection';
-import { featureCases } from './features.fixture';
+import { featureCases, physicalSlotsForFeature } from './features.fixture';
+import { cookPhysicalFeature } from './node-inputs.commands';
 
 it('shares empty UV plans and observes a texture added after an untextured frame', () => {
   const geometry = new BoxGeometry();
@@ -165,27 +167,35 @@ it('keeps affine dashed-line admission exact after runtime mesh adoption', () =>
 });
 
 describe('Three source to native World', () => {
-  const featureAssets = new AssetRegistry();
-  let featureProjection: SceneProjection | undefined;
-  beforeAll(() => {
-    installDefaultAssetDecoders(featureAssets);
-  });
+  const featureProjections = new Map<
+    string,
+    { assets: AssetRegistry; projection: SceneProjection }
+  >();
   afterAll(() => {
-    featureProjection?.dispose();
-    featureAssets.dispose();
+    for (const { assets, projection } of featureProjections.values()) {
+      projection.dispose();
+      assets.dispose();
+    }
   });
   it.each(Object.entries(featureCases({ ...ThreeCore, ClippingGroup })))(
     'keeps %s geometry valid across the same source edits used by the GPU oracle',
     { timeout: 120000 },
     async (name, populate) => {
-      const assets = featureAssets;
-      // Cooked program admission belongs to the existing bounded async case.
-      featureProjection ??= new SceneProjection(
-        featureAssets,
-        undefined,
-        await prepareMaterialPrograms(featureAssets),
-      );
-      const projection = featureProjection;
+      const key = physicalSlotsForFeature(name) === undefined ? 'stock' : name;
+      let feature = featureProjections.get(key);
+      if (feature === undefined) {
+        const assets = new AssetRegistry();
+        try {
+          installDefaultAssetDecoders(assets);
+          const prepare = await prepareMaterialPrograms(assets, await cookPhysicalFeature(name));
+          feature = { assets, projection: new SceneProjection(assets, undefined, prepare) };
+        } catch (cause) {
+          assets.dispose();
+          throw cause;
+        }
+        featureProjections.set(key, feature);
+      }
+      const { assets, projection } = feature;
       const scene = new Scene(),
         camera = new PerspectiveCamera(50, 1, 0.1, 100);
       camera.coordinateSystem = WebGPUCoordinateSystem;
@@ -320,9 +330,12 @@ describe('Three source to native World', () => {
     assets = new AssetRegistry(),
     material: MeshBasicMaterial | MeshStandardMaterial = new MeshBasicMaterial({ color: 0xff8040 }),
     prepare?: Awaited<ReturnType<typeof prepareMaterialPrograms>>,
+    world?: World,
   ) {
     assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
-    const projection = new SceneProjection(assets, undefined, prepare);
+    const projection = new SceneProjection(assets, undefined, prepare, {
+      ...(world === undefined ? {} : { world }),
+    });
     owned.push({ projection, assets });
     const scene = new Scene();
     const camera = new PerspectiveCamera(60, 1, 0.1, 100);
@@ -1074,6 +1087,41 @@ describe('Three source to native World', () => {
     f.scene.remove(first, second);
     f.sync();
     expect(Array.from(sky()?.ambientIrradiance ?? [])).toEqual([0, 0, 0]);
+  });
+
+  it('projects camera-visible hemisphere irradiance and follows source edits', () => {
+    const f = fixture();
+    const group = new Group();
+    const hemi = new HemisphereLight(0xff0000, 0x0000ff, Math.PI);
+    f.scene.add(group);
+    group.add(hemi);
+    const sky = () =>
+      [...f.projection.world.query({ read: [Skylight] }).unwrap()][0]?.get(Skylight);
+    f.sync();
+    expect(Array.from(sky()?.color ?? [])).toEqual([1, 0, 0]);
+    expect(Array.from(sky()?.groundColor ?? [])).toEqual([0, 0, 1]);
+    expect(sky()?.intensity).toBe(1);
+
+    hemi.groundColor.set(0x00ff00);
+    hemi.intensity *= 0.5;
+    group.position.y = -2;
+    f.sync();
+    expect(Array.from(sky()?.color ?? [])).toEqual([0, 0.5, 0]);
+    expect(Array.from(sky()?.groundColor ?? [])).toEqual([0.5, 0, 0]);
+
+    hemi.layers.set(1);
+    f.sync();
+    expect(sky()?.intensity).toBe(0);
+    f.camera.layers.enable(1);
+    f.sync();
+    expect(sky()?.intensity).toBe(1);
+    group.visible = false;
+    f.sync();
+    expect(sky()?.intensity).toBe(0);
+    group.visible = true;
+    f.scene.remove(group);
+    f.sync();
+    expect(sky()?.intensity).toBe(0);
   });
 
   it('uses the frozen camera view cache independently of its world matrix', () => {
@@ -1901,6 +1949,34 @@ describe('Three source to native World', () => {
     expect(f.projection.world.get(entity, GlobalTransform).unwrap().world[12]).toBe(99);
   });
 
+  it('retains the admitted tracking settings across successive edits to one options object', () => {
+    const f = fixture();
+    setThreeSceneTracking(f.scene, true);
+    const buffers = {
+      depth: true,
+      stencil: false,
+      sortObjects: true,
+      opaque: true,
+      transparent: true,
+      updateMatrices: true,
+    };
+    const sync = () => {
+      f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), buffers);
+      return f.projection.sourceWork()?.mode;
+    };
+    try {
+      expect(sync()).toBe('full');
+      expect(sync()).toBe('tracked');
+      buffers.depth = false;
+      expect(sync()).toBe('full');
+      expect(sync()).toBe('tracked');
+      buffers.depth = true;
+      expect(sync()).toBe('full');
+    } finally {
+      f.projection.dispose();
+    }
+  });
+
   it('reads independent double-precision source poses while native rows move through the same page', () => {
     const f = fixture();
     const other = new Group();
@@ -1917,12 +1993,20 @@ describe('Three source to native World', () => {
     };
     try {
       f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), inputs);
+      const poses = f.projection.world.query({ changed: [Transform] }).unwrap();
+      Array.from(poses);
+      const otherEntity = f.entity(other);
+      const thirdEntity = f.entity(third);
       for (let frame = 1; frame <= 60; frame++) {
         const x = 1 + frame * 2 ** -32;
         other.position.x = x;
         third.position.y = -x;
         f.mesh.position.z = frame / 7;
         f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), inputs);
+        const changed = Array.from(poses, (row) => row.entity);
+        expect(changed).toContain(f.entity());
+        expect(changed.includes(otherEntity)).toBe(frame === 1);
+        expect(changed.includes(thirdEntity)).toBe(frame === 1);
         expect(other.matrix.elements[12]).toBe(x);
         expect(third.matrix.elements[13]).toBe(-x);
         expect(f.mesh.matrix.elements[14]).toBe(frame / 7);
@@ -2022,6 +2106,56 @@ describe('Three source to native World', () => {
     } finally {
       updates.mockRestore();
     }
+  });
+
+  it('publishes parented motion and compares Three poses with the current shared World columns', () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const f = fixture(assets, undefined, undefined, world);
+    const parent = new Group();
+    parent.add(f.mesh);
+    f.scene.add(parent);
+    setThreeSceneTracking(f.scene, true);
+    const sync = () =>
+      f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), {
+        ecsPoses: true,
+        updateMatrices: true,
+        depth: true,
+        stencil: false,
+        sortObjects: true,
+        opaque: true,
+        transparent: true,
+      });
+    const changes = world.query({ changed: [Transform] }).unwrap();
+    const changed = () => [...changes].map((row) => row.entity);
+
+    parent.position.x = 10;
+    f.mesh.position.x = 1;
+    sync();
+    const parentEntity = f.entity(parent);
+    const child = f.entity();
+    changed();
+    expect(f.projection.sourceWork()?.poseAuthority).toBe('ecs');
+
+    parent.position.x = 20;
+    f.mesh.position.x = 1 + 2 ** -30;
+    sync();
+    expect(changed()).toEqual([parentEntity]);
+    expect(world.get(child, GlobalTransform).unwrap().world[12]).toBe(21);
+    expect(f.mesh.matrix.elements[12]).toBe(1 + 2 ** -30);
+
+    world.set(child, Transform, { pos: [7, 0, 0] }).unwrap();
+    expect(changed()).toEqual([child]);
+    f.mesh.position.x = 1 + 2 ** -29;
+    sync();
+    expect(changed()).toEqual([child]);
+    expect(world.get(child, Transform).unwrap().pos[0]).toBe(1);
+    expect(world.get(child, GlobalTransform).unwrap().world[12]).toBe(21);
+    expect(f.mesh.matrix.elements[12]).toBe(1 + 2 ** -29);
+    expect(f.mesh.matrixWorld.elements[12]).toBe(21);
+
+    sync();
+    expect(changed()).toEqual([]);
   });
 
   it('reverses changed edges and retires replaced sources during sustained pose motion', () => {

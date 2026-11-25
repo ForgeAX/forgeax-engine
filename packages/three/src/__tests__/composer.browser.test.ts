@@ -1,6 +1,7 @@
 import {
   AmbientLight,
   BoxGeometry,
+  Fog,
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
@@ -97,6 +98,14 @@ it.each([
     );
     expect(bloomState()).toMatchObject({ state: 'active', passCount: 11, encodeCount: 11 });
 
+    if (renderPath === 'forward') {
+      scene.fog = new Fog(0x204060, 2, 9);
+      await completedFrame();
+      const key = renderer.inspect().renderer.featureGraph?.last.topologyKey;
+      expect(key).toContain('"forwardDisplay"');
+      expect(key).toContain('"samples":4');
+      expect(bloomState()).toMatchObject({ state: 'active', encodeCount: 11 });
+    }
     gtao.enabled = false;
     await completedFrame();
     expect(lighting()?.status).toBe('off');

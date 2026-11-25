@@ -3,6 +3,8 @@ import { mat4 } from '@forgeax/engine-math';
 import { type GraphTextureView, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
+import viewSource from '../../../shader/src/common.wgsl?raw';
+import depthPyramidSampleSource from '../../../shader/src/depth-pyramid-sample.wgsl?raw';
 import gbufferSource from '../../../shader/src/standard-gbuffer.wgsl?raw';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import { addDepthPyramidPasses } from '../depth-pyramid/graph';
@@ -41,6 +43,22 @@ fn surfaces(uv: vec2<f32>) -> vec2<f32> {
   let receiver = select(20.0, 6.0 / max(1.0 - dx, 0.001), dx < 1.0);
   let wall = select(20.0, 2.0 / max(dx, 0.001), dx > 0.0);
   return vec2<f32>(min(min(receiver, wall), 20.0), select(0.0, 1.0, wall < receiver));
+}
+`;
+
+// A flat source supplies an exact depth at each HZB level. Keep the mirror
+// narrower than a mip-1 texel so the step can leave it via the clear gap.
+const SSR_PLANAR_RECEIVER_DEPTH = 2;
+const SSR_PLANAR_SOURCE_DEPTH = 2.25;
+const SSR_PLANAR_RECEIVER_START = 28;
+const SSR_PLANAR_RECEIVER_END = 30;
+const SSR_PLANAR_SURFACES = /* wgsl */ `
+fn surfaces(uv: vec2<f32>) -> vec2<f32> {
+  let x = uv.x * ${SSR_GPU_PROBE_WIDTH}.0;
+  let receiver = x >= ${SSR_PLANAR_RECEIVER_START}.0 && x < ${SSR_PLANAR_RECEIVER_END}.0;
+  let source = uv.x >= 0.5;
+  let distance = select(20.0, ${SSR_PLANAR_RECEIVER_DEPTH}.0, receiver);
+  return vec2<f32>(select(distance, ${SSR_PLANAR_SOURCE_DEPTH}, source), f32(source));
 }
 `;
 
@@ -129,20 +147,12 @@ export interface SsrGpuDispatchOptions {
   readonly excludedSource?: boolean;
   readonly excludedReceiver?: boolean;
   readonly coordinateSource?: boolean;
+  readonly planarCoordinateSource?: boolean;
   readonly halfHitColor?: boolean;
-  /** A recessed grout strip, not a painted line on a flat wall. */
-  readonly recessedSource?: boolean;
 }
 
 function probeSurfaces(options: SsrGpuDispatchOptions) {
-  return options.recessedSource
-    ? SSR_TEST_SURFACES.replace(
-        'let wall = select(20.0, 2.0 / max(dx, 0.001), dx > 0.0);',
-        `let dy = (1.0 - uv.y * 2.0) / 1.732050808;
-  let front = 2.0 / max(dx, 0.001);
-  let wall = select(20.0, select(front, 2.12 / max(dx, 0.001), abs(dy * front) < 0.5), dx > 0.0);`,
-      )
-    : SSR_TEST_SURFACES;
+  return options.planarCoordinateSource ? SSR_PLANAR_SURFACES : SSR_TEST_SURFACES;
 }
 
 /** SSR sources plus the depth-pyramid sources its trace reads. */
@@ -173,17 +183,46 @@ function ssrHitUnweight(words: readonly number[], p: number, half: (value: numbe
   return 1 / Math.max(1 - Math.max(0, luma), 2 ** -11);
 }
 
+function decodeSsrHalf(value: number) {
+  const exponent = (value >> 10) & 31;
+  return (
+    (value & 0x8000 ? -1 : 1) *
+    (exponent === 0
+      ? (value & 1023) * 2 ** -24
+      : (1 + (value & 1023) / 1024) * 2 ** (exponent - 15))
+  );
+}
+
+/** Exact UV for a reflection from the left panel onto the fronto-parallel source. */
+export function ssrPlanarCoordinateErrors(words: readonly number[]) {
+  // The mirror normal (sqrt(3)/2, 0, 1/2) reflects -Z into
+  // (sqrt(3)/2, 0, -1/2). The orthographic viewport spans two world units.
+  const offset = ((SSR_PLANAR_SOURCE_DEPTH - SSR_PLANAR_RECEIVER_DEPTH) * Math.sqrt(3)) / 2;
+  const errors: number[] = [];
+  for (let y = 0; y < SSR_GPU_PROBE_HEIGHT; y++) {
+    for (let x = SSR_PLANAR_RECEIVER_START; x < SSR_PLANAR_RECEIVER_END; x++) {
+      const u = (x + 0.5) / SSR_GPU_PROBE_WIDTH + offset;
+      const v = (y + 0.5) / SSR_GPU_PROBE_HEIGHT;
+      // Mip 1 covers four scene pixels. Stay one such cell inside the source,
+      // so the analytic plane and the furthest-depth sample agree.
+      if (u < 0.5 + 4 / SSR_GPU_PROBE_WIDTH || v < 0.2 || v > 0.8) continue;
+      const p = (y * SSR_GPU_PROBE_WIDTH + x) * 4;
+      if (decodeSsrHalf(words[p + 3] ?? 0) <= 0.2) continue;
+      const unweight = ssrHitUnweight(words, p, decodeSsrHalf);
+      errors.push(
+        Math.max(
+          Math.abs(decodeSsrHalf(words[p] ?? 0) * unweight - u),
+          Math.abs(decodeSsrHalf(words[p + 1] ?? 0) * unweight - v),
+        ),
+      );
+    }
+  }
+  return errors;
+}
+
 /** Exact mirror/wall intersection independent of the production march. */
 export function ssrCoordinateErrors(words: readonly number[], recessedSource = false) {
-  const half = (value: number) => {
-    const exponent = (value >> 10) & 31;
-    return (
-      (value & 0x8000 ? -1 : 1) *
-      (exponent === 0
-        ? (value & 1023) * 2 ** -24
-        : (1 + (value & 1023) / 1024) * 2 ** (exponent - 15))
-    );
-  };
+  const half = decodeSsrHalf;
   const errors: number[] = [];
   for (let y = 0; y < SSR_GPU_PROBE_HEIGHT; y++) {
     for (let x = 0; x < SSR_GPU_PROBE_WIDTH; x++) {
@@ -242,14 +281,25 @@ export function ssrCoordinateErrors(words: readonly number[], recessedSource = f
 }
 
 /** Execute the production ray-depth function with genuine camera projections. */
-export async function runSsrViewDistanceProbe(device: RhiDevice, source: string) {
+export async function runSsrViewDistanceProbe(device: RhiDevice) {
+  const viewType = viewSource
+    .slice(
+      viewSource.indexOf('struct AtmosphereMedium'),
+      viewSource.indexOf('// Direct Mesh draws'),
+    )
+    .replace(/^#.*$/gm, '');
+  const pyramidSampling = depthPyramidSampleSource.replace(/^#.*$/gm, '');
   const module = createShaderModuleImmediate(device, {
-    code: `${source}
+    code: `${viewType}
+${pyramidSampling}
+@group(0) @binding(5) var<uniform> view: View;
 @group(1) @binding(0) var<storage, read_write> depthProbe : array<vec4<f32>>;
+fn probeViewDistance(z: f32) -> f32 {
+  let clip = view.worldViewProj * vec4<f32>(0.0, 0.0, z, 1.0);
+  return linearizeViewDepth(clip.z / clip.w, view.temporalProjection);
+}
 @compute @workgroup_size(1) fn probe_ssr_view_distance() {
-  depthProbe[0] = vec4<f32>(
-    projectWorldViewDistance(vec3<f32>(0.0, 0.0, -6.58)),
-    projectWorldViewDistance(vec3<f32>(0.0, 0.0, -12.0)), 0.0, 0.0);
+  depthProbe[0] = vec4<f32>(probeViewDistance(-6.58), probeViewDistance(-12.0), 0.0, 0.0);
 }`,
   }).unwrap();
   const viewLayout = device
@@ -398,8 +448,13 @@ export async function prepareSsrGpuDispatch(
 
 function seedSceneSource(options: SsrGpuDispatchOptions) {
   let source = SSR_GPU_SCENE_SEED_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options));
-  if (options.coordinateSource)
+  if (options.coordinateSource || options.planarCoordinateSource)
     source = source.replace('vec3<f32>(0.9, 0.18, 0.04)', 'vec3<f32>(uv, 0.5)');
+  if (options.planarCoordinateSource)
+    source = source.replace(
+      'vec3<f32>(0.853553391, 0.50, 0.853553391)',
+      'vec3<f32>(0.933012702, 0.50, 0.75)',
+    );
   if (options.sourceBackFacing)
     source = source.replace('vec3<f32>(0.0, 0.50, 0.50)', 'vec3<f32>(1.0, 0.50, 0.50)');
   if (options.excludedSource)
@@ -549,10 +604,10 @@ function seedOccluderPipeline(
   options: SsrGpuDispatchOptions,
   createModule: typeof createShaderModuleImmediate,
 ) {
-  const module = createModule(device, {
-    code: SSR_GPU_OCCLUDER_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options)),
-    label: 'ssr-occluder-seed',
-  });
+  let source = SSR_GPU_OCCLUDER_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options));
+  if (options.planarCoordinateSource)
+    source = source.replace('0.1 * (20.0 - z) / (19.9 * z)', '(20.0 - z) / 19.9');
+  const module = createModule(device, { code: source, label: 'ssr-occluder-seed' });
   if (!module.ok) throw module.error;
   return device
     .createRenderPipeline({
@@ -601,7 +656,31 @@ async function seedHitColor(
   return view;
 }
 
-/** Run repeated actual SSR graph dispatches and read back the scene and traced radiance. */
+function ssrProbeView(options: SsrGpuDispatchOptions) {
+  const viewPayload = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
+  const projection = mat4.create();
+  if (options.planarCoordinateSource) mat4.orthographicReverseZ(projection, -1, 1, 1, -1, 0.1, 20);
+  else mat4.perspectiveReverseZ(projection, Math.PI / 3, 2, 0.1, 20);
+  const inverseProjection = mat4.create();
+  mat4.invert(inverseProjection, projection);
+  viewPayload.set(projection, 0);
+  viewPayload.set(inverseProjection, 44);
+  viewPayload.set(projection, 196);
+  viewPayload.set(projection, 212);
+  // The depth-pyramid seed linearizes the depth attachment through the shared View
+  // projection range; keep this carrier's identity matrices paired with the
+  // same finite perspective range used by the admission fixture.
+  viewPayload[228] = 0.1;
+  viewPayload[229] = 20;
+  viewPayload[230] = Number(options.planarCoordinateSource === true);
+  viewPayload[236] = options.maxDistance ?? 12;
+  viewPayload[237] = 0.2;
+  viewPayload[238] = 0.6;
+  viewPayload[239] = options.enabled === false ? 0 : 1;
+  writeSsrQualityLanes(viewPayload, options.quality);
+  return viewPayload;
+}
+
 export async function runSsrGpuDispatch(
   device: RhiDevice,
   shaders: SsrProbeShaderSources,
@@ -666,26 +745,7 @@ export async function runSsrGpuDispatch(
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
-  const viewPayload = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
-  const projection = mat4.create();
-  mat4.perspectiveReverseZ(projection, Math.PI / 3, 2, 0.1, 20);
-  const inverseProjection = mat4.create();
-  mat4.invert(inverseProjection, projection);
-  viewPayload.set(projection, 0);
-  viewPayload.set(inverseProjection, 44);
-  viewPayload.set(projection, 196);
-  viewPayload.set(projection, 212);
-  // The depth-pyramid seed linearizes the depth attachment through the shared View
-  // projection range; keep this carrier's identity matrices paired with the
-  // same finite perspective range used by the admission fixture.
-  viewPayload[228] = 0.1;
-  viewPayload[229] = 20;
-  viewPayload[230] = 0;
-  viewPayload[236] = options.maxDistance ?? 12;
-  viewPayload[237] = 0.2;
-  viewPayload[238] = 0.6;
-  viewPayload[239] = options.enabled === false ? 0 : 1;
-  writeSsrQualityLanes(viewPayload, options.quality);
+  const viewPayload = ssrProbeView(options);
   const wroteView = device.queue.writeBuffer(viewUniformBuffer, 0, viewPayload);
   wroteView.unwrap();
   const view = graph
@@ -854,7 +914,9 @@ export async function runSsrGpuDispatch(
     encode: () => undefined,
   });
   responseSeed.unwrap();
+  const water = options.waterTrace;
   const depthPyramid = addDepthPyramidPasses(graph, {
+    reduction: 'furthest',
     execution: options.execution ?? 'compute',
     depth: depthSample,
     width: SSR_GPU_PROBE_WIDTH,
@@ -862,7 +924,6 @@ export async function runSsrGpuDispatch(
     view,
   });
   const pyramid = depthPyramid.unwrap().pyramid;
-  const water = options.waterTrace;
   let waterParamsBuffer: import('@forgeax/engine-rhi').Buffer | undefined;
   const waterParams = () => {
     const size = WATER_SSR_PARAMS_BYTES;
@@ -907,7 +968,6 @@ export async function runSsrGpuDispatch(
             depth: depthSample,
             normal: normal.view,
             coverage: fallback.view,
-            temporal: currentTemporal.view,
             inputParams: waterParams(),
             ...(water === 'history' ? { sceneColorHistory: fallback.view } : {}),
           },
@@ -944,7 +1004,7 @@ export async function runSsrGpuDispatch(
     .unwrap();
   const pyramidReadbackBuffer = device
     .createBuffer({
-      label: 'depth-pyramid-readback',
+      label: 'hzb-readback',
       size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
@@ -1015,7 +1075,7 @@ export async function runSsrGpuDispatch(
   traceCopy.unwrap();
   const pyramidReadback = graph
     .importBuffer(
-      'depth-pyramid-readback',
+      'hzb-readback',
       {
         size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
         usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
@@ -1025,7 +1085,7 @@ export async function runSsrGpuDispatch(
     .unwrap();
   const pyramidLevel0 = pyramid.levels[0];
   if (pyramidLevel0 === undefined) throw new Error('depth pyramid mip 0 missing');
-  const pyramidCopy = graph.addCopyPass('depth-pyramid-readback', {
+  const pyramidCopy = graph.addCopyPass('hzb-readback', {
     accesses: [
       { resource: pyramidLevel0, usage: 'copy-src' },
       { resource: pyramidReadback, usage: 'copy-dst' },

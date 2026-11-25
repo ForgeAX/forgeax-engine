@@ -118,7 +118,9 @@ import {
 } from './schedule';
 import {
   observeScheduleRuns as observeWorldScheduleRuns,
+  type ScheduleObservers,
   type ScheduleRunObserver,
+  scheduleObservers,
 } from './schedule-observation';
 import { FixedUpdate, isDomainSchedule, type ScheduleToken, Update } from './schedule-token';
 import {
@@ -302,6 +304,7 @@ const NO_LINKED_CHILDREN: readonly EntityHandle[] = Object.freeze([]);
  * and recyclable free-list.
  */
 export class World {
+  [scheduleObservers]: ScheduleObservers | undefined;
   readonly [worldRead]: WorldRead = {
     hasRelationshipEdge: (component, source, target) => {
       const role = relationshipRole(component);

@@ -1,9 +1,14 @@
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import {
+  refineTextureClusterMembership,
+  type TextureClusterMembershipScratch,
+} from '../cluster-binner';
+import {
   type DirectLightSnapshot,
   packDirectLightSlot,
   type ReflectedDirectLightSlotLayout,
 } from '../light-buffer-layout';
+import type { PreparedStandardLighting } from '../pipeline/standard-lighting/prepare';
 import type { StandardClusterTextureLayout } from '../pipeline/standard-lighting/texture';
 
 /** Persistent CPU image for the WebGL2 Cluster texture's host-owned regions. */
@@ -18,11 +23,61 @@ export class ClusterTextureTable {
   private usedRows = 0;
   private rowBytes = 0;
 
+  private readonly membershipScratch: TextureClusterMembershipScratch = {};
+  private membership:
+    | {
+        readonly bounds: symbol;
+        readonly reservation: Uint32Array;
+        readonly near: number;
+        readonly far: number;
+        readonly grid: Uint32Array;
+        readonly indices: Uint32Array;
+      }
+    | undefined;
+
   constructor(width: number, height: number, lightSlotCount: number) {
     this.words = new Uint32Array(width * height * 4);
     this.sources.length = lightSlotCount;
     this.projector.length = lightSlotCount;
     this.channelMappings = new Uint32Array(lightSlotCount);
+  }
+
+  /** Cache against the exact producer bounds, including cone/orientation edits. */
+  prepareMembership(prepared: PreparedStandardLighting): {
+    readonly grid: Uint32Array;
+    readonly indices: Uint32Array;
+  } {
+    const reservation = prepared.clusterGrid;
+    const camera = prepared.camera;
+    const bounds = prepared.publication?.bounds.id;
+    const previous = this.membership;
+    if (
+      bounds !== undefined &&
+      previous?.bounds === bounds &&
+      previous.reservation === reservation &&
+      previous.near === camera?.near &&
+      previous.far === camera?.far
+    ) {
+      return previous;
+    }
+    const payload = prepared.boundsColumn?.uploadWords() ?? prepared.lightBounds;
+    if (camera === undefined || payload[5] !== 1 || prepared.membershipEntryCount === 0)
+      return { grid: reservation, indices: prepared.lightIndexList };
+    const refined = refineTextureClusterMembership(
+      payload,
+      prepared.membershipLightCount,
+      prepared.layout.grid,
+      reservation,
+      prepared.membershipEntryCount,
+      camera.near,
+      camera.far,
+      prepared.clusterEntryCapK === undefined ? prepared.lightIndexList : undefined,
+      this.membershipScratch,
+    );
+    if (bounds !== undefined) {
+      this.membership = { bounds, reservation, near: camera.near, far: camera.far, ...refined };
+    }
+    return refined;
   }
 
   write(input: {

@@ -17,6 +17,7 @@ import {
   rowMaterialSlot,
   rowMaterialSourcesKey,
 } from './row-materials';
+import { compactSourceDrawAt } from './source-draw-indices';
 
 type Draws = Map<number, readonly GpuDrivenBatch[]>;
 type Meshes = Map<number, Draws>;
@@ -231,6 +232,7 @@ export class GpuDrawSelection {
           batch.prepared?.identity.material,
           batch.prepared?.identity.deformation,
           batch.lod?.coverages.length ?? 0,
+          filter,
         )
       )
         continue;
@@ -246,12 +248,14 @@ export class GpuDrawSelection {
    */
   readonly #forwardMasks = new WeakMap<RenderableSnapshot, number>();
   readonly #temporalMasks = new WeakMap<RenderableSnapshot, number>();
+  readonly #depthVelocityMasks = new WeakMap<RenderableSnapshot, number>();
 
   private ownsUncached(
     source: RenderableSnapshot,
     draw: GpuDrivenDrawSnapshot,
     compactIndex: number,
     passKind: PassKind,
+    filter?: RenderPipelineGpuDrivenFilter,
   ): boolean {
     for (const batch of this.batches(source, draw, compactIndex) ?? [])
       if (
@@ -262,6 +266,7 @@ export class GpuDrawSelection {
             batch.prepared?.identity.material,
             batch.prepared?.identity.deformation,
             batch.lod?.coverages.length ?? 0,
+            filter,
           ))
       )
         return true;
@@ -269,8 +274,17 @@ export class GpuDrawSelection {
   }
 
   /** Bit i answers compact draw i; the WeakMap already distinguishes a cached zero. */
-  private ownershipMask(source: RenderableSnapshot, passKind: PassKind): number {
-    const masks = passKind === 'temporal' ? this.#temporalMasks : this.#forwardMasks;
+  private ownershipMask(
+    source: RenderableSnapshot,
+    passKind: PassKind,
+    filter?: RenderPipelineGpuDrivenFilter,
+  ): number {
+    const masks =
+      passKind !== 'temporal'
+        ? this.#forwardMasks
+        : filter === 'opaque-depth-velocity'
+          ? this.#depthVelocityMasks
+          : this.#temporalMasks;
     let mask = masks.get(source);
     if (mask !== undefined) return mask;
     mask = 0;
@@ -278,7 +292,7 @@ export class GpuDrawSelection {
     if (draws !== undefined && gpuDrivenGeometryEligible(source))
       for (let index = 0; index < draws.length; index++) {
         const draw = draws[index];
-        if (draw !== undefined && this.ownsUncached(source, draw, index, passKind))
+        if (draw !== undefined && this.ownsUncached(source, draw, index, passKind, filter))
           mask |= 1 << index;
       }
     masks.set(source, mask);
@@ -290,6 +304,7 @@ export class GpuDrawSelection {
     draw: GpuDrivenDrawSnapshot,
     compactIndex: number,
     passKind: PassKind = 'forward',
+    filter?: RenderPipelineGpuDrivenFilter,
   ): boolean {
     if (this.#byBinding.size === 0) return false;
     const memoized =
@@ -299,9 +314,9 @@ export class GpuDrawSelection {
       source.gpuDrivenDraws !== undefined &&
       source.gpuDrivenDraws.length <= MASK_DRAWS &&
       source.gpuDrivenDraws[compactIndex] === draw;
-    if (memoized) return (this.ownershipMask(source, passKind) & (1 << compactIndex)) !== 0;
+    if (memoized) return (this.ownershipMask(source, passKind, filter) & (1 << compactIndex)) !== 0;
     if (!gpuDrivenGeometryEligible(source)) return false;
-    return this.ownsUncached(source, draw, compactIndex, passKind);
+    return this.ownsUncached(source, draw, compactIndex, passKind, filter);
   }
 
   /** Native view ranges are ordered by slot; lookup never expands them into entity claims. */
@@ -312,11 +327,11 @@ export class GpuDrawSelection {
     generation: number,
   ): boolean {
     if (this.#byBinding.size === 0 || !gpuDrivenGeometryEligible(source)) return false;
-    const compactIndex = source.gpuDrivenDraws?.findIndex(
-      (draw, index) => gpuDrivenSourceDrawItemIndex(draw, index) === sourceDrawIndex,
-    );
-    const draw = compactIndex === undefined ? undefined : source.gpuDrivenDraws?.[compactIndex];
-    if (draw === undefined || compactIndex === undefined) return false;
+    const draws = source.gpuDrivenDraws;
+    const compactIndex = compactSourceDrawAt(draws, sourceDrawIndex);
+    if (compactIndex < 0) return false;
+    const draw = draws?.[compactIndex];
+    if (draw === undefined) return false;
     for (const batch of this.batches(source, draw, compactIndex) ?? []) {
       if (batch.binding === undefined || !sameGeometry(source, draw, batch.binding)) continue;
       const candidates = batch.candidates;
@@ -339,11 +354,10 @@ export class GpuDrawSelection {
   }
 
   has(source: RenderableSnapshot, drawItemIndex: number): boolean {
-    const index = source.gpuDrivenDraws?.findIndex(
-      (draw, index) => gpuDrivenSourceDrawItemIndex(draw, index) === drawItemIndex,
-    );
-    const draw = index === undefined ? undefined : source.gpuDrivenDraws?.[index];
-    return draw !== undefined && index !== undefined && this.owns(source, draw, index);
+    const draws = source.gpuDrivenDraws;
+    const index = compactSourceDrawAt(draws, drawItemIndex);
+    const draw = index < 0 ? undefined : draws?.[index];
+    return draw !== undefined && this.owns(source, draw, index);
   }
 
   ownsAll(source: RenderableSnapshot): boolean {

@@ -21,7 +21,7 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import { temporalAnalysisCapacity } from '../pipeline/render-extent';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { CameraSnapshot } from '../render-contract';
-import { ssrColorExtent, ssrColorMipCount } from '../ssr/scene-color-input';
+import { ssrColorExtent } from '../ssr/scene-color-input';
 import { requireTsrCapabilities, usesTsrCompute } from '../tsr/capabilities';
 import { TSR_ANALYSIS_FORMATS } from '../tsr/layout';
 
@@ -165,7 +165,6 @@ function createState(
       createSurface(device, childScope, label, width, height, format, storage);
     const colorSize =
       algorithm === 'scene-color' ? ssrColorExtent({ width, height }) : { width, height };
-    const colorMipCount = algorithm === 'scene-color' ? ssrColorMipCount(colorSize) : 1;
     const colorSurface = (slot: string) =>
       createSurface(
         device,
@@ -175,7 +174,6 @@ function createState(
         colorSize.height,
         TEMPORAL_HISTORY_FORMATS.color,
         storage,
-        colorMipCount,
       );
     const analysisPair = (kind: 'guide' | 'moire'): [TemporalSurface, TemporalSurface] => [
       createSurface(

@@ -13,6 +13,7 @@ import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderPipelineFrame } from '../../render-pipeline';
 import type { MaterialSnapshot } from '../../render-system-extract';
+import { JoinedFrameRows } from '../../scene/frame-list';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
 import { ProbeBlendSceneProjection } from '../../scene/probe-blend';
@@ -1116,8 +1117,9 @@ it('addresses each pass row once under the combined index with its last dispatch
   const f = fixture(1);
   const first = request('Forward', { gpu: false });
   const second = request('Forward', { gpu: false, passKind: 'temporal' });
+  const phases = new ViewDrawPhases();
   const prepared = prepareScenePasses([first, second], {
-    phases: new ViewDrawPhases(),
+    phases,
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -1136,6 +1138,13 @@ it('addresses each pass row once under the combined index with its last dispatch
     world: f.world,
     camera: undefined,
   });
+  const parts = phases.scenePassWork?.queued;
+  assert(parts);
+  assert(prepared.dispatch instanceof JoinedFrameRows);
+  expect(prepared.dispatch.ranges.map((range) => range.rows)).toHaveLength(2);
+  expect(prepared.dispatch.ranges[0]?.rows).toBe(parts[0]?.work.dispatch);
+  expect(prepared.dispatch.ranges[1]?.rows).toBe(parts[1]?.work.dispatch);
+  expect(prepared.dispatch.at(-1)).toBe(parts[1]?.work.dispatch.at(-1));
   const perPass = prepared.rows.length / 2;
   expect(perPass).toBeGreaterThan(0);
   expect(prepared.rows.map((row) => row.renderableIndex)).toEqual(

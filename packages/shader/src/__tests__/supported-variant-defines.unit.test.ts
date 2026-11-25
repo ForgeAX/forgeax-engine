@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { supportedVariantDefines } from '../supported-variant-defines.js';
+import { ShaderVariantDomain, supportedVariantDefines } from '../supported-variant-defines.js';
 import { isSupportedVariantDefines } from '../variant-permutation-rules.js';
 
 function originalRows(axes: readonly string[]): Record<string, boolean>[] {
@@ -39,24 +39,81 @@ it('retains the exact Standard matrix and all four maintained lean Water lanes',
   const rows = [...supportedVariantDefines(axes)];
   const constrained = [...supportedVariantDefines(axes, { STORAGE_BUFFER_AVAILABLE: false })];
   expect(constrained).toEqual(rows.filter((row) => row.STORAGE_BUFFER_AVAILABLE === false));
-  expect(rows).toHaveLength(11272);
+  expect(rows).toHaveLength(13000);
   expect(rows.every(isSupportedVariantDefines)).toBe(true);
+  const withoutSsr = rows.filter((row) => !row.FORWARD_INLINE_SSR);
+  const withSsr = rows.filter((row) => row.FORWARD_INLINE_SSR);
+  expect(withoutSsr).toHaveLength(11272);
+  expect(withSsr).toHaveLength(1728);
+  const withoutSsrKeys = new Set(withoutSsr.map((row) => JSON.stringify(row)));
+  for (const row of withSsr) {
+    expect(row.EXTENDED_LIGHTING_AVAILABLE).toBe(true);
+    expect(row.REFLECTION_FALLBACK_AVAILABLE).toBe(false);
+    expect(row.VISIBLE_SURFACE_AVAILABLE).toBe(false);
+    expect(withoutSsrKeys.has(JSON.stringify({ ...row, FORWARD_INLINE_SSR: false }))).toBe(true);
+  }
   const added = rows.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
-  const legacy = rows.filter((row) => !added.includes(row));
-  expect(added).toHaveLength(320);
-  expect(legacy).toHaveLength(10952);
-  const legacyKeys = new Set(legacy.map((row) => JSON.stringify(row)));
+  expect(added.filter((row) => !row.FORWARD_INLINE_SSR)).toHaveLength(320);
+  expect(added.filter((row) => row.FORWARD_INLINE_SSR)).toHaveLength(80);
+  const simpleShadowKeys = new Set(
+    rows.filter((row) => row.DIRECTIONAL_SHADOW_SIMPLE).map((row) => JSON.stringify(row)),
+  );
   for (const row of added)
-    expect(legacyKeys.has(JSON.stringify({ ...row, DIRECTIONAL_SHADOW_SIMPLE: true }))).toBe(true);
+    expect(simpleShadowKeys.has(JSON.stringify({ ...row, DIRECTIONAL_SHADOW_SIMPLE: true }))).toBe(
+      true,
+    );
   const lean = rows.filter((row) => row.STANDARD_LEAN_INPUTS === true);
   for (const waves of [true, false]) {
     for (const rgba16 of [true, false]) {
       const lane = lean.filter(
         (row) => row.WATER_WAVES_AVAILABLE === waves && row.WATER_INFO_RGBA16 === rgba16,
       );
-      expect(lane).toHaveLength(640);
-      expect(lane.filter((row) => added.includes(row))).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
+      expect(lane.filter((row) => !row.FORWARD_INLINE_SSR)).toHaveLength(640);
+      expect(lane.filter((row) => row.FORWARD_INLINE_SSR)).toHaveLength(96);
     }
+  }
+});
+
+it('selects the same legal row as exhaustive scoring for every partial assignment', () => {
+  const axes = [
+    'PROBE_BLEND_AVAILABLE',
+    'STORAGE_BUFFER_AVAILABLE',
+    'CLUSTER_FORWARD_AVAILABLE',
+    'CUSTOM_A',
+    'CUSTOM_B',
+  ];
+  const domain = new ShaderVariantDomain(axes);
+  const preferences = [
+    ['PROBE_BLEND_AVAILABLE', true, 2],
+    ['STORAGE_BUFFER_AVAILABLE', false, 2],
+    ['CLUSTER_FORWARD_AVAILABLE', false, 1],
+  ] as const;
+  const rows = [...supportedVariantDefines(axes)]
+    .map((defines) => ({
+      defines,
+      key: axes.every((axis) => defines[axis])
+        ? ''
+        : [...axes]
+            .sort()
+            .map((axis) => `${axis}=${defines[axis]}`)
+            .join('+'),
+      score: preferences.reduce(
+        (sum, [axis, value, weight]) => sum + (defines[axis] === value ? weight : 0),
+        0,
+      ),
+    }))
+    .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+  for (let code = 0; code < 3 ** axes.length; code++) {
+    const constraints: Record<string, boolean> = {};
+    let digits = code;
+    for (const axis of axes) {
+      const digit = digits % 3;
+      if (digit !== 0) constraints[axis] = digit === 2;
+      digits = Math.floor(digits / 3);
+    }
+    const expected = rows.find(({ defines }) =>
+      Object.entries(constraints).every(([axis, value]) => defines[axis] === value),
+    );
+    expect(domain.preferred(constraints, preferences)).toEqual(expected?.defines);
   }
 });

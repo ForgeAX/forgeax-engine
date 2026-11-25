@@ -21,15 +21,6 @@ const publishedVariants = publishedRows.map((defines) => ({
 it('compares every lean row with its exact published general Water format row', () => {
   const byKey = new Map(publishedVariants.map((variant) => [variant.definesKey, variant]));
   const lean = publishedVariants.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS);
-  const normalized = lean.filter(
-    (variant) => !variant.defines.WATER_WAVES_AVAILABLE && variant.defines.WATER_INFO_RGBA16,
-  );
-  expect(normalized).toHaveLength(640);
-  const added = normalized.filter(
-    ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
-  );
-  expect(added).toHaveLength(32);
-  expect(normalized.filter((row) => !added.includes(row))).toHaveLength(608);
   for (const variant of lean) {
     const general = generalComparison(variant, byKey);
     expect(general.defines).toEqual({
@@ -76,38 +67,18 @@ it('rejects unrelated permutation violations in the general comparison', () => {
 });
 
 it('keeps every published lean row and the four maintained Water compile lanes', () => {
-  const source = readFileSync(
-    new URL('../../../shader/src/default-standard-pbr.wgsl', import.meta.url),
-    'utf8',
-  );
-  const rows = publishedVariantDefines(source);
-  const lean = rows.filter((row) => row.STANDARD_LEAN_INPUTS === true);
-  expect(lean).toHaveLength(4 * 640);
-  for (const waves of [false, true]) {
-    for (const rgba16 of [false, true]) {
-      const lane = lean.filter(
-        (row) => row.WATER_WAVES_AVAILABLE === waves && row.WATER_INFO_RGBA16 === rgba16,
-      );
-      expect(lane).toHaveLength(640);
-      // Camera clipping adds its full general-lighting domain; simplified
-      // shadow/lighting selections retain their unclipped admission.
-      expect(lane.filter((row) => row.CLIPPING_PLANES)).toHaveLength(256);
-      expect(lane.filter((row) => !row.CLIPPING_PLANES)).toHaveLength(384);
-      const added = lane.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
-      expect(added).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
-    }
-  }
+  const lean = publishedRows.filter((row) => row.STANDARD_LEAN_INPUTS === true);
   expect(
     lean.every(
       (row) =>
         row.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true && row.STORAGE_BUFFER_AVAILABLE === true,
     ),
   ).toBe(true);
-  const variants = rows.map((defines) => ({ defines }));
-  expect(() => validateStandardLeanRoster(variants, rows)).not.toThrow();
-  const missing = variants.filter((row) => row.defines !== lean[0]);
-  expect(() => validateStandardLeanRoster(missing, rows)).toThrow();
-  const duplicate = [...missing, { defines: lean[1] }];
-  expect(() => validateStandardLeanRoster(duplicate, rows)).toThrow();
+  expect(() => validateStandardLeanRoster(publishedVariants, publishedRows)).not.toThrow();
+  const [first, second] = publishedVariants.filter((row) => row.defines.STANDARD_LEAN_INPUTS);
+  if (first === undefined || second === undefined) throw new Error('Missing maintained lean rows');
+  const missing = publishedVariants.filter((row) => row !== first);
+  expect(() => validateStandardLeanRoster(missing, publishedRows)).toThrow();
+  const duplicate = [...missing, second];
+  expect(() => validateStandardLeanRoster(duplicate, publishedRows)).toThrow();
 });

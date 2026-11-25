@@ -43,8 +43,11 @@ interface AgentOnboarding {
 
 export function agentOnboarding(sdk: SdkContext, projectRoot?: string): AgentOnboarding {
   const root = projectRoot ?? sdk.root;
+  const guide = sdk.manifest.skills.some(({ id }) => id === 'forgeax-engine-authoring')
+    ? 'forgeax-engine-authoring'
+    : 'forgeax-engine-sdk';
   return {
-    read: [resolve(root, 'AGENTS.md'), resolve(root, 'skills', 'forgeax-engine-sdk', 'SKILL.md')],
+    read: [resolve(root, 'AGENTS.md'), resolve(root, 'skills', guide, 'SKILL.md')],
     ...(projectRoot === undefined
       ? {
           templateSelection: {
@@ -63,8 +66,10 @@ function sdkInitPath(sdk: SdkContext): string {
   return resolve(sdk.root, ...SDK_INIT_PATH);
 }
 
-export function sdkProjectInstallArgs(store: string | undefined): string[] {
-  return sdkInstallArgs(store, true);
+export function sdkProjectInstallArgs(store: string | undefined, embedded = false): string[] {
+  const args = sdkInstallArgs(store, true);
+  if (embedded) args[1] = '--no-frozen-lockfile';
+  return args;
 }
 
 function sdkInstallArgs(store: string | undefined, ignoreScripts = false): string[] {

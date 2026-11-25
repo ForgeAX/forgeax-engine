@@ -10,7 +10,7 @@ import {
   type RenderableSnapshot,
 } from '../render-system-extract';
 import {
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
 } from '../temporal/scene-data';
 import { createSceneDataCatalog } from '../temporal/scene-data-catalog';
@@ -20,8 +20,10 @@ import {
   type StandardSceneDataContributor,
   sameSceneSurfaceAdmission,
   sceneDataSurfaceBindings,
+  selectSceneDataDispatchPass,
   standardAoSceneDataUnavailable,
   standardSceneDataContributorForDispatch,
+  standardSceneDataContributorFromColumns,
   standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
 
@@ -90,7 +92,7 @@ it('serializes each complete contributor key once instead of during every sort c
     materialShaderId: 'forgeax::default-standard-pbr',
     geometry: 'mesh',
     deformation: 'rigid' as const,
-    entryPoint: 'fs_ao_input',
+    entryPoint: 'fs_depth_masked',
     selectedProgram: `program-${index}`,
   }));
   const input = {
@@ -223,7 +225,7 @@ it('uses the authored Standard root while preserving the selected cooked program
     ],
     materialProgramKeys: { forward: selectedProgram },
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+      forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry: 'mesh', vertexColor: false },
     materialPublication: {
@@ -280,7 +282,7 @@ it('uses the authored Standard root while preserving the selected cooked program
   expect(contributor).toMatchObject({
     geometry: 'mesh',
     deformation: 'rigid',
-    entryPoint: 'fs_ao_input',
+    entryPoint: 'fs_depth_masked',
   });
   const supportedAdmission = createStandardSceneSurfaceAdmission({
     viewIdentity: 'view/1',
@@ -333,15 +335,15 @@ it('uses the authored Standard root while preserving the selected cooked program
         authoredShaderId: 'forgeax::default-standard-pbr',
         canonicalStandardPbr: true,
         selectedPass: 'forward',
-        expectedFragmentEntry: 'fs_ao_input',
-        publishedFragmentEntries: ['fs_ao_input'],
+        expectedFragmentEntry: 'fs_depth_masked',
+        publishedFragmentEntries: ['fs_depth_masked'],
         registryLookupKey: selectedProgram,
         programCandidates: [
           {
             pass: 'forward',
             selectedProgramKey: selectedProgram,
             registryLookupKey: selectedProgram,
-            fragmentEntryPoints: ['fs_ao_input'],
+            fragmentEntryPoints: ['fs_depth_masked'],
           },
         ],
       },
@@ -373,7 +375,7 @@ it('uses the authored Standard root while preserving the selected cooked program
   });
   let catalogError: unknown;
   try {
-    catalog.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+    catalog.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
   } catch (error) {
     catalogError = error;
   }
@@ -405,7 +407,7 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
     ],
     materialProgramKeys: { forward: 'cooked:standard-forward' },
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+      forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry: 'mesh', vertexColor: false },
     materialPublication: {
@@ -471,7 +473,7 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
         rejectedField: 'fragment-entry-point',
         selectedPass: 'forward',
         expectedFragmentEntry: 'fs_gbuffer',
-        publishedFragmentEntries: ['fs_ao_input'],
+        publishedFragmentEntries: ['fs_depth_masked'],
       },
     ],
   });
@@ -648,7 +650,7 @@ it.each([
     ],
     materialProgramKeys: { forward: 'cooked:unlit-forward' },
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+      forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry, vertexColor: false },
   } as unknown as MaterialSnapshot;
@@ -693,9 +695,9 @@ it.each([
 });
 
 it.each([
-  ['forgeax::pbr-skin', 'forward', 'fs_ao_input', 'available'],
-  ['forgeax_material::pbr-skin', 'forward', 'fs_ao_input', 'available'],
-  ['custom::pbr-skin', 'forward', 'fs_ao_input', 'unavailable'],
+  ['forgeax::pbr-skin', 'forward', 'fs_depth_masked', 'available'],
+  ['forgeax_material::pbr-skin', 'forward', 'fs_depth_masked', 'available'],
+  ['custom::pbr-skin', 'forward', 'fs_depth_masked', 'unavailable'],
   ['forgeax::pbr-skin', 'deferred', 'fs_gbuffer', 'available'],
   ['forgeax_material::pbr-skin', 'deferred', 'fs_gbuffer', 'available'],
   ['custom::pbr-skin', 'deferred', 'fs_gbuffer', 'unavailable'],
@@ -756,7 +758,7 @@ it('reuses an available proof only after checking current producer-owned contrib
     ],
     materialProgramKeys: { forward: 'cooked:forward' },
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+      forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry: 'mesh', vertexColor: false },
   } as unknown as MaterialSnapshot;
@@ -837,7 +839,9 @@ function programObservationFixture(fixed: boolean) {
     ],
     materialProgramKeys: { forward: 'cooked:forward' },
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] }] },
+      forward: {
+        entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment' as const, bindings: [] }],
+      },
     },
     materialContext: { geometry: 'mesh' as const, vertexColor: false },
     materialPublication: {
@@ -920,6 +924,63 @@ it('serializes fixed program facts once while keeping each contribution current'
   expect(changed?.selectedProgram).not.toBe(first.selectedProgram);
   expect(first.selectedProgram).toContain('program-hash-1');
   expect(first.facts?.selectedProgramFacts?.artifactHash).toBe('program-hash-1');
+});
+
+it('serializes each live Pass publication and selected program once per contributor', () => {
+  const f = programObservationFixture(false);
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    const first = f.produce();
+    const writes = stringify.mock.calls.map(([value]) => value);
+    expect(
+      writes.filter(
+        (value) => Array.isArray(value) && value[0] === f.source.materialPublication.identity,
+      ),
+    ).toHaveLength(1);
+    expect(writes.filter((value) => value?.artifactHash === 'program-hash-1')).toHaveLength(1);
+    const [program] = f.source.materialPublication.programs;
+    if (program === undefined) throw new Error('missing live material program');
+    program.artifactHash = 'next';
+    expect(f.produce()?.selectedProgram).not.toBe(first?.selectedProgram);
+  } finally {
+    stringify.mockRestore();
+  }
+});
+
+it('observes live program metadata between two members of the same dispatch work', () => {
+  const f = programObservationFixture(false);
+  const dispatch = {
+    materialHandle: 31,
+    materialShaderId: 'cooked:forward',
+    tags: { LightMode: 'Forward' },
+    passIndex: 0,
+  };
+  const group = selectSceneDataDispatchPass(f.material, dispatch, 'forward');
+  const row = { material: f.material, materials: [f.material] } as unknown as RenderableSnapshot;
+  const first = standardSceneDataContributorFromColumns(
+    row,
+    row,
+    1,
+    dispatch,
+    'forward',
+    undefined,
+    group,
+  );
+  const [entry] = f.source.materialProgramInputs.forward.entryPoints;
+  if (entry === undefined) throw new Error('missing live program entry');
+  entry.name = 'changed';
+  const next = standardSceneDataContributorFromColumns(
+    row,
+    row,
+    2,
+    dispatch,
+    'forward',
+    undefined,
+    group,
+  );
+  expect(first?.entryPoint).toBe('fs_depth_masked');
+  expect(next?.entryPoint).toBeUndefined();
+  expect(next?.facts?.publishedFragmentEntries).toEqual(['changed']);
 });
 
 it('keeps mutable and accessor program metadata live despite shallow ownership flags', () => {
@@ -1099,7 +1160,7 @@ it('reuses complete fixed contributor observations and keeps held proofs indepen
   expect(deferred?.forwardOnly).toBe(true);
   expect(deferred?.facts?.expectedFragmentEntry).toBe('fs_gbuffer');
   expect(first.facts?.morphWeightsPresent).toBe(false);
-  expect(first.facts?.expectedFragmentEntry).toBe('fs_ao_input');
+  expect(first.facts?.expectedFragmentEntry).toBe('fs_depth_masked');
   f.material.adopt(
     Object.freeze({
       ...f.snapshot,
@@ -1261,7 +1322,7 @@ function frozenSurfaceMaterial(handle: number, module: string): MaterialResource
         ],
         materialProgramKeys: { forward: programKey },
         materialProgramInputs: {
-          forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+          forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
         },
         materialContext: { geometry: 'mesh', vertexColor: false },
         materialPublication: {

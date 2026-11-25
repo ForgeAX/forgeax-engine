@@ -1,5 +1,6 @@
 import { CONVOY_HARDWARE_SLOTS } from './convoy-surfaces.ts';
-import { type AssetsJob, bakeMaps } from '@forgeax/engine/modeling';
+import { type AssetsJob, bakeMaps, bakeMapsWithGpu } from '@forgeax/engine/modeling';
+import { withBuildGpuDevice } from '@forgeax/engine/devkit/plugin-build';
 import { ok } from '@forgeax/engine/types';
 import { convoyBakeSettings, prepareConvoyAssets } from './convoy-model.ts';
 import { finishConvoyTextures } from './convoy-finish.ts';
@@ -16,9 +17,14 @@ export const CONVOY_OUTPUT_KEYS = [
 /** One deferred asset set shares geometry, bake correspondence and delivery maps. */
 export const CONVOY_JOB: AssetsJob<{ readonly resolution: number }> = {
   kind: 'assets', name: 'game-3d-convoy',
-  build: ({ resolution }, { packageId, cache }) => {
+  build: async ({ resolution }, { packageId, cache }) => {
     const { assets, bakeBase: base, bakeDetail: detail } = prepareConvoyAssets(resolution, packageId);
-    const baked = bakeMaps({ base, detail, ...convoyBakeSettings(resolution), resolution, mips: false, ...(cache === undefined ? {} : { cache }) });
+    const settings = { base, detail, ...convoyBakeSettings(resolution), resolution, mips: false,
+      ...(cache === undefined ? {} : { cache }) };
+    const baked = await withBuildGpuDevice(device => device
+      ? bakeMapsWithGpu(settings, device)
+      : bakeMaps(settings));
+
     if (!baked.ok) return baked;
     const maps = finishConvoyTextures(baked.value.textures);
     return ok({ ...assets,

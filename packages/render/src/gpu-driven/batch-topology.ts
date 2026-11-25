@@ -27,6 +27,7 @@ import { inheritTaskHeaders } from './fixed-task-plan';
 import { MeshBatchProjection, type MeshExecutionPlans } from './mesh-batches';
 import type { PreparedGpuDrivenDraw } from './prepared-draw';
 import {
+  type RowGroup,
   type RowMaterialGroup,
   RowMaterialMembers,
   rowMaterialResource,
@@ -338,6 +339,10 @@ export interface EligibleGpuDrivenDraw {
   readonly lod?: GpuDrivenBatchLod;
 }
 
+interface MembershipCandidate extends EligibleGpuDrivenDraw {
+  readonly memberGroup?: RowGroup;
+}
+
 interface MembershipDraw {
   readonly sourceDrawIndex: number;
   readonly batchText: string;
@@ -433,8 +438,8 @@ let recentEligible:
   | {
       readonly snapshot: RenderableSnapshot;
       readonly reflected: boolean;
-      readonly rowGroup: RowMaterialGroup | undefined;
-      readonly draws: readonly EligibleGpuDrivenDraw[];
+      readonly rowGroup: RowGroup | undefined;
+      readonly draws: readonly MembershipCandidate[];
     }
   | undefined;
 let recentMembership:
@@ -464,11 +469,15 @@ function sameEligibleInputs(a: RenderableSnapshot, b: RenderableSnapshot): boole
   );
 }
 
+const noMembershipCandidates: readonly MembershipCandidate[] = Object.freeze([]);
+
 function eligibleDraws(
   slot: RenderSceneSlot,
   rows: Pick<RowMaterialMembers<object, unknown>, 'group'>,
-): readonly EligibleGpuDrivenDraw[] {
+): readonly MembershipCandidate[] {
   const snapshot = slot.snapshot;
+  // Hidden and unpublished geometry has no raster membership to classify.
+  if (!hasRasterDemand(snapshot) || !snapshot.gpuDrivenDraws?.length) return noMembershipCandidates;
   const reflected = isReflectedTransform(snapshot.transform.world);
   const rowGroup = rows.group(snapshot);
   const recent = recentEligible;
@@ -486,11 +495,8 @@ function eligibleDraws(
 
 function eligibleDrawsUncached(
   snapshot: RenderableSnapshot,
-  rowGroup: RowMaterialGroup | undefined,
-): readonly EligibleGpuDrivenDraw[] {
-  // Authored hiding removes raster demand; per-view culling retains membership.
-  // Explicit candidate preparation consumes eligibleGpuDrivenDraws directly.
-  if (!hasRasterDemand(snapshot)) return [];
+  rowGroup: RowGroup | undefined,
+): readonly MembershipCandidate[] {
   const rowClass = rowGroup?.text;
   const draws = rowMaterialDraws(eligibleGpuDrivenDraws(snapshot), snapshot, rowGroup);
   const first = draws[0];
@@ -509,6 +515,7 @@ function eligibleDrawsUncached(
   return [
     {
       ...first,
+      ...(rowGroup === undefined ? {} : { memberGroup: rowGroup }),
       sourceDrawIndex: 0,
       binding: Object.freeze({ ...first.binding, source }),
       key: {
@@ -858,28 +865,26 @@ export class BatchTopology {
     if (this.health !== 'ready') throw this.health.cause;
     try {
       let changed = false;
-      let topologyChanged = false;
       this.residency.beginDelta(delta);
       for (const removed of delta.removedSlots) {
-        const removedChanged = this.remove(removed.slot);
-        changed = removedChanged || changed;
-        topologyChanged = removedChanged || topologyChanged;
+        if (this.remove(removed.slot)) changed = true;
       }
       for (const slot of delta.recreatedSlots) {
-        const removedChanged = this.remove(slot.slot);
-        const addedChanged = this.add(slot);
-        changed = removedChanged || addedChanged || changed;
-        topologyChanged = removedChanged || addedChanged || topologyChanged;
+        if (this.remove(slot.slot)) changed = true;
+        if (this.add(slot)) changed = true;
       }
-      const impact = this.applyMembershipUpdates(delta);
-      changed = impact !== 'none' || changed;
-      topologyChanged = impact === 'topology' || topologyChanged;
+      // The scene commit issues one final row per slot. Full content already
+      // includes instance cardinality; the instance-only lane is disjoint.
+      for (const slot of delta.contentUpdatedSlots) {
+        if (this.updateMembership(slot, true)) changed = true;
+      }
+      for (const slot of delta.instanceUpdatedSlots) {
+        if (this.updateMembership(slot, false)) changed = true;
+      }
       for (const slot of delta.createdSlots) {
-        const addedChanged = this.add(slot);
-        changed = addedChanged || changed;
-        topologyChanged = addedChanged || topologyChanged;
+        if (this.add(slot)) changed = true;
       }
-      if (topologyChanged) {
+      if (changed) {
         this.revision += 1;
         this.patches += 1;
         this.cachedPlan = undefined;
@@ -891,34 +896,8 @@ export class BatchTopology {
     }
   }
 
-  private applyMembershipUpdates(delta: RenderSceneApplyResult): 'none' | 'content' | 'topology' {
-    let impact: 'none' | 'content' | 'topology' = 'none';
-    // Membership depends on source descriptors and instance cardinality.
-    // Root matrices feed visibility without changing this dependency.
-    const contentUpdatedSlots = delta.contentUpdatedSlots;
-    const instanceUpdatedSlots = delta.instanceUpdatedSlots;
-    const membershipUpdates = new Map<number, { slot: RenderSceneSlot; content: boolean }>();
-    for (const slot of contentUpdatedSlots) {
-      membershipUpdates.set(slot.slot, { slot, content: true });
-    }
-    // Instance cardinality is a membership input, including in mixed updates.
-    for (const slot of instanceUpdatedSlots) {
-      if (!membershipUpdates.has(slot.slot)) {
-        membershipUpdates.set(slot.slot, { slot, content: false });
-      }
-    }
-    for (const update of membershipUpdates.values()) {
-      const moved = this.updateMembership(update.slot, update.content);
-      if (moved === 'topology' || impact === 'none') impact = moved;
-    }
-    return impact;
-  }
-
   /** Re-project one slot's membership; a stable projection patches its members in place. */
-  private updateMembership(
-    slot: RenderSceneSlot,
-    content: boolean,
-  ): 'none' | 'content' | 'topology' {
+  private updateMembership(slot: RenderSceneSlot, content: boolean): boolean {
     const eligible = eligibleDraws(slot, this.rowMaterials);
     const next = membershipProjection(slot, eligible);
     // The projection is one descriptor per eligible source draw; candidate
@@ -941,10 +920,10 @@ export class BatchTopology {
     if (!topologyStable) {
       const removedChanged = this.remove(slot.slot);
       const addedChanged = this.add(slot, eligible, next);
-      return removedChanged || addedChanged ? 'topology' : 'none';
+      return removedChanged || addedChanged;
     }
     if (content) this.contentPatches += 1;
-    const retargeted = this.retargetRowMaterial(slot, next);
+    const retargeted = this.retargetRowMaterial(slot, next, eligible[0]);
     if (previous.instanceCount !== next.instanceCount) {
       for (const membership of previous.draws) {
         const batch = this.batches.get(membership.batchText);
@@ -958,10 +937,10 @@ export class BatchTopology {
         this.changedBatches.add(batch);
       }
       this.membershipByPrimitive.set(slot.slot, next);
-      return 'topology';
+      return true;
     }
     this.membershipByPrimitive.set(slot.slot, next);
-    return retargeted ? 'topology' : 'none';
+    return retargeted;
   }
 
   /**
@@ -969,22 +948,26 @@ export class BatchTopology {
    * class. Its per-material membership follows, and the batch binding moves
    * when its material lost the last member.
    */
-  private retargetRowMaterial(slot: RenderSceneSlot, projection: MembershipProjection): boolean {
+  private retargetRowMaterial(
+    slot: RenderSceneSlot,
+    projection: MembershipProjection,
+    draw: MembershipCandidate | undefined,
+  ): boolean {
     const material = rowMaterialResource(slot.snapshot);
     if (material === undefined || this.rowMaterials.materialOf(slot.slot) === material)
       return false;
-    const draw = eligibleDraws(slot, this.rowMaterials)[0];
     const batch =
       projection.draws[0] === undefined
         ? undefined
         : this.batches.get(projection.draws[0].batchText);
-    if (draw === undefined || batch === undefined || batch.key.rowMaterial !== true) return false;
+    if (draw?.memberGroup === undefined || batch === undefined || batch.key.rowMaterial !== true)
+      return false;
     const binding = this.rowMaterials.retarget(
       batch,
       slot.slot,
       slot.snapshot,
       draw.binding,
-      draw.key.materialResourceClass,
+      draw.memberGroup,
     );
     return binding !== undefined && this.rebind(batch, binding);
   }
@@ -1011,7 +994,7 @@ export class BatchTopology {
       let changed = false;
       for (const index of this.rowMaterials.adopt(materials)) {
         const slot = slotAt(index);
-        if (slot !== undefined && this.updateMembership(slot, false) === 'topology') changed = true;
+        if (slot !== undefined && this.updateMembership(slot, false)) changed = true;
       }
       if (changed) {
         this.revision += 1;
@@ -1245,7 +1228,7 @@ export class BatchTopology {
 
   private add(
     slot: RenderSceneSlot,
-    draws?: readonly EligibleGpuDrivenDraw[],
+    draws?: readonly MembershipCandidate[],
     projection?: MembershipProjection,
     pendingMembers?: Map<MutableBatch, GpuDrivenBatchMember | GpuDrivenBatchMember[]>,
   ): boolean {
@@ -1285,14 +1268,8 @@ export class BatchTopology {
         };
         this.batches.set(text, batch);
       }
-      if (draw.key.rowMaterial === true)
-        this.rowMaterials.add(
-          batch,
-          slot.slot,
-          slot.snapshot,
-          draw.binding,
-          draw.key.materialResourceClass,
-        );
+      if (draw.memberGroup !== undefined)
+        this.rowMaterials.add(batch, slot.slot, slot.snapshot, draw.binding, draw.memberGroup);
       const pending = pendingMembers?.get(batch);
       const firstMember = pending === undefined && batch.members.length === 0;
       batch.contentEpoch += instanceCount - (firstMember ? 1 : 0);

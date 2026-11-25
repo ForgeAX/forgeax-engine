@@ -1097,7 +1097,15 @@ it.each([
     const profile = {
       ...f.profile(),
       gather: 'screen-probe' as const,
-      probes: SCREEN_PROBE_DEFAULTS,
+      probes:
+        lane === 'no-rq'
+          ? {
+              ...SCREEN_PROBE_DEFAULTS,
+              integration: 'screen-space' as const,
+              irradiance: 'probe-sh3' as const,
+              shortRangeAoMode: 'half-scalar' as const,
+            }
+          : SCREEN_PROBE_DEFAULTS,
     };
     const frozen = createRenderProfileSelection().select(
       freezeRenderProfile({ ...DEFAULT_STANDARD_PROFILE, diffuseGi: profile }),
@@ -1114,6 +1122,7 @@ it.each([
 
     for (let i = 0; i < 50; i++) {
       screen.prepare({
+        reconstruction: 'current-support',
         runtime: f.runtime,
         profile,
         field,
@@ -1141,6 +1150,7 @@ it.each([
     const nextField = await f.ready();
     for (let i = 0; i < 50 && screen.ready === undefined; i++) {
       screen.prepare({
+        reconstruction: 'current-support',
         runtime: f.runtime,
         profile,
         field: nextField,
@@ -1163,6 +1173,7 @@ it.each([
         f.setVisibleSurface(rows.update(retained, 1024).unwrap());
         const updated = await f.ready();
         screen.prepare({
+          reconstruction: 'current-support',
           runtime: f.runtime,
           profile,
           field: updated,
@@ -1189,7 +1200,8 @@ it.each([
           sampleCount: 1 as const,
         };
       };
-      const pyramid = texture('closest-depth', 'r32float');
+      const closestHzb = texture('hzb-closest', 'r32float');
+      const hzb = texture('hzb', 'r32float');
       const targets = {
         scene: texture('scene', 'rgba16float'),
         diffuseGiBaseline: graph
@@ -1200,7 +1212,8 @@ it.each([
         albedo: texture('albedo', 'r32uint'),
         f0: texture('f0', 'rg32uint'),
         motion: texture('motion', 'rgba16float'),
-        depthPyramid: () => ok(pyramid.view),
+        closestHzb: () => ok(closestHzb.view),
+        sceneHzb: () => ok(hzb.view),
         identity: texture('identity', 'rgba32uint'),
       };
       addScreenProbePasses(graph, prepared, targets).unwrap();
@@ -1208,9 +1221,20 @@ it.each([
         .compile({ device: f.runtime.device, surfaceSize: { width: 32, height: 32 } })
         .unwrap();
       try {
+        const { passes } = compiled.inspect();
+        expect(passes.some((pass) => pass.name === 'screen-probe.prepare-receivers')).toBe(true);
         expect(
-          compiled.inspect().passes.some((p) => p.name === 'screen-probe.prepare-receivers'),
-        ).toBe(true);
+          passes.find(({ name }) => name === 'screen-probe.trace-screen')?.accesses,
+        ).toContainEqual({
+          resource: 'hzb-closest',
+          usage: 'sampled-read',
+        });
+        expect(
+          passes.find(({ name }) => name === 'screen-probe.short-range-ao')?.accesses,
+        ).toContainEqual({
+          resource: 'hzb',
+          usage: 'sampled-read',
+        });
       } finally {
         (await compiled.retire()).unwrap();
       }

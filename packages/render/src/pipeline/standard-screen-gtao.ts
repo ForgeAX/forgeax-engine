@@ -19,17 +19,19 @@ import {
   type RenderPipelineTopology,
 } from '../render-pipeline';
 import { type DeferredAoNormalLayout, getSsaoParameters, resolveSsaoQuality } from '../ssao-config';
-import { buildSsaoUniformPayload, SSAO_UNIFORM_BYTES } from '../ssao-uniform';
+import { buildScreenAoUniformPayload, SCREEN_AO_UNIFORM_BYTES } from '../ssao-uniform';
 import { type GtaoHistoryGraphInput, importGtaoHistory } from './gtao-history';
 import {
   resolveStandardGtaoExecution,
   type StandardPipelineBuildContext,
 } from './standard-build-context';
 import { addAoDepthInputs, addScreenAoRaster, reducedExtent } from './standard-screen-ssao';
+import type { ReadViewHzb } from './standard-view-hzb';
 
 interface StandardGtaoInput {
   readonly size: DepthPyramidExtent;
   readonly depth: RenderPipelineTarget;
+  readonly hzb?: ReadViewHzb | undefined;
   readonly normal: RenderPipelineTarget;
   readonly normalLayout: DeferredAoNormalLayout;
   readonly velocity?: RenderPipelineTarget | undefined;
@@ -46,7 +48,7 @@ export function addStandardScreenGtao(
   const options = resolved.gtao;
   const { permutation } = resolveSsaoQuality(config);
   const size = reducedExtent(input.size, Number(options.downsample));
-  const depthInputs = addAoDepthInputs(context, topology, input.depth, input.size, 'gtao');
+  const depthInputs = addAoDepthInputs(context, topology, input.depth, input.size, input.hzb);
   if (!depthInputs.ok) return depthInputs;
   const { depth, hierarchy } = depthInputs.value;
   const hzb = hierarchy.pyramid;
@@ -67,12 +69,12 @@ export function addStandardScreenGtao(
     : ok(undefined);
   if (!history.ok) return history;
   const acceptedHistory = history.value;
-  const buffer = graph.createBuffer('gtao-parameters', { size: SSAO_UNIFORM_BYTES });
+  const buffer = graph.createBuffer('gtao-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
   if (!buffer.ok) return buffer;
   const historyBuffer =
     acceptedHistory === undefined
       ? ok(undefined)
-      : graph.createBuffer('gtao-reprojection-parameters', { size: SSAO_UNIFORM_BYTES });
+      : graph.createBuffer('gtao-reprojection-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
   if (!historyBuffer.ok) return historyBuffer;
   const reproject = historyBuffer.value;
   const populated = graph.addCopyPass('gtao-parameters', {
@@ -88,7 +90,7 @@ export function addStandardScreenGtao(
       const angles = [60, 300, 180, 240, 120, 0] as const;
       const offsets = [0.1, 0.6, 0.35, 0.85] as const;
       const stepCounts = [4, 6, 8, 12, 20] as const;
-      const values = buildSsaoUniformPayload(camera, config);
+      const values = buildScreenAoUniformPayload(camera, config, input.size);
       values.set(
         [resolved.intensity, resolved.power, resolved.fadeDistance, resolved.fadeRadius],
         48,
@@ -275,7 +277,10 @@ function addGtaoCompute(
         }),
       );
       const entries: BindGroupEntry[] = [
-        { binding: 14, resource: { kind: 'buffer', value: { buffer, size: SSAO_UNIFORM_BYTES } } },
+        {
+          binding: 14,
+          resource: { kind: 'buffer', value: { buffer, size: SCREEN_AO_UNIFORM_BYTES } },
+        },
         ...views.map(({ binding, value }) => ({
           binding,
           resource: { kind: 'textureView' as const, value },

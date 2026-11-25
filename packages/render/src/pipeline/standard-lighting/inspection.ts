@@ -58,7 +58,8 @@ export interface StandardAmbientOcclusionInspection {
   };
   readonly output: {
     readonly rawFormat: 'rgba8unorm' | 'r8unorm';
-    readonly filteredFormat: 'r8unorm';
+    readonly filteredFormat: 'r8unorm' | 'rgba8unorm';
+    readonly channel?: 'a';
     readonly extent?: { readonly width: number; readonly height: number };
     readonly rawBytes?: number;
     readonly filteredBytes?: number;
@@ -310,9 +311,19 @@ function sumKnownBytes(
 }
 
 function ambientOcclusionGraphResources(graph: CompiledRenderGraphInfo | undefined) {
-  const calc = graph?.passes.find((pass) =>
-    ['ssao-calc', 'gtao-calc', 'gtao-calc-compute'].includes(pass.name),
+  const fused = graph?.passes.find(
+    (pass) =>
+      pass.name === 'forward-directional-shadow' &&
+      pass.accesses.some(
+        (access) =>
+          access.usage === 'uniform-read' && access.resource === 'ssao-screen-parameters-0',
+      ),
   );
+  const calc =
+    fused ??
+    graph?.passes.find((pass) =>
+      ['ssao-calc', 'gtao-calc', 'gtao-calc-compute'].includes(pass.name),
+    );
   const blur = graph?.passes.find(
     (pass) => pass.name === 'gtao-resolve' || pass.name === 'ssao-blur',
   );
@@ -331,7 +342,7 @@ function ambientOcclusionGraphResources(graph: CompiledRenderGraphInfo | undefin
   const raw = graphResource(graph, rawName);
   const filtered = graphResource(graph, filteredName) ?? raw;
   const horizontal = graphResource(graph, 'ssao-horizontal');
-  return { calc, normal, depth, raw, filtered, horizontal };
+  return { calc, normal, depth, raw, filtered, horizontal, fused };
 }
 
 function ambientOcclusionWorkBudget(
@@ -364,7 +375,7 @@ function collectAmbientOcclusionFacts(input: {
 }) {
   const requested = input.config?.enabled === true;
   const parameters = getSsaoParameters(requested ? input.config : undefined);
-  const { calc, normal, depth, raw, filtered, horizontal } = ambientOcclusionGraphResources(
+  const { calc, normal, depth, raw, filtered, horizontal, fused } = ambientOcclusionGraphResources(
     input.graph,
   );
   const effective =
@@ -379,7 +390,9 @@ function collectAmbientOcclusionFacts(input: {
     input.config,
   );
   const passNames = (input.graph?.passes ?? [])
-    .filter(({ name }) => name.startsWith('ssao-') || name.startsWith('gtao-'))
+    .filter(
+      ({ name }) => name === fused?.name || name.startsWith('ssao-') || name.startsWith('gtao-'),
+    )
     .map(({ name }) => name);
   const levels =
     active && effective === 'ssao'
@@ -401,6 +414,7 @@ function collectAmbientOcclusionFacts(input: {
     levels,
     filterTaps,
     calc,
+    fused,
     active,
     normal,
     raw,
@@ -471,7 +485,8 @@ function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbient
 function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
   return Object.freeze({
     rawFormat: facts.raw?.format === 'rgba8unorm' ? ('rgba8unorm' as const) : ('r8unorm' as const),
-    filteredFormat: 'r8unorm' as const,
+    filteredFormat: facts.fused === undefined ? ('r8unorm' as const) : ('rgba8unorm' as const),
+    ...(facts.fused === undefined ? {} : { channel: 'a' as const }),
     ...(facts.outputExtent === undefined
       ? {}
       : {

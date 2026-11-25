@@ -113,6 +113,10 @@ function beginGpuTimingFrame(
   else internals.gpuPassTimingBeginReason = started.error;
 }
 
+function throwResidencyError(error: Error): never {
+  throw error;
+}
+
 /** Every view consumes the same precise accepted asset changes. */
 function adoptPublicationAssets(
   internals: RenderSystemInternals,
@@ -120,21 +124,8 @@ function adoptPublicationAssets(
 ): void {
   const store = internals.gpuStore;
   const resources = publication.resources;
-  for (const change of publication.assetChanges) {
-    const payload = resources.resolveAsset(change.handle).unwrap();
-    store
-      .adoptMeshChange(change, payload.kind === 'mesh' ? payload : undefined, resources)
-      .unwrap();
-    store
-      .adoptTextureChange(
-        change,
-        payload.kind === 'texture' || payload.kind === 'gpu-texture' ? payload : undefined,
-        resources,
-      )
-      .unwrap();
-    store.invalidateSampler(change.handle, resources);
-    store.adoptCubemapChange(change, resources);
-  }
+  for (const change of publication.assetChanges)
+    store.adoptAssetChange(resources, change, throwResidencyError);
   for (const handle of publication.packet.retiredAssets) {
     store.invalidateMesh(handle, resources);
     store.invalidateSampler(handle, resources);

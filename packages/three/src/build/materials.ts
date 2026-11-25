@@ -22,8 +22,8 @@ export function physicalTextureRecipe(
 }
 
 /** Build-time native Cook. Each set is an exact texture-membership variant;
- * numeric Physical values remain editable at runtime. No shader compiler ships
- * in the player entry. Include both sets when an application adds/removes a map. */
+ * numeric Physical values remain editable at runtime. Include each custom set
+ * an application uses when adding or removing maps. */
 export async function cookPhysicalMaterials(
   textureSets: readonly (readonly PhysicalTextureSlot[])[],
 ): Promise<string> {

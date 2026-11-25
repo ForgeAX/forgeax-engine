@@ -7,20 +7,27 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import {
   createMaterialShaderProgram,
   type MaterialShaderArtifact,
+  STANDARD_ORM_REUSE_BIT,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../device/device-scope';
 import { MorphGeometry } from '../../device/morph-geometry';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import { createPointsLinesSnapshot, type PointsLinesStyle } from '../../points-lines/snapshot';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchEntry } from '../../render-system-extract';
 import { morphSnapshotFor } from '../../render-system-extract-tail';
 import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
+import { shadowViewPlanesByView } from '../shadow-culling';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
-import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+import {
+  CPU_SETUP_SHADER,
+  cpuSetupFixture,
+  fixtureMaterialBinding,
+} from './main-pass-cpu-setup-fixture';
 
 const artifactFor = (
   program: MaterialShaderArtifact['program'],
@@ -113,7 +120,7 @@ async function setup() {
       1,
       f.meshGroup,
       f.meshGroup,
-      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       undefined,
       ['rgba8unorm'],
@@ -176,7 +183,7 @@ it('uses the identical selection for preparation and visible direct drawing', as
       1,
       f.meshGroup,
       f.meshGroup,
-      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       [{ ...f.authoredPass, entityIndex: 1, renderableIndex: 0 }],
       ['rgba8unorm'],
@@ -339,6 +346,133 @@ it('prepares visible residual authored casters before recording their shadow vie
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);
     expect(f.entry.source.authorVisible).toBe(true);
     expect(f.receipts).toEqual([]);
+    const views = [
+      { kind: 'directional', index: 0 },
+      { kind: 'spot', index: 1 },
+    ] as const;
+    Object.assign(f.c, {
+      shadowViewPlanesByView: shadowViewPlanesByView(
+        views.map((identity) => ({
+          identity,
+          planes: new Float32Array(24),
+          matrix: new Float32Array(16),
+        })),
+      ),
+    });
+    lookup.mockClear();
+    prepareShadowMaterialPipelines(f.c, true, () => false);
+    expect(lookup).not.toHaveBeenCalled();
+    prepareShadowMaterialPipelines(
+      f.c,
+      true,
+      (_frame, view, includeStatic) => includeStatic === true && view.kind === 'spot',
+    );
+    expect(lookup).toHaveBeenCalledOnce();
+    lookup.mockClear();
+    prepareShadowMaterialPipelines(f.c, false, () => false);
+    expect(lookup).toHaveBeenCalledOnce();
+  } finally {
+    f.dispose();
+  }
+});
+
+it('prepares occupied caster classes from material publications without reading raster binding addresses', async () => {
+  const f = await setup();
+  try {
+    const second = f.add({ entity: 2, submeshes: 1 });
+    const mirrored = f.add({ entity: 3, submeshes: 1 });
+    mirrored.source.transform.world[0] = -1;
+    const rows = [f.entry, second, mirrored];
+    for (const row of rows) {
+      Object.assign(row.source, { authorVisible: true });
+      const resource = row.source.material;
+      resource.adopt(
+        captureMaterialSnapshot({
+          ...resource.snapshot,
+          immutableValues: true,
+          metallic: row.source.entityKey / 10,
+          passes: [
+            {
+              name: 'ShadowCaster',
+              program: { module: 'forgeax::default-shadow-caster' },
+              renderState: { tags: { LightMode: 'ShadowCaster' } },
+            },
+          ],
+        }),
+      );
+    }
+    f.acceptMaterials();
+    const request = vi.fn(() => ({ pipeline: f.pipeline, group2Contract: 'mesh' }));
+    Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: request });
+    Object.assign(f.c, {
+      shadowValidatedOrdered: rows,
+      pipelinePreparationEntries: [],
+      shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+      acceptedMaterialSlots: { frame: f.c.materialFrame, slots: [] },
+    });
+    const addresses = vi.spyOn(f.c.materialSlotIndices, 'at');
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(addresses).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(2);
+
+    // Three geometries can share native program families while keeping independent material values.
+    const frame = f.c.materialFrame;
+    if (frame === undefined) throw Error('missing fixture material frame');
+    const versions = rows.map((row) => {
+      const accepted = frame.get(row.source.material);
+      if (accepted === undefined) throw Error('missing fixture material');
+      return accepted;
+    });
+    const bindings = new Map(
+      versions.map((version, slot) => [version.resource, new Map([['', slot]])]),
+    );
+    Object.assign(f.c, { acceptedMaterialSlots: { frame, slots: versions, bindings } });
+    const physicalReads = vi.spyOn(MaterialResource, '_frameAddress');
+    try {
+      request.mockClear();
+      prepareShadowMaterialPipelines(f.c, true);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(physicalReads).not.toHaveBeenCalled();
+      expect(addresses).not.toHaveBeenCalled();
+      // An unsubmitted or misaddressed binding still resolves its real accepted version.
+      bindings.set(second.source.material, new Map([['', 0]]));
+      prepareShadowMaterialPipelines(f.c, true);
+      expect(physicalReads).toHaveBeenCalledWith(second.source.material);
+    } finally {
+      physicalReads.mockRestore();
+    }
+
+    const material = second.source.material;
+    const prior = f.c.materialFrame;
+    if (prior === undefined) throw Error('missing accepted material frame');
+    material.adopt(
+      captureMaterialSnapshot({
+        ...material.snapshot,
+        paramSnapshot: { alphaCutoff: 0.5 },
+        standardTextureMask: STANDARD_ORM_REUSE_BIT + 3,
+      }),
+    );
+    const changed = prior.with(material);
+    expect(changed.get(material)?.programs?.stockShadow).toMatchObject({
+      alphaMask: true,
+      textureMask: 3,
+    });
+    Object.assign(f.c, { materialFrame: changed });
+    request.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request.mock.calls).toContainEqual(
+      expect.arrayContaining([{ [STANDARD_TEXTURE_MASK_OVERRIDE]: 3 }]),
+    );
+    const retry = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
+    Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: retry });
+    Object.assign(f.c, { shadowValidatedOrdered: [second, second, second] });
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(retry).toHaveBeenCalledTimes(2);
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
   } finally {
     f.dispose();
   }

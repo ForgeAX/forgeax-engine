@@ -955,6 +955,7 @@ function addFieldReflectionPasses({
             previous: resources.textureView(fallbackBeforeComposite.value).unwrap(),
           },
           pixelCount,
+          reflection.composeReflection === true,
         )
         .unwrap(),
   });

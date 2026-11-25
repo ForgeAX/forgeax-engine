@@ -379,9 +379,12 @@ describe('render-gpu-driven-prepare system', () => {
     ['direct', true, false],
     ['automatic', false, false],
   ] as const)('stages %s raster with prepared=%s after Skin and refines HZB to %s', (geometryLane, hasPrepared, lateOcclusion) => {
-    const context = setup('forward', false);
-    // Forward HZB is opt-in; this case exercises its post-Skin refinement.
-    viewPassPlanQueue(context.world, context.view).stage({ ...input(false), gpuOcclusion: true });
+    const context = setup('deferred', false);
+    viewPassPlanQueue(context.world, context.view).stage({
+      ...input(false),
+      renderPath: 'deferred',
+      gpuOcclusion: true,
+    });
     const order: string[] = [];
     const prepared = {
       selection: EMPTY_GPU_DRAW_SELECTION,

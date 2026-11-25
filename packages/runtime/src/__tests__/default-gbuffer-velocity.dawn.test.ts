@@ -35,13 +35,66 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
   return result.value;
 }
 
-it.each([
-  { antialias: ANTIALIAS_NONE, scale: 1, name: 'no temporal AA' },
+const temporalModes = [
   { antialias: ANTIALIAS_TAA, scale: 1, name: 'TAA' },
   { antialias: ANTIALIAS_TAA, scale: 0.75, name: 'TAAU' },
   { antialias: ANTIALIAS_TSR, scale: 1, name: 'TSR' },
-])('writes object velocity with depth and reconstructs camera velocity on static foreground ($name)', async ({
+] as const;
+
+it.each([
+  {
+    renderPath: 'forward',
+    antialias: ANTIALIAS_NONE,
+    scale: 1,
+    name: 'Motion Blur',
+    gpu: false,
+    contact: false,
+  },
+  {
+    renderPath: 'deferred',
+    antialias: ANTIALIAS_NONE,
+    scale: 1,
+    name: 'no temporal AA',
+    gpu: false,
+    contact: false,
+  },
+  {
+    renderPath: 'forward',
+    antialias: ANTIALIAS_TAA,
+    scale: 1,
+    name: 'GPU Scene TAA',
+    gpu: true,
+    contact: false,
+  },
+  ...temporalModes.flatMap((mode) =>
+    (['forward', 'deferred'] as const).map((renderPath) => ({
+      ...mode,
+      renderPath,
+      gpu: false,
+      contact: false,
+    })),
+  ),
+  {
+    renderPath: 'forward',
+    antialias: ANTIALIAS_TAA,
+    scale: 1,
+    name: 'contact shadows',
+    gpu: false,
+    contact: true,
+  },
+  {
+    renderPath: 'forward',
+    antialias: ANTIALIAS_TAA,
+    scale: 1,
+    name: 'GPU Scene contact shadows',
+    gpu: true,
+    contact: true,
+  },
+] as const)('writes object velocity with depth and reconstructs camera velocity on static foreground ($renderPath $name)', async ({
   antialias,
+  gpu,
+  contact,
+  renderPath,
   scale,
 }) => {
   const target = offscreenCanvas(64);
@@ -53,8 +106,8 @@ it.each([
         rhi: recorder.backend.rhi,
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
-          renderPath: 'deferred',
-          gbufferFormat: 'default',
+          renderPath,
+          ...(renderPath === 'deferred' ? { gbufferFormat: 'default' as const } : {}),
           ambientOcclusion: { enabled: false },
         },
       },
@@ -72,7 +125,7 @@ it.each([
     world
       .spawn({
         component: DirectionalLight,
-        data: { direction: [0, 0, -1], castShadow: false },
+        data: { direction: [0, 0, -1], castShadow: false, contactShadowLength: contact ? 0.2 : 0 },
       })
       .unwrap();
     const camera = world
@@ -127,7 +180,7 @@ it.each([
     const draw = () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      return drawReadyFrame(renderer, { source, geometryLane: 'direct' });
+      return drawReadyFrame(renderer, { source, geometryLane: gpu ? 'automatic' : 'direct' });
     };
     await draw();
     world.set(moving, Transform, { pos: [-0.25, 0, -1] }).unwrap();
@@ -141,14 +194,37 @@ it.each([
     await draw();
     (await recorder.frameBoundary()).unwrap();
     const inspection = renderer.inspect();
+    const stageFacts = JSON.stringify({
+      output: inspection.output,
+      passes: inspection.perFramePassNames,
+      views: inspection.views?.map(({ temporal }) => temporal),
+      diagnostics: inspection.featureDiagnostics,
+    });
     if (antialias !== ANTIALIAS_NONE)
-      expect(inspection.temporal).toMatchObject({ historyValid: true });
-    expect(inspection.motionBlur).toMatchObject({ status: 'active' });
+      expect(inspection.temporal, stageFacts).toMatchObject({ historyValid: true });
+    expect(inspection.motionBlur, stageFacts).toMatchObject({ status: 'active' });
     const tape = decodeTape((await pending).unwrap().bytes).unwrap();
     const model = buildFrameModel(tape);
-    const raw = model.works.find((work) =>
+    if (renderPath === 'forward') {
+      expect(inspection.perFramePassNames).not.toContain('standard-scene-data');
+      expect(
+        model.works.some((work) =>
+          work.pipeline.shaders.some((shader) =>
+            shader.source?.includes('fn sceneTemporalFromVelocity'),
+          ),
+        ),
+      ).toBe(true);
+    }
+    const rawWriters = model.works.filter((work) =>
       work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_scene_velocity'),
     );
+    const raw = rawWriters.at(-1);
+    if (gpu) {
+      expect(rawWriters.map((work) => work.kind)).toEqual([
+        'drawIndexedIndirect',
+        'drawIndexedIndirect',
+      ]);
+    }
     const blur = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
@@ -156,11 +232,34 @@ it.each([
           shader.entryPoint === 'reconstruct',
       ),
     );
-    expect(blur).toBeDefined();
+    if (renderPath === 'deferred') expect(blur).toBeDefined();
+    else {
+      expect(inspection.perFramePassNames).not.toContain('gpu-driven.occlusion-cull');
+      const prepass = 'standard-depth-velocity';
+      if (contact) {
+        const receiver = inspection.directionalShadow.forwardReceiver;
+        const projected = receiver?.mode === 'screen';
+        if (projected) expect(receiver).toMatchObject({ contact: true });
+        const contactPass = projected ? 'forward-directional-shadow' : 'forward-contact-shadow';
+        expect(inspection.perFramePassNames.indexOf(contactPass)).toBeGreaterThan(
+          inspection.perFramePassNames.indexOf(prepass),
+        );
+        expect(inspection.perFramePassNames.indexOf(contactPass)).toBeLessThan(
+          inspection.perFramePassNames.indexOf('main'),
+        );
+      }
+      expect(inspection.perFramePassNames).toContain(prepass);
+      expect(inspection.perFramePassNames.indexOf(prepass)).toBeLessThan(
+        inspection.perFramePassNames.indexOf('main'),
+      );
+    }
     const resolved = model.works.find((work) =>
       work.pipeline.shaders.some(
         (shader) =>
-          shader.source?.includes('fn sceneTemporalFromVelocity') &&
+          (renderPath === 'forward'
+            ? shader.source?.includes('fn fs_taa_resolve') ||
+              shader.entryPoint === 'tsr_reconstruct'
+            : shader.source?.includes('fn sceneTemporalFromVelocity')) &&
           (shader.entryPoint === 'fs_main' || shader.entryPoint === 'tsr_reconstruct'),
       ),
     );
@@ -202,11 +301,20 @@ it.each([
           halfFloat.f16ToF32(bytes.getUint16(pixel(x) * 8 + channel * 2, true));
       };
       const object = await read(raw, 0);
-      expect(object(34, 0)).toBe(0);
+      const staticWord = object(34, 0);
+      const packedX = (word: number) => word & 0xffff;
+      const packedY = (word: number) => word >>> 16;
+      const expectedX = (ndc: number) =>
+        Math.round(32767 + Math.sign(ndc) * Math.sqrt(2 * Math.abs(ndc)) * 0.2495 * 65535);
+      if (gpu) {
+        // The vertex transforms can differ by a rounding step before companding.
+        expect(Math.abs(packedY(staticWord) - 32767)).toBeLessThanOrEqual(1);
+        expect(Math.abs(packedX(staticWord) - expectedX(-0.0625))).toBeLessThanOrEqual(1);
+      } else expect(staticWord).toBe(0);
       const word = object(47, 0);
-      // SM5 gamma companding of NDC +0.1875 with zero Y displacement.
-      expect(word >>> 16).toBe(32767);
-      expect(word & 65535).toBe(Math.round(Math.sqrt(0.375) * 0.2495 * 65535 + 32767));
+      // SM5 gamma companding of NDC +0.1875 into two UNORM16 lanes.
+      expect(packedY(word)).toBe(32767);
+      expect(Math.abs(packedX(word) - expectedX(0.1875))).toBeLessThanOrEqual(1);
       if (resolved !== undefined) {
         const motion = await read(resolved, 1);
         expect(motion(34, 0)).toBeCloseTo(-0.03125, 4);

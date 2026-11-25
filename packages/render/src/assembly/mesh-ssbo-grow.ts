@@ -127,8 +127,13 @@ export function writeMeshSsboBuffer(
   if (size === 0) return;
   const pages = storage.pages;
   if (pages === undefined) {
-    const binding = meshSsboBufferBinding(storage, byteOffset);
-    const result = queue.writeBuffer(binding.buffer, binding.byteOffset, data, dataOffset, size);
+    const result = queue.writeBuffer(
+      meshSsboBuffer(storage, byteOffset),
+      byteOffset,
+      data,
+      dataOffset,
+      size,
+    );
     if (!result.ok) throw result.error;
     return;
   }

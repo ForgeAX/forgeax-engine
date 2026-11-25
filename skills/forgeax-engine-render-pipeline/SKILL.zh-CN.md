@@ -11,7 +11,7 @@
 <a id="volumetric-clouds"></a>
 ## 体积云
 
-Standard HDR、单采样 Camera、Atmosphere、DirectionalLight、每 World 一个 VolumetricCloudLayer。将 [Render 示例](../../packages/render/examples/volumetric-clouds) 复制到项目资产根；安装包在 examples/volumetric-clouds，SDK ZIP 在 source/engine/packages/render/examples/volumetric-clouds。
+Standard HDR、单采样 Camera、Atmosphere、DirectionalLight、每 World 一个 VolumetricCloudLayer。将 [Render 示例](../../packages/render/examples/volumetric-clouds) 复制到项目资产根；安装后可在 `@forgeax/engine` 内置的 Render 包中找到 `examples/volumetric-clouds`。
 
 从 @forgeax/engine/render/authoring 用 cloudMaterialKind 加载 cloudGuids.material，两个实例 GUID 用 cloudMaterialInstanceKind。从 @forgeax/engine/render spawn VolumetricCloudLayer，传 material handle、米制 altitude/thickness；base 选项保留初始实例。键盘 press edge 在同一 layer 设置 materialInstance，每次选择增加 requestRevision。World 代码/检查字段见[云创作契约](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)。
 
@@ -521,7 +521,7 @@ CPU 只 cull 残余 CPU-drawn 行：ExtractedFrame.gpuOwned 列出，verificatio
 
 ## GPU occlusion：双阶段 HZB
 
-唯一 main-view occlusion owner。main GPU lane 拆 scene（1x/MSAA）：early g-buffer/main 画上帧可见，occlusion-depth-pyramid-*由 depth 建 furthest pyramid，gpu-driven.occlusion-cull 测其余，g-buffer-late/main-late 画揭露者。默认开，pipeline.config.gpuOcclusion:false opt-out，无 CPU fallback。Deferred shadow 在 g-buffer-late 后；directional/spot final caster 若 receiver prism 被 camera pyramid 挡则跳，shadowRaster.views[].cameraCulled。Forward/point/static layer/另 camera、capture、probe、fog、ray-diffuse 读 map 的帧关闭（fog 仅 enabled 算）。边缘丢 shadow 是 receiver dilation 太小；有遮挡 Deferred cameraCulled=0先查 admission roster，可能 graph 未绑 pyramid。
+唯一 main-view occlusion owner。main GPU lane 拆 scene（1x/MSAA）：early g-buffer/main 画上帧可见，occlusion-hzb-*由 depth 建 furthest pyramid，gpu-driven.occlusion-cull 测其余，g-buffer-late/main-late 画揭露者。默认开，pipeline.config.gpuOcclusion:false opt-out，无 CPU fallback。Deferred shadow 在 g-buffer-late 后；directional/spot final caster 若 receiver prism 被 camera pyramid 挡则跳，shadowRaster.views[].cameraCulled。Forward/point/static layer/另 camera、capture、probe、fog、ray-diffuse 读 map 的帧关闭（fog 仅 enabled 算）。边缘丢 shadow 是 receiver dilation 太小；有遮挡 Deferred cameraCulled=0先查 admission roster，可能 graph 未绑 pyramid。
 
 apps/perf/shadow-stress/scripts/inspect-shadow-cull-tape.mjs 验每 view 丢 instance 数等 cameraCulled。无 reprojection，history 是 per-instance visibility bit。晚一帧重现为 late append 坏，误 cull 为 footprint/mip 错。readLodSelection().occlusion.culled/late（inspect.lodOcclusion 同投影）和 RHI pyramid mip/late indirect 诊断，不关 cull。
 

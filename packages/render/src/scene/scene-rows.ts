@@ -1,5 +1,6 @@
 import type { FrameArena, World } from '@forgeax/engine-ecs';
 import { type box3, mat4 } from '@forgeax/engine-math';
+import type { PresentationSpan } from '@forgeax/engine-scene/internal';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import {
@@ -17,22 +18,14 @@ import { CapturedSceneTransform, ScenePoseWriter } from './captured-transform';
 import type { RetainedRowFacts } from './frame-list';
 import { FrameSet } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
-import {
-  slotContent,
-  slotDrawSnapshot,
-  slotPoseColumn,
-  slotPoseOffset,
-  slotTransform,
-} from './mesh-draw';
+import { slotContent, slotDrawSnapshot, slotPoseColumn, slotPoseOffset } from './mesh-draw';
 import { MeshFrame, type MeshGeometry } from './mesh-frame';
 import {
-  boundsFromArray,
   cullingDisplacementRadius,
-  intersects,
   ownInstances,
   ownPointsLinesSnapshot,
   ownSnapshot,
-  transformedWorldBounds,
+  writeTransformedWorldBounds,
 } from './render-scene-snapshots';
 import type {
   RenderSceneApplyResult,
@@ -67,8 +60,6 @@ import type { SkinSceneFrame } from './skin-scene-inputs';
  * No per-row object; a row write invalidates its entry.
  */
 const BOUNDS_SCRATCH = new Float64Array(6);
-/** Consumed before the next derivation: copied into the column and the caller's box. */
-const WORLD_BOUNDS_SCRATCH: RenderSceneBounds = { min: [0, 0, 0], max: [0, 0, 0] };
 
 /** Exact original publication facts, not a currentness or resource-residency authority. */
 const publications = new WeakMap<ReservedSceneRow, WeakRef<RenderSceneSlot>>();
@@ -116,7 +107,7 @@ class RowBoundsPage {
     geometry: number,
     radius: number,
     material: number,
-    bounds: RenderSceneBounds | undefined,
+    bounds: Float32Array | Float64Array | undefined,
   ): void {
     if (this.versions[lane] === 0) this.occupied++;
     this.versions[lane] = version;
@@ -126,12 +117,7 @@ class RowBoundsPage {
     this.known[lane] = bounds === undefined ? 0 : 1;
     if (bounds === undefined) return;
     const start = lane * 6;
-    this.boxes[start] = bounds.min[0];
-    this.boxes[start + 1] = bounds.min[1];
-    this.boxes[start + 2] = bounds.min[2];
-    this.boxes[start + 3] = bounds.max[0];
-    this.boxes[start + 4] = bounds.max[1];
-    this.boxes[start + 5] = bounds.max[2];
+    this.boxes.set(bounds, start);
   }
 
   release(lane: number): boolean {
@@ -519,7 +505,22 @@ export class SceneRows {
     return this.commit(preparedOperations, spans);
   }
 
-  /** Published Worker spans and live ECS query columns stay owned through this synchronous commit. */
+  /** Local ECS presentation runs contain each entity once in stable query order. */
+  commitPresentationSpans(spans: readonly PresentationSpan[]): RenderSceneApplyResult {
+    if (spans.length === 0) return EMPTY_APPLY;
+    if (this.committing) throw new Error('Scene commit cannot reenter');
+    this.committing = true;
+    try {
+      const initial: RenderSceneSlot[] = [];
+      const updated: RenderSceneSlot[] = [];
+      const content: RenderSceneSlot[] = [];
+      const ignored = this.slots.writePresentationSpans(spans, initial, updated, content);
+      return this.poseDelta(initial, updated, content, ignored);
+    } finally {
+      this.committing = false;
+    }
+  }
+
   commitTransformSpans(spans: readonly WorldTransformSpan[], world: World): RenderSceneApplyResult {
     if (spans.length === 0) return EMPTY_APPLY;
     // Small and dense spans use the same versioned row writer. Only overflow needs an arena scope.
@@ -561,8 +562,19 @@ export class SceneRows {
       updatedSlots.push(after);
       if (chunk[base + 2] === 1) contentUpdatedSlots.push(after);
     }
+    return ok(this.poseDelta(initial, updatedSlots, contentUpdatedSlots, ignored));
+  }
+
+  private poseDelta(
+    initial: readonly RenderSceneSlot[],
+    updatedSlots: readonly RenderSceneSlot[],
+    contentUpdatedSlots: readonly RenderSceneSlot[],
+    ignored: number,
+  ): RenderSceneApplyResult {
+    if (updatedSlots.length === 0)
+      return ignored === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates: ignored };
     this.revisionValue++;
-    return ok({
+    return {
       ...EMPTY_APPLY,
       updated: updatedSlots.length,
       ignoredLateUpdates: ignored,
@@ -570,7 +582,7 @@ export class SceneRows {
       contentUpdatedSlots,
       previous: new PreviousPoseRows(updatedSlots, initial),
       journal: this.slots.journal,
-    });
+    };
   }
 
   private commit(
@@ -630,7 +642,13 @@ export class SceneRows {
       return pending;
     };
     try {
-      return this.commitPending(preparedOperations, spans, pendingFor, pendingOrder);
+      return this.commitPending(
+        preparedOperations,
+        spans,
+        pendingFor,
+        pendingOrder,
+        pendingEntities,
+      );
     } finally {
       for (const pending of pendingOrder)
         if (pending.slot !== undefined) pendingBySlot[pending.slot] = undefined;
@@ -642,6 +660,7 @@ export class SceneRows {
     spans: readonly WorldTransformSpan[],
     pendingFor: (entityKey: number) => PendingIdentity,
     pendingOrder: readonly PendingIdentity[],
+    pendingEntities: ReadonlyMap<number, PendingIdentity>,
   ): RenderSceneApplyResult {
     let ignoredLateUpdates = 0;
 
@@ -689,7 +708,7 @@ export class SceneRows {
       }
       if (operation.world !== undefined) updateWorld(pending, operation.world, 0);
     }
-    ignoredLateUpdates += this.stageTransformSpans(spans, pendingFor, updateWorld);
+    ignoredLateUpdates += this.stageTransformSpans(spans, pendingEntities, pendingFor, updateWorld);
 
     let created = 0;
     let updated = 0;
@@ -757,6 +776,7 @@ export class SceneRows {
   /** Compare canonical pose columns before hydrating unchanged row observations. */
   private stageTransformSpans(
     spans: readonly WorldTransformSpan[],
+    pendingEntities: ReadonlyMap<number, PendingIdentity>,
     pendingFor: (entityKey: number, knownSlot?: number) => PendingIdentity,
     updateWorld: (pending: PendingIdentity, source: ArrayLike<number>, offset: number) => void,
   ): number {
@@ -769,10 +789,12 @@ export class SceneRows {
         if (entity === undefined) continue;
         const slot = this.slots.slotOf(entity);
         // Earlier operations/spans own their staged pose, not the current columns.
-        const staged = slot === undefined ? undefined : this.pendingBySlot[slot];
+        // Only an earlier content operation can admit a source without a draw slot.
+        // Bones and other transform-only entities do not need pending draw records.
+        const staged = slot === undefined ? pendingEntities.get(entity) : this.pendingBySlot[slot];
         if (typeof staged === 'number') throw new Error('Scene pose staging is already active');
-        let pending = slot === undefined ? pendingFor(entity) : staged;
-        if (pending !== undefined && !pending.live) {
+        let pending = staged;
+        if (pending ? !pending.live : slot === undefined) {
           ignored++;
           continue;
         }
@@ -1053,33 +1075,32 @@ export class SceneRows {
       columns.materials[lane] = materialsId;
       return columns.read(lane, out);
     }
-    let candidate: RenderSceneBounds | undefined;
+    let candidate: Float32Array | Float64Array | undefined;
     const local = localDisplacedBounds(snapshot, geometry, radius);
     if (local !== undefined && snapshot.instances !== undefined) {
       if (snapshot.instances.instanceCount !== 0) {
-        const entityWorld = slotTransform(slot).world;
+        const entityWorld = slotPoseColumn(slot);
+        const entityWorldOffset = slotPoseOffset(slot);
         const inputs = {
           meshAabb: local,
           entityWorld,
+          entityWorldOffset,
           transforms: snapshot.instances.transforms,
           entityKey: slot.entityKey,
           meshGeneration: fingerprintNumericArray(local) ^ ((snapshot.assetHandle ?? 0) >>> 0),
-          transformGeneration: fingerprintNumericArray(entityWorld),
+          transformGeneration: fingerprintNumericArray(entityWorld, entityWorldOffset, 16),
           matrixGeneration: snapshot.instances.revision ?? snapshot.instances.archVersion,
         };
-        const derived =
+        candidate =
           current && this.slots.version(index) === slot.version
             ? this.instanceBoundsCache.get(inputs)
             : deriveInstancesUnionBounds(inputs);
-        candidate = boundsFromArray(derived ?? []);
       }
-    } else if (local !== undefined)
-      candidate = transformedWorldBounds(
-        local,
-        slotPoseColumn(slot),
-        WORLD_BOUNDS_SCRATCH,
-        slotPoseOffset(slot),
-      );
+    } else if (
+      local !== undefined &&
+      writeTransformedWorldBounds(BOUNDS_SCRATCH, local, slotPoseColumn(slot), slotPoseOffset(slot))
+    )
+      candidate = BOUNDS_SCRATCH;
     // Unknown or empty facts read as undefined (conservative no-cull) and prove no material frame.
     const proven = candidate === undefined ? -1 : materialsId;
     // A held frame can answer a historical query without taking storage from a live owner.
@@ -1093,12 +1114,7 @@ export class SceneRows {
       owned.write(lane, slot.version, geometryId, radius, proven, candidate);
     }
     if (candidate === undefined) return false;
-    out[0] = candidate.min[0];
-    out[1] = candidate.min[1];
-    out[2] = candidate.min[2];
-    out[3] = candidate.max[0];
-    out[4] = candidate.max[1];
-    out[5] = candidate.max[2];
+    if (candidate !== out) for (let i = 0; i < 6; i++) out[i] = candidate[i] as number;
     return true;
   }
 
@@ -1142,11 +1158,19 @@ export class SceneRows {
 
   querySpatial(bounds: RenderSceneBounds, current = this.slots.capture()): RenderSceneSlot[] {
     const records: RenderSceneSlot[] = [];
+    const candidate = new Float64Array(6);
     for (const record of current) {
-      if (record === undefined) continue;
-      const candidate = this.cullingWorldBoundsAt(record);
-      if (candidate === null || candidate === undefined) continue;
-      if (intersects(candidate, bounds)) records.push(record);
+      if (record === undefined || !this.resolveBounds(record, this.meshes, undefined, candidate))
+        continue;
+      if (
+        (candidate[0] as number) <= bounds.max[0] &&
+        (candidate[3] as number) >= bounds.min[0] &&
+        (candidate[1] as number) <= bounds.max[1] &&
+        (candidate[4] as number) >= bounds.min[1] &&
+        (candidate[2] as number) <= bounds.max[2] &&
+        (candidate[5] as number) >= bounds.min[2]
+      )
+        records.push(record);
     }
     return records;
   }

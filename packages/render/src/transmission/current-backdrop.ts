@@ -13,8 +13,10 @@ import {
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
+import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { NativeMaterialView } from '../record/graph-binding-views';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { type ScenePassRequest, scenePassMaterialRows } from '../record/scene-pass-work';
 import {
   type ViewTargetTexture,
   type ViewTargetTextures,
@@ -22,6 +24,7 @@ import {
 } from '../record/view-target-textures';
 import type { RenderPipelineTarget } from '../render-pipeline';
 import type { PhysicalSceneRaster } from '../typed-render-graph-primitives';
+import { transmissionMergeEncoder } from './merge';
 
 interface BackdropImage {
   readonly width: number;
@@ -41,17 +44,27 @@ interface BackdropImage {
 export class CurrentTransmissionTargets {
   private image: BackdropImage | undefined;
   private usedLevels = 0;
+  private copiedScene = false;
 
   constructor(private readonly textures: ViewTargetTextures) {}
 
   begin(): void {
     this.usedLevels = 0;
+    this.copiedScene = false;
   }
   finish(): void {
     if (this.usedLevels === 0) this.release();
   }
   get current(): BackdropImage | undefined {
     return this.usedLevels > 0 ? this.image : undefined;
+  }
+
+  get copied(): boolean | undefined {
+    return this.usedLevels > 0 ? this.copiedScene : undefined;
+  }
+
+  noteCopy(): void {
+    this.copiedScene = true;
   }
 
   get mipCount(): number {
@@ -89,7 +102,9 @@ export class CurrentTransmissionTargets {
       width,
       height,
       format,
-      GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+      GPU_TEXTURE_USAGE_COPY_DST |
+        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+        (format === 'rgba16float' ? GPU_TEXTURE_USAGE_RENDER_ATTACHMENT : 0),
       levels,
     );
     let scratch: ViewTargetTexture | undefined;
@@ -152,6 +167,31 @@ function targets(frame: _InternalRenderPipelineContext): CurrentTransmissionTarg
   return state.currentTransmissionTargets;
 }
 
+function canReplaceTransmission(
+  frame: _InternalRenderPipelineContext,
+  request: ScenePassRequest,
+): boolean {
+  if (frame.currentTransmissionDemand?.needsRoughMips === true) return false;
+  const stock = scenePassMaterialRows(frame, request).dispatch;
+  let found = false;
+  for (const pass of stock) {
+    if (
+      pass.tags.LightMode !==
+      (request.currentTransparencyPass === 'backs' ? 'TransmissionBack' : 'Forward')
+    )
+      continue;
+    found = true;
+    if (
+      !isCanonicalStandardPbrMaterialShader(pass.materialShaderId) ||
+      pass.renderState?.blend !== undefined ||
+      pass.renderState?.outputs !== undefined ||
+      (pass.renderState?.colorWriteMask ?? 15) !== 15
+    )
+      return false;
+  }
+  return found;
+}
+
 /** The graph grants scene color and depth together. The private backdrop is
  * produced, downsampled and consumed within this single command domain. */
 export function currentTransmissionRaster(
@@ -162,16 +202,20 @@ export function currentTransmissionRaster(
 ): PhysicalSceneRaster {
   const prefix = backs ? 'transmission-backdrop-backs' : 'transmission-backdrop';
   const name = backs ? 'transmission-backs' : 'transmission-forward';
+  const canMerge = scene.format === 'rgba16float';
+  const mergeProgram = transmissionMergeEncoder();
   return {
     colorFormats: [scene.format as GPUTextureFormat],
-    add(graph, accesses, enabled, encodeScene) {
+    add(graph, accesses, enabled, encodeScene, request) {
       accesses.push({ resource: scene.view, usage: 'copy-src' });
+      if (canMerge) accesses.push({ resource: scene.view, usage: 'sampled-read' });
       let frame: _InternalRenderPipelineContext | undefined;
       let resolver: GraphResourceResolver | undefined;
       let image: BackdropImage | undefined;
       let mipCount = 0;
       let source: Texture | undefined;
       let colorView: TextureView | undefined;
+      let directBackdrop: NativeMaterialView | undefined;
       let depthView: TextureView | undefined;
       const required = <T>(value: T | undefined): T => {
         if (value === undefined)
@@ -274,6 +318,51 @@ export function currentTransmissionRaster(
           );
         },
       };
+      const replacement: RenderGraphNativePass = {
+        ...draw,
+        name,
+        descriptor: {
+          ...draw.descriptor,
+          colorAttachments: [
+            {
+              get view() {
+                return required(image?.base.view);
+              },
+              loadOp: 'clear',
+              storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: -1 },
+            },
+          ],
+        },
+        encode(pass: RhiRenderPassEncoder) {
+          const view = required(colorView);
+          if (directBackdrop?.view !== view) {
+            directBackdrop = {
+              view,
+              currentTextureView: () => (directBackdrop?.view === view ? view : undefined),
+            };
+          }
+          encodeScene(pass, required(frame), required(resolver), directBackdrop);
+        },
+      };
+      const merge: RenderGraphNativePass = {
+        kind: 'raster',
+        name: `${name}-merge`,
+        descriptor: {
+          colorAttachments: [
+            {
+              get view() {
+                return required(colorView);
+              },
+              loadOp: 'load',
+              storeOp: 'store',
+            },
+          ],
+        },
+        encode(pass) {
+          mergeProgram.encode(pass, required(frame), required(image?.base.view));
+        },
+      };
       return graph.addSubgraphPass(declaration ?? name, {
         accesses,
         profilePasses: () => [
@@ -281,6 +370,7 @@ export function currentTransmissionRaster(
           { kind: 'raster', name: `${prefix}-mip` },
           { kind: 'copy', name: `${prefix}-mip-copy` },
           draw,
+          ...(canMerge ? [merge] : []),
         ],
         executeIf: enabled,
         commandsDirect(activeFrame, resolved, issue, recording) {
@@ -299,6 +389,12 @@ export function currentTransmissionRaster(
             source = resolver.texture(scene.texture).unwrap();
             colorView = resolver.textureView(scene.view).unwrap();
             depthView = resolver.textureView(depth.view).unwrap();
+            if (canMerge && canReplaceTransmission(frame, request) && mergeProgram.prepare(frame)) {
+              issue(recording, replacement);
+              issue(recording, merge);
+              return;
+            }
+            owner.noteCopy();
             issue(recording, copy);
             for (let level = 1; level < mipCount; level++) {
               if (mips[level] === undefined) declareMip(level);

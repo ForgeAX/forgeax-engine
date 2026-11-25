@@ -1,4 +1,9 @@
-import { createBoxGeometry, describeMeshDraw } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  describeMeshDraw,
+  projectStaticMeshVertexStreams,
+  type VertexLayoutProjection,
+} from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import {
   createMaterialProgramArtifactReceipt,
@@ -15,8 +20,10 @@ import {
   gpuDrivenMaterialArtifactKey,
   prepareGpuDrivenDraw,
 } from '../extract/gpu-driven';
+import { meshGeometryDraws } from '../gpu-driven/mesh-batches';
 import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MeshFrame } from '../scene/mesh-frame';
 
 const textureNames = [
   'baseColorTexture',
@@ -433,6 +440,72 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     expect(first?.some((input) => input.semantic === 'color')).toBe(false);
     expect(changed?.some((input) => input.semantic === 'color')).toBe(true);
     expect(project(mesh)).toBe(changed);
+  });
+
+  it('rebinds sections to current materials while both producers share the issued vertex layout', () => {
+    const box = createBoxGeometry(1, 1, 1).unwrap();
+    const original = box.submeshes[0];
+    if (!original) throw new Error('Expected a box section');
+    const asset = { ...box, submeshes: [original, { ...original, materialSlot: 1 }] };
+    const description = describeMeshDraw(asset);
+    const mesh = new MeshFrame().with(7, asset).get(7);
+    if (mesh === undefined) throw new Error('Expected a resident mesh');
+    const a = MaterialResource.from(material());
+    const b = MaterialResource.from(material());
+    const first = meshGeometryDraws(mesh, [a, b], 'rigid');
+    const swapped = meshGeometryDraws(mesh, [b, a], 'rigid');
+    const skinned = meshGeometryDraws(mesh, [b, a], 'skin');
+    const extracted = buildGpuDrivenDraws({
+      mesh: description,
+      materials: [],
+      fallbackMaterial: material(),
+      deformation: 'rigid',
+    });
+    for (let i = 0; i < first.length; i++) {
+      expect(first[i]?.geometry).toBe(swapped[i]?.geometry);
+      expect(first[i]?.geometry).not.toBe(skinned[i]?.geometry);
+      expect(first[i]?.geometry.layout).toBe(description.layout);
+      expect(first[i]?.geometry.receipt.vertexInputs).toBe(
+        extracted[i]?.geometry.receipt.vertexInputs,
+      );
+    }
+    expect(first.map((row) => row.materialResourceClass)).toEqual(
+      swapped.map((row) => row.materialResourceClass).reverse(),
+    );
+    expect(first[0]?.materialResourceClass).not.toBe(first[1]?.materialResourceClass);
+  });
+
+  it('keeps earlier split streams and shader inputs when an external layout changes in place', () => {
+    const description = describeMeshDraw(createBoxGeometry(1, 1, 1).unwrap());
+    const physical = projectStaticMeshVertexStreams(description.layout, 24)?.layout;
+    const stream = physical?.streams?.[0];
+    const position = description.layout.attributes[0];
+    const streamPosition = stream?.attributes[0];
+    if (!physical || !stream || !position || !streamPosition)
+      throw new Error('Expected split box streams');
+    const attribute = { ...position };
+    const streamAttribute = { ...streamPosition };
+    const borrowed = {
+      ...physical,
+      attributes: [attribute],
+      streams: [{ arrayStride: stream.arrayStride, attributes: [streamAttribute] }],
+    };
+    const project = (layout: VertexLayoutProjection) =>
+      buildGpuDrivenDraws({
+        mesh: { ...description, layout },
+        materials: [],
+        fallbackMaterial: material(),
+        deformation: 'rigid',
+      })[0]?.geometry;
+    expect(project(physical)?.layout).toBe(physical);
+    const first = project(borrowed);
+    attribute.shaderLocation = 12;
+    streamAttribute.offset = 4;
+    const next = project(borrowed);
+    expect(first?.receipt.vertexInputs[0]?.location).toBe(0);
+    expect(next?.receipt.vertexInputs[0]?.location).toBe(12);
+    expect(first?.layout?.streams?.[0]?.attributes[0]?.offset).toBe(0);
+    expect(next?.layout?.streams?.[0]?.attributes[0]?.offset).toBe(4);
   });
 
   it('keeps colored and colorless receipts on distinct production identities', () => {

@@ -10,6 +10,7 @@ import type { CameraSnapshot } from '../render-contract';
 import {
   R32FLOAT_MIP_SAMPLED_RENDER_PROFILE,
   R32FLOAT_RENDER_PROBE_STAGES,
+  type RhiDevice,
   type RhiTextureFormatCapabilityReceipt,
   validateR32FloatReceipt,
 } from '@forgeax/engine-rhi';
@@ -694,9 +695,10 @@ function admitSsrCapabilities(
   viewRange: number,
 ): SsrSpatialAdmission | undefined {
   const capabilities = environment.capabilities;
+  const rasterAttachments = environment.lane === 'deferred' ? 3 : 4;
   const raster =
     capabilities.r32floatSampledRender === true &&
-    (capabilities.maxColorAttachments ?? 0) >= 3 &&
+    (capabilities.maxColorAttachments ?? 0) >= rasterAttachments &&
     (capabilities.maxSampledTexturesPerShaderStage ?? 0) >= 7;
   if (
     ((!capabilities.compute || !capabilities.storageTexture) && !raster) ||
@@ -709,7 +711,7 @@ function admitSsrCapabilities(
         environment.lane,
         'capability-unavailable',
         [
-          'compute+storageTexture or qualified raster (MRT>=3, sampled textures>=7)',
+          `compute+storageTexture or qualified raster (MRT>=${rasterAttachments}, sampled textures>=7)`,
           'rgba16floatRenderable',
         ],
         {
@@ -850,4 +852,26 @@ export function admitSsrSpatial(input: {
     viewRange,
     work: ADMITTED_SPATIAL_WORK,
   });
+}
+
+/** Shared producer admission for the Forward shader resource pair. */
+export function admitsInlineSsr(
+  device: Pick<RhiDevice, 'caps'>,
+  extendedLighting: boolean | undefined,
+  ssr: SsrSpatialAdmission | undefined,
+): boolean {
+  return (
+    ssr?.status === 'admitted' &&
+    ssr.lane === 'forward' &&
+    extendedLighting === true &&
+    device.caps.compute &&
+    device.caps.storageTexture
+  );
+}
+
+export function withInlineSsrVariant(variant: string | undefined): string {
+  if (!variant) return 'FORWARD_INLINE_SSR=true';
+  return variant.includes('FORWARD_INLINE_SSR=')
+    ? variant.replace(/FORWARD_INLINE_SSR=(true|false)/, 'FORWARD_INLINE_SSR=true')
+    : `${variant}+FORWARD_INLINE_SSR=true`;
 }

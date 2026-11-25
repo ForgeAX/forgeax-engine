@@ -13,7 +13,7 @@ import {
   type ResidualCullMemo,
   type ViewCullStorage,
 } from './persistent-cull';
-import { worldBounds, writeBounds } from './render-scene-snapshots';
+import { writeBounds, writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
 import { type RenderScene, sceneDrawContentOf, sceneRow } from './render-scene-view';
 import { ResidualRoster } from './residual-roster';
@@ -63,21 +63,24 @@ class ResidualReadRoster {
       return before.value;
     const previous = before?.value ?? new FrameSet();
     const edits = new Map<number, boolean>();
-    const changed = (slot: number) => {
-      const present = residual.has(slot) && !unavailable.has(slot) && slots.versionAt(slot) !== 0;
+    const changed = (slot: number, version?: number) => {
+      const present =
+        residual.has(slot) && !unavailable.has(slot) && (version ?? slots.versionAt(slot)) !== 0;
       if (previous.has(slot) !== present) edits.set(slot, present);
     };
+    // Membership publications report presence, while Scene publications supply row versions.
+    const read = (slot: number) => changed(slot);
     if (
       before === undefined ||
-      (slots !== before.slots && !slots.changesSince(before.slots, changed))
+      (slots !== before.slots && !slots.visitChangedVersions(before.slots, changed))
     ) {
-      for (const slot of residual.borrowKeys()) changed(slot);
+      for (const slot of residual.borrowKeys()) read(slot);
       if (before !== undefined)
         for (const slot of before.value.borrowKeys())
           if (!residual.has(slot)) edits.set(slot, false);
     } else {
-      residual.changesSince(before.residual, changed);
-      unavailable.changesSince(before.unavailable, changed);
+      residual.changesSince(before.residual, read);
+      unavailable.changesSince(before.unavailable, read);
     }
     const value = edits.size === 0 ? previous : previous.edit(edits);
     this.before = { slots, residual, unavailable, value };
@@ -153,7 +156,7 @@ export class ViewCull {
         sceneRow(row ?? (index >= 0 ? roster.at(index) : undefined), snapshot) ??
         projection.slotOf(snapshot);
       if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
-        return writeBounds(worldBounds(snapshot), out);
+        return writeTransformedWorldBounds(out, snapshot.localAabb, snapshot.transform.world);
       return slot === undefined
         ? writeBounds(projection.cullingWorldBounds(snapshot), out)
         : projection.writeCullingWorldBoundsAt(slot, out, meshes, materials, skin);

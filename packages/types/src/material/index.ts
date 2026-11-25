@@ -1,6 +1,7 @@
 export * from './asset.js';
 export * from './clipping.js';
 export {
+  compileMaterialColorProjection,
   linearChannelToSrgb,
   type MaterialColorParameterSchema,
   type MaterialColorSpace,

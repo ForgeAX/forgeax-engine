@@ -19,18 +19,73 @@ export interface MutableWalkMembers extends WalkMembers {
   delete(object: Object3D): boolean;
 }
 
-/** Ordered membership for one synchronous source walk. Mounted nodes already have an
- * engine-owned row. An address is valid only while its slot contains that exact source. */
-export class SceneWalkRows<T extends Object3D = Object3D> {
+/** Reusable source references in insertion order. Releasing a traversal clears
+ * its strong references and trims storage after its working set contracts. */
+class OrderedSourceRows<T extends Object3D> {
   protected readonly rows: (T | undefined)[] = [];
-  private provisional: Map<Object3D, number> | undefined;
   protected end = 0;
+  protected readers = 0;
   size = 0;
+
+  // Cursor methods are shared. Each traversal owns its address and one reusable result.
+  private static readonly Cursor = class<T extends Object3D> implements Iterator<T> {
+    private address = 0;
+    private yielded: IteratorYieldResult<T> | undefined;
+    constructor(private owner: OrderedSourceRows<T> | undefined) {}
+    next(): IteratorResult<T> {
+      const owner = this.owner;
+      if (owner === undefined) return walkDone;
+      while (this.address < owner.end) {
+        const node = owner.rows[this.address++];
+        if (node === undefined) continue;
+        if (this.yielded === undefined) this.yielded = { done: false, value: node };
+        else this.yielded.value = node;
+        return this.yielded;
+      }
+      return this.return();
+    }
+    return(): typeof walkDone {
+      if (this.owner !== undefined) this.owner.readers--;
+      this.owner = undefined;
+      this.yielded = undefined;
+      return walkDone;
+    }
+  };
+
+  protected append(object: T): number {
+    const address = this.end++;
+    this.rows[address] = object;
+    this.size++;
+    return address;
+  }
+
+  [Symbol.iterator](): Iterator<T> {
+    this.readers++;
+    return new OrderedSourceRows.Cursor(this);
+  }
+
+  protected clearRows<V>(values: (V | undefined)[]): void {
+    values.fill(undefined, 0, this.end);
+    if (values.length > Math.max(128, this.end * 2)) values.length = this.end;
+  }
+
+  release(): void {
+    this.clearRows(this.rows);
+    this.end = 0;
+    this.size = 0;
+  }
+}
+
+/** Mounted scene rows issue membership addresses for one synchronous walk. */
+export class SceneWalkRows<T extends Object3D = Object3D> extends OrderedSourceRows<T> {
+  private provisional: Map<Object3D, number> | undefined;
 
   constructor(
     protected readonly records: ReadonlyMap<Object3D, NodeRecord>,
     private readonly slot: WalkSlot,
-  ) {}
+  ) {
+    super();
+  }
 
   has(object: T): boolean {
     return this.addressOf(object, this.records.get(object)) !== undefined;
@@ -46,9 +101,7 @@ export class SceneWalkRows<T extends Object3D = Object3D> {
     const record = this.records.get(object);
     const prior = this.addressOf(object, record);
     if (prior !== undefined) return prior;
-    const address = this.end++;
-    this.rows[address] = object;
-    this.size++;
+    const address = this.append(object);
     if (record) record[this.slot] = address;
     else {
       this.provisional ??= new Map();
@@ -71,34 +124,58 @@ export class SceneWalkRows<T extends Object3D = Object3D> {
     return true;
   }
 
-  [Symbol.iterator](): Iterator<T> {
-    let address = 0;
-    let result: IteratorYieldResult<T> | undefined;
-    return {
-      next: (): IteratorResult<T> => {
-        while (address < this.end) {
-          const object = this.rows[address++];
-          if (object !== undefined) {
-            if (result === undefined) result = { done: false, value: object };
-            else result.value = object;
-            return result;
-          }
-        }
-        return walkDone;
-      },
-    };
-  }
-
-  protected clearRows<V>(values: (V | undefined)[]): void {
-    values.fill(undefined, 0, this.end);
-    if (values.length > Math.max(128, this.end * 2)) values.length = this.end;
-  }
-
-  release(): void {
-    this.clearRows(this.rows);
-    this.end = 0;
-    this.size = 0;
+  override release(): void {
+    super.release();
     this.provisional = undefined;
+  }
+}
+
+/** The observer writes to one list while the publisher reads the preceding list.
+ * Each weak address is only a hint. Identity in the receiving list decides membership. */
+export class SourcePoseEdits extends OrderedSourceRows<Object3D> {
+  private readonly addresses = new WeakMap<Object3D, number>();
+
+  has(node: Object3D): boolean {
+    const address = this.addresses.get(node);
+    return address !== undefined && this.rows[address] === node;
+  }
+
+  add(node: Object3D, observedAddress?: number): number {
+    if (observedAddress !== undefined && this.rows[observedAddress] === node)
+      return observedAddress;
+    const previous = this.addresses.get(node);
+    if (previous !== undefined && this.rows[previous] === node) return previous;
+    const address = this.append(node);
+    if (address !== previous) this.addresses.set(node, address);
+    return address;
+  }
+
+  delete(node: Object3D): boolean {
+    const address = this.addresses.get(node);
+    if (address === undefined || this.rows[address] !== node) return false;
+    this.addresses.delete(node);
+    this.rows[address] = undefined;
+    this.size--;
+    // A live cursor must observe delete-and-reinsert at the end in submission order.
+    if (this.readers !== 0) return true;
+    while (this.end > 0 && this.rows[this.end - 1] === undefined) this.end--;
+    // Structural churn can leave holes between surviving nodes before the next capture.
+    if (this.end > Math.max(128, this.size * 2)) this.compact();
+    return true;
+  }
+
+  private compact(): void {
+    let kept = 0;
+    for (let index = 0; index < this.end; index++) {
+      const node = this.rows[index];
+      if (node === undefined) continue;
+      if (kept !== index) {
+        this.rows[kept] = node;
+        this.addresses.set(node, kept);
+      }
+      kept++;
+    }
+    this.rows.length = this.end = kept;
   }
 }
 

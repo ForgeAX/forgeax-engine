@@ -468,6 +468,11 @@ It fingerprints whole candidate files, including CPU admission and DOM helpers
 that contain native tokens. Review the actual delta and record only that review;
 retain unrelated digests and identities, and keep semantic/GPU acceptance gates.
 
+Transmission Dawn partitions verify the complete assertion count, including
+skipped rows in each native child. When adding cases, update the feature
+partitions and the Smoke roster-count tests together. Preserve the canonical
+60-frame receipt and run the affected native owner before publishing.
+
 For checkout `git clean` failing on inaccessible root dependency shims, clear
 only the current runner workspace's `node_modules` before checkout, from the
 runner temporary directory with noninteractive sudo. The existing later install
@@ -861,6 +866,11 @@ the clean-checkout module resolution. Prepare pinned pnpm/npm and run the existi
 frozen workspace install before that complete acceptance owner, once. Preserve
 the generated-workflow parser, all export/provenance assertions and the original
 SDK execution bounds; a warm local dependency tree does not qualify bootstrap.
+
+Inspect the `engine-package-size-<run-id>` receipt from SDK PR Preflight for
+Engine npm packaging changes. The same producer rejects any final compressed
+archive over 64,000,000 bytes locally and in CI. The receipt includes the paired
+Engine revision and archive digest.
 
 After a PR is opened, every subsequent update must use this workflow. The initial
 CI run establishes its baseline; each subsequent push declares `CI-Repair-From`
@@ -2286,12 +2296,10 @@ The pinned official archive snapshot retains package bytes after moving mirrors
 remove old releases; retain download/hash errors rather than bypassing setup.
 
 Basic source initialization and ordinary tests do not require Dawn. `pnpm test`
-retains its DevKit browser journeys; Dawn GPU testing is a local opt-in. For a missing
-carrier on macOS/Windows, explicitly run
-`pnpm --filter @forgeax/engine-dawn-node build:native` before `pnpm test:dawn`;
-follow the [carrier contract](../../packages/dawn-node/README.md). Do not add
-native compilation to installation or ordinary builds, skip missing GPU evidence,
-or substitute Dawn for the native wgpu Ray Query backend.
+retains its DevKit browser journeys. A frozen workspace install supplies the
+upstream Dawn prebuild for `pnpm test:dawn`. Follow the
+[provider contract](../../packages/dawn-node/README.md) for standalone games.
+Report missing GPU evidence and keep the native wgpu Ray Query gate independent.
 
 On Windows, run `pnpm test:browser` / `pnpm test:dawn` through the
 [Node suite entry](../../scripts/ci/README.md#concurrent-local-sessions-and-the-gpu-lease).
@@ -2305,14 +2313,6 @@ For a Windows multi-project Vitest failure, verify that CLI exclusion globs reac
 the resolved project with forward slashes. The actual workspace regression in
 `scripts/ci/__tests__/run-vitest-projects.test.mjs` requires ordinary tests and
 rejects the excluded file; retain the separately leased DevKit native groups.
-
-For the Windows Nightly `Build opt-in Dawn native carrier` step, separate CMake
-generator/configuration from the later MSVC source compile. A CMake log that
-selects `Visual Studio 18 2026` proves generator selection only; the native
-build must finish and publish its verified output. Check the build worker cap
-when MSVC is still compiling DXC/LLVM at the cold-build deadline. The CI guide
-owns the cold-build budget and content-keyed output cache; never cache or
-restore the CMake build tree.
 
 Package-script environment prefixes use the workspace's pnpm `shellEmulator`;
 direct child launchers must use `pnpmCommand`, including composite Smoke gates.
@@ -2427,6 +2427,11 @@ fields through console transport and inspect the named cause. Follow the
 errors fail promptly, healthy startup retains its allowance, and backend stop
 requires its own retirement evidence. Preview keeps separate Catalog and
 completed-frame deadlines; an inspection connection or capture is not readiness.
+
+For a Screen Probe Support deadline failure, compare the first submission
+duration and the effective child worker counts with the last complete run.
+The isolated owner uses the existing bounded software GPU worker policy.
+Keep the thin-wall case deadline and all support controls.
 
 For Screen Probe motion, noise or receiver-sequence failures, follow
 [RHI Debug](../forgeax-engine-rhi-debug/SKILL.md) and inspect actual probe and pixel
@@ -2882,6 +2887,8 @@ OBJ/GLB performance samples belong to its opt-in fidelity benchmarks. Optional
 Mesh, lighting-channel/GI and Wave 1 captures upload only after failure. Inspect
 the successful check logs rather than treating an absent optional artifact as
 missing acceptance; required producer artifacts and receipts remain mandatory.
+Reverse-Z Dawn preserves its frame tape, inspection report and pixels under
+`artifacts/reverse-z/dawn/` in the same failure upload.
 
 Read the failed head's logs and separate preparation, execution, teardown and
 transport. Reproduce with the owning package or `pnpm ci:focus`. Keep the real
@@ -3261,8 +3268,6 @@ regressions, then require complete final-head consumer CI.
 
 For `release-source-not-on-main` or `release-source-not-on-stable` after a successful resolve step, follow [shallow release ancestry](../../scripts/ci/README.md#release-source-ancestry-from-shallow-checkouts). Compare complete branch history before assigning source drift; the release-policy owner must fetch sufficient history and still reject outsiders. Keep the sealed Candidate bytes and all publication guards.
 
-For explicit Dawn preparation on a shared host, set `CMAKE_BUILD_PARALLEL_LEVEL=1` to cap native compilation without changing the pinned source, device lease or gate budgets; see the Dawn carrier contract.
-
 For green MCP checks with a black Scene or fatal Play screenshot, follow the
 [consumer acceptance gate](../../scripts/ci/README.md#optional-mcp-app-consumer).
 Inspect the real screenshots, visible native fatal details and console errors;
@@ -3409,6 +3414,12 @@ forward/deferred cases, their temporal frames and replay assertions. Use complet
 historical file cost for placement and retain failed child logs separately.
 Require local red/green placement replay and relevant final-candidate `ci:focus`
 checks before publication. Required Linux native owners execute in final-head PR CI.
+
+If World Card Bounds reaches its case deadline in ordinary Dawn, run
+`pnpm ci:focus --kind dawn --select world-card-bounds` for both of its
+unchanged GPU cases. Use the finite-ray pipeline and readback timings to
+diagnose cold Mesa execution. Keep the dedicated serial owner, the original
+90-second case deadline and the four final-head Linux lanes.
 
 If a Standard nonreceiver stalls in its first native GPU completion, retain the
 actual failing tape and inspect its declared shadow reception before changing

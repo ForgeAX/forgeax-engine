@@ -69,7 +69,6 @@ import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type {
   GpuRasterOwnership,
   PersistentGpuDrivenState,
@@ -134,7 +133,7 @@ import {
   type RenderableDrawReceipt,
   summarizeGpuDrivenDraws,
 } from './gpu-draw-receipts';
-import { canRetainMaterialBindings } from './material-binding-index';
+import { canRetainMaterialBindings, type MaterialRelationFrame } from './material-binding-index';
 import { materialGeometry } from './material-geometry';
 import { foldRenderableSnapshot } from './mesh-ssbo';
 import {
@@ -320,8 +319,8 @@ import {
 import { consumeViewDiffuseGi, reprojectDiffuseGiHistory } from './frame-diffuse-gi';
 import {
   captureViewsCastShadows,
-  collectDirectShadowMaterials,
   type DirectShadowInputs,
+  directionalAtlasMaterialReads,
   gpuLaneDirectShadowRows,
   updateGpuDrivenShadowViews,
   validateDirectShadowRows,
@@ -365,7 +364,7 @@ import {
   recordCompiledFrameGraph,
   settleEncodedFrameGraph,
 } from './typed-frame-graph';
-import { indirectSpecularMode, writePointsLinesViewUbo, writeViewUbo } from './view-ubo';
+import { indirectSpecularMode, writeViewUbo } from './view-ubo';
 import { updateVolumetricFogInspection } from './volumetric-fog-commit';
 
 export type { RecordProfileRunner };
@@ -928,7 +927,6 @@ function prepareGpuDrivenRecordingShadows(
   profile: RecordProfileRunner | undefined,
   lights: ViewLights,
   reads: ShadowMeshInput | undefined,
-  planes: () => ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
@@ -951,7 +949,6 @@ function prepareGpuDrivenRecordingShadows(
     profile,
     input.shadowViews,
     lights,
-    planes,
     targetSize,
     graphGeneration,
     directionalLimit,
@@ -963,8 +960,10 @@ function retainGpuShadowMeshReads(
   input: import('./frame-gpu-driven-input').FrameGpuDrivenInput,
   reads: ShadowMeshInput | undefined,
 ): void {
-  for (const [binding, execution] of input.artifacts?.batchExecutions ?? [])
-    if (execution.shadow.route !== 'none') reads?.reads.add(input.meshes.get(binding)?.changeToken);
+  if (reads === undefined || input.artifacts === undefined) return;
+  input.artifacts.batchExecutions.forEach((execution, binding) => {
+    if (execution.shadow.route !== 'none') reads.reads.add(input.meshes.get(binding)?.changeToken);
+  });
 }
 
 function observePreparedResourceGeneration(
@@ -1263,17 +1262,13 @@ function forwardViewShadowReception(
   internals: RenderSystemInternals,
   lights: ViewLights,
   renderPath: 'forward' | 'deferred',
+  contactShadow: boolean,
   cloudShadow: boolean,
   capsuleShadow: boolean,
 ): boolean | undefined {
   if (internals.device.caps.backendKind !== 'wgpu-webgl2' || renderPath !== 'forward')
     return undefined;
-  return (
-    lights.shadowViews.length > 0 ||
-    (lights.directional?.contactShadowLength ?? 0) > 0 ||
-    cloudShadow ||
-    capsuleShadow
-  );
+  return lights.shadowViews.length > 0 || contactShadow || cloudShadow || capsuleShadow;
 }
 
 function capsuleShadowLightFor(
@@ -1666,6 +1661,7 @@ function prepareFrameMaterialReads(input: {
   readonly shadowCasterProjection: PersistentShadowCasterProjection | undefined;
   readonly profilePhase: RecordProfileRunner | undefined;
   readonly camera: CameraSnapshot;
+  readonly captureOnly: boolean | undefined;
 }) {
   const {
     internals,
@@ -1685,6 +1681,8 @@ function prepareFrameMaterialReads(input: {
     shadowCasterProjection,
     sourceRenderables,
   );
+  if (!input.captureOnly && shadowCasterProjection !== undefined)
+    frameState.materialBgAssemblyCache.adoptMaterials(fixedMaterials);
   const prepareSources = (sources: FrameList<RenderableSnapshot>, dispatch: DispatchList = []) =>
     runRecordProfilePhase(profilePhase, 'record/validation', () =>
       validateRenderables(
@@ -1746,12 +1744,11 @@ function capsuleShadowPolicy(
     standard.prepared.renderPath === 'deferred' ||
     (internals.standardSceneShaders?.forwardContact !== undefined &&
       internals.standardSceneShaders.forwardScreenCompose !== undefined);
-  const forwardCapsuleShadows =
+  const capsuleShadows =
     capsuleShadowDirectional &&
-    standard.prepared.renderPath === 'forward' &&
     lights.cascades?.directionalShadowQuality !== undefined &&
     hasCapsuleShadowDemand(renderables);
-  return { capsuleShadowDirectional, forwardCapsuleShadows };
+  return { capsuleShadowDirectional, capsuleShadows };
 }
 
 /** CPU preparation before graph compilation; its product lives on the recording view. */
@@ -1892,7 +1889,7 @@ export function prepareFrameGraphInputs(
     return { kind: 'pending' as const, featurePlan };
   }
 
-  const { capsuleShadowDirectional, forwardCapsuleShadows } = capsuleShadowPolicy(
+  const { capsuleShadowDirectional, capsuleShadows } = capsuleShadowPolicy(
     internals,
     standard,
     lights,
@@ -1937,17 +1934,13 @@ export function prepareFrameGraphInputs(
     frameState.compiledFrameGraph,
     frameState.compiledFrameGraphCandidate?.previous.installed,
   );
-  let frameShadowPlanes: ReadonlyMap<string, Float32Array> | undefined;
-  const shadowPlanesByView = (): ReadonlyMap<string, Float32Array> => {
-    frameShadowPlanes ??= shadowViewPlanesByView(lights.shadowViews, directionalPreparationLimit);
-    return frameShadowPlanes;
-  };
   const hasShadowViews = hasShadowViewDemand(lights);
 
   let acceptedMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   let acceptedShadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   let materialBindingClasses: ReadonlyMap<string, string> | undefined;
   let directShadowValidated: DrawRows | undefined;
+  let directShadowMaterials: MaterialRelationFrame | undefined;
   const cubeCaptureWork = prepareCubeCapture(cubeCapture);
   const captureViewWork = prepareCaptureView(internals, camera);
   if (captureViewWork === undefined) return { kind: 'rejected' as const };
@@ -1999,6 +1992,7 @@ export function prepareFrameGraphInputs(
     shadowCasterProjection,
     profilePhase,
     camera,
+    captureOnly,
   });
   const fixedShadowDomain = isFixedShadowDomain(
     rendererRecording,
@@ -2026,6 +2020,7 @@ export function prepareFrameGraphInputs(
   const directShadowInputs = (scene: PersistentGpuDrivenState): DirectShadowInputs => ({
     scene,
     phases: drawPhases,
+    retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
     meshes: gpuDrivenMeshes,
     sourceScope,
     materials: fixedMaterials,
@@ -2035,8 +2030,6 @@ export function prepareFrameGraphInputs(
     geometry: directGeometry,
     lodRows: shadowLodRows,
   });
-  const gpuShadowMaterials = gpuInput.shadowMaterials;
-  const directShadowMaterials = new ShadowMaterialContent();
   // `render-subsurface-admission` admitted this view's diffusion lane in RenderQueue.
   const subsurface = consumeViewSubsurface(internals, cubeCapture, captureOnly, () =>
     subsurfaceAdmissionInput(
@@ -2074,7 +2067,6 @@ export function prepareFrameGraphInputs(
         profilePhase,
         lights,
         shadowMeshReads,
-        shadowPlanesByView,
         graphShadowMapSize,
         frameState.graphGeneration,
         directionalPreparationLimit,
@@ -2092,6 +2084,7 @@ export function prepareFrameGraphInputs(
       );
       if (shadows?.derived === true) shadowGeometryFixed = false;
       directShadowValidated = shadows?.rows;
+      directShadowMaterials = shadows?.materialRows;
     }
   }
 
@@ -2116,16 +2109,24 @@ export function prepareFrameGraphInputs(
       const shadows = validateDirectShadowRows(directShadowInputs(nativeScene));
       if (shadows.derived) shadowGeometryFixed = false;
       directShadowValidated = shadows.rows;
+      directShadowMaterials = shadows.materialRows;
     }
   }
-  collectDirectShadowMaterials(
-    internals,
-    sourceScope,
-    directShadowValidated,
-    fixedMaterials,
-    directShadowMaterials,
-    shadowMeshReads,
-  );
+  // Only a fixed mesh lease can carry a directional atlas into another frame.
+  // Dynamic caster rows still render; they have no atlas material reads to retain.
+  const shadowAtlasMaterials =
+    shadowGeometryFixed && attempt.shadowMeshLease !== undefined
+      ? directionalAtlasMaterialReads(
+          internals,
+          sourceScope,
+          directShadowValidated,
+          fixedMaterials,
+          gpuInput,
+          shadowCasterProjection,
+          shadowMeshReads,
+          directShadowMaterials !== undefined,
+        )
+      : undefined;
 
   // Compile the single frame graph only after GPU preparation has projected
   // the current frame. This keeps the graph topology and its execution
@@ -2193,19 +2194,19 @@ export function prepareFrameGraphInputs(
     manualDraws,
     foldBuckets,
     directShadowValidated,
+    directShadowMaterials,
     materialBindingClasses,
     fixedMaterials,
     sourceRenderables,
     capsuleShadowDirectional,
-    forwardCapsuleShadows,
+    capsuleShadows,
     light,
     analyticFog,
     shadowGeometryFixed,
     shadowLodSelection,
     renderReadLease,
     effectiveShadowMapSize,
-    gpuShadowMaterials,
-    directShadowMaterials,
+    shadowAtlasMaterials,
     bindGroupCounts,
     postProcessParams,
     dispatchCounts,
@@ -2214,7 +2215,7 @@ export function prepareFrameGraphInputs(
     ssr,
     frameGpuDriven,
     acceptedShadowMaterialArtifacts,
-    shadowPlanesByView,
+    directionalPreparationLimit,
     pointsLines,
     onRenderableDraw,
     effectiveSpotShadowMapSize,
@@ -2348,6 +2349,9 @@ function standardClusterTextureExtentForGraph(
     !environment.atmosphere.backgroundOnly;
   if (captureOnly || installedGraph?.graph !== preflightGraph)
     return atmosphere ? { atmosphere: true } : undefined;
+  const receiver = currentForwardShadowReceiver(frameState);
+  if (receiver?.mode === 'screen' && receiver.ambientOcclusion)
+    return { screen: { width: receiver.width, height: receiver.height } };
   // The uploader and the pass sample the same physical Cluster generation.
   if (installedGraph.displayPorts !== undefined)
     return installedGraph.displayPorts.clusterTextureExtent;
@@ -2437,6 +2441,7 @@ export function sealFrameGraph(
     manualDraws,
     foldBuckets,
     directShadowValidated,
+    directShadowMaterials,
     materialBindingClasses,
     fixedMaterials,
     sourceRenderables,
@@ -2448,8 +2453,7 @@ export function sealFrameGraph(
     shadowLodSelection,
     renderReadLease,
     effectiveShadowMapSize,
-    gpuShadowMaterials,
-    directShadowMaterials,
+    shadowAtlasMaterials,
     bindGroupCounts,
     postProcessParams,
     dispatchCounts,
@@ -2458,7 +2462,7 @@ export function sealFrameGraph(
     ssr,
     frameGpuDriven,
     acceptedShadowMaterialArtifacts,
-    shadowPlanesByView,
+    directionalPreparationLimit,
     pointsLines,
     onRenderableDraw,
     effectiveSpotShadowMapSize,
@@ -2598,6 +2602,7 @@ export function sealFrameGraph(
             owner: drawPhases.materialBindings,
             renderables: sceneWork.rows,
             rows: sceneWork.materialRows,
+            shadow: directShadowMaterials,
           },
       sceneWork,
     ),
@@ -2695,15 +2700,6 @@ export function sealFrameGraph(
           frameState.activeTemporalGpuState.width === targetW &&
           frameState.activeTemporalGpuState.height === targetH,
       );
-      if (pipelineState.pointsLinesViewBuffer !== undefined) {
-        writePointsLinesViewUbo(
-          internals.device.queue,
-          pipelineState.pointsLinesViewBuffer,
-          camera,
-          targetW,
-          targetH,
-        );
-      }
       writeShadowCasterUniforms(
         internals.device.queue,
         pipelineState.shadowCasterCascadeBuffer,
@@ -2728,7 +2724,7 @@ export function sealFrameGraph(
         effectiveShadowMapSize,
         shadowMeshInput,
         shadowCasterProjection,
-        [gpuShadowMaterials, directShadowMaterials],
+        shadowAtlasMaterials,
         shadowLodToken,
       ),
   );
@@ -2847,6 +2843,7 @@ export function sealFrameGraph(
       internals,
       lights,
       standard.prepared.renderPath,
+      light.contactShadowLength > 0,
       cloudShadowProjection !== undefined,
       capsuleShadowLight !== undefined,
     ),
@@ -2876,6 +2873,7 @@ export function sealFrameGraph(
     foldDispatchPlan: dispatchPlan.foldDispatchPlan,
     materialSlotIndices,
     materialSlots,
+    acceptedMaterialSlots: dispatchPlan.acceptedMaterialSlots,
     materialBindings: dispatchPlan.materialBindings,
     materialBindingSlots: dispatchPlan.materialBindingSlots,
     materialSlotCount,
@@ -2887,7 +2885,7 @@ export function sealFrameGraph(
       gpuSelection,
       acceptedShadowMaterialArtifacts,
     ),
-    shadowViewPlanesByView: shadowPlanesByView(),
+    shadowViewPlanesByView: shadowViewPlanesByView(lights.shadowViews, directionalPreparationLimit),
     materialFrame: fixedMaterials,
     waterMaterialRecordCache: {
       validatedOrdered,
@@ -3006,7 +3004,7 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
     clearOnly: cameras.length === 0,
     passPlan,
     unfoggedOpaque: fixedMaterials.hasUnfoggedOpaque,
-    forwardCapsuleShadows: prepared.forwardCapsuleShadows,
+    capsuleShadows: prepared.capsuleShadows,
     volumetricFog: volume.graphFog,
     volumeTopologyCandidate: volume.topologyCandidate,
     standardLighting: standard,

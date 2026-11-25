@@ -102,10 +102,6 @@ afterEach(() => vi.restoreAllMocks());
       const view = projectViewLayout(device, viewBgl, reads);
       expect(view.entries).toEqual([
         expect.objectContaining({ binding: 0 }),
-        expect.objectContaining({
-          binding: 10,
-          buffer: { type: 'uniform', hasDynamicOffset: true },
-        }),
         expect.objectContaining({ binding: 34, buffer: { type: 'uniform', minBindingSize: 112 } }),
         expect.objectContaining({ binding: 35, buffer: { type: 'uniform' } }),
         expect.objectContaining({

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -9,14 +9,14 @@ import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { build } from 'vite';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { verifyDist, writeDistManifest } from '../../dist.js';
 import type { ProjectFacts } from '../../types.js';
 import { executionWorkerEntries } from '../execution-workers.js';
 import { prepareWechatBuild, verifyWechatPackageBudget, writeWechatProject } from '../wechat.js';
 import { generatedWechatConfiguration } from './configuration-host.fixture';
 
-it('bundles an ordinary Runtime Pack into a lazy native WeChat module', async () => {
+it('bundles a native Runtime Pack and compiles shaders with the initialized WeChat WASM', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-runtime-pack-'));
   try {
     const scope = resolve(root, 'node_modules/@forgeax');
@@ -34,7 +34,7 @@ it('bundles an ordinary Runtime Pack into a lazy native WeChat module', async ()
           "export function generate() { return { ok: true, value: { s: { kind: 'sampler' } } }; }",
       },
     }).unwrap();
-    await prepareWechatBuild(
+    const { plugin } = await prepareWechatBuild(
       {
         root,
         id: 'inline-runtime',
@@ -72,14 +72,26 @@ it('bundles an ordinary Runtime Pack into a lazy native WeChat module', async ()
     expect(host).toContain(
       'runtimePacks: { scopeId: runtimeBinding.scopeId, authored, imports, programHost, cache: runtimePackCache }',
     );
+    const staging = (await readdir(root, { withFileTypes: true })).find(
+      (entry) => entry.isDirectory() && entry.name.startsWith('wechat-'),
+    );
+    expect(staging).toBeDefined();
+    const bindings = `./${staging?.name}/wgpu/wgpu-native.mjs`;
     await writeFile(
       resolve(root, 'probe.ts'),
       `
 import { loadPackProgram } from '@forgeax/engine/pack/runtime';
+import { prepareShaderCompiler } from '@forgeax/engine/shader-compiler/program';
+import { initializeNativeWgpu } from ${JSON.stringify(bindings)};
 import { authored, imports, programHost } from './wechat-programs.ts';
 export async function generate() {
   const generator = (await loadPackProgram(authored[0].program, imports, programHost)).unwrap();
   return generator({});
+}
+export async function compile(host) {
+  await initializeNativeWgpu(host);
+  const compiler = (await prepareShaderCompiler()).unwrap();
+  return compiler.program('@compute @workgroup_size(1) fn main() {}', { computeEntry: 'main' }).unwrap().wgsl;
 }
 `,
     );
@@ -87,7 +99,7 @@ export async function generate() {
       root,
       configFile: false,
       logLevel: 'error',
-      plugins: [executionWorkerEntries([], 'native')],
+      plugins: [plugin, executionWorkerEntries([], 'native')],
       build: {
         modulePreload: false,
         rollupOptions: {
@@ -101,8 +113,23 @@ export async function generate() {
         },
       },
     });
-    const { generate } = createRequire(import.meta.url)(resolve(root, 'dist/probe.cjs'));
+    const { compile, generate } = createRequire(import.meta.url)(resolve(root, 'dist/probe.cjs'));
     await expect(generate()).resolves.toEqual({ ok: true, value: { s: { kind: 'sampler' } } });
+    const bytes = await readFile(resolve(root, 'dist/wasm/wgpu.wasm'));
+    const instantiate = vi.fn((imports: WebAssembly.Imports) =>
+      WebAssembly.instantiate(bytes, imports),
+    );
+    const nativeHost = {
+      readWasm: async () => bytes,
+      instantiate,
+      surfaces: [
+        {
+          getContext: () => ({ VERSION: 7938, getParameter: () => 'WebGL 2.0 (native contract)' }),
+        },
+      ],
+    };
+    await expect(compile(nativeHost)).resolves.toContain('@compute');
+    expect(instantiate).toHaveBeenCalledTimes(1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -215,7 +242,7 @@ it('publishes one subpackage with unchanged local JavaScript and lossless packag
     expect(bootstrap).not.toContain('require(');
     let progress: ((event: object) => void) | undefined;
     let loaded: (() => void) | undefined;
-    const startup = runInNewContext(`${bootstrap}; globalThis.__forgeaxGameInspection`, {
+    const realm = {
       wx: {
         loadSubpackage: (options: { success(): void }) => {
           loaded = options.success;
@@ -227,7 +254,13 @@ it('publishes one subpackage with unchanged local JavaScript and lossless packag
         },
       },
       console: { info() {} },
-    });
+      __forgeaxRegisterWechatPayload: undefined as ((start: () => void) => void) | undefined,
+    };
+    const startup = runInNewContext(`${bootstrap}; globalThis.__forgeaxGameInspection`, realm);
+    const launch = vi.fn();
+    const register = realm.__forgeaxRegisterWechatPayload;
+    register?.(launch);
+    expect(launch).not.toHaveBeenCalled();
     expect(progress).toBeTypeOf('function');
     progress?.({ progress: 25, totalBytesWritten: 100, totalBytesExpectedToWrite: 400 });
     expect(startup.renderer().packageLoad).toMatchObject({
@@ -247,6 +280,20 @@ it('publishes one subpackage with unchanged local JavaScript and lossless packag
     progress?.({ progress: 100, totalBytesWritten: 400, totalBytesExpectedToWrite: 400 });
     expect(startup.renderer().phase).toBe('subpackage-loaded');
     expect(startup.renderer().packageLoad.events).toBe(2);
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(1));
+    expect(realm.__forgeaxRegisterWechatPayload).toBeUndefined();
+    loaded?.();
+    register?.(launch);
+    expect(launch).toHaveBeenCalledTimes(1);
+
+    // Old DevTools can report success before evaluating the payload module.
+    const lateRealm = {
+      ...realm,
+      wx: { loadSubpackage: ({ success }: { success(): void }) => success() },
+    };
+    runInNewContext(bootstrap, lateRealm);
+    lateRealm.__forgeaxRegisterWechatPayload?.(launch);
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(2));
     expect(JSON.parse(await readFile(resolve(root, 'game.json'), 'utf8')).subpackages).toEqual([
       { name: 'payload', root: 'payload/' },
     ]);

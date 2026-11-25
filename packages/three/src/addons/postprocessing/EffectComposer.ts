@@ -1,6 +1,11 @@
 import { Vector2 } from 'three/src/Three.Core.js';
 import { invalidError, unsupportedError } from '../../compatibility-error';
-import { renderThreePostProcessing, type ThreePostProcessing } from '../../post-processing';
+import type { ThreeFullscreenPass } from '../../fullscreen-pass';
+import {
+  isThreeFullscreenPass,
+  renderThreePostProcessing,
+  type ThreePostProcessing,
+} from '../../post-processing';
 import type { WebGPURenderer } from '../../renderer';
 import { GTAOPass } from './GTAOPass';
 import { OutputPass } from './OutputPass';
@@ -108,28 +113,53 @@ export class EffectComposer {
       !scene.clear
     )
       throw unsupportedError('EffectComposer RenderPass overrides');
+    this.renderer[renderThreePostProcessing](
+      scene.scene,
+      scene.camera,
+      this.collectPostProcessing(scene, first, last),
+    );
+  }
+
+  private collectPostProcessing(
+    scene: RenderPass,
+    first: number,
+    last: number,
+  ): ThreePostProcessing {
     let ao: ThreePostProcessing['ao'];
     let bloom: ThreePostProcessing['bloom'];
+    let fullscreen: ThreeFullscreenPass | undefined;
     for (let i = first + 1; i < last; i++) {
       const pass = this.passes[i];
       if (!pass?.enabled) continue;
-      if (pass instanceof GTAOPass && ao === undefined && bloom === undefined) {
+      if (
+        pass instanceof GTAOPass &&
+        ao === undefined &&
+        bloom === undefined &&
+        fullscreen === undefined
+      ) {
         validateAoPass(pass, scene);
         ao = aoSettings(pass, this.size.x * this.pixelRatio);
-      } else if (pass instanceof UnrealBloomPass && bloom === undefined) {
+      } else if (
+        pass instanceof UnrealBloomPass &&
+        bloom === undefined &&
+        fullscreen === undefined
+      ) {
         bloom = {
           // Three r187 composites with 3 * strength; native Bloom uses intensity / 3.
           intensity: pass.strength * 9,
           radius: pass.radius ?? 0,
           threshold: pass.threshold ?? 0,
         };
+      } else if (isThreeFullscreenPass(pass) && fullscreen === undefined) {
+        fullscreen = pass;
       } else {
         throw unsupportedError(`EffectComposer pass or ordering: ${pass.constructor.name}`);
       }
     }
-    this.renderer[renderThreePostProcessing](scene.scene, scene.camera, {
+    return {
+      ...(fullscreen === undefined ? {} : { fullscreen }),
       ...(ao === undefined ? {} : { ao }),
       ...(bloom === undefined ? {} : { bloom }),
-    });
+    };
   }
 }

@@ -30,7 +30,7 @@ import { sameValue } from '../same-value';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import { shadowPlanes } from '../shadow-frustum';
 import { renderWorldFor } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewField, requireViewField } from './view-field';
 
 /** Spot shadow tiles in the renderer-owned spot depth array. */
 export const SPOT_SHADOW_LAYERS = 4;
@@ -716,7 +716,8 @@ export class RenderLights {
     refit.clear();
     if (!changed) return;
     const views: ShadowViewProjection[] = [];
-    for (const entity of this.shadowed) views.push(...this.currentViews(entity));
+    for (const entity of this.shadowed)
+      for (const view of this.viewEntities(entity)) views.push(this.projectionOf(view));
     this.shadowViews = Object.freeze(views);
   }
 
@@ -795,39 +796,41 @@ export class RenderLights {
     if (shadow !== undefined) this.writeShadow(entity, layer, shadow);
   }
 
-  /** The light's shadow view projections, in face order. */
-  private currentViews(entity: EntityHandle): ShadowViewProjection[] {
-    const world = this.world;
-    return this.viewEntities(entity).map((view) =>
-      world
-        .resolveUniqueRef<ShadowViewProjection>(world.get(view, ShadowView).unwrap().projection)
-        .unwrap(),
-    );
+  private projectionOf(view: EntityHandle): ShadowViewProjection {
+    return this.world
+      .resolveUniqueRef<ShadowViewProjection>(
+        requireViewField(this.world, view, ShadowView, 'projection'),
+      )
+      .unwrap();
   }
 
-  /**
-   * Spawn or rewrite the light's shadow views in face order when its layer or
-   * matrices changed; true when a view was written.
-   */
+  /** One source matrix span owns one face. Keep untouched planes and previously issued views. */
   private refreshViews(entity: EntityHandle): boolean {
     const kind = this.kindOf(entity);
     if (kind === undefined) return false;
     const layer = this.layerOf(entity);
-    const matrices = layer < 0 ? undefined : this.viewMatrices(kind, entity);
+    if (layer < 0) return false;
+    const point = kind.shadow === 'point';
+    const matrices = point
+      ? this.pointShadow(entity)?.shadowMatrices
+      : (this.facts(entity) as SpotLightSnapshot).lightViewProj;
     if (matrices === undefined) return false;
     const world = this.world;
     const entities = this.viewEntities(entity);
-    const current = this.currentViews(entity);
-    if (
-      current.length === matrices.length &&
-      current.every(
-        (view, face) => view.identity.index === layer && sameValue(view.matrix, matrices[face]),
+    let changed = false;
+    for (let face = 0; face < (point ? 6 : 1); face += 1) {
+      const view = entities[face];
+      const prior = view === undefined ? undefined : this.projectionOf(view);
+      const priorIdentity = prior?.identity;
+      const offset = point ? face * 16 : 0;
+      const length = point ? Math.max(0, Math.min(16, matrices.length - offset)) : matrices.length;
+      if (
+        prior !== undefined &&
+        prior.identity.index === layer &&
+        sameMatrixSpan(prior.matrix, matrices, offset, length)
       )
-    )
-      return false;
-    for (let face = 0; face < matrices.length; face += 1) {
-      const matrix = new Float32Array(matrices[face] as Float32Array);
-      const priorIdentity = current[face]?.identity;
+        continue;
+      const matrix = matrices.slice(offset, offset + length);
       const projection: ShadowViewProjection = Object.freeze({
         identity: captureShadowViewIdentity(
           priorIdentity?.kind === kind.shadow &&
@@ -844,7 +847,7 @@ export class RenderLights {
         planes: shadowPlanes(matrix),
       });
       const handle = world.allocUniqueRef('ShadowViewProjection', projection);
-      const view = entities[face];
+      changed = true;
       if (view === undefined)
         world
           .spawn(
@@ -854,7 +857,7 @@ export class RenderLights {
           .unwrap();
       else world.set(view, ShadowView, { projection: handle }).unwrap();
     }
-    return true;
+    return changed;
   }
 
   private kindOf(entity: EntityHandle): LightKind | undefined {
@@ -866,19 +869,6 @@ export class RenderLights {
         : undefined;
   }
 
-  /** Face matrices of a light's shadow views. */
-  private viewMatrices(kind: LightKind, entity: EntityHandle): Float32Array[] | undefined {
-    if (kind.shadow === 'point') {
-      const shadow = this.pointShadow(entity);
-      if (shadow === undefined) return undefined;
-      return Array.from({ length: 6 }, (_, face) =>
-        shadow.shadowMatrices.subarray(face * 16, face * 16 + 16),
-      );
-    }
-    const spot = this.facts(entity) as SpotLightSnapshot;
-    return spot.lightViewProj === undefined ? undefined : [spot.lightViewProj];
-  }
-
   /** The light's shadow view entities, in the face order they were spawned. */
   private viewEntities(entity: EntityHandle): readonly EntityHandle[] {
     const world = this.world;
@@ -887,22 +877,22 @@ export class RenderLights {
   }
 
   private layerOf(entity: EntityHandle): number {
-    return this.world.get(entity, RenderLight).unwrap().shadowLayer;
+    return requireViewField(this.world, entity, RenderLight, 'shadowLayer');
   }
 
   private facts(entity: EntityHandle): LightFacts {
     const world = this.world;
     return world
-      .resolveUniqueRef<LightFacts>(world.get(entity, RenderLight).unwrap().facts)
+      .resolveUniqueRef<LightFacts>(requireViewField(world, entity, RenderLight, 'facts'))
       .unwrap();
   }
 
   private pointShadow(entity: EntityHandle): PointShadowSnapshot | undefined {
     const world = this.world;
-    if (!world.hasComponent(entity, RenderPointShadow)) return undefined;
-    return world
-      .resolveUniqueRef<PointShadowSnapshot>(world.get(entity, RenderPointShadow).unwrap().facts)
-      .unwrap();
+    const handle = readViewField(world, entity, RenderPointShadow, 'facts');
+    return handle === undefined
+      ? undefined
+      : world.resolveUniqueRef<PointShadowSnapshot>(handle).unwrap();
   }
 
   private writeFacts(entity: EntityHandle, facts: LightFacts): void {
@@ -927,6 +917,22 @@ export class RenderLights {
     if (present) world.set(entity, RenderPointShadow, { facts }).unwrap();
     else world.addComponent(entity, { component: RenderPointShadow, data: { facts } }).unwrap();
   }
+}
+
+/** Compare the packed source directly. A NaN requires checking its original bit pattern. */
+function sameMatrixSpan(
+  current: Float32Array,
+  source: Float32Array,
+  offset: number,
+  length: number,
+): boolean {
+  if (current.length !== length) return false;
+  for (let i = 0; i < length; i++) {
+    const value = current[i];
+    if (!Object.is(value, source[offset + i])) return false;
+    if (Number.isNaN(value)) return sameValue(current, source.subarray(offset, offset + length));
+  }
+  return true;
 }
 
 function castsSpot(facts: LightFacts): boolean {

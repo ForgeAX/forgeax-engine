@@ -109,34 +109,75 @@ export const SKIN_VERTEX_ATTRIBUTE_MAP: VertexAttributeMap = Object.freeze({
   skinWeight: EMPTY_FLOAT32,
 });
 
-type Entry = {
-  readonly key: AttributeKey;
-  readonly shaderLocation: number;
-  readonly offset: number;
-  readonly format: string;
-};
+const UV_LOCATIONS = UV_KEYS.map((key) => CANONICAL_KEYS.indexOf(key));
+const COLOR_BIT = 1 << CANONICAL_KEYS.indexOf('color');
 
-/**
- * Add shader UV sets the mesh lacks as aliases of bytes already inside its
- * uploaded vertex: the last present UV set, or position.xy for a UV-less mesh.
- * The stride never grows; a trailing invented region would make every later
- * vertex read the wrong bytes.
- */
-function emitAliasEntries(entries: Entry[], toIndex: number): Entry | undefined {
-  const source = entries.filter((entry) => UV_KEYS.includes(entry.key)).at(-1) ?? entries[0];
-  if (source === undefined) return undefined;
-  for (let k = 0; k < toIndex && k < UV_KEYS.length; k++) {
-    // biome-ignore lint/style/noNonNullAssertion: bounded index on const array
-    const uvKey = UV_KEYS[k]!;
-    if (entries.some((entry) => entry.key === uvKey)) continue;
-    entries.push({
-      key: uvKey,
-      shaderLocation: CANONICAL_KEYS.indexOf(uvKey),
-      offset: source.offset,
-      format: ATTRIBUTE_FORMAT_MAP[uvKey],
-    });
+interface CanonicalVertexInputs {
+  readonly projection: VertexLayoutProjection;
+  readonly uvMask: number;
+  readonly uvSource: VertexLayoutProjectionAttribute | undefined;
+}
+
+/** Static streams share the source attribute roster. A foreign mask alone proves nothing. */
+function canonicalInputs(
+  mask: number,
+  attributes: VertexLayoutProjection['attributes'],
+): CanonicalVertexInputs | undefined {
+  const inputs = layoutsByMask.get(mask);
+  return inputs !== undefined && inputs.projection.attributes === attributes ? inputs : undefined;
+}
+
+export function vertexLayoutHasColor(projection: VertexLayoutProjection): boolean {
+  const attributes = projection.attributes;
+  const inputs = canonicalInputs(projection.mask, attributes);
+  return inputs === undefined
+    ? attributes.some((attribute) => attribute.key === 'color')
+    : (inputs.projection.mask & COLOR_BIT) !== 0;
+}
+
+/** Visit only shader UV inputs supplied by aliasing bytes in an existing physical stream. */
+export function visitVertexUvAliases(
+  projection: VertexLayoutProjection,
+  setCount: number,
+  visit: (key: AttributeKey, location: number, stream: number, offset: number) => void,
+): void {
+  if (!(setCount > 0)) return;
+  const attributes = projection.attributes;
+  const inputs = canonicalInputs(projection.mask, attributes);
+  let source: VertexLayoutProjectionAttribute | undefined;
+  let present: number;
+  if (inputs !== undefined) {
+    present = inputs.uvMask;
+    source = inputs.uvSource;
+  } else {
+    source = attributes[0];
+    present = 0;
+    for (const attribute of attributes) {
+      const index = UV_KEYS.indexOf(attribute.key);
+      if (index < 0) continue;
+      source = attribute;
+      present |= 1 << index;
+    }
   }
-  return source;
+  const required = (1 << Math.min(Math.ceil(setCount), UV_KEYS.length)) - 1;
+  if (source === undefined || (present & required) === required) return;
+  const emit = (stream: number, offset: number) => {
+    for (let index = 0; index < setCount && index < UV_KEYS.length; index++) {
+      const key = UV_KEYS[index];
+      if (key !== undefined && !(present & (1 << index)))
+        visit(key, UV_LOCATIONS[index] as number, stream, offset);
+    }
+  };
+  if (projection.streams === undefined) {
+    if (source.offset + 8 <= projection.arrayStride) emit(0, source.offset);
+    return;
+  }
+  for (let i = 0; i < projection.streams.length; i++) {
+    const stream = projection.streams[i];
+    const physical = stream?.attributes.find((attribute) => attribute.key === source.key);
+    if (physical !== undefined && stream !== undefined && physical.offset + 8 <= stream.arrayStride)
+      emit(i, physical.offset);
+  }
 }
 
 /**
@@ -177,52 +218,30 @@ export function deriveVertexBufferLayoutFromProjection(
   projection: VertexLayoutProjection,
   opts?: { shaderUvSetCount?: number },
 ): GpuVertexBufferLayoutEntry[] {
-  const entries = projection.attributes.map(({ key, shaderLocation, offset, format }) => ({
-    key,
-    shaderLocation,
-    offset,
-    format,
+  if (projection.attributes.length === 0 && projection.streams === undefined) return [];
+  const streams = projection.streams ?? [projection];
+  const layouts = streams.map((stream) => ({
+    arrayStride: stream.arrayStride,
+    attributes: stream.attributes.map(({ shaderLocation, offset, format }) => ({
+      shaderLocation,
+      offset,
+      format,
+    })),
   }));
-  const arrayStride = projection.arrayStride;
-  const shaderUvSetCount = opts?.shaderUvSetCount ?? 0;
-  const originalCount = entries.length;
-  const uvSource = shaderUvSetCount > 0 ? emitAliasEntries(entries, shaderUvSetCount) : undefined;
-  if (projection.streams !== undefined) {
-    const aliases = entries.slice(originalCount);
-    return projection.streams.map((stream) => {
-      const aliasSource = stream.attributes.find((attribute) => attribute.key === uvSource?.key);
-      return {
-        arrayStride: stream.arrayStride,
-        attributes: [
-          ...stream.attributes.map(({ shaderLocation, offset, format }) => ({
-            shaderLocation,
-            offset,
-            format,
-          })),
-          ...(aliasSource === undefined
-            ? []
-            : aliases.map(({ shaderLocation, format }) => ({
-                shaderLocation,
-                format,
-                offset: aliasSource.offset,
-              }))),
-        ],
-      };
-    });
-  }
-  entries.sort((a, b) => a.shaderLocation - b.shaderLocation);
-  return projection.attributes.length === 0
-    ? []
-    : [
-        {
-          arrayStride,
-          attributes: entries.map(({ shaderLocation, offset, format }) => ({
-            shaderLocation,
-            offset,
-            format,
-          })),
-        },
-      ];
+  visitVertexUvAliases(
+    projection,
+    opts?.shaderUvSetCount ?? 0,
+    (key, shaderLocation, stream, offset) => {
+      layouts[stream]?.attributes.push({
+        shaderLocation,
+        offset,
+        format: ATTRIBUTE_FORMAT_MAP[key],
+      });
+    },
+  );
+  if (projection.streams === undefined)
+    layouts[0]?.attributes.sort((left, right) => left.shaderLocation - right.shaderLocation);
+  return layouts;
 }
 
 export interface VertexLayoutProjectionAttribute {
@@ -347,7 +366,7 @@ function fnv1a(input: string): string {
 
 // The finite canonical mask is the complete layout identity. Do not key this
 // cache by a mesh/map object: authoring maps may change in place.
-const layoutsByMask = new Map<number, VertexLayoutProjection>();
+const layoutsByMask = new Map<number, CanonicalVertexInputs>();
 
 export interface MeshVertexStreamRange {
   readonly offset: number;
@@ -355,6 +374,44 @@ export interface MeshVertexStreamRange {
 }
 
 const staticStreamLayouts = new WeakMap<VertexLayoutProjection, VertexLayoutProjection>();
+const detachedLayouts = new WeakSet<VertexLayoutProjection>();
+
+function captureLayoutAttributes(attributes: readonly VertexLayoutProjectionAttribute[]) {
+  return Object.freeze(Array.from(attributes, (attribute) => Object.freeze({ ...attribute })));
+}
+
+/** Bind physical layout facts to an issued draw. Independently supplied layouts can
+ * carry a matching mask while their stream offsets, attributes or digest differ. */
+export function captureVertexLayoutProjection(
+  source: VertexLayoutProjection,
+): VertexLayoutProjection {
+  const canonical = layoutsByMask.get(source.mask)?.projection;
+  if (
+    source === canonical ||
+    (canonical !== undefined && source === staticStreamLayouts.get(canonical)) ||
+    detachedLayouts.has(source)
+  )
+    return source;
+  const { streams, attributes, ...header } = source;
+  const layout = Object.freeze({
+    ...header,
+    attributes: captureLayoutAttributes(attributes),
+    ...(streams === undefined
+      ? {}
+      : {
+          streams: Object.freeze(
+            Array.from(streams, (stream) =>
+              Object.freeze({
+                arrayStride: stream.arrayStride,
+                attributes: captureLayoutAttributes(stream.attributes),
+              }),
+            ),
+          ),
+        }),
+  });
+  detachedLayouts.add(layout);
+  return layout;
+}
 
 function staticStreamSlot(key: AttributeKey): 0 | 1 | 2 | 3 {
   if (key === 'position') return 0;
@@ -543,9 +600,11 @@ export function deriveVertexLayoutProjection(
 
 function layoutFromMask(mask: number): VertexLayoutProjection {
   const cached = layoutsByMask.get(mask);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return cached.projection;
   const attributes: VertexLayoutProjectionAttribute[] = [];
   let offset = 0;
+  let uvMask = 0;
+  let uvSource: VertexLayoutProjectionAttribute | undefined;
   for (let index = 0; index < CANONICAL_KEYS.length; index += 1) {
     const key = CANONICAL_KEYS[index];
     if (key === undefined || (mask & (1 << index)) === 0) continue;
@@ -555,7 +614,13 @@ function layoutFromMask(mask: number): VertexLayoutProjection {
       else if (mask & SKIN_WEIGHT_UNORM16) format = 'unorm16x4';
     }
     const byteLength = bytesForFormat(format);
-    attributes.push(Object.freeze({ key, shaderLocation: index, offset, format, byteLength }));
+    const attribute = Object.freeze({ key, shaderLocation: index, offset, format, byteLength });
+    attributes.push(attribute);
+    const uv = UV_KEYS.indexOf(key);
+    if (uv >= 0) {
+      uvMask |= 1 << uv;
+      uvSource = attribute;
+    }
     offset += byteLength;
   }
   const digestInput = [
@@ -573,7 +638,7 @@ function layoutFromMask(mask: number): VertexLayoutProjection {
     arrayStride: offset,
     digest: fnv1a(digestInput),
   });
-  layoutsByMask.set(mask, projection);
+  layoutsByMask.set(mask, { projection, uvMask, uvSource: uvSource ?? attributes[0] });
   return projection;
 }
 

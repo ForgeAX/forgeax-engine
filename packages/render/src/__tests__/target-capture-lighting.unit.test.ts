@@ -17,11 +17,12 @@ import {
   finishTargetCaptureLighting,
   prepareTargetCaptureLighting,
 } from '../record/target-capture-lighting';
-import { POINTS_LINES_VIEW_BUFFER_SIZE, writePointsLinesViewUbo } from '../record/view-ubo';
+import { POINTS_LINES_VIEW_SLOT_STRIDE, writePointsLinesViewUbo } from '../record/view-ubo';
 import { getOrCreateSsaoFallbackTexture, resetSsaoResources } from '../ssao-buffers';
 import type { RenderTarget } from '../targets/contracts';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
 import type { ViewLights } from '../world/render-lights';
+import * as viewPointsLines from '../world/view-points-lines';
 import { earthAtmosphere } from './atmosphere-fixture';
 import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
@@ -50,7 +51,7 @@ function pipeline(device: RhiDevice): PipelineState {
     hdrpClusterMembershipPipeline: null,
     hdrpClusterMembershipBindGroupLayout: null,
     pointsLinesViewBuffer: device
-      .createBuffer({ size: POINTS_LINES_VIEW_BUFFER_SIZE, usage: 0x48 })
+      .createBuffer({ size: POINTS_LINES_VIEW_SLOT_STRIDE, usage: 0x48 })
       .unwrap(),
   } as unknown as PipelineState;
 }
@@ -208,6 +209,7 @@ describe('target capture lighting ownership', () => {
 
   it('releases a partial private allocation and can retry without retiring parent buffers', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const failure = new RhiError({
       code: 'internal-error',
       expected: 'capture buffer allocation',
@@ -230,6 +232,7 @@ describe('target capture lighting ownership', () => {
   });
   it('fences every capture resource while leaving the parent fallback and Points/Lines buffer alive', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const parentFallback = required(getOrCreateSsaoFallbackTexture(f.runtime));
     const captured = f.prepare();
     const fallback = required(getOrCreateSsaoFallbackTexture(captured.runtime));
@@ -270,6 +273,7 @@ describe('target capture lighting ownership', () => {
 
   it('replaces buffers on device change and retires the old capture through its creation device', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const old = f.prepare();
     const oldPointsBuffer = old.pipeline.pointsLinesViewBuffer;
     const oldFallback = required(getOrCreateSsaoFallbackTexture(old.runtime));
@@ -387,6 +391,7 @@ describe('target capture lighting ownership', () => {
 
   it('keeps different camera payloads at the same Points/Lines draw slot in separate buffers', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const first = f.prepare(0);
     const second = f.prepare(1);
     finishTargetCaptureLighting(f.owner);

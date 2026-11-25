@@ -29,22 +29,26 @@ Agent 指引：[forgeax-view-start](skills/forgeax-view-start/SKILL.zh-CN.md)。
 
 `pnpm test` 和 `pnpm test:view` 同时运行顶层测试，以及各包 `src/*.test.mjs` 和 `src/__tests__` 下由所属模块维护的回归测试。Engine 与 View 的配套 CI 使用相同入口。
 
-### 单文件启动
+### 打开工程
 
-View 仅随 SDK 分发，不进入 Engine npm 包或游戏 npm 依赖。已准备好的源码检出也保留相同入口：
+在游戏工程根目录运行 Engine 创作包的命令，然后打开返回的 URL。
 
 ```sh
-node /path/to/forgeax-sdk/tools/view/start.mjs --project /path/to/game
-node /path/to/forgeax-sdk/tools/view/start.mjs
+forgeax project view --json
+```
+
+从已准备的贡献者检出启动时，可以直接运行 View 文件。
+
+```sh
 node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
 ```
 
-SDK 入口通过既有 launcher 初始化 `.forgeax/cli-runtime`，再从其中解析匹配的 Engine 和 View Host Pack；不会使用游戏的 Engine 托管 View。发布产物已构建完成。
+Engine 安装提供配对的 View Host Pack 和已构建的界面。
 源码贡献者的准备与原生宿主集成见[贡献者指南](skills/forgeax-view-start/CONTRIBUTOR.md)。
 
 页面右下角显示宿主 Engine 包的实际版本，例如 `Engine 0.5.2`，准备连接和离线时也保留。View 自己的包版本和所选游戏不决定这个版本号。
 
-初始 JSON 包含 `enginePackage`、`viewRoot`、`hostPack`、请求的 `project`、`url`、后端 `root` 和 `phase: preparing`。
+源码文件启动时的初始 JSON 包含 `enginePackage`、`viewRoot`、`hostPack`、请求的 `project`、`url`、后端 `root` 和 `phase: preparing`。
 这是启动公告，不是实时状态。`--help` 不启动服务；不加 `--json` 也会输出 JSON。
 安装不完整时，在分配实例前报告缺失产物。
 
@@ -216,23 +220,19 @@ Ctrl+C 停止前台呈现；停止其后端后，呈现仍可显式重启。
 
 ## 源码集成与分发
 
-View 保留独立仓库与审查边界。Engine 在 `tools/view` 固定确切源码，拥有工作区锁文件、集成构建、SDK 清单和发布器。
-公共 npm 产品为 `@forgeax/engine` 和 `@forgeax/engine-sdk`。
-SDK 将 View 嵌入为私有本地 `@forgeax/view` 包，版本与其 Engine 依赖一致。
-历史独立 `@forgeax/view` 预发布标签已经退役；不要用它们配对 Engine 渠道。
-安装 SDK 渠道即可获得匹配的 View 工具。游戏安装 `@forgeax/engine`，不依赖 View。
+View 保留独立仓库与审查边界。Engine 在 `tools/view` 固定确切源码，拥有工作区锁文件和集成构建。
+`@forgeax/engine` 创作归档在 `authoring/tools/view` 内置配对的私有工具。游戏清单声明 `@forgeax/engine`。
 
 ```mermaid
 flowchart LR
   Source["View 仓库"] --> Pin["Engine tools/view gitlink"]
   Pin --> Build["统一的 Engine 工作区和锁文件"]
   Plugins["Engine tools/view-plugins 源码"] --> Build
-  Build --> Tool["SDK cli-runtime：Engine 与私有 View"]
+  Build --> Tool["Engine 创作归档内置私有 View"]
   Engine["Engine 运行时包"] --> Game["普通游戏项目"]
 ```
 
-SDK 启动器从自己的 `.forgeax/cli-runtime` 解析所选工具导出的 `host.pack.json`。
-安装输入位于 `toolchain/cli-runtime`；游戏模板输入保持独立。
+Engine CLI 通过工具导出的 `host.pack.json` 打开 View。早期 SDK 版本从各自的 `.forgeax/cli-runtime` 使用相同契约。
 常驻入口和嵌入入口使用相同的所选面板及前端插件。由内容派生的 revision 标识该构建。
 
 | 事项 | 负责人 |
@@ -240,7 +240,7 @@ SDK 启动器从自己的 `.forgeax/cli-runtime` 解析所选工具导出的 `ho
 | 通用 Shell、页面/插槽/面板服务 | View |
 | RHI Debug 和 Profiler 呈现 | Engine 普通 `tools/view-plugins` 源码 |
 | World、Renderer、捕获和模型语义 | 已有 Engine 包 |
-| 配对包版本、源码展开、离线存储 | Engine SDK 流水线 |
+| 配对的包版本和创作归档 | Engine 打包流水线 |
 
 每页声明 `context: 'project'` 或 `context: 'artifact'`。
 产物页可在打开项目前检查已保存的捕获。场景页和资产页保留项目恢复能力。

@@ -2189,7 +2189,6 @@ function spawnValidatedLight(
     //
     // visibility flags mirror the WebGPU GPUShaderStage bitmask:
     //   VERTEX = 0x1, FRAGMENT = 0x2.
-    const VISIBILITY_VERTEX = 0x1;
     const VISIBILITY_FRAGMENT = 0x2;
     const VISIBILITY_VERTEX_FRAGMENT = 0x1 | 0x2;
 
@@ -2218,12 +2217,10 @@ function spawnValidatedLight(
         expect(noStorage.some((e) => e.binding === 8)).toBe(true);
       });
 
-      it('reserves binding 9 and keeps Points/Lines at binding 10', () => {
+      it('keeps bindings 9 and 10 absent from the shared view layout', () => {
         const entries = buildPbrViewBglEntries({ storageBuffer: true, extendedLighting: false });
         expect(entries.some((e) => e.binding === 9)).toBe(false);
-        const pointsLines = entries.find((e) => e.binding === 10);
-        expect(pointsLines?.buffer?.type).toBe('uniform');
-        expect(pointsLines?.visibility).toBe(VISIBILITY_VERTEX);
+        expect(entries.some((e) => e.binding === 10)).toBe(false);
       });
     });
 
@@ -2239,20 +2236,19 @@ function spawnValidatedLight(
     // UBO (binding 0). This block locks that the spot matrices add ZERO new view
     // BGL buffer bindings (the WebGL2 budget invariant).
     describe('spotLightViewProj folded into View UBO (binding 0), not a new binding', () => {
-      it('view BGL includes only the vertex Points/Lines UBO beyond binding 7', () => {
+      it('view BGL includes no Points/Lines UBO beyond binding 7', () => {
         // Enumerate uniform-buffer entries on the view BGL. After the w25 fold,
         // uniform buffers are binding 0 (View UBO, carries the spot matrices
         // in its tail), binding 6 (point shadowParams), binding 7
-        // (shadowCasterCascade), and binding 10 (Points/Lines view). No
-        // standalone spot-matrix uniform buffer exists.
+        // (shadowCasterCascade). No standalone spot-matrix uniform buffer
+        // exists, and Points/Lines now own their view inputs separately.
         const entries = buildPbrViewBglEntries({ storageBuffer: true, extendedLighting: false });
         const uniformBufferBindings = entries
           .filter((e) => e.buffer?.type === 'uniform')
           .map((e) => e.binding)
           .sort((a, b) => a - b);
-        // Local lights are not in the view group; only the view, shadow
-        // params, cascade selector, and vertex-only Points/Lines UBO remain.
-        expect(uniformBufferBindings).toEqual([0, 6, 7, 10]);
+        // Local lights and Points/Lines inputs are not in the shared view group.
+        expect(uniformBufferBindings).toEqual([0, 6, 7]);
       });
 
       it('storageBuffer=false: WebGL2 fallback uniform-buffer bindings stay within budget', () => {
@@ -2328,8 +2324,8 @@ function spawnValidatedLight(
       });
     });
 
-    describe('base binding roster keeps Points/Lines at 10', () => {
-      it('exposes camera/shadow bindings, Points/Lines at 10 and the shared optical sampler at 17', () => {
+    describe('base binding roster omits the dedicated Points/Lines input', () => {
+      it('exposes camera/shadow bindings and the shared optical sampler at 17', () => {
         const bindings = buildPbrViewBglEntries({
           storageBuffer: true,
           extendedLighting: false,
@@ -2337,7 +2333,7 @@ function spawnValidatedLight(
         })
           .map((e) => e.binding)
           .sort((a, b) => a - b);
-        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
+        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 17]);
       });
     });
   });

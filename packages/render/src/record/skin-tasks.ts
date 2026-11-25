@@ -168,7 +168,7 @@ export class SkinTasks {
   }[] = [];
   private capsuleRowsUsed = 0;
   private current = new Float32Array(0);
-  private previous = new Float32Array(0);
+  private header = new Uint32Array(0);
   private readonly matrix = mat4.create();
   private readonly inverse = mat4.create();
   private readonly translation = new Float32Array(4);
@@ -278,12 +278,17 @@ export class SkinTasks {
           ? 'Skin current/previous palettes fit the storage task'
           : 'uniform Skin demand has at most 255 joints',
       );
-    if (this.current.length < count * 16) {
-      const capacity = Math.min(this.maxJoints * 16, Math.max(count * 16, this.current.length * 2));
-      const current = new Float32Array(capacity),
-        previous = new Float32Array(capacity);
+    const paletteBytes = count * 64;
+    if (this.current.byteLength < paletteBytes * 2) {
+      const capacity = Math.min(
+        this.maxJoints * 128,
+        Math.max(paletteBytes * 2, this.current.byteLength * 2),
+      );
+      const bytes = new ArrayBuffer(32 + capacity);
+      const header = new Uint32Array(bytes, 0, 8);
+      const current = new Float32Array(bytes, 32);
+      this.header = header;
       this.current = current;
-      this.previous = previous;
     }
     // A palette composed for frames with the same inputs is the previous pose.
     const history = this.stalePalettes.get(slot) ?? this.palettes.get(slot);
@@ -292,7 +297,7 @@ export class SkinTasks {
       slot,
       frame.previous,
       this.current,
-      this.previous,
+      undefined,
       this.matrix,
       this.inverse,
       history !== undefined &&
@@ -321,35 +326,36 @@ export class SkinTasks {
     if (data === undefined || auxiliary === undefined) throw invalid('allocated Skin task buffers');
     const queue = this.device.queue;
     if (this.storage) {
-      this.words[0] = slot + 1;
-      this.words[1] = count;
-      this.words[2] = dataOffset / 16 + 2;
-      this.words[3] = flags;
-      this.words[4] = 0;
-      this.words[5] = 0;
-      this.words[6] = 0;
-      this.words[7] = 0;
-      queue.writeBuffer(data, dataOffset, this.words.buffer, 0, 32).unwrap();
-      queue.writeBuffer(data, dataOffset + 32, this.current.buffer, 0, count * 64).unwrap();
-      this.paletteUploadBytes += count * 64;
-      queue
-        .writeBuffer(data, dataOffset + 32 + count * 64, this.previous.buffer, 0, count * 64)
-        .unwrap();
-      this.paletteUploadBytes += count * 64;
+      this.header[0] = slot + 1;
+      this.header[1] = count;
+      this.header[2] = dataOffset / 16 + 2;
+      this.header[3] = flags;
+      queue.writeBuffer(data, dataOffset, this.current.buffer, 0, 32 + paletteBytes * 2).unwrap();
+      this.paletteUploadBytes += paletteBytes * 2;
       this.words[0] = dataOffset / 16 + 1;
       this.words[1] = dataOffset / 16;
       this.words[2] = 0;
       this.words[3] = 0;
       queue.writeBuffer(auxiliary, auxiliaryOffset, this.words.buffer, 0, 16).unwrap();
     } else {
-      queue.writeBuffer(data, dataOffset, this.current.buffer, 0, count * 64).unwrap();
+      queue
+        .writeBuffer(data, dataOffset, this.current.buffer, this.current.byteOffset, paletteBytes)
+        .unwrap();
       this.paletteUploadBytes += count * 64;
       this.words[0] = count;
       this.words[1] = flags;
       this.words[2] = 0;
       this.words[3] = 0;
       queue.writeBuffer(data, dataOffset + 255 * 64, this.words.buffer, 0, 16).unwrap();
-      queue.writeBuffer(auxiliary, auxiliaryOffset, this.previous.buffer, 0, count * 64).unwrap();
+      queue
+        .writeBuffer(
+          auxiliary,
+          auxiliaryOffset,
+          this.current.buffer,
+          this.current.byteOffset + paletteBytes,
+          paletteBytes,
+        )
+        .unwrap();
       this.paletteUploadBytes += count * 64;
       this.writeAffineTranslation(frame, record, slot, poseFlags, auxiliary, auxiliaryOffset);
     }

@@ -1,3 +1,4 @@
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
@@ -94,12 +95,15 @@ it.each([
 it.each([
   'return',
   'native-return',
+  'demand-change',
+  'native-failure',
   'reentrant-next',
   'throw',
 ] as const)('closes resource preparation and unwinds its exact recipe on %s', async (mode) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const builder = new RenderGraphBuilder();
   let captured: (() => boolean) | undefined;
+  let wanted = true;
   let finalized = 0;
   let steps = 0;
   let work: ReturnType<
@@ -114,7 +118,8 @@ it.each([
           steps++;
           if (mode === 'native-return') work.return(ok(undefined));
           if (mode === 'reentrant-next') work.next();
-          yield;
+          const resumed = yield;
+          if (mode === 'native-failure') throw resumed;
           assert(current());
           steps++;
         } finally {
@@ -127,9 +132,22 @@ it.each([
     })
     .unwrap();
   const graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
-  work = graph.prepareResources(() => true);
+  work = graph.prepareResources(() => wanted);
   try {
     work.next();
+    if (mode === 'demand-change') {
+      wanted = false;
+      const result = work.next();
+      assert(result.done && !result.value.ok);
+      expect(result.value.error.code).toBe('graph-preparation-invalid');
+    }
+    if (mode === 'native-failure') {
+      const cause = new Error('native pipeline creation failed');
+      const result = work.next(cause);
+      assert(result.done && !result.value.ok);
+      expect(result.value.error.code).toBe('pass-preparation-failed');
+      expect(result.value.error.detail).toMatchObject({ cause });
+    }
     if (mode === 'return') work.return(ok(undefined));
     if (mode === 'throw') {
       let caught = false;
@@ -205,6 +223,63 @@ it('prepares an explicit native import through the original imported-view cache 
     (await graph.retire()).unwrap();
     device.destroyTexture(first).unwrap();
     device.destroyTexture(second).unwrap();
+  }
+});
+
+it.each([
+  'owner changed',
+  'demand changed',
+  'device lost',
+] as const)('preserves the original native texture preparation outcome when %s between turns', async (outcome) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const desc = { format: 'rgba8unorm' as const, size: { width: 4, height: 4 }, usage: 4 };
+  const texture = device.createTexture(desc).unwrap();
+  let wanted = true;
+  let owned = true;
+  const original = new RhiError({
+    code: outcome === 'device lost' ? 'device-lost' : 'rhi-descriptor-invalid',
+    expected: 'the original native texture and its demand',
+    hint: 'read the original owner',
+  });
+  const builder = new RenderGraphBuilder();
+  const ref = builder
+    .importTexture('streamed-shadow', desc, () => texture, {
+      *prepare() {
+        yield;
+        if (outcome !== 'owner changed') throw original;
+        return texture;
+      },
+      current: () => (owned ? texture : undefined),
+    })
+    .unwrap();
+  const view = builder.view(ref, { dimension: '2d' }).unwrap();
+  builder
+    .addComputePass('shadow consumer', {
+      accesses: [{ resource: view, usage: 'sampled-read' }],
+      encodeDirect: () => {},
+    })
+    .unwrap();
+  const graph = builder.compile({ device, surfaceSize: desc.size }).unwrap();
+  try {
+    const work = graph.prepareResources(() => wanted);
+    expect(work.next().done).toBe(false);
+    wanted = outcome === 'owner changed';
+    owned = false;
+    const result = work.next();
+    assert(result.done && !result.value.ok);
+    if (outcome === 'device lost') {
+      expect(result.value.error).toMatchObject({
+        code: 'resource-resolution-failed',
+        detail: { resourceLabel: 'streamed-shadow', accesses: [String(original)] },
+      });
+      expect(result.value.error.cause).toBe(original);
+    } else {
+      expect(result.value.error.code).toBe('graph-preparation-invalid');
+    }
+    expect(graph.preparedResourcesCurrent()).toBe(false);
+  } finally {
+    (await graph.retire()).unwrap();
+    device.destroyTexture(texture).unwrap();
   }
 });
 

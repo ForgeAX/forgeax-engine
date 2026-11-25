@@ -164,10 +164,13 @@ async function createMotionBlurScenario() {
       data: { shutterAngle: 180, maxRadiusPixels: 8, sampleCount: 4, targetFps: 60 },
     })
     .unwrap();
+  const updated = world.update();
+  if (!updated.ok) throw updated.error;
   const frameInput = () => ({ source: attached.value });
   return {
     renderer,
     draw: () => renderer.draw(frameInput()),
+    update: () => world.update(1 / 60),
     dispose: () => renderer.dispose(),
   };
 }
@@ -1619,6 +1622,8 @@ describe('factory contract', () => {
     await vi.waitFor(() => expect(pending).toHaveLength(1));
     const initialization = renderer.initialization;
     pending[0]?.resolve(ok({} as ShaderModule));
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]?.resolve(ok({} as ShaderModule));
     expect((await initialization).ok).toBe(true);
 
     const world = new World();
@@ -1650,20 +1655,20 @@ describe('factory contract', () => {
     const first = renderer.draw(frameInput());
     expect(first.ok, first.ok ? '' : JSON.stringify({ error: first.error, drawErrors })).toBe(true);
     expect(frameBoundary).toHaveBeenCalled();
-    expect(pending).toHaveLength(1);
+    expect(pending).toHaveLength(2);
 
     world.set(camera, LocalCamera, { antialias: ANTIALIAS_NONE }).unwrap();
     expect(world.update().ok).toBe(true);
     const off = renderer.draw(frameInput());
     expect(off.ok).toBe(true);
 
-    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(1);
+    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(2);
 
     world.set(camera, LocalCamera, { antialias: ANTIALIAS_TAA }).unwrap();
     expect(world.update().ok).toBe(true);
     const second = renderer.draw(frameInput());
     expect(second.ok, second.ok ? '' : JSON.stringify(second.error)).toBe(true);
-    expect(pending).toHaveLength(1);
+    expect(pending).toHaveLength(2);
     expect(renderer.draw(frameInput()).ok).toBe(true);
     world.set(camera, LocalCamera, { antialias: ANTIALIAS_NONE }).unwrap();
     expect(world.update().ok).toBe(true);
@@ -1672,12 +1677,12 @@ describe('factory contract', () => {
     expect(world.update().ok).toBe(true);
     const replacement = renderer.draw(frameInput());
     expect(replacement.ok).toBe(true);
-    expect(pending).toHaveLength(1);
+    expect(pending).toHaveLength(2);
 
     expect((await renderer.dispose()).ok).toBe(true);
 
     expect((await renderer.dispose()).ok).toBe(true);
-    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(1);
+    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(2);
   });
 
   it('rebuilds a TAA graph for a same-mode target resize', async () => {
@@ -1764,7 +1769,7 @@ describe('factory contract', () => {
       .filter(([_, label]) => label.startsWith('taa-history-'))
       .slice(-4);
     expect(firstGeneration).toHaveLength(4);
-    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(1);
+    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(2);
     const firstFrame = renderer.inspect().frame.frameId;
 
     canvas.width = 96;
@@ -1786,7 +1791,7 @@ describe('factory contract', () => {
     expect(replacementGeneration.every(([handle]) => !destroyed.has(handle))).toBe(true);
     expect(renderer.inspect().frame.frameId).toBe(firstFrame + 1);
     expect(renderer.inspect().state).toBe('alive');
-    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(1);
+    expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(2);
     world.set(camera, LocalCamera, { antialias: ANTIALIAS_NONE }).unwrap();
     expect(world.update().ok).toBe(true);
     expect(renderer.draw(frameInput()).ok).toBe(true);
@@ -1823,22 +1828,30 @@ describe('factory contract', () => {
       .unwrap();
     const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
+    const dynamicFrame = renderer.draw(frameInput());
+    expect(dynamicFrame.ok).toBe(true);
+    if (dynamicFrame.ok && dynamicFrame.value !== undefined)
+      expect((await dynamicFrame.value.completed).ok).toBe(true);
     const dynamicInspection = renderer.inspect();
     expect(dynamicInspection.perFramePassNames).toContain('standard-scene-coverage');
-    expect(dynamicInspection.temporalTarget).toMatchObject({
-      descriptor: { width: 32, height: 32 },
+    expect(dynamicInspection.dynamicResolution?.extent).toMatchObject({
+      outputWidth: 64,
+      outputHeight: 64,
+      internalWidth: 32,
+      internalHeight: 32,
+      scale: 0.5,
     });
     const dynamicGeneration = dynamicInspection.recoveryEvidence.graph.generation;
 
     expect(world.removeComponent(camera, DynamicResolution).ok).toBe(true);
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
+    const surfaceFrame = renderer.draw(frameInput());
+    expect(surfaceFrame.ok).toBe(true);
+    if (surfaceFrame.ok && surfaceFrame.value !== undefined)
+      expect((await surfaceFrame.value.completed).ok).toBe(true);
     const surfaceInspection = renderer.inspect();
     expect(surfaceInspection.perFramePassNames).not.toContain('standard-scene-coverage');
-    expect(surfaceInspection.temporalTarget).toMatchObject({
-      descriptor: { width: 64, height: 64 },
-    });
+    expect(surfaceInspection.dynamicResolution).toBeUndefined();
     expect(surfaceInspection.recoveryEvidence.graph.generation).toBeGreaterThan(dynamicGeneration);
     await renderer.dispose();
   });
@@ -1866,7 +1879,10 @@ describe('factory contract', () => {
       .unwrap();
     const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
+    const initialFrame = renderer.draw(frameInput());
+    expect(initialFrame.ok).toBe(true);
+    if (initialFrame.ok && initialFrame.value !== undefined)
+      expect((await initialFrame.value.completed).ok).toBe(true);
     expect(renderer.inspect().perFramePassNames).not.toContain('standard-scene-coverage');
 
     expect(
@@ -1876,17 +1892,29 @@ describe('factory contract', () => {
       }).ok,
     ).toBe(true);
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
+    const dynamicFrame = renderer.draw(frameInput());
+    expect(dynamicFrame.ok).toBe(true);
+    if (dynamicFrame.ok && dynamicFrame.value !== undefined)
+      expect((await dynamicFrame.value.completed).ok).toBe(true);
     const dynamic = renderer.inspect();
     expect(dynamic.perFramePassNames).toContain('standard-scene-coverage');
-    expect(dynamic.temporalTarget).toMatchObject({ descriptor: { width: 32, height: 32 } });
+    expect(dynamic.dynamicResolution?.extent).toMatchObject({
+      outputWidth: 64,
+      outputHeight: 64,
+      internalWidth: 32,
+      internalHeight: 32,
+      scale: 0.5,
+    });
 
     expect(world.removeComponent(camera, DynamicResolution).ok).toBe(true);
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
+    const surfaceFrame = renderer.draw(frameInput());
+    expect(surfaceFrame.ok).toBe(true);
+    if (surfaceFrame.ok && surfaceFrame.value !== undefined)
+      expect((await surfaceFrame.value.completed).ok).toBe(true);
     const surface = renderer.inspect();
     expect(surface.perFramePassNames).not.toContain('standard-scene-coverage');
-    expect(surface.temporalTarget).toMatchObject({ descriptor: { width: 64, height: 64 } });
+    expect(surface.dynamicResolution).toBeUndefined();
     await renderer.dispose();
   });
 
@@ -2093,8 +2121,16 @@ describe('factory contract', () => {
       hint: 'repair the queue and retry the same frame',
     });
     try {
-      expect(scenario.draw().ok).toBe(true);
-      expect(scenario.draw().ok).toBe(true);
+      const first = scenario.draw();
+      expect(first.ok).toBe(true);
+      if (first.ok && first.value !== undefined)
+        expect((await first.value.completed).ok).toBe(true);
+      expect(scenario.renderer.inspect().perFramePassNames).toContain('motion-blur');
+      expect(scenario.update().ok).toBe(true);
+      const second = scenario.draw();
+      expect(second.ok).toBe(true);
+      if (second.ok && second.value !== undefined)
+        expect((await second.value.completed).ok).toBe(true);
       const accepted = scenario.renderer.inspect().motionBlur;
       expect(accepted).toMatchObject({ enabled: true });
       expect(accepted).not.toHaveProperty('lastFailure');

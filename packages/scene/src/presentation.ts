@@ -5,9 +5,11 @@ import {
   type EntityHandle,
   FixedTime,
   FixedUpdate,
+  type Query,
   Time,
   type World,
 } from '@forgeax/engine-ecs';
+import { createEntityLookup } from '@forgeax/engine-ecs/internal';
 import {
   createStateProjection,
   readMutationEpoch,
@@ -224,18 +226,26 @@ export function readPresentationWorldMatrix(
   world: World,
   entity: EntityHandle,
 ): ArrayLike<number> | undefined {
-  const state = presentations.get(world);
-  if (state === undefined) return readRenderArrayView(world, entity, GlobalTransform, 'world');
+  const source = presentationSource(world, entity, presentations.get(world));
+  return typeof source === 'string'
+    ? readRenderArrayView(world, entity, GlobalTransform, source)
+    : source;
+}
+
+function presentationSource(
+  world: World,
+  entity: EntityHandle,
+  state: Presentation | undefined,
+  interpolates?: boolean,
+): 'world' | 'presentation' | Mat4 | undefined {
+  if (state === undefined) return 'world';
   refresh(world, state);
-  if (state.prepared === state.version)
-    return readRenderArrayView(
-      world,
-      entity,
-      GlobalTransform,
-      state.active.has(entity) ? 'presentation' : 'world',
-    );
-  if (state.history.size === 0 && !world.hasComponent(entity, TransformInterpolation))
-    return readRenderArrayView(world, entity, GlobalTransform, 'world');
+  if (state.prepared === state.version) return state.active.has(entity) ? 'presentation' : 'world';
+  if (
+    state.history.size === 0 &&
+    !(interpolates ?? world.hasComponent(entity, TransformInterpolation))
+  )
+    return 'world';
   return sample(world, entity, state);
 }
 
@@ -246,20 +256,136 @@ export function copyPresentationWorldMatrix(
   target: Float32Array | number[],
 ): boolean {
   if (target.length < 16) return false;
-  const state = presentations.get(world);
-  let field: 'world' | 'presentation' = 'world';
-  if (state !== undefined) {
-    refresh(world, state);
-    if (state.prepared === state.version) {
-      if (state.active.has(entity)) field = 'presentation';
-    } else if (state.history.size !== 0 || world.hasComponent(entity, TransformInterpolation)) {
-      const sampled = sample(world, entity, state);
-      if (sampled === undefined) return false;
-      for (let lane = 0; lane < 16; lane++) target[lane] = sampled[lane] as number;
+  const source = presentationSource(world, entity, presentations.get(world));
+  if (source === undefined) return false;
+  if (typeof source === 'string')
+    return world[worldRead].copyArray(entity, GlobalTransform, source, target) === 16;
+  for (let lane = 0; lane < 16; lane++) target[lane] = source[lane] as number;
+  return true;
+}
+
+/** Borrow the selected F32 column and offset until the next lookup or World mutation. */
+export function createPresentationMatrixReader(world: World) {
+  const lookup = createEntityLookup(
+    world,
+    [GlobalTransform, TransformInterpolation],
+    [
+      [0, 'world'],
+      [0, 'presentation'],
+    ],
+  );
+  const reader: { values: Float32Array; offset: number; locate(entity: EntityHandle): boolean } = {
+    values: new Float32Array(0),
+    offset: 0,
+    locate(entity: EntityHandle): boolean {
+      if (!lookup.get(entity)) return false;
+      const source = presentationSource(
+        world,
+        entity,
+        presentations.get(world),
+        lookup.columns.added[1] !== undefined,
+      );
+      if (source === undefined) return false;
+      if (typeof source !== 'string') {
+        reader.values = source;
+        reader.offset = 0;
+      } else {
+        const column = lookup.columns.fields[source === 'world' ? 0 : 1];
+        if (column === undefined) return false;
+        reader.values = column.view as Float32Array;
+        reader.offset = lookup.row * 16;
+      }
       return true;
+    },
+  };
+  return reader;
+}
+
+export interface PresentationSpan {
+  readonly entities: Readonly<Uint32Array>;
+  readonly worlds: Readonly<Float32Array>;
+}
+
+/** Keep adjacent entities on the same presentation column in one borrowed range. */
+function appendMatrixRange(
+  spans: PresentationSpan[],
+  entities: Readonly<Uint32Array>,
+  worlds: Float32Array,
+  start: number,
+  end: number,
+): void {
+  if (start === 0 && end === entities.length) spans.push({ entities, worlds });
+  else
+    spans.push({
+      entities: entities.subarray(start, end),
+      worlds: worlds.subarray(start * 16, end * 16),
+    });
+}
+
+/** Read the same display pose as scalar extraction. Whole column runs stay borrowed. */
+export function collectPresentationTransformSpans(
+  world: World,
+  query: Query<readonly [typeof GlobalTransform]>,
+  out: PresentationSpan[],
+  changedEntities?: (entities: Readonly<Uint32Array>) => void,
+): void {
+  const state = presentations.get(world);
+  if (state !== undefined) refresh(world, state);
+  let tableId = -1;
+  let tableInterpolates = false;
+  for (const span of query.spans().unwrap()) {
+    const entities = span.entities;
+    changedEntities?.(entities);
+    const columns = span.get(GlobalTransform);
+    if (state === undefined || (state.prepared === state.version && state.active.size === 0)) {
+      out.push({ entities, worlds: columns.world });
+      continue;
     }
+    if (state.prepared !== state.version) {
+      // Interpolation membership is table-stored. All rows in this span have the same component set.
+      if (state.history.size === 0) {
+        if (tableId !== span.tableId) {
+          tableId = span.tableId;
+          tableInterpolates = world.hasComponent(
+            entities[0] as EntityHandle,
+            TransformInterpolation,
+          );
+        }
+        if (!tableInterpolates) {
+          out.push({ entities, worlds: columns.world });
+          continue;
+        }
+      }
+      for (let index = 0; index < entities.length; index++) {
+        const matrix = sample(world, entities[index] as EntityHandle, state);
+        if (matrix !== undefined)
+          out.push({ entities: entities.subarray(index, index + 1), worlds: matrix });
+      }
+      continue;
+    }
+    let start = 0;
+    let selected = state.active.has(entities[0] as EntityHandle);
+    for (let index = 1; index < entities.length; index++) {
+      const active = state.active.has(entities[index] as EntityHandle);
+      if (active === selected) continue;
+      appendMatrixRange(
+        out,
+        entities,
+        selected ? columns.presentation : columns.world,
+        start,
+        index,
+      );
+      start = index;
+      selected = active;
+    }
+    appendMatrixRange(
+      out,
+      entities,
+      selected ? columns.presentation : columns.world,
+      start,
+      entities.length,
+    );
   }
-  return world[worldRead].copyArray(entity, GlobalTransform, field, target) === 16;
 }
 
 /** Explicit discontinuity: the next sampled pose starts at the new author value. */

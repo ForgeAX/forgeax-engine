@@ -1,4 +1,4 @@
-import { ok } from '@forgeax/engine-types';
+import { ok, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import {
@@ -102,6 +102,7 @@ describe('deferred lighting AO uniform owner', () => {
               standardSceneShaders: {
                 gbuffer: 'standard-gbuffer/2',
                 deferred: { unclustered: 'fixture' },
+                specializedDeferredLighting: () => new ShaderSource(['fixture']),
               },
               shaderModuleFactory: { createShaderModule: () => ok({}) },
             },

@@ -9,7 +9,11 @@ import { buildPipelineDescriptor, cacheKeyOf, type PipelineSpec } from '../../pi
 import { FORWARD_PASS_SELECTOR } from '../../systems/pass-selector';
 import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
-import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+import {
+  CPU_SETUP_SHADER,
+  cpuSetupFixture,
+  fixtureMaterialBinding,
+} from './main-pass-cpu-setup-fixture';
 
 it('shares ordered deferred attachment arguments across mixed shaders only within one record pass', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -35,7 +39,7 @@ it('shares ordered deferred attachment arguments across mixed shaders only withi
         1,
         f.meshGroup,
         f.meshGroup,
-        () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+        fixtureMaterialBinding(f.materialGroup),
         'deferred',
         undefined,
         formats,
@@ -100,7 +104,7 @@ it('keeps absent, Standard fallback and authored output contracts distinct and r
         1,
         f.meshGroup,
         f.meshGroup,
-        () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+        fixtureMaterialBinding(f.materialGroup),
         'forward',
         undefined,
         formats,
@@ -160,7 +164,7 @@ it.each([
       1,
       f.meshGroup,
       f.meshGroup,
-      () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       undefined,
       ['rgba16float', 'rgba16float', 'rgba16float'],
@@ -176,74 +180,14 @@ it.each([
 
 const waterPasses = [
   ['water-prepass', 'depth', 'fs_water_prepass'],
+  ['water-coverage', 'coverage', 'fs_water_coverage'],
+  ['water-depth-velocity', 'depth-velocity', 'fs_water_depth_velocity'],
+  ['water-forward-color-temporal', 'forward-color-temporal', 'fs_water_forward_color_temporal'],
+  ['water-forward-color-velocity', 'forward-color-velocity', 'fs_water_forward_color_velocity'],
   ['water-color', 'color', 'fs_water_color'],
   ['water-shadow', 'shadow', 'fs_water_shadow'],
   ['water-velocity', 'velocity', 'fs_water_velocity'],
 ] as const;
-
-it('prepares an explicit opaque-normal entry at four samples with equal-depth read-only admission', async () => {
-  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
-  const f = cpuSetupFixture(device, module);
-  const entry = f.add({ entity: 1, submeshes: 1 });
-  Object.assign(entry.source, {
-    pipelinePreparation: [
-      {
-        materialHandle: 7,
-        passIndex: 0,
-        tags: { LightMode: 'Forward' },
-        materialShaderId: entry.source.material.snapshot.materialShaderId,
-        vertexEntry: 'vs_main',
-        fragmentEntry: 'fs_main',
-      },
-    ],
-  });
-  Object.assign(f.c, { pipelinePreparationEntries: [entry] });
-  f.acceptMaterials();
-  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
-  try {
-    prepareMainPassPipelines(
-      f.c,
-      FORWARD_PASS_SELECTOR,
-      { passKind: 'forward', recordMode: 'opaque', fragmentEntryPoint: 'fs_ao_input_msaa' },
-      4,
-      ['rgba8uint'],
-    );
-    expect(lookup).toHaveBeenCalledTimes(1);
-    const request = lookup.mock.calls[0];
-    if (request === undefined) throw new Error('missing normal pipeline request');
-    expect(request[19]).toBe('fs_ao_input_msaa');
-    const fragmentEntry = request[19];
-    if (fragmentEntry == null) throw new Error('missing explicit normal fragment entry');
-    expect(
-      buildPipelineDescriptor(
-        {
-          shader: {
-            id: request[0],
-            passKind: request[6] ?? 'forward',
-            variantSet: request[5],
-            fragmentEntry,
-          },
-          attachments: {
-            colorFormats: ['rgba8uint'],
-            depthFormat: 'depth32float-stencil8',
-            sampleCount: 4,
-          },
-          geometry: { topology: 'triangle-list', vertexLayout: {} },
-          renderState: request[2],
-        },
-        { vertex: module, fragment: module },
-      ),
-    ).toMatchObject({
-      multisample: { count: 4 },
-      depthStencil: { depthCompare: 'greater-equal', depthWriteEnabled: false },
-      fragment: { entryPoint: 'fs_ao_input_msaa', targets: [{ format: 'rgba8uint' }] },
-    });
-  } finally {
-    lookup.mockRestore();
-    f.dispose();
-  }
-});
 
 it('requests a colorless PSO only when the forward pass binds no color target', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -263,7 +207,7 @@ it('requests a colorless PSO only when the forward pass binds no color target', 
         1,
         f.meshGroup,
         f.meshGroup,
-        () => ({ group: f.materialGroup, byteOffset: 0, dynamicOffsetCount: 1 as const }),
+        fixtureMaterialBinding(f.materialGroup),
         'forward',
         undefined,
         formats,

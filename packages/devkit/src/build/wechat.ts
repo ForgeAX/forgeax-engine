@@ -28,6 +28,7 @@ import { emitNativeUiFonts } from './native-ui-fonts.js';
 import { nativeGamePhysicsDimensions, type PluginSourceInventory } from './plugin-assets.js';
 import { staticPackProgramsSource } from './static-pack-programs.js';
 
+const WECHAT_WGPU_MODULE = '\0forgeax:wechat-wgpu';
 const STARTUP_PRESENTATION_FILE = 'forgeax-wechat-startup.json';
 
 function nativeFailureDefault(appOptions: DevKitAppOptions): boolean {
@@ -157,16 +158,27 @@ import('@forgeax/engine/platform-wechat/standards').then(({ installWechatStandar
   });
 });
 }
-launch();`,
+const register = Reflect.get(globalThis, '__forgeaxRegisterWechatPayload');
+if (typeof register !== 'function') throw new Error('ForgeAX WeChat package bootstrap is unavailable');
+register(launch);`,
   );
+  const nativeWgpuModule = JSON.stringify(resolve(native, 'wgpu-native.mjs'));
   let wgpuRequire: NodeRequire | undefined;
   const plugin: Plugin = {
     name: 'forgeax:wechat-package',
     enforce: 'pre',
     resolveId(id, importer) {
+      if (id === '@forgeax/engine-wgpu-wasm') return WECHAT_WGPU_MODULE;
       if (importer?.startsWith(native) && id.startsWith('@noble/hashes/'))
         return wgpuRequire?.resolve(id) ?? null;
       return null;
+    },
+    load(id) {
+      if (id !== WECHAT_WGPU_MODULE) return null;
+      // Naga uses the same verified module as the native RHI, even for lazy compilation.
+      return `import * as bindings from ${nativeWgpuModule};
+export { getCompilerFingerprint } from ${nativeWgpuModule};
+export async function ensureReady() { await bindings.nativeWgpuReady(); return bindings; }`;
     },
     async buildStart() {
       // Vite selects both glue and native payload owners, including use-local bindings.
@@ -279,29 +291,57 @@ export async function writeWechatProject(
 const inspection = { phase: 'subpackage-loading', error: undefined, renderer: () => ({ state: 'initializing', phase: inspection.phase, lastError: inspection.error, packageLoad: { ...packageLoad } }) };
 globalThis.__forgeaxGameInspection = inspection;
 console.info('[forgeax.wechat.startup]', 'subpackage-loading');
-const task = wx.loadSubpackage({ name: 'payload', success() { if (inspection.phase === 'subpackage-loading') inspection.phase = 'subpackage-loaded'; console.info('[forgeax.wechat.startup]', 'subpackage-loaded'); }, fail(error) {
-  const nativeMessage = error && error.errMsg;
-  const message = typeof nativeMessage === 'string' ? nativeMessage : String(error);
-  inspection.phase = 'failed';
-  inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
-  console.error('ForgeAX package failed', error);
-  if (${presentation.defaultFailure}) wx.showModal({ title: ${JSON.stringify(presentation.packageFailureTitle)}, content: message, confirmText: ${JSON.stringify(presentation.confirm)}, showCancel: false });
-} });
-try {
-  packageLoad.progressAvailable = !!task && typeof task.onProgressUpdate === 'function';
-  if (packageLoad.progressAvailable && inspection.phase === 'subpackage-loading') task.onProgressUpdate(event => {
-    if (inspection.phase !== 'subpackage-loading') return;
-    packageLoad.events++;
-    packageLoad.lastProgressAt = Date.now();
-    try {
-      for (const key of ['progress', 'totalBytesWritten', 'totalBytesExpectedToWrite']) {
-        const value = event && event[key];
-        if (Number.isSafeInteger(value) && value >= 0 && (key !== 'progress' || value <= 100)) packageLoad[key] = value;
-        else packageLoad.invalidFields = (packageLoad.invalidFields || 0) + 1;
-      }
-    } catch (error) { packageLoad.observerError = String(error).slice(0, 512); }
-  });
-} catch (error) { packageLoad.observerError = String(error).slice(0, 512); }\n`,
+const payloadReady = new Promise(resolve => {
+  globalThis.__forgeaxRegisterWechatPayload = resolve;
+});
+let loadPending = true;
+const packageReady = new Promise(resolve => {
+  const succeed = () => {
+    if (!loadPending) return;
+    loadPending = false;
+    inspection.phase = 'subpackage-loaded';
+    console.info('[forgeax.wechat.startup]', 'subpackage-loaded');
+    resolve(true);
+  };
+  const fail = error => {
+    if (!loadPending) return;
+    loadPending = false;
+    resolve(false);
+    delete globalThis.__forgeaxRegisterWechatPayload;
+    const nativeMessage = error && error.errMsg;
+    const message = typeof nativeMessage === 'string' ? nativeMessage : String(error);
+    inspection.phase = 'failed';
+    inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
+    console.error('ForgeAX package failed', error);
+    if (${presentation.defaultFailure}) wx.showModal({ title: ${JSON.stringify(presentation.packageFailureTitle)}, content: message, confirmText: ${JSON.stringify(presentation.confirm)}, showCancel: false });
+  };
+  let task;
+  try {
+    task = wx.loadSubpackage({ name: 'payload', success: succeed, fail });
+  } catch (error) { fail(error); }
+  try {
+    packageLoad.progressAvailable = !!task && typeof task.onProgressUpdate === 'function';
+    if (packageLoad.progressAvailable && loadPending) task.onProgressUpdate(observeProgress);
+  } catch (error) { packageLoad.observerError = String(error).slice(0, 512); }
+});
+packageReady.then(async loaded => {
+  if (!loaded) return;
+  const launch = await payloadReady;
+  delete globalThis.__forgeaxRegisterWechatPayload;
+  launch();
+});
+function observeProgress(event) {
+  if (!loadPending) return;
+  packageLoad.events++;
+  packageLoad.lastProgressAt = Date.now();
+  try {
+    for (const key of ['progress', 'totalBytesWritten', 'totalBytesExpectedToWrite']) {
+      const value = event && event[key];
+      if (Number.isSafeInteger(value) && value >= 0 && (key !== 'progress' || value <= 100)) packageLoad[key] = value;
+      else packageLoad.invalidFields = (packageLoad.invalidFields || 0) + 1;
+    }
+  } catch (error) { packageLoad.observerError = String(error).slice(0, 512); }
+}\n`,
     ),
     writeFile(
       resolve(outDir, 'game.json'),
@@ -593,7 +633,7 @@ async function boot(identity, reload) {
   const input = createWechatInputBackend(wx, platform, { ui: ui.input, keyboard: wx,
     onError: error => console.warn('ForgeAX native input failed', error) }).unwrap();
   releases.push(() => input.detach());
-  const audio = createWechatAudioBackend(wx, platform, { onError: fail });
+  const audio = createWechatAudioBackend(wx, platform, { onError: error => console.warn('ForgeAX native audio failed', error) });
   releases.push(() => audio.destroy());
   startup.bindInput(enabled => input.setInputAllowed?.(enabled));
   advance('wgpu');

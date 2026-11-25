@@ -1,3 +1,4 @@
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
 import { isStripTopology } from '@forgeax/engine-types';
 import { pipelineVertexConstants } from './material-stage-constants';
 // PipelineSpec 4-axis SSOT — single-file type + derive-fn + entrypoint + error model.
@@ -199,6 +200,14 @@ export function renderStateHash(renderState: MaterialRenderState | undefined): s
 // 6 pure derive functions (M1-T2)
 // ══════════════════════════════════════════════════════════════════════════════
 
+/** Only strip restart makes the index-buffer width a pipeline input. */
+export function pipelineStripIndexFormat(
+  topology: PrimitiveTopology | undefined,
+  indexFormat: GPUIndexFormat | undefined,
+): GPUIndexFormat | undefined {
+  return topology !== undefined && isStripTopology(topology) ? indexFormat : undefined;
+}
+
 function constantsKey(
   stage: 'constants' | 'vertex-constants',
   values: Readonly<Record<string, number>> | undefined,
@@ -223,10 +232,8 @@ function constantsKey(
 export function cacheKeyOf(spec: PipelineSpec): string {
   const { shader, attachments, geometry, renderState } = spec;
   const topoSegment = geometry.topology;
-  const stripSegment =
-    isStripTopology(topoSegment) && geometry.stripIndexFormat !== undefined
-      ? `:${geometry.stripIndexFormat}`
-      : '';
+  const stripFormat = pipelineStripIndexFormat(topoSegment, geometry.stripIndexFormat);
+  const stripSegment = stripFormat === undefined ? '' : `:${stripFormat}`;
 
   // The geometry owner publishes one immutable projection. Legacy callers may
   // still provide only the map; derive the same projection at this boundary.
@@ -296,7 +303,7 @@ export function variantSetFromVertexLayoutProjection(
   projection: VertexLayoutProjection,
   authoredVariantSet: string | undefined,
 ): Result<string, VertexColorVariantConflictError> {
-  const projected = projection.attributes.some((attribute) => attribute.key === 'color');
+  const projected = vertexLayoutHasColor(projection);
   const axis = `VERTEX_COLOR_AVAILABLE=${projected ? 'true' : 'false'}`;
   if (authoredVariantSet === undefined) return ok(axis);
   if (projected && authoredVariantSet === '') return ok(authoredVariantSet);
@@ -460,9 +467,8 @@ export function buildPipelineDescriptor(
     cullMode: renderState?.cullMode ?? 'back',
     frontFace: renderState?.frontFace ?? 'ccw',
   };
-  if (geometry.topology.endsWith('strip') && geometry.stripIndexFormat !== undefined) {
-    primitive.stripIndexFormat = geometry.stripIndexFormat;
-  }
+  const stripFormat = pipelineStripIndexFormat(geometry.topology, geometry.stripIndexFormat);
+  if (stripFormat !== undefined) primitive.stripIndexFormat = stripFormat;
   descriptor.primitive = primitive;
 
   // Depth-stencil state.

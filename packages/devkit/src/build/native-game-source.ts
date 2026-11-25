@@ -176,8 +176,7 @@ const value = result => { if (!result.ok) throw result.error; return result.valu
     ${!desktop && platform.cpuProfile ? 'profiler,' : ''}
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, {
-    ...forgeaxBundlerAdapter(),
-    shaderManifestUrl: ${packageUrl} + 'shaders/manifest.json',
+    ...forgeaxBundlerAdapter({ shaderManifestUrl: ${packageUrl} + 'shaders/manifest.json' }),
     readShaderManifest: ${readShaderManifest},
   }));`,
     world: `const world = new World({ time: configured.time });

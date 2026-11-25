@@ -40,14 +40,22 @@ async function fixture() {
 it('waits for actual completion across aborted candidates and reuses the exact ready pipeline', async () => {
   const f = await fixture();
   try {
-    const initial = f.session().prepareProgram('actual', descriptor, true);
+    const reflected = {
+      ...descriptor,
+      entryPointReads: [{ name: 'main', stage: 'compute' as const, bindings: [] }],
+      bindings: [
+        { entries: [{ binding: 3, visibility: 4, buffer: { type: 'storage' as const } }] },
+      ],
+    };
+    const layouts = vi.spyOn(f.device, 'createBindGroupLayout');
+    const initial = f.session().prepareProgram('actual', reflected, true);
     expect(initial.ok).toBe(false);
     if (initial.ok) throw Error('early ready');
     expect(initial.error).toMatchObject({ detail: { recovery: 'next-frame' } });
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     expect(f.sync).not.toHaveBeenCalled();
     f.session().abortFrame().unwrap();
-    expect(f.session().prepareProgram('actual', descriptor, true).ok).toBe(false);
+    expect(f.session().prepareProgram('actual', reflected, true).ok).toBe(false);
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     const pipeline = f.native(),
       finish = f.completions[0];
@@ -55,7 +63,7 @@ it('waits for actual completion across aborted candidates and reuses the exact r
     finish(ok(pipeline));
     await Promise.resolve();
     const session = f.session(),
-      program = session.prepareProgram('actual', descriptor, true).unwrap(),
+      program = session.prepareProgram('actual', reflected, true).unwrap(),
       bindings = session.prepareBindings('bindings', { program, entries: [] }).unwrap();
     const pass = session
       .resolveComputePass('compute-completion', {
@@ -65,8 +73,9 @@ it('waits for actual completion across aborted candidates and reuses the exact r
       })
       .unwrap();
     expect(pass.dispatches[0]?.pipeline).toBe(pipeline);
-    session.prepareProgram('another-player', descriptor, true).unwrap();
+    session.prepareProgram('another-player', reflected, true).unwrap();
     session.commitFrame();
+    expect(layouts.mock.calls.map(([layout]) => layout.entries)).toEqual([[]]);
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     expect(f.sync).toHaveBeenCalledTimes(1);
   } finally {

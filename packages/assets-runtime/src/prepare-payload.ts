@@ -62,7 +62,7 @@ function validateWaterSimulationReferences(
   asset: Extract<Asset, { kind: 'water-simulation-recipe' }>,
   requireWaterReference: (
     target: string,
-    expectedKind: string,
+    expectedKind: string | readonly string[],
     field: string,
   ) => AssetError | undefined,
 ): AssetError | undefined {
@@ -70,7 +70,7 @@ function validateWaterSimulationReferences(
     ...asset.materialGuids.map((target) => [target, 'material', 'materialGuids'] as const),
     ...asset.textureGuids.map((target) => [target, 'texture', 'textureGuids'] as const),
     ...('impulseNoiseGuid' in asset
-      ? [[asset.impulseNoiseGuid, 'texture', 'impulseNoiseGuid'] as const]
+      ? [[asset.impulseNoiseGuid, ['texture', 'gpu-texture'], 'impulseNoiseGuid'] as const]
       : []),
     ...('shallowStageConfig' in asset && asset.shallowStageConfig
       ? asset.shallowStageConfig.materialGuids.map(
@@ -239,19 +239,26 @@ export function validateAssetReferences(
   }
   const requireWaterReference = (
     target: string,
-    expectedKind: string,
+    expectedKind: string | readonly string[],
     field: string,
   ): AssetError | undefined => {
     const normalized = target.toLowerCase();
     const actualKind = direct.has(normalized)
       ? (kind(normalized) ?? 'missing')
       : 'missing-ref-edge';
-    if (actualKind === expectedKind) return undefined;
+    if (
+      typeof expectedKind === 'string'
+        ? actualKind === expectedKind
+        : expectedKind.includes(actualKind)
+    )
+      return undefined;
+    const expectedLabel =
+      typeof expectedKind === 'string' ? expectedKind : expectedKind.join(' or ');
     return new AssetError({
       code: 'asset-parse-failed',
-      expected: `${field} ${normalized} to reference a ${expectedKind} asset in the declared closure`,
+      expected: `${field} ${normalized} to reference a ${expectedLabel} asset in the declared closure`,
       hint: `repair ${field} on ${asset.kind} ${guid}; it currently resolves to ${actualKind}`,
-      detail: { guid, dependencyGuid: normalized, expectedKind, actualKind },
+      detail: { guid, dependencyGuid: normalized, expectedKind: expectedLabel, actualKind },
     });
   };
   if (asset.kind === 'water-body') {

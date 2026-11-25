@@ -138,22 +138,7 @@ function captureAssetData(
     }
     if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes, allocation);
     active.add(value);
-    const result = copyPlainNode(value, copy);
-    if (allocation !== undefined && result !== value) {
-      let bytes = 16;
-      for (const [key, field] of Object.entries(result as object)) {
-        // Strings are returned unchanged by copy(), not allocated again by this clone.
-        const scalar =
-          typeof field === 'number' || typeof field === 'bigint'
-            ? 8
-            : typeof field === 'boolean'
-              ? 1
-              : 0;
-        bytes += assetFieldBytes(key, scalar);
-      }
-      allocation.bytes += bytes;
-      allocation.nodes.set(result as object, bytes);
-    }
+    const result = copyPlainNode(value, copy, allocation);
     active.delete(value);
     return result;
   };
@@ -181,42 +166,47 @@ function copyBinaryView(
   return new Constructor(bytes.buffer);
 }
 
-function copyPlainNode(value: object, copy: (value: unknown) => unknown): unknown {
+function copyPlainNode(
+  value: object,
+  copy: (value: unknown) => unknown,
+  allocation: CaptureAllocation | undefined,
+): object {
   const array = Array.isArray(value);
   const prototype = Object.getPrototypeOf(value);
   if (!array && prototype !== null && prototype !== Object.prototype)
     throw new TypeError('asset content requires plain data objects');
-  const { keys, fields } = copyPlainFields(value, array, copy);
-  const result: Record<string, unknown> | unknown[] = array ? [] : {};
-  for (const [index, key] of keys.entries())
-    Object.defineProperty(result, key, {
-      value: fields[index],
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  return result;
-}
-
-/** Validated enumerable data fields, copied. */
-function copyPlainFields(
-  value: object,
-  array: boolean,
-  copy: (value: unknown) => unknown,
-): { keys: string[]; fields: unknown[] } {
-  const keys: string[] = [];
-  const fields: unknown[] = [];
+  // Snapshot descriptors before descending. A child proxy can mutate later
+  // siblings, and copying must never call an accessor on the input or target.
   const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result = array ? [] : {};
+  let bytes = 16;
   for (const key of Reflect.ownKeys(descriptors)) {
     if (array && key === 'length') continue;
     if (typeof key !== 'string') throw new TypeError('asset content contains a symbol property');
     const descriptor = descriptors[key];
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
       throw new TypeError('asset content requires enumerable data properties');
-    keys.push(key);
-    fields.push(copy(descriptor.value));
+    const field = copy(descriptor.value);
+    descriptor.value = field;
+    descriptor.configurable = true;
+    descriptor.writable = true;
+    Object.defineProperty(result, key, descriptor);
+    if (allocation !== undefined) {
+      // Strings and nested objects carry their own storage.
+      const scalar =
+        typeof field === 'number' || typeof field === 'bigint'
+          ? 8
+          : typeof field === 'boolean'
+            ? 1
+            : 0;
+      bytes += assetFieldBytes(key, scalar);
+    }
   }
-  return { keys, fields };
+  if (allocation !== undefined) {
+    allocation.bytes += bytes;
+    allocation.nodes.set(result, bytes);
+  }
+  return result;
 }
 
 const ARRAY_TYPES = [
@@ -243,6 +233,7 @@ export function assetDataBytes(
   rootFields?: Map<string, number>,
   binaryStorage?: 'copy' | 'receive',
 ): number {
+  if (value === null || typeof value !== 'object') return scalarDataBytes(value);
   const active = new Set<object>();
   const received = binaryStorage === 'receive' ? new Set<ArrayBuffer>() : undefined;
   const binaryBytes = (buffer: ArrayBufferLike, viewBytes = buffer.byteLength): number => {
@@ -256,13 +247,7 @@ export function assetDataBytes(
     return buffer.byteLength;
   };
   const measure = (entry: unknown, fields?: Map<string, number>): number => {
-    if (typeof entry === 'string') return entry.length * 2;
-    if (typeof entry === 'number' || typeof entry === 'bigint') return 8;
-    if (typeof entry === 'boolean') return 1;
-    if (typeof entry === 'function' || typeof entry === 'symbol')
-      throw new TypeError('asset content must be data');
-    if (entry === null || entry === undefined) return 0;
-    if (typeof entry !== 'object') throw new TypeError('asset content must be data');
+    if (entry === null || typeof entry !== 'object') return scalarDataBytes(entry);
     if (active.has(entry)) throw new TypeError('asset content contains a cycle');
     if (ArrayBuffer.isView(entry)) {
       if (!ARRAY_TYPES.some((candidate) => Object.getPrototypeOf(entry) === candidate.prototype))
@@ -293,6 +278,23 @@ export function assetDataBytes(
     return size;
   };
   return measure(value, Array.isArray(value) ? undefined : rootFields);
+}
+
+function scalarDataBytes(value: unknown): number {
+  switch (typeof value) {
+    case 'string':
+      return value.length * 2;
+    case 'number':
+    case 'bigint':
+      return 8;
+    case 'boolean':
+      return 1;
+    case 'function':
+    case 'symbol':
+      throw new TypeError('asset content must be data');
+    default:
+      return 0;
+  }
 }
 
 export function assetFieldBytes(key: string, valueBytes: number): number {

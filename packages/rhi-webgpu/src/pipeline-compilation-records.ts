@@ -1,3 +1,4 @@
+import { nowMs } from '@forgeax/engine-platform';
 import type { PipelineLibraryInspection } from '@forgeax/engine-rhi';
 
 type History = NonNullable<PipelineLibraryInspection['runtimeRequests']>;
@@ -26,7 +27,7 @@ export class PipelineCompilationRecords<P extends object> {
       ...input,
       program: input.program === undefined ? undefined : new WeakRef(input.program),
       sequence: ++this.sequence,
-      demandedAtMs: performance.now(),
+      demandedAtMs: nowMs(),
       completedAtMs: null,
       outcome: 'pending',
     };
@@ -37,7 +38,7 @@ export class PipelineCompilationRecords<P extends object> {
   finish(row: CompilationRecord<P> | undefined, outcome: PublicRequest['outcome']): void {
     if (row === undefined) return;
     row.outcome = outcome;
-    row.completedAtMs = performance.now();
+    row.completedAtMs = nowMs();
   }
 
   inspect(pipeline: (program: P, row: CompilationRecord<P>) => PublicRequest['pipeline']): History {
@@ -58,7 +59,7 @@ export class PipelineCompilationRecords<P extends object> {
       capacity: this.capacity,
       overwritten: Math.max(0, this.sequence - this.capacity),
       latestSequence: this.sequence,
-      observedAtMs: performance.now(),
+      observedAtMs: nowMs(),
       requests,
     };
   }

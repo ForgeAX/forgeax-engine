@@ -939,6 +939,65 @@ const firstFrameResourceEvents = [];
 const stableFrameResourceEvents = [];
 const trackedDevice = shim.sharedDevice;
 const restoreDeviceMethods = [];
+const liveVelocityTargets = new Set();
+
+function textureDescriptorSummary(descriptor) {
+  return {
+    format: descriptor?.format,
+    width: descriptor?.size?.width,
+    height: descriptor?.size?.height,
+    sampleCount: descriptor?.sampleCount ?? 1,
+    label: descriptor?.label ?? null,
+  };
+}
+
+function firstFrameTextureDescriptors() {
+  return firstFrameResourceEvents
+    .filter((event) => event.kind === 'texture')
+    .map((event) => textureDescriptorSummary(event.descriptor));
+}
+
+function resolveTemporalInputRoute({ passNames, temporalTarget, textures, width, height }) {
+  const descriptor = temporalTarget?.descriptor;
+  if (
+    passNames.includes('standard-scene-data') &&
+    temporalTarget?.identity === 'standard-scene-temporal' &&
+    temporalTarget.producerId === 'forgeax::standard::scene-data' &&
+    temporalTarget.targetCount === 1 &&
+    descriptor?.format === 'rgba16float' &&
+    descriptor.width === width &&
+    descriptor.height === height &&
+    descriptor.sampleCount === 1
+  ) {
+    return 'scene-data';
+  }
+
+  const hasTexture = (label, formats) =>
+    textures.some(
+      (texture) =>
+        texture.label === label &&
+        formats.includes(texture.format) &&
+        texture.width === width &&
+        texture.height === height &&
+        texture.sampleCount === 1,
+    );
+  if (
+    passNames.includes('standard-depth-prepass') &&
+    passNames.includes('standard-depth-velocity') &&
+    hasTexture('scene-depth', ['depth32float', 'depth32float-stencil8']) &&
+    hasTexture('scene-velocity', ['r32uint'])
+  ) {
+    return 'depth-velocity';
+  }
+  return undefined;
+}
+
+function temporalSourcePasses(route) {
+  return route === 'depth-velocity'
+    ? ['standard-depth-prepass', 'standard-depth-velocity']
+    : ['standard-scene-data'];
+}
+
 if (trackedDevice !== undefined) {
   for (const [kind, method] of [
     ['texture', 'createTexture'],
@@ -949,8 +1008,20 @@ if (trackedDevice !== undefined) {
     if (typeof original !== 'function') continue;
     restoreDeviceMethods.push([method, original]);
     trackedDevice[method] = (...args) => {
-      resourceEvents.push({ kind, descriptor: args[0] });
-      return original.apply(trackedDevice, args);
+      const descriptor = args[0];
+      resourceEvents.push({ kind, descriptor });
+      const resource = original.apply(trackedDevice, args);
+      // Warm-up can replace the view graph. Retired allocations are not active targets.
+      if (kind === 'texture' && descriptor.label === 'scene-velocity') {
+        const summary = textureDescriptorSummary(descriptor);
+        const destroy = resource.destroy.bind(resource);
+        liveVelocityTargets.add(summary);
+        resource.destroy = () => {
+          liveVelocityTargets.delete(summary);
+          destroy();
+        };
+      }
+      return resource;
     };
   }
 }
@@ -967,6 +1038,7 @@ const onWallSamples = [];
 const offWallSamples = [];
 let captureMode = 'on';
 let frame = 0;
+let readyPictures = 0;
 const drawFrame = () => {
   const motionEnabled = !['static', 'reactive'].includes(visualCase);
   // Choose a phase whose 600-frame endpoint crosses a bar edge. The bounded
@@ -1001,13 +1073,10 @@ const drawFrame = () => {
   const frameEvents = resourceEvents.slice(-resourceEvents.length);
   const newEvents = frameEvents.slice(drawFrame.lastEventCount ?? 0);
   drawFrame.lastEventCount = frameEvents.length;
-  // Startup creation lasts through the first ready picture; a pending
-  // pipeline-preparation frame is not yet the steady state.
-  (frame === 1 || !drawFrame.readyObserved
-    ? firstFrameResourceEvents
-    : stableFrameResourceEvents
-  ).push(...newEvents);
-  if (drawn.ok && drawn.value.presentation === 'ready') drawFrame.readyObserved = true;
+  // The first ready picture establishes the previous transform. The following
+  // ready picture can first exercise the object's velocity pipeline.
+  (readyPictures < 2 ? firstFrameResourceEvents : stableFrameResourceEvents).push(...newEvents);
+  if (readyPictures < 2 && drawn.ok && drawn.value.presentation === 'ready') readyPictures += 1;
   if (!drawn.ok) drawErrors.push(drawn.error.code);
   return drawn;
 };
@@ -1025,7 +1094,7 @@ const runAdmissionState = async () => {
     if (!completed.ok) throw completed.error;
     if (index >= frames - admissionSampleCount) samples.push(performance.now() - startedAt);
   }
-  return { samples, inspection: renderer.inspect() };
+  return { samples, inspection: renderer.inspect(), velocityTargets: [...liveVelocityTargets] };
 };
 
 if (performanceAdmissionMode) {
@@ -1042,7 +1111,8 @@ if (performanceAdmissionMode) {
   frame = 0;
   captureMode = 'on';
   const on = await runAdmissionState();
-  const passCounters = activePassCountersFromInspection;
+  const passCounters = ({ inspection, velocityTargets }) =>
+    activePassCountersFromInspection(inspection, velocityTargets);
   const buildDigest = process.env.SMOKE_BUILD_DIGEST ?? hashVitePayload(appRoot);
   const adapter = JSON.stringify(shim.adapterInfo ?? null);
   const performanceAdmissionAvailable =
@@ -1129,7 +1199,7 @@ if (performanceAdmissionMode) {
       order: ['off', 'on'],
       offMs: off.samples,
       onMs: on.samples,
-      passCounters: { off: passCounters(off.inspection), on: passCounters(on.inspection) },
+      passCounters: { off: passCounters(off), on: passCounters(on) },
     },
     temporalTarget: on.inspection.temporalTarget ?? null,
     adapterFacts,
@@ -1186,13 +1256,24 @@ if (isolatedCaptureMode !== undefined) {
   const isolatedInspection = renderer.inspect();
   const isolatedTemporal = isolatedInspection.temporal;
   const isolatedTarget = isolatedInspection.temporalTarget;
-  const isolatedDescriptor = isolatedTarget?.descriptor;
+  const isolatedFirstFrameTextures = firstFrameTextureDescriptors();
+  const isolatedTemporalInputRoute = resolveTemporalInputRoute({
+    passNames: isolatedInspection.perFramePassNames,
+    temporalTarget: isolatedTarget,
+    textures: isolatedFirstFrameTextures,
+    width,
+    height,
+  });
   const isolatedStableCreation = {
     texture: stableFrameResourceEvents.filter((event) => event.kind === 'texture').length,
     buffer: stableFrameResourceEvents.filter((event) => event.kind === 'buffer').length,
     pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
   };
-  const isolatedRequiredPasses = ['standard-scene-data', ...temporalPasses, 'output-transform'];
+  const isolatedRequiredPasses = [
+    ...temporalSourcePasses(isolatedTemporalInputRoute),
+    ...temporalPasses,
+    'output-transform',
+  ];
   const isolatedMissingPasses = isolatedRequiredPasses.filter(
     (pass) => !isolatedInspection.perFramePassNames.includes(pass),
   );
@@ -1222,7 +1303,11 @@ if (isolatedCaptureMode !== undefined) {
       historyAttempt: isolatedTemporal.historyAttempt,
       epoch: isolatedTemporal.epoch,
     },
+    temporalInputRoute: isolatedTemporalInputRoute ?? null,
     temporalTarget: isolatedTarget ?? null,
+    temporalInputTextures: isolatedFirstFrameTextures.filter((texture) =>
+      ['scene-depth', 'scene-velocity'].includes(texture.label),
+    ),
     creation: isolatedStableCreation,
     passes: [...isolatedInspection.perFramePassNames],
     errors,
@@ -1240,14 +1325,7 @@ if (isolatedCaptureMode !== undefined) {
     isolatedTemporal === undefined ||
     isolatedTemporal.status !== 'stable' ||
     isolatedTemporal.historyValid !== true ||
-    isolatedDescriptor === undefined ||
-    isolatedTarget?.identity !== 'standard-scene-temporal' ||
-    isolatedTarget.producerId !== 'forgeax::standard::scene-data' ||
-    isolatedTarget.targetCount !== 1 ||
-    isolatedDescriptor.format !== 'rgba16float' ||
-    isolatedDescriptor.width !== width ||
-    isolatedDescriptor.height !== height ||
-    isolatedDescriptor.sampleCount !== 1 ||
+    isolatedTemporalInputRoute === undefined ||
     isolatedStableCreation.texture !== 0 ||
     isolatedStableCreation.buffer !== 0 ||
     isolatedStableCreation.pipeline !== 0;
@@ -1277,6 +1355,9 @@ const { framesObserved, pixelSamples, device } = await runFrameLoopAndReadback({
   samplePoints: motionSamplePoints,
 });
 const onInspection = renderer.inspect();
+const onVelocityTargets = [...liveVelocityTargets];
+// The completed on capture allocated its own staging buffer outside Renderer.draw.
+drawFrame.lastEventCount = resourceEvents.length;
 
 // Re-render without MotionBlur so the same moving-rigid ROI proves a true
 // on/off distinction on the real Dawn readback path.
@@ -1317,14 +1398,26 @@ const roiDelta = motionSampleNames.reduce(
 
 const inspection = onInspection;
 const semanticTemporalTarget = inspection.temporalTarget;
-const temporalDescriptor = semanticTemporalTarget?.descriptor;
+const firstFrameTextures = firstFrameTextureDescriptors();
+const temporalInputRoute = resolveTemporalInputRoute({
+  passNames: inspection.perFramePassNames,
+  temporalTarget: semanticTemporalTarget,
+  textures: firstFrameTextures,
+  width,
+  height,
+});
 const stableCreation = {
   texture: stableFrameResourceEvents.filter((event) => event.kind === 'texture').length,
   buffer: stableFrameResourceEvents.filter((event) => event.kind === 'buffer').length,
   pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
 };
 const temporal = inspection.temporal;
-const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'standard-grade'];
+const requiredPasses = [
+  ...temporalSourcePasses(temporalInputRoute),
+  ...temporalPasses,
+  'motion-blur',
+  'standard-grade',
+];
 const missingPasses = requiredPasses.filter((pass) => !inspection.perFramePassNames.includes(pass));
 const requiresRoiDifference = ['moving-rigid', 'camera-pan'].includes(visualCase);
 const centerEnergy = onRoiEnergy;
@@ -1340,6 +1433,7 @@ const report = {
     packageSha256: sha256File(resolve(appRoot, 'package.json')),
   },
   backend: inspection.capabilities.backendKind,
+  resolution: { width, height },
   framesObserved,
   pixelSamples,
   motionBlurFalsifier: {
@@ -1364,17 +1458,14 @@ const report = {
     historyAttempt: temporal.historyAttempt,
     epoch: temporal.epoch,
   },
+  temporalInputRoute: temporalInputRoute ?? null,
   temporalTarget: semanticTemporalTarget ?? null,
   resourceProbe: {
-    firstFrameTextures: firstFrameResourceEvents
-      .filter((event) => event.kind === 'texture')
-      .map((event) => ({
-        format: event.descriptor?.format,
-        width: event.descriptor?.size?.width,
-        height: event.descriptor?.size?.height,
-        sampleCount: event.descriptor?.sampleCount ?? 1,
-        label: event.descriptor?.label ?? null,
-      })),
+    velocityTargets: onVelocityTargets,
+    firstFrameTextures,
+    temporalInputTextures: firstFrameTextures.filter((texture) =>
+      ['scene-depth', 'scene-velocity'].includes(texture.label),
+    ),
   },
   creation: stableCreation,
   ...(collectTiming
@@ -1434,14 +1525,7 @@ const failed =
   temporal === undefined ||
   temporal.status !== 'stable' ||
   temporal.historyValid !== true ||
-  temporalDescriptor === undefined ||
-  semanticTemporalTarget?.identity !== 'standard-scene-temporal' ||
-  semanticTemporalTarget.producerId !== 'forgeax::standard::scene-data' ||
-  semanticTemporalTarget.targetCount !== 1 ||
-  temporalDescriptor.format !== 'rgba16float' ||
-  temporalDescriptor.width !== width ||
-  temporalDescriptor.height !== height ||
-  temporalDescriptor.sampleCount !== 1 ||
+  temporalInputRoute === undefined ||
   stableCreation.texture !== 0 ||
   stableCreation.buffer !== 0 ||
   stableCreation.pipeline !== 0;

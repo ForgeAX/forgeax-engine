@@ -1,6 +1,7 @@
 import type { GraphTextureDescriptor } from '@forgeax/engine-render-graph';
 import { ok } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { addOutlinePasses } from '../features/outline/graph';
 import type {
   RenderPipeline,
   RenderPipelineBuildContext,
@@ -13,6 +14,8 @@ import {
   addObservationCapturePass,
   addTypedOutputTransformPass,
 } from '../typed-render-graph-primitives';
+import { addHdrOutputEffects } from './hdr-output-effects';
+import { renderInternalSize } from './render-extent';
 import type { StandardPipelineBuildContext } from './standard-build-context';
 import { buildStandard, standardPipeline } from './standard-pipeline';
 import { addStandardBloom } from './standard-post';
@@ -102,12 +105,24 @@ export function createPremultipliedForwardPipeline(
     samplesClearColor: true,
     format,
     domain: 'linear-hdr',
-    build(context, topology, color, _depth, surface) {
-      const hdr = addForwardOutputBloom(context, topology, color);
+    build(context, topology, color, depth, surface) {
+      const outlined =
+        topology.camera.postProcessing && topology.camera.outline === true
+          ? addOutlinePasses(context.graph, color, depth, renderInternalSize(topology), {
+              premultipliedScene: true,
+            })
+          : ok(color);
+      if (!outlined.ok) return outlined;
+      const hdr = addForwardOutputBloom(context, topology, outlined.value);
       if (!hdr.ok) return hdr;
+      const effected =
+        topology.camera.postProcessing && topology.clearOnly !== true
+          ? addHdrOutputEffects(context, topology, hdr.value)
+          : hdr;
+      if (!effected.ok) return effected;
       return finishPremultipliedForwardOutput(
         context.graph,
-        hdr.value,
+        effected.value,
         surface.storage,
         targetName,
         (context as StandardPipelineBuildContext).directFinalColor === true,

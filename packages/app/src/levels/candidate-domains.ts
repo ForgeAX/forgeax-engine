@@ -1,8 +1,10 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { Collider } from '@forgeax/engine-physics';
 import type { RapierPhysicsWorld3D, StaticPhysicsGroup } from '@forgeax/engine-physics-rapier3d';
-import type { SourceViewPreparation } from '@forgeax/engine-render/internal';
-import { RhiError } from '@forgeax/engine-rhi';
+import {
+  isObsoleteSourceViewFailure,
+  type SourceViewPreparation,
+} from '@forgeax/engine-render/internal';
 import type { SceneRosterParticipation } from '@forgeax/engine-scene/internal';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type {
@@ -97,12 +99,7 @@ export class CandidateDomains {
         if (!this.isCurrent()) throw Error('the complete prepared Level demand changed');
         return;
       } catch (cause) {
-        if (
-          !(cause instanceof RhiError) ||
-          cause.code !== 'rhi-descriptor-invalid' ||
-          !native.isObsolete()
-        )
-          throw cause;
+        if (!isObsoleteSourceViewFailure(native, cause)) throw cause;
         yield* this.retireNative();
       }
     }

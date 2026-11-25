@@ -6,7 +6,6 @@ import {
 } from '@forgeax/engine-render-graph';
 import type { BindGroupEntry } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
-import { addDepthPyramidPasses } from '../depth-pyramid/graph';
 import type { DepthPyramidExtent } from '../depth-pyramid/plan';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
@@ -22,12 +21,13 @@ import {
   type SsaoScreenBinding,
   type SsaoScreenStage,
 } from '../ssao-screen-program';
-import { buildSsaoUniformPayload, SSAO_UNIFORM_BYTES } from '../ssao-uniform';
-import { sceneViewImport } from './gpu-occlusion';
+import { buildScreenAoUniformPayload, SCREEN_AO_UNIFORM_BYTES } from '../ssao-uniform';
 import type { StandardPipelineBuildContext } from './standard-build-context';
+import { type ReadViewHzb, standardAoHzbLevels, viewHzb } from './standard-view-hzb';
 
 interface ScreenAoInput {
   readonly depth: RenderPipelineTarget;
+  readonly hzb?: ReadViewHzb | undefined;
   readonly size: DepthPyramidExtent;
   readonly normal?: RenderPipelineTarget | undefined;
   readonly normalLayout?: DeferredAoNormalLayout | undefined;
@@ -100,7 +100,7 @@ export function addScreenAoRaster(
                 binding: 14,
                 resource: {
                   kind: 'buffer',
-                  value: { buffer: uniform, size: SSAO_UNIFORM_BYTES },
+                  value: { buffer: uniform, size: SCREEN_AO_UNIFORM_BYTES },
                 },
               },
             ];
@@ -134,29 +134,63 @@ export function addAoDepthInputs(
   topology: RenderPipelineTopology,
   depth: RenderPipelineTarget,
   size: DepthPyramidExtent,
-  label: 'ssao' | 'gtao',
+  hzb?: ReadViewHzb,
 ) {
-  const { graph } = context;
-  const depthView = graph.view(depth.texture, { dimension: '2d', aspect: 'depth-only' });
+  const depthView = context.graph.view(depth.texture, { dimension: '2d', aspect: 'depth-only' });
   if (!depthView.ok) return depthView;
-  const view = sceneViewImport(graph)();
-  if (!view.ok) return view;
-  const hierarchy = addDepthPyramidPasses(graph, {
-    label: `${label}-furthest-hzb`,
-    reduction: 'furthest',
-    nativeInputs: context.nativeInputs,
-    execution:
-      topology.lane.compute && topology.lane.storageTexture !== false ? 'compute' : 'fragment',
-    depth: depthView.value,
-    view: view.value,
-    mipLevelLimit:
-      label === 'ssao'
-        ? 1
-        : 3 + Math.max(0, 2 - resolveSsaoQuality(topology.config?.ambientOcclusion).permutation),
-    ...size,
-  });
+  const hierarchy = (
+    hzb ?? viewHzb(context, topology, depthView.value, size, standardAoHzbLevels(topology))
+  )();
   if (!hierarchy.ok) return hierarchy;
-  return ok({ depth: depthView.value, hierarchy: hierarchy.value.pyramid });
+  return ok({ depth: depthView.value, hierarchy: hierarchy.value });
+}
+
+export function addScreenSsaoParameters(
+  { graph }: StandardPipelineBuildContext,
+  topology: RenderPipelineTopology,
+  size: DepthPyramidExtent,
+  level: number,
+): Result<GraphBuffer, RenderGraphError> {
+  const config = topology.config?.ambientOcclusion;
+  const { permutation } = resolveSsaoQuality(config);
+  const label = `ssao-screen-parameters-${level}`;
+  const buffer = graph.createBuffer(label, { size: SCREEN_AO_UNIFORM_BYTES });
+  if (!buffer.ok) return buffer;
+  const populated = graph.addCopyPass(label, {
+    accesses: [{ resource: buffer.value, usage: 'copy-dst' }],
+    encodeDirect: (_encoder, frame, resources) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const active = internal.frameState.installedPipelineConfig?.ambientOcclusion ?? config;
+      const resolved = getSsaoParameters(active);
+      const values = buildScreenAoUniformPayload(internal.camera, active, size);
+      values.set(
+        [
+          resolved.intensity,
+          resolved.power,
+          resolved.fadeDistance,
+          resolved.fadeRadius,
+          resolved.radius,
+          Number(resolved.radiusInWorldSpace),
+          resolved.bias / 1000,
+          permutation,
+          resolved.mipBlend,
+          resolved.mipScale,
+          resolved.mipThreshold,
+          level,
+        ],
+        48,
+      );
+      const phase = (internal.camera.temporal?.temporalFrameIndex ?? 0) % 8;
+      values.set(
+        [phase * 2.48, phase * 7.52, reducedExtent(size, level).width / size.width, 0],
+        60,
+      );
+      internal.runtime.device.queue
+        .writeBuffer(resources.buffer(buffer.value).unwrap(), 0, values)
+        .unwrap();
+    },
+  });
+  return populated.ok ? buffer : populated;
 }
 
 export function addStandardScreenSsao(
@@ -164,55 +198,17 @@ export function addStandardScreenSsao(
   topology: RenderPipelineTopology,
   input: ScreenAoInput,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  const { graph } = context;
   const { depth, size, normal, normalLayout } = input;
-  const config = topology.config?.ambientOcclusion;
-  const { levels, permutation } = resolveSsaoQuality(config);
+  const { levels } = resolveSsaoQuality(topology.config?.ambientOcclusion);
   const levelCount = normal === undefined ? 1 : Math.max(1, levels);
-  const depthInputs = addAoDepthInputs(context, topology, depth, size, 'ssao');
+  const depthInputs = addAoDepthInputs(context, topology, depth, size, input.hzb);
   if (!depthInputs.ok) return depthInputs;
   const { depth: sampledDepth, hierarchy } = depthInputs.value;
   const hzb = hierarchy.levels[0] as GraphTextureView;
   const parameters: GraphBuffer[] = [];
   for (let level = 0; level < levelCount; level++) {
-    const label = `ssao-screen-parameters-${level}`;
-    const buffer = graph.createBuffer(label, { size: SSAO_UNIFORM_BYTES });
+    const buffer = addScreenSsaoParameters(context, topology, size, level);
     if (!buffer.ok) return buffer;
-    const populated = graph.addCopyPass(label, {
-      accesses: [{ resource: buffer.value, usage: 'copy-dst' }],
-      encodeDirect: (_encoder, frame, resources) => {
-        const internal = frame as _InternalRenderPipelineContext;
-        const active = internal.frameState.installedPipelineConfig?.ambientOcclusion ?? config;
-        const resolved = getSsaoParameters(active);
-        const values = buildSsaoUniformPayload(internal.camera, active);
-        values.set(
-          [
-            resolved.intensity,
-            resolved.power,
-            resolved.fadeDistance,
-            resolved.fadeRadius,
-            resolved.radius,
-            Number(resolved.radiusInWorldSpace),
-            resolved.bias / 1000,
-            permutation,
-            resolved.mipBlend,
-            resolved.mipScale,
-            resolved.mipThreshold,
-            level,
-          ],
-          48,
-        );
-        const phase = (internal.camera.temporal?.temporalFrameIndex ?? 0) % 8;
-        values.set(
-          [phase * 2.48, phase * 7.52, reducedExtent(size, level).width / size.width, 0],
-          60,
-        );
-        internal.runtime.device.queue
-          .writeBuffer(resources.buffer(buffer.value).unwrap(), 0, values)
-          .unwrap();
-      },
-    });
-    if (!populated.ok) return populated;
     parameters.push(buffer.value);
   }
   const raster = (

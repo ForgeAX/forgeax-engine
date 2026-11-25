@@ -1,20 +1,24 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullQueue, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
-import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
-import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
+import { assert, expect, it, vi } from 'vitest';
+import { prepareRuntimeMaterialTemplates } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program';
 import { createRenderer } from '../assembly/factory';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
+import { Camera, DirectionalLight, MeshFilter, MeshRenderer, SpotLight } from '../components';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
+import { BatchRowAssembly } from '../gpu-driven/production-raster-rows';
+import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { Materials } from '../materials';
+import * as shadowReads from '../record/frame-gpu-driven';
+import * as frameGpuInput from '../record/frame-gpu-driven-input';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
+import { receiptRow } from './gpu-draw-selection-fixture';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -49,22 +53,15 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
       ],
     },
   ];
-  // The two independent materials target the storage-capable renderer below.
-  const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
-  const publications = await Promise.all(
-    authored.map(async (source, index) => {
-      const guid = `019f0000-0000-7000-8000-0000000008b${index}`;
-      const cooked = await cooker.cook({ guid, source });
-      const record = validateCookedMaterialRecord(
-        (cooked.payload as { cooked: unknown }).cooked,
-      ).unwrap();
-      return { guid, source, record };
-    }),
-  );
+  const publications = authored.map((source, index) => ({
+    guid: `019f0000-0000-7000-8000-0000000008b${index}`,
+    source,
+  }));
+  const installMaterials = await prepareRuntimeMaterialTemplates(publications);
   const renderer = await createRenderer(
     { width: 32, height: 32, getContext: () => null },
     undefined,
-    { shaderManifestUrl: renderLifecycleManifestUrl() },
+    { shaderManifestUrl: renderLifecycleManifestUrl(), prepareShaderProgramCompiler },
     {
       rhi,
       createShaderModule: rhi.createShaderModule,
@@ -72,8 +69,11 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     },
   );
   const world = new World({ assets: renderer.assetRegistry });
+  const frameInputs = vi.spyOn(frameGpuInput, 'buildFrameGpuDrivenInput');
+  const captureAtlas = vi.spyOn(shadowReads, 'directionalAtlasMaterialReads');
   const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
   const shadowPrepare = vi.spyOn(GpuDrivenProduction.prototype, 'updateShadowViews');
+  const indirectRows = vi.spyOn(BatchRowAssembly.prototype, 'assemble');
   const directSurface = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'directSurfaceInstances');
   const viewUpdate = vi.spyOn(GpuDrivenView.prototype, 'update');
   const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
@@ -92,7 +92,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
         { component: Camera, data: { fov: 1, aspect: 1, near: 0.1, far: 30, antialias: 0 } },
       )
       .unwrap();
-    world
+    const sun = world
       .spawn({
         component: DirectionalLight,
         data: {
@@ -103,13 +103,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
         },
       })
       .unwrap();
-    publishRuntimeAssets(
-      renderer.assetRegistry,
-      publications.map(({ guid, source, record }) => ({
-        guid,
-        asset: { ...source, cooked: record },
-      })),
-    );
+    installMaterials(renderer.assetRegistry);
     const entities = [];
     for (const [index, publication] of publications.entries()) {
       const material = await renderer.assetRegistry.load(
@@ -133,6 +127,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
           .unwrap(),
       );
     }
+    const solidEntity = entities[0];
     const surfaceEntity = entities[1];
     if (surfaceEntity === undefined) throw new Error('missing Surface entity');
     const page = ReadonlyDynamicInputPage.create({
@@ -193,9 +188,17 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     world.update(1 / 60).unwrap();
     viewUpdate.mockClear();
     directSurface.mockClear();
+    indirectRows.mockClear();
     consume.mockClear();
     expect(draw('direct').ok, JSON.stringify(errors)).toBe(true);
     expect(viewUpdate).not.toHaveBeenCalled();
+    expect(indirectRows).not.toHaveBeenCalled();
+    expect(
+      captureAtlas.mock.calls.some(
+        ([, , rows, , , projection]) =>
+          rows !== undefined && rows.length > 0 && projection !== undefined,
+      ),
+    ).toBe(true);
     expect(directSurface).not.toHaveBeenCalled();
     expect(consume).not.toHaveBeenCalled();
     expect(preparedFrame().standardPbrFrameResources.surfaceDynamicInput).toBeUndefined();
@@ -213,6 +216,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(draw('direct').ok, JSON.stringify(errors)).toBe(true);
     expect(viewUpdate).toHaveBeenCalled();
     expect(directSurface).toHaveBeenCalled();
+    expect(indirectRows).toHaveBeenCalled();
     expect(consume).toHaveBeenCalledTimes(1);
     expect(preparedFrame().standardPbrFrameResources.surfaceDynamicInput).toBeDefined();
     expect(errors).toEqual([]);
@@ -279,6 +283,79 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(encodedIndirectDraws()).toBeGreaterThan(0);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
+
+    // Reuse the real frame, cooked Surface program and page at the admission boundary.
+    const inputs = frameInputs.mock.calls.at(-1);
+    assert(inputs);
+    const [sources, input, frame, standard, pipeline] = inputs;
+    const dynamic = frame?.surfaceDynamicInput;
+    const range = dynamic?.ranges?.[0];
+    const owner = sources.renderables.find((item) => item.entityKey === surfaceEntity);
+    const solid = sources.renderables.find((item) => item.entityKey === solidEntity);
+    const drawRow = receiptRow().source.gpuDrivenDraws?.[0];
+    assert(frame && dynamic && range && owner && solid && drawRow);
+    const section = 7;
+    const owned = [
+      { ...drawRow, drawItemIndex: section, materialSlot: 1 },
+      { ...drawRow, drawItemIndex: 2, materialSlot: 0 },
+    ];
+    const ranges = [2, section, 8].map((drawItemIndex) => ({
+      ...range,
+      member: { ...range.member, drawItemIndex },
+    }));
+    const requests = (draws: typeof owner.gpuDrivenDraws) => {
+      assert(draws);
+      const source = {
+        ...owner,
+        gpuVertexSource: { feature: 'medium', resource: 'vertices' },
+        materials: [solid.material, owner.material],
+        gpuDrivenDraws: draws,
+      };
+      return frameGpuInput.buildFrameGpuDrivenInput(
+        { ...sources, renderables: [source] },
+        input,
+        { ...frame, surfaceDynamicInput: { ...dynamic, ranges } },
+        standard,
+        pipeline,
+      ).request?.directSurface;
+    };
+    expect(requests(sealSourceDraws(owned))?.ranges).toEqual([ranges[1]]);
+    const duplicate = [
+      { ...drawRow, drawItemIndex: section, materialSlot: 0 },
+      { ...drawRow, drawItemIndex: section, materialSlot: 1 },
+    ];
+    expect(requests(duplicate)).toBeUndefined();
+    duplicate.reverse();
+    expect(requests(duplicate)?.ranges).toEqual([ranges[1]]);
+
+    // A local light still renders its direct casters without a directional atlas consumer.
+    captureAtlas.mockClear();
+    frameInputs.mockClear();
+    world.set(sun, DirectionalLight, { castShadow: false }).unwrap();
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 4] } },
+        { component: SpotLight, data: { direction: [0, 0, -1], castShadow: true, mapSize: 64 } },
+      )
+      .unwrap();
+    world.update(1 / 60).unwrap();
+    endedPasses.mockClear();
+    expect(draw('direct').ok, JSON.stringify(errors)).toBe(true);
+    const shadowPasses = (endedPasses.mock.contexts as RhiNullRenderPassEncoder[])
+      .filter((pass) => pass.drawCount > 0)
+      .map((pass) => pass.passName);
+    expect(
+      shadowPasses.some((name) => /spot.*shadow|shadow.*spot/i.test(name)),
+      JSON.stringify(shadowPasses),
+    ).toBe(true);
+    const spotInput = frameInputs.mock.results.at(-1)?.value;
+    expect(spotInput?.request?.geometryLane).toBe('direct');
+    expect(spotInput?.request?.shadowMaterials).toBeUndefined();
+    const casters = [...(spotInput?.request?.batchExecutions.values() ?? [])];
+    expect(casters.some(({ shadow }) => shadow.route === 'direct')).toBe(true);
+    expect(casters.some(({ shadow }) => shadow.route === 'gpu')).toBe(false);
+    expect(spotInput?.artifacts?.shadowMaterialArtifacts.size).toBe(0);
+    expect(captureAtlas).not.toHaveBeenCalled();
   } finally {
     await renderer.dispose();
     vi.restoreAllMocks();

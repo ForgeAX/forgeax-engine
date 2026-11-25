@@ -8,7 +8,7 @@ import type {
 import { ok, type Result } from '@forgeax/engine-types';
 import { estimateDepthPyramidMemory } from '../depth-pyramid/graph';
 import type { DepthPyramidExtent } from '../depth-pyramid/plan';
-import { ssrColorExtent, ssrColorMipTailTexels } from './scene-color-input';
+import { ssrColorExtent } from './scene-color-input';
 
 export const SSR_TRACE_FORMAT = 'rgba16float' as const;
 export const SSR_R32FLOAT_BYTES_PER_PIXEL = 4 as const;
@@ -26,7 +26,7 @@ export interface SsrSpatialTexture {
 export interface SsrSpatialResources {
   readonly trace: SsrSpatialTexture;
   /** Full-resolution reactivity of the admitted reflection source taps. */
-  readonly hitReactivity: GraphTextureView;
+  readonly hitReactivity?: GraphTextureView;
 }
 
 export interface SsrSpatialMemoryEstimate {
@@ -34,7 +34,7 @@ export interface SsrSpatialMemoryEstimate {
   readonly height: number;
   readonly traceWidth: number;
   readonly traceHeight: number;
-  /** The view's shared depth pyramid, counted in SSR admission while SSR is its only closest-depth reader. */
+  /** The complete view HZB, included conservatively in SSR admission. */
   readonly depthPyramidBytes: number;
   readonly fragmentScratchBytes: number;
   readonly sceneColorBytes: number;
@@ -73,36 +73,37 @@ export function estimateSsrSpatialMemory(
   options: {
     readonly execution?: 'compute' | 'fragment';
     readonly forward?: boolean;
-    readonly sceneColorMipCount?: number | undefined;
+    readonly water?: boolean;
+    readonly forwardSampleCount?: 1 | 4;
+    readonly depthPyramidBytes?: number | undefined;
     readonly resolutionScale?: number | undefined;
   } = {},
 ): SsrSpatialMemoryEstimate {
   const trace = ssrTraceExtent(extent, options.resolutionScale);
-  const depthPyramidBytes = estimateDepthPyramidMemory(extent);
+  const depthPyramidBytes = options.depthPyramidBytes ?? estimateDepthPyramidMemory(extent);
   const traceBytes = byteCount(trace.width, trace.height, SSR_RGBA16FLOAT_BYTES_PER_PIXEL);
-  const hitReactivityBytes = byteCount(trace.width, trace.height, SSR_R32FLOAT_BYTES_PER_PIXEL);
+  const hitReactivityBytes =
+    options.water === true ? 0 : byteCount(trace.width, trace.height, SSR_R32FLOAT_BYTES_PER_PIXEL);
   const fallbackInputBytes = byteCount(
     extent.width,
     extent.height,
     SSR_RGBA16FLOAT_BYTES_PER_PIXEL,
   );
   const colorExtent = ssrColorExtent(extent);
-  const colorBaseBytes = byteCount(
+  const sceneColorBytes = byteCount(
     colorExtent.width,
     colorExtent.height,
     SSR_RGBA16FLOAT_BYTES_PER_PIXEL,
   );
-  const colorMipBytes =
-    ssrColorMipTailTexels(colorExtent, options.sceneColorMipCount ?? 1) *
-    SSR_RGBA16FLOAT_BYTES_PER_PIXEL;
-  const sceneColorBytes = colorBaseBytes + colorMipBytes;
-  const fragmentScratchBytes =
-    options.execution === 'fragment' ? depthPyramidBytes + colorMipBytes + 16 : 0;
-  // Conservative incremental Forward demand: depth32float-stencil8 (8),
-  // packed normal/roughness (4), temporal-v1 (8), exact BRDF response (8).
+  const fragmentScratchBytes = options.execution === 'fragment' ? depthPyramidBytes + 16 : 0;
+  // Conservative incremental Forward demand: center depth (8), packed
+  // normal/roughness (4), temporal-v1 (8), BRDF response (8), and Base Pass
+  // surface attributes (8). MSAA retains all three source attachments until resolve.
   // Count all inputs even when another consumer already demanded them.
   const forwardInputsBytes =
-    options.forward === true ? byteCount(extent.width, extent.height, 28) : 0;
+    options.forward === true
+      ? byteCount(extent.width, extent.height, 36 + (options.forwardSampleCount === 4 ? 96 : 0))
+      : 0;
   const ssrOwnedBytes =
     fragmentScratchBytes +
     sceneColorBytes +
@@ -158,10 +159,12 @@ export function createSsrSpatialResources<FrameCtx extends RenderGraphFrame>(
   extent: DepthPyramidExtent,
   label = 'ssr',
   resolutionScale = 1,
+  water = false,
 ): Result<SsrSpatialResources, RenderGraphError> {
   const traceExtent = ssrTraceExtent(extent, resolutionScale);
   const trace = texture(graph, `${label}-trace`, SSR_TRACE_FORMAT, traceExtent);
   if (!trace.ok) return trace;
+  if (water) return ok({ trace: trace.value });
   const hitTexture = graph.createTexture(`${label}-hit-reactivity`, {
     format: 'r32float',
     size: traceExtent,

@@ -10,12 +10,12 @@ import {
   disposeTransientInstanceBuffers,
   type InstanceBufferCacheKey,
 } from '../instance-buffer-cache';
-import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
+import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderAsset } from '../publication/resource-scope';
 import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { type AcceptedMaterial, MaterialFrame } from '../scene/material-dispatch';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import type { MeshFrame } from '../scene/mesh-frame';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
@@ -36,6 +36,7 @@ import {
   canRetainMaterialBindings,
   type MaterialBindingIndex,
   type MaterialRelationFrame,
+  usesSubmittedSpriteGeometry,
 } from './material-binding-index';
 import { materialGeometry } from './material-geometry';
 import { prepareMaterialUniformFrame } from './material-uniforms';
@@ -102,6 +103,7 @@ export interface MaterialBinding {
 
 /** A retained phase proves the exact row roster whose relations it publishes. */
 interface RetainedMaterialRows {
+  readonly shadow?: MaterialRelationFrame | undefined;
   readonly owner: MaterialBindingIndex;
   readonly renderables: DrawRows;
   readonly rows: readonly MaterialRelationFrame[] | undefined;
@@ -381,6 +383,7 @@ export function buildDispatchPlan(
   foldDispatchPlan: FoldDispatchPlan | null;
   materialSlotIndices: FrameList<readonly number[]>;
   materialSlots: readonly MaterialSnapshot[];
+  acceptedMaterialSlots?: SubmittedMaterialSlots | undefined;
   materialBindings: readonly MaterialBinding[];
   materialBindingSlots: MaterialBindingSlots;
   materialSlotCount: number;
@@ -510,6 +513,7 @@ export function buildDispatchPlan(
     foldDispatchPlan,
     materialSlotIndices: materials.slotIndices,
     materialSlots: materials.slots,
+    acceptedMaterialSlots: submittedMaterialSlots(materials),
     materialBindings: materials.bindings,
     materialBindingSlots: materials.bindingSlots,
     materialSlotCount: materials.slotCount,
@@ -526,13 +530,28 @@ const EMPTY_BINDING_SLOTS: MaterialBindingSlots = new Map();
 
 type MeshDrawRoster = PersistentShadowCasterProjection['meshDraws'];
 
+/** The final physical addresses and the immutable Scene versions they submit. */
+export interface SubmittedMaterialSlots {
+  readonly frame: MaterialFrame;
+  readonly slots: readonly AcceptedMaterial[];
+  readonly bindings?: MaterialBindingSlots;
+}
+
 /** The frame-local material UBO table, truncated in step with its rows. */
 export interface MaterialTable {
+  accepted?: { readonly frame: MaterialFrame; readonly slots: AcceptedMaterial[] };
   slotIndices: FrameList<readonly number[]>;
   slots: readonly MaterialSnapshot[];
   bindings: readonly MaterialBinding[];
   bindingSlots: MaterialBindingSlots;
   slotCount: number;
+}
+
+/** Bind the final address table after GPU appends and capacity selection. */
+function submittedMaterialSlots(table: MaterialTable): SubmittedMaterialSlots | undefined {
+  return table.accepted === undefined
+    ? undefined
+    : { frame: table.accepted.frame, slots: table.accepted.slots, bindings: table.bindingSlots };
 }
 
 function physicalDrawCapacityError(): RhiError {
@@ -614,11 +633,7 @@ function materialGroupOf(
   entry: ValidatedRenderable,
   sharedMaterials: SharedMaterialFrame | undefined,
 ): readonly MaterialResource[] {
-  if (
-    materialUsesSpriteGeometry(
-      acceptedMaterialSnapshot(entry.source.material, sharedMaterials?.frame, entry.source),
-    )
-  ) {
+  if (usesSubmittedSpriteGeometry(entry.source.material, sharedMaterials?.frame, entry.source)) {
     return [entry.source.material];
   }
   return entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
@@ -635,11 +650,14 @@ function buildMaterialTable(
     const source = materialRows.at(owner)?.source;
     return source === undefined ? '' : (materialBindingClasses?.get(`${source.entityKey}`) ?? '');
   });
+  const fixed = MaterialFrame.fixedProgramRoot(sharedMaterials?.frame);
+  const versions: AcceptedMaterial[] | undefined = fixed === undefined ? undefined : [];
   const slots = materialSlotPlan.slots.map((material, slot) =>
     acceptedMaterialSnapshot(
       material,
       sharedMaterials?.frame,
       materialRows.at(materialSlotPlan.slotOwners[slot] ?? -1)?.source,
+      versions,
     ),
   );
   const bindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
@@ -652,8 +670,12 @@ function buildMaterialTable(
       entityKey: owner.source.entityKey,
     };
   });
+  const bindingSlots = materialSlotsByClass(bindings);
   const table = {
-    bindingSlots: materialSlotsByClass(bindings),
+    ...(fixed === undefined || versions === undefined
+      ? {}
+      : { accepted: { frame: fixed, slots: versions } }),
+    bindingSlots,
     slotIndices: materialSlotPlan.slotIndices,
     slots,
     bindings,
@@ -691,6 +713,7 @@ function buildFrameMaterialTable(
         shadowValidated,
         fixedMaterials,
         validatedOrdered,
+        retainedMaterials.shadow,
       );
       if (sharedMaterials !== undefined) appendSharedMaterialBindings(materials, sharedMaterials);
     } catch (error) {
@@ -801,7 +824,12 @@ function appendSharedMaterialValue(
       hint: 'keep prepared World indices aligned with the frame resource scopes',
     });
   (table.slots as MaterialSnapshot[]).push(
-    acceptedMaterialSnapshot(binding.material, sharedMaterials.frame),
+    acceptedMaterialSnapshot(
+      binding.material,
+      sharedMaterials.frame,
+      undefined,
+      table.accepted?.slots,
+    ),
   );
   (table.bindings as MaterialBinding[]).push({
     material: binding.material,
@@ -864,6 +892,7 @@ function truncateToDegradedCapacity(
   materials.slots = materials.slots.slice(0, materials.slotCount);
   materials.bindings = materials.bindings.slice(0, materials.slotCount);
   materials.bindingSlots = materialSlotsByClass(materials.bindings);
+  if (materials.accepted !== undefined) materials.accepted.slots.length = materials.slotCount;
   return { primaryCount: retainedPrimaryCount, shadowCount: retainedShadowCount };
 }
 
@@ -925,11 +954,11 @@ function addressPhysicalRows(
   };
   const retained =
     ownedRows && meshDraws !== undefined
-      ? meshDraws.addressOwnedMeshDrawRows(validatedOrdered)
+      ? meshDraws.addressOwnedMeshDrawRows(validatedOrdered, shadowValidatedOrdered)
       : undefined;
   if (retained !== undefined) sourceCapacity = retained.capacity;
   const ordinaryOrdered = retained?.rows ?? validatedOrdered.map(sourceAddress);
-  const shadowOrdered = shadowValidatedOrdered.map(sourceAddress);
+  const shadowOrdered = retained?.shadowRows ?? shadowValidatedOrdered.map(sourceAddress);
   let physicalDemand = sourceCapacity;
   let foldedOrdered = ordinaryOrdered;
   if ((foldDispatchPlan?.headBuckets.size ?? 0) > 0) {

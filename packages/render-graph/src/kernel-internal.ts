@@ -243,6 +243,10 @@ export interface CompiledView<FrameCtx extends RenderGraphFrame = RenderGraphFra
 export class PhysicalGraphSlots<Frame extends RenderGraphFrame> {
   private readonly rows: (CompiledResource<Frame> | CompiledView<Frame> | undefined)[] = [];
 
+  get addressCount(): number {
+    return this.rows.length;
+  }
+
   insert(row: CompiledResource<Frame> | CompiledView<Frame>): void {
     this.rows[row.record.id] = row;
   }

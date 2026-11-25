@@ -9,7 +9,7 @@ import type {
   LodHeightCamera,
 } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
-import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
+import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import { cameraAdmitsLayers } from '../render-layers';
@@ -24,7 +24,8 @@ import { drawChangesSince } from '../scene/draw-evidence';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { TreeFrame } from '../scene/frame-tree-list';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { type MaterialFrame, usesAcceptedSpriteGeometry } from '../scene/material-dispatch';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { type BinnedItem, BinnedPhase, type BinPlacement } from '../systems/binned-phase';
@@ -37,8 +38,8 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_YZ,
 } from '../systems/transparent-sort-config';
 import {
-  resolveViewDrawOrder,
   type ViewDrawOrderKey,
+  ViewDrawOrderReader,
   type ViewDrawOrderSelection,
 } from '../systems/view-draw-order';
 import { selectCpuLodRow } from './cpu-lod';
@@ -228,6 +229,7 @@ interface Member {
   live: boolean;
   changeAddress: number;
   moveAddress: number;
+  sortVisit: number;
   readonly key: number;
   /** Scene row address (the entity's GPU row); undefined for a view-owned draw. */
   readonly slot: number | undefined;
@@ -239,6 +241,8 @@ interface Member {
   admitted: boolean;
   /** View-owned source of a member without a Scene row. */
   view: RenderableSnapshot | undefined;
+  /** This queue visit has received only Scene slot evidence. */
+  slotOnly: boolean;
   /** Scene row version the current row was built from. */
   version: number;
   /** Scene row read by the latest rebuild. */
@@ -289,7 +293,17 @@ class ChangedDrawMembers {
   }
 
   add(member: Member): void {
+    if (this.address === 'changeAddress') member.slotOnly = false;
+    if (!this.has(member)) this.append(member);
+  }
+
+  addSlot(member: Member): void {
     if (this.has(member)) return;
+    member.slotOnly = true;
+    this.append(member);
+  }
+
+  private append(member: Member): void {
     member[this.address] = this.size;
     this.rows[this.size++] = member;
   }
@@ -406,6 +420,9 @@ function keyedDraw(row: ValidatedRenderable | undefined): boolean {
   return row?.source.nativeDraw !== undefined || row?.source.terrainSection !== undefined;
 }
 
+/** A fixed residual already owns admission for its slots; the camera tests the remaining rows. */
+type AdmissionReads = 'changes' | 'all' | NonNullable<CameraAdmission['residual']>;
+
 function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): boolean {
   return (
     (input.cullMask === undefined || cameraAdmitsLayers(input, source)) &&
@@ -466,8 +483,11 @@ export class DirectDrawPhase {
   private lodMode: 'native' | 'external' | 'none' | undefined;
   private geometry: readonly unknown[] = [];
   private sort = new SortedPhase('layered');
+  private readonly sourceOrderReader = new ViewDrawOrderReader();
   private sortItems: (DrawItem | undefined)[] = [];
   private sortInputs: DirectDrawSort | undefined;
+  private sortVisit = 0;
+  private completedSourceOrder: ViewDrawOrderSelection | undefined;
   /** Which entries belong to the currently populated sorted phase. */
   private sortAll: boolean | undefined;
   // Number columns only. The sorting workspace never retains a draw or a material.
@@ -550,7 +570,9 @@ export class DirectDrawPhase {
     try {
       for (const member of this.pending) dirty.add(member);
       const previousSort = this.sortInputs;
+      this.sortVisit++;
       this.sortInputs = input.sort;
+      if (input.sort?.sourceOrder !== this.completedSourceOrder) this.sort.invalidate();
       if (previousSort === undefined) this.adoptSortEye();
       const lodCamera = input.lodCamera ?? [];
       const mode =
@@ -560,9 +582,9 @@ export class DirectDrawPhase {
       this.syncUnbatched(input.scene.unbatchedSlots ?? EMPTY_SLOTS, dirty);
       this.syncEvidence(input, dirty);
       this.syncGeometry(input.geometry ?? [], dirty);
-      const sampleAll = this.syncAdmission(input, dirty);
+      const admission = this.syncAdmission(input, dirty);
       this.syncViewDraws(input, dirty);
-      this.rebuild(input, dirty, sampleAll || input.scene.draws === undefined);
+      this.rebuild(input, dirty, input.scene.draws === undefined ? 'all' : admission);
       this.touchMorphed(input, dirty);
       if (lodMoved) this.reprojectLod(input, dirty);
       this.syncSort(previousSort);
@@ -570,6 +592,9 @@ export class DirectDrawPhase {
       this.lodMode = mode;
     } catch (cause) {
       this.lodMode = undefined;
+      this.completedSourceOrder = undefined;
+      // A failed camera read can leave unvisited rows outside the residual.
+      this.admission = undefined;
       // Input cursors may already have advanced. Retry the actual live
       // members even when the next frame carries no additional edits.
       dirty.forEach((member) => {
@@ -870,8 +895,7 @@ export class DirectDrawPhase {
             before !== undefined &&
             after !== undefined &&
             before.snapshot.passes !== after.snapshot.passes &&
-            materialUsesSpriteGeometry(before.snapshot) !==
-              materialUsesSpriteGeometry(after.snapshot);
+            usesAcceptedSpriteGeometry(before) !== usesAcceptedSpriteGeometry(after);
           for (const member of this.materialReaders.get(resource) ?? []) {
             if (!samePasses) member.placed = undefined;
             if (
@@ -895,14 +919,12 @@ export class DirectDrawPhase {
     const draws = input.scene.draws;
     this.draws = draws;
     if (previous === draws) return;
-    const slots = draws?.slots;
     const linked = drawChangesSince(previous, draws, {
-      slot: (slot) => {
+      slot: (slot, version) => {
         const member = this.members.get(slot);
-        if (member === undefined) return;
-        // Page diffs report every lane of a changed page; an unchanged row keeps its version.
-        if (slots !== undefined && slots.versionAt(slot) === member.version) return;
-        dirty.add(member);
+        if (member === undefined || version === member.version) return;
+        if (dirty instanceof ChangedDrawMembers) dirty.addSlot(member);
+        else dirty.add(member);
       },
       row: (slot) => {
         const member = this.members.get(slot);
@@ -927,7 +949,7 @@ export class DirectDrawPhase {
   }
 
   /** True when every current source needs a layer/predicate sample. */
-  private syncAdmission(input: DirectDrawInput, dirty: MemberChanges): boolean {
+  private syncAdmission(input: DirectDrawInput, dirty: MemberChanges): AdmissionReads {
     const maskChanged = input.cullMask !== this.cullMask;
     this.cullMask = input.cullMask;
     const visible = input.visible;
@@ -936,29 +958,38 @@ export class DirectDrawPhase {
     const previous = this.admission;
     this.visibility = visible;
     this.admission = admission;
-    if (maskChanged) return true;
-    if (visible === undefined && previousVisible === undefined) return false;
+    if (maskChanged) return 'all';
+    if (visible === undefined && previousVisible === undefined) return 'changes';
     if (
       visible !== undefined &&
       previousVisible !== undefined &&
       admission !== undefined &&
       previous !== undefined
     ) {
-      if (admission === previous) return false;
+      if (admission === previous) return 'changes';
       const flip = (slot: number) => {
         const member = this.members.get(slot);
         if (member !== undefined) dirty.add(member);
       };
+      if ('sceneOwner' in admission || 'sceneOwner' in previous) {
+        if (
+          !('sceneOwner' in admission && 'sceneOwner' in previous) ||
+          admission.sceneOwner !== previous.sceneOwner ||
+          admission.residency !== previous.residency ||
+          input.viewDraws.length !== 0
+        )
+          return 'all';
+        admission.hidden.changesSince(previous.hidden, flip);
+        return 'changes';
+      }
       admission.hidden.changesSince(previous.hidden, flip);
       admission.residual.changesSince(previous.residual, flip);
-      // Rows outside the residual set are judged by the camera itself.
-      if (admission.frusta !== previous.frusta)
-        for (const member of this.members.values())
-          if (member.slot === undefined || !admission.residual.has(member.slot)) dirty.add(member);
-      return false;
+      // A new frustum requires a visibility read outside the fixed residual.
+      // Only a changed answer or independent Scene evidence requires new draw work.
+      return admission.frusta !== previous.frusta ? admission.residual : 'changes';
     }
     // Without fixed evidence, admission is re-read for every candidate.
-    return true;
+    return 'all';
   }
 
   private syncViewDraws(input: DirectDrawInput, dirty: MemberChanges): void {
@@ -992,6 +1023,7 @@ export class DirectDrawPhase {
         live: true,
         changeAddress: -1,
         moveAddress: -1,
+        sortVisit: -1,
         key,
         slot,
         firstBatch: undefined,
@@ -999,6 +1031,7 @@ export class DirectDrawPhase {
         unbatched: false,
         admitted: false,
         view: undefined,
+        slotOnly: false,
         version: -1,
         record: undefined,
         row: undefined,
@@ -1036,28 +1069,37 @@ export class DirectDrawPhase {
     this.movedRows.remove(member);
   }
 
-  private rebuild(input: DirectDrawInput, dirty: MemberChanges, sampleAll: boolean): void {
-    if (!sampleAll && dirty.size === 0) return;
+  private rebuild(input: DirectDrawInput, dirty: MemberChanges, sample: AdmissionReads): void {
+    if (sample === 'changes' && dirty.size === 0) return;
     let unbatched: { sources: RenderableSnapshot[]; owners: Member[] } | undefined;
     // An external projector receives its complete ordered batch. Native LOD
     // is row-local and is applied during the subsequent placement walk.
     const externalRows = typeof input.lod === 'function' ? ([] as Member[]) : undefined;
     // The addressed change queue already contains the projection work in order.
     // A borrowed all-row walk discovers its subset while reading the external source.
-    const sampled = sampleAll ? ([] as Member[]) : undefined;
-    const candidates = sampleAll ? this.members : dirty;
+    const sampled = sample === 'all' ? ([] as Member[]) : undefined;
+    const candidates = sample === 'changes' ? dirty : this.members;
     candidates.forEach((member) => {
-      if (!sampleAll && !member.live) return;
+      if (!member.live) return;
+      const changed = sample === 'changes' || dirty.has(member);
+      if (
+        !changed &&
+        typeof sample === 'object' &&
+        member.slot !== undefined &&
+        sample.has(member.slot)
+      )
+        return;
       if (member.view === undefined && member.firstBatch === undefined && !member.unbatched) {
         this.retire(member);
         return;
       }
-      const changed = !sampleAll || dirty.has(member);
       const tracked = input.scene.draws !== undefined;
       // Fixed draw evidence names every changed projection. A selected batch's
       // row already owns the exact source passed to the admission predicate.
       const retained =
-        !changed && tracked && member.firstBatch !== undefined ? member.row : undefined;
+        sample === 'all' && !changed && tracked && member.firstBatch !== undefined
+          ? member.row
+          : undefined;
       const current =
         retained !== undefined
           ? retained.source
@@ -1077,15 +1119,51 @@ export class DirectDrawPhase {
         if (admitted === member.admitted && !sourceChanged) return;
         dirty.add(member);
       }
+      const sameAdmission = member.admitted === admitted;
       member.admitted = admitted;
-      this.work.rebuilt += 1;
       const previous = member.row;
+      const before = member.record;
+      const source = this.candidate(member, input, admitted ? current : undefined);
+      const after = member.record;
+      sampled?.push(member);
+      // A native slot carries one shared content object across successive poses.
+      // Any independent residency, batch, material or view edit takes the full join.
+      if (
+        dirty instanceof ChangedDrawMembers &&
+        member.slotOnly &&
+        changed &&
+        sameAdmission &&
+        member.firstBatch !== undefined &&
+        after instanceof SceneDrawSlot &&
+        after.retainsContentOf(before)
+      ) {
+        if (source === undefined && previous === undefined) return;
+        if (
+          source !== undefined &&
+          previous !== undefined &&
+          previous.world !== undefined &&
+          previous.submeshIndices !== undefined &&
+          previous.source.morph === undefined &&
+          source.morph === undefined &&
+          sameReads(previous.source, source)
+        ) {
+          member.row = this.issueBatchedRow(
+            member,
+            input,
+            source,
+            previous.world,
+            previous.mesh,
+            previous.submeshIndices,
+          );
+          if (externalRows !== undefined) externalRows.push(member);
+          return;
+        }
+      }
+      this.work.rebuilt += 1;
       this.pending.delete(member);
       this.morphed.delete(member);
       member.row = undefined;
       member.preaddressed = false;
-      sampled?.push(member);
-      const source = this.candidate(member, input, admitted ? current : undefined);
       if (member.firstBatch !== undefined) {
         member.row = this.batchedRow(member, source, input);
         this.reread(member, previous?.source, source);
@@ -1152,6 +1230,14 @@ export class DirectDrawPhase {
     const lod = input.lod;
     live.forEach((member) => {
       if (!member.live) return;
+      // An absent draw retiring another absent draw has no bin or roster edit.
+      if (
+        member.row === undefined &&
+        member.drawn === undefined &&
+        member.placed === undefined &&
+        member.items.length === 0
+      )
+        return;
       if (typeof lod !== 'function' && member.row !== undefined) {
         member.drawn =
           lod === undefined
@@ -1211,6 +1297,7 @@ export class DirectDrawPhase {
             : selectCpuLodRow(row, lod, undefined, this.lodWorld);
       if (cameraMoved && next === member.drawn) continue;
       member.drawn = next;
+      member.sortVisit = -1;
       if (cameraMoved) this.emittedRevision = -1;
       member.published = undefined;
     }
@@ -1258,6 +1345,7 @@ export class DirectDrawPhase {
             );
       if (next === before) continue;
       member.drawn = next;
+      member.sortVisit = -1;
       member.published = undefined;
       // Native LOD changes only physical index ranges. Its existing pass placement,
       // material and transparent-sort position belong to the same source.
@@ -1352,6 +1440,18 @@ export class DirectDrawPhase {
         ? selected.mesh
         : (input.prepareGeometry?.(selected.base, selected.material, source) ?? selected.mesh);
     if (mesh !== selected.mesh) this.morphed.set(member, selected);
+    return this.issueBatchedRow(member, input, source, selected.world, mesh, indices);
+  }
+
+  private issueBatchedRow(
+    member: Member,
+    input: DirectDrawInput,
+    source: RenderableSnapshot,
+    world: RenderResourceScope,
+    mesh: MeshGpuHandles,
+    indices: readonly number[],
+  ): MutableRow {
+    const sceneSlot = member.record;
     // A moved member has a new detached source but often the same pass address.
     // Issue can use this one new row directly. A re-sort or changed overlay still
     // produces the current address without mutating previously submitted rows.
@@ -1359,7 +1459,7 @@ export class DirectDrawPhase {
     member.preaddressed = previous !== undefined;
     const row: MutableRow = {
       source,
-      world: selected.world,
+      world,
       mesh,
       renderableIndex: previous?.renderableIndex ?? 0,
       meshSlot: sourceAddress(input.scene, sceneSlot, source, 0),
@@ -1505,36 +1605,64 @@ export class DirectDrawPhase {
   private syncMemberSort(member: Member): void {
     const inputs = this.sortInputs;
     if (inputs === undefined) return;
+    const visit = this.sortVisit;
     let ordinal = 0;
     let value: number | undefined;
+    let group: number | undefined;
+    let priority = 0,
+      depth = 0,
+      tie = 0;
+    const sourceOrder = inputs.sourceOrder;
     for (const item of member.items) {
       const entry = item.entry;
       if (entry === undefined || !sortedEntry(entry, inputs.all)) continue;
       const entryOrdinal = ordinal++;
       if (item.sortId === -2) continue;
-      const sourceKey =
-        inputs.sourceOrder === undefined ? undefined : this.sourceSortKey(item, inputs);
-      if (sourceKey === undefined) value ??= this.sortValue(member, inputs);
-      const tie = this.bins.ordinalOf(item.bin);
-      if (item.sortId >= 0) {
-        if (sourceKey === undefined)
-          this.sort.update(item.sortId, entry.layer, value ?? 0, entry.materialHandle, tie);
-        else this.sort.update(item.sortId, ...sourceKey);
+      if (entryOrdinal === 0 && sourceOrder !== undefined) {
+        const key = this.readMemberOrder(member, sourceOrder);
+        // A second draw can reenter this reader. Only the scalar keys belong to this member.
+        if (key !== undefined) {
+          group = key[0];
+          priority = key[1];
+          depth = key[2];
+          tie = key[3];
+        }
+      }
+      if (group !== undefined) {
+        this.writeSortedItem(item, entryOrdinal, group, priority, depth, tie);
         continue;
       }
-      const key = this.sortKey((member.drawn as MutableRow).source, entryOrdinal);
-      if (key === undefined) {
-        this.unaddressable += 1;
-        item.sortId = -2;
-        continue;
-      }
-      const id =
-        sourceKey === undefined
-          ? this.sort.enter(key, entry.layer, value ?? 0, entry.materialHandle, tie)
-          : this.sort.enter(key, ...sourceKey);
-      item.sortId = id;
-      this.sortItems[id] = item;
+      value ??= this.sortValue(member, inputs);
+      const bin = this.bins.ordinalOf(item.bin);
+      if (sourceOrder === undefined)
+        this.writeSortedItem(item, entryOrdinal, entry.layer, value, entry.materialHandle, bin);
+      else
+        this.writeSortedItem(item, entryOrdinal, Number.NEGATIVE_INFINITY, entry.layer, value, bin);
     }
+    member.sortVisit = visit;
+  }
+
+  private writeSortedItem(
+    item: DrawItem,
+    ordinal: number,
+    group: number,
+    priority: number,
+    depth: number,
+    tie: number,
+  ): void {
+    if (item.sortId >= 0) {
+      this.sort.update(item.sortId, group, priority, depth, tie);
+      return;
+    }
+    const key = this.sortKey((item.owner.drawn as MutableRow).source, ordinal);
+    if (key === undefined) {
+      this.unaddressable += 1;
+      item.sortId = -2;
+      return;
+    }
+    const id = this.sort.enter(key, group, priority, depth, tie);
+    item.sortId = id;
+    this.sortItems[id] = item;
   }
 
   private leaveSort(member: Member): void {
@@ -1577,33 +1705,41 @@ export class DirectDrawPhase {
     return transparentSortValue(pose, pivot, inputs.mode, inputs.yzAlpha, inputs.camera);
   }
 
+  private readMemberOrder(
+    member: Member,
+    order: ViewDrawOrderSelection,
+  ): ViewDrawOrderKey | undefined {
+    const source = (member.drawn as ValidatedRenderable).source;
+    const pose = CapturedSceneTransform.storage(source.transform);
+    return this.sourceOrderReader.read(
+      order,
+      source.entityKey,
+      CapturedSceneTransform.column(pose),
+      CapturedSceneTransform.offset(pose),
+    );
+  }
+
   /** Opaque work retains its precedence in a combined pass. */
   private sourceSortKey(item: DrawItem, inputs: DirectDrawSort): ViewDrawOrderKey {
     const entry = item.entry as DispatchEntry;
-    const source = (item.owner.drawn as ValidatedRenderable).source;
-    let key: ViewDrawOrderKey | undefined;
-    if (inputs.sourceOrder !== undefined) {
-      const pose = CapturedSceneTransform.storage(source.transform);
-      key = resolveViewDrawOrder(
-        inputs.sourceOrder,
-        source.entityKey,
-        CapturedSceneTransform.column(pose),
-        CapturedSceneTransform.offset(pose),
-      );
-    }
-    return (
-      key ?? [
-        Number.NEGATIVE_INFINITY,
-        entry.layer,
-        this.sortValue(item.owner, inputs),
-        this.bins.ordinalOf(item.bin),
-      ]
-    );
+    const key =
+      inputs.sourceOrder === undefined
+        ? undefined
+        : this.readMemberOrder(item.owner, inputs.sourceOrder);
+    if (key !== undefined) return key;
+    const value = this.sortValue(item.owner, inputs);
+    const fallback = this.sourceOrderReader.key;
+    fallback[0] = Number.NEGATIVE_INFINITY;
+    fallback[1] = entry.layer;
+    fallback[2] = value;
+    fallback[3] = this.bins.ordinalOf(item.bin);
+    return fallback;
   }
 
   /** Adopt this sync's sort inputs: a changed formula re-evaluates every sorted value. */
   private syncSort(previous: DirectDrawSort | undefined): void {
     const inputs = this.sortInputs;
+    if (inputs?.sourceOrder === undefined) this.completedSourceOrder = undefined;
     if (inputs === undefined) {
       if (previous !== undefined) this.resetSort();
       return;
@@ -1619,14 +1755,8 @@ export class DirectDrawPhase {
       this.sort.invalidate();
       for (const member of this.members.values()) this.syncMemberSort(member);
     }
-    if (inputs.sourceOrder) {
-      if (inputs.sourceOrder !== previous?.sourceOrder) {
-        this.sort.invalidate();
-        for (const item of this.sortItems)
-          if (item !== undefined)
-            this.sort.update(item.sortId, ...this.sourceSortKey(item, inputs));
-      }
-      this.sort.commit();
+    if (inputs.sourceOrder !== undefined) {
+      this.publishViewOrder(inputs.sourceOrder);
       return;
     }
     this.syncSortTies();
@@ -1655,6 +1785,17 @@ export class DirectDrawPhase {
       this.sort.commit();
       this.rangeChanged = -1;
     }
+  }
+
+  private publishViewOrder(source: ViewDrawOrderSelection): void {
+    if (source !== this.completedSourceOrder) {
+      for (const item of this.sortItems) {
+        if (item !== undefined && item.owner.sortVisit !== this.sortVisit)
+          this.syncMemberSort(item.owner);
+      }
+    }
+    this.sort.commit();
+    this.completedSourceOrder = source;
   }
 
   private syncSortTies(): void {
@@ -1779,25 +1920,22 @@ export class DirectDrawPhase {
     if (
       revision === this.emittedRevision &&
       sort === this.emittedSort &&
-      offset === this.emittedOffset &&
+      (offset === this.emittedOffset || this.materials?.hasBorrowedValues === false) &&
       this.unaddressable === 0 &&
       this.sort.ordered
     ) {
+      if (offset !== this.emittedOffset) return this.relocate(offset);
       if (this.movedRows.size > 0) {
         const previous = this.output.rows;
         if (this.retainBindings) this.materialRows.begin(this.materials as MaterialFrame);
-        const rows = issueDrawRows(
-          previous.length,
-          this.movedRows.size === previous.length ? undefined : previous,
-          (write) => {
-            this.movedRows.forEach((member) => {
-              const index = member.outputIndex;
-              const row = this.publishRow(member, offset + index);
-              write(index, row);
-              if (this.retainBindings) this.materialRows.write(index, row);
-            });
-          },
-        );
+        const rows = issueDrawRows(previous.length, previous, (write) => {
+          this.movedRows.forEach((member) => {
+            const index = member.outputIndex;
+            const row = this.publishRow(member, offset + index);
+            write(index, row);
+            if (this.retainBindings) this.materialRows.move(index, row);
+          });
+        });
         this.output = {
           ...this.output,
           rows,
@@ -1833,6 +1971,42 @@ export class DirectDrawPhase {
     this.emittedRevision = revision;
     this.emittedSort = sort;
     this.emittedOffset = offset;
+    return this.output;
+  }
+
+  /** A preceding pass changed width. The admitted membership, local indices
+   * and order still belong to this phase, including concurrent pose writes. */
+  private relocate(offset: number): DirectDrawOutput {
+    const previous = this.output;
+    const delta = offset - this.emittedOffset;
+    const rows = issueDrawRows(previous.rows.length, undefined, (write) => {
+      for (const member of this.members.values()) {
+        if (member.emitted !== this.epoch) continue;
+        write(member.outputIndex, this.publishRow(member, offset + member.outputIndex));
+      }
+    });
+    let materialRows = previous.materialRows;
+    if (this.retainBindings && this.movedRows.size > 0) {
+      this.materialRows.begin(this.materials as MaterialFrame);
+      this.movedRows.forEach((member) => {
+        this.materialRows.move(member.outputIndex, member.published as ValidatedRenderable);
+      });
+      materialRows = this.materialRows.finish(rows.length);
+    }
+    const dispatch = previous.dispatch.map((entry) => ({
+      ...entry,
+      renderableIndex: entry.renderableIndex + delta,
+    }));
+    this.output = {
+      ...previous,
+      rows,
+      dispatch,
+      materialRows,
+      materialPasses: previous.materialPasses?.atOffset(offset),
+    };
+    this.emittedOffset = offset;
+    this.movedRows.release(this.members.size);
+    this.work.emitted++;
     return this.output;
   }
 

@@ -16,6 +16,7 @@ import {
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 import { rayShaderTestImports } from './ray-shader-imports.fixture';
+import { sceneVelocityWord } from './scene-velocity.fixture';
 
 it.each([
   'legacy',
@@ -469,8 +470,7 @@ it.each([
         if (motionWithDepth !== undefined) {
           const texels = new Uint32Array(256 * 2);
           if (motionIsValid) {
-            const x = Math.round(32767 + Math.sqrt(4 * (0.375 / 16)) * 0.2495 * 65535);
-            const xy = x | (32767 << 16);
+            const xy = sceneVelocityWord(0.375 / 16, 0);
             const depth =
               velocityDepth < 0
                 ? 0xffffffff

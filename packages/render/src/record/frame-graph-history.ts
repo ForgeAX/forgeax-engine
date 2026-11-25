@@ -33,11 +33,9 @@ import { type ProbeBackgroundResources, recordProbeBackground } from '../reflect
 import { addPmremArrayMigrations, type PmremArrayMigration } from '../reflection/pmrem-array';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
-import { addSsrColorDownsample } from '../ssr/color-mips';
 import {
   fullSsrColorViewport,
   ssrColorExtent,
-  ssrColorMipCount,
   writeSsrColorViewport,
 } from '../ssr/scene-color-input';
 import { WATER_SSR_DEFAULT_PROFILE, WATER_SSR_PARAMS_BYTES } from '../ssr/water-profile';
@@ -377,7 +375,7 @@ export function importSsrSceneColorHistoryTarget(
     ? { width, height }
     : { width: accepted?.width ?? width, height: accepted?.height ?? height };
   const halfSize = ssrColorExtent(size);
-  const mipLevelCount = sceneColorOnly ? ssrColorMipCount(halfSize) : 1;
+  const mipLevelCount = 1;
   const resolve = (frame: RenderPipelineFrame) => {
     const internal = frame as _InternalRenderPipelineContext;
     const active = internal.frameState.activeTemporalGpuState;
@@ -424,10 +422,7 @@ export function importSsrSceneColorHistoryTarget(
     label: sceneColorOnly ? 'ssr-hit-color-history.view' : 'ssr-temporal-color-history.view',
     mipLevelCount,
   } as const;
-  const view =
-    mipLevelCount > 1
-      ? graph.view(texture.value, viewDescriptor)
-      : graph.importView(texture.value, viewDescriptor, (frame) => resolve(frame).view);
+  const view = graph.importView(texture.value, viewDescriptor, (frame) => resolve(frame).view);
   if (!view.ok) return view;
   const history = {
     texture: texture.value,
@@ -436,9 +431,7 @@ export function importSsrSceneColorHistoryTarget(
     sampleCount: 1,
     domain: 'linear-hdr',
   } as const;
-  return sceneColorOnly
-    ? ok(history)
-    : addSsrColorDownsample(graph, history, halfSize, 'ssr-hit-color-history');
+  return ok(history);
 }
 
 export function importSsrSceneColorOutput(
@@ -467,7 +460,7 @@ export function importSsrSceneColorOutput(
       {
         format: 'rgba16float',
         size,
-        mipLevelCount: ssrColorMipCount(size),
+        mipLevelCount: 1,
         usage:
           GPU_TEXTURE_USAGE_COPY_SRC |
           GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |

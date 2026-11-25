@@ -134,7 +134,7 @@ async function productionFixture() {
       clustered: false,
       reflectionFallback: false,
       probeBlend: false,
-      shadowViews: false,
+      demand: 'forward',
     });
   return {
     device,

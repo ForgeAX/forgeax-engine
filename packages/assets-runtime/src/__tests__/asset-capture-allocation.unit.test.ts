@@ -4,6 +4,34 @@ import { assetDataBytes, captureAssetDataAllocated } from '../internal/asset-dat
 import { AssetRecords } from '../internal/asset-records';
 
 describe('owned capture allocation evidence', () => {
+  it('copies the admitted sibling descriptors and charges writable data on the new owner', () => {
+    const source = {
+      child: new Proxy(
+        {},
+        {
+          ownKeys(target) {
+            source.after = 99;
+            return Reflect.ownKeys(target);
+          },
+        },
+      ),
+      after: 3,
+    };
+    Object.defineProperty(source, '__proto__', { enumerable: true, value: true });
+    const captured = captureAssetDataAllocated(source, 'copy');
+    expect(source.after).toBe(99);
+    expect(captured.value.after).toBe(3);
+    expect(Object.getPrototypeOf(captured.value)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(captured.value, '__proto__')).toEqual({
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: true,
+    });
+    expect(captured.bytes).toBe(assetDataBytes(captured.value));
+    expect(captured.reusedBy(captured.value)).toBe(captured.bytes);
+  });
+
   it('charges new containers while known cloning reuses immutable string leaves', () => {
     const input = { text: 'x'.repeat(8192), child: { flag: true, value: 3 } };
     const captured = captureAssetDataAllocated(input, 'copy');

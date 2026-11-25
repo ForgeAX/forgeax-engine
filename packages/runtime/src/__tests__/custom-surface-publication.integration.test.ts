@@ -26,7 +26,7 @@ import {
 import {
   materialProgramKeysForMaterial,
   materialSceneIndexProgramKeysForMaterial,
-} from '../../../render/src/render-system-extract';
+} from '../../../render/src/material-program-selection';
 import { derive, type MaterialAsset, selectMaterialStaticContract } from '../../../types/src/index';
 
 const GUID = '019f0000-0000-7000-8000-0000000007a1';

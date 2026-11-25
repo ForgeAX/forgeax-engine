@@ -12,7 +12,7 @@
 >
 > rhi inspect/read 返回 replay-backend-unavailable（例如宿主无原生 replay）时保留 tape 和 rhi summary 结构，转用真实后端的 dev capture 截图、dev eval 状态、debug draw。不要重试 replay 或因此阻塞交付。
 >
-> macOS/Windows 按设计不带预构建 dawn.node；可在 Engine 源码检出运行 `pnpm --filter @forgeax/engine-dawn-node build:native`。因此这些平台通常无 replay，但结构功能仍可用：rhi summary（含 --passes/--label）及默认 pipeline/bindings 的 inspect 只读 tape；只有 pixels、outputs、rhi read、rhi timing 需要 replay。
+> Node GPU 工具使用可选的上游 Dawn 预编译包。需要回放时，在游戏中安装 `upstream-webgpu@npm:webgpu@0.6.2`，并使用游戏自己的 CLI。`rhi summary`（含 `--passes` / `--label`）及默认 `pipeline` / `bindings` 的 `rhi inspect` 只读取 tape。`pixels`、`outputs`、`rhi read` 和 `rhi timing` 会回放。
 
 | 症状 | 首先检查 |
 |:--|:--|
@@ -184,6 +184,18 @@ Viewer 只读，加载一份 .rhitape，经 workIndex 联动四视图；无 WebG
 | Core package | protocol/recorder/index/model/replay/readback 契约。 |
 
 Core 不得导入 DOM、Node filesystem、PNG encoder、Viewer state。Vite bridge 仅开发期提供一份 raw tape。
+
+## Screen Probe Dawn 交接证据
+
+完整薄墙支持测试在 Dawn 独占的 `screen-probe-support` owner 中运行。lane 失败时，`dawn-screen-probe-failure-*` artifact 会在条件满足时保留 handoff JSON 与 GPU 原始 readback，包括尚未生成 motion capture 的失败。
+
+| 文件 | 证据 |
+|:--|:--|
+| `handoff-result.json` | 测试状态、已完成控制项、GPU errors 与 phase 时间 |
+| `handoff-raw-<side>-<mode>.bin` | 已完成 side/mode 控制项的原始 Screen/World ray 和 receiver readback |
+| `motion-captures.json` 与 `*.rhitape` | 已生成的 Renderer motion 与 inspection capture |
+
+读取 `handoff-result.json` 中的时间和状态字段。`jq '.controls | keys' handoff-result.json` 列出已完成的控制项。依据 `screen-probe-support.dawn.test.ts` 的 readback 布局检查对应 raw 文件；JSON 也保留后续 production-support 结果。保留 180 秒 case deadline 和全部原始控制项。见 [CI artifact 契约](../../scripts/ci/README.md#screen-probe-dawn-failure-evidence)。
 
 ## 验证
 

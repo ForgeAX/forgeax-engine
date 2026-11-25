@@ -24,7 +24,11 @@ keeps the final value of each changed entity and omits identical values. Values
 survive updates to sort order because the recorder addresses them by entity.
 The render worker applies these rows with the scene publication and reuses the
 direct mesh buffer and its dirty-slot upload. Render creates the projection
-after the first ECS mutation of this component.
+after the first ECS mutation of this component. Native recording reads the
+eight scalar columns into synchronous scratch. An ordinary mesh with no
+parameter component needs no temporary row. Both the local and Worker paths
+compare the physical F32 values at the draw's buffer address, including edits
+to a reused input array. Removing the component clears its previous GPU words.
 
 ## Quality budgets
 
@@ -668,15 +672,14 @@ Each recording imports its selected shared physical textures and uploads the
 matching Fluid/WaterInfo Body rows anew. Missing, stale and incompatible
 publications reject recording; held observations retain their encoded identity.
 
-Lazy Scene row views follow immutable column pages. Reading a quiet frame does
-not rebuild a per-row registration map. Copying a changed page carries already
-read, unchanged row identities and replaces written lanes by version; old frames
-keep their own views, including deletion and slot reuse. Mesh and temporal draw
-owners supply versioned projections directly, without another per-frame slot map.
-Pose/version columns change independently of cold identity/content columns.
-Content writes copy the cold columns before changing them. Matrix windows already
-returned from a pending page remain fixed across another write or slot reuse;
-only overwriting an observed pose range requires preserving that numeric backing.
+Each captured Scene page holds the rows issued by its writer. An edit copies
+64 row references once per touched page and replaces its affected lanes. Pose
+writes append 16 floats to an eight-matrix backing in admission order, including
+edits to scattered physical slots. A held matrix pins at most 512 bytes of pose
+storage. Earlier rows and frames retain their data across deletion and slot reuse.
+Material and feature scans read contiguous entity and content columns, shared
+across all pose edits. An actual content or membership change owns their next
+revision. Mesh and temporal draw owners read the same issued row.
 Rigid draws without probe bindings reuse the pass's prepared identity instance
 descriptor; probe, Sprite and authored Instances retain their separate bindings.
 
@@ -1080,11 +1083,10 @@ six-target layout remains 36 bytes/sample. The separate receiver normal and
 32-bit lighting channels remain intact. Old cooked writers and utility readers
 must be rebuilt; ordinary Standard ABI validity alone does not certify this output.
 
-Forward SceneData keeps `standard-surface-normal-v1` unchanged. Deferred publishes
-`standard-gbuffer-normal-v2`; callers must request its actual schema. Shared AO,
-SSR and decal modules select the matching decoder with a native pipeline constant,
-without multiplying source templates. SSR history and Water origin normals retain
-their own v1 encoding.
+Forward SceneData publishes depth. Deferred publishes `standard-gbuffer-normal-v2`
+for consumers that require material normals and roughness. Forward screen lighting
+reconstructs geometric normals from depth. SSR history and Water origin normals
+use their own encoding.
 
 ## Preparing hidden loadout pipelines
 
@@ -2679,12 +2681,28 @@ side effects. Native entry facts are required; legacy or unknown programs retain
 normal base-pass depth writes. Blending, alpha-to-coverage, stencil operations and
 scene-depth-dependent programs remain outside this proof.
 
-The HZB reads the furthest of all Reverse-Z MSAA samples. AO uses a nearest-sample
-GPU depth resolve on capable lanes; this is not an exact pixel-center SceneData
-producer. Normal and temporal readers retain their published single-sample
-coverage. A depth-only SceneData reader does not allocate a normal texture.
-The primary single-sample pass uses the normal-producing entry when a normal
-reader exists; an MSAA view adds that semantic producer only on demand.
+Screen-space effects share the Forward scene depth. On lanes that can sample
+MSAA depth, per-pixel consumers share a nearest-covered-sample resolve,
+and consumers of motion receive the data from that same sample. If only the
+screen HZB reads it, its seed resolves the samples inline. GPU occlusion uses
+the furthest of all samples to preserve visibility through coverage gaps.
+The Standard screen HZB rounds each viewport axis up to a power of two and
+halves it for mip 0. Its seed clamps the padding to the render rectangle, and
+screen-space sampling uses that rectangle. Native compute batches up to three
+reduction levels per dispatch.
+
+Forward TAA, TAAU, TSR, and standalone Motion Blur request opaque velocity
+from the prepass. Base Pass loads the seeded depth. The prepass writes the
+attachments required by the view:
+
+| View requirements | Opaque temporal production |
+| :-- | :-- |
+| Packed velocity | Stationary geometry writes depth first. Moving geometry and supported GPU batches write depth and packed velocity next. The AA or Blur shader decodes velocity and reconstructs camera motion. |
+| MSAA | The primary pass writes per-sample depth and temporal data. The screen depth resolve selects both from the same sample. Water's opaque backdrop resolve also selects color from its matching sample. |
+
+Single-sample water consumes the opaque temporal target. Water writes its own
+surface motion and composes it over the opaque result. Scene-depth-dependent
+materials and custom Forward outputs can require the late temporal producer.
 
 ### MSAA on WebGL2
 
@@ -4093,16 +4111,23 @@ world.spawn({ component: DirectionalLight, data: {
 
 | Author field | Valid values / units | Default | Effective meaning |
 |:--|:--|:--|:--|
-| `contactShadowLength` | Meters, finite `>= 0` | `0` | World length of the depth-buffer march toward the light |
+| Render profile `contactShadows` | Boolean | `true` | Allows lights to request the effect. `false` disables contact shadows across the renderer. |
+| Directional light `contactShadowLength` | Meters, finite `>= 0` | `0` | World length of the depth-buffer march toward the light |
+
+Set `settings.rendering.contactShadows` to `false` to disable the effect at
+configuration time. The renderer keeps each light's authored length when the
+profile switches off, so re-enabling it restores the light's setting.
 
 - It runs inline in the Deferred Standard lighting pass. It adds no pass,
   render target, bind group or pipeline, and the frame topology is identical
   with the field on or off. The value travels in the View UBO lane
   `directionalShadowFilter.w`; `0` takes a uniform early-out.
-- Forward uses the same march over its semantic surface depth/normal prepass.
-  It shares the existing AO binding on storage backends and the Cluster texture
-  on WebGL2, without adding a material sampler. Only opaque directional
-  lighting receives it; receiver opt-out, ambient and emission remain intact.
+- Forward derives a geometric normal from depth. Admitted screen projection
+  multiplies cascaded and contact visibility in R. Full-resolution SSAO
+  shares the reconstruction and writes A in the same draw. Standalone
+  screen effects use the same depth reconstruction on other Forward views.
+  The Base Pass applies the directional shadow to direct sunlight and AO
+  to indirect lighting.
 - It is independent of `castShadow`. It multiplies the directional shadow
   factor, so it can supplement cascades or stand alone for a cheap sun
   occlusion term. Deferred pixels already in full cascade shadow skip the march.
@@ -5425,27 +5450,18 @@ maps the typed action to the existing public World and Renderer seams.
 
 ### Shared view depth pyramid
 
-`depth-pyramid/graph.ts` owns one per-view closest-depth hierarchy: an
-`r32float` half-resolution mip chain of linear view depth (`+inf` = empty),
-reduced with conservative floor/ceil footprints so odd extents never drop a
-source texel. `addDepthPyramidPasses` records `depth-pyramid-seed` and
-`depth-pyramid-reduce-chain` and returns the sampled `pyramid` view. The
-pipeline adds it only when an admitted consumer reads it; a frame without a
-consumer allocates nothing and records no pass. SSR trace is the current
-consumer, and its admission budget counts the pyramid as `depthPyramidBytes`.
-The seed/reduce sources prewarm as their own bundle
-(`DEPTH_PYRAMID_SHADER_MODULES`) and install together with SSR sources.
-Every reader and producer addresses a pyramid through the shared
-`forgeax_depth_pyramid::sample` import: the empty sentinel, per-level extent
-(`max(extent0 >> level, 1)`, portable for per-lane levels), cell lookup, and
-the overlapping odd-boundary footprint. Consumers name their binding
-`depthPyramid`; no consumer owns a private pyramid addressing copy.
+The Standard view HZB is the half-resolution `r32float` pyramid of furthest
+linear view distances. The renderer builds it on demand from a specific opaque
+depth version. An uncovered sample leaves its coarse cell empty. Consumers
+that need exact hits still validate the receiver or hit against their finer
+depth inputs.
 
-`reduction: 'furthest'` projects the occlusion variant from the same owner:
-`occlusion-depth-pyramid-seed` / `-reduce-chain` keep the farthest linear
-distance per texel, and any uncovered sample makes the texel empty, so a texel
-only hides geometry behind every surface it covers. It is a graph transient
-sized to the view's internal depth extent. GPU occlusion consumes that bound.
+| Depth pyramid | Scene-depth version | Consumers |
+| --- | --- | --- |
+| `hzb` | The opaque scene depth for the view | Standard SSAO and GTAO, ordinary SSR, Screen Probe short-range AO, and Forward Water SSR when its opaque depth still matches |
+| `hzb-closest` | The Deferred opaque scene depth | Screen Probe hierarchical screen tracing and Deferred Water SSR when its opaque depth still matches |
+| `occlusion-hzb` | The early depth before late geometry | GPU-driven late visibility and eligible shadow receiver culling |
+| `water-hzb` / `water-hzb-closest` | The matching opaque depth for Water after an intervening write or MSAA resolve | Forward / Deferred Water SSR |
 Deferred Water SSR instead traces the opaque closest hierarchy through the
 shared SSR surface traversal and quality budgets. Its displaced receiver comes
 from the Water visibility pass; source normals, material coverage and motion
@@ -5464,18 +5480,18 @@ opaque depth layer. Water Surface normal animation contributes temporal
 reactivity separately from geometric motion; previous producer texture contents
 are not reconstructed.
 
-On the native Forward path opaque Standard materials trace inside their color
-draw using current opaque Hi-Z and the accepted View HDR of the preceding
-frame. Water draws after the opaque scene and resolves screen hits against
-its paired current no-water color and Hi-Z. It writes the final Water color
-with coverage blending. The visibility pass keeps nearest depth, coverage,
-and motion. Forward Water skips SSR when underwater translucency could make
-the color and opaque depth refer to different surfaces.
+The Standard graph builds only as many mips as its consumers need. SSAO and
+Screen Probe short-range AO sample mip zero. GTAO and SSR can read additional
+mips. The shared builder uses overlapping floor/ceil footprints at odd
+extents so every source texel contributes.
 
-With Forward MSAA, one nearest Reverse-Z sample ID selects raw depth and legal
-1x hardware depth. Standard temporal demand can add opaque motion to that
-resolve. The selected refraction backdrop comes from the nearest sample,
-while the final Water draw blends into the averaged display resolve.
+The native Forward path traces opaque reflections in the color draw and
+samples the preceding accepted View HDR. Forward Water traces against its
+current no-water HZB and color. Deferred Water uses its visibility pass to
+supply the ray origin and uses opaque HZB for the hit. Water refraction and
+material depth calculations retain a full-resolution device-depth input.
+With Forward MSAA, the nearest sample selects the paired refraction color
+and depth, while the final Water draw blends into the averaged display resolve.
 
 After-tonemap depth consumers under TAA use a full-output, single-sample
 geometry depth pass and the matching unjittered View. Its coverage uses the
@@ -5496,7 +5512,7 @@ camera fields inherit the project. Set `enabled: false` to disable AO.
 
 | Route | Input and execution | Filtering and output |
 | :-- | :-- | :-- |
-| Forward SSAO | Single-sample depth, a reduced furthest HZB, one raster estimator | In-pass normal-aware quad filter in quality permutations 1 and 2, full-size R8 visibility |
+| Forward SSAO | Single-sample depth, HZB, one raster estimator | In-pass normal-aware quad filter in quality permutations 1 and 2. Full-size visibility uses R8 or the screen shadow mask A channel. |
 | Deferred SSAO | GBuffer normals and depth, one to three resolution levels, R16G16B16A16 setup where needed | Depth and normal weighted coarse-to-fine reconstruction, full-size R8 visibility |
 | Deferred GTAO | Furthest HZB, default depth reconstruction, native compute raw estimator on storage devices | 5x5 spatial filter, independent per-view history, four-sample full-resolution resolve |
 
@@ -6330,11 +6346,10 @@ if (!result.ok) throw result.error;
 | Bounded work | Effective color tiers are exactly `0|4|8|16`; metadata probes are fixed and color work is linear in the tier. There is no radius-squared neighborhood, per-pixel scatter, or atomic accumulation. |
 | WebGL2 fallback | One directional raster gather, explicitly reported as `raster-limited`; it does not claim compute quality or timing parity. |
 
-Under Forward MSAA, the shared single-sample temporal producer uses the existing
-single-sample surface prepass depth. Temporal demand enables a depth-only prepass
-when no other reader needs one; AO stays disabled unless authored. The four-sample
-scene color/depth pair remains separate, and semantic motion/depth values are not
-averaged by an MSAA color resolve. This also applies when DoF follows Motion Blur.
+Under native Forward MSAA, the screen depth resolve selects the nearest covered
+sample and its motion. The four-sample scene color/depth pair is still used for
+raster coverage. When main AA runs, Motion Blur uses its output-domain color
+and temporal metadata together.
 
 The authored integer sample count maps to one of the four execution tiers:
 `4..7 → 4`, `8..15 → 8`, and `16 → 16`; a zero-work bypass is `0`. The
@@ -6778,6 +6793,14 @@ of these slot facts. Geometry-only revisions reuse equal slot facts and their
 prepared material bindings; changes to slot names, source keys or defaults
 produce a new version. Later source-array edits cannot change a captured frame. A slot without a declared mesh default
 uses the neutral engine material.
+
+A binding update resolves every selected slot. The accepted material references
+and their binding sources have separate immutable columns, so changing a material
+can retain the slot provenance. A reserved GPU Scene row resolves handles from
+its extracted materials in row order, with the primary material taking precedence.
+An issued composite override stays shared while a scene row or an in-flight frame
+holds it. Releasing the last such row also releases the composite and its resolved
+mesh bindings, even when the individual material assets remain loaded.
 
 > [!IMPORTANT]
 > A declared mesh default is a required asset dependency. If it is unavailable,
@@ -8460,15 +8483,14 @@ route.
 
 ### Two-phase HZB occlusion
 
-Two-phase HZB is the only main-view occlusion owner. The main camera's GPU lane
-adds it on top of the frustum cull for both the Deferred (`g-buffer`) and
-Forward (`main`) Standard lanes, single-sampled or MSAA:
+The Standard Deferred camera adds two-phase HZB occlusion to its GPU instance
+frustum cull:
 
 ```text
 early scene pass (last frame's visible items)
-  -> occlusion-depth-pyramid-seed / -reduce-chain (furthest)
+  -> occlusion-hzb-seed / -reduce-chain (furthest)
   -> gpu-driven.occlusion-cull -> gpu-driven.occlusion-finalize-indirect
-  -> late scene pass (g-buffer-late / main-late: newly revealed items only)
+  -> g-buffer-late (newly revealed items only)
 ```
 
 The early phase draws only items whose per-instance visibility bit was set the
@@ -8489,12 +8511,10 @@ into the new counters; rows new to the bitmap take the late test.
 > This deliberately deviates from reprojecting last frame's pyramid: the
 > previous visible set is exact for the current camera, so no reprojection
 > error margin or history depth target exists.
-> Forward defaults to the single-phase frustum/distance path. Set
-> `RenderPipelineAsset.config.gpuOcclusion: true` (or `StandardProfile.gpuOcclusion`)
-> to opt into HZB; explicit false disables it. Deferred retains its existing
-> enabled default. Clear-only views never request late occlusion. There is no
-> hardware-query or CPU occlusion fallback; unrelated SSR/GI pyramids retain
-> their own consumer demand.
+> Forward uses the GPU view's single-phase instance selection and shades over
+> the completed prepass. `RenderPipelineAsset.config.gpuOcclusion` (or
+> `StandardProfile.gpuOcclusion`) controls Deferred occlusion, which defaults
+> to enabled. AO, SSR and GI build their pyramids according to their own demand.
 
 #### Shadow casters against the camera pyramid
 
@@ -9207,6 +9227,11 @@ particle bridge and consumes the same effective visibility boundary.
 
 ## Semantic scene data
 
+Forward features use the Standard surface depth token for geometry inputs.
+The legacy material normal token remains recognized and reports
+`producer-missing`. Depth consumers reconstruct geometric normals when
+needed. Deferred features request their GBuffer normal schema.
+
 Temporal consumers request the producer-owned `forgeax::scene-data::temporal-v1`
 schema through `createSceneDataCatalog`. The catalog returns an opaque,
 sampled-read-only `SceneDataTarget`; consumers place that token in
@@ -9228,22 +9253,22 @@ available, `SceneDataUnavailableError` exposes the closed `reason`, missing
 producer IDs (at most 32 plus an omission count), and explicit `recovery`.
 Repair capability or producer coverage at its owner, then retry the next frame.
 
-Standard camera views can also publish two renderer-owned surface schemas:
-`forgeax::scene-data::standard-surface-normal-v1` and
-`forgeax::scene-data::standard-surface-depth-v1`. A RenderFeature requests the
-opaque tokens from the exact rendered view and binds those tokens through its
-normal prepared graph resources:
+Standard camera views publish `forgeax::scene-data::standard-surface-depth-v1`
+when they can cover the requested surface. A Deferred view can also publish
+`forgeax::scene-data::standard-gbuffer-normal-v2`. A RenderFeature requests
+these tokens on the rendered view and binds them through its prepared graph
+resources. The retired Forward material-normal token reports `producer-missing`.
 
 ```ts
 import {
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   type RenderFeaturePlanContext,
 } from '@forgeax/engine/render';
 
-function standardSurfaceInputs(view: RenderFeaturePlanContext['views'][number]) {
+function deferredSurfaceInputs(view: RenderFeaturePlanContext['views'][number]) {
   return {
-    normal: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA),
+    normal: view.sceneData.require(SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA),
     depth: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA),
   };
 }
@@ -9407,11 +9432,12 @@ Fragment code never requires `textureNumLevels`: the full depth chain derives it
 level count from level-zero extent; composition receives its actual reflection
 mip count, including the one-mip spatial-only case, through graph-owned metadata.
 
-Portable Forward SSR writes the environment fallback and unit-radiance
-response in the built-in Standard material pass. Spatial composition reads
-those attachments with the current scene surface data. Native Forward can
-trace inside the color draw when the extended-lighting bindings are admitted.
-Both routes require single-sampling and retain the material textures.
+Portable Forward SSR writes environment fallback, unit-radiance response
+and material normal/roughness in the built-in Standard Base Pass. A screen
+pass packs the resolved material data for the shared SSR readers. Native
+Forward evaluates SSR with its material values inside the Base Pass when
+the extended-lighting bindings fit. Geometry predepth serves both routes
+with depth and coverage.
 
 The spatial descriptor estimate counts the depth hierarchy, trace outputs,
 fallback inputs, and any portable scratch and Forward surface inputs before
@@ -10874,8 +10900,12 @@ The copied token preserves producer identity through asset reads, edits and Work
 publication; resolving a slot is one producer lookup, independent of consumer count.
 The source is runtime content; do not serialize it into a Pack or treat it as a
 TextureAsset GUID. Canvas objects stay in their authoring realm. The ordinary
-Render Worker publication snapshots native frames and retains receiver-owned
-keys, so no DOM object or source GPU handle crosses the Worker boundary.
+Render Worker publication sends a live Canvas frame on each publication. For
+an immutable snapshot it sends pixels on first use and on each new version.
+Later publications reference that accepted version. The receiver holds one
+frame per active snapshot for delayed draws and device recovery, and closes
+it on replacement, last-consumer removal or disposal. A new source epoch sends
+the current pixels again.
 
 | Event | Behavior |
 |:--|:--|
@@ -10884,7 +10914,7 @@ keys, so no DOM object or source GPU handle crosses the Worker boundary.
 | Resize | Redraw the resized canvas and call `update()`; commit a replacement texture only after allocation, view creation and copy succeed. |
 | Color and UVs | sRGB RGBA with straight alpha. `flipY` defaults to `true`; use `new CanvasTexture(canvas, { flipY: false })` for top-left UVs such as `HANDLE_QUAD` or glTF. Orientation is immutable and survives publication/recovery; complete linear-light mip chains, with the existing trilinear material sampler policy. Canvas data maps requiring linear storage are outside this color-texture entry. |
 | Failure | Publish the structured RHI error; failed allocation/copy retains the prior view. A failed frame leaves mip generation dirty and retries before any later consuming draw. |
-| Device recovery | Discard old GPU state and upload the current canvas on the next consuming frame, without rebinding the material. Worker sources republish through their ordinary next frame. |
+| Device recovery | Discard old GPU state and upload the current canvas on the next consuming frame, without rebinding the material. Workers can read an accepted immutable snapshot again or consume the next live frame. |
 | Disposal | Idempotently release uploads; never clear or destroy the caller's canvas. `update()` after disposal does not resurrect it. Worker copies retire on the next accepted publication. |
 | Renderer teardown | Release that Renderer's uploads and lifetime listeners even when the Canvas source remains alive; other Renderers retain their own uploads. |
 
@@ -13116,8 +13146,9 @@ updates preserve the accepted group while preparing a candidate. Invalidating si
 accepts the whole group, stale work cannot publish, and unused resources retire
 after their last GPU use. `Renderer.inspect().textureGeneration` exposes group
 status, accepted/candidate generation, error and reserved bytes on request.
-The initial scope supports 2D/2D-array color outputs with a 256 MiB reservation
-budget per Renderer; unsupported graphs fail explicitly without CPU generation.
+2D generators can read an intermediate `r32float` field with unfilterable
+texture bindings when float32 filtering is unavailable. The generator uses a
+256 MiB reservation budget per Renderer; unsupported graphs fail explicitly without CPU generation.
 
 GPU normal/roughness mip filtering uses the [assets-runtime filter contract](../assets-runtime/README.md#gpu-mip-generation). Its temporary GPU images join the same 256 MiB old/candidate/setup reservation and retire at the submission fence; admission requires two MRTs, 12 bytes/sample and renderable half-float. It adds no recurring scene pass.
 

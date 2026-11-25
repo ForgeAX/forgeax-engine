@@ -69,7 +69,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await writeFile(
     resolve(root, 'sdk-manifest.json'),
     `${JSON.stringify({
-      schemaVersion: '1.11.0',
+      schemaVersion: '1.12.0',
       viewCommit: 'view-test',
       sdkVersion: '0.0.0-test',
       engineCommit: 'test',
@@ -458,7 +458,7 @@ afterEach(async () => {
 });
 
 describe('newCommand', () => {
-  it('gives an installed Engine CLI an executable SDK recovery route before creating files', async () => {
+  it('gives a CLI without authoring resources an Engine installation route before creating files', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-missing-sdk-'));
     temporaryRoots.push(root);
     process.env.FORGEAX_SDK_ROOT = resolve(root, 'missing-sdk');
@@ -470,17 +470,11 @@ describe('newCommand', () => {
       ok: false,
       error: {
         code: 'sdk-context-missing',
-        hint: expect.stringContaining('forgeax sdk install --root <sdk-root>'),
+        hint: expect.stringContaining('Install @forgeax/engine globally'),
       },
     });
-    if (result.ok) throw new Error('missing SDK unexpectedly created a game');
-    expect(result.error.hint).toContain(
-      'node <sdk-root>/bin/forgeax.mjs project init --root <sdk-root>',
-    );
-    expect(result.error.hint).toContain(
-      'node <sdk-root>/bin/forgeax.mjs project new <game-root> --template game-3d',
-    );
-    expect(result.error.hint).toContain('FORGEAX_SDK_ROOT');
+    if (result.ok) throw new Error('missing authoring resources unexpectedly created a game');
+    expect(result.error.hint).toContain('rerun forgeax project new');
     expect(await readdir(root)).toEqual([]);
   });
 
@@ -579,8 +573,8 @@ describe('newCommand', () => {
       ok: false,
       error: {
         code: 'project-target-inside-sdk',
-        expected: 'forgeax project new target to be outside the unpacked SDK root',
-        hint: 'Choose a sibling directory or an absolute path outside the SDK.',
+        expected: 'forgeax project new target to be outside the Engine installation',
+        hint: 'Choose a sibling directory or an absolute path outside the Engine installation.',
         detail: { root: targetRoot, sdkRoot: sdk.root },
       },
     });

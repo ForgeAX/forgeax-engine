@@ -78,3 +78,65 @@ it('admits normal-roughness mip filtering only for generated linear RGBA8 output
   ])
     expect(validateTextureGenerator(withFilter(patch)).ok).toBe(false);
 });
+
+it('admits compute volume generation only for a single published 3D R8 target', () => {
+  const volume = {
+    shape: { viewDimension: '3d', extent: { width: 7, height: 5, depth: 3 } },
+    format: 'r8unorm',
+    colorSpace: 'linear',
+    mips: { kind: 'none' },
+  };
+  const pass = {
+    kind: 'compute-volume',
+    program: { module: 'test::volume' },
+    reads: {},
+    writes: ['color'],
+  };
+  const source = { ...recipe(), outputs: { color: volume }, transient: {}, passes: [pass] };
+  expect(validateTextureGenerator(source).ok).toBe(true);
+  for (const color of [output, { ...volume, format: 'rgba8unorm' }]) {
+    expect(validateTextureGenerator({ ...source, outputs: { color } }).ok).toBe(false);
+  }
+  expect(
+    validateTextureGenerator({
+      ...source,
+      passes: [{ ...pass, reads: { texture: { kind: 'local', name: 'color' } } }],
+    }).ok,
+  ).toBe(false);
+});
+
+it('tracks custom mip writes and reads individually inside one texture', () => {
+  const custom = { ...output, mips: { kind: 'custom', levelCount: 2 } };
+  const base = {
+    kind: 'raster',
+    program: { module: 'paint', fragmentEntry: 'paint' },
+    reads: {},
+    writes: ['color'],
+  };
+  const next = {
+    ...base,
+    mipLevel: 1,
+    reads: { previous: { kind: 'local', name: 'color', mipLevel: 0 } },
+  };
+  const source = { ...recipe(), transient: {}, outputs: { color: custom }, passes: [base, next] };
+  expect(validateTextureGenerator(source).ok).toBe(true);
+  expect(validateTextureGenerator({ ...source, passes: [base] }).ok).toBe(false);
+  expect(validateTextureGenerator({ ...source, passes: [next, base] }).ok).toBe(false);
+  expect(validateTextureGenerator({ ...source, passes: [base, { ...next, mipLevel: 2 }] }).ok).toBe(
+    false,
+  );
+  expect(validateTextureGenerator({ ...source, passes: [base, { ...next, mipLevel: 0 }] }).ok).toBe(
+    false,
+  );
+});
+
+it('admits Gaussian and bounded sharpening only on generated textures', () => {
+  const withFilter = (mipFilter: unknown) => ({
+    ...recipe(),
+    outputs: { color: { ...output, mipFilter } },
+  });
+  expect(validateTextureGenerator(withFilter('gaussian')).ok).toBe(true);
+  expect(validateTextureGenerator(withFilter({ kind: 'sharpen', strength: 4 })).ok).toBe(true);
+  expect(validateTextureGenerator(withFilter({ kind: 'sharpen', strength: 11 })).ok).toBe(false);
+  expect(validateTextureGenerator(withFilter({ kind: 'sharpen', strength: 2.5 })).ok).toBe(false);
+});

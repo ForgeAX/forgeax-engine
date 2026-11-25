@@ -15,7 +15,6 @@ import {
 import { TAA_SCENE_VELOCITY_WGSL, TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import {
   err,
-  type MaterialColorOutput,
   ok,
   type PassKind,
   type PassSelector,
@@ -48,7 +47,11 @@ import {
   prepareMainPassGeometryPipelines,
 } from './record/main-pass';
 import { prepareMaterialSkylight } from './record/main-pass-material';
-import type { MaterialRecordMode } from './record/material-pass-selection';
+import {
+  isWaterForwardColorMode,
+  type MaterialRecordMode,
+  waterRecordPass,
+} from './record/material-pass-selection';
 import { encodeFrameObservationCapture } from './record/observation-capture';
 import {
   addOrdinaryMaterialDepthSnapshot,
@@ -363,27 +366,18 @@ function detachedScenePassContext(
 }
 
 function scenePassFragmentEntryPoint(options: TypedScenePassOptions): string | undefined {
-  if (options.recordMode === 'water-visibility') return 'fs_water_visibility';
-  if (options.recordMode === 'water-forward-color') return 'fs_water_forward_color';
   return (
     options.fragmentEntryPoint ??
+    waterRecordPass(options.recordMode)?.[1] ??
     (options.passKind === 'temporal'
       ? 'fs_temporal'
       : options.passKind === 'deferred'
         ? 'fs_gbuffer'
-        : options.recordMode === 'water-prepass'
-          ? 'fs_water_prepass'
-          : options.recordMode === 'water-color'
-            ? 'fs_water_color'
-            : options.recordMode === 'water-shadow'
-              ? 'fs_water_shadow'
-              : options.recordMode === 'water-velocity'
-                ? 'fs_water_velocity'
-                : options.recordMode === 'single-layer-medium-nearest-layer'
-                  ? 'fs_nearest_layer'
-                  : options.recordMode === 'single-layer-medium-color'
-                    ? 'fs_color'
-                    : undefined)
+        : options.recordMode === 'single-layer-medium-nearest-layer'
+          ? 'fs_nearest_layer'
+          : options.recordMode === 'single-layer-medium-color'
+            ? 'fs_color'
+            : undefined)
   );
 }
 
@@ -410,7 +404,7 @@ function typedScenePassAccesses(
   if (
     options.recordMode === 'single-layer-medium-color' ||
     options.recordMode === 'water-color' ||
-    options.recordMode === 'water-forward-color'
+    isWaterForwardColorMode(options.recordMode)
   ) {
     sampled(options.surfaceNearestLayer);
     sampled(options.surfaceNearestDepth);
@@ -524,6 +518,7 @@ export interface PhysicalSceneRaster {
     accesses: GraphAccess[],
     enabled: (frame: RenderPipelineFrame) => boolean,
     encode: EncodeSceneRaster,
+    request: ScenePassRequest,
   ): Result<void, RenderGraphError>;
 }
 
@@ -550,24 +545,9 @@ export function addTypedScenePass(
 ): Result<void, RenderGraphError> {
   const colorTargets = options.colorTargets ?? (options.color === undefined ? [] : [options.color]);
   const validateWaterAttachments = () => {
-    const waterOutputs = ((): readonly MaterialColorOutput[] | undefined => {
-      switch (options.recordMode) {
-        case 'water-prepass':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS.depth;
-        case 'water-color':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS.color;
-        case 'water-visibility':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS.visibility;
-        case 'water-forward-color':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS['forward-color'];
-        case 'water-shadow':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS.shadow;
-        case 'water-velocity':
-          return SINGLE_LAYER_WATER_PASS_OUTPUTS.velocity;
-        default:
-          return undefined;
-      }
-    })();
+    const waterPass = waterRecordPass(options.recordMode)?.[0];
+    const waterOutputs =
+      waterPass === undefined ? undefined : SINGLE_LAYER_WATER_PASS_OUTPUTS[waterPass];
     if (waterOutputs !== undefined) {
       const mismatch = waterOutputs.findIndex(
         (output, index) => colorTargets[index]?.format !== output.format,
@@ -832,11 +812,7 @@ export function addTypedScenePass(
   const accesses = typedScenePassAccesses(options, colorTargets);
   if (sampledMaterialDepth.value !== undefined)
     accesses.push({ resource: sampledMaterialDepth.value, usage: 'sampled-read' });
-  for (const read of graph.consumerReads('render-feature.scene'))
-    if (
-      !accesses.some((access) => access.resource === read.resource && access.usage === read.usage)
-    )
-      accesses.push({ ...read });
+  graph.appendConsumerReads('render-feature.scene', accesses);
   // The same current writer decides whether the early geometry issues and which
   // depth the opaque raster loads. Resource declarations still cover both outcomes.
   const firstColorWriter =
@@ -982,7 +958,7 @@ export function addTypedScenePass(
     );
   };
   const writer = options.writer ?? graph;
-  if (physical !== undefined) return physical.add(writer, accesses, enabled, encode);
+  if (physical !== undefined) return physical.add(writer, accesses, enabled, encode, request);
   return writer.addRasterPass(
     options.name,
     {

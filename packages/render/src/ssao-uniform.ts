@@ -18,6 +18,7 @@ import { getSsaoParameters } from './ssao-config';
 // shader-side scalar binding at the tail without re-allocation.
 export const SSAO_UNIFORM_INTENSITY_OFFSET = 192;
 export const SSAO_UNIFORM_BYTES = 256;
+export const SCREEN_AO_UNIFORM_BYTES = SSAO_UNIFORM_BYTES + 16;
 
 type AoConfig = NonNullable<RenderPipelineAsset['config']>['ambientOcclusion'];
 
@@ -68,3 +69,15 @@ export class SsaoUniformPage {
 }
 
 export const buildSsaoUniformPayload = SsaoUniformPage.snapshot;
+
+/** Screen AO carries the render extent used to address its padded view HZB. */
+export function buildScreenAoUniformPayload(
+  camera: CameraSnapshot,
+  config: AoConfig,
+  size: { readonly width: number; readonly height: number },
+): Float32Array {
+  const values = new Float32Array(SCREEN_AO_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
+  values.set(buildSsaoUniformPayload(camera, config));
+  values.set([size.width, size.height], SSAO_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
+  return values;
+}

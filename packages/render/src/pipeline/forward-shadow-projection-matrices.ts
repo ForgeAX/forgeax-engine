@@ -8,7 +8,7 @@ import type { ForwardShadowAdmission } from './forward-shadow-admission';
 const CASCADE_COUNT = 4;
 const SPOT_COUNT = 4;
 const MATRIX_FLOATS = (CASCADE_COUNT + SPOT_COUNT * 2) * 16;
-export const FORWARD_SHADOW_MATRIX_BYTES = (MATRIX_FLOATS + 24) * 4;
+export const FORWARD_SHADOW_MATRIX_BYTES = (MATRIX_FLOATS + 28) * 4;
 
 function mapClipToUv(matrix: Mat4): void {
   for (let i = 0; i < 16; i += 4) {

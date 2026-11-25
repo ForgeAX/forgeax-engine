@@ -110,6 +110,7 @@ export class StandardPointsLinesOwner {
       // This frame's attempt observes only what it prepares here.
       this.pending = new Map();
       const prepared = new Map<string, PreparedPointsLines>();
+      let slots = 0;
       for (const source of sparseRowsOf(rows, 'pointsLines')) {
         const points = source.pointsLines;
         // Every retained row is prepared: the camera cull is a draw-time predicate, and a
@@ -118,15 +119,16 @@ export class StandardPointsLinesOwner {
         const world = scopeOf();
         const mesh = renderAssetRevision(world, points.meshHandle) ?? 0;
         const material = renderAssetRevision(world, points.materialHandle) ?? 0;
+        const submission = this.prepare({ source, world }, clustered);
         prepared.set(pointsLinesRowKey(source), {
-          submission: this.prepare({ source, world }, clustered),
-          slot: prepared.size,
+          submission,
+          slot: submission?.plan.drawCount === 1 ? slots++ : 0,
           stale: () =>
             (renderAssetRevision(world, points.meshHandle) ?? 0) !== mesh ||
             (renderAssetRevision(world, points.materialHandle) ?? 0) !== material,
         });
       }
-      return { ok: true, rows: prepared, slots: prepared.size };
+      return { ok: true, rows: prepared, slots };
     } catch (cause) {
       return { ok: false, cause };
     }

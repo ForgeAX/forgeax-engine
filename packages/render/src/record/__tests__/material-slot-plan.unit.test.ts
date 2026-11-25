@@ -4,7 +4,7 @@ import {
   capturedGpuMaterialLayout,
   captureGpuMaterialBindings,
 } from '../../gpu-driven/captured-material-bindings';
-import { MaterialResource } from '../../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchList, MaterialSnapshot } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
@@ -226,6 +226,40 @@ describe('material slot identity and scope', () => {
 });
 
 describe('independent geometry and material capacity', () => {
+  it('seals split CPU and appended GPU slots with their accepted versions after capacity selection', () => {
+    const a = material();
+    const b = material();
+    const c = material();
+    for (const resource of [a, b, c])
+      resource.adopt(captureMaterialSnapshot({ ...resource.snapshot, immutableValues: true }));
+    const frame = new MaterialFrame(undefined).with(a).with(b).with(c);
+    const rows = [row(0, a), row(1, a), row(2, b)];
+    const sourceScope = row(0, a).world;
+    const classes = new Map([['1', 'probe:2']]);
+    const plan = buildDispatchPlan(ceiling(3, 4), rows, [], [], [], classes, false, {
+      frame,
+      sourceScope,
+      bindings: [{ material: c, resourceClass: 'gpu' }],
+    });
+    expect(plan.acceptedMaterialSlots?.slots).toEqual([
+      frame.get(a),
+      frame.get(a),
+      frame.get(b),
+      frame.get(c),
+    ]);
+    expect(plan.acceptedMaterialSlots?.bindings).toBe(plan.materialBindingSlots);
+    expect(plan.materialBindingSlots.get(a)?.get('probe:2')).toBe(1);
+    expect(plan.materialBindingSlots.get(c)?.get('gpu')).toBe(3);
+    const clipped = buildDispatchPlan(ceiling(2, 6), rows, [], [], [], classes, false, {
+      frame,
+      sourceScope,
+      bindings: [],
+    });
+    expect(clipped.acceptedMaterialSlots?.slots).toEqual([frame.get(a), frame.get(a)]);
+    expect(clipped.acceptedMaterialSlots?.bindings?.has(b)).toBe(false);
+    expect(plan.acceptedMaterialSlots?.slots.length).toBe(4);
+  });
+
   it('truncates only at complete material prefixes', () => {
     const indices = [[0], [1, 2, 3], [0, 4], [5, 6, 7, 8]];
     expect(findRenderablePrefixForSlotCapacity(indices, 3)).toBe(1);

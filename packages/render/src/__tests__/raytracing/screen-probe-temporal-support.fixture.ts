@@ -192,6 +192,7 @@ export function temporalSupport(input: TemporalSupportInput = {}) {
     },
     screenProbeMetaAo,
     SCENE_VELOCITY_INVALID_DEPTH: 0xffffffff,
+    sceneVelocityPreviousDepth: (word: number) => bitFloat((word & 0x7fffffff) - 1),
     SP_META_KIND_MASK: 3,
     SP_META_AO_VALID: 4,
     SP_META_FAST_UPDATE_SHIFT: wordConstant('SP_META_FAST_UPDATE_SHIFT', shaderSource),

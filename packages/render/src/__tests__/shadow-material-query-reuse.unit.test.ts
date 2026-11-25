@@ -140,7 +140,6 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: buffer },
   });
-  Object.assign(f.context.frameState, { materialBgShared: new Map() });
   const projections = f.projections as unknown as Map<number, GpuDrivenShadowBatchProjection>;
   for (const [id, projection] of projections)
     projections.set(id, {
@@ -609,7 +608,7 @@ it.each([
         ? { textureSources: new Map([['surfaceMap', canvasTexture.source]]) }
         : { videoTextureFields: new Map([['surfaceMap', clip]]) }),
     });
-    const uploads = vi.spyOn(f.dynamic, 'uploadFrame');
+    const uploads = vi.spyOn(f.dynamic, kind === 'video' ? 'uploadFrame' : 'uploadCanvasFrame');
     if (kind === 'video') {
       expect(f.run).toThrow('entity-local video binding');
       expect(uploads).not.toHaveBeenCalled();

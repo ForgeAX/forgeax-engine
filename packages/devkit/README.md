@@ -216,7 +216,7 @@ project tool discovery starts Vite only when a declared tool contract needs modu
 loading. Browser execution and build operations retain their existing owners;
 Pack authoring activates one gateway per client and preserves request-id
 deduplication. The package ships the CLI's dynamic chunks under `dist` together
-with the public entry, so SDK/archive consumers follow the same path. Generated Node program tables load the shipped internal `pack-program-host.mjs` artifact directly; restoring their module closure does not import the DevKit facade or activate Vite/Playwright.
+with the public entry, so installed Engine consumers follow the same path. Generated Node program tables load the shipped internal `pack-program-host.mjs` artifact directly; restoring their module closure does not import the DevKit facade or activate Vite/Playwright.
 
 Exact `dev start/status/stop/reload` commands dispatch directly to the built-in
 live owner without a preliminary project tool inventory. Start and reload keep
@@ -357,14 +357,11 @@ authoritative, and its lifecycle disposes the prepared platform with the target.
 `callDevKitBackend(root, operation, args)` calls one active ToolApi provider over
 the authenticated local transport; absent or ambiguous capabilities fail.
 
-Normal View startup is `node /path/to/view/start.mjs [--project G]`. View owns
-installation discovery, its packaged Host Pack and temporary workspace defaults;
-it calls the public `ensureDevKitView` API directly. DevKit retains backend process
-ownership without adding built-in View startup commands. Default H is shared per
-Engine/View installation independently of cwd and G; `--new-instance` allocates
-a unique temporary H unless explicit `--root H` takes precedence. Use the returned
-H explicitly for `view status`, `view stop` and `backend stop`. Omitting G preserves
-a bound project or leaves a fresh owner ready for project selection.
+Start installed View with `forgeax project view --root G --json`. DevKit selects
+the bundled Host Pack and owns backend startup at G. Open the returned URL for
+the selected project. Use `forgeax backend status --root G` and
+`forgeax backend stop --root G` for the process lifecycle. View contributors can
+use the source checkout launcher to control an explicit workspace root H.
 
 For example, an installed View host Pack contributes separate `view start`,
 `view status` and `view stop` commands. `view start` requires this backend and
@@ -1492,30 +1489,19 @@ font closure in the candidate HTML. Follow the normal `forgeax project preview`
 path for a built directory, upload a Web ZIP to an HTTPS static host, or open
 the exact single-HTML candidate through the release browser profile.
 
-`forgeax project new` accepts an absent or empty target only when that target is outside the unpacked SDK
-root. An SDK-owned target fails before template copying with `project-target-inside-sdk`; use a
-sibling directory or an absolute path outside the SDK.
-
-`forgeax project new` requires an explicit template: choose `game-3d` for every 3D game, including custom
-3D genres, and choose `empty` otherwise. Omitting `--template` fails with `sdk-template-required`.
-
-SDK initialization and project creation return two required `onboarding.read` paths:
-the selected root's `AGENTS.md` and SDK skill. The skill links the capability catalog
-on demand. The generated game guide selects local playable delivery by default;
-publication and Engine/SDK production have their own explicit routes.
-
-The installed `@forgeax/engine` CLI does not carry SDK templates. If it reports
-`sdk-context-missing`, install the matching SDK in a sibling directory, initialize
-it, and use that SDK's entry to create the new project:
+`forgeax project new` takes an absent or empty target outside the Engine
+installation. Select `game-3d` for a third-person starting point or `empty` for a
+minimal project. The generated project records the exact Engine version. Its
+`onboarding.read` points to the project's `AGENTS.md` and Engine authoring skill.
 
 ```bash
-pnpm exec forgeax sdk install --root ../forgeax-sdk
-node ../forgeax-sdk/bin/forgeax.mjs project init --root ../forgeax-sdk
-node ../forgeax-sdk/bin/forgeax.mjs project new ../my-game --template game-3d
+npm install -g @forgeax/engine
+forgeax project new my-game --template game-3d
 ```
 
-`sdk install` defaults to the invoking Engine's version. If that SDK is already
-installed, use its `bin/forgeax.mjs` entry or set `FORGEAX_SDK_ROOT` to its root.
+If the command reports `sdk-context-missing`, select an Engine version that
+includes project templates and retry. Use `forgeax project init` for an existing
+project.
 
 > [!IMPORTANT]
 > `game-3d` is a runnable, contentful third-person reference, not an empty 3D scene. It copies
@@ -3232,12 +3218,14 @@ The existing `rhi inspect` command accepts `--buffer` JSON with a resource ID, r
 
 `rhi timing` (`rhi.timing`) replays the artifact once with replay-owned pass timestamps and returns `timing.passes` (pass index, kind, label, work indices, `gpuNanoseconds`) plus `totalGpuNanoseconds`. It needs a replay device with `timestamp-query` and otherwise fails with `replay-capability-mismatch`; times rank passes on the replay device. See [RHI Debug per-pass timing](../rhi-debug/README.md#per-pass-gpu-timing).
 
-## Selected tool sources and SDK runtime
+## Selected tool sources
 
 A package-owned Host frontend that declares `@forgeax/engine` is admitted against the Host's Engine graph. Generic presentation packages need not depend on Engine. Frontend aliases
 select that graph across all physical Engine packages. An explicitly bound game graph
 must resolve to the same package roots or equal runtime bytes; equal version labels alone
 do not admit conflicting code. The failure is `host-assembly-invalid` before target boot.
+
+### Earlier SDK installations
 
 SDK manifest 1.11.0 distinguishes runtime/tool packages and records `viewCommit`. View is a
 private built tool under SDK `tools/view/`, installed through `file:../../tools/view`;
@@ -3261,6 +3249,8 @@ independent writable outputs and checks every reused file's byte count and SHA-2
 before moving entries through private staging. This avoids a second complete SDK copy and preserves hard
 links and relative symbolic links. The target must be absent or empty; temporary
 download and staging directories are removed after success or failure.
+
+### Target frontend ownership
 
 A headed target samples the native `devkitWorkspaceFrontend` lease when the
 project opens. Retirement of that service marks its frontend target lost; the

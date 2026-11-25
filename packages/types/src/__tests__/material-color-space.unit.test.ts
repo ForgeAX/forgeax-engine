@@ -13,6 +13,19 @@ describe('material color-space contract', () => {
     expect(srgbChannelToLinear(0.5)).toBeCloseTo(0.2140411405, 9);
   });
 
+  it('applies authored declarations over the shader color vocabulary per field', () => {
+    const values = { tint: [0.5, 0.25, 0.1, 0.4], data: [0.5, 0.25, 0.1, 0.4] };
+    const schema = [
+      { name: 'tint', type: 'color' },
+      { name: 'data', type: 'color' },
+    ];
+    const runtime = materialValuesToLinearRuntime(values, schema, undefined, [
+      { name: 'data', type: 'vec4' },
+    ]);
+    expect(runtime.tint).toEqual(authoredColorToLinear(values.tint));
+    expect(runtime.data).toBe(values.data);
+  });
+
   it('round-trips every 8-bit sRGB channel within half an LSB', () => {
     for (let byte = 0; byte <= 255; byte += 1) {
       const encoded = byte / 255;

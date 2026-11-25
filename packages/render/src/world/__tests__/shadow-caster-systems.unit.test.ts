@@ -1,6 +1,6 @@
 import { defineSystem } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
@@ -58,6 +58,7 @@ function setup(
     readonly system?: boolean;
     readonly capture?: boolean;
     readonly unfitted?: boolean;
+    readonly lights?: ViewLights;
   } = {},
 ) {
   const world = createRenderWorld();
@@ -115,7 +116,8 @@ function setup(
     })
     .unwrap();
   const record = createViewRecord(view);
-  record.lights = options.unfitted === true ? { ...lights, shadowViews: [] } : lights;
+  record.lights =
+    options.unfitted === true ? { ...lights, shadowViews: [] } : (options.lights ?? lights);
   world
     .addComponent(view, {
       component: ViewCascadeFit,
@@ -255,5 +257,29 @@ it('widens a late capture demand beyond the main fitted frustum in the same fram
     outside,
     otherChannel,
   ]);
+  endRenderFrame(f.world);
+});
+
+it('reads each candidate bound once across multiple shadow frusta and resolves channels once per view', () => {
+  const projected = lights.shadowViews[0];
+  if (projected === undefined) throw new Error('missing fixture cascade');
+  const masks = vi.fn(() => 1);
+  const fitted = {
+    ...lights,
+    spot: [
+      {
+        shadowAtlasTile: 2,
+        get shadowCasterChannels() {
+          return masks();
+        },
+      },
+    ],
+    shadowViews: [projected, { ...projected, identity: { kind: 'spot', index: 2 } }],
+  } as unknown as ViewLights;
+  const f = setup({ lights: fitted });
+  f.run(1);
+  expect(viewShadowCastersOf(f.world, f.view)).toEqual([inside]);
+  expect(f.boundsReads).toEqual([inside.entityKey, outside.entityKey]);
+  expect(masks).toHaveBeenCalledOnce();
   endRenderFrame(f.world);
 });

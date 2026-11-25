@@ -1,6 +1,5 @@
-import { RhiError } from '@forgeax/engine-rhi';
 import { type MeshSourceStage, StagedMeshSourceError } from '../scene/staged-mesh-source';
-import type { SourceViewPreparation } from './source-view-preparation';
+import { isObsoleteSourceViewFailure, type SourceViewPreparation } from './source-view-preparation';
 
 /** Advance the same scene and View owners used by local Levels at an idle render turn. */
 export class PublishedLevelPreparation {
@@ -33,8 +32,7 @@ export class PublishedLevelPreparation {
       const next = view.next();
       if (!next.done) return next.value ?? false;
     } catch (cause) {
-      if (cause instanceof RhiError && cause.code === 'rhi-descriptor-invalid' && view.isObsolete())
-        return this.releaseView() ?? false;
+      if (isObsoleteSourceViewFailure(view, cause)) return this.releaseView() ?? false;
       throw cause;
     }
     if (view.isCurrent()) {

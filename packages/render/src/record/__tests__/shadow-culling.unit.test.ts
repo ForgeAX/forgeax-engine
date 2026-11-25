@@ -5,7 +5,11 @@ import * as derivedBounds from '../../instances-derived-bounds';
 import { InstanceBoundsCache } from '../../instances-derived-bounds';
 import type { RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
-import { shadowViewContains } from '../shadow-culling';
+import {
+  admittedShadowWindings,
+  shadowViewContains,
+  shadowViewPlanesByView,
+} from '../shadow-culling';
 
 function snapshot(x = 0) {
   const world = mat4.identity(mat4.create());
@@ -144,4 +148,20 @@ describe('shadow world bounds ownership', () => {
       ),
     ).toBe(true);
   });
+});
+
+it('prepares each admitted winding once in first-view order, with the cascade limit applied', () => {
+  const matrix = mat4.create();
+  const planes = new Float32Array(24);
+  const directional = { kind: 'directional', index: 1 } as const;
+  const point = { kind: 'point', index: 2, face: 0 } as const;
+  const spot = { kind: 'spot', index: 1 } as const;
+  const views = [directional, point, point, spot].map((identity) => ({ identity, matrix, planes }));
+  const all = shadowViewPlanesByView(views);
+  const limited = shadowViewPlanesByView(views, 1);
+  expect(admittedShadowWindings(all, [])).toEqual([false, true]);
+  expect(admittedShadowWindings(limited, [])).toEqual([true, false]);
+  expect(admittedShadowWindings(new Map(limited), [directional])).toEqual([true, false]);
+  expect(admittedShadowWindings(new Map(), [point])).toEqual([]);
+  expect(admittedShadowWindings(undefined, [point, point])).toEqual([true]);
 });

@@ -2,6 +2,9 @@
 #import forgeax_pbr::lighting_directional::{sampleDirectionalShadowClip, sampleDirectionalPcss, sampleDirectionalSoftPcf, sampleDirectionalSizedPcf, pickCascadeLayer, directionalCascadeBlend}
 #import forgeax_pbr::lighting_punctual::{pointShadowVisibility, spotShadowVisibilityAtClip, punctualRangeReaches, spotConeReaches, spotDefaultShadowParams}
 #import forgeax_scene_temporal::{sceneFragmentViewZ}
+#import forgeax_view::common::{depthSurfaceCameraFacing, reconstructDepthSurface}
+#import forgeax_pbr::contact_shadow::{traceDirectionalContactShadow}
+#import forgeax_hdrp::ssao::{screenSsaoReconstruct, screenSsaoRotateToWorld, screenAoResolvedAtPixel, screenSsaoResolvedDepth, SsaoVsOut}
 
 @group(1) @binding(0) var sceneDepth : texture_depth_2d;
 struct ScreenToShadow {
@@ -14,6 +17,7 @@ struct ScreenToShadow {
   atlas : vec4<f32>,
   spotFade : vec4<f32>,
   pointFade : vec4<f32>,
+  effects : vec4<f32>, // mapped sun, contact shadow, temporal phase, AO source
 };
 @group(1) @binding(1) var<uniform> screenToShadow : ScreenToShadow;
 @group(1) @binding(2) var<storage, read> lights : array<DirectLightSlot>;
@@ -212,8 +216,7 @@ fn receiverAxisDepthDelta(pixel : vec2<i32>, axis : vec2<i32>, depth : f32, exte
   return select(b, a, aError < bError || (aError == bError && abs(a) <= abs(b)));
 }
 
-fn directionalVisibility(pixel : vec2<f32>) -> f32 {
-  let depth = textureLoad(sceneDepth, vec2<i32>(pixel), 0);
+fn directionalVisibility(pixel : vec2<f32>, depth : f32) -> f32 {
   let clip = receiverClip(pixel, depth);
   var depthDelta = vec2<f32>(dpdxFine(depth), dpdyFine(depth));
   let count = u32(view.cascadeCount);
@@ -239,19 +242,48 @@ fn directionalVisibility(pixel : vec2<f32>) -> f32 {
   return shadeKnownCascade(pixel, depth, clip, first, count, depthDelta);
 }
 
+fn evaluateDirectionalEffects(in : FullscreenOutput) -> vec4<f32> {
+  let pixel = vec2<i32>(in.position.xy);
+  let depth = textureLoad(sceneDepth, pixel, 0);
+  let valid = depth > 0.0;
+  var shadow = 1.0;
+  var ao = 1.0;
+  if (screenToShadow.effects.x > 0.0) {
+    shadow = directionalVisibility(in.position.xy, depth);
+  }
+  let contact = screenToShadow.effects.y > 0.0;
+  let aoSource = screenToShadow.effects.w;
+  if (aoSource == 1.0) {
+    let surface = screenSsaoReconstruct(sceneDepth, pixel, depth);
+    ao = screenSsaoResolvedDepth(SsaoVsOut(in.position, in.uv),
+      vec4<f32>(surface.normal, -surface.position.z), valid);
+    if (contact && valid && shadow > 0.0) {
+      let hit = traceDirectionalContactShadow(view, sceneDepth,
+        screenSsaoRotateToWorld(surface.position) + view.cameraPos, screenSsaoRotateToWorld(surface.normal),
+        pixel, screenToShadow.effects.z);
+      shadow *= hit.visibility;
+    }
+  } else {
+    if (aoSource == 2.0) {
+      ao = screenAoResolvedAtPixel(pixel);
+    }
+    if (contact && valid && shadow > 0.0) {
+      let fallback = depthSurfaceCameraFacing(view.worldViewProj, view.temporalProjection.z > 0.5);
+      let surface = reconstructDepthSurface(sceneDepth, pixel, depth, view.inverseViewProj, fallback);
+      let hit = traceDirectionalContactShadow(view, sceneDepth, surface.position, surface.normal,
+        pixel, screenToShadow.effects.z);
+      shadow *= hit.visibility;
+    }
+  }
+  return vec4<f32>(shadow, 1.0, 1.0, ao);
+}
+
 @fragment fn fs_main(in : FullscreenOutput) -> @location(0) f32 {
-  return directionalVisibility(in.position.xy);
+  return evaluateDirectionalEffects(in).r;
 }
 
 @fragment fn fs_directional_rgba(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  return vec4<f32>(directionalVisibility(in.position.xy), 1.0, 1.0, 1.0);
-}
-
-@group(0) @binding(9) var ambientOcclusion : texture_2d<f32>;
-
-@fragment fn fs_ao_alpha(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  let visibility = textureLoad(ambientOcclusion, vec2<i32>(in.position.xy), 0).r;
-  return vec4<f32>(0.0, 0.0, 0.0, visibility);
+  return evaluateDirectionalEffects(in);
 }
 
 struct PunctualProjectionVertex {

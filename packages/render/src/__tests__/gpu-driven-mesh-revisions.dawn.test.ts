@@ -200,7 +200,7 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) color: vec4<f32> }
       entries: [0, 1].map((binding) => ({
         binding,
         visibility: 1,
-        buffer: { type: 'uniform' as const, hasDynamicOffset: true },
+        buffer: { type: 'uniform' as const, hasDynamicOffset: binding === 0 },
       })),
     })
     .unwrap();
@@ -1327,7 +1327,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
               depthStoreOp: 'store',
             },
           });
-          pass.setBindGroup(0, f.viewGroup, [0, 0]);
+          pass.setBindGroup(0, f.viewGroup, [0]);
           recordGpuDrivenShadowIndirect(pass, { view: submitted.view, batches });
           pass.end();
         }
@@ -1621,7 +1621,7 @@ it('publishes native shadow arena bindings for active and retiring owned Views',
             depthStoreOp: 'store',
           },
         });
-        pass.setBindGroup(0, f.viewGroup, [0, 0]);
+        pass.setBindGroup(0, f.viewGroup, [0]);
         recordGpuDrivenShadowIndirect(pass, { view: submitted.view, batches });
         pass.end();
         encoder.copyTextureToBuffer(

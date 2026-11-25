@@ -43,20 +43,21 @@ detection does not save a user choice; the language menu does.
 `pnpm test` and `pnpm test:view` run both the top-level suites and each package's
 `src/*.test.mjs` and `src/__tests__` owner regressions. Paired Engine and View CI use these same entries.
 
-### One-file startup
+### Open a project
 
-Use the View file shipped only in the SDK. The Engine npm package and game
-npm dependencies do not contain View. Prepared source checkouts use the same entry:
+From the game root, open the URL returned by the Engine authoring installation.
 
 ```sh
-node /path/to/forgeax-sdk/tools/view/start.mjs --project /path/to/game
-node /path/to/forgeax-sdk/tools/view/start.mjs
+forgeax project view --json
+```
+
+For a prepared contributor checkout, start the View file directly.
+
+```sh
 node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
 ```
 
-SDK startup initializes `.forgeax/cli-runtime` through the SDK's existing launcher,
-then resolves its matching Engine and View Host Pack from that runtime. It never
-uses the game's npm Engine to host View. Published outputs are built already.
+The installed Engine supplies its matching View Host Pack and built presentation.
 A source contributor can prepare missing outputs with
 `node tools/view/skills/forgeax-view-start/scripts/start-view.mjs [--project G]`;
 ordinary startup uses the root file with prepared outputs. See the
@@ -67,7 +68,7 @@ The bottom-right footer displays the hosting Engine package version (for example
 `Engine 0.5.2`), including while the backend is preparing or disconnected. View's
 independent package version and the selected game do not determine this label.
 
-The initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
+The source file's initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
 `project`, `url`, Backend `root` and `phase: preparing`. This is an announcement,
 not live status. `--help` starts no services; the file emits JSON without `--json`.
 An incomplete installation reports the missing output before allocating an instance.
@@ -279,35 +280,31 @@ its backend leaves that presentation available for an explicit restart.
 
 ## Source integration and distribution
 
-View retains its own repository and review boundary. Engine selects its exact source
-at `tools/view` and owns the workspace lock, integrated build, SDK inventory and publisher.
-The public npm products are `@forgeax/engine` and `@forgeax/engine-sdk`. The SDK
-embeds View as a private local `@forgeax/view` package, using the same version as
-its Engine dependency. Historical standalone `@forgeax/view` prerelease tags are
-retired; do not use them to pair View with an Engine channel. Install the SDK
-channel to receive its matching View tool. Games install `@forgeax/engine`; they
-do not acquire a View dependency.
+View retains its own repository and review boundary. Engine selects the exact
+source at `tools/view` and owns the workspace lock and integrated build. The
+`@forgeax/engine` authoring archive includes the matching private View tool under
+`authoring/tools/view`. Game manifests declare `@forgeax/engine`.
 
 ```mermaid
 flowchart LR
   Source["View repository"] --> Pin["Engine tools/view gitlink"]
   Pin --> Build["One Engine workspace and lockfile"]
   Plugins["Engine tools/view-plugins source"] --> Build
-  Build --> Tool["SDK cli-runtime: Engine plus private View"]
+  Build --> Tool["Engine authoring archive with private View"]
   Engine["Engine runtime packages"] --> Game["Ordinary game project"]
 ```
 
-The SDK launcher resolves the selected tool's exported `host.pack.json` from its own
-`.forgeax/cli-runtime`. Its install inputs live in `toolchain/cli-runtime`; game template
-inputs remain independent. Resident and embedded entries use the same selected panels
-and frontend plugins. A content-derived revision identifies that build.
+The Engine CLI opens the tool through its exported `host.pack.json`. Earlier SDK
+releases resolve the same contract from their own `.forgeax/cli-runtime`.
+Resident and embedded entries use the same selected panels and frontend plugins.
+A content-derived revision identifies that build.
 
 | Concern | Owner |
 |:--|:--|
 | Generic shell, page/slot/panel services | View |
 | RHI Debug and Profiler presentation | Engine ordinary `tools/view-plugins` source |
 | World, Renderer, capture and model semantics | Existing Engine packages |
-| Paired package versions, source expansion, offline store | Engine SDK pipeline |
+| Paired package versions and authoring archive | Engine packaging pipeline |
 
 Every page declares `context: 'project'` or `context: 'artifact'`. Artifact pages can
 inspect saved captures before opening a project. Scene and asset pages retain project

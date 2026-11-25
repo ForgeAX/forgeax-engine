@@ -8,9 +8,15 @@ type SubsurfaceSelectionError = 'invalid-values' | 'invalid-surface' | 'missing-
 type SubsurfaceProfile = number | SubsurfaceSelectionError;
 export type SubsurfaceDemand = readonly number[] | 0 | SubsurfaceSelectionError;
 
+const ZERO_RADIUS = Object.freeze([0, 0, 0]);
+
+function radiusByte(radius: number): number {
+  return Math.floor(Math.fround(0.5 + Math.fround(255 * Math.fround(Math.fround(radius) / 12))));
+}
+
 function profile(material: MaterialSnapshot | undefined): SubsurfaceProfile {
   if (material === undefined) return 'missing-material';
-  const radius = material.paramSnapshot?.subsurfaceRadius ?? [0, 0, 0];
+  const radius = material.paramSnapshot?.subsurfaceRadius ?? ZERO_RADIUS;
   const weight = material.paramSnapshot?.subsurfaceWeight ?? 0;
   if (
     !Array.isArray(radius) ||
@@ -22,12 +28,9 @@ function profile(material: MaterialSnapshot | undefined): SubsurfaceProfile {
     weight > 1
   )
     return 'invalid-values';
-  const rgb = radius.map((r) =>
-    Math.floor(Math.fround(0.5 + Math.fround(255 * Math.fround(Math.fround(r) / 12)))),
-  );
-  const key = (rgb[0] ?? 0) | ((rgb[1] ?? 0) << 8) | ((rgb[2] ?? 0) << 16);
-  if (Math.floor(Math.fround(0.5 + Math.fround(Math.fround(weight) * 255))) === 0 || key === 0)
-    return 0;
+  if (Math.floor(Math.fround(0.5 + Math.fround(Math.fround(weight) * 255))) === 0) return 0;
+  const key = radiusByte(radius[0]) | (radiusByte(radius[1]) << 8) | (radiusByte(radius[2]) << 16);
+  if (key === 0) return 0;
   if (
     material.deferredPass !== true ||
     material.surfaceModel !== 'standard' ||
@@ -164,6 +167,7 @@ export class SubsurfaceSelection {
 
   /** An admitted profile table is immutable for the lifetime of its frame. */
   get demand(): SubsurfaceDemand {
+    if (this.profiles.size === 0) return 0;
     if (this.profiles.has('missing-material')) return 'missing-material';
     if (this.profiles.has('invalid-values')) return 'invalid-values';
     if (this.profiles.has('invalid-surface')) return 'invalid-surface';

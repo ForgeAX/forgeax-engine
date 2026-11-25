@@ -235,7 +235,9 @@ export async function verifyForwardScreenShadow(
       expect(
         draw.bindings.filter(
           ({ groupIndex, binding, resourceKind }) =>
-            groupIndex === 0 && resourceKind === 'textureView' && [3, 5, 8, 24].includes(binding),
+            groupIndex === 0 &&
+            resourceKind === 'textureView' &&
+            [3, 5, 8, 24, 27, 28].includes(binding),
         ),
       ).toEqual([]);
       expect(
@@ -287,6 +289,17 @@ export async function verifyForwardScreenShadow(
       projectedLights: 1,
     });
     await verifyAoCoexistence(renderer, draw);
+    world.set(sun, DirectionalLight, { contactShadowLength: 0.3 }).unwrap();
+    const combinedRaw = await draw(false, 'contact-ao-raw', true);
+    const combined = await draw(true, 'contact-ao-screen', true);
+    expect(
+      renderer.inspect({ fields: ['directionalShadow'] }).directionalShadow.forwardReceiver,
+    ).toMatchObject({ mode: 'screen', contact: true, ambientOcclusion: true });
+    expect(entryWorks(combined, 'fs_directional_rgba')).toHaveLength(1);
+    expect(renderer.inspect().perFramePassNames).not.toContain('forward-contact-shadow');
+    expect(renderer.inspect().perFramePassNames).not.toContain('ssao-calc');
+    expectDirectionalEdgeParity(combinedRaw, combined, 'contact shadows with AO');
+    world.set(sun, DirectionalLight, { contactShadowLength: 0 }).unwrap();
     await verifyCoverageEdges(world, renderer, draw, camera);
     await verifySkinnedCoverageFallback(world, renderer, draw);
     await verifyCookieOwnership(world, renderer, draw);
@@ -658,19 +671,19 @@ async function verifyAoCoexistence(
   });
   const works = entryWorks(projected, 'fs_forward_sun_shadow');
   expect(works.length).toBeGreaterThan(0);
-  const alphaPass = entryWorks(projected, 'fs_ao_alpha');
-  expect(alphaPass).toHaveLength(1);
-  expect(alphaPass[0]?.pipeline.descriptor).toMatchObject({
-    desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: 8 }] } },
-  });
-  const alphaTarget = alphaPass[0]?.attachments?.colorViewHandleIds[0];
-  expect(alphaTarget).toBeDefined();
+  expect(entryWorks(projected, 'fs_ao_alpha')).toHaveLength(0);
   const directional = entryWorks(projected, 'fs_directional_rgba');
   expect(directional).toHaveLength(1);
   expect(directional[0]?.pipeline.descriptor).toMatchObject({
-    desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: 1 }] } },
+    desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: 9 }] } },
   });
-  expect(directional[0]?.attachments?.colorViewHandleIds[0]).toBe(alphaTarget);
+  const alphaTarget = directional[0]?.attachments?.colorViewHandleIds[0];
+  expect(alphaTarget).toBeDefined();
+  expect(renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
+    status: 'active',
+    output: { channel: 'a' },
+  });
+  expect(renderer.inspect().perFramePassNames).not.toContain('ssao-calc');
   for (const work of works) {
     expect(
       work.bindings.some(({ groupIndex, binding }) => groupIndex === 0 && binding === 25),
@@ -913,17 +926,24 @@ async function verifyLocalOnlyChannels(
   world.set(extraSpot, SpotLight, { castShadow: true }).unwrap();
   world.despawn(skylight).unwrap();
 
-  const alphaPass = entryWorks(screenAo, 'fs_ao_alpha');
-  expect(alphaPass).toHaveLength(1);
-  expect(alphaPass[0]?.pipeline.descriptor).toMatchObject({
-    desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: 8 }] } },
+  expect(entryWorks(screenAo, 'fs_ao_alpha')).toHaveLength(0);
+  const directionAndAo = entryWorks(screenAo, 'fs_directional_rgba');
+  expect(directionAndAo).toHaveLength(1);
+  expect(directionAndAo[0]?.pipeline.descriptor).toMatchObject({
+    desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: 9 }] } },
   });
-  const maskTarget = alphaPass[0]?.attachments?.colorViewHandleIds[0];
+  const maskTarget = directionAndAo[0]?.attachments?.colorViewHandleIds[0];
   expect(maskTarget).toBeDefined();
   const projectedEntry = 'fs_forward_sun_shadow';
-  const pipelineIds = (frame: ShadowFrame) =>
-    new Set(entryWorks(frame, projectedEntry).map(({ pipeline }) => pipeline.pipelineHandleId));
-  expect(pipelineIds(screenAo)).toEqual(pipelineIds(screenAoOff));
+  const receiverPrograms = (frame: ShadowFrame) =>
+    new Set(
+      entryWorks(frame, projectedEntry).map(({ pipeline }) =>
+        JSON.stringify(
+          pipeline.shaders.map(({ stage, entryPoint, source }) => ({ stage, entryPoint, source })),
+        ),
+      ),
+    );
+  expect(receiverPrograms(screenAo)).toEqual(receiverPrograms(screenAoOff));
   const receivers = entryWorks(screenAo, projectedEntry);
   expect(receivers.length).toBeGreaterThan(0);
   for (const { bindings } of receivers) {
@@ -944,9 +964,6 @@ async function verifyLocalOnlyChannels(
   expect(local).toHaveLength(4);
   expect(entryWorks(screen, 'fs_directional_rgba')).toHaveLength(0);
   const shadowWriteMask = (work: (typeof local)[number]) => {
-    expect(work.bindings.some(({ groupIndex, binding }) => groupIndex === 0 && binding === 3)).toBe(
-      false,
-    );
     expect(work.pipeline.descriptor).toMatchObject({
       desc: { fragment: { targets: [{ format: 'rgba8unorm', writeMask: expect.any(Number) }] } },
     });
@@ -1138,6 +1155,9 @@ function verifyDepthOnlyProjection(frame: ShadowFrame) {
         pass.colorAttachmentViewHandleIds.length === 0,
     ),
   ).toBe(true);
+  for (const work of entryWorks(frame, 'vs_position_only')) {
+    expect(work.bindings.filter(({ resourceKind }) => resourceKind === 'textureView')).toEqual([]);
+  }
   const projection = frame.model.works.filter((work) => {
     const descriptor = work.pipeline.descriptor as { desc?: { label?: string } } | undefined;
     const label = descriptor?.desc?.label;

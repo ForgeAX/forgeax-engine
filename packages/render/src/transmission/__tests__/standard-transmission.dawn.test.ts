@@ -62,6 +62,8 @@ interface TransmissionCase {
   readonly ior: number;
   readonly thickness: number;
   readonly roughness: number;
+  readonly roughRefraction?: boolean;
+  readonly forceCopy?: boolean;
   readonly attenuationColor: readonly [number, number, number];
   readonly attenuationDistance?: number;
   readonly transmissionTexture?: number;
@@ -220,6 +222,7 @@ async function createTransmissionHost(testCase: TransmissionCase) {
     device,
     opaqueMaterialBindings,
     renderPath: undefined as TransmissionCase['renderPath'],
+    roughRefraction: undefined as boolean | undefined,
     get configuredDevice() {
       return configuredDevice;
     },
@@ -253,20 +256,47 @@ afterEach(async () => {
   }
 });
 
-function selectTransmissionProfile(
-  host: TransmissionHost,
-  renderPath: TransmissionCase['renderPath'],
-): void {
-  const next = renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
+function selectTransmissionProfile(host: TransmissionHost, testCase: TransmissionCase): void {
+  const next = testCase.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
   // The first sample explicitly installs its profile. Only later samples with
   // the same accepted path retain this test's ready host and graph epoch.
-  if (host.renderPath === next) return;
+  const roughRefraction = testCase.roughRefraction ?? testCase.alternateRoughBacks === true;
+  if (host.renderPath === next && host.roughRefraction === roughRefraction) return;
   const selected = host.renderer.setProfile({
     ...DEFAULT_STANDARD_PROFILE,
     renderPath: next,
+    roughRefraction,
   });
   if (!selected.ok) throw selected.error;
   host.renderPath = next;
+  host.roughRefraction = roughRefraction;
+}
+
+function assertChangingTransmissionPasses(
+  names: readonly string[],
+  frame: number,
+  phase: number,
+  doubleSided: boolean,
+): void {
+  expect(names.includes('transmission-backs'), `submitted frame ${frame}: ${names.join(',')}`).toBe(
+    doubleSided,
+  );
+  expect(names.includes('transmission-backdrop-mip')).toBe(doubleSided);
+  expect(names.includes('transmission-forward')).toBe(phase !== 2);
+  const merging = names.includes('transmission-forward-merge');
+  const copying = names.includes('transmission-backdrop-copy');
+  expect(copying || merging).toBe(phase !== 2);
+  if (phase === 1 && frame > 2) expect(merging).toBe(true);
+  if (doubleSided) expect(copying).toBe(true);
+  if (doubleSided) {
+    expect(names.indexOf('transmission-backs')).toBeLessThan(
+      names.indexOf('transmission-backdrop-copy'),
+    );
+    expect(names).toContain('transmission-backdrop-mip-copy-5');
+    expect(names.indexOf('transmission-backdrop-mip-copy-5')).toBeLessThan(
+      names.indexOf('transmission-forward'),
+    );
+  }
 }
 
 async function renderCase(
@@ -289,7 +319,7 @@ async function renderCase(
   const fixture = await pending;
   const firstOpaqueBinding = fixture.opaqueMaterialBindings.length;
   const { renderer, device } = fixture;
-  selectTransmissionProfile(fixture, testCase.renderPath);
+  selectTransmissionProfile(fixture, testCase);
   let lease: ReturnType<typeof renderer.attach> | undefined;
   const errors: { readonly code: string; readonly detail?: unknown }[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -349,6 +379,16 @@ async function renderCase(
           }
         : { queue: 2000 }),
       ...(testCase.surfaceQuat === undefined ? {} : { renderState: { cullMode: 'none' as const } }),
+      ...(testCase.forceCopy
+        ? {
+            renderState: {
+              blend: {
+                color: { srcFactor: 'one' as const, dstFactor: 'zero' as const },
+                alpha: { srcFactor: 'one' as const, dstFactor: 'zero' as const },
+              },
+            },
+          }
+        : {}),
       ...(transmissionHandle === undefined
         ? {}
         : { transmissionTexture: { texture: transmissionHandle as never } }),
@@ -517,22 +557,7 @@ async function renderCase(
       if (roughBacks !== undefined) {
         const state = renderer.inspect();
         const names = state.perFramePassNames;
-        expect(
-          names.includes('transmission-backs'),
-          `submitted frame ${frame}: ${names.join(',')}`,
-        ).toBe(doubleSided);
-        expect(names.includes('transmission-backdrop-mip')).toBe(doubleSided);
-        expect(names.includes('transmission-forward')).toBe(phase !== 2);
-        expect(names.includes('transmission-backdrop-copy')).toBe(phase !== 2);
-        if (doubleSided) {
-          expect(names.indexOf('transmission-backs')).toBeLessThan(
-            names.indexOf('transmission-backdrop-copy'),
-          );
-          expect(names).toContain('transmission-backdrop-mip-copy-5');
-          expect(names.indexOf('transmission-backdrop-mip-copy-5')).toBeLessThan(
-            names.indexOf('transmission-forward'),
-          );
-        }
+        assertChangingTransmissionPasses(names, frame, phase, doubleSided);
         const compiles = state.featureGraph?.rebuildAttempts;
         const allocations = state.viewTargetAllocation?.successfulAllocationCount;
         expect(compiles).toBeDefined();
@@ -552,7 +577,7 @@ async function renderCase(
             `frame ${frame} phase ${phase} passes ${names.join(',')} indirect draws ${state.renderScene.gpuDriven.indirectDrawCount}`,
           ).toBe(gpu);
           expect(names.includes('gpu-driven.occlusion-cull')).toBe(late);
-          expect(names.includes('occlusion-depth-pyramid-seed')).toBe(late);
+          expect(names.includes('occlusion-hzb-seed')).toBe(late);
           expect(state.renderScene.gpuDriven.encodedIndirectDraws > 0).toBe(gpu);
           if (gpu) expect(state.viewTargetAllocation?.liveBytes).toBe(late ? pyramidBytes : 0);
           else expect(state.viewTargetAllocation?.liveBytes).toBeGreaterThan(0);
@@ -681,6 +706,33 @@ describe('Standard transmission Dawn ROI', () => {
     120_000,
   );
 
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('composites current-frame stock %s transmission without copying scene color', async (renderPath) => {
+    const options = {
+      transmission: 1,
+      ior: 1.5,
+      thickness: 0.5,
+      roughness: 0.3,
+      attenuationColor: [0.7, 0.8, 0.9] as const,
+      attenuationDistance: 2,
+      renderPath,
+    };
+    const direct = await renderCase({ ...options, name: 'current-scene' }, 3);
+    const copied = await renderCase({ ...options, name: 'identity-blend', forceCopy: true });
+    expect(direct.errors).toEqual([]);
+    expect(copied.errors).toEqual([]);
+    expect(direct.passNames).toContain('transmission-forward-merge');
+    expect(direct.passNames).not.toContain('transmission-backdrop-copy');
+    expect(direct.passNames).not.toContain('transmission-backdrop-mip');
+    expect(copied.passNames).toContain('transmission-backdrop-copy');
+    for (let channel = 0; channel < 4; channel++)
+      expect(
+        Math.abs((direct.pixel[channel] as number) - (copied.pixel[channel] as number)),
+      ).toBeLessThanOrEqual(1);
+  }, 120_000);
+
   it('uses linear HDR observation and responds to F0, Beer, texture, TIR, and fallback inputs', async () => {
     const baseline = await renderCase({
       name: 'baseline',
@@ -782,11 +834,13 @@ describe('Standard transmission Dawn ROI', () => {
     // Each fixture temporarily owns navigator.gpu.requestAdapter. Run it to
     // completion before installing the next hook or allocating its device.
     const cases = [];
-    for (const testCase of selectedCases) cases.push(await renderCase(testCase));
+    for (const testCase of selectedCases)
+      cases.push(await renderCase({ ...testCase, roughRefraction: true }));
     for (const result of cases) expect(result.pixel.every(Number.isFinite)).toBe(true);
     expect(cases[1]?.pixel).not.toEqual(cases[0]?.pixel);
     if (!LIGHTWEIGHT_DAWN) expect(cases[2]?.pixel).not.toEqual(cases[0]?.pixel);
     const rough = LIGHTWEIGHT_DAWN ? cases[2] : cases[3];
+    expect(rough?.passNames).toContain('transmission-backdrop-mip');
     expect(luma(rough?.pixel ?? [0, 0, 0, 0])).toBeLessThanOrEqual(
       luma(cases[0]?.pixel ?? [0, 0, 0, 0]) + 2,
     );
@@ -838,11 +892,17 @@ describe('Standard transmission Dawn ROI', () => {
     for (const renderPath of ['forward', 'deferred'] as const) {
       const output = await renderCase({ ...options, name: renderPath, overlap: true, renderPath });
       const prefix = output.passNames.indexOf('transparent-before-transmission');
-      const backdrop = output.passNames.indexOf('transmission-backdrop-copy');
+      const copy = output.passNames.indexOf('transmission-backdrop-copy');
       const suffix = output.passNames.indexOf('transmission-forward');
+      const merge = output.passNames.indexOf('transmission-forward-merge');
       expect(prefix).toBeGreaterThanOrEqual(0);
-      expect(backdrop).toBeGreaterThan(prefix);
-      expect(suffix).toBeGreaterThan(backdrop);
+      expect(suffix).toBeGreaterThan(prefix);
+      if (copy >= 0) {
+        expect(copy).toBeGreaterThan(prefix);
+        expect(suffix).toBeGreaterThan(copy);
+      } else {
+        expect(merge).toBeGreaterThan(suffix);
+      }
       expect(output.errors).toEqual([]);
       expect(output.pixel.every(Number.isFinite)).toBe(true);
       // The green BLEND surface must survive the transmitting surface's composition.

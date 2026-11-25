@@ -77,21 +77,49 @@ export function instanceCollectionCacheKey(instance: {
   return `legacy-instance:${instance.cacheKey}`;
 }
 
-/**
- * Cross-frame cache entry for a material bind group whose source material and
- * all resolved GPU resources are stable. Binding-source handles survive
- * Worker cloning and numeric material edits; the builder only stores entries
- * after all explicit resource handles resolve to resident GPU objects.
- */
+export type MaterialBindingSources = Pick<
+  MaterialSnapshot,
+  | 'standardTextureMask'
+  | 'emissiveTexture'
+  | 'occlusionTexture'
+  | 'textureHandles'
+  | 'samplerHandles'
+> & {
+  readonly paramSnapshot?:
+    | { readonly transmission?: unknown; readonly displacementMode?: unknown }
+    | undefined;
+};
+
+/** Source and actual sampled view of one installed Canvas field. */
+export interface CanvasFieldBinding {
+  readonly local: import('../textures/canvas-texture').CanvasSourceSlot | undefined;
+  readonly field: string;
+  readonly owner: string;
+  readonly id: number;
+  readonly publicationKey: string;
+  readonly view: TextureView;
+}
+
+/** Issued physical bindings and the source facts that keep them current. */
 export interface MaterialBgAssemblyCacheEntry {
+  /** Empty lit material layouts bind their tables without a dynamic uniform offset. */
+  readonly dynamicOffsetCount?: 0 | 1;
+  readonly inputs?: MaterialBindingSources;
+  /** Ordinary draws resolve these live pixels. Prepared recordings require a pure witness. */
+  readonly canvas?: {
+    readonly fields: readonly CanvasFieldBinding[];
+    readonly schema: MaterialSnapshot['materialParamSchema'];
+    readonly defaultSampler: import('@forgeax/engine-rhi').Sampler;
+  };
+
   readonly graphViews?: GraphBindingViews;
   readonly descriptor: BindGroupDescriptor & { readonly entries: readonly BindGroupEntry[] };
   /** Accepted source and physical binding currency, without a frame or old table binding. */
   readonly bindingsCurrent: () => boolean;
   readonly skylightBindingStart: number;
   /** Derived once on first observed hit; cold miss receipts stay detached. */
-  iblMaterial?: IblBindingInspection['material'];
-  readonly uniformResources: object;
+  iblMaterial?: IblBindingInspection['material'] | null;
+  readonly uniformResources: object | undefined;
   readonly material: MaterialSnapshot;
   /** Exact asset versions and resident views used by this shared binding. */
   readonly materialResources: readonly {
@@ -100,6 +128,8 @@ export interface MaterialBgAssemblyCacheEntry {
     readonly revision: number | undefined;
     readonly view: TextureView | undefined;
   }[];
+  /** A closed field roster, or the identity of an open-ended resource provider. */
+  readonly preparedTextureDomain?: object | undefined;
   readonly preparedTextures: readonly {
     readonly parameter: string;
     readonly textureView: TextureView | undefined;
@@ -107,7 +137,7 @@ export interface MaterialBgAssemblyCacheEntry {
   }[];
   readonly materialBgl: BindGroupLayout;
   /** Buffer identity changes when the shared material capacity grows. */
-  readonly materialBuffer: Buffer;
+  readonly materialBuffer: Buffer | undefined;
   readonly sceneMaterialBuffer?: Buffer;
   readonly skylightResources: SkylightBindGroupResources;
   /**
@@ -182,17 +212,7 @@ export interface CurrentGraphTarget {
 const textureIdentities = new WeakMap<object, number>();
 let nextTextureIdentity = 1;
 
-const opaqueResourceIdentities = new WeakMap<object, number>();
-let nextOpaqueResourceIdentity = 1;
-
-/** Stable detached identity for a renderer-owned opaque resource handle. */
-export function getOpaqueResourceIdentity(resource: object): number {
-  const existing = opaqueResourceIdentities.get(resource);
-  if (existing !== undefined) return existing;
-  const identity = nextOpaqueResourceIdentity++;
-  opaqueResourceIdentities.set(resource, identity);
-  return identity;
-}
+export { getOpaqueResourceIdentity } from '../opaque-resource-identity';
 
 /**
  * Project an opaque RHI texture handle to a stable diagnostic identity.
@@ -485,6 +505,7 @@ export interface InstalledFrameGraph {
   readonly requiresShadowPipelinePreparation?: (
     frame: import('../render-pipeline').RenderPipelineFrame,
     identity: import('../gpu-driven/shadow-views').ShadowViewIdentity,
+    includeStaticLayer?: boolean,
   ) => boolean;
   /** Private graph-owned real GPU-driven PSO completion gate. */
   readonly prepareGpuDrivenPipelines?: (
@@ -563,16 +584,7 @@ export interface RenderFrameState {
   /** This frame's Motion Blur receipt, staged for RenderCommit; `receipt: undefined` clears the last one. */
   stagedMotionBlurExecution?: { readonly receipt: MotionBlurExecutionReceipt | undefined };
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
-  iblBindingInspection?: IblBindingInspection;
-  /** Last issued draw of this view attempt. Settlement releases all physical handles. */
-  iblDrawBinding?: {
-    receipt: IblBindingInspection;
-    pipeline: object;
-    group: object;
-    layout: unknown;
-    shader: MaterialSnapshot['materialShaderId'];
-    schema: MaterialSnapshot['materialParamSchema'];
-  };
+  iblBindings?: import('./ibl-binding-observation').IblBindingObservation;
   /** Physical AO region requested inside the no-storage Cluster texture. */
   standardClusterTextureExtent?:
     | import('../pipeline/standard-lighting/texture').StandardClusterTextureExtent
@@ -885,15 +897,7 @@ export interface RenderFrameState {
   readonly instancesBgPerEntity: Map<number, WeakMap<object, unknown>>;
   /** Identity-keyed instances BGs shared across entities using the same buffer. */
   readonly instancesBgShared: WeakMap<object, unknown>;
-  /**
-   * feat-20260622-handle-to-id-allocator-elimination M1 / w2: cross-entity
-   * shared material bind group cache (OQ-1 option A). Outer key is the
-   * material shaderId string; inner chain is a WeakMap keyed by the same
-   * handle objects used in per-entity chains. Reuses the generic
-   * `getOrCreatePerEntity` helper with outerKey string|number (D-1).
-   */
-  readonly materialBgShared: Map<string, WeakMap<object, unknown>>;
-  /** Cross-frame fast path for fully-resident, immutable material snapshots. */
+  /** Physical groups and accepted resource bindings for this renderer. */
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
   /** Opaque shadow fallback bindings follow physical resources across scene replacement. */
   shadowMaterialBindGroups: WeakMap<object, unknown>;

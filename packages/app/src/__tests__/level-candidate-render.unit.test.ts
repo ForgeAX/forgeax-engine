@@ -13,6 +13,7 @@ import {
   type PersistentRenderCandidateRequest,
   SceneComposition,
 } from '../../../render/src/scene/scene-composition';
+import { RenderGraphError } from '../../../render-graph';
 import { AppLevelOwner } from '../levels/app-level-owner';
 import { createLevelCandidate } from '../levels/candidate';
 import type { CandidateRenderHost } from '../levels/candidate-render-source';
@@ -105,7 +106,7 @@ it('retries actual Source retirement after an ordinary pending composition settl
   }
 });
 
-it('prepares a queued Scene while Render waits without starting another native preparation', async () => {
+it('keeps a queued Scene moving while an obsolete native graph retires and the same Source retries', async () => {
   const assets = new AssetRegistry();
   const world = new World({ assets });
   for (const component of LEVEL_STREAMING_SOURCE_COMPONENTS)
@@ -115,6 +116,8 @@ it('prepares a queued Scene while Render waits without starting another native p
     .unwrap();
   const native = Promise.withResolvers<void>();
   const renderInspections = vi.fn();
+  const staleGraphRetired = vi.fn();
+  let firstGraph = true;
   const begun = vi.fn<CandidateRenderHost['beginStagedGroup']>((observation) => {
     let retired = false;
     const status = () => ({
@@ -140,13 +143,24 @@ it('prepares a queued Scene while Render waits without starting another native p
         },
       },
       prepareViews(current) {
+        const obsolete = firstGraph;
+        firstGraph = false;
         const work = (function* () {
           yield native.promise;
+          if (obsolete)
+            throw new RenderGraphError({
+              code: 'graph-preparation-invalid',
+              expected: 'the original native import owner after the yield',
+              hint: 'prepare the current View',
+            });
         })();
         return Object.assign(work, {
-          isCurrent: current,
-          isObsolete: () => false,
-          retire: async () => ok(undefined),
+          isCurrent: () => !obsolete && current(),
+          isObsolete: () => obsolete && current(),
+          retire: async () => {
+            if (obsolete) staleGraphRetired();
+            return ok(undefined);
+          },
         });
       },
     });
@@ -172,6 +186,13 @@ it('prepares a queued Scene while Render waits without starting another native p
     world.update(1 / 60).unwrap();
     expect(world.getResource(FixedTime).tick).toBeGreaterThan(fixedBefore);
     expect(renderInspections).not.toHaveBeenCalled();
+    native.resolve();
+    for (let turn = 0; turn < 64 && first.inspect().phase !== 'prepared'; turn++) {
+      await first.inspect().pending;
+      owner.step();
+    }
+    expect(first.inspect().phase).toBe('prepared');
+    expect(staleGraphRetired).toHaveBeenCalledOnce();
   } finally {
     native.resolve();
     await owner.closeStopped();

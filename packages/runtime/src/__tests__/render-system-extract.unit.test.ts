@@ -364,6 +364,47 @@ describe('render-system-extract material color boundary', () => {
 });
 
 describe('render-system-extract spot direction owner', () => {
+  it('reads changing spot rows and retains the submitted color and authored shadow matrix', () => {
+    const { world, assets } = makeScene();
+    const matrix = Array.from({ length: 16 }, (_, i) => i + 1);
+    world.spawn({ component: SpotLight, data: { direction: [0, 1, 0] } }).unwrap();
+    const entity = world
+      .spawn({
+        component: SpotLight,
+        data: {
+          color: [1, 0.25, 0.5],
+          intensity: 2,
+          direction: [3, 4, 0],
+          shadowProjection: 1,
+          shadowViewProjection: matrix,
+        },
+      })
+      .unwrap();
+    const read = () =>
+      extractFrame(world, prepareExtractContext(world, { assets })).lights.spot.find(
+        (light) => light.entity === entity,
+      );
+    const initial = read();
+    expect(Array.from(initial?.color ?? [])).toEqual([2, 0.5, 1]);
+    expect(Array.from(initial?.lightViewProj ?? [])).toEqual(matrix);
+    world
+      .set(entity, SpotLight, {
+        color: [0, 1, 0],
+        intensity: 3,
+        direction: [0, 0, -2],
+        shadowProjection: 0,
+        castShadow: true,
+      })
+      .unwrap();
+    const next = read();
+    expect(Array.from(next?.color ?? [])).toEqual([0, 3, 0]);
+    expect(Array.from(next?.direction ?? [])).toEqual([0, 0, -1]);
+    expect(next?.lightViewProj).toHaveLength(16);
+    expect(Array.from(next?.lightViewProj ?? [])).not.toEqual(matrix);
+    expect(Array.from(initial?.lightViewProj ?? [])).toEqual(matrix);
+    expect(Array.from(initial?.color ?? [])).toEqual([2, 0.5, 1]);
+  });
+
   it('normalizes spot snapshots in extract through one spot query', () => {
     const { world, assets } = makeScene();
     for (const direction of [

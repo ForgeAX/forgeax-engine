@@ -10,6 +10,11 @@ import type {
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import { bindMeshVertexStreams } from '../device/mesh-vertex-streams';
+import {
+  bindRasterOffset,
+  EMPTY_GEOMETRY_OFFSETS,
+  sameGeometryOffsets,
+} from '../record/geometry-bind-offsets';
 
 export interface PreparedRasterWindowPreparation {
   isCurrent(): boolean;
@@ -36,7 +41,7 @@ export interface PreparedRasterBindings {
   readonly view: BindGroup;
   readonly viewOffset: number;
   readonly material: BindGroup;
-  readonly materialOffset: number;
+  readonly materialOffset: number | undefined;
   readonly mesh: BindGroup;
   readonly meshOffsets: readonly number[];
   readonly vertex: Buffer;
@@ -89,12 +94,7 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
     a.indexed !== b.indexed
   )
     return false;
-  if (
-    a.meshOffsets !== b.meshOffsets &&
-    (a.meshOffsets.length !== b.meshOffsets.length ||
-      a.meshOffsets.some((value, index) => value !== b.meshOffsets[index]))
-  )
-    return false;
+  if (!sameGeometryOffsets(a.meshOffsets, b.meshOffsets)) return false;
   if (a.windows === b.windows) return true;
   if (a.windows.length !== b.windows.length) return false;
   for (let index = 0; index < a.windows.length; index++)
@@ -111,15 +111,15 @@ export function recordPreparedRasters(
   assertCurrent(current);
   let previous: PreparedRasterBindings | undefined;
   let count = 0;
+  let words: Uint32Array | undefined;
   for (const b of batches) {
-    count += recordPreparedRasterAfter(commands, b, previous, current);
+    if (words === undefined && (b.viewOffset !== 0 || (b.materialOffset ?? 0) !== 0))
+      words = new Uint32Array(1);
+    count += recordPreparedRasterAfter(commands, b, previous, current, words);
     previous = b;
   }
   return count;
 }
-
-const ZERO_VIEW_OFFSETS = Object.freeze([0, 0]);
-const ZERO_MATERIAL_OFFSET = Object.freeze([0]);
 
 /** Encode a single row while preserving physical state across consecutive draws. */
 export function recordPreparedRasterAfter(
@@ -127,6 +127,7 @@ export function recordPreparedRasterAfter(
   b: PreparedRasterBindings,
   previous?: PreparedRasterBindings,
   current?: () => boolean,
+  words?: Uint32Array,
 ): number {
   let count = 0;
   const pipelineChanged = previous?.pipeline !== b.pipeline;
@@ -136,7 +137,7 @@ export function recordPreparedRasterAfter(
     count++;
   }
   if (pipelineChanged || previous?.view !== b.view || previous.viewOffset !== b.viewOffset) {
-    commands.setBindGroup(0, b.view, b.viewOffset === 0 ? ZERO_VIEW_OFFSETS : [b.viewOffset, 0]);
+    bindRasterOffset(commands, 0, b.view, b.viewOffset, words);
     assertCurrent(current);
     count++;
   }
@@ -145,19 +146,14 @@ export function recordPreparedRasterAfter(
     previous?.material !== b.material ||
     previous.materialOffset !== b.materialOffset
   ) {
-    commands.setBindGroup(
-      1,
-      b.material,
-      b.materialOffset === 0 ? ZERO_MATERIAL_OFFSET : [b.materialOffset],
-    );
+    bindRasterOffset(commands, 1, b.material, b.materialOffset, words);
     assertCurrent(current);
     count++;
   }
   if (
     pipelineChanged ||
     previous?.mesh !== b.mesh ||
-    previous.meshOffsets.length !== b.meshOffsets.length ||
-    previous.meshOffsets.some((value, index) => value !== b.meshOffsets[index])
+    !sameGeometryOffsets(previous.meshOffsets, b.meshOffsets)
   ) {
     commands.setBindGroup(2, b.mesh, b.meshOffsets);
     assertCurrent(current);
@@ -276,7 +272,10 @@ type RasterRecordingEntry = Pick<PreparedRasterEntry, 'pass' | 'device'> &
 function snapshotBindings(observed: PreparedRasterBindings): PreparedRasterBindings {
   return {
     ...observed,
-    meshOffsets: Object.freeze([...observed.meshOffsets]),
+    meshOffsets:
+      observed.meshOffsets.length === 0
+        ? EMPTY_GEOMETRY_OFFSETS
+        : Object.freeze([...observed.meshOffsets]),
     windows: prepareRasterWindows(observed.windows),
   };
 }

@@ -700,6 +700,7 @@ export class Baker {
     sampleIndex: number,
     out: Float64Array,
     averaged: boolean,
+    deferOcclusion = false,
   ): void {
     const group = this.groups[g] as GroupBake;
     group.samples++;
@@ -730,6 +731,7 @@ export class Baker {
     let ao: number | undefined;
     let height: number | undefined;
     const occlusion = () => {
+      if (deferOcclusion) return 1;
       ao ??= this.occlusion(q, nd, sampleIndex, group);
       return ao;
     };
@@ -811,16 +813,28 @@ export class Baker {
     }
   }
 
+  occlusionInputs() {
+    return { offset: this.eps, rays: this.rays };
+  }
+
   private slotOf(tri: number): ResolvedSlot {
     return this.slotSurface[this.detail.triangleSlot[tri] as number] as ResolvedSlot;
   }
 
-  /** A ray set turned about the normal per sample, in the frame of n. */
-  private turned(rays: Float64Array, k: number, n: Tuple3, sampleIndex: number): Tuple3 {
+  /** One tangent frame and rotation shared by all rays of a sample. */
+  private rayFrame(n: Tuple3, sampleIndex: number) {
     const [e1, e2] = basis(n);
     const turn = 2 * Math.PI * hash(sampleIndex, 7);
-    const c = cos(turn);
-    const s = sin(turn);
+    return { e1, e2, c: cos(turn), s: sin(turn) };
+  }
+
+  private turned(
+    rays: Float64Array,
+    k: number,
+    n: Tuple3,
+    frame: ReturnType<Baker['rayFrame']>,
+  ): Tuple3 {
+    const { e1, e2, c, s } = frame;
     const x0 = rays[k * 3] as number;
     const y0 = rays[k * 3 + 1] as number;
     const z = rays[k * 3 + 2] as number;
@@ -845,8 +859,9 @@ export class Baker {
     const linear = this.params.ao.attenuation === 'linear';
     const floor = this.params.ao.floor;
     let occluded = 0;
+    const frame = this.rayFrame(n, sampleIndex);
     for (let k = 0; k < count; k++) {
-      const dir = this.turned(this.rays, k, n, sampleIndex);
+      const dir = this.turned(this.rays, k, n, frame);
       let t = Infinity;
       if (floor !== undefined && dir[1] < 0) {
         const f = (floor - start[1]) / dir[1];
@@ -880,9 +895,10 @@ export class Baker {
     ];
     const count = this.params.thickness.rays;
     const reach = group.thicknessDistance;
+    const frame = this.rayFrame(back, sampleIndex);
     let sum = 0;
     for (let k = 0; k < count; k++) {
-      const hit = group.bvh.raycast(start, this.turned(this.inward, k, back, sampleIndex), reach);
+      const hit = group.bvh.raycast(start, this.turned(this.inward, k, back, frame), reach);
       sum += hit === undefined ? 1 : hit.t / reach;
     }
     return sum / count;
@@ -1048,9 +1064,11 @@ function background(kind: BakeMapKind, params: BakeJobParams): readonly number[]
  * percentile, height by the height range, positions by their bounds. Returns the
  * curvature range.
  */
+type TextureChannels = Float64Array | Float32Array;
+
 function encodeMaps(
   maps: readonly BakeMapKind[],
-  values: readonly Float64Array[],
+  values: readonly TextureChannels[],
   weight: Float64Array,
   encoding: Encoding,
 ): number {
@@ -1071,11 +1089,12 @@ function encodeMaps(
   const { min, max } = encoding.positionBounds;
   const { edgeWear, cavity } = encoding.params;
   for (const [k, kind] of maps.entries()) {
-    const v = values[k] as Float64Array;
+    const v = values[k] as TextureChannels;
+    const empty = background(kind, encoding.params);
     for (let i = 0; i < weight.length; i++) {
       const o = i * 4;
       if (!((weight[i] as number) > 0)) {
-        v.set(background(kind, encoding.params), o);
+        v.set(empty, o);
         continue;
       }
       switch (kind) {
@@ -1342,7 +1361,7 @@ const MIXED = -2;
  */
 function dilate(
   kinds: readonly BakeMapKind[],
-  values: Float64Array[],
+  values: TextureChannels[],
   covered: Uint8Array,
   owner: Int32Array,
   grid: Grid,
@@ -1708,8 +1727,9 @@ export function diagonalOf(...positions: ArrayLike<number>[]): number {
   return Math.sqrt(sum);
 }
 
-function encodeFloats(values: Float64Array): Uint8Array {
-  return new Uint8Array(Float32Array.from(values).buffer);
+function encodeFloats(values: TextureChannels): Uint8Array {
+  const data = values instanceof Float32Array ? values : Float32Array.from(values);
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
 /**
@@ -2250,6 +2270,7 @@ export function bakeRows(
   prepared: PreparedBake,
   rows: readonly number[],
   work: WorkMeter,
+  occlusionGroups?: Int32Array,
 ): Result<BakeRows, ModelingError> {
   const { params, baker, groups, triangles, directions, hard } = prepared;
   const { surface: b, islands, tiles, bins } = prepared.atlas as NonNullable<PreparedBake['atlas']>;
@@ -2401,7 +2422,9 @@ export function bakeRows(
                 texel * 16 + s,
                 sample,
                 at.averaged,
+                occlusionGroups !== undefined,
               );
+              if (occlusionGroups !== undefined) occlusionGroups[i] = at.g;
               const opaque = opacity < 0 || baker.lastHit;
               if (opacity >= 0 && opaque) hits[i] = (hits[i] as number) + 1;
               for (const [k, kind] of maps.entries()) {
@@ -2533,32 +2556,47 @@ function bakeVertices(
  * samples, measure texture-space curvature, filter, encode, fill the gutter and measure
  * mip bleed. Equal rows give equal bytes however they were split across Workers.
  */
-function finishTexture(
-  prepared: PreparedBake,
-  parts: readonly BakeRows[],
-): Result<
-  {
-    values: Float64Array[];
-    covered: number;
-    curvatureRange: number;
-    bleed: number[];
-    stack: BakeStack;
-    handedness: BakeHandedness;
-  },
-  ModelingError
-> {
-  const { params, encoding } = prepared;
+export interface TextureBakeFilterInput {
+  readonly maps: readonly BakeMapKind[];
+  readonly grid: Grid;
+  readonly sums: readonly Float64Array[];
+  readonly weight: Float64Array;
+  readonly island: Int32Array;
+  readonly point: Float64Array;
+  readonly normal: Float64Array;
+  readonly denoise: number;
+  readonly bspline: boolean;
+}
+
+interface TextureBakeResult {
+  readonly values: TextureChannels[];
+  readonly covered: number;
+  readonly curvatureRange: number;
+  readonly bleed: number[];
+  readonly stack: BakeStack;
+  readonly handedness: BakeHandedness;
+}
+
+/** Gather sampled rows once for both texture filtering backends. */
+function assembleTexture(prepared: PreparedBake, parts: readonly BakeRows[]) {
+  const { params } = prepared;
   const maps = params.maps;
   const grid = gridOf(params);
   const texels = grid.w * grid.h;
-  const sums: Float64Array[] = maps.map(() => new Float64Array(texels * 4));
+  const whole =
+    parts.length === 1 &&
+    parts[0]?.weight.length === texels &&
+    parts[0].rows.every((row, i) => row === i)
+      ? parts[0]
+      : undefined;
+  const sums = whole?.sums ?? maps.map(() => new Float64Array(texels * 4));
   const curving = guided(params);
-  const pointSum = new Float64Array(curving ? texels * 3 : 0);
-  const normalSum = new Float64Array(curving ? texels * 3 : 0);
-  const weight = new Float64Array(texels);
-  const island = new Int32Array(texels).fill(NONE);
+  const pointSum = whole?.point ?? new Float64Array(curving ? texels * 3 : 0);
+  const normalSum = whole?.normal ?? new Float64Array(curving ? texels * 3 : 0);
+  const weight = whole?.weight ?? new Float64Array(texels);
+  const island = whole?.island ?? new Int32Array(texels).fill(NONE);
   const opacity = maps.indexOf('opacity');
-  const hits = new Float64Array(opacity >= 0 ? texels : 0);
+  const hits = whole?.hits ?? new Float64Array(opacity >= 0 ? texels : 0);
   const stack = { samples: 0, conflicts: 0, maxAngle: 0, maxHeight: 0, face: -1 };
   const handedness = { samples: 0, face: -1 };
   let firstTexel = -1;
@@ -2579,6 +2617,7 @@ function finishTexture(
       firstTexel = texel as number;
       stack.face = face as number;
     }
+    if (part === whole) continue;
     let offset = 0;
     for (const ty of part.rows) {
       const [y0, y1] = rowSpan(ty, grid.h);
@@ -2612,6 +2651,22 @@ function finishTexture(
       ),
     );
   }
+  return ok({ sums, pointSum, normalSum, weight, island, hits, stack, handedness, covered });
+}
+
+function finishTexture(
+  prepared: PreparedBake,
+  data: Extract<ReturnType<typeof assembleTexture>, { ok: true }>['value'],
+  filtered?: readonly Float32Array[],
+): TextureBakeResult {
+  const { params, encoding } = prepared;
+  const maps = params.maps;
+  const grid = gridOf(params);
+  const texels = grid.w * grid.h;
+  const { sums, pointSum, normalSum, weight, island, hits, stack, handedness, covered } = data;
+  const output: TextureChannels[] = [...sums];
+  const curving = guided(params);
+  const opacity = maps.indexOf('opacity');
   // The opacity map covers its charts; the others only where rays hit, and the gutter
   // fills the transparent texels from the hits around them (C-404 nets).
   const layers: { kinds: number[]; weight: Float64Array }[] =
@@ -2628,78 +2683,117 @@ function finishTexture(
   for (const layer of layers) {
     if (layer.kinds.length === 0) continue;
     const kinds = layer.kinds.map((k) => maps[k] as BakeMapKind);
-    const values = layer.kinds.map((k) => sums[k] as Float64Array);
     const lw = layer.weight;
-    for (let i = 0; i < texels; i++) {
-      const w = lw[i] as number;
-      if (!(w > 0)) continue;
-      for (const [j, v] of values.entries()) {
-        if (kinds[j] === 'materialId') continue;
-        for (let c = 0; c < 4; c++) v[i * 4 + c] = (v[i * 4 + c] as number) / w;
-      }
-    }
-    const point = new Float64Array(pointSum);
-    const normal = new Float64Array(normalSum);
-    for (let i = 0; i < (curving ? texels : 0); i++) {
-      const w = lw[i] as number;
-      if (!(w > 0)) continue;
-      normal.set(
-        normalize([
-          normal[i * 3] as number,
-          normal[i * 3 + 1] as number,
-          normal[i * 3 + 2] as number,
-        ]),
-        i * 3,
-      );
-      for (let c = 0; c < 3; c++) point[i * 3 + c] = (point[i * 3 + c] as number) / w;
-    }
-    if (params.ao.denoise > 0) {
-      for (const [j, kind] of kinds.entries()) {
-        if (kind === 'ao' || kind === 'ormh') {
-          denoise(values[j] as Float64Array, normal, lw, island, grid, params.ao.denoise);
+    const raw = layer.kinds.map((k) => sums[k] as Float64Array);
+    if (filtered === undefined) {
+      for (let i = 0; i < texels; i++) {
+        const w = lw[i] as number;
+        if (!(w > 0)) continue;
+        for (const [j, v] of raw.entries()) {
+          if (kinds[j] === 'materialId') continue;
+          for (let c = 0; c < 4; c++) v[i * 4 + c] = (v[i * 4 + c] as number) / w;
         }
       }
-    }
-    if (curving && kinds.some((kind) => CURVATURE_MAPS.includes(kind))) {
-      const curvature = textureCurvature(point, normal, lw, island, grid, params.wrap);
-      for (const [j, kind] of kinds.entries()) {
-        if (!CURVATURE_MAPS.includes(kind)) continue;
-        const v = values[j] as Float64Array;
-        for (let i = 0; i < texels; i++) v[i * 4] = curvature[i] as number;
+      const point = new Float64Array(pointSum);
+      const normal = new Float64Array(normalSum);
+      for (let i = 0; i < (curving ? texels : 0); i++) {
+        const w = lw[i] as number;
+        if (!(w > 0)) continue;
+        normal.set(
+          normalize([
+            normal[i * 3] as number,
+            normal[i * 3 + 1] as number,
+            normal[i * 3 + 2] as number,
+          ]),
+          i * 3,
+        );
+        for (let c = 0; c < 3; c++) point[i * 3 + c] = (point[i * 3 + c] as number) / w;
       }
+      if (params.ao.denoise > 0) {
+        for (const [j, kind] of kinds.entries()) {
+          if (kind === 'ao' || kind === 'ormh') {
+            denoise(raw[j] as Float64Array, normal, lw, island, grid, params.ao.denoise);
+          }
+        }
+      }
+      if (curving && kinds.some((kind) => CURVATURE_MAPS.includes(kind))) {
+        const curvature = textureCurvature(point, normal, lw, island, grid, params.wrap);
+        for (const [j, kind] of kinds.entries()) {
+          if (!CURVATURE_MAPS.includes(kind)) continue;
+          const v = raw[j] as Float64Array;
+          for (let i = 0; i < texels; i++) v[i * 4] = curvature[i] as number;
+        }
+      }
+      if (params.filter === 'bspline') filterBspline(kinds, raw, lw, island, grid, normal);
     }
-    if (params.filter === 'bspline') filterBspline(kinds, values, lw, island, grid, normal);
+    const values =
+      filtered === undefined ? raw : layer.kinds.map((k) => filtered[k] as Float32Array);
     curvatureRange = Math.max(curvatureRange, encodeMaps(kinds, values, lw, encoding));
     const mask = Uint8Array.from(lw, (w) => (w > 0 ? 1 : 0));
     const layerOwner = Int32Array.from(island, (o, i) => ((lw[i] as number) > 0 ? o : UNOWNED));
     dilate(kinds, values, mask, layerOwner, grid, params.gutter === 'fill' ? fill : params.gutter);
-    for (const [j, k] of layer.kinds.entries()) sums[k] = values[j] as Float64Array;
+    for (const [j, k] of layer.kinds.entries()) output[k] = values[j] as TextureChannels;
     if (layer.weight === weight) owner = layerOwner;
   }
-  return ok({
-    values: sums,
+  return {
+    values: output,
     covered,
     curvatureRange,
     bleed: mipBleed(owner, chart, grid),
     stack,
     handedness,
-  });
+  };
 }
 
 /**
  * The job output of a prepared bake: the texture target from its sampled rows (`parts`,
  * which together hold every tile row once), the vertex target sampled here.
  */
+/** GPU filtering only needs the canonical chart, guide and sampled channels. */
+export async function finishBakeWithFilter(
+  prepared: PreparedBake,
+  parts: readonly BakeRows[],
+  work: WorkMeter,
+  filter: (input: TextureBakeFilterInput) => Promise<readonly Float32Array[] | undefined>,
+): Promise<Result<BackendOutput<'bake'>, ModelingError>> {
+  const { params } = prepared;
+  const grid = gridOf(params);
+  if (
+    params.target !== 'texture' ||
+    params.maps.includes('opacity') ||
+    grid.u ||
+    grid.v ||
+    !guided(params)
+  )
+    return finishBake(prepared, parts, work);
+  const data = assembleTexture(prepared, parts);
+  if (!data.ok) return data;
+  const { sums, weight, island, pointSum: point, normalSum: normal } = data.value;
+  const filtered = await filter({
+    maps: params.maps,
+    grid,
+    sums,
+    weight,
+    island,
+    point,
+    normal,
+    denoise: params.ao.denoise,
+    bspline: params.filter === 'bspline',
+  });
+  return finishBake(prepared, parts, work, finishTexture(prepared, data.value, filtered));
+}
+
 export function finishBake(
   prepared: PreparedBake,
   parts: readonly BakeRows[],
   work: WorkMeter,
+  filtered?: TextureBakeResult,
 ): Result<BackendOutput<'bake'>, ModelingError> {
   const { params, groups, baker, encoding, hard } = prepared;
   const counts = new Float64Array(groups.length * GROUP_COUNTERS);
   let findings: Float64Array[] = [];
   let result: {
-    values: Float64Array[];
+    values: TextureChannels[];
     covered: number;
     curvatureRange: number;
     bleed?: number[];
@@ -2720,9 +2814,12 @@ export function finishBake(
       );
     }
   } else {
-    const texture = finishTexture(prepared, parts);
-    if (!texture.ok) return texture;
-    result = texture.value;
+    if (filtered === undefined) {
+      const texture = assembleTexture(prepared, parts);
+      if (!texture.ok) return texture;
+      filtered = finishTexture(prepared, texture.value);
+    }
+    result = filtered;
     findings = parts.map((part) => part.findings);
     for (const part of parts) {
       for (let i = 0; i < counts.length; i++)

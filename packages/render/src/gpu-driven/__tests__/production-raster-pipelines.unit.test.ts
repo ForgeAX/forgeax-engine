@@ -49,7 +49,7 @@ it.each([
   'pipelineFor',
   'opaquePipelineFor',
   'gbufferPipelineFor',
-  'aoInputPipelineFor',
+  'sceneVelocityPipelineFor',
   'temporalPipelineFor',
   'coveragePipelineFor',
 ] satisfies (keyof ProjectedRasterPipelines)[])('keeps %s encoding synchronous until explicit preparation', (name) => {

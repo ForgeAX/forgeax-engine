@@ -149,6 +149,12 @@ it('transfers only mesh channel and texture region bytes without publishing thei
     const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     const texture = accepted.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
+    expect(accepted.assetChanges.find((change) => change.handle === f.mesh)?.stableKind).toBe(
+      'mesh',
+    );
+    expect(accepted.assetChanges.find((change) => change.handle === f.texture)?.stableKind).toBe(
+      'texture',
+    );
     expect(mesh.vertices.buffer).toBe(beforeMesh.vertices.buffer);
     expect(texture.data.buffer).toBe(beforeTexture.data.buffer);
     expect([...mesh.vertices.subarray(0, 3)]).toEqual([0.125, 0.25, 0.375]);
@@ -292,14 +298,11 @@ it('prepares a future mesh revision without changing the drawn allocation, then 
     assert(next);
     expect(next).not.toBe(old);
     expect(old.vertexBuffer.isDestroyed).toBe(false);
-    for (const change of accepted.assetChanges)
-      store
-        .adoptMeshChange(
-          change,
-          accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap(),
-          accepted.resources,
-        )
-        .unwrap();
+    for (const change of accepted.assetChanges) {
+      store.adoptAssetChange(accepted.resources, change, (error) => {
+        throw error;
+      });
+    }
     expect(store.getMeshGpuHandles(f.mesh, accepted.resources)).toBe(next);
     expect(candidate.isCurrent()).toBe(true);
     await candidate.release(false);

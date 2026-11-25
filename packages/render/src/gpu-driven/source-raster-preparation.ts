@@ -74,7 +74,6 @@ export interface NativeMainGraphPreparation {
   isCurrent(): boolean;
   attachGraph(graph: InstalledFrameGraph): Generator<void, Result<void, RhiError>>;
   pipelineRequests(): Result<Iterable<() => boolean>, RhiError>;
-  prepareWindows(): Generator<void, Result<void, RhiError>>;
   prepareBundles(input: SourceRasterPassBindings): Generator<void, Result<void, RhiError>>;
   shadowRows(): Generator<void, readonly SourceShadowRow[]>;
   holdShadow(row: SourceShadowRow, receipt: () => boolean): void;
@@ -288,13 +287,6 @@ export class SourceRasterPreparations {
         *pipelineRequests() {
           for (const job of jobs.values()) yield* job.sourceRequests(frame.liveRasterBatches);
         },
-        prepareWindows: function* () {
-          return yield* frame.materialRaster.prepareVisibleWindows(
-            frame.filtered.plan,
-            projected.lateRegion === undefined ? [0] : [0, projected.lateRegion.visibleBase],
-            current,
-          );
-        },
         prepareBundles: (input: SourceRasterPassBindings) =>
           prepareSourceRasterBundles(frame, projected, device, passes, input, current, receipts),
       }),
@@ -419,10 +411,6 @@ export function prepareNativeMainGraph(
           ) {
             if (attached === undefined || !isCurrent()) return invalid();
             return yield* attached.prepareBundles(bindings);
-          },
-          prepareWindows: function* () {
-            if (attached === undefined || !isCurrent()) return invalid();
-            return yield* attached.prepareWindows();
           },
         }),
       )

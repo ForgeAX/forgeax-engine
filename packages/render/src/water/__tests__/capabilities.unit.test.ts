@@ -364,7 +364,7 @@ describe('Water graph capability facts', () => {
     const builder = new RenderGraphBuilder();
     for (const name of [
       'water-no-water-color-copy',
-      'water-depth-mask-velocity',
+      'water-depth-prepass',
       'water-slw-inner-color',
       'water-ssr-trace',
       'water-ssr-temporal',

@@ -57,12 +57,6 @@ function sameRows<K, V>(a: ReadonlyMap<K, V>, b: ReadonlyMap<K, V>): boolean {
   return true;
 }
 
-interface LiveWindowFacts {
-  readonly owner: LiveRasterBatch['visibleBindGroups'];
-  readonly early: readonly BindGroup[] | undefined;
-  readonly late: readonly BindGroup[] | undefined;
-}
-
 function sameOwners(expected: ProductionRasterInputs, now: ProductionRasterInputs): boolean {
   return (
     now.rigid === expected.rigid &&
@@ -74,16 +68,10 @@ function sameOwners(expected: ProductionRasterInputs, now: ProductionRasterInput
   );
 }
 
-function sameWindows(windows: ReadonlyMap<LiveRasterBatch, LiveWindowFacts>): boolean {
-  for (const [live, expected] of windows) {
-    const current = live.visibleBindGroups;
-    if (
-      current !== expected.owner ||
-      current?.early !== expected.early ||
-      current?.late !== expected.late
-    )
-      return false;
-  }
+function sameWindows(
+  windows: ReadonlyMap<LiveRasterBatch, LiveRasterBatch['visibleBindGroups']>,
+): boolean {
+  for (const [live, expected] of windows) if (live.visibleBindGroups !== expected) return false;
   return true;
 }
 
@@ -105,14 +93,11 @@ function sameSources(
 }
 
 function captureProjectionFacts(state: ProductionRasterInputs, visible: ReadonlySet<Buffer>) {
-  const liveWindows = new Map<LiveRasterBatch, LiveWindowFacts>();
+  const liveWindows = new Map<LiveRasterBatch, LiveRasterBatch['visibleBindGroups']>();
   const sources = new Map<ShadowBatchProjections, ShadowProjectionSource | undefined>();
   const sourceFacts = new Map<ShadowBatchProjections, ShadowProjectionSource>();
   if (state.main !== undefined && visible.has(state.main.visibleBuffer))
-    for (const live of state.main.value) {
-      const owner = live.visibleBindGroups;
-      liveWindows.set(live, { owner, early: owner?.early, late: owner?.late });
-    }
+    for (const live of state.main.value) liveWindows.set(live, live.visibleBindGroups);
   for (const projection of state.shadows.values()) {
     const source = state.shadowSources.get(projection);
     if (source === undefined || !visible.has(source.visibleBuffer)) continue;
@@ -133,7 +118,7 @@ function projectMainInputs(
   visible: ReadonlySet<Buffer>,
   map: MapWindows,
   identity: (value: unknown) => unknown,
-  captured: ReadonlyMap<LiveRasterBatch, LiveWindowFacts>,
+  captured: ReadonlyMap<LiveRasterBatch, LiveRasterBatch['visibleBindGroups']>,
   pending: Map<LiveRasterBatch, LiveRasterBatch['visibleBindGroups']>,
   caches: Set<LiveRasterBatch['bundles']>,
   storage: ViewStorageTarget | undefined,
@@ -149,10 +134,15 @@ function projectMainInputs(
       live,
       groups === undefined
         ? undefined
-        : {
-            ...(groups.early === undefined ? {} : { early: map(groups.early, binding, adapter) }),
-            ...(groups.late === undefined ? {} : { late: map(groups.late, binding, adapter) }),
-          },
+        : new Map(
+            Array.from(groups, ([layout, { early, late }]) => [
+              layout,
+              {
+                ...(early === undefined ? {} : { early: map(early, binding, adapter) }),
+                ...(late === undefined ? {} : { late: map(late, binding, adapter) }),
+              },
+            ]),
+          ),
     );
     caches.add(live.bundles);
   }

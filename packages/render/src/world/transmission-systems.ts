@@ -18,6 +18,7 @@ import {
   inspectTransmissionFromAdmission,
   type TransmissionInspection,
 } from '../transmission/inspection';
+import { limitRoughRefraction } from '../transmission/projection';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
 import { readViewField, readViewState, requireViewField } from './view-field';
@@ -112,13 +113,26 @@ function capabilityOf(
   return facts;
 }
 
+function viewTransmissionDemand(owner: ViewSettlementOwner) {
+  const profile = owner.frameState.cameraStandardProfile ?? owner.internals.standardProfile;
+  return limitRoughRefraction(owner.scene.transmissionTopologyDemand(), profile?.roughRefraction);
+}
+
+function submittedBackdropTopology(
+  input: Parameters<typeof resolveTransmissionBackdropTopology>[0],
+  copied: boolean | undefined,
+) {
+  const planned = resolveTransmissionBackdropTopology(input);
+  return copied === false ? { ...planned, copyCount: 0 } : planned;
+}
+
 function admitCandidate(
   state: ViewTransmissionState,
   owner: ViewSettlementOwner,
   antialias: CameraSnapshot['antialias'],
 ): ViewTransmissionOutcome {
   const { internals } = owner;
-  const demand = owner.scene.transmissionTopologyDemand();
+  const demand = viewTransmissionDemand(owner);
   if (demand.activeCount === 0) return { kind: 'admitted' };
   const topology = resolveTransmissionBackdropTopology({
     demand,
@@ -166,13 +180,14 @@ function refreshInspection(
 ): void {
   const { internals, frameState } = owner;
   state.antialias = antialias;
-  const demand = owner.scene.transmissionTopologyDemand();
+  const demand = viewTransmissionDemand(owner);
   if (demand.activeCount === 0) {
     state.inspection = undefined;
     state.key = '';
     return;
   }
-  const current = submitted ? frameState.currentTransmissionTargets?.current : undefined;
+  const targets = submitted ? frameState.currentTransmissionTargets : undefined;
+  const current = targets?.current;
   const physical =
     submitted && current === undefined
       ? frameState.compiledFrameGraph?.graph
@@ -188,10 +203,13 @@ function refreshInspection(
     height:
       current?.height ?? descriptor?.height ?? Math.max(1, recordContext(internals).canvas.height),
   };
-  const topology = resolveTransmissionBackdropTopology({
-    demand,
-    sourceSampleCount: isMultisampleAntialias(antialias) ? 4 : 1,
-  });
+  const topology = submittedBackdropTopology(
+    {
+      demand,
+      sourceSampleCount: isMultisampleAntialias(antialias) ? 4 : 1,
+    },
+    targets?.copied,
+  );
   const format = current?.format ?? descriptor?.format ?? 'rgba16float';
   const mipCount =
     (current === undefined ? undefined : frameState.currentTransmissionTargets?.mipCount) ??
@@ -210,7 +228,7 @@ function refreshInspection(
             estimateTransmissionBackdropBytes(extent, mipCount, format),
           deviceGeneration: recordContext(internals).deviceScope.generation,
         } as const);
-  const key = `${demand.activeCount}:${demand.needsRoughMips}:${extent.width}:${extent.height}:${recordContext(internals).deviceScope.generation}:${format}:${mipCount}:${resource?.bytes ?? 0}:${antialias}:${submitted}`;
+  const key = `${demand.activeCount}:${demand.needsRoughMips}:${extent.width}:${extent.height}:${recordContext(internals).deviceScope.generation}:${format}:${mipCount}:${topology.copyCount}:${resource?.bytes ?? 0}:${antialias}:${submitted}`;
   if (key === state.key && state.inspection !== undefined) return;
   if (submitted) {
     state.admission.admit(

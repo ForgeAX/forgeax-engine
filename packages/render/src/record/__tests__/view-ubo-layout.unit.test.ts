@@ -46,7 +46,7 @@ describe('View UBO directional shadow ABI', () => {
     expect(viewUboSrc).toMatch(/viewPayload\[237\]\s*=\s*ssr\.thickness/);
     expect(viewUboSrc).toMatch(/viewPayload\[238\]\s*=\s*ssr\.maxRoughness/);
     expect(viewUboSrc).toMatch(
-      /viewPayload\[239\]\s*=\s*inlineSsr\s*\?\s*\(previousColorValid\s*\?\s*3\s*:\s*2\)\s*:\s*1/,
+      /viewPayload\[239\]\s*=\s*inlineSsr\s*\?\s*\(previousColorValid\s*\?\s*3\s*:\s*2\)\s*:\s*previousColorValid\s*\?\s*4\s*:\s*1/,
     );
     expect(viewStruct).not.toMatch(/pcfKernelSize/);
     expect(commonWgslSrc.match(/@group\(0\) @binding\(0\) var<uniform> view/g)).toHaveLength(1);

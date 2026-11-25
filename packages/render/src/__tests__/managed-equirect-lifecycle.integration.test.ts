@@ -49,7 +49,10 @@ async function fixture() {
     assets.update(source, { data: new Uint8Array(64).fill(1) }).unwrap();
     const batch = observer.read().unwrap();
     assert(batch.changes.length === 1);
-    for (const change of batch.changes) store.adoptCubemapChange(change, resources);
+    for (const change of batch.changes)
+      store.adoptAssetChange(resources, change, (error) => {
+        throw error;
+      });
     batch.accept();
   };
   const close = () => {

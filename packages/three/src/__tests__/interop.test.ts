@@ -5,6 +5,7 @@ import {
 } from '@forgeax/engine/physics-rapier3d';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, defineComponent, World } from '@forgeax/engine-ecs';
+import { readEntityComponentEpoch, readMutationEpoch } from '@forgeax/engine-ecs/projection';
 import {
   Collider,
   ColliderShapeValue,
@@ -391,7 +392,7 @@ it('coalesces tracked local edits into the correct ECS position at each mount bo
   const marker = defineComponent('DirectPositionMigration', { value: 'u32' });
   a.world.addComponent(entity, { component: marker, data: { value: 1 } }).unwrap();
   first.sync().unwrap();
-  const writes = vi.spyOn(a.world, 'set');
+  const before = readMutationEpoch(a.world);
   const ranges = vi.spyOn(a.world, 'setArrayRange');
   alias.x = 2;
   alias.x = 16777217;
@@ -405,11 +406,11 @@ it('coalesces tracked local edits into the correct ECS position at each mount bo
     Math.fround(Math.fround(alias.x) + 10),
   );
   expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(0);
-  expect(writes.mock.calls.filter(([e, c]) => e === entity && c === Transform)).toHaveLength(1);
+  expect(readEntityComponentEpoch(a.world, entity, Transform)).toBe(before + 1);
   expect(ranges.mock.calls.some(([e, c]) => e === entity && c === Transform)).toBe(false);
   alias.x -= 0.1;
   first.sync().unwrap();
-  expect(writes.mock.calls.filter(([e, c]) => e === entity && c === Transform)).toHaveLength(1);
+  expect(readEntityComponentEpoch(a.world, entity, Transform)).toBe(before + 1);
   second.sync().unwrap();
   expect(b.world.get(other, Transform).unwrap().pos[0]).toBe(Math.fround(alias.x));
   first.dispose().unwrap();

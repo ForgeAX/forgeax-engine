@@ -2,6 +2,9 @@ import common from './common.wgsl?raw';
 import motionBlur from './motion-blur.wgsl?raw';
 import temporal from './scene-temporal.wgsl?raw';
 import reconstruction from './scene-velocity-reconstruction.wgsl?raw';
+
+export const SCENE_VELOCITY_WITH_DEPTH_OVERRIDE = '64009';
+
 import taa from './taa-resolve.wgsl?raw';
 
 const view = common.match(

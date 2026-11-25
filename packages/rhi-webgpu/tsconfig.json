@@ -12,6 +12,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../types" },
+    { "path": "../platform" },
     { "path": "../rhi" }
   ]
 }

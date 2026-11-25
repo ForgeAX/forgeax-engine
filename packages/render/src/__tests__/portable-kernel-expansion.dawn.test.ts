@@ -16,7 +16,7 @@ import {
 import {
   runSsrGpuDispatch,
   type SsrProbeShaderSources,
-  ssrCoordinateErrors,
+  ssrPlanarCoordinateErrors,
 } from './ssr-gpu-dispatch';
 
 let sources: DepthPyramidShaderSources;
@@ -33,6 +33,7 @@ beforeAll(async () => {
       defines: { PORTABLE_FRAGMENT: fragment },
       imports: {
         'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
+        'forgeax_ssr::ray': read('ssr-ray'),
         'forgeax_view::common': read('common'),
       },
     });
@@ -51,6 +52,7 @@ beforeAll(async () => {
       defines: { PORTABLE_FRAGMENT: fragment },
       imports: {
         'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
+        'forgeax_ssr::ray': read('ssr-ray'),
         'forgeax_view::common': read('common'),
         'forgeax_pbr::gbuffer': read('standard-gbuffer'),
         forgeax_scene_temporal: read('scene-temporal'),
@@ -240,15 +242,15 @@ it('runs the full SSR graph for 60 completed frames with compute and raster spat
   const device = (
     await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
   ).unwrap();
-  const native = await runSsrGpuDispatch(device, ssrSources, 60, { coordinateSource: true });
+  const native = await runSsrGpuDispatch(device, ssrSources, 60, { planarCoordinateSource: true });
   const raster = await runSsrGpuDispatch(device, ssrSources, 60, {
     execution: 'fragment',
-    coordinateSource: true,
+    planarCoordinateSource: true,
   });
   expect(raster.pyramidPixels).toEqual(native.pyramidPixels);
   expect(raster.tracePixels).toEqual(native.tracePixels);
   expect(raster.pixels).toEqual(native.pixels);
-  const errors = ssrCoordinateErrors(raster.tracePixels[0] ?? []);
+  const errors = ssrPlanarCoordinateErrors(raster.tracePixels[0] ?? []);
   expect(errors.length).toBeGreaterThan(20);
   expect(Math.max(...errors)).toBeLessThan(0.02);
 });

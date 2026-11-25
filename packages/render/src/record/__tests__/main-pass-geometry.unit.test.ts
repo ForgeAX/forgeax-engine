@@ -15,31 +15,6 @@ import {
 import { geometryRenderStateForTopology } from '../main-pass-material';
 
 describe('geometry pass render state', () => {
-  it('reuses opaque sample depth for the integer normal carrier without inherited color blending or alpha coverage', () => {
-    const base = {
-      blend: {
-        color: { srcFactor: 'src-alpha' as const, dstFactor: 'one-minus-src-alpha' as const },
-        alpha: { srcFactor: 'one' as const, dstFactor: 'zero' as const },
-      },
-      outputs: [{ name: 'color', format: 'rgba16float' as const }],
-      alphaToCoverageEnabled: true,
-      colorWriteMask: 0,
-      depthWriteEnabled: true,
-      cullMode: 'back' as const,
-    };
-    const state = geometryRenderStateForPass(base, 'forward', false, undefined, 'fs_ao_input_msaa');
-    expect(state).toEqual({
-      outputs: [{ name: 'normal', format: 'rgba8uint' }],
-      alphaToCoverageEnabled: false,
-      colorWriteMask: 15,
-      depthWriteEnabled: false,
-      depthCompare: 'less-equal',
-      cullMode: 'back',
-    });
-    expect(base.alphaToCoverageEnabled).toBe(true);
-    expect(base.outputs).toEqual([{ name: 'color', format: 'rgba16float' }]);
-    expect(geometryRenderStateForPass(base, 'forward')).toBe(base);
-  });
   it('keeps the main depth authority while admitting equal temporal depth', () => {
     const base = {
       cullMode: 'back' as const,

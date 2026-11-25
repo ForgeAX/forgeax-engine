@@ -53,6 +53,9 @@ function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
 
 /** An immutable geometry root; asset edits copy tree paths, never instance bindings. */
 export class MeshFrame {
+  /** Identifies this immutable geometry publication without retaining its tree. */
+  readonly identity = Symbol();
+
   constructor(private readonly root: Node<MeshGeometry> | undefined = undefined) {}
 
   get(handle: number | undefined): MeshGeometry | undefined {

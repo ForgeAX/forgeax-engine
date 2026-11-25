@@ -82,7 +82,8 @@ async function residualFrameCounts(count: number): Promise<FrameCounts> {
   draw(6);
   expect(errors).toEqual([]);
   const counts = {
-    pipelineRequests: pipelineRequests.mock.calls.length,
+    // A per-draw class lookup that hits resolves nothing; a miss is a genuine resolution.
+    pipelineRequests: pipelineRequests.mock.results.filter((r) => r.value === undefined).length,
     identityLookups: frameLookups.mock.calls.length + sceneLookups.mock.calls.length,
   };
   for (const spy of [pipelineRequests, frameLookups, sceneLookups]) spy.mockRestore();

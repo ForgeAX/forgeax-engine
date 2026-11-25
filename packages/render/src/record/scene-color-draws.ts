@@ -100,12 +100,18 @@ export class SceneColorDraws implements SceneRasterWriter {
     }
   }
 
-  private addPorts(name: string, accesses: readonly GraphAccess[]): Result<void, RenderGraphError> {
+  private addPorts(
+    name: string,
+    accesses: readonly GraphAccess[],
+    subgraph = false,
+  ): Result<void, RenderGraphError> {
     for (const access of accesses) {
       const { resource, usage } = access;
       const supported =
         resource === this.color
-          ? usage === 'color-attachment' || usage === 'copy-src'
+          ? usage === 'color-attachment' ||
+            usage === 'copy-src' ||
+            (subgraph && usage === 'sampled-read')
           : resource === this.depth
             ? usage === 'depth-stencil-write' || usage === 'copy-src'
             : this.admitsRead(access);
@@ -173,7 +179,7 @@ export class SceneColorDraws implements SceneRasterWriter {
   addSubgraphPass(name: string, descriptor: SubgraphPass<Frame>): Result<void, RenderGraphError> {
     if (descriptor.child !== undefined)
       return invalidStage(name, 'current physical commands with explicit attachment ports');
-    const ports = this.addPorts(name, descriptor.accesses);
+    const ports = this.addPorts(name, descriptor.accesses, true);
     if (!ports.ok) return ports;
     this.stages.push({
       name,

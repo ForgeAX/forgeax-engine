@@ -1,10 +1,14 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { freezeJson } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
   captureMaterialSnapshot,
+  deriveOwnedMaterialParameters,
+  MATERIAL_RASTER_ALPHA_MASK,
   MaterialResource,
   materialResource,
+  ownedMaterialRasterFlags,
   ownedMaterialValues,
 } from '../material-resource';
 import { Materials } from '../materials';
@@ -17,6 +21,50 @@ import {
   storeMaterialSnapshot,
 } from '../render-system-extract';
 import { projectFramePresentation } from '../render-system-presentation';
+import { materialPasses } from '../scene/material-dispatch';
+
+it('publishes alpha specialization per numeric version while projections share pass declarations', () => {
+  const input = { ...defaultMaterialSnapshot(), immutableValues: true as const };
+  const source = MaterialResource.from(captureMaterialSnapshot(input));
+  const snapshot = source.snapshot;
+  const masked = deriveOwnedMaterialParameters(source, snapshot, { alphaCutoff: 0.5 });
+  if (masked === undefined) throw new Error('expected a fixed parameter version');
+  expect(materialPasses(masked.snapshot)).toBe(materialPasses(snapshot));
+  expect(ownedMaterialRasterFlags(masked.snapshot)).toBe(MATERIAL_RASTER_ALPHA_MASK);
+  expect(ownedMaterialRasterFlags(snapshot)).toBe(0);
+  expect(ownedMaterialRasterFlags(input)).toBeUndefined();
+});
+
+it('binds projected Passes to the captured handle and publication across material replacement', () => {
+  const snapshot = captureMaterialSnapshot({
+    ...defaultMaterialSnapshot(),
+    materialHandle: 17,
+    passes: [{ name: 'forward', program: { module: 'terrain-test::surface' } }],
+    materialProgramKeys: { forward: 'first-program' },
+  });
+  const base = MaterialResource.from(snapshot);
+  const original = deriveOwnedMaterialParameters(base, snapshot, { roughness: 0.25 });
+  if (original === undefined) throw new Error('missing owned material projection');
+  const held = materialPasses(original.snapshot);
+  base.adopt(
+    captureMaterialSnapshot({
+      ...snapshot,
+      materialHandle: 42,
+      materialProgramKeys: { forward: 'second-program' },
+    }),
+  );
+  const next = deriveOwnedMaterialParameters(base, base.snapshot, { roughness: 0.75 });
+  if (next === undefined) throw new Error('missing replacement material projection');
+  expect(materialPasses(next.snapshot)).toBe(materialPasses(base.snapshot));
+  expect(materialPasses(next.snapshot)[0]).toMatchObject({
+    materialHandle: 42,
+    materialShaderId: 'second-program',
+  });
+  expect(held[0]).toMatchObject({ materialHandle: 17, materialShaderId: 'first-program' });
+  expect(Object.isFrozen(held)).toBe(true);
+  expect(Object.isFrozen(held[0])).toBe(true);
+  expect(Object.isFrozen(held[0]?.tags)).toBe(true);
+});
 
 it('retains the detached programs already built by material preparation', () => {
   const assets = new AssetRegistry();
@@ -204,4 +252,112 @@ it('keeps a fixed snapshot proven when its latest resource adopts another snapsh
   expect(producer.ownsValues(program)).toBe(true);
   const held = new MaterialResource(program);
   expect(held.ownsValues(program)).toBe(true);
+});
+
+const testRasterContext = {
+  backend: 'webgpu',
+  capability: 'storage-buffer',
+  pipeline: 'forward',
+  geometry: 'mesh',
+  pass: 'forward',
+  profile: 'forgeax-material-wgsl-v1',
+  toolchain: 'naga-oil',
+  instrumentation: 'none',
+} as const;
+
+it('clones only the borrowed material roots together and leaves the published program tables shared', () => {
+  const materialContext = { geometry: 'mesh' as const, vertexColor: false };
+  const pass = {
+    name: 'custom',
+    program: { module: 'test::medium' },
+    renderState: { selectedContext: materialContext },
+  };
+  const entryPoints = Array.from({ length: 128 }, (_, i) => ({
+    name: `entry-${i}`,
+    stage: 'fragment' as const,
+    bindings: [],
+  }));
+  const materialProgramInputs = freezeJson({ custom: { entryPoints } });
+  const identity = {
+    materialGuid: 'material-a',
+    publicationGeneration: 1,
+    specializationKey: 'program-a',
+    artifactHash: 'artifact-a',
+  };
+  const materialPublication = freezeJson({
+    identity,
+    programs: Array.from({ length: 128 }, (_, i) => ({
+      pass: `pass-${i}`,
+      context: testRasterContext,
+      address: 'direct' as const,
+      specializationKey: `key-${i}`,
+      artifactHash: `hash-${i}`,
+    })),
+  });
+  const source = {
+    ...defaultMaterialSnapshot(),
+    passes: [pass],
+    materialContext,
+    materialProgramInputs,
+    materialPublication,
+  };
+  const clone = vi.spyOn(globalThis, 'structuredClone');
+  try {
+    const first = captureMaterialSnapshot(source);
+    const programRoots = clone.mock.calls
+      .map(([value]) => value)
+      .filter(
+        (root): root is { passes: unknown } =>
+          root !== null && typeof root === 'object' && 'passes' in root,
+      );
+    expect(programRoots.map((root) => Object.keys(root).sort())).toEqual([
+      ['materialContext', 'passes'],
+    ]);
+    expect(first.materialProgramInputs).toBe(materialProgramInputs);
+    expect(first.materialPublication).toBe(materialPublication);
+    expect(first.materialProgramInputs?.custom?.entryPoints).toHaveLength(128);
+    expect(first.materialPublication?.programs).toHaveLength(128);
+    expect(first.passes[0]?.renderState?.selectedContext).toBe(first.materialContext);
+    expect(first.materialContext).not.toBe(materialContext);
+    materialContext.vertexColor = true;
+    pass.program.module = 'test::changed';
+    const next = captureMaterialSnapshot(source);
+    expect(next.passes[0]?.renderState?.selectedContext).toBe(next.materialContext);
+    expect(next.materialContext?.vertexColor).toBe(true);
+    expect(next.passes[0]?.program.module).toBe('test::changed');
+    expect(first.materialContext?.vertexColor).toBe(false);
+    expect(first.passes[0]?.program.module).toBe('test::medium');
+    expect(Object.isFrozen(first.passes[0]?.renderState)).toBe(true);
+  } finally {
+    clone.mockRestore();
+  }
+});
+
+it('issues reusable program, key and context tables during actual material preparation', () => {
+  const assets = new AssetRegistry();
+  try {
+    const material = Materials.standard({ baseColor: [1, 1, 1, 1] });
+    const specializationKey = 'test::custom-selection';
+    const prepared = prepareMaterialSnapshot({
+      handle: 3,
+      material,
+      assets,
+      world: worldRenderResources(new World({ assets })),
+      programSelections: [{ pass: 'forward', specializationKey, context: testRasterContext }],
+    });
+    const pass = { name: 'custom', program: { module: 'test::new' } };
+    const detached = captureMaterialSnapshot({ ...prepared, passes: [pass] });
+    expect(prepared.materialProgramKeys).toEqual({ forward: specializationKey });
+    for (const key of [
+      'materialContext',
+      'materialProgramKeys',
+      'materialProgramInputs',
+    ] as const) {
+      expect(Object.isFrozen(prepared[key])).toBe(true);
+      expect(detached[key]).toBe(prepared[key]);
+    }
+    expect(detached.passes[0]).not.toBe(pass);
+  } finally {
+    assets.dispose();
+  }
 });

@@ -18,9 +18,10 @@ import {
   captureGlobalMeshBindingsCurrent,
 } from '../record/frame-lighting';
 import type { InstalledFrameGraph } from '../record/frame-snapshot';
-import { createPerSubmeshMaterialBgDeps, materialBindingByteOffset } from '../record/main-pass';
+import { createPerSubmeshMaterialBgDeps } from '../record/main-pass';
 import {
   buildPerSubmeshMaterialBg,
+  type MaterialBindingAddress,
   prepareMaterialSkylight,
   resolveMaterialReflection,
 } from '../record/main-pass-material';
@@ -327,6 +328,8 @@ function* preparePassMaterials(
         undefined,
         binding.resourceClass,
       );
+      const capture: NonNullable<MaterialBindingAddress['capture']> = { current: undefined };
+      const address: MaterialBindingAddress = { byteOffset: 0, dynamicOffsetCount: 1, capture };
       const group = scope.uniforms.runPrepared(() =>
         buildPerSubmeshMaterialBg(
           deps,
@@ -338,16 +341,17 @@ function* preparePassMaterials(
           binding.resourceClass,
           standardMaterialLayoutIndex,
           reflection ?? null,
+          address,
         ),
       );
-      const bindingCurrent = frameState.materialBgAssemblyCache.captureBindingCurrent(group);
+      const bindingCurrent = capture.current;
       if (bindingCurrent === undefined || !live() || !bindingCurrent())
         throw invalid('actual current material binding receipt');
       receipts.push(bindingCurrent);
-      scope.uniforms.hold(internals, accepted.snapshot);
       return {
         group,
-        byteOffset: materialBindingByteOffset(materialInputs, accepted.snapshot),
+        byteOffset: address.byteOffset,
+        dynamicOffsetCount: address.dynamicOffsetCount,
         reflection: reflection?.resources ?? resources,
       };
     };

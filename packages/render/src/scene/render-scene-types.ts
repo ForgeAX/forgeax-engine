@@ -61,9 +61,9 @@ export interface RenderSceneApplyResult {
   readonly ignoredLateUpdates: number;
   readonly createdSlots: readonly RenderSceneSlot[];
   readonly updatedSlots: readonly RenderSceneSlot[];
-  /** Full retained-snapshot updates; transform spans stay in updatedSlots only. */
+  /** One final row per full content update, including any instance edits to that slot. */
   readonly contentUpdatedSlots: readonly RenderSceneSlot[];
-  /** Retained snapshots with changed instance payloads; root transforms may change too. */
+  /** Instance edits for slots outside the content lane. Root transforms may change too. */
   readonly instanceUpdatedSlots: readonly RenderSceneSlot[];
   /** Pre-apply records of the removed rows. */
   readonly removedSlots: readonly RenderSceneSlot[];

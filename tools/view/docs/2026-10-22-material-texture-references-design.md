@@ -66,5 +66,4 @@ This extends the presentation reuse in the
 [Mesh material slots design](2026-10-22-mesh-material-slots-design.md) without
 changing its native entity-reference mechanism or the
 [Inspector thumbnail design](2026-10-22-inspector-asset-thumbnails-design.md).
-Validation boundaries and results are recorded in the
-[delivery evidence](evidence/2026-10-22-material-texture-references/README.md).
+Validation boundaries and results are recorded in the implementation pull request.

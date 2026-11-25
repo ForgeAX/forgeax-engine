@@ -402,6 +402,13 @@ export async function verifyStandardGBufferReplay(
       );
       if (geometry === undefined || lighting === undefined || geometry.attachments === null)
         throw new Error('missing production GBuffer/lighting work');
+      expect(
+        geometryWorks.flatMap((work) =>
+          work.bindings.filter(
+            (binding) => binding.groupIndex === 1 && binding.resourceKind === 'textureView',
+          ),
+        ),
+      ).toEqual([]);
       expect(geometry.workIndex).toBeLessThan(lighting.workIndex);
       expect(geometry.drawCall).toMatchObject({
         // Deferred SSR writes its fallback in lighting, so the G-buffer stays GPU-driven.

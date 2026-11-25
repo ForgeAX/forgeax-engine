@@ -33,17 +33,20 @@ import {
   SkyboxBackground,
   Skylight,
 } from '@forgeax/engine-render';
-import { setViewDrawOrder, type ViewDrawOrderSource } from '@forgeax/engine-render/internal';
+import { setViewDrawOrder } from '@forgeax/engine-render/internal';
 import {
   ChildOf,
   Children,
-  copyPresentationWorldMatrix,
   GlobalTransform,
   MorphWeights,
   Name,
   propagateTransforms,
   Transform,
 } from '@forgeax/engine-scene';
+import {
+  createLocalPoseWriter,
+  createPresentationMatrixReader,
+} from '@forgeax/engine-scene/internal';
 import { Skin } from '@forgeax/engine-skinning';
 import {
   type AssetHandle,
@@ -145,10 +148,13 @@ import {
 import type { RenderTargets } from './render-targets';
 import { expandScalarTexture } from './scalar-texture';
 import {
+  hasLightingEnvironment,
   NO_EQUIRECT,
   projectFog,
+  type SceneAmbientLighting,
   type SceneLighting,
-  sceneAmbientIrradiance,
+  sameAmbientLighting,
+  sceneAmbientLighting,
   validateLight,
 } from './scene-lighting';
 import {
@@ -222,6 +228,7 @@ import {
 } from './scene-mesh-planning';
 import {
   createScenePreparation,
+  EMPTY_SOURCE_TRANSFORM,
   type NodeRecord,
   type PoseRecord,
   type SceneBuffers,
@@ -267,7 +274,7 @@ import {
   separateDrawPose,
   trackingSelected,
 } from './source-changes';
-import { matrixStorage, publishWorldMatrix } from './source-collections';
+import { publishWorldMatrix, sourceCollectionStorage } from './source-collections';
 import { ownSourceValue } from './source-fields';
 import {
   reflectSourceWorldPose,
@@ -285,6 +292,7 @@ import {
 } from './texture';
 import { TextureStorage } from './texture-storage';
 import { MeshUvs, type UvProjection } from './uv-projection';
+import { worldMatrixRow } from './world-matrix-storage';
 
 export interface ThreeSourceIdentity {
   readonly uuid: string;
@@ -315,6 +323,8 @@ export class SceneProjection {
     private readonly options: SceneProjectionOptions = {},
   ) {
     this.world = options.world ?? new World({ assets });
+    this.writePoseColumns = createLocalPoseWriter(this.world);
+    this.presentationReader = createPresentationMatrixReader(this.world);
     this.nativeOwners = options.world ? new Map() : undefined;
     this.canvasTextures = options.canvasTextures ? new CanvasTextures() : undefined;
     this.geometry = new SharedAssets(assets);
@@ -360,7 +370,7 @@ export class SceneProjection {
   private readonly reusedDraws = new SceneWalkRows<Renderable>(this.nodes, 'reusedDrawSlot');
   private readonly preparationLists = new ScenePreparationLists();
   private walking = false;
-  private viewOrderOwners: Map<number, Object3D> | undefined;
+  private readonly orderedDraws = new Map<number, NodeRecord>();
   private viewOrderCamera: Camera | undefined;
   private readonly viewOrderMatrix: number[] = [];
   private readonly stockDefinitions: {
@@ -373,11 +383,11 @@ export class SceneProjection {
   private readonly poseScratch: number[] = [];
   private readonly poseMatrix = new Matrix4();
   private readonly poseExpectedWorld = new Matrix4();
-  private readonly poseFields = { pos: vec3.create(), quat: quat.create(), scale: vec3.create() };
+  private readonly writePoseColumns: ReturnType<typeof createLocalPoseWriter>;
+  private readonly presentationReader: ReturnType<typeof createPresentationMatrixReader>;
   private readonly spritePose = new SpritePoseReader();
-  private readonly presentationLanes = new Float32Array(16);
   private readonly presentationMatrix = new Matrix4();
-  private readonly poseOwners = new Map<number, Object3D>();
+  private readonly poseOwners = new Map<number, NodeRecord>();
   private readonly sourcePoses = new SourcePosePage();
   private readonly localMatrixPosition = new Vector3();
   private readonly localMatrixRotation = new Quaternion();
@@ -386,11 +396,11 @@ export class SceneProjection {
   private readonly readWorld = (object: Object3D): Matrix4 | undefined => {
     const record = this.nodes.get(object);
     const entity = record?.sourcePose?.entity ?? record?.entity;
-    if (
-      entity !== undefined &&
-      copyPresentationWorldMatrix(this.world, entity, this.presentationLanes)
-    )
-      return this.presentationMatrix.fromArray(this.presentationLanes);
+    if (entity !== undefined && this.presentationReader.locate(entity))
+      return this.presentationMatrix.fromArray(
+        this.presentationReader.values,
+        this.presentationReader.offset,
+      );
     return undefined;
   };
 
@@ -436,7 +446,7 @@ export class SceneProjection {
     }
   }
   private plainLighting: { signature: readonly unknown[]; data: SceneLighting } | undefined;
-  private committedLighting: { data: SceneLighting; ambient: readonly number[] } | undefined;
+  private committedLighting: { data: SceneLighting; ambient: SceneAmbientLighting } | undefined;
   private readonly jointSnapshots: JointSnapshots = new WeakMap();
   private readonly batchRosters = new WeakMap<BatchedMesh, Uint32Array>();
   private readonly maximumJointIndices = new WeakMap<Uint16Array, number>();
@@ -502,7 +512,7 @@ export class SceneProjection {
       this.options.validateSource?.(object, record.entity);
       record.skinBinding = undefined;
       record.jointPoses = undefined;
-      record.transform = [];
+      record.transform = EMPTY_SOURCE_TRANSFORM;
       record.localVersion = undefined;
       record.instances = [];
       if (object === changes.root) {
@@ -629,26 +639,26 @@ export class SceneProjection {
         throw error;
       }
     }
-    const settings = tracked
-      ? [
-          buffers.depth,
-          buffers.stencil,
-          buffers.opaque,
-          buffers.transparent,
-          buffers.sortObjects,
-          buffers.nativeTransparentOrder,
-          buffers.opaqueSort,
-          buffers.transparentSort,
-          buffers.opaqueOrder,
-          buffers.shadowMap?.enabled,
-          buffers.shadowMap?.type,
-          overrideMaterial(scene),
-          scene.parent,
-          scene.matrixAutoUpdate,
-          scene.matrixWorldAutoUpdate,
-          buffers.ecsPoses,
-        ]
-      : [];
+    const settings = lists.trackingSettings;
+    if (tracked) {
+      let slot = 0;
+      settings[slot++] = buffers.depth;
+      settings[slot++] = buffers.stencil;
+      settings[slot++] = buffers.opaque;
+      settings[slot++] = buffers.transparent;
+      settings[slot++] = buffers.sortObjects;
+      settings[slot++] = buffers.nativeTransparentOrder;
+      settings[slot++] = buffers.opaqueSort;
+      settings[slot++] = buffers.transparentSort;
+      settings[slot++] = buffers.opaqueOrder;
+      settings[slot++] = buffers.shadowMap?.enabled;
+      settings[slot++] = buffers.shadowMap?.type;
+      settings[slot++] = overrideMaterial(scene);
+      settings[slot++] = scene.parent;
+      settings[slot++] = scene.matrixAutoUpdate;
+      settings[slot++] = scene.matrixWorldAutoUpdate;
+      settings[slot++] = buffers.ecsPoses;
+    }
     if (
       this.changes &&
       (!tracked ||
@@ -727,7 +737,7 @@ export class SceneProjection {
         this.trackFrame(frame, settings);
       else if (frame.changes) {
         const changes = frame.changes;
-        changes.promote((node) => this.trackNode(frame, changes, node));
+        changes.promote((node, hidden) => this.trackNode(frame, changes, node, hidden));
       }
       if (this.nativeOwners && this.changes) {
         this.nativeChanges ??= observeStateChanges(
@@ -869,7 +879,7 @@ export class SceneProjection {
     this.releaseTracking();
     for (const record of this.nodes.values()) {
       this.detachTransformParent(record.sourcePose ?? record);
-      record.transform = [];
+      record.transform = EMPTY_SOURCE_TRANSFORM;
       record.localVersion = undefined;
     }
     this.poseOwners.clear();
@@ -879,7 +889,7 @@ export class SceneProjection {
         record.sourcePose = undefined;
       }
       if (ecsPoses && !separateDrawPose(object))
-        this.poseOwners.set(unpackSlot(record.entity), object);
+        this.poseOwners.set(unpackSlot(record.entity), record);
     }
     this.ecsPoseChanges = ecsPoses
       ? observeStateChanges(this.world, [GlobalTransform], this.poseOwners)
@@ -913,9 +923,9 @@ export class SceneProjection {
       if (record.sourcePose === undefined && separateDrawPose(object)) {
         record.sourcePose = {
           entity: this.world.spawn({ component: Transform, data: {} }).unwrap(),
-          transform: [],
+          transform: EMPTY_SOURCE_TRANSFORM,
         };
-        this.poseOwners.set(unpackSlot(record.sourcePose.entity), object);
+        this.poseOwners.set(unpackSlot(record.sourcePose.entity), record);
       }
       const pose = record.sourcePose ?? record;
       const parent = object === scene ? null : object.parent;
@@ -960,13 +970,12 @@ export class SceneProjection {
       if (offset >= page.used) throw new Error('Source pose did not pass validation');
       const record = this.sourcePose(object);
       const previous = record.transform;
-      let changed = previous.length !== POSE_LANES;
-      for (let i = 0; !changed && i < POSE_LANES; i++)
-        changed = !Object.is(previous[i], values[offset + i]);
+      const changed = !page.matchesRecord(previous, offset);
       if (changed) {
-        this.writeLocalTransform(record, values, offset);
-        previous.length = POSE_LANES;
-        for (let i = 0; i < POSE_LANES; i++) previous[i] = values[offset + i] as number;
+        this.writePoseColumns(record.entity, values, offset);
+        const accepted = previous instanceof Float64Array ? previous : page.issueRecord();
+        page.writeRecord(accepted, offset);
+        record.transform = accepted;
         record.localVersion = undefined;
         frame.sourcePoseWrites++;
       }
@@ -1012,7 +1021,7 @@ export class SceneProjection {
 
   private writeSourceLocalMatrix(object: Object3D, source: Float64Array, offset: number): void {
     if (resolveSourceLocalPose(object)) return;
-    const target = matrixStorage(object.matrix.elements);
+    const target = sourceCollectionStorage(object.matrix.elements);
     const elements = this.poseMatrix.compose(
       this.localMatrixPosition.fromArray(source, offset),
       this.localMatrixRotation.fromArray(source, offset + 3),
@@ -1026,7 +1035,7 @@ export class SceneProjection {
     const cursor = this.ecsPoseChanges;
     if (cursor === undefined) return false;
     if (changes === undefined) {
-      for (const object of nodes) this.reflectWorldPose(object, camera);
+      for (const object of nodes) this.reflectWorldPose(this.nodes.get(object), camera);
       cursor.resetBaseline();
       return true;
     }
@@ -1034,13 +1043,13 @@ export class SceneProjection {
     // A cache-only edit still needs repair if Scene's derived pose was unchanged.
     const edits = changes.matrixRepairs;
     let changed = edits.size !== 0;
-    for (const object of edits) this.reflectWorldPose(object, camera);
+    for (const object of edits) this.reflectWorldPose(this.nodes.get(object), camera);
     if (!cursor.isCurrent()) {
       const batch = cursor.read();
       for (const slot of batch.indices) {
-        const object = this.poseOwners.get(slot);
-        if (object === undefined || edits.has(object)) continue;
-        this.reflectWorldPose(object, camera);
+        const record = this.poseOwners.get(slot);
+        if (record === undefined || edits.has(record.object)) continue;
+        this.reflectWorldPose(record, camera);
         changed = true;
       }
       batch.accept();
@@ -1049,16 +1058,23 @@ export class SceneProjection {
     return changed;
   }
 
-  private reflectWorldPose(object: Object3D, camera: Camera): void {
-    const record = this.nodes.get(object);
+  private reflectWorldPose(record: NodeRecord | undefined, camera: Camera): void {
     if (record === undefined) return;
+    const object = record.object;
     const elements = object.matrixWorld.elements;
-    const target = matrixStorage(elements);
+    const target = sourceCollectionStorage(elements);
     if (target.length < 16) target.length = 16;
-    if (
-      !copyPresentationWorldMatrix(this.world, record.sourcePose?.entity ?? record.entity, target)
-    )
-      return;
+    const row = worldMatrixRow(target);
+    const entity = record.sourcePose?.entity ?? record.entity;
+    if (!this.presentationReader.locate(entity)) return;
+    const { values, offset } = this.presentationReader;
+    // Resolve the destination after the ECS read. Authored setters may reenter this reader.
+    const lanes = row?.lanes;
+    if (lanes !== undefined) {
+      for (let i = 0; i < 16; i++) lanes[i] = values[offset + i] as number;
+    } else {
+      for (let i = 0; i < 16; i++) target[i] = values[offset + i] as number;
+    }
     object.matrixWorldNeedsUpdate = false;
     if (object !== camera && object instanceof Camera) this.reflectCameraView(object);
     reflectSourceWorldPose(object);
@@ -1326,11 +1342,12 @@ export class SceneProjection {
     }
     this.nativeRepairs.clear();
     if (buffers.externalDemand?.size) throw buffers.externalDemand;
-    const ambientIrradiance = sceneAmbientIrradiance(
+    const ambient = sceneAmbientLighting(
       scene,
       frame.visible,
       changes,
       camera.layers.mask,
+      hasLightingEnvironment(lighting),
     );
     // New resource leases stay provisional until all material preparation succeeds.
     rankOpaqueMeshes(frame);
@@ -1353,7 +1370,7 @@ export class SceneProjection {
           frame.lists.transparentRanks.set(object, rank);
       }
     for (const validate of frame.borrowedInstanceWindows ?? []) validate();
-    return () => this.commitDraws(frame, lighting, ambientIrradiance, cameraData);
+    return () => this.commitDraws(frame, lighting, ambient, cameraData);
   }
 
   /** Keep the admitted source assets when this view cannot draw the attached mesh. */
@@ -1367,7 +1384,7 @@ export class SceneProjection {
       return;
     }
     const camera = frame.camera;
-    const view = matrixStorage(camera.matrixWorldInverse.elements);
+    const view = sourceCollectionStorage(camera.matrixWorldInverse.elements);
     if (
       frame.changes &&
       camera === this.viewOrderCamera &&
@@ -1380,31 +1397,32 @@ export class SceneProjection {
       return;
     this.viewOrderCamera = camera;
     for (let i = 0; i < view.length; i++) this.viewOrderMatrix[i] = view[i] as number;
-    let owners = this.viewOrderOwners;
-    if (owners === undefined) {
-      owners = new Map();
-      for (const [object, record] of this.nodes) owners.set(record.entity, object);
-      this.viewOrderOwners = owners;
-    }
     const nativePoses = frame.ecsPoses;
     setViewDrawOrder(this.world, {
       view: view.slice(),
-      localFor: (entity): ViewDrawOrderSource | undefined => {
-        const object = owners.get(entity);
-        if (object === undefined || !isRenderable(object)) return undefined;
-        const record = this.nodes.get(object);
-        if (record?.orderedTransparency !== true) return undefined;
+      readLocal: (entity, out) => {
+        const record = this.orderedDraws.get(entity);
+        if (!record || !isRenderable(record.object)) return false;
+        const object = record.object;
         const sprite = object instanceof Sprite;
         const center = sprite ? undefined : sourceSortCenter(object);
-        return {
-          group: record.groupOrder ?? 0,
-          priority: object.renderOrder,
-          center: center ? [center.x, center.y, center.z] : [0, 0, 0],
-          tie: object.id,
-          ...(!nativePoses || sprite
-            ? { authoredWorld: matrixStorage(object.matrixWorld.elements) }
-            : {}),
-        };
+        // A source getter can render recursively. Read all inputs before filling the phase's output.
+        const group = record.groupOrder ?? 0;
+        const priority = object.renderOrder;
+        const tie = object.id;
+        const x = center?.x ?? 0;
+        const y = center?.y ?? 0;
+        const z = center?.z ?? 0;
+        const world =
+          !nativePoses || sprite ? sourceCollectionStorage(object.matrixWorld.elements) : undefined;
+        out.group = group;
+        out.priority = priority;
+        out.tie = tie;
+        out.x = x;
+        out.y = y;
+        out.z = z;
+        out.authoredWorld = world;
+        return true;
       },
     });
   }
@@ -1600,22 +1618,44 @@ export class SceneProjection {
     if (hasClipping && !witness) return;
     const changes = new SceneChanges(
       frame.scene,
-      settings,
+      settings.slice(),
       frame.camera.layers.mask,
       witness,
       frame.ecsPoses,
       frame.buffers.nativeTransparentOrder === true,
     );
     this.changes = changes;
-    changes.index(frame.scene, (node) => this.trackNode(frame, changes, node));
+    changes.index(frame.scene, (node, hidden) => this.trackNode(frame, changes, node, hidden));
   }
 
   private trackNode(
     frame: ScenePreparation,
     changes: SceneChanges,
     node: Object3D,
+    hidden: boolean,
   ): boolean | 'view' {
     if (changes.unobservedNodeState.has(node)) return false;
+    if (hidden) {
+      // The ECS hierarchy still owns names and poses. Once the draw was withdrawn,
+      // the hidden source needs no mesh/material lease until it becomes visible again.
+      const record = this.nodes.get(node);
+      if (
+        !frame.ecsPoses ||
+        this.options.world ||
+        this.options.validateSource ||
+        !record?.renderReady ||
+        record.binding !== undefined
+      )
+        return false;
+      if (changes.ordinaryGroup(node)) return true;
+      if (!(node instanceof Mesh) || Object.getPrototypeOf(node) !== Mesh.prototype) return false;
+      releaseMeshCache(record);
+      record.meshGeometry = undefined;
+      record.ordinaryMesh = undefined;
+      record.meshMaterials = undefined;
+      this.meshUvs.delete(node);
+      return true;
+    }
     if (!node.visible) {
       if (!isRenderable(node) || !changes.watchDormant(node)) return false;
       const record = this.nodes.get(node);
@@ -1875,9 +1915,9 @@ export class SceneProjection {
     // reads and overridden parent updates establish the same proof from matrices.
     if (localVersion === undefined) {
       const local = this.poseMatrix.compose(object.position, object.quaternion, object.scale);
-      if (!sameValues(local.elements, matrixStorage(object.matrix.elements))) return;
+      if (!sameValues(local.elements, sourceCollectionStorage(object.matrix.elements))) return;
       const expected = this.poseExpectedWorld.multiplyMatrices(parent.matrixWorld, local).elements;
-      if (!sameValues(expected, matrixStorage(object.matrixWorld.elements))) return;
+      if (!sameValues(expected, sourceCollectionStorage(object.matrixWorld.elements))) return;
     }
     return parent;
   }
@@ -1965,7 +2005,7 @@ export class SceneProjection {
       }
       matrix = spriteMatrix(object, camera, material, positionMaterial).elements;
     }
-    const values = frame.changes ? matrixStorage(matrix) : matrix;
+    const values = frame.changes ? sourceCollectionStorage(matrix) : matrix;
     const revision = object instanceof Bone ? sourceWorldRevision(object) : undefined;
     if (
       previous !== undefined &&
@@ -1977,7 +2017,7 @@ export class SceneProjection {
     frame.lists.transforms.set(object, decomposeSourceMatrix(object, camera, values, revision));
   }
 
-  /** A published opaque mesh keeps its native binding as cameras move. Cold or
+  /** A published mesh keeps its native binding as cameras move. Cold or
    * replaced assets still enter through source admission; arbitrary direct
    * material/geometry edits continue through the normal observation path. */
   private nativeViewMesh(
@@ -2001,10 +2041,11 @@ export class SceneProjection {
       ordinaryMeshSurface(material) &&
       (!isBlended(material) ||
         (frame.buffers.nativeTransparentOrder === true &&
-          material instanceof MeshBasicMaterial &&
-          material.map === null &&
-          material.alphaMap === null &&
-          !(frame.buffers.shadowMap?.enabled && object.castShadow)))
+          (this.options.world === undefined ||
+            (material instanceof MeshBasicMaterial &&
+              material.map === null &&
+              material.alphaMap === null &&
+              !(frame.buffers.shadowMap?.enabled && object.castShadow)))))
     );
   }
 
@@ -3234,19 +3275,17 @@ export class SceneProjection {
   private commitDraws(
     frame: ScenePreparation,
     lighting: SceneLighting,
-    ambientIrradiance: [number, number, number],
+    ambient: SceneAmbientLighting,
     cameraData: CameraData,
   ): void {
     if (
       !frame.changes ||
       this.committedLighting?.data !== lighting ||
-      !sameValues(this.committedLighting.ambient, ambientIrradiance)
+      !sameAmbientLighting(this.committedLighting.ambient, ambient)
     ) {
-      this.writeSceneLighting(frame.scene, lighting, ambientIrradiance);
+      this.writeSceneLighting(frame.scene, lighting, ambient);
       this.committedLighting =
-        this.plainLighting?.data === lighting
-          ? { data: lighting, ambient: ambientIrradiance }
-          : undefined;
+        this.plainLighting?.data === lighting ? { data: lighting, ambient } : undefined;
     }
     if (frame.changes) {
       for (const [object, rank] of frame.lists.transparentRanks) {
@@ -3326,7 +3365,7 @@ export class SceneProjection {
       const record = this.nodeRecord(object);
       this.detachTransformParent(record);
       if (parent === null && !frame.lists.transforms.has(object)) {
-        record.transform = [];
+        record.transform = EMPTY_SOURCE_TRANSFORM;
         record.localVersion = undefined;
       }
     }
@@ -3345,12 +3384,11 @@ export class SceneProjection {
     const entity = this.world
       .spawn({ component: Transform, data: {} }, { component: Name, data: { value: object.name } })
       .unwrap();
-    const record: NodeRecord = { entity, transform: [] };
+    const record: NodeRecord = { object, entity, transform: EMPTY_SOURCE_TRANSFORM };
     this.nodes.set(object, record);
     if (this.ecsPoseChanges !== undefined && !separateDrawPose(object))
-      this.poseOwners.set(unpackSlot(entity), object);
+      this.poseOwners.set(unpackSlot(entity), record);
     this.nativeOwners?.set(unpackSlot(entity), object);
-    this.viewOrderOwners?.set(entity, object);
     if (object instanceof InstancedMesh) {
       const invalidate = () => {
         record.instances = [];
@@ -3402,7 +3440,7 @@ export class SceneProjection {
   private writeSceneLighting(
     scene: Object3D,
     lighting: SceneLighting,
-    ambientIrradiance: [number, number, number],
+    ambient: SceneAmbientLighting,
   ): void {
     const sceneEntity = this.nodes.get(scene)?.entity;
     if (sceneEntity === undefined) throw new Error('admitted scene missing its entity');
@@ -3417,13 +3455,16 @@ export class SceneProjection {
     } else this.removeIfPresent(sceneEntity, RenderTargetEnvironment);
     this.ensure(sceneEntity, Skylight, { intensity: 0 });
     this.write(sceneEntity, Skylight, {
-      ambientIrradiance,
+      ambientIrradiance: ambient.irradiance,
+      color: ambient.hemisphere?.sky ?? [1, 1, 1],
+      groundColor: ambient.hemisphere?.ground ?? [0, 0, 0],
       equirect: lighting.lighting,
       intensity:
-        (lighting.lighting !== 0 || lighting.targetEnvironment !== undefined) &&
-        scene instanceof Scene
+        hasLightingEnvironment(lighting) && scene instanceof Scene
           ? scene.environmentIntensity
-          : 0,
+          : ambient.hemisphere === undefined
+            ? 0
+            : 1,
       rotation: lighting.lightingRotation,
     });
     if (lighting.background !== 0) {
@@ -3446,23 +3487,11 @@ export class SceneProjection {
       record.transform = transform.values;
       record.skinWorldRevision = transform.skinWorldRevision;
     } else {
-      this.writeLocalTransform(record, transform.pose, 0);
+      this.writePoseColumns(record.entity, transform.pose, 0);
       record.transform = transform.pose;
       record.localVersion = transform.localVersion;
       record.skinWorldRevision = undefined;
     }
-  }
-
-  private writeLocalTransform(record: PoseRecord, pose: ArrayLike<number>, offset: number): void {
-    const { pos, quat, scale } = this.poseFields;
-    for (let i = 0; i < 3; i++) {
-      pos[i] = pose[offset + i] as number;
-      scale[i] = pose[offset + 7 + i] as number;
-    }
-    for (let i = 0; i < 4; i++) quat[i] = pose[offset + 3 + i] as number;
-    if (this.options.world === undefined)
-      this.world.set(record.entity, Transform, this.poseFields).unwrap();
-    else this.write(record.entity, Transform, this.poseFields);
   }
 
   private readonly nodeName = { value: '' };
@@ -3558,7 +3587,7 @@ export class SceneProjection {
     if (source !== undefined && this.world.componentsOf(source.entity).ok)
       this.world.despawn(source.entity).unwrap();
     this.nativeOwners?.delete(unpackSlot(record.entity));
-    this.viewOrderOwners?.delete(record.entity);
+    this.orderedDraws.delete(record.entity);
     for (const joint of record.joints ?? []) this.nativeOwners?.delete(unpackSlot(joint));
     record.disposeSource?.();
     for (const joint of record.joints ?? [])
@@ -3674,7 +3703,9 @@ export class SceneProjection {
       throw new Error('admitted geometry missing its managed asset reference');
     const record = this.nodes.get(object);
     if (record === undefined) throw new Error('admitted mesh missing its entity');
-    record.orderedTransparency = plan.blended === true;
+    if (plan.blended && frame.buffers.nativeTransparentOrder)
+      this.orderedDraws.set(record.entity, record);
+    else this.orderedDraws.delete(record.entity);
     const entity = record.entity;
     const staysOrdinary =
       this.options.world === undefined &&
@@ -3952,7 +3983,7 @@ export class SceneProjection {
     for (const record of this.nodes.values()) this.releaseNode(record);
     this.nodes.clear();
     this.sourcePoses.release(0);
-    this.viewOrderOwners = undefined;
+    this.orderedDraws.clear();
     this.viewOrderCamera = undefined;
     this.canvasTextures?.dispose();
     for (const store of this.resourceStores) store.dispose();
@@ -3982,6 +4013,7 @@ export class SceneProjection {
         'PerspectiveCamera',
         'OrthographicCamera',
         'AmbientLight',
+        'HemisphereLight',
         'DirectionalLight',
         'PointLight',
         'RectAreaLight',

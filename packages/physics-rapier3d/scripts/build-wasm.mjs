@@ -202,7 +202,17 @@ for (const name of [`${stem}.js`, `${stem}.d.ts`, `${stem}_bg.wasm`])
 await writeFile(join(js, 'raw.ts'), `export * from "./${stem}.js";\n`);
 await writeFile(
   join(js, 'init.ts'),
-  `import initWasm from "./${stem}.js";\nimport bytes from "./${stem}_bg.wasm";\nexport async function init() { await initWasm({module_or_path:bytes}); }\n`,
+  `import initWasm from "./${stem}.js";
+export async function init() {
+  const source = new URL('./rapier.wasm', import.meta.url);
+  if (source.protocol === 'file:') {
+    const { readFile } = globalThis.process.getBuiltinModule('node:fs/promises');
+    await initWasm({ module_or_path: await readFile(source) });
+  } else {
+    await initWasm({ module_or_path: source });
+  }
+}
+`,
 );
 await writeFile(
   join(js, 'wasm.d.ts'),
@@ -217,7 +227,6 @@ await build({
   platform: 'neutral',
   target: 'es2022',
   outfile: join(staged, 'rapier.mjs'),
-  loader: { '.wasm': 'binary' },
   legalComments: 'eof',
   minify: true,
 });

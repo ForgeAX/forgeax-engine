@@ -67,8 +67,13 @@ import { SceneProjection } from '../scene';
 import { SharedAssets } from '../shared-assets';
 import { type JointSnapshots, projectJoints } from '../skinning';
 import { SceneChanges, setThreeSceneTracking } from '../source-changes';
-import { enableThreeSourceTracking, ownedCollection } from '../source-collections';
-import { observeField, releaseField } from '../source-fields';
+import {
+  enableThreeSourceTracking,
+  ownedCollection,
+  publishWorldMatrix,
+  watchTargetMatrix,
+} from '../source-collections';
+import { observeField, observeScale, releaseField } from '../source-fields';
 import {
   bindSourceWorldPose,
   reflectSourceWorldPose,
@@ -1056,6 +1061,39 @@ it('keeps ECS skin draws resident until a binding input changes', () => {
     expect(projection.sourceWork()?.meshPlans).toBe(1);
     expect(assets.read(skin().skeleton).unwrap().inverseBindMatrices[12]).toBe(-1);
 
+    const other = new SkinnedMesh(geometry, second);
+    const sharedInverse = inverses[0] as Matrix4;
+    const otherInverses = [sharedInverse];
+    other.bind(new Skeleton([joint], otherInverses), new Matrix4());
+    actor.add(other);
+    sync();
+    sync();
+    const sharedChecks = projection.sourceWork()?.foreignInputChecks;
+    expect(sharedChecks).toBeTypeOf('number');
+    const otherEntity = projection.entityFor(other);
+    if (otherEntity === undefined) throw new Error('Missing second skin');
+    const otherInverseX = () =>
+      assets.read(projection.world.get(otherEntity, Skin).unwrap().skeleton).unwrap()
+        .inverseBindMatrices[12];
+    sharedInverse.elements[12] = -2;
+    sync();
+    expect(otherInverseX()).toBe(-2);
+    expect(assets.read(skin().skeleton).unwrap().inverseBindMatrices[12]).toBe(-2);
+    otherInverses[0] = new Matrix4().makeTranslation(-3, 0, 0);
+    sync();
+    expect(otherInverseX()).toBe(-3);
+    sync();
+    expect(projection.sourceWork()?.foreignInputChecks).toBe(Number(sharedChecks) + 1);
+    otherInverses[0] = sharedInverse;
+    sync();
+    sync();
+    expect(projection.sourceWork()?.foreignInputChecks).toBe(sharedChecks);
+    actor.remove(other);
+    sync();
+    sharedInverse.elements[12] = -4;
+    sync();
+    expect(assets.read(skin().skeleton).unwrap().inverseBindMatrices[12]).toBe(-4);
+
     actor.scale.x = 2;
     sync();
     expect(projection.world.hasComponent(entity, Skin)).toBe(false);
@@ -1090,6 +1128,82 @@ it('keeps ECS skin draws resident until a binding input changes', () => {
   }
 });
 
+it('keeps tuple observation until the last attachment of the same reader retires', () => {
+  const scale = new Group().scale;
+  const dirty = vi.fn();
+  const first = observeScale(scale, dirty);
+  const second = observeScale(scale, dirty);
+  expect(first).toBeTypeOf('function');
+  expect(second).toBeTypeOf('function');
+  scale.x = 2;
+  first?.();
+  first?.();
+  scale.y = 3;
+  expect(dirty).toHaveBeenCalledTimes(2);
+  second?.();
+  scale.z = 4;
+  expect(dirty).toHaveBeenCalledTimes(2);
+  expect(Object.getOwnPropertyDescriptor(scale, 'y')?.value).toBe(3);
+});
+
+it('retires readers after a game seals or freezes a tracked vector', () => {
+  const scale = new Group().scale;
+  const first = vi.fn();
+  const second = vi.fn();
+  const releaseFirst = observeScale(scale, first);
+  const releaseSecond = observeScale(scale, second);
+  Object.seal(scale);
+  releaseFirst?.();
+  scale.x = 3;
+  expect(first).not.toHaveBeenCalled();
+  expect(second).toHaveBeenCalledOnce();
+  releaseSecond?.();
+  scale.y = 4;
+  expect(second).toHaveBeenCalledOnce();
+
+  const frozen = new Group().scale;
+  const a = observeScale(frozen, first);
+  const b = observeScale(frozen, second);
+  Object.freeze(frozen);
+  expect(() => a?.()).not.toThrow();
+  expect(() => b?.()).not.toThrow();
+});
+
+it('retains direct edits and published world matrices until the last reader detaches', () => {
+  const close = enableThreeSourceTracking();
+  const elements = ownedCollection([0]);
+  close();
+  const read = vi.fn();
+  const other = vi.fn();
+  const a = watchTargetMatrix(elements, read);
+  const b = watchTargetMatrix(elements, read);
+  const c = watchTargetMatrix(elements, other);
+  try {
+    elements[0] = 1;
+    publishWorldMatrix(elements);
+    expect(read).toHaveBeenCalledTimes(2);
+    a?.();
+    a?.();
+    elements[0] = 2;
+    publishWorldMatrix(elements);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(other).toHaveBeenCalledTimes(4);
+    c?.();
+    elements[0] = 3;
+    publishWorldMatrix(elements);
+    expect(read).toHaveBeenCalledTimes(6);
+    expect(other).toHaveBeenCalledTimes(4);
+    b?.();
+    elements[0] = 4;
+    publishWorldMatrix(elements);
+    expect(read).toHaveBeenCalledTimes(6);
+  } finally {
+    a?.();
+    b?.();
+    c?.();
+  }
+});
+
 it('keeps the prepared local matrix valid across world-pose publication', () => {
   const object = new Group();
   object.position.x = 2;
@@ -1113,6 +1227,91 @@ it('keeps the prepared local matrix valid across world-pose publication', () => 
     binding.release();
     compose.mockRestore();
   }
+});
+
+it('composes from the admitted parent output and switches to live storage on retirement', () => {
+  const parent = new Group();
+  const child = new Group();
+  parent.add(child);
+  const matrix = parent.matrixWorld;
+  const read = vi.fn(() => matrix);
+  Object.defineProperty(parent, 'matrixWorld', { configurable: true, get: read });
+  const root = bindSourceWorldPose(parent, SynchronousTransform);
+  const branch = bindSourceWorldPose(child, SynchronousTransform);
+  try {
+    read.mockClear();
+    for (let frame = 1; frame <= 60; frame++) {
+      parent.position.x = frame;
+      root.transform.invalidateLocal();
+      resolveSourceWorldPose(parent);
+      resolveSourceWorldPose(child);
+      expect(child.matrixWorld.elements[12]).toBe(frame);
+    }
+    expect(read).not.toHaveBeenCalled();
+    root.release();
+    matrix.makeTranslation(73, 0, 0);
+    resolveSourceWorldPose(child);
+    expect(read).toHaveBeenCalledOnce();
+    expect(child.matrixWorld.elements[12]).toBe(73);
+  } finally {
+    root.release();
+    branch.release();
+  }
+});
+
+it('isolates matrix destinations across a reentrant read of an unobserved parent', () => {
+  const parent = new Group();
+  const child = new Group();
+  const nested = new Group();
+  child.position.x = 2;
+  nested.position.x = 11;
+  parent.add(child);
+  const matrix = parent.matrixWorld.makeTranslation(3, 0, 0);
+  const a = bindSourceWorldPose(child, SynchronousTransform);
+  const b = bindSourceWorldPose(nested, SynchronousTransform);
+  try {
+    Object.defineProperty(parent, 'matrixWorld', {
+      get() {
+        resolveSourceWorldPose(nested);
+        return matrix;
+      },
+    });
+    resolveSourceWorldPose(child);
+    expect(child.matrixWorld.elements[12]).toBe(5);
+    expect(nested.matrixWorld.elements[12]).toBe(11);
+  } finally {
+    b.release();
+    a.release();
+  }
+});
+
+it('keeps the ECS matrix attachment live when another observer releases twice', () => {
+  const node = new Group();
+  const ecs = bindSourceWorldPose(node, SynchronousTransform);
+  const changed = vi.fn();
+  const view = bindSourceWorldPose(node, SynchronousTransform, changed);
+  const other = bindSourceWorldPose(node, SynchronousTransform, changed);
+  try {
+    expect(view.transform).toBe(ecs.transform);
+    view.release();
+    view.release();
+    node.position.x = 3;
+    ecs.transform.invalidateLocal();
+    expect(resolveSourceWorldPose(node)).toBe(true);
+    expect(node.matrixWorld.elements[12]).toBe(3);
+    expect(changed).toHaveBeenCalledTimes(1);
+    other.release();
+    node.position.x = 7;
+    ecs.transform.invalidateLocal();
+    expect(resolveSourceWorldPose(node)).toBe(true);
+    expect(node.matrixWorld.elements[12]).toBe(7);
+    expect(changed).toHaveBeenCalledTimes(1);
+  } finally {
+    view.release();
+    other.release();
+    ecs.release();
+  }
+  expect(resolveSourceWorldPose(node)).toBe(false);
 });
 
 it('reuses native joints and replaces only a changed bone result', () => {
@@ -1380,6 +1579,35 @@ it('visits only the dynamic LOD subtree and keeps retained transparent ranks on 
     projection.dispose();
     assets.dispose();
   }
+});
+
+it('dispatches inherited methods with the live receiver through replacement and release', () => {
+  const proto = { dispatch: () => 1 };
+  const node = Object.create(proto);
+  const other = Object.create(node);
+  const changed = vi.fn();
+  expect(observeField(node, 'dispatch', changed, true)).toBe(true);
+  expect(other.dispatch()).toBe(1);
+  proto.dispatch = () => 2;
+  expect(node.dispatch()).toBe(2);
+  Object.defineProperty(proto, 'dispatch', {
+    get(this: object) {
+      return () => this;
+    },
+  });
+  expect(node.dispatch()).toBe(node);
+  expect(other.dispatch()).toBe(other);
+  Object.setPrototypeOf(node, null);
+  expect(node.dispatch).toBeUndefined();
+  Object.setPrototypeOf(node, { dispatch: () => 3 });
+  expect(node.dispatch()).toBe(3);
+  other.dispatch = () => 4;
+  expect(changed).not.toHaveBeenCalled();
+  node.dispatch = () => 5;
+  expect(changed).toHaveBeenCalledTimes(1);
+  releaseField(node, 'dispatch', changed);
+  expect(node.dispatch()).toBe(5);
+  expect(other.dispatch()).toBe(4);
 });
 
 it('reuses released field slots while preserving inherited writes and duplicate subscriptions', () => {
@@ -1695,6 +1923,91 @@ it('retains ordinary NodeMaterial bindings and re-admits changed node inputs', (
     sync();
     expect(assets.read(handle()).unwrap().values?.baseColor).toEqual([0, 0, 1, 1]);
   } finally {
+    projection.dispose();
+    geometry.dispose();
+    material.dispose();
+    assets.dispose();
+  }
+});
+
+it('publishes moving hidden descendants to ECS and admits their current draws on reveal', () => {
+  const assets = new AssetRegistry();
+  installDefaultAssetDecoders(assets);
+  const projection = new SceneProjection(assets);
+  const scene = new Scene(),
+    camera = new PerspectiveCamera();
+  const hidden = new Group(),
+    socket = new Group();
+  const geometry = new BoxGeometry(),
+    material = new MeshStandardMaterial({ transparent: true, opacity: 0.75 });
+  const children = Array.from({ length: 32 }, () => new Mesh(geometry, material));
+  for (const child of children) child.castShadow = true;
+  hidden.visible = false;
+  scene.add(hidden);
+  hidden.add(socket);
+  socket.add(...children);
+  setThreeSceneTracking(scene, true);
+  const sync = () =>
+    projection.sync(scene, camera, cameraData(camera, NoToneMapping, 1), {
+      ecsPoses: true,
+      updateMatrices: true,
+      depth: true,
+      stencil: false,
+      sortObjects: true,
+      opaque: true,
+      transparent: true,
+      nativeTransparentOrder: true,
+      shadowMap: { enabled: true, type: PCFShadowMap, cameraLayers: camera.layers.mask },
+    });
+  const enroll = vi.spyOn(SceneChanges.prototype, 'registerNode');
+  try {
+    sync();
+    enroll.mockClear();
+    const child = children[0];
+    if (!child) throw new Error('Expected the first hidden mesh');
+    const entity = projection.entityFor(child);
+    if (entity === undefined) throw new Error('Missing projected entity');
+    for (let frame = 1; frame <= 6; frame++) {
+      socket.position.y = frame;
+      child.name = `moving-${frame}`;
+      child.position.x = frame;
+      sync();
+      expect(projection.sourceWork()?.sourceNodes).toBeLessThan(4);
+      expect(projection.world.get(entity, Name).unwrap().value).toBe(child.name);
+      expect(projection.world.get(entity, GlobalTransform).unwrap().world[13]).toBe(frame);
+      expect(projection.world.get(entity, MeshFilter).unwrap().assetHandle).toBe(0);
+    }
+    hidden.visible = true;
+    sync();
+    expect(projection.entityFor(child)).toBe(entity);
+    expect(projection.world.get(entity, MeshFilter).unwrap().assetHandle).not.toBe(0);
+    for (let frame = 1; frame <= 6; frame++) {
+      child.position.z = frame;
+      material.opacity = 0.1 * frame;
+      sync();
+      expect(projection.sourceWork()?.meshPlans).toBe(0);
+      expect(projection.world.get(entity, GlobalTransform).unwrap().world[14]).toBe(frame);
+      const handle = projection.world.get(entity, MeshRenderer).unwrap().materials[0];
+      if (!handle) throw new Error('Missing transparent material');
+      expect(assets.read(handle).unwrap().values?.baseColor).toEqual([
+        1,
+        1,
+        1,
+        expect.closeTo(material.opacity),
+      ]);
+    }
+    hidden.visible = false;
+    sync();
+    expect(projection.world.get(entity, MeshFilter).unwrap().assetHandle).toBe(0);
+    sync();
+    expect(projection.sourceWork()?.sourceNodes).toBeLessThan(4);
+    expect(enroll).not.toHaveBeenCalled();
+    scene.add(child);
+    sync();
+    expect(projection.world.get(entity, MeshFilter).unwrap().assetHandle).not.toBe(0);
+    expect(projection.world.get(entity, GlobalTransform).unwrap().world[13]).toBe(0);
+  } finally {
+    enroll.mockRestore();
     projection.dispose();
     geometry.dispose();
     material.dispose();

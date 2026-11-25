@@ -98,7 +98,6 @@ export const SCREEN_PROBE_BINDINGS = {
   probeMovingIn: [48, 'read'],
   pixelMovingOut: [49, 'storage'],
   pixelMovingIn: [50, 'read'],
-  shortRangeAoFurthestDepthOut: [51, 'storage-r32float'],
 } as const satisfies Record<string, readonly [number, Binding]>;
 export type ScreenProbeSlot = keyof typeof SCREEN_PROBE_BINDINGS;
 
@@ -208,10 +207,6 @@ const SCREEN_PROBE_RETAINED_AO_SLOTS = [
 export const SCREEN_PROBE_TRACE_STAGES = {
   prepareScreenProbeReceiverMotion: {
     slots: ['frame', 'view', 'probesIn', 'adaptiveCountIn', 'motionWithDepth', 'receiverMotionOut'],
-    field: false,
-  },
-  seedScreenProbeFurthestDepth: {
-    slots: ['depth', 'shortRangeAoFurthestDepthOut'],
     field: false,
   },
   computeScreenProbeShortRangeAo: {
@@ -556,8 +551,6 @@ export async function createScreenProbeKernels(
     stage === 'applyScreenProbeAoHistory' ||
     stage === 'applyScreenProbeAoHistoryCompact';
   const traceStageEnabled = (stage: ScreenProbeTraceStage) => {
-    if (stage === 'seedScreenProbeFurthestDepth')
-      return screenSpace && shortRangeAoMode === 'half-scalar';
     if (stage === 'temporalScreenProbesWithVelocity') return screenSpace;
     if (stage === 'temporalScreenProbesWithAoAndVelocity') return screenSpace && shortRangeAo;
     if (

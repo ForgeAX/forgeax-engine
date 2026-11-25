@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { WebGpuPipelineLibrary } from '../pipeline-library';
+import { PipelineResourceIndex } from '../pipeline-resource-index';
 import { createMockGpu } from './__mocks__/gpu-device';
 
 function required<T>(value: T | undefined): T {
@@ -100,6 +101,21 @@ it('lists every current compilation with detached complete state and no shader s
   required(f.finishes[1])();
   await second;
   expect(f.library.inspect().pending).toEqual({ unidentified: 0, pipelines: [] });
+});
+
+it('compiles and inspects a WebGPU pipeline without a realm performance object', async () => {
+  const f = await fixture();
+  vi.stubGlobal('performance', undefined);
+  try {
+    const pipeline = f.library.createRenderPipelineAsync(f.descriptor());
+    expect(f.library.inspect().pending?.pipelines[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    await Promise.resolve();
+    required(f.finishes[0])();
+    await pipeline;
+    expect(f.library.inspect().compilationPending).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('identifies recipes across module numbering and labels, while separating actual state variants', async () => {
@@ -213,6 +229,29 @@ it('keeps coverage unresolved until background indexing finishes and reports sha
   await Promise.all([background, startup, runtime]);
   expect(target.render).toHaveBeenCalledTimes(1);
   expect(target.library.export().ok).toBe(true);
+});
+
+it('resolves frame readiness from in-flight compilations independently of resident programs', async () => {
+  const f = await fixture();
+  const handles = Array.from({ length: 32 }, (_, i) =>
+    f.library.createRenderPipeline(f.descriptor(String(i))),
+  );
+  const enumerate = vi.spyOn(PipelineResourceIndex.prototype, 'values');
+  try {
+    expect(f.library.pendingRuntimeCompilation()).toBeUndefined();
+    const pending = f.library.createRenderPipelineAsync(f.descriptor('another'));
+    const receipt = f.library.pendingRuntimeCompilation();
+    await Promise.resolve();
+    required(f.finishes[0])();
+    await pending;
+    expect((await receipt)?.ok).toBe(true);
+    expect(f.library.pendingRuntimeCompilation()).toBeUndefined();
+    expect(enumerate).not.toHaveBeenCalled();
+    expect(handles).toHaveLength(32);
+  } finally {
+    enumerate.mockRestore();
+    f.library.dispose();
+  }
 });
 
 it('signals completion of captured runtime compilations without waiting for later requests', async () => {

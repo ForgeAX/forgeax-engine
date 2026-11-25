@@ -1,19 +1,21 @@
 import type { Buffer } from '@forgeax/engine-rhi';
 import type { MeshGpuHandles } from '../device/gpu-residency';
-import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { CollectedMaterialArtifacts } from '../gpu-driven/material-artifacts';
 import { sceneIndexKeyForPass } from '../gpu-driven/material-artifacts';
 import type { GpuDrivenPrepareInput } from '../gpu-driven/production-raster';
+import { sourceDrawForSection } from '../gpu-driven/source-draw-indices';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
+import { admitsInlineSsr } from '../ssr/admission';
 import type { ViewLights } from '../world/render-lights';
+import { renderWorldFor } from '../world/render-world';
+import { viewSsrAdmissionOf } from '../world/ssr-admission-systems';
 import { directionalShadowSimple } from './directional-shadow-simple';
 import type { GpuDrivenRecordInput } from './frame';
 import {
@@ -22,8 +24,8 @@ import {
   resolveFrameMaterials,
 } from './frame-admission';
 import {
+  captureCasterMaterialReads,
   collectFrameGpuDrivenArtifacts,
-  collectGpuShadowMaterials,
   gpuDrivenPrepareRequest,
   gpuProbeBlendBufferFor,
 } from './frame-gpu-driven';
@@ -57,7 +59,7 @@ export interface FrameGpuDrivenInput {
   readonly deferredProbeBuffer: Buffer | undefined;
   readonly artifacts: CollectedMaterialArtifacts | undefined;
   readonly sourcePreparationPending?: true;
-  readonly shadowMaterials: ShadowMaterialContent;
+  readonly shadowReads?: ReturnType<typeof captureCasterMaterialReads> | undefined;
   readonly shadowViews: boolean;
   readonly request: GpuDrivenPrepareInput | undefined;
   readonly materialBindingClasses: ReadonlyMap<string, string>;
@@ -82,9 +84,7 @@ function resolveDirectSurface(
   const directRanges = ranges.filter(({ member }) => {
     const source = owners.get(member.entityKey);
     if (!source) return false;
-    const draw = source.gpuDrivenDraws?.find(
-      (draw, index) => gpuDrivenSourceDrawItemIndex(draw, index) === member.drawItemIndex,
-    );
+    const draw = sourceDrawForSection(source.gpuDrivenDraws, member.drawItemIndex);
     const slot =
       draw?.materialSlot ??
       (member.drawItemIndex === 0 && source.materials.length === 1 ? 0 : undefined);
@@ -125,11 +125,6 @@ export function buildFrameGpuDrivenInput(
     renderables,
     sources.hasLightProbes,
   );
-  const { materials } = resolveFrameMaterials(
-    shadowCasterProjection,
-    shadowCasterProjection?.renderables ?? renderables,
-  );
-  const shadowMaterials = new ShadowMaterialContent(materials);
   const hasShadows = hasShadowViewDemand(sources.lights);
   const shadowViews = hasShadows && frame?.geometryLane !== 'direct';
   if (frame === undefined)
@@ -138,7 +133,6 @@ export function buildFrameGpuDrivenInput(
       visibleSurface,
       deferredProbeBuffer,
       artifacts: undefined,
-      shadowMaterials,
       shadowViews: false,
       request: undefined,
       materialBindingClasses: sources.materialBindingClasses,
@@ -148,7 +142,7 @@ export function buildFrameGpuDrivenInput(
     frame.scene,
     frame.scene?.materialPrograms ?? shadowCasterProjection?.materialPrograms,
     standard,
-    hasShadows,
+    shadowViews ? 'forward-and-shadow' : hasShadows ? 'forward-with-direct-shadows' : 'forward',
   );
   if (artifacts.sourcePreparationPending === true)
     return {
@@ -157,21 +151,22 @@ export function buildFrameGpuDrivenInput(
       deferredProbeBuffer,
       artifacts,
       sourcePreparationPending: true,
-      shadowMaterials,
       shadowViews,
       request: undefined,
       materialBindingClasses: sources.materialBindingClasses,
     };
-  if (hasShadows)
-    collectGpuShadowMaterials(
-      internals,
-      sourceScope,
-      artifacts.batchExecutions,
-      meshes,
-      shadowMaterials,
-      undefined,
-      shadowCasterProjection,
-    );
+  // Only GPU shadow views consume physical caster versions during Queue.
+  // Direct passes bind their live materials while encoding. A retained directional
+  // atlas admits its own reads once its mesh domain is known during Record.
+  const shadowReads = shadowViews
+    ? captureCasterMaterialReads(
+        internals,
+        sourceScope,
+        artifacts.batchExecutions,
+        resolveFrameMaterials(shadowCasterProjection, renderables).materials,
+        shadowCasterProjection,
+      )
+    : undefined;
   const probeBuffer = gpuProbeBlendBufferFor(
     internals,
     frameState,
@@ -191,7 +186,7 @@ export function buildFrameGpuDrivenInput(
     visibleSurface,
     probeBuffer,
     shadowViews,
-    shadowMaterials,
+    shadowReads?.content,
     sources.materialBindingClasses,
     shadowCasterProjection,
     sources.profilePhase,
@@ -200,14 +195,25 @@ export function buildFrameGpuDrivenInput(
     sources.leanLighting === true,
     directSurface,
   );
+
+  const ssr =
+    pipelineState.extendedLightingAvailable === true && internals.viewEntity !== undefined
+      ? viewSsrAdmissionOf(renderWorldFor(internals), internals.viewEntity)
+      : undefined;
   return {
     meshes,
     visibleSurface,
     deferredProbeBuffer,
     artifacts,
-    shadowMaterials,
+    shadowReads,
     shadowViews,
-    request,
+    request: admitsInlineSsr(
+      internals.device,
+      pipelineState.extendedLightingAvailable,
+      ssr?.kind === 'resolved' ? ssr.admission : undefined,
+    )
+      ? { ...request, forwardInlineSsr: true }
+      : request,
     materialBindingClasses: sources.materialBindingClasses,
   };
 }

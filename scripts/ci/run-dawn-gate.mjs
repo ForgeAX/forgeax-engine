@@ -14,6 +14,7 @@ import {
   dawnGateGroupPriority,
   dawnNativeExecutionOrder,
 } from './dawn-gate-roster.mjs';
+import { graphicsEnvironment, verifyBundle } from './local-graphics.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
@@ -151,7 +152,7 @@ export function dawnGroupEnvironment(group, environment, ordinaryWorkers, native
     group.limitSoftwareGpuWorkers || (nativeConcurrency === 2 && group.nativeProcessSlots === 1);
   const rasterThreadLimit =
     group.softwareGpuHeapRasterThreads ?? (limitSoftwareGpuWorkers ? 4 : undefined);
-  return {
+  const env = {
     ...environment,
     ...group.env,
     ...(group.serialOrdinary ? { FORGEAX_DAWN_SERIAL_ORDINARY: String(ordinaryWorkers) } : {}),
@@ -172,6 +173,15 @@ export function dawnGroupEnvironment(group, environment, ordinaryWorkers, native
       ? { MALLOC_ARENA_MAX: '2', MALLOC_TRIM_THRESHOLD_: '131072' }
       : {}),
   };
+  const bundle = group.lockedGraphics && env.FORGEAX_CI_GRAPHICS_ROOT;
+  if (!bundle) return env;
+  verifyBundle(bundle);
+  const selected = graphicsEnvironment(bundle, env);
+  console.log(
+    '[dawn-graphics]',
+    JSON.stringify({ owner: group.id, icd: selected.VK_DRIVER_FILES }),
+  );
+  return selected;
 }
 
 export function selectDawnGroups(id, shard) {

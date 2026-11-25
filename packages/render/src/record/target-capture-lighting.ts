@@ -112,6 +112,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     group.writers.length = 0;
     group.used = 0;
   }
+  const pointsLinesSlots = preparedPointsLinesSlots(runtime);
   let view = group.writers[group.used];
   if (view === undefined) {
     const device = runtime.device;
@@ -124,6 +125,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     let pointsLines: ReturnType<typeof createPointsLinesViewBuffer>;
     try {
       pointsLines = createPointsLinesViewBuffer(device);
+      pointsLines.ensureCapacity(pointsLinesSlots);
     } catch (error) {
       device.destroyBuffer(buffer.value);
       throw error;
@@ -141,6 +143,8 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       pointsLinesView: pointsLines,
     };
     group.writers.push(view);
+  } else {
+    view.pointsLinesView.ensureCapacity(pointsLinesSlots);
   }
   group.used++;
   if (work.candidateGeneration === undefined || view.generation !== work.candidateGeneration) {
@@ -170,8 +174,6 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   }
   view.scenePasses.camera = work.faceCamera;
   const cascades = captureLights.cascades;
-  // This frame's capture views grow to the slots `view-points-lines` prepared.
-  view.pointsLinesView.ensureCapacity(preparedPointsLinesSlots(runtime));
   const capturePipeline = {
     ...pipeline,
     perPassResources: {

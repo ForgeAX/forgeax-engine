@@ -1,5 +1,5 @@
 import { err, ok, type Result } from '../result.js';
-import type { TextureMipPolicy, TextureShape } from './asset.js';
+import type { CustomTextureMipPolicy, TextureMipPolicy, TextureShape } from './asset.js';
 import { isCompressedFormat } from './block.js';
 
 export type TextureErrorCode = keyof TextureErrorDetailMap;
@@ -19,7 +19,7 @@ type TextureErrorDetailMap = {
   };
   'texture-mip-policy-invalid': {
     readonly viewDimension: TextureShape['viewDimension'];
-    readonly policy: TextureMipPolicy['kind'];
+    readonly policy: (TextureMipPolicy | CustomTextureMipPolicy)['kind'];
   };
   'texture-format-dimension-unsupported': {
     readonly format: GPUTextureFormat;

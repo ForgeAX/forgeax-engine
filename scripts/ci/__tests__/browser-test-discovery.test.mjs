@@ -167,7 +167,6 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
           errors,
           optimized: optimized.map(({ id, src }) => ({ id, src })),
         };
-        assert.deepEqual(warnings, [], 'every configured dependency must resolve from its installed owner');
         assert.notEqual(
           optimizer.metadata,
           previousMetadata,
@@ -193,7 +192,14 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
             'the actual browser loading chain must not select the native Host runtime');
         }
         const payload = await server.transformRequest('/packages/physics-rapier3d/pkg/rapier.mjs');
-        assert.ok(payload?.code.length > 0, 'Vite must serve the real embedded WASM module');
+        assert.ok(payload?.code.length > 0, 'Vite must serve the scalar module');
+        assert.ok(!payload.code.includes('AGFzbQ'), 'the scalar module must not inline its WASM');
+        const url = new URL('/packages/physics-rapier3d/pkg/rapier.wasm',
+          server.resolvedUrls.local[0]);
+        const response = await fetch(url);
+        assert.equal(response.status, 200, 'Vite must serve the shared scalar WASM');
+        assert.ok(WebAssembly.validate(await response.arrayBuffer()));
+        assert.deepEqual(warnings, [], 'configured dependencies and Rapier must resolve from the installed owners');
         if (!parity) assert.ok(!optimized.some(entry => entry.id.startsWith('three')), 'runtime owner must not prepare Parity');
         rows.push({ owner, optimizedCount: optimized.length });
       } finally {

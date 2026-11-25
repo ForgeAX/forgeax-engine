@@ -110,6 +110,9 @@ async function buildProduction(
     ...(context.opts.ddc?.buildCacheRoot === undefined
       ? {}
       : { buildCacheRoot: context.opts.ddc.buildCacheRoot }),
+    ...(context.opts.ddc?.buildCacheSeedRoot === undefined
+      ? {}
+      : { buildCacheSeedRoot: context.opts.ddc.buildCacheSeedRoot }),
     ...(context.opts.runtimeBinding === undefined
       ? {}
       : { runtimeBinding: context.opts.runtimeBinding }),

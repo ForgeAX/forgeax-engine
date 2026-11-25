@@ -1,5 +1,5 @@
 #define_import_path forgeax_ssr::compose
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid, loadCompactGBufferRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid, loadCompactGBufferRoughness, encodeStandardNormalRoughness}
 
 struct ComposeVertex {
   @builtin(position) position : vec4<f32>,
@@ -10,14 +10,26 @@ struct ComposeVertex {
 @group(0) @binding(2) var response : texture_2d<f32>;
 @group(0) @binding(3) var normalRoughness : texture_2d<u32>;
 @group(0) @binding(7) var defaultGBufferB : texture_2d<u32>;
+@group(0) @binding(8) var forwardReflectionSurface : texture_2d<f32>;
 @group(0) @binding(4) var radianceSampler : sampler;
 #import forgeax_view::common::{View, screenSpaceReflectionRoughnessFade}
 @group(0) @binding(5) var<uniform> view : View;
+@id(64008) override ssrComposeEnvironment : bool = false;
 
 fn ssrComposeVertex(index : u32) -> ComposeVertex {
   let x = select(-1.0, 3.0, index == 1u);
   let y = select(-1.0, 3.0, index == 2u);
   return ComposeVertex(vec4<f32>(x, y, 0.0, 1.0));
+}
+
+@vertex fn vs_pack_forward_surface(@builtin(vertex_index) index : u32) -> ComposeVertex {
+  return ssrComposeVertex(index);
+}
+
+@fragment fn fs_pack_forward_surface(in : ComposeVertex) -> @location(0) u32 {
+  let surface = textureLoad(forwardReflectionSurface, vec2<i32>(in.position.xy), 0);
+  if (dot(surface.xyz, surface.xyz) <= 1e-10) { return 0u; }
+  return encodeStandardNormalRoughness(normalize(surface.xyz), surface.w);
 }
 
 #if PORTABLE_FRAGMENT
@@ -63,7 +75,7 @@ fn evaluateSsrCompose(in : ComposeVertex, context : texture_2d<u32>, compact : b
   let roughnessLimit = clamp(view.ssrParams.z, 0.0, 1.0);
   if (!(view.ssrParams.w > 0.5 && view.ssrParams.w < 3.402823e+38) ||
       !(receiverRoughness >= 0.0 && receiverRoughness < roughnessLimit) || environment.a <= 0.0) {
-    return vec4<f32>(0.0);
+    return vec4f(select(vec3f(0.0), environment.rgb, ssrComposeEnvironment), 0.0);
   }
   let roughness = clamp(receiverRoughness, 0.04, 1.0);
   let lod = ssrReflectionLod(roughness);
@@ -90,9 +102,12 @@ fn evaluateSsrCompose(in : ComposeVertex, context : texture_2d<u32>, compact : b
   // lobe can contain a visible wall even when that one ray misses its edge.
   // Preserve the current material's cutoff instead of borrowing a neighbor's
   // roughness policy from the filtered reflection pyramid.
-  let receiverConfidence = screenSpaceReflectionRoughnessFade(receiverRoughness, roughnessLimit);
+  let receiverConfidence = screenSpaceReflectionRoughnessFade(receiverRoughness, roughnessLimit, view.ssrQuality.w > 0.0);
   let confidence = clamp(min(receiverConfidence, sample.a), 0.0, 1.0) * environment.a;
-  return vec4<f32>(confidence * (sample.rgb * materialResponse - environment.rgb), 0.0);
+  let screenSpecular = sample.rgb * materialResponse;
+  let specular = select(confidence * (screenSpecular - environment.rgb),
+    mix(environment.rgb, screenSpecular, confidence), ssrComposeEnvironment);
+  return vec4f(specular, 0.0);
 }
 
 #if PORTABLE_FRAGMENT

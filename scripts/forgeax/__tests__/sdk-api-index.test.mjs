@@ -71,7 +71,7 @@ test('fails on a renamed export or member instead of rendering a stale name', ()
 });
 
 test('game onboarding links the API index', () => {
-  for (const file of ['skills/forgeax-engine-sdk/SKILL.md', 'templates/AGENTS.md']) {
+  for (const file of ['skills/forgeax-engine-authoring/SKILL.md', 'templates/AGENTS.md']) {
     assert.match(readFileSync(resolve(root, file), 'utf8'), /references\/api-index\.md/, file);
   }
 });

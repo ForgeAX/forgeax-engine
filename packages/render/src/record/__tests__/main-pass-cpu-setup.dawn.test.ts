@@ -3,6 +3,13 @@ import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
+import {
+  projectViewLayout,
+  retainPipelineView,
+  retainViewGroup,
+  retainViewLayout,
+  viewForPipeline,
+} from '../../environment/bindings';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { flushMeshDrawUploads } from '../mesh-ssbo';
 import {
@@ -140,26 +147,28 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
   Object.assign(last.source, { transform: { world: moved } });
   device.queue.writeBuffer(f.meshUniformBuffer, 3 * 256, moved).unwrap();
   const viewBuffer = device.createBuffer({ size: 2048, usage: 64 | 8 }).unwrap();
-  const viewLayout = device
-    .createBindGroupLayout({
-      entries: [0, 10].map((binding) => ({
-        binding,
-        visibility: 1,
-        buffer: { type: 'uniform', hasDynamicOffset: true },
-      })),
-    })
-    .unwrap();
-  const viewGroup = device
-    .createBindGroup({
-      layout: viewLayout,
-      entries: [0, 10].map((binding) => ({
-        binding,
-        resource: { kind: 'buffer', value: { buffer: viewBuffer, size: 256 } },
-      })),
-    })
-    .unwrap();
+  const viewEntries = [
+    { binding: 0, visibility: 1, buffer: { type: 'uniform' as const, hasDynamicOffset: true } },
+  ];
+  const viewLayout = device.createBindGroupLayout({ entries: viewEntries }).unwrap();
+  retainViewLayout(viewLayout, viewEntries);
+  const resources = [
+    { binding: 0, resource: { kind: 'buffer' as const, value: { buffer: viewBuffer, size: 256 } } },
+  ];
+  const viewGroup = device.createBindGroup({ layout: viewLayout, entries: resources }).unwrap();
+  retainViewGroup(viewGroup, viewLayout, resources);
+  const pointsLayout = projectViewLayout(
+    device,
+    viewLayout,
+    new Map([
+      [0, 1],
+      [10, 1],
+    ]),
+  );
   const pipeline = f.createPipeline(shader, viewLayout);
-  const pointsPipeline = f.createPipeline(pointsShader, viewLayout);
+  const pointsPipeline = f.createPipeline(pointsShader, pointsLayout);
+  retainPipelineView(pointsPipeline, pointsLayout);
+  const pointsGroup = viewForPipeline(device, pointsPipeline, viewGroup, viewBuffer);
   Object.assign(f.c.runtime, {
     getMaterialShaderPipelineEntry: (id: string) => ({
       pipeline: id === 'forgeax::points-lines' ? pointsPipeline : pipeline,
@@ -201,11 +210,13 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
     });
-    pass.setBindGroup(0, viewGroup, [0, 0]);
+    pass.setBindGroup(0, viewGroup, [0]);
     if (!oracle) f.record(pass);
     else
       for (const entry of [first, points, ...(omitLast ? [] : [last])]) {
         pass.setPipeline(entry === points ? pointsPipeline : pipeline);
+        if (entry === points) pass.setBindGroup(0, pointsGroup, [0, 0]);
+        else pass.setBindGroup(0, viewGroup, [0]);
         pass.setBindGroup(1, f.materialGroup, [0]);
         pass.setBindGroup(2, f.meshGroup, [entry === last ? 3 * 256 : 0]);
         pass.setBindGroup(3, identityGroup);

@@ -62,9 +62,10 @@ function changingTransmissionTitles(source) {
   const names = [];
   const alternating = source.match(/'(records sixty alternating[^']+)'/)?.[1];
   const replacement = source.match(/'(releases inactive glass[^']+)'/)?.[1];
-  assert.ok(alternating && replacement);
+  const directColor = source.match(/'(composites current-frame stock[^']+)'/)?.[1];
+  assert.ok(alternating && replacement && directColor);
   for (const path of ['forward', 'deferred']) {
-    names.push(alternating.replace('%s', path));
+    names.push(alternating.replace('%s', path), directColor.replace('%s', path));
     for (const shadow of ['false', 'true'])
       names.push(replacement.replace('%s', path).replace('%s', shadow));
   }
@@ -76,7 +77,7 @@ for (const [kind, file, count] of [
   [
     'transmission',
     'packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts',
-    14,
+    16,
   ],
 ])
   test(`${kind} real test titles are selected and passed exactly once`, () => {
@@ -161,7 +162,7 @@ test('transmission Smoke owners conserve every static and changing transmission 
   );
   const names = [...source.matchAll(/\bit\(\s*'([^']+)'/g)].map((match) => match[1]);
   names.push(...changingTransmissionTitles(source));
-  assert.equal(names.length, 15);
+  assert.equal(names.length, 17);
   assert.deepEqual(selectTransmissionSmokeOwner(features), roster);
   assert.equal(roster.length, 7);
   assert.deepEqual(selectTransmissionSmokeOwner(features, 'frames'), [canonical]);
@@ -170,7 +171,7 @@ test('transmission Smoke owners conserve every static and changing transmission 
   const allCovered = new Set();
   for (const [owner, expected] of [
     ['features-a', 6],
-    ['features-b', 8],
+    ['features-b', 10],
     ['frames', 1],
   ]) {
     const covered = new Set();

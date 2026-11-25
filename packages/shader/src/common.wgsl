@@ -1,5 +1,59 @@
 #define_import_path forgeax_view::common
 
+struct ReconstructedDepthSurface {
+  position : vec3<f32>,
+  normal : vec3<f32>,
+};
+
+fn depthSurfaceCameraFacing(worldViewProj : mat4x4<f32>, orthographic : bool) -> vec3<f32> {
+  let perspective = -vec3<f32>(worldViewProj[0].w, worldViewProj[1].w, worldViewProj[2].w);
+  let parallel = vec3<f32>(worldViewProj[0].z, worldViewProj[1].z, worldViewProj[2].z);
+  return normalize(select(perspective, parallel, orthographic));
+}
+
+fn depthSurfacePosition(pixel : vec2<f32>, inverseExtent : vec2<f32>, deviceZ : f32,
+    inverseProjection : mat4x4<f32>) -> vec3<f32> {
+  let ndc = (pixel + 0.5) * inverseExtent * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+  let p = inverseProjection * vec4<f32>(ndc, deviceZ, 1.0);
+  return p.xyz / p.w;
+}
+
+// Choose the one-sided depth difference that stays on the receiver plane.
+// A clear or off-screen neighbor cannot define that plane.
+fn depthSurfaceSlope(source : texture_depth_2d, pixel : vec2<i32>, axis : vec2<i32>,
+    extent : vec2<i32>, center : f32) -> f32 {
+  let previous = pixel - axis;
+  let next = pixel + axis;
+  let previousDepth = textureLoad(source, clamp(previous, vec2<i32>(0), extent - 1), 0);
+  let nextDepth = textureLoad(source, clamp(next, vec2<i32>(0), extent - 1), 0);
+  let previousValid = all(previous >= vec2<i32>(0)) && previousDepth > 0.0;
+  let nextValid = all(next < extent) && nextDepth > 0.0;
+  let d0 = center - previousDepth;
+  let d1 = nextDepth - center;
+  return select(
+    select(0.0, d1, nextValid), d0,
+    previousValid && (!nextValid || abs(d0) <= abs(d1)),
+  );
+}
+
+fn reconstructDepthSurface(source : texture_depth_2d, pixel : vec2<i32>, deviceZ : f32,
+    inverseProjection : mat4x4<f32>, fallbackNormal : vec3<f32>) -> ReconstructedDepthSurface {
+  let extent = vec2<i32>(textureDimensions(source));
+  let inverseExtent = 1.0 / vec2<f32>(extent);
+  let dx = depthSurfaceSlope(source, pixel, vec2<i32>(1, 0), extent, deviceZ);
+  let dy = depthSurfaceSlope(source, pixel, vec2<i32>(0, 1), extent, deviceZ);
+  let centerPixel = vec2<f32>(pixel);
+  let center = depthSurfacePosition(centerPixel, inverseExtent, deviceZ, inverseProjection);
+  let right = depthSurfacePosition(centerPixel + vec2<f32>(1.0, 0.0), inverseExtent,
+    max(deviceZ + dx, 1e-8), inverseProjection);
+  let down = depthSurfacePosition(centerPixel + vec2<f32>(0.0, 1.0), inverseExtent,
+    max(deviceZ + dy, 1e-8), inverseProjection);
+  let normal = cross(down - center, right - center);
+  let length2 = dot(normal, normal);
+  return ReconstructedDepthSurface(center,
+    select(fallbackNormal, normal * inverseSqrt(max(length2, 1e-20)), length2 > 1e-20));
+}
+
 // The texture view owns the texture transfer: an sRGB view decodes once during
 // textureSample, while a linear view is returned unchanged. Authored scalar
 // values are decoded by the material extraction path before the uniform upload.
@@ -165,7 +219,7 @@ struct View {
   // z = perspective camera height density; w packs Deferred channel projection
   // in bits 0..19 and indirect specular controls in bits 20..21.
   fogSky : vec4<f32>,
-  // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
+  // SSR trace scale, per-ray steps, rays per pixel and temporal sample phase.
   ssrQuality : vec4<f32>,
   // Index + 1 is the compact GBuffer subsurface profile ID; zero entries are unused.
   subsurfaceProfiles : array<vec4<u32>, 4>,
@@ -174,40 +228,22 @@ struct View {
   groundSolar : vec4<f32>,
 };
 
-// Keep full SSR through half the authored cutoff, then fade linearly to zero.
-fn screenSpaceReflectionRoughnessFade(roughness: f32, maxRoughness: f32) -> f32 {
-  let enabled = maxRoughness > 0.0;
-  let limit = select(1.0, maxRoughness, enabled);
-  return select(0.0, clamp(2.0 - 2.0 * (roughness / limit), 0.0, 1.0), enabled);
+// The mirror-only route fades to the environment twice as early as GGX.
+fn screenSpaceReflectionRoughnessFade(roughness: f32, maxRoughness: f32, glossy: bool) -> f32 {
+  if (!(maxRoughness > 0.0)) { return 0.0; }
+  let slope = select(4.0, 2.0, glossy) / maxRoughness;
+  return clamp(2.0 - roughness * slope, 0.0, 1.0);
 }
 
-// Level zero already covers the first full-resolution downsample. Keep the
-// roughness curve in source-scene texels and translate it to this mip chain.
-fn ssrSceneColorLod(roughness: f32, maxRoughness: f32, levels: u32) -> f32 {
-  let relativeRoughness = roughness / max(maxRoughness, 1e-6);
-  let span = clamp((relativeRoughness - 0.1) / 0.65, 0.0, 1.0);
-  return max(0.0, span * f32(levels) - 1.0);
-}
-
-fn sampleSsrSceneColorLevel(source: texture_2d<f32>, uv: vec2<f32>, level: u32) -> vec3<f32> {
-  let size = textureDimensions(source, level);
-  let position = clamp(uv * vec2<f32>(size) - 0.5, vec2<f32>(0.0), vec2<f32>(size - 1u));
-  let lower = vec2<i32>(floor(position));
-  let upper = min(lower + 1, vec2<i32>(size) - 1);
+fn sampleSsrSceneColor(source: texture_2d<f32>, uv: vec2f) -> vec3f {
+  let size = textureDimensions(source, 0);
+  let position = clamp(uv * vec2f(size) - 0.5, vec2f(0.0), vec2f(size - 1u));
+  let lower = vec2i(floor(position));
+  let upper = min(lower + 1, vec2i(size) - 1);
   let f = fract(position);
-  let a = mix(textureLoad(source, lower, level).rgb,
-    textureLoad(source, vec2<i32>(upper.x, lower.y), level).rgb, f.x);
-  let b = mix(textureLoad(source, vec2<i32>(lower.x, upper.y), level).rgb,
-    textureLoad(source, upper, level).rgb, f.x);
+  let a = mix(textureLoad(source, lower, 0).rgb, textureLoad(source, vec2i(upper.x, lower.y), 0).rgb, f.x);
+  let b = mix(textureLoad(source, vec2i(lower.x, upper.y), 0).rgb, textureLoad(source, upper, 0).rgb, f.x);
   return mix(a, b, f.y);
-}
-
-fn sampleSsrSceneColor(source: texture_2d<f32>, uv: vec2<f32>, lod: f32) -> vec3<f32> {
-  let lower = u32(floor(lod));
-  let fraction = fract(lod);
-  let base = sampleSsrSceneColorLevel(source, uv, lower);
-  if (fraction <= 0.0) { return base; }
-  return mix(base, sampleSsrSceneColorLevel(source, uv, lower + 1u), fraction);
 }
 
 // Direct Mesh draws bind aligned 256-byte slots, exposing a 208-byte storage

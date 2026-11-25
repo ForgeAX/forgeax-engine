@@ -1,6 +1,7 @@
 import {
-  deriveVertexBufferLayoutFromProjection,
+  captureVertexLayoutProjection,
   type VertexLayoutProjection,
+  visitVertexUvAliases,
 } from '@forgeax/engine-geometry';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
@@ -24,7 +25,8 @@ import type { GpuDrivenBatch, GpuDrivenBatchLod } from './batch-topology';
 import {
   type GpuDrivenDrawRange,
   type GpuDrivenGeometryReceipt,
-  hasGpuDrivenVertexColor,
+  hasGpuDrivenVertexSemantic,
+  hasRequiredVertexInputs,
   ownGpuDrivenVertexInputs,
   type PreparedGpuDrivenDraw,
   prepareGpuDrivenDraw,
@@ -40,6 +42,30 @@ export interface BatchGeometry {
 
 const capturedGeometry = new WeakSet<BatchGeometry>();
 
+interface BatchVertexLayout {
+  readonly layout: VertexLayoutProjection;
+  readonly vertexInputs: GpuDrivenGeometryReceipt['vertexInputs'];
+}
+
+const batchLayouts = new WeakMap<VertexLayoutProjection, BatchVertexLayout>();
+
+/** Extraction and resident mesh binding consume one input declaration per physical layout. */
+export function batchVertexLayout(source: VertexLayoutProjection): BatchVertexLayout {
+  const known = batchLayouts.get(source);
+  if (known !== undefined) return known;
+  const layout = captureVertexLayoutProjection(source);
+  const vertexInputs = ownGpuDrivenVertexInputs(
+    layout.attributes.map(({ key, shaderLocation, format }) => ({
+      semantic: key,
+      location: shaderLocation,
+      format,
+    })),
+  );
+  const value = { layout, vertexInputs };
+  batchLayouts.set(layout, value);
+  return value;
+}
+
 /** Capture borrowed source facts once, sharing the immutable result across bindings. */
 export function captureBatchGeometry(source: BatchGeometry): BatchGeometry {
   if (capturedGeometry.has(source)) return source;
@@ -50,14 +76,7 @@ export function captureBatchGeometry(source: BatchGeometry): BatchGeometry {
     }),
     ...(source.layout === undefined
       ? {}
-      : {
-          layout: Object.freeze({
-            ...source.layout,
-            attributes: Object.freeze(
-              source.layout.attributes.map((attribute) => Object.freeze({ ...attribute })),
-            ),
-          }),
-        }),
+      : { layout: captureVertexLayoutProjection(source.layout) }),
     draw: Object.freeze({ ...source.draw }),
     deformation: source.deformation,
   });
@@ -180,8 +199,8 @@ export function prepareBatchExecution<Artifact extends BatchArtifactFacts>(
   const required =
     pass.sceneIndexProgramKey !== undefined || isCanonicalStandardPbrMaterialShader(pass.shaderId);
   const artifact = resolve(pass.sceneIndexProgramKey ?? pass.shaderId, {
-    vertexColorAvailable: hasGpuDrivenVertexColor(geometry.receipt.vertexInputs),
-    ...(geometry.receipt.vertexInputs.some((input) => input.semantic === 'tangentFrame')
+    vertexColorAvailable: hasGpuDrivenVertexSemantic(geometry.receipt.vertexInputs, 'color'),
+    ...(hasGpuDrivenVertexSemantic(geometry.receipt.vertexInputs, 'tangentFrame')
       ? { tangentFrame32: true }
       : {}),
     deformation: geometry.deformation,
@@ -210,36 +229,33 @@ export function prepareBatchExecution<Artifact extends BatchArtifactFacts>(
   if (receipt.systemInputs?.water === 'water-frame/3') return direct();
   const selected = projectBatchArtifact(artifact, pass);
   const sourceInputs = geometry.receipt.vertexInputs;
-  // UV aliases reuse bytes inside the uploaded stride (Geometry owns the alias choice).
-  const layout =
-    geometry.layout === undefined ||
-    artifact.uvSetCount === undefined ||
-    receipt.vertexInputs.every((input) =>
-      sourceInputs.some((actual) => actual.location === input.location),
-    )
-      ? undefined
-      : deriveVertexBufferLayoutFromProjection(geometry.layout, {
-          shaderUvSetCount: artifact.uvSetCount,
-        })[0];
-  const aliases =
-    layout?.arrayStride !== geometry.layout?.arrayStride
-      ? []
-      : receipt.vertexInputs.filter(
-          (input) =>
-            !sourceInputs.some((actual) => actual.location === input.location) &&
-            layout?.attributes.some(
-              (actual) =>
-                actual.shaderLocation === input.location && actual.format === input.format,
-            ),
-        );
+  // Geometry owns physical stream offsets. Admission needs only the required shader
+  // inputs those bytes supply; pipeline creation materializes the GPU descriptors.
+  let inputs: (typeof sourceInputs)[number][] | undefined;
+  if (
+    geometry.layout !== undefined &&
+    artifact.uvSetCount !== undefined &&
+    !hasRequiredVertexInputs(receipt.vertexInputs, sourceInputs)
+  ) {
+    visitVertexUvAliases(geometry.layout, artifact.uvSetCount, (key, location) => {
+      const input = receipt.vertexInputs.find(
+        (required) =>
+          required.location === location &&
+          required.semantic === key &&
+          required.format === 'float32x2',
+      );
+      if (input === undefined || sourceInputs.some((actual) => actual.location === location))
+        return;
+      inputs ??= [...sourceInputs];
+      inputs.push(input);
+    });
+  }
   const prepared = prepareGpuDrivenDraw({
     material,
     deformation: geometry.deformation,
     artifact: selected,
     geometry:
-      aliases.length === 0
-        ? geometry.receipt
-        : { ...geometry.receipt, vertexInputs: [...sourceInputs, ...aliases] },
+      inputs === undefined ? geometry.receipt : { ...geometry.receipt, vertexInputs: inputs },
     generation: receipt.generation,
     draw: geometry.draw,
   });

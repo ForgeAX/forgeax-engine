@@ -16,6 +16,7 @@ adding a new package surface.
 
 | 任务 | skill |
 |:--|:--|
+| Install Engine, create a game, or discover its capabilities | `forgeax-engine-authoring` |
 | Investigate consumer reports or conversation traces, establish Engine responsibility and improve supported paths | `forgeax-engine-evolve` |
 | 复杂或原因不明的渲染问题：黑屏/缺物体、光照/阴影、闪烁、后处理、浏览器/后端分歧 | **先读 `forgeax-engine-rhi-debug`**：真实失败帧 → work/binding/resource/像素证据 → owning subsystem；再按证据加载领域 skill |
 | WeChat Mini Game / official AI DevTools / simulator / login QR / native host | `forgeax-engine-wechat` |

@@ -79,20 +79,13 @@
 <a id="get-started"></a>
 ## 开始使用
 
-把引擎和它的 AI 工具链装进你的编辑器：
+安装包含创作资源的 Engine 版本。需要 Node.js 和 pnpm。
 
 ```bash
-npx -y @forgeax/game install
-```
-
-支持：Claude Code · Cursor · ChatGPT · Kimi Code · DeepSeek · VS Code。
-
-或直接用引擎新建工程：
-
-```bash
-pnpm dlx @forgeax/engine project new my-game --template game-3d
+npm install -g @forgeax/engine
+forgeax project new my-game --template game-3d
 cd my-game
-pnpm exec forgeax dev start --headless false
+forgeax dev start
 ```
 
 `game-3d` 是第三人称参考工程，`empty` 是最小起点。先读生成的 README 与技能，再看 [Engine](packages/engine/README.md) 与 [CLI 使用指南](skills/forgeax-engine-cli/SKILL.zh-CN.md)。
@@ -115,7 +108,7 @@ pnpm exec forgeax project package --format web-zip
 </details>
 
 <details>
-<summary>从引擎源码 / SDK 构建</summary>
+<summary>从引擎源码构建</summary>
 
 工具链版本以 [`.nvmrc`](.nvmrc)、[`.pnpm-version`](.pnpm-version)、[`.bun-version`](.bun-version) 为准。
 
@@ -127,12 +120,11 @@ pnpm test
 
 | 场景 | 入口 |
 |:--|:--|
-| 获取 SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
-| SDK 的 `source/engine/` | 独立公开源码面，带 `.forgeax-public-distribution` 标记与预构建 WASM；运行上述 install / build，无需私有子模块 |
+| 公开源码检出 | 独立公开源码面，带 `.forgeax-public-distribution` 标记与预构建 WASM；运行上述 install / build，无需私有子模块 |
 | 完整贡献者 checkout | 首次 clone 使用 `--recurse-submodules` 获取有权限访问的私有资产；完整应用构建运行 `pnpm build` |
 | 单个示例迭代 | `pnpm build:app hello/triangle`；更大范围验收遵循 Smoke gate |
 
-SDK 包含构建产物、模板、技能与 Engine 源码。详见 [SDK 指南](skills/forgeax-engine-sdk/SKILL.zh-CN.md)。
+`pnpm engine:pack --output <目录>` 生成 Engine npm 归档，压缩包上限为 64 MB（64,000,000 字节）。游戏工作参见[创作指南](skills/forgeax-engine-authoring/SKILL.zh-CN.md)。
 
 </details>
 

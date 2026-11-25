@@ -426,6 +426,51 @@ it('keeps authored matrix arrays and retained NodeMaterial values live', {
   }
 });
 
+it('visits edited child arrays and preserves caller-owned proxy reads in both stock updates', () => {
+  const stop = THREE.enableThreeSourceTracking();
+  const root = new THREE.Group();
+  const first = new THREE.Group(),
+    second = new THREE.Group(),
+    replacement = new THREE.Group();
+  stop();
+  root.add(first, second);
+  for (const parentUpdate of [false, true]) {
+    const visits: string[] = [];
+    const children = root.children;
+    children[1] = second;
+    const method = parentUpdate ? 'updateWorldMatrix' : 'updateMatrixWorld';
+    first[method] = () => {
+      visits.push('first');
+      children[1] = replacement;
+    };
+    second[method] = () => {
+      visits.push('second');
+    };
+    replacement[method] = () => {
+      visits.push('replacement');
+    };
+    const run = () =>
+      parentUpdate ? root.updateWorldMatrix(false, true) : root.updateMatrixWorld(true);
+    run();
+    expect(visits).toEqual(['first', 'replacement']);
+    const reads: PropertyKey[] = [];
+    root.children = new Proxy(children, {
+      get(target, key, receiver) {
+        reads.push(key);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    try {
+      visits.length = 0;
+      run();
+      expect(visits).toEqual(['first', 'replacement']);
+      expect(reads).toEqual(['length', '0', '1']);
+    } finally {
+      root.children = children;
+    }
+  }
+});
+
 it('reuses stock source bone matrices across synchronous animation reads', {
   timeout: 120000,
 }, async () => {
@@ -461,6 +506,16 @@ it('reuses stock source bone matrices across synchronous animation reads', {
       expect(resolve.mock.results.every((r) => r.type === 'return' && r.value === false)).toBe(
         true,
       );
+      expect(Object.hasOwn(foot, 'updateWorldMatrix')).toBe(false);
+      const inheritedUpdate = foot.updateWorldMatrix;
+      const calls: number[] = [];
+      foot.updateWorldMatrix = function (parents, children, force) {
+        calls.push(this.id);
+        inheritedUpdate.call(this, parents, children, force);
+      };
+      foot.getWorldPosition(position);
+      expect(calls).toEqual([foot.id]);
+      Reflect.deleteProperty(foot, 'updateWorldMatrix');
       hip.rotation.z = Math.PI / 2;
       expect(foot.getWorldPosition(position).x).toBeCloseTo(0);
       expect(position.y).toBeCloseTo(1);
@@ -487,4 +542,101 @@ it('reuses stock source bone matrices across synchronous animation reads', {
   } finally {
     renderer.dispose();
   }
+});
+
+it('reads owned and borrowed pose elements through their public array receivers', () => {
+  const stop = THREE.enableThreeSourceTracking();
+  const bone = new THREE.Bone();
+  stop();
+  const matrix = bone.matrixWorld;
+  matrix.makeScale(-2, 3, 4).setPosition(5, 6, 7);
+  const owned = matrix.elements;
+  const position = new THREE.Vector3();
+  const rotation = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  let receiver: unknown;
+  Object.defineProperty(owned, '12', {
+    configurable: true,
+    get() {
+      receiver = this;
+      return 11;
+    },
+  });
+  expect(position.setFromMatrixPosition(matrix)).toBe(position);
+  expect(position.toArray()).toEqual([11, 6, 7]);
+  expect(receiver).toBe(owned);
+  // Change a later lane mid-query. Each subsequent read still sees the current descriptor.
+  Object.defineProperty(position, 'x', {
+    configurable: true,
+    set() {
+      Object.defineProperty(owned, '13', {
+        configurable: true,
+        get() {
+          receiver = this;
+          return 19;
+        },
+      });
+    },
+  });
+  const determinant = vi.spyOn(matrix, 'determinantAffine');
+  expect(matrix.decompose(position, rotation, scale)).toBe(matrix);
+  expect(determinant.mock.instances).toEqual([matrix]);
+  expect(receiver).toBe(owned);
+  expect(position.y).toBe(19);
+  expect(scale.toArray()).toEqual([-2, 3, 4]);
+  const reads: PropertyKey[] = [];
+  let determinantReceiver: unknown;
+  Object.defineProperty(owned, '0', {
+    configurable: true,
+    get() {
+      determinantReceiver = this;
+      return -2;
+    },
+  });
+  expect(matrix.determinantAffine()).toBe(-24);
+  expect(determinantReceiver).toBe(owned);
+  const borrowed = new Proxy([...owned] as typeof owned, {
+    get(target, key, self) {
+      reads.push(key);
+      return Reflect.get(target, key, self);
+    },
+  });
+  matrix.elements = borrowed;
+  expect(new THREE.Vector3().setFromMatrixPosition(matrix).toArray()).toEqual([11, 19, 7]);
+  expect(reads).toEqual(['12', '13', '14']);
+  expect(matrix.determinantAffine()).toBe(-24);
+});
+
+it('preserves live operand and destination receivers through stock matrix multiplication', () => {
+  const release = THREE.enableThreeSourceTracking();
+  const left = new THREE.Bone().matrixWorld,
+    right = new THREE.Bone().matrixWorld;
+  const output = new THREE.Bone().matrixWorld;
+  release();
+  const receivers: unknown[] = [];
+  Object.defineProperty(left.elements, 0, {
+    configurable: true,
+    get() {
+      receivers.push(this);
+      Object.defineProperty(right.elements, 0, {
+        configurable: true,
+        get() {
+          receivers.push(this);
+          return 1;
+        },
+      });
+      return 1;
+    },
+  });
+  Object.defineProperty(output.elements, 0, {
+    configurable: true,
+    set() {
+      receivers.push(this);
+    },
+  });
+  output.multiplyMatrices(left, right);
+  expect(receivers).toHaveLength(3);
+  expect(receivers[0]).toBe(left.elements);
+  expect(receivers[1]).toBe(right.elements);
+  expect(receivers[2]).toBe(output.elements);
 });

@@ -101,7 +101,7 @@ describe('Production raster Inputs publication', () => {
   ) {
     const rows = Array.from({ length: count }, () => ({
       batch: {},
-      visibleBindGroups: { early: [f.mainA] },
+      visibleBindGroups: new Map([[undefined, { early: [f.mainA] }]]),
       bundles: new PreparedRasterBundleCache(),
     })) as unknown as readonly LiveRasterBatch[];
     const main = {
@@ -148,7 +148,7 @@ describe('Production raster Inputs publication', () => {
     const f = await fixture();
     const { accept, result } = prepareProduction(f, 1, (row) => {
       f.create.mockImplementationOnce((descriptor) => {
-        row.visibleBindGroups = { early: [f.mainB] };
+        row.visibleBindGroups = new Map([[undefined, { early: [f.mainB] }]]);
         return f.createNative(descriptor);
       });
     });

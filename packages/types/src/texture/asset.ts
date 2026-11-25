@@ -14,6 +14,11 @@ export type TextureShape =
       readonly extent: { readonly width: number; readonly height: number; readonly depth: number };
     };
 
+export interface CustomTextureMipPolicy {
+  readonly kind: 'custom';
+  readonly levelCount: number;
+}
+
 export type TextureMipPolicy =
   | { readonly kind: 'none' }
   | { readonly kind: 'generate' }

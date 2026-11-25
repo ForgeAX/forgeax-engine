@@ -24,7 +24,7 @@ import {
 } from '../render-system-presentation';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { RenderScene } from '../scene/render-scene-view';
-import { RowViews, SceneSlotFrame } from '../scene/scene-slots';
+import { SceneSlotFrame, SceneSlotPage } from '../scene/scene-slots';
 
 it('keeps concrete submitted submeshes independent of entity and terrain evidence', () => {
   const draws = createPresentationDraws();
@@ -515,7 +515,7 @@ it('reads changing display evidence in occupied row order without requesting pos
   const handles = { submeshes: [{}] };
   const getMeshGpuHandles = vi.fn(() => handles);
   const internals = { gpuStore: { getMeshGpuHandles } } as unknown as RenderSystemInternals;
-  const views = vi.spyOn(RowViews.prototype, 'read');
+  const views = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     const live = rows.filter((row) => row.entityKey % 3 !== 1);
     for (let frame = 0; frame < 100; frame++) {

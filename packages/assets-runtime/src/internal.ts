@@ -35,13 +35,18 @@ export {
   runtimeAssetRegistry,
   runtimeAssetSource,
   runtimeAssets,
+  runtimeMaterialDeclaration,
 } from './internal/runtime-assets.js';
 export {
   completeEmbeddedMaterial,
   completeSourceMaterialPayload,
   createMaterialLoader,
 } from './material/loader.js';
-export type { PrepareMaterialSourceProgram } from './material/runtime-shader.js';
+export {
+  type DecodedMaterialTemplate,
+  type PrepareMaterialSourceProgram,
+  projectMaterialTemplate,
+} from './material/runtime-shader.js';
 export {
   createSceneContentPublicationTask,
   type SceneContentPublicationGuard,

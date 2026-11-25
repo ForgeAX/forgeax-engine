@@ -1,3 +1,4 @@
+import { nowMs } from '@forgeax/engine-platform';
 import {
   compiledRenderGraphAllocation,
   compiledRenderGraphGeneration,
@@ -197,7 +198,7 @@ import type {
 } from '../render-pipeline';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { SHADOW_ATLAS_DEFAULT_FACE_SIZE } from '../shadow-atlas';
-import type { SsrSpatialAdmission } from '../ssr/admission';
+import { admitsInlineSsr, type SsrSpatialAdmission } from '../ssr/admission';
 import { createTargetCoverageAttachment } from '../temporal/target-coverage-attachment';
 import { usesTsrCompute } from '../tsr/capabilities';
 import { hasVolumetricFogCapability } from '../volume/capability';
@@ -840,8 +841,7 @@ function measurePlanSignature(
 ): string {
   const signatureMetrics =
     metrics === undefined ? undefined : { calls: 0, typedArrayBytes: 0, outputChars: 0 };
-  const started =
-    metrics === undefined ? 0 : typeof performance === 'undefined' ? Date.now() : performance.now();
+  const started = metrics === undefined ? 0 : nowMs();
   // The host records detached structural evidence, but graph admission must
   // check it again so a mutation between the two synchronous stages cannot
   // smuggle a stale plan into the compiled graph. Only candidates without
@@ -857,7 +857,7 @@ function measurePlanSignature(
     ? planned.signature
     : renderFeaturePlanSignature(planned.plan, signatureMetrics);
   if (metrics !== undefined) {
-    const now = typeof performance === 'undefined' ? Date.now() : performance.now();
+    const now = nowMs();
     metrics.signatureValidationCalls += signatureMetrics?.calls ?? 0;
     metrics.signatureValidationBytes += signatureMetrics?.typedArrayBytes ?? 0;
     metrics.signatureValidationChars += signatureMetrics?.outputChars ?? 0;
@@ -1426,20 +1426,6 @@ function canUseDeferredPcf(
   );
 }
 
-function admitsInlineSsr(
-  internals: RenderSystemInternals,
-  pipelineState: PipelineState,
-  ssr: SsrSpatialAdmission | undefined,
-): boolean {
-  return (
-    ssr?.status === 'admitted' &&
-    ssr.lane === 'forward' &&
-    pipelineState.extendedLightingAvailable === true &&
-    internals.device.caps.compute &&
-    internals.device.caps.storageTexture
-  );
-}
-
 function topologyOf(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -1463,7 +1449,7 @@ function topologyOf(
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
   subsurface?: RenderPipelineTopology['subsurface'],
   unfoggedOpaque = false,
-  forwardCapsuleShadows = false,
+  capsuleShadows = false,
   stockRecording = false,
   layersOwner?: ShadowDepthLayers,
 ): Result<RenderPipelineTopology, RhiError> {
@@ -1495,7 +1481,7 @@ function topologyOf(
   )?.plan.waterView;
   const surfaceAdmission =
     frameState.standardSceneSurfaceAdmission ?? featureGraphCandidate?.sceneDataAdmission;
-  const inlineSsr = admitsInlineSsr(internals, pipelineState, ssr);
+  const inlineSsr = admitsInlineSsr(internals.device, pipelineState.extendedLightingAvailable, ssr);
   const reflectionFallback = reflectionFallbackDemandOf(internals);
   const probes = viewReflectionProbesOf(renderWorldFor(internals), internals.viewEntity);
   const hasLocalProbes =
@@ -1521,6 +1507,10 @@ function topologyOf(
   const deferredPcf = canUseDeferredPcf(internals, standardProfile, lights)
     ? { deferredPcfLighting: true as const }
     : {};
+  const capsuleTopology =
+    standardProfile?.renderPath === 'deferred'
+      ? { deferredCapsuleShadows: !clearOnly && capsuleShadows }
+      : { forwardCapsuleShadows: !clearOnly && capsuleShadows };
   const publishViewTopology = (
     checkedShadow: Extract<typeof shadow, { ok: true }>,
     checkedSurfaceProfile: Extract<typeof surfaceProfile, { ok: true }>,
@@ -1535,11 +1525,14 @@ function topologyOf(
       ...(subsurface === undefined ? {} : { subsurface: { quality: subsurface.quality } }),
       ...compact.value,
       forwardContactShadows: forwardContactDemand(clearOnly, standardLighting),
-      forwardCapsuleShadows: !clearOnly && forwardCapsuleShadows,
+      ...capsuleTopology,
       projectedDecals,
       standardProfile,
       config,
       preTemporalEffects: preTemporalEffectsOf(config, fullscreenEffects),
+      hdrOutputEffects: (config?.postEffects ?? []).filter(
+        (identity) => fullscreenEffects.get(identity)?.stage === 'before-output',
+      ),
       clearOnly,
       ...probeTopology,
       reflectionFallback: {
@@ -1872,7 +1865,7 @@ function admitFeaturePostProcessChain(
         identity,
         built.bindGroupLayout,
         [
-          entry.stage === 'before-temporal'
+          entry.stage === 'before-temporal' || entry.stage === 'before-output'
             ? 'rgba16float'
             : (topology.surface.storageFormat as GPUTextureFormat),
         ],
@@ -1886,6 +1879,7 @@ function withoutPostEffects(topology: RenderPipelineTopology): RenderPipelineTop
   return {
     ...topology,
     preTemporalEffects: [],
+    hdrOutputEffects: [],
     config: {
       ...(topology.config ?? {}),
       postEffects: [],
@@ -2068,10 +2062,6 @@ function waterFluidForRecording(viewIdentity: string) {
   };
 }
 
-function graphClockMs(): number {
-  return typeof performance === 'undefined' ? Date.now() : performance.now();
-}
-
 type StandardGraphInputs = Pick<
   RenderPipelineBuildContext<RenderPipelineFrame>,
   | 'standardOutput'
@@ -2179,7 +2169,9 @@ function importStandardGraphInputs(
   const waterSsr = topology.water === true && isWaterSsrAdmitted(ssr) ? ssr : undefined;
   const temporalAA = isTemporalAntialias(camera.antialias);
   const hitColorHistory =
-    topology.inlineSsr || (waterSsr !== undefined && temporalAA)
+    topology.inlineSsr ||
+    (temporalAA &&
+      (waterSsr !== undefined || (ssr?.status === 'admitted' && ssr.lane === 'deferred')))
       ? importSsrSceneColorHistoryTarget(
           builder,
           frameState,
@@ -2388,7 +2380,7 @@ export interface GraphCompileInput {
   readonly subsurface?: RenderPipelineTopology['subsurface'] | undefined;
   readonly rendererRecording?: boolean | undefined;
   readonly unfoggedOpaque?: boolean | undefined;
-  readonly forwardCapsuleShadows?: boolean | undefined;
+  readonly capsuleShadows?: boolean | undefined;
   /** Renderer-owned shadow layers; the caller ensures them before compile. */
   readonly shadowDepthLayers: ShadowDepthLayers;
 }
@@ -2601,7 +2593,7 @@ function compileViewGraphStagesOwned(
     subsurface,
     rendererRecording = false,
     unfoggedOpaque = false,
-    forwardCapsuleShadows = false,
+    capsuleShadows = false,
     shadowDepthLayers,
   } = input;
   // `render-feature-plan` planned the Feature candidate compile reads (fullscreen
@@ -2641,7 +2633,7 @@ function compileViewGraphStagesOwned(
       retainedFrameGraphPolicyMatches(
         installed.retainedPolicy,
         directional.value,
-        forwardCapsuleShadows,
+        capsuleShadows,
         compactProfile ? 'standard-gbuffer/4' : undefined,
         canUseDeferredPcf(
           internals,
@@ -2789,7 +2781,7 @@ function compileViewGraphStagesOwned(
     terrainReceivers,
     subsurface,
     unfoggedOpaque,
-    forwardCapsuleShadows,
+    capsuleShadows,
     stockRecording,
     gpuDriven?.shadowViewPool?.staticLayers,
   );
@@ -2981,7 +2973,7 @@ function compileViewGraphStagesOwned(
       const key = displayGraphIdentity(ports, topology);
       metrics.lastTopologyKey = key;
       metrics.rebuildAttempts++;
-      const started = graphClockMs();
+      const started = nowMs();
       const procedure = RenderGraphBuilder.procedure<RenderPipelineFrame>({
         device: internals.device,
         surfaceSize: { width: surfaceWidth, height: surfaceHeight },
@@ -3012,14 +3004,14 @@ function compileViewGraphStagesOwned(
               retainBundles,
               internals.device.caps,
             );
-      metrics.buildCpuMs += graphClockMs() - started;
+      metrics.buildCpuMs += nowMs() - started;
       if (!built.ok) {
         metrics.buildFailures++;
         return reject('graph-build-failed', { route: 'registry', error: built.error }, 'topology');
       }
       metrics.compileAttempts++;
       metrics.compileCause = { installedTopologyKey: installed?.topologyKey, key };
-      const physicalStarted = graphClockMs();
+      const physicalStarted = nowMs();
       const physical =
         profileSession === undefined
           ? procedure.bindResources()
@@ -3028,7 +3020,7 @@ function compileViewGraphStagesOwned(
               'graph/bind-ordered-resources',
               procedure.bindResources,
             );
-      metrics.compileCpuMs += graphClockMs() - physicalStarted;
+      metrics.compileCpuMs += nowMs() - physicalStarted;
       if (!physical.ok) {
         metrics.compileFailures++;
         return reject(
@@ -3198,7 +3190,7 @@ function compileViewGraphStagesOwned(
     retireStash = existing.retireStash;
     metrics.rebuildAttempts += 1;
     metrics.lastTopologyKey = key;
-    const buildStarted = graphClockMs();
+    const buildStarted = nowMs();
     // Shader resources do not classify their owning plan. Only standalone effects
     // and Standard's named post stages defer ordinary scene contribution.
     const fullscreenFeatureIds = new Set([
@@ -3549,12 +3541,12 @@ function compileViewGraphStagesOwned(
     const captureTargetFailure = retainViewGraphCaptureTarget();
     if (captureTargetFailure !== undefined) return captureTargetFailure;
     metrics.compileAttempts += 1;
-    metrics.buildCpuMs += graphClockMs() - buildStarted;
+    metrics.buildCpuMs += nowMs() - buildStarted;
     metrics.compileCause = {
       installedTopologyKey: frameState.compiledFrameGraph?.topologyKey,
       key,
     };
-    const compileStarted = graphClockMs();
+    const compileStarted = nowMs();
     const compileViewGraphCandidate = () => {
       let compiled: ReturnType<typeof builder.compile>;
       try {
@@ -3567,7 +3559,7 @@ function compileViewGraphStagesOwned(
                 procedure.bindResources,
               );
       } finally {
-        metrics.compileCpuMs += graphClockMs() - compileStarted;
+        metrics.compileCpuMs += nowMs() - compileStarted;
       }
       return compiled;
     };

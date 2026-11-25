@@ -14,13 +14,12 @@
 #endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
-#import forgeax_scene_temporal::{encodeSceneVelocityWithDepth, packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocityRaster, packSceneTemporalV1WithValidity}
 #import forgeax_material::alpha_hash::{alphaHashThreshold, alphaCoverageValue, materialOutputAlpha, materialOutputColor}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{forward_fog}
 #import forgeax_view::fog::{vertex_height_fog}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
 
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #pragma variant_axis ATMOSPHERE_AVAILABLE
@@ -435,11 +434,9 @@ fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 #endif
 }
 
-// Unlit does not receive AO lighting, but its opaque surface still supplies
-// depth and normals to the view's occlusion inputs. It shares color's vertex
-// transform; no normal texture or Standard PBR layout is required.
+// Preserve the opaque Unlit color pass coverage while writing only depth.
 @fragment
-fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
+fn fs_depth_masked(in : VsOut) {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   selectSceneMaterial(in.materialAddress);
 #endif
@@ -450,7 +447,6 @@ fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @locati
   if (unlitColorCoverageRejected(coverage, in)) { discard; }
 #endif
   applyUnlitClipping(in.worldPos, in.clip.xy, false);
-  return encodeStandardNormalRoughness(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), 1.0);
 }
 
 // Weighted blended OIT accumulation for straight-alpha blend states.
@@ -666,8 +662,15 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_temporal_depth(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return materialTemporal(in, coverage.opacity);
+}
+
+@fragment
 fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
   let coverage = unlitTemporalCoverage(in);
   if (coverage.rejected) { discard; }
-  return encodeSceneVelocityWithDepth(materialTemporal(in, coverage.opacity), in.previousClip);
+  return encodeSceneVelocityRaster(materialTemporal(in, coverage.opacity), in.previousClip);
 }

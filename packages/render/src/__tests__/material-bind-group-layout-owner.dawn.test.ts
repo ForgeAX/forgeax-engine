@@ -74,7 +74,6 @@ it('keeps the selected native material layout through replacement and return to 
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: skylightBindGroupResources(fallback),
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},

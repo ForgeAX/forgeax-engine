@@ -4,7 +4,7 @@
 // Iteration runs may add --from <step> (a step with a setup); final acceptance
 // runs the whole journey in real time.
 //
-// PlayContext signatures and gotchas: skills/forgeax-engine-sdk/references/api/play.md
+// PlayContext signatures and gotchas: skills/forgeax-engine-authoring/references/api/play.md
 // (also `pnpm exec forgeax help project play --json`).
 // `game-3d.player` is this template's read projection (assets/player/player.ts);
 // keep the steps in sync when the player changes.

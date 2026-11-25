@@ -7,9 +7,11 @@
 
 ## Engine Content 纹理
 
-程序化纹理使用普通 ScriptablePack 返回 TextureAsset，参考 Content checker texture。固定 seed/source parameters 拥有 pixels，标准 Pack producer 拥有 cook、content identity、cache、publication，Water texture 同路。Pack source/imported source module 经普通 Content source closure 发布。
+Engine Content 纹理使用普通 Scriptable Pack。棋盘格发布确定性的像素纹理。Water 表面、体纹理与冲击噪声 Pack 发布 `texture-generator` 和独立的 `gpu-texture`。Pack cooker 发布程序和描述，Renderer 在纹理驻留时生成像素。
 
-修改 texture field 保留声明 GUID/dimension/color space/mip policy/sampler contract，经普通 Pack cook 审阅外观与 decoded pixel 变化。不能引入 Water 专用 prebuild generator、raw-image staging、SDK resource whitelist、fallback loader。见 [Content](../../packages/content/README.md)。
+mip 选项和写法见 [GPU 纹理 Pack 契约](../../packages/pack/README.md#runtime-gpu-texture-declarations)。冲击噪声从未锐化的临时金字塔读取，写满九级自定义 mip。
+
+修改生成过程时保留尺寸、颜色空间、mip 策略和采样契约。检查落盘数据、mip 过滤和实际材质。迁移已有项目的 Water 表面 GUID 时参照 [Content 契约](../../packages/content/README.md)。
 
 ## River Bake 发布
 
@@ -33,7 +35,6 @@ prepareWaterRiverBake 从 completed current GPU capture 派生普通 Pack recipe
 - runtime mesh 可用 Pack material，material values 编辑不移动顶点。
 - runtime GPU texture 从 pack/source 用 gpuTextureOutputs(packageId,name,recipe) 声明 texture-generator 和独立 gpu-texture（GpuTextureAsset）。build 准备 programs，Renderer 生成 pixels/mips。Runtime Pack 复用 prepared programs，不 cook raw WGSL、不隐式回读 pixels。两种 kind 都可在 View 原生 texture preview 打开。见 [Pack](../../packages/pack/README.md#runtime-gpu-texture-declarations)。
 - 增量 vertex batch 共用全局 index space，遵循 MeshBuilder append contract，不能假设隐式 index rebasing。
-- 完整配方见程序化道具与 runtime mesh。
 
 获准把复制 author source 适配到不同 SDK 时，保留不可变原件，在 active asset root 外工作。更新真实 dependency/API，用包管理器重建 lock，对目标 SDK compile/cook，再导出导入验证过的 source closure/identity/provenance。locked-version 拒绝不证明无法适配，只改版本标签或 clone GUID 不算迁移。
 
@@ -75,7 +76,7 @@ View 自动发现外部声明变化。在同 preview 验 live edit，Save 前 so
 
 同 mount 经 EngineContent.water 发布普通 Water root/child material family 与 texture source。Body slot GUID 由 waterMaterialFamilySlots 提供，Zone far material 为 Zone dependency，不复制为 Body state。见 [Water material](../../packages/water/README.md#material-family)。Pack/helper source 按 Content Apache-2.0 分发。
 
-local fluid recipe 同普通闭包，impulseNoiseGuid 是必需 texture ref，含冷 Pack/Catalog 加载。默认用 EngineContent.water.textures['impulse-noise']。普通 Pack 生 seeded grayscale、gamma/brightness、完整 packed mip chain TextureAsset，Content test 覆盖 pixel hash/mip contract。见 [GUID](../../packages/content/README.md#guids)。
+局部流体配方的 `impulseNoiseGuid` 指向必需的二维采样纹理。默认用 `EngineContent.water.textures['impulse-noise']`。冷启动通过普通 Pack/Catalog 加载 GUID，Renderer 等整条自定义链就绪后再消费冲击。现有二维像素纹理仍可作为自定义冲击笔刷。见 [Content 契约](../../packages/content/README.md#volume-and-impulse)。
 
 基础 cube/sphere/cylinder/cone/torus/capsule/plane/quad/nine-slice-quad/triangle、mip checker texture/sampler、默认 Standard material 都是 @forgeax/engine-content 普通 Pack。两 SDK 模板通过 forge.json assetLibraries:["@forgeax/engine/content"] mount，asset list 显示 @forgeax/engine/content/<file>.pack.ts。从 @forgeax/engine/content 导入 EngineContent GUID，像项目资产加载。删 mount 就没有这些资产；库 source 只读，需编辑先复制到 asset root。unresolved 用 project-asset-library-unresolved（install/bind Engine、修 specifier），invalid 表示包无 forgeax.library.assetRoot。代码 createPrimitiveMesh(kind)+assets.create 仍为未注册 runtime mesh。见 Content 契约。
 

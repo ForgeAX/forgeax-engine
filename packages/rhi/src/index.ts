@@ -2550,7 +2550,7 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
-export { bufferWriteRange } from './buffer-write-range';
+export { bufferWriteRange, readBufferWriteRange } from './buffer-write-range';
 export {
   type MultisampleRenderCapability,
   multisampleRenderCapability,

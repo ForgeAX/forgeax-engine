@@ -85,7 +85,7 @@ import {
 import { mainLayerSuppression } from './camera-layer-suppression';
 import { EMPTY_GPU_DRAW_SELECTION } from './draw-selection';
 import { FilteredPlanContributionOwner } from './filtered-plan-contributions';
-import { hasCapturedTaskMembership } from './fixed-task-plan';
+import { hasCapturedTaskMembership, isIssuedExecution } from './fixed-task-plan';
 import {
   type GBufferOrderDiagnosticConfig,
   type GBufferOrderEncodeEvidence,
@@ -184,6 +184,7 @@ import {
   type PreparedProductionPlan,
 } from './production-raster-prepare';
 import {
+  admitDirectResources,
   BatchRowAssembly,
   type HeldResidentBatchRows,
   type ProvisionalBatchContribution,
@@ -1039,6 +1040,23 @@ export class GpuDrivenProduction {
       );
     const materialPipelineState = input.materialPipelineState;
     if (materialPipelineState === undefined) return this.missingMaterialPipelineState(input);
+    const direct = input.geometryLane === 'direct' && !requiresGpuSurfacePreparation(input);
+    const resident = scene.residentExecution ?? scene.plan;
+    if (direct && isIssuedExecution(scene.plan, resident)) {
+      const preparation = this.preparations.forward;
+      preparation.retireAbsent(resident);
+      preparation.cached = undefined;
+      const admission = runRecordProfilePhase(
+        input.profilePhase,
+        'record/gpu-driven-prepare/plan',
+        () => admitDirectResources(scene, materials, input.batchExecutions, input.meshByBinding),
+      );
+      if (!admission.ok) {
+        this.blockPlanAssembly(scene, admission.error);
+        return admission;
+      }
+      return this.prepareDirectFrame(scene, materials, admission.value);
+    }
     const rebuilt = runRecordProfilePhase(
       input.profilePhase,
       'record/gpu-driven-prepare/plan',
@@ -1057,8 +1075,12 @@ export class GpuDrivenProduction {
       return rebuilt;
     }
     const preparedPlan = rebuilt.value;
-    if (input.geometryLane === 'direct' && !requiresGpuSurfacePreparation(input))
-      return this.prepareDirectFrame(scene, materials, preparedPlan);
+    if (direct)
+      return this.prepareDirectFrame(
+        scene,
+        materials,
+        preparedPlan.batchRows.some((row) => row.fact !== undefined),
+      );
     const filterStage = runRecordProfilePhase(
       input.profilePhase,
       'record/gpu-driven-prepare/filter',
@@ -1187,14 +1209,14 @@ export class GpuDrivenProduction {
   private prepareDirectFrame(
     scene: PersistentGpuDrivenState,
     materials: GpuSceneResourceFrame,
-    preparedPlan: PreparedProductionPlan,
+    usesSceneTable: boolean,
   ): Result<PreparedGpuDrivenFrame | undefined, RhiError> {
     this.gpuOwnedEntityCount = 0;
     this.laneReason = 'unsupported';
     // Main grouping has no shadow claim filter: every admitted draw has
     // a candidate group. Preserve its empty/CPU-only resource fallback.
     this.releaseCameraRoster();
-    if (!preparedPlan.batchRows.some((row) => row.fact !== undefined)) return ok(undefined);
+    if (!usesSceneTable) return ok(undefined);
     this.shadowSource = undefined;
     this.shadowScene = undefined;
     this.disableShadowViews();
@@ -1768,7 +1790,7 @@ export class GpuDrivenProduction {
       ? `|view-clipping${frame.input.camera.clipping?.caps === true ? '-caps' : ''}`
       : '';
     // Both independent lighting facts are fixed into the projected pipelines.
-    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.leanLighting === true ? '|lean' : ''}`;
+    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.leanLighting === true ? '|lean' : ''}${input.forwardInlineSsr ? '|inline-ssr' : ''}`;
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${variantSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 
@@ -2319,6 +2341,7 @@ export class GpuDrivenProduction {
       visibleSurface: frame.input.visibleSurface !== undefined,
       directionalShadowSimple: frame.input.directionalShadowSimple === true,
       leanLighting: frame.input.leanLighting === true,
+      forwardInlineSsr: frame.input.forwardInlineSsr === true,
     };
   }
 
@@ -2470,7 +2493,7 @@ export class GpuDrivenProduction {
       bundlePass,
       viewOffset,
     );
-    if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [viewOffset, 0]);
+    if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [viewOffset]);
     const colorFormats = frameResources.colorFormats ?? target.colorFormats;
     const sampleCount = rasterSampleCount(
       frameResources.sampleCount ??
@@ -2564,7 +2587,7 @@ export class GpuDrivenProduction {
     const runs = this.retainedEncodes.begin(
       bundlePass,
       identities,
-      (key, program) =>
+      (key, program, uniformRequired) =>
         materialOwner(
           frameResources.prepareMaterialBinding(
             materialSlotFromLayoutKey(key),
@@ -2572,6 +2595,7 @@ export class GpuDrivenProduction {
             program,
           ),
           program,
+          uniformRequired,
         ),
       (cls) => {
         const batch = cls as ProjectedRasterClass;
@@ -2775,7 +2799,7 @@ export class GpuDrivenProduction {
       if (!indirect.ok) throw indirect.error;
       bindings.indirect = indirect.value;
     }
-    const windows = visibleWindowsFor(live, batch, call);
+    const windows = visibleWindowsFor(live, batch, call, selectedPipeline.value);
     this.encodeLevels(projected, call, bindings, live, batch, windows);
     frameResources.recordMaterialPipelineBinding?.(
       globalMaterialSlot,

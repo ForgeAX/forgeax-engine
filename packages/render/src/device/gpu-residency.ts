@@ -11,7 +11,7 @@ import { renderAssetRevision } from '../publication/resource-scope';
 import { type RecordProfileRunner, runRecordProfilePhase } from '../record/render-context';
 import { ImagePages } from './image-pages';
 import { MeshChanges, type MeshChangeToken } from './mesh-changes';
-import { type MeshGpuRange, packMeshLodGeometry } from './mesh-lod-geometry';
+import { type MeshGpuRange, packMeshLodGeometry, vertexSectionStarts } from './mesh-lod-geometry';
 import { type ResidencyLease, ResidencyLifetime } from './residency-lifetime';
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
 import { TextureDerivations } from './texture-derivation';
@@ -551,6 +551,8 @@ export interface MeshGpuHandles {
    * For single-submesh meshes this is a 1-element array (byte-identical to pre-M4).
    */
   readonly submeshes: readonly import('@forgeax/engine-types').Submesh[];
+  /** Root geometry vertex addresses, shared across draws, morph outputs and buffer forks. */
+  readonly sectionFirstVertices?: Uint32Array;
   /** Packed root + lower-detail geometry ranges in the shared mesh buffers. */
   readonly lodRanges?: readonly (readonly MeshGpuRange[])[];
 }
@@ -570,6 +572,20 @@ type SharedMeshAllocation = {
   source?: { readonly version: MeshBufferVersion; readonly generation: number } | undefined;
 };
 
+function meshDrawSections(
+  mesh: TypesMeshAsset,
+  renderData: MeshRenderData,
+): Pick<MeshGpuHandles, 'indexed' | 'topology' | 'submeshes' | 'sectionFirstVertices'> {
+  return {
+    indexed: mesh.indices !== undefined,
+    topology: renderData.submeshes[0]?.topology ?? 'triangle-list',
+    submeshes: renderData.submeshes,
+    ...(mesh.indices === undefined && renderData.submeshes.length > 1
+      ? { sectionFirstVertices: vertexSectionStarts(renderData.submeshes) }
+      : {}),
+  };
+}
+
 function meshComparisonSource(words: Uint32Array): SharedMeshAllocation['source'] {
   const version = publishedMeshBufferVersion(words.buffer);
   return version === undefined ? undefined : { version, generation: version.generation };
@@ -580,6 +596,15 @@ interface TextureProjection {
 }
 const NO_TEXTURE_WORK = ok(undefined);
 const DERIVED_GEOMETRY = Symbol();
+
+/** A publication owns every live payload it reports. A local source can lose its CPU copy. */
+function readChangedAsset(scope: RenderResourceScope, change: AssetChange) {
+  if (change.removed) return undefined;
+  const result = scope.resolveAsset(change.handle);
+  if (result.ok) return result.value;
+  if (scope.world === undefined) throw result.error;
+  return undefined;
+}
 
 export class GpuResidencyCache {
   /** Per-entity morphed streams derived from resident Mesh handles. */
@@ -611,6 +636,25 @@ export class GpuResidencyCache {
       else holds.set(handle, remaining);
     };
   }
+  /** Request generation and expose the completed allocation for the consuming graph. */
+  ensureAcceptedGeneratedTexture(
+    handle: AssetHandle<'gpu-texture'>,
+    asset: GpuTextureAsset,
+    scope: RenderResourceScope,
+  ): Result<TextureGpuEntry | undefined, RhiError | AssetError | ImageError> {
+    const result = this.ensureGeneratedTexture(handle, asset, scope);
+    if (!result.ok) return result.error.code === 'asset-not-ready' ? ok(undefined) : result;
+    const allocation = this.generatedAllocations.get(result.value.texture);
+    const namespace = this.sourceNamespace(scope);
+    return ok(
+      allocation !== undefined &&
+        this.textureGenerators.isCurrent(handle, namespace) &&
+        this.textureGenerators.isAccepted(handle, namespace, allocation.generation)
+        ? result.value
+        : undefined,
+    );
+  }
+
   private ensureGeneratedTexture(
     handle: AssetHandle<'texture' | 'gpu-texture'>,
     pod: GpuTextureAsset,
@@ -694,7 +738,11 @@ export class GpuResidencyCache {
           );
         const entry = resident.value;
         // A mip skip leaves a shorter chain resident than the asset authors.
-        const chain = residentTextureChain({ shape: asset.shape, mips: asset.mips }, entry.receipt);
+        const mips =
+          asset.mips.kind === 'custom'
+            ? { kind: 'packed' as const, levelCount: asset.mips.levelCount }
+            : asset.mips;
+        const chain = residentTextureChain({ shape: asset.shape, mips }, entry.receipt);
         return ok({
           kind: 'texture',
           texture: entry.texture,
@@ -2055,6 +2103,37 @@ export class GpuResidencyCache {
     // Transfer exact cleanup ownership before a wrapper can fail to return its result.
     capture?.(prepared);
     return ok(prepared);
+  }
+
+  /** Fan out only untyped replacements and retirements, which may own an older physical kind. */
+  adoptAssetChange(
+    scope: RenderResourceScope,
+    change: AssetChange,
+    onError: (error: RhiError) => void,
+  ): void {
+    const kind = change.stableKind;
+    const meshChanged = kind === undefined || kind === 'mesh';
+    const textureChanged = kind === undefined || kind === 'texture' || kind === 'gpu-texture';
+    if (meshChanged || textureChanged) {
+      const value = readChangedAsset(scope, change);
+      if (meshChanged) {
+        const mesh = this.adoptMeshChange(
+          change,
+          value?.kind === 'mesh' ? value : undefined,
+          scope,
+        );
+        if (!mesh.ok) onError(mesh.error);
+      }
+      if (textureChanged) {
+        const texture =
+          value?.kind === 'texture' || value?.kind === 'gpu-texture' ? value : undefined;
+        const adopted = this.adoptTextureChange(change, texture, scope);
+        if (!adopted.ok) onError(adopted.error);
+      }
+    }
+    if (kind === undefined || kind === 'sampler') this.invalidateSampler(change.handle, scope);
+    if (kind === undefined || kind === 'equirect' || kind === 'gpu-texture')
+      this.adoptCubemapChange(change, scope);
   }
 
   /** A surviving GPU generation can no longer lend CPU bytes changed by its producer. */
@@ -3883,9 +3962,7 @@ export class GpuResidencyCache {
         ...(streams === undefined ? {} : { vertexStreams: streams.ranges }),
         uvSetCount: 1 + extraUvSets,
         vertexCount,
-        indexed: mesh.indices !== undefined,
-        topology: renderData.submeshes[0]?.topology ?? 'triangle-list',
-        submeshes: renderData.submeshes,
+        ...meshDrawSections(mesh, renderData),
         ...(lodRanges === undefined ? {} : { lodRanges }),
       };
       const result = this.meshLifetime(entry).result;

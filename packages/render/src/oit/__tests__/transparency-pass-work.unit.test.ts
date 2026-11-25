@@ -149,12 +149,13 @@ it('classifies changing native pass members and skin slots without issuing per-d
         tick % 3 !== 0 ? { ...base, skinBinding: { skeleton: tick, joints: [1, 2] } } : base;
       render.apply([{ kind: 'update', entityKey: tick, snapshot: next }]);
       const roster = render.slotsSnapshot();
+      const dispatch = owner.query(roster);
       const result = resolveTransparencyView({
         requested: 'weighted-blended',
         rgba16floatRenderable: true,
         renderables: render.materialize(),
         materialFrame: owner.materials(),
-        dispatch: owner.query(roster),
+        dispatch: tick % 2 === 0 ? dispatch : [...dispatch].reverse(),
       });
       const skinned = tick + 1 - (Math.floor(tick / 3) + 1);
       expect(result.inspection.accumulatedDrawCount).toBe(count - skinned);

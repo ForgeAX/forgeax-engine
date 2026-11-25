@@ -16,7 +16,7 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_YZ,
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from '../transparent-sort-config';
-import { resolveViewDrawOrder, type ViewDrawOrderSelection } from '../view-draw-order';
+import { ViewDrawOrderReader, type ViewDrawOrderSelection } from '../view-draw-order';
 
 function scope(mode: number, yzAlpha = 1): RenderResourceScope {
   return {
@@ -553,19 +553,39 @@ it('orders changing poses from a shared page and reads independently authored an
       expect(transparentSortValue(packed, undefined, mode, 0.3, camera)).toBe(
         transparentSortValue(plain, undefined, mode, 0.3, camera),
       );
-    const anchor = {
-      group: 0,
-      priority: 1,
-      tie: frame,
-      center: [0.4, 1.2, 2] as const,
-      ...(frame % 2 === 0 ? { authoredWorld: identity } : {}),
-    };
+    const reader = new ViewDrawOrderReader();
     const order: ViewDrawOrderSelection = {
-      keys: new Map(),
       view: identity,
-      localFor: () => anchor,
+      readLocal: (_entity, out) => {
+        out.group = 0;
+        out.priority = 1;
+        out.tie = frame;
+        out.x = 0.4;
+        out.y = 1.2;
+        out.z = 2;
+        out.authoredWorld = frame % 2 === 0 ? identity : undefined;
+        return true;
+      },
     };
-    const expected = resolveViewDrawOrder(order, 0, plain);
-    expect(resolveViewDrawOrder(order, 1, page, offset)).toEqual(expected);
+    const expected = [0, 1, 2 + (frame % 2 === 0 ? 0 : frame / 2), frame];
+    expect(reader.read(order, 1, page, offset)).toEqual(expected);
   }
+});
+
+it('orders distinct submitted rows of the same entity by their own rendered pose', () => {
+  const view = renderable(0, 0, 0).transform.world;
+  const reader = new ViewDrawOrderReader();
+  const order: ViewDrawOrderSelection = {
+    view,
+    readLocal: (entity, out) => {
+      out.group = 0;
+      out.priority = 2;
+      out.tie = entity;
+      out.x = out.y = out.z = 0;
+      out.authoredWorld = undefined;
+      return true;
+    },
+  };
+  expect(reader.read(order, 9, renderable(0, 0, -3).transform.world)).toEqual([0, 2, -3, 9]);
+  expect(reader.read(order, 9, renderable(0, 0, -8).transform.world)).toEqual([0, 2, -8, 9]);
 });

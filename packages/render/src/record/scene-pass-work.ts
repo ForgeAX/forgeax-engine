@@ -19,7 +19,13 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
-import { type FrameList, FrameListBase, FrameProjection } from '../scene/frame-list';
+import {
+  type FrameList,
+  FrameListBase,
+  FrameProjection,
+  type FrameRange,
+  JoinedFrameRows,
+} from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import {
@@ -728,7 +734,6 @@ function combinedDispatch(
   queued: ScenePassPreparationMemo['queued'],
   previous: ScenePassPreparationMemo | undefined,
 ): DispatchList {
-  let length = 0;
   let only: DispatchList | undefined;
   let populated = 0;
   let same = previous !== undefined && previous.queued.length === queued.length;
@@ -738,19 +743,22 @@ function combinedDispatch(
     if (dispatch.length > 0) {
       only = dispatch;
       populated++;
-      length += dispatch.length;
     }
     const before = previous?.queued[segment++]?.work.dispatch;
     if (before !== dispatch && (dispatch.length !== 0 || before?.length !== 0)) same = false;
   }
   if (populated <= 1) return only ?? [];
   if (same && previous !== undefined) return previous.value.dispatch;
-  const combined = new Array<DispatchEntry>(length);
-  let index = 0;
+  // Each phase has already sealed its address space and ordered commands.
+  // Joining a changed roster costs one range per nonempty phase.
+  const ranges: FrameRange<DispatchEntry>[] = [];
+  let start = 0;
   for (const { work } of queued) {
-    for (const entry of work.dispatch) combined[index++] = entry;
+    if (work.dispatch.length === 0) continue;
+    ranges.push({ start, rows: work.dispatch });
+    start += work.dispatch.length;
   }
-  return combined;
+  return new JoinedFrameRows(ranges);
 }
 
 export function prepareScenePasses(

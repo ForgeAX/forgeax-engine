@@ -94,7 +94,7 @@ it.each([
               expected: 'the current AO depth pyramid seed',
               hint: 'inspect the original native preparation',
               detail: {
-                passName: 'ssao-furthest-hzb-seed',
+                passName: 'hzb-seed',
                 passKind: 'compute',
                 cause: Error('the prepared program lost its View'),
               },
@@ -160,7 +160,7 @@ it.each([
   if (mode === 'superseded-during-hiz') {
     await expect(prepare()).rejects.toMatchObject({
       code: 'rhi-descriptor-invalid',
-      cause: { code: 'pass-preparation-failed', detail: { passName: 'ssao-furthest-hzb-seed' } },
+      cause: { code: 'pass-preparation-failed', detail: { passName: 'hzb-seed' } },
     });
     expect(preparing.isObsolete()).toBe(true);
     (await preparing.retire()).unwrap();

@@ -1060,21 +1060,30 @@ it('reconstructs Screen Probe lighting from plane-compatible uniform and adaptiv
     const furthestDepth = device.createTexture({ size: [4, 2], format: 'r32float', usage: 4 | 8 });
     textures.push(furthestDepth);
     const furthestDepthView = furthestDepth.createView();
+    const seedSource = readFileSync(
+      new URL('../../../../shader/src/depth-pyramid-seed.wgsl', import.meta.url),
+      'utf8',
+    );
+    const seedProgram = (
+      await compileShader(seedSource, {
+        id: 'depth-pyramid-seed',
+        imports: await rayShaderTestImports(),
+      })
+    ).unwrap();
+    viewData.set([0.5, 1.5, 1, 0], 228);
     const seedAoDepth = device.createComputePipeline({
       layout: 'auto',
       compute: {
-        module: device.createShaderModule({ code: compiled.wgsl }),
-        entryPoint: 'seedScreenProbeFurthestDepth',
+        module: device.createShaderModule({ code: seedProgram.wgsl }),
+        entryPoint: 'depth_pyramid_seed_furthest',
       },
     });
     const seedAoDepthInputs = device.createBindGroup({
       layout: seedAoDepth.getBindGroupLayout(0),
       entries: [
-        { binding: SCREEN_PROBE_BINDINGS.depth[0], resource: depth.createView() },
-        {
-          binding: SCREEN_PROBE_BINDINGS.shortRangeAoFurthestDepthOut[0],
-          resource: furthestDepthView,
-        },
+        { binding: 0, resource: depth.createView() },
+        { binding: 1, resource: furthestDepthView },
+        { binding: 2, resource: { buffer: view } },
       ],
     });
     const aoMeta = new Uint32Array(32 * 4);

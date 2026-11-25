@@ -57,7 +57,7 @@ import {
   type PublishedAssetPatch,
   prepareAssetPatch,
 } from './asset-patch';
-import { CanvasFrameReceiver } from './canvas';
+import { CanvasFrameReceiver, type PublishedCanvasFrame } from './canvas';
 import {
   type PublishedAssetVersion,
   type PublishedMeshPreparation,
@@ -88,6 +88,7 @@ import {
   PublicationMaterialProjectionAdmission,
   rebindPublicationMaterialSchemas,
 } from './programs';
+import { adoptWorkerMaterialSnapshot } from './received-materials';
 import { decodeRenderPublication, type RenderPublicationMessage } from './record';
 import type { RenderResourceScope } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
@@ -387,15 +388,31 @@ function unusableVideoFrame(frame: unknown): boolean {
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_TOKENS: ReadonlySet<object> = new Set();
 
+function validCanvasPixels(row: PublishedCanvasFrame, canvases: CanvasFrameReceiver): boolean {
+  switch (row.snapshot) {
+    case undefined:
+      return row.frame === undefined || (!row.disposed && !unusableVideoFrame(row.frame));
+    case 'replace':
+      return !row.disposed && !unusableVideoFrame(row.frame);
+    case 'reuse':
+      return !row.disposed && row.frame === undefined && canvases.hasSnapshot(row);
+    default:
+      return false;
+  }
+}
+
 function admitCanvasFrameIds(
   rows: RenderPublication['canvasFrames'],
+  canvases: CanvasFrameReceiver,
 ): Result<ReadonlySet<string>, RenderPublicationError> {
   if (rows !== undefined && !Array.isArray(rows))
     return rejectPublication('shape', 'canvas frames');
   if (rows === undefined || rows.length === 0) return ok(NO_KEYS);
   const canvasIds = new Set<string>();
-  for (const row of rows ?? []) {
+  for (const row of rows) {
     if (
+      row === null ||
+      typeof row !== 'object' ||
       typeof row.id !== 'string' ||
       row.id.length === 0 ||
       typeof row.flipY !== 'boolean' ||
@@ -403,8 +420,7 @@ function admitCanvasFrameIds(
       !Number.isSafeInteger(row.version) ||
       row.version < 1 ||
       typeof row.disposed !== 'boolean' ||
-      (row.disposed && row.frame !== undefined) ||
-      (row.frame !== undefined && unusableVideoFrame(row.frame))
+      !validCanvasPixels(row, canvases)
     )
       return rejectPublication('shape', 'canvas frame');
     canvasIds.add(row.id);
@@ -522,6 +538,7 @@ function admitTargetSourceKeys(
 /** Canvas ids and target-source keys a material texture may reference in this frame. */
 function admitFrameTextureSources(
   packet: RenderPublication,
+  canvases: CanvasFrameReceiver,
 ): Result<
   { readonly canvasIds: ReadonlySet<string>; readonly sourceTokens: ReadonlySet<string> },
   RenderPublicationError
@@ -532,7 +549,7 @@ function admitFrameTextureSources(
     shadowCasterChannelsError(lights) ??
     punctualLightDecayError(lights);
   if (lightError !== undefined) return err(lightError);
-  const canvasIds = admitCanvasFrameIds(packet.canvasFrames);
+  const canvasIds = admitCanvasFrameIds(packet.canvasFrames, canvases);
   if (!canvasIds.ok) return canvasIds;
   const videoError = videoFramesError(packet.videoFrames);
   if (videoError !== undefined) return err(videoError);
@@ -671,12 +688,16 @@ function validSharedMaterialRow(row: RenderPublication['materials'][number]): bo
 function stageSharedMaterials(
   materials: RenderPublication['materials'],
   retiredMaterials: ReadonlySet<number>,
+  adoptValues?: typeof adoptWorkerMaterialSnapshot,
 ): Result<Map<number, MaterialResource>, RenderPublicationError> {
   const stagedMaterials = new Map<number, MaterialResource>();
   for (const row of materials) {
     if (!validSharedMaterialRow(row) || stagedMaterials.has(row.id) || retiredMaterials.has(row.id))
       return rejectPublication('shape', 'shared material');
-    stagedMaterials.set(row.id, new MaterialResource(row.value));
+    stagedMaterials.set(
+      row.id,
+      new MaterialResource(adoptValues === undefined ? row.value : adoptValues(row.value)),
+    );
   }
   return ok(stagedMaterials);
 }
@@ -1205,7 +1226,11 @@ export function decodeClosedLevelRows(
     !Array.isArray(chunk.materials)
   )
     return rejectPublication('shape', 'closed Level row columns');
-  const materials = stageSharedMaterials(chunk.materials, NO_MATERIALS);
+  const materials = stageSharedMaterials(
+    chunk.materials,
+    NO_MATERIALS,
+    adoptWorkerMaterialSnapshot,
+  );
   if (!materials.ok) return materials;
   const stage = createTemplateDecoder(
     (id) => materials.value.get(id),
@@ -1911,7 +1936,7 @@ export class RenderPublicationReceiver {
     const admitted = this.admitPacket(input);
     if (!admitted.ok) return admitted;
     const packet = admitted.value;
-    const textureSources = admitFrameTextureSources(packet);
+    const textureSources = admitFrameTextureSources(packet, this.canvases);
     if (!textureSources.ok) return textureSources;
     const versions = this.stageFixedAssetVersions(packet);
     if (!versions.ok) return versions;
@@ -2125,7 +2150,7 @@ export class RenderPublicationReceiver {
         this.commitAssetRows(packet, assets.value.admitted, assets.value.patched, materialAssets);
         for (const change of assets.value.changes)
           this.retireOlderPreparations(change.handle, change.revision);
-        this.commitFrameInputs(packet);
+        this.commitFrameInputs(packet, canvasIds);
         references?.commit();
         this.commitJointMatrices(packet, retiredJoints.value, jointRows.value);
         if (drawParameters !== undefined) {
@@ -2825,7 +2850,7 @@ export class RenderPublicationReceiver {
     if (versions.size === 0) this.preparedMeshes.delete(handle);
   }
 
-  private commitFrameInputs(packet: RenderPublication): void {
+  private commitFrameInputs(packet: RenderPublication, canvasIds: ReadonlySet<string>): void {
     const resources = this.resources as {
       -readonly [K in 'time' | 'transparentSort']: RenderResourceScope[K];
     };
@@ -2834,7 +2859,7 @@ export class RenderPublicationReceiver {
     this.releaseVideoFrames();
     for (const row of packet.videoFrames)
       this.videoFrames.set(`${row.entity}:${row.clip}`, row.frame);
-    this.canvases.accept(packet.canvasFrames ?? []);
+    this.canvases.accept(packet.canvasFrames ?? [], canvasIds);
   }
 
   private commitJointMatrices(

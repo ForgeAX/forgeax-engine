@@ -55,8 +55,14 @@ it('encodes unassociated color before premultiplication, including tone mapping 
       encoder.copyTextureToBuffer({ texture, origin: [64, 64] }, { buffer: pixel }, [1, 1]);
       device.queue.submit([encoder.finish()]);
       await pixel.mapAsync(GPUMapMode.READ);
-      const rgba = Array.from(new Uint8Array(pixel.getMappedRange()));
-      return texture.format === 'bgra8unorm' ? [rgba[2], rgba[1], rgba[0], rgba[3]] : rgba;
+      const lanes = new DataView(pixel.getMappedRange());
+      const [r, g, b, a] = [
+        lanes.getUint8(0),
+        lanes.getUint8(1),
+        lanes.getUint8(2),
+        lanes.getUint8(3),
+      ];
+      return texture.format === 'bgra8unorm' ? [b, g, r, a] : [r, g, b, a];
     } finally {
       pixel.destroy();
     }
@@ -85,6 +91,12 @@ it('encodes unassociated color before premultiplication, including tone mapping 
     light.removeFromParent();
     await readyFrames(renderer, scene, camera, 1);
     matches(center(await renderer.captureFrame(scene, camera)), [160, 0, 117, 191]);
+    renderer.samples = 4;
+    await readyFrames(renderer, scene, camera, 1);
+    matches(await presentedCenter(), [160, 0, 117, 191]);
+    matches(center(await renderer.captureFrame(scene, camera)), [160, 0, 117, 191]);
+    expect(forward()?.last.topologyKey).toContain('"samples":4');
+    renderer.samples = 0;
     renderer.toneMapping = THREE.ReinhardToneMapping;
     await readyFrames(renderer, scene, camera, 1);
     const toned = await renderer.captureFrame(scene, camera);

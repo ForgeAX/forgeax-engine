@@ -45,7 +45,7 @@ export class CurrentOcclusionDepth {
     let image = this.image;
     if (image === undefined || image.width !== width || image.height !== height) {
       const allocation = this.textures.allocate(
-        'occlusion-depth-pyramid',
+        'occlusion-hzb',
         width,
         height,
         plan.format,

@@ -3,6 +3,7 @@ import { describeMeshDraw } from '@forgeax/engine-geometry';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { materialRasterSourceFacts } from '../assembly/material/assembly';
 import { buildGpuDrivenDraws } from '../extract/gpu-driven';
+import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
 import type { InstanceProjectionStore } from '../instances';
 import type {
   GpuDrivenDrawSnapshot,
@@ -105,7 +106,7 @@ function sharedGpuDrivenDraws(
   const complete =
     artifacts === undefined ||
     built.every((draw) => draw.prepared !== undefined || draw.preparationError !== undefined);
-  const draws = Object.freeze(built.map((draw) => Object.freeze(draw)));
+  const draws = sealSourceDraws(built);
   // An incomplete table is shared only by the rows of this preparation (a cold
   // first frame admits every row before any program is ready); a later
   // preparation rebuilds it against the then-current artifacts.

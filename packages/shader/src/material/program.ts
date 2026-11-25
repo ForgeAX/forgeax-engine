@@ -6,6 +6,7 @@ import {
   ShaderSource,
   stripWgslComments,
 } from '@forgeax/engine-types';
+import { admitMaterialShaderEntries } from './depth-entries.js';
 import { type DeclaredVertexInput, declaredMaterialVertexInputs } from './vertex-inputs.js';
 
 const NO_TEXTURE_DECLARATIONS: readonly ParamSchemaEntry[] = Object.freeze([]);
@@ -238,12 +239,14 @@ export function withMaterialShaderEntryPoints(
           ),
         }),
       );
+  const captured = Object.freeze(reads);
+  admitMaterialShaderEntries(captured);
   return Object.freeze(
     Object.defineProperties(
       {},
       {
         ...Object.getOwnPropertyDescriptors(program),
-        entryPoints: { value: Object.freeze(reads), enumerable: true },
+        entryPoints: { value: captured, enumerable: true },
       },
     ),
   ) as MaterialShaderProgram;

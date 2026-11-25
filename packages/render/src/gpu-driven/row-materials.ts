@@ -104,8 +104,8 @@ export function rowMaterialSourcesKey(
   return sources.length === 1 ? (sources[0] as string) : sources.join(',');
 }
 
-const rowClassText = (materialClass: string, sources: string) =>
-  JSON.stringify([materialClass, sources]);
+// Binding sources are closed tokens without newlines. Keep the material class verbatim.
+const rowClassText = (materialClass: string, sources: string) => `${sources}\n${materialClass}`;
 
 /** Whether draw `materialSlot` of a row-material row reads the member's own material slot. */
 export function rowMaterialSlot(
@@ -124,7 +124,7 @@ export interface RowMaterialGroup {
   readonly rows: ReadonlyMap<MaterialResource, number>;
 }
 
-interface RowGroup extends RowMaterialGroup {
+export interface RowGroup extends RowMaterialGroup {
   /** Current class; new rows of an unheld material join the group holding it. */
   rowClass: string;
   readonly rows: Map<MaterialResource, number>;
@@ -140,6 +140,7 @@ interface RowMember {
   readonly group: RowGroup;
 }
 
+const noMovedSlots: readonly number[] = Object.freeze([]);
 let nextGroup = 0;
 
 /**
@@ -147,54 +148,53 @@ let nextGroup = 0;
  * their class and keep it under a stable text: a group whose only material
  * changes class follows that material without moving rows; a material that
  * shares its group, or whose new class already has one, moves exactly its own
- * rows. Groups persist for reuse, so their count is bounded by the classes
- * seen. A batch binds one held material for its pipeline and bind-group facts;
- * when that material's last member leaves, another held material takes over.
+ * rows. Only groups with live rows are indexed for admission. A batch binds
+ * one held material for its pipeline and bind-group facts; when its last row
+ * leaves, another held material takes over.
  */
 export class RowMaterialMembers<Batch extends object, Binding> {
   private readonly bySlot: (RowMember | undefined)[] = [];
   private readonly slots = new Map<MaterialResource, Set<number>>();
-  private readonly groups = new Map<string, RowGroup>();
   private readonly joinable = new Map<string, RowGroup>();
   private readonly groupOf = new Map<MaterialResource, Map<string, RowGroup>>();
   private readonly batches = new WeakMap<Batch, BatchMaterials<Binding>>();
   private materials: MaterialFrame | undefined;
 
   /** Group of a row, or `undefined` for a per-material row. */
-  group(snapshot: RowMaterialSource): RowMaterialGroup | undefined {
+  group(snapshot: RowMaterialSource): RowGroup | undefined {
     const material = rowMaterialResource(snapshot);
     const materialClass =
       material === undefined ? undefined : materialBatchClass(material.snapshot);
     if (material === undefined || materialClass === undefined) return undefined;
     const sources = rowMaterialSourcesKey(snapshot.materialBindingSources);
-    const rowClass = rowClassText(materialClass, sources);
     const held = this.groupOf.get(material)?.get(sources);
     if (held !== undefined) return held;
-    let group = this.joinable.get(rowClass);
-    if (group === undefined) {
-      group = { text: JSON.stringify(['row', nextGroup++]), sources, rowClass, rows: new Map() };
-      this.joinable.set(rowClass, group);
-      this.groups.set(group.text, group);
-    }
-    return group;
+    const rowClass = rowClassText(materialClass, sources);
+    return (
+      this.joinable.get(rowClass) ?? {
+        text: JSON.stringify(['row', nextGroup++]),
+        sources,
+        rowClass,
+        rows: new Map(),
+      }
+    );
   }
 
   materialOf(slot: number): MaterialResource | undefined {
     return this.bySlot[slot]?.material;
   }
 
-  /** Register row `slot` of `batch` under the group `text` returned for `snapshot`. */
+  /** Register row `slot` of `batch` under the group selected for this admission. */
   add(
     batch: Batch,
     slot: number,
     snapshot: RowMaterialSource,
     binding: Binding,
-    text: string,
+    group: RowGroup,
   ): void {
     const material = rowMaterialResource(snapshot);
-    const group = this.groups.get(text);
-    if (material === undefined || group === undefined)
-      throw new Error('Missing row-material group');
+    if (material === undefined) throw new Error('Missing row material');
+    if (group.rows.size === 0) this.joinable.set(group.rowClass, group);
     group.rows.set(material, (group.rows.get(material) ?? 0) + 1);
     let held = this.groupOf.get(material);
     if (held === undefined) {
@@ -236,11 +236,11 @@ export class RowMaterialMembers<Batch extends object, Binding> {
     slot: number,
     snapshot: RowMaterialSource,
     binding: Binding,
-    text: string,
+    group: RowGroup,
   ): Binding | undefined {
     const previous = this.bySlot[slot];
     if (previous?.material === rowMaterialResource(snapshot)) return undefined;
-    this.add(batch, slot, snapshot, binding, text);
+    this.add(batch, slot, snapshot, binding, group);
     return previous === undefined ? undefined : this.release(batch, slot, previous);
   }
 
@@ -252,6 +252,7 @@ export class RowMaterialMembers<Batch extends object, Binding> {
     if (rows > 0) group.rows.set(material, rows);
     else {
       group.rows.delete(material);
+      if (group.rows.size === 0) this.joinable.delete(group.rowClass);
       const held = this.groupOf.get(material);
       if (held?.get(group.sources) === group) held.delete(group.sources);
       if (held?.size === 0) this.groupOf.delete(material);
@@ -274,13 +275,15 @@ export class RowMaterialMembers<Batch extends object, Binding> {
   adopt(materials: MaterialFrame): readonly number[] {
     const previous = this.materials;
     this.materials = materials;
-    if (previous === undefined || previous === materials || this.groupOf.size === 0) return [];
-    const moved: number[] = [];
+    if (previous === undefined || previous === materials || this.groupOf.size === 0)
+      return noMovedSlots;
+    let moved: number[] | undefined;
     materials.changesSince(previous, (before, after) => {
       if (before === undefined || after === undefined) return;
       const held = this.groupOf.get(after.resource);
+      if (held === undefined) return;
       const next = materialBatchClass(after.snapshot);
-      if (held === undefined || materialBatchClass(before.snapshot) === next) return;
+      if (materialBatchClass(before.snapshot) === next) return;
       let move = false;
       for (const [sources, group] of held) {
         const rowClass = next === undefined ? undefined : rowClassText(next, sources);
@@ -292,9 +295,15 @@ export class RowMaterialMembers<Batch extends object, Binding> {
         move = true;
       }
       if (held.size === 0) this.groupOf.delete(after.resource);
-      if (move) moved.push(...(this.slots.get(after.resource) ?? []));
+      if (move) {
+        const slots = this.slots.get(after.resource);
+        if (slots !== undefined) {
+          moved ??= [];
+          for (const slot of slots) moved.push(slot);
+        }
+      }
     });
-    return moved;
+    return moved ?? noMovedSlots;
   }
 
   private reclass(group: RowGroup, rowClass: string): void {
@@ -306,7 +315,6 @@ export class RowMaterialMembers<Batch extends object, Binding> {
   clear(): void {
     this.bySlot.length = 0;
     this.slots.clear();
-    this.groups.clear();
     this.joinable.clear();
     this.groupOf.clear();
     this.materials = undefined;

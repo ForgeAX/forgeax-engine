@@ -29,6 +29,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -160,10 +161,7 @@ function createDriver(
         );
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   let time = 0;
-  const draw = async (): Promise<FrameReceipt> => {
-    world.update(1 / 60).unwrap();
-    propagateTransforms(world).unwrap();
-    time += 1 / 60;
+  const submit = async (): Promise<FrameReceipt> => {
     const candidate = publisher?.prepare(time).unwrap();
     const packet =
       candidate === undefined
@@ -183,6 +181,12 @@ function createDriver(
       if (packet !== undefined)
         required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     }
+  };
+  const draw = async (presentation: 'submitted' | 'ready' = 'submitted') => {
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    time += 1 / 60;
+    return presentation === 'ready' ? completeReadyFrame(submit) : submit();
   };
   return {
     draw,
@@ -464,10 +468,10 @@ export async function verifyStereo(
     const anaglyphDisparity = measureDisparity(anaglyph, 'anaglyph', SEPARATION);
     expectDisparity(anaglyphDisparity, 1, 1);
 
-    // TAA keeps an independent history per eye across the settling window.
+    // TAA needs a full window of visible frames after the mode switch.
     world.set(camera, Camera, { antialias: ANTIALIAS_TAA }).unwrap();
     world.set(camera, StereoCamera, stereoData()).unwrap();
-    for (let i = 0; i < settleFrames; i++) await driver.draw();
+    for (let i = 0; i < settleFrames; i++) await driver.draw('ready');
     frames += settleFrames;
     const taaImage = await observe();
     await save('sbs-taa.rgba', taaImage.rgba);

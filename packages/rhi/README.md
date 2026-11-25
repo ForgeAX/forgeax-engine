@@ -571,9 +571,11 @@ the backend shells.
 `RhiQueue.writeBuffer` uses bytes for the destination offset, TypedArray elements
 for source `dataOffset/size`, and bytes for ArrayBuffer/DataView source ranges.
 Omitted size means the remaining source view; explicit zero stays zero. The
-resulting byte count must be a multiple of four. `bufferWriteRange` is the pure
-shared conversion authority used by backends and Debug; it rejects invalid
-source ranges without clipping. Source subviews retain their own byte offset.
+resulting byte count must be a multiple of four. Each WebGPU or wgpu queue owns
+two numbers for the validated source range. `readBufferWriteRange` fills them on
+success. `bufferWriteRange` returns an independent range for capture and other
+retaining consumers. Both reject an invalid range without clipping. Source
+offsets are relative to the supplied view.
 
 Buffer-copy shorthand expands to the stable full native signature. An omitted
 size uses the source buffer size; explicit zero and complete-form offsets remain

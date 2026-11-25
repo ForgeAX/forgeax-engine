@@ -13,11 +13,22 @@ fn sceneTemporalFromVelocity(
   let homogeneous = view.inverseViewProj * ndc;
   let world = homogeneous / homogeneous.w;
   let current = view.temporalCurrentViewProj * world;
-  let word = textureLoad(velocity, pixel, 0).x;
-  if ((word & 65535u) != 0u) {
-    return vec4<f32>(decodeSceneVelocity(word), sceneTemporalViewDepth(current, view.temporalProjection), 0.0);
+  let packed = textureLoad(velocity, pixel, 0).xy;
+  if (packed.x != 0u) {
+    let invalid = packed.x == SCENE_VELOCITY_INVALID_MOTION;
+    return vec4<f32>(
+      select(decodeSceneVelocity(packed.x), vec2<f32>(0.0), invalid),
+      sceneTemporalViewDepth(current, view.temporalProjection),
+      select(sceneVelocityReactive(packed.y), 2.0, invalid),
+    );
   }
-  return packSceneTemporalV1(current, view.temporalPreviousViewProj * world, view.temporalProjection, 0.0);
+  return packSceneTemporalV1WithValidity(
+    current,
+    view.temporalPreviousViewProj * world,
+    view.temporalProjection,
+    0.0,
+    true,
+  );
 }
 
 
@@ -53,6 +64,8 @@ fn closestSceneVelocity(
       if (deviceZ > nearestZ) { nearest = p; nearestZ = deviceZ; }
     }
   }
+  // TAA integrates stochastic coverage across frames. Match the float
+  // temporal path by carrying its nearest valid neighbor through a depth edge.
   let packed = sceneTemporalFromVelocity(nearest, sceneDepth, velocity, view);
   var depthEdge = false;
   if (nearestZ > 0.0) {

@@ -100,9 +100,14 @@ describe('Depth pyramid + SSR spatial Browser WebGPU gate', () => {
       encode: () => undefined,
     });
     expect(seeded.ok).toBe(true);
-    const depthPyramid = addDepthPyramidPasses(graph, { depth, width: WIDTH, height: HEIGHT });
+    const depthPyramid = addDepthPyramidPasses(graph, {
+      depth,
+      width: WIDTH,
+      height: HEIGHT,
+    });
     expect(depthPyramid.ok).toBe(true);
     if (!depthPyramid.ok) return;
+    expect(depthPyramid.value.pyramid.reduction).toBe('furthest');
     const projected = addSsrSpatialPasses(graph, {
       admission: admittedAdmission(),
       depthPyramid: depthPyramid.value.pyramid,
@@ -133,13 +138,11 @@ describe('Depth pyramid + SSR spatial Browser WebGPU gate', () => {
     const info = compiled.value.inspect();
     expect(info.passes.map((pass) => pass.name)).toEqual([
       'seed-inputs',
-      'depth-pyramid-seed',
-      'depth-pyramid-reduce-chain',
+      'hzb-seed',
+      'hzb-reduce-chain',
       'ssr-trace',
     ]);
-    expect(
-      info.resources.find((resource) => resource.label === 'depth-pyramid')?.descriptor,
-    ).toMatchObject({
+    expect(info.resources.find((resource) => resource.label === 'hzb')?.descriptor).toMatchObject({
       format: 'r32float',
       width: Math.floor(WIDTH / 2),
       height: Math.floor(HEIGHT / 2),

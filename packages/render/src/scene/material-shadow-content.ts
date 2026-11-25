@@ -1,12 +1,13 @@
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import {
   derive,
+  getAdmittedParamSchemaInterface,
   type MaterialResourceBindingLayout,
   type ShaderBindingReads,
 } from '@forgeax/engine-types';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import { rowMaterialResource } from '../gpu-driven/row-materials';
-import type { MaterialResource } from '../material-resource';
+import { type MaterialResource, ownedMaterialPassDeclaration } from '../material-resource';
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
 import { writePbrMaterialUboPayload } from '../record/main-pass-material';
@@ -34,21 +35,22 @@ function payload(snapshot: MaterialSnapshot): Uint8Array {
   return bytes;
 }
 
-const contracts = new WeakMap<
-  MaterialSnapshot,
-  readonly {
-    readonly shape: string;
-    readonly reads: readonly ShaderBindingReads[] | undefined;
-  }[]
->();
-/** Structural reads belong to the accepted Pass contract, not a frame probe. */
+interface ShadowPass {
+  readonly shape: string;
+  readonly reads: readonly ShaderBindingReads[] | undefined;
+}
+interface ShadowPassContract {
+  readonly passes: readonly ShadowPass[];
+  readonly schema: MaterialSnapshot['materialParamSchema'];
+  readonly bindings: readonly MaterialResourceBindingLayout[] | undefined;
+}
+const contracts = new WeakMap<object, ShadowPassContract>();
 const NO_RESOURCE_BINDINGS: readonly MaterialResourceBindingLayout[] = Object.freeze([]);
-function shadowResourceBindings(
-  snapshot: MaterialSnapshot,
+/** Project reflected shader reads into the schema's physical ABI order. */
+function selectShadowBindings(
+  passes: readonly ShadowPass[],
+  resources: readonly MaterialResourceBindingLayout[],
 ): readonly MaterialResourceBindingLayout[] {
-  const passes = shadowPasses(snapshot);
-  const layout = derive(snapshot.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
-  const resources = layout.resourceBindings;
   // derive emits resource bindings in increasing ABI order. Numeric-only reads
   // before the first resource cannot select one. Sampler-only schemas can start at zero.
   const firstResource = resources[0];
@@ -74,10 +76,12 @@ function shadowResourceBindings(
     ? NO_RESOURCE_BINDINGS
     : resources.filter((binding) => bindings.has(binding.binding));
 }
-function shadowPasses(snapshot: MaterialSnapshot) {
-  let contract = contracts.get(snapshot);
-  if (contract !== undefined) return contract;
-  contract = materialPasses(snapshot)
+function shadowContract(snapshot: MaterialSnapshot): ShadowPassContract {
+  const declaration = ownedMaterialPassDeclaration(snapshot);
+  const owner = declaration ?? snapshot;
+  const existing = contracts.get(owner);
+  if (existing !== undefined) return existing;
+  const passes = materialPasses(snapshot)
     .filter((pass) => pass.tags.LightMode === 'ShadowCaster')
     .map((pass) => {
       const authored = snapshot.passes[pass.passIndex];
@@ -108,8 +112,98 @@ function shadowPasses(snapshot: MaterialSnapshot) {
             : [...vertex.bindings, ...(fragment?.bindings ?? [])],
       };
     });
-  contracts.set(snapshot, contract);
+  const schema = snapshot.materialParamSchema;
+  const admitted =
+    declaration === undefined || passes.length === 0
+      ? undefined
+      : getAdmittedParamSchemaInterface(schema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
+  const contract = {
+    passes,
+    schema,
+    bindings:
+      admitted === undefined ? undefined : selectShadowBindings(passes, admitted.resourceBindings),
+  };
+  contracts.set(owner, contract);
   return contract;
+}
+
+const LIVE_ATLAS_SOURCE = Symbol('live-shadow-atlas-source');
+
+function shadowBindingVersions(
+  snapshot: MaterialSnapshot,
+  bindings: readonly MaterialResourceBindingLayout[],
+  scope: RenderResourceScope,
+  preparedMaterialTexture: RenderSystemRuntime['preparedMaterialTexture'],
+  atlasOnly: boolean,
+): unknown[] | typeof LIVE_ATLAS_SOURCE | undefined {
+  let resources: unknown[] | undefined;
+  for (const binding of bindings) {
+    const name = binding.parameter ?? binding.name;
+    const prepared =
+      preparedMaterialTexture?.parameters?.has(name) === false
+        ? undefined
+        : preparedMaterialTexture?.(snapshot, name);
+    if (prepared !== undefined) {
+      resources ??= [];
+      resources.push(prepared);
+      continue;
+    }
+    const handle =
+      binding.kind === 'sampler'
+        ? snapshot.samplerHandles?.get(name)
+        : snapshot.textureHandles?.get(name);
+    if (handle !== undefined) {
+      resources ??= [];
+      resources.push(renderAssetRevision(scope, handle));
+    }
+    // Host/target/video sources have their own frame publication. Without a
+    // fixed source witness, this shared depth work is deliberately not retained.
+    if (snapshot.textureSources?.has(name) || snapshot.videoTextureFields?.has(name)) {
+      if (atlasOnly) return LIVE_ATLAS_SOURCE;
+      resources ??= [];
+      resources.push({});
+    }
+  }
+  return resources;
+}
+
+function sameShadowUniformRead(
+  a: MaterialSnapshot,
+  b: MaterialSnapshot,
+  layout: ReturnType<typeof derive>,
+  read: ShaderBindingReads,
+): boolean {
+  const before = payload(a),
+    after = payload(b);
+  if (read.fields === undefined) return before.every((byte, index) => byte === after[index]);
+  for (const name of read.fields) {
+    const field = layout.uboLayout.entries.find((entry) => entry.name === name);
+    const coordinates =
+      field === undefined
+        ? layout.coordinateRecords.find(
+            (record) =>
+              record.transformMember === name ||
+              record.metadataMember === name ||
+              record.rotationMember === name,
+          )
+        : undefined;
+    const start =
+      field !== undefined
+        ? field.offset
+        : coordinates === undefined
+          ? undefined
+          : coordinates.offset +
+            (coordinates.transformMember === name
+              ? 0
+              : coordinates.metadataMember === name
+                ? 16
+                : 32);
+    if (start === undefined) return false;
+    const size = field?.size ?? 16;
+    for (let offset = start; offset < start + size; offset++)
+      if (before[offset] !== after[offset]) return false;
+  }
+  return true;
 }
 
 function sameRead(a: MaterialSnapshot, b: MaterialSnapshot, read: ShaderBindingReads): boolean {
@@ -117,38 +211,8 @@ function sameRead(a: MaterialSnapshot, b: MaterialSnapshot, read: ShaderBindingR
   const layout = derive(a.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
   const next = derive(b.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA);
   if (layout.layoutIdentity !== next.layoutIdentity) return false;
-  if (read.binding === 0) {
-    const before = payload(a),
-      after = payload(b);
-    if (read.fields === undefined) return before.every((byte, index) => byte === after[index]);
-    for (const name of read.fields) {
-      const field = layout.uboLayout.entries.find((entry) => entry.name === name);
-      const coordinates =
-        field === undefined
-          ? layout.coordinateRecords.find(
-              (record) =>
-                record.transformMember === name ||
-                record.metadataMember === name ||
-                record.rotationMember === name,
-            )
-          : undefined;
-      const start =
-        field !== undefined
-          ? field.offset
-          : coordinates === undefined
-            ? undefined
-            : coordinates.offset +
-              (coordinates.transformMember === name
-                ? 0
-                : coordinates.metadataMember === name
-                  ? 16
-                  : 32);
-      if (start === undefined) return false;
-      const size = field?.size ?? 16;
-      for (let offset = start; offset < start + size; offset++)
-        if (before[offset] !== after[offset]) return false;
-    }
-    return true;
+  if (read.binding === 0 && layout.resourceBindings[0]?.binding !== 0) {
+    return sameShadowUniformRead(a, b, layout, read);
   }
   const resource = layout.resourceBindings.find((resource) => resource.binding === read.binding);
   if (resource === undefined) return false;
@@ -170,8 +234,8 @@ export function sameShadowMaterial(
   b: MaterialSnapshot | undefined,
 ): boolean {
   if (a === b) return true;
-  const before = a === undefined ? [] : shadowPasses(a),
-    after = b === undefined ? [] : shadowPasses(b);
+  const before = a === undefined ? [] : shadowContract(a).passes,
+    after = b === undefined ? [] : shadowContract(b).passes;
   if (before.length !== after.length) return false;
   if (before.length === 0) return true;
   if (a === undefined || b === undefined) return false;
@@ -235,17 +299,52 @@ interface ShadowScopeContent {
 export class ShadowMaterialContent {
   private readonly entries = new Map<RenderResourceScope, ShadowScopeContent>();
   private observed: ReadonlySet<MaterialResource> | undefined;
-  private readonly selections = new WeakMap<
-    SubmissionPlan,
-    {
-      readonly source: Pick<PersistentGpuDrivenState, 'slotAt'>;
-      readonly content: ShadowMaterialContent;
-    }
-  >();
+  private selections:
+    | WeakMap<
+        SubmissionPlan,
+        {
+          readonly source: Pick<PersistentGpuDrivenState, 'slotAt'>;
+          readonly content: ShadowMaterialContent;
+        }
+      >
+    | undefined;
   /** Members whose shadow reads are witnessed by the owned frame instead of an entry. */
   private readonly framed = new Map<MaterialResource, MaterialSnapshot>();
 
-  constructor(private readonly materials?: MaterialFrame) {}
+  private liveAtlas = false;
+
+  constructor(
+    private readonly materials?: MaterialFrame,
+    private readonly domain: 'view' | 'whole-atlas' = 'view',
+  ) {}
+
+  /** One unfenced source prevents retaining the entire directional atlas. */
+  get requiresAtlasRedraw(): boolean {
+    return this.liveAtlas;
+  }
+
+  /** Capture a material from an admitted frame once per resource scope, even across submeshes. */
+  addFromFrame(
+    resource: MaterialResource,
+    frame: MaterialFrame,
+    scope: RenderResourceScope,
+    preparedMaterialTexture: RenderSystemRuntime['preparedMaterialTexture'],
+    worldId: number,
+  ): void {
+    const materials = this.entries.get(scope)?.materials;
+    if (materials?.has(resource)) return;
+    const accepted = frame.get(resource);
+    if (accepted !== undefined)
+      this.capture(
+        resource,
+        accepted.snapshot,
+        scope,
+        preparedMaterialTexture,
+        worldId,
+        materials,
+        frame === this.materials,
+      );
+  }
 
   add(
     resource: MaterialResource,
@@ -254,65 +353,63 @@ export class ShadowMaterialContent {
     preparedMaterialTexture?: RenderSystemRuntime['preparedMaterialTexture'],
     worldId?: number,
   ): void {
-    let materials = this.entries.get(scope)?.materials;
+    const materials = this.entries.get(scope)?.materials;
     if (materials?.has(resource)) return;
-    // The captured frame already witnessed this exact numeric snapshot. Keep
-    // new scope membership without repeating its frame lookup or ABI reads.
-    if (this.framed.get(resource) === snapshot) {
-      this.addFramed(resource, snapshot, scope, worldId);
-      return;
-    }
-    const passes = shadowPasses(snapshot);
-    if (passes.length === 0) return;
-    const bindings = shadowResourceBindings(snapshot);
-    // The owned fixed MaterialFrame already captures these immutable numeric
-    // values. Keep scope membership without recording the same dependency twice.
-    if (
-      bindings.length === 0 &&
-      snapshot.immutableValues === true &&
-      this.materials?.get(resource)?.snapshot === snapshot
-    ) {
-      this.addFramed(resource, snapshot, scope, worldId);
-      return;
-    }
-    const resources: unknown[] = [];
-    for (const binding of bindings) {
-      const name = binding.parameter ?? binding.name;
-      const prepared = preparedMaterialTexture?.(snapshot, name);
-      if (prepared !== undefined) {
-        resources.push(prepared);
-        continue;
-      }
-      const handle =
-        binding.kind === 'sampler'
-          ? snapshot.samplerHandles?.get(name)
-          : snapshot.textureHandles?.get(name);
-      if (handle !== undefined) resources.push(renderAssetRevision(scope, handle));
-      // Host/target/video sources have their own frame publication. Without a
-      // fixed source witness, this shared depth work is deliberately not retained.
-      if (snapshot.textureSources?.has(name) || snapshot.videoTextureFields?.has(name))
-        resources.push({});
-    }
-    if (materials === undefined) {
-      materials = new Map();
-      this.entries.set(scope, { worldId, materials });
-    }
-    materials.set(resource, { snapshot, resources });
+    this.capture(resource, snapshot, scope, preparedMaterialTexture, worldId, materials, false);
   }
 
-  private addFramed(
+  private capture(
     resource: MaterialResource,
     snapshot: MaterialSnapshot,
     scope: RenderResourceScope,
+    preparedMaterialTexture: RenderSystemRuntime['preparedMaterialTexture'],
     worldId: number | undefined,
+    materials: ShadowScopeContent['materials'] | undefined,
+    fromOwnedFrame: boolean,
   ): void {
-    let materials = this.entries.get(scope)?.materials;
+    const contract = shadowContract(snapshot);
+    if (contract.passes.length === 0) return;
+    const captured =
+      contract.schema === snapshot.materialParamSchema ? contract.bindings : undefined;
+    // Borrowed schemas and reads may change in place. Only an owned shader
+    // declaration with an admitted schema supplies fixed binding numbers.
+    const bindings =
+      captured ??
+      selectShadowBindings(
+        contract.passes,
+        derive(snapshot.materialParamSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA).resourceBindings,
+      );
     if (materials === undefined) {
       materials = new Map();
       this.entries.set(scope, { worldId, materials });
     }
-    materials.set(resource, undefined);
-    this.framed.set(resource, snapshot);
+    if (
+      bindings.length === 0 &&
+      snapshot.immutableValues === true &&
+      (fromOwnedFrame ||
+        this.framed.get(resource) === snapshot ||
+        this.materials?.get(resource)?.snapshot === snapshot)
+    ) {
+      materials.set(resource, undefined);
+      this.framed.set(resource, snapshot);
+    } else {
+      const resources = shadowBindingVersions(
+        snapshot,
+        bindings,
+        scope,
+        preparedMaterialTexture,
+        this.domain === 'whole-atlas',
+      );
+      if (resources === LIVE_ATLAS_SOURCE) {
+        this.liveAtlas = true;
+        this.entries.clear();
+        this.framed.clear();
+        return;
+      }
+      materials.set(resource, resources === undefined ? { snapshot } : { snapshot, resources });
+    }
+    // A later scope can add dependencies even when a prior selection covered every material.
+    this.selections = undefined;
   }
 
   /** Row-material batches read every member's numeric row, including non-representatives. */
@@ -322,11 +419,9 @@ export class ShadowMaterialContent {
     preparedMaterialTexture: RenderSystemRuntime['preparedMaterialTexture'],
     worldId: number,
   ): void {
-    for (const resource of resources) {
-      const accepted = this.materials?.get(resource);
-      if (accepted !== undefined)
-        this.add(resource, accepted.snapshot, scope, preparedMaterialTexture, worldId);
-    }
+    if (this.materials === undefined) return;
+    for (const resource of resources)
+      this.addFromFrame(resource, this.materials, scope, preparedMaterialTexture, worldId);
   }
 
   /** Exact privately selected plans retain only the materials their selected rows read. */
@@ -334,25 +429,15 @@ export class ShadowMaterialContent {
     plan: SubmissionPlan,
     source: Pick<PersistentGpuDrivenState, 'slotAt'>,
   ): ShadowMaterialContent {
-    const retained = this.selections.get(plan);
+    const retained = this.selections?.get(plan);
     if (retained?.source === source) return retained.content;
     const observed = new Set<MaterialResource>();
-    const worlds = new Map<number, Set<MaterialResource>>();
-    const add = (worldId: number, resource: MaterialResource) => {
-      observed.add(resource);
-      let materials = worlds.get(worldId);
-      if (materials === undefined) {
-        materials = new Set();
-        worlds.set(worldId, materials);
-      }
-      materials.add(resource);
-    };
     for (const batch of plan.batches) {
       if (batch.candidates.length === 0) continue;
       const binding = batch.binding;
       if (binding === undefined) return this;
       if (batch.key.rowMaterial !== true) {
-        add(0, binding.material);
+        observed.add(binding.material);
         continue;
       }
       for (const candidate of batch.candidates) {
@@ -360,37 +445,34 @@ export class ShadowMaterialContent {
         if (row?.generation !== candidate.generation) return this;
         const resource = rowMaterialResource(row.snapshot);
         if (resource === undefined) return this;
-        add(0, resource);
+        observed.add(resource);
       }
     }
     const content = new ShadowMaterialContent(this.materials);
     content.observed = observed;
-    const captured = new Map<number, Set<MaterialResource>>();
+    // Plan rows address renderer-local World 0. Multiple scopes can witness the same resource.
+    const sharedCoverage = this.entries.size > 1 ? new Set<MaterialResource>() : undefined;
+    let covered = 0;
     for (const [scope, entry] of this.entries) {
       if (entry.worldId === undefined) return this;
-      const selected = worlds.get(entry.worldId);
-      if (selected === undefined) continue;
-      const materials = new Map<MaterialResource, ShadowMaterialState | undefined>();
-      for (const resource of selected) {
+      if (entry.worldId !== 0) continue;
+      let materials: ShadowScopeContent['materials'] | undefined;
+      for (const resource of observed) {
         const state = entry.materials.get(resource);
-        if (entry.materials.has(resource)) {
-          materials.set(resource, state);
-          // Only addFramed creates an undefined state, alongside its exact snapshot.
-          if (state === undefined)
-            content.framed.set(resource, this.framed.get(resource) as MaterialSnapshot);
-          let scopeMaterials = captured.get(entry.worldId);
-          if (scopeMaterials === undefined) {
-            scopeMaterials = new Set();
-            captured.set(entry.worldId, scopeMaterials);
-          }
-          scopeMaterials.add(resource);
-        }
+        if (state === undefined && !entry.materials.has(resource)) continue;
+        materials ??= new Map();
+        materials.set(resource, state);
+        if (state === undefined)
+          content.framed.set(resource, this.framed.get(resource) as MaterialSnapshot);
+        sharedCoverage?.add(resource);
       }
-      if (materials.size !== 0) content.entries.set(scope, { worldId: entry.worldId, materials });
+      if (materials !== undefined) {
+        content.entries.set(scope, { worldId: entry.worldId, materials });
+        covered += materials.size;
+      }
     }
-    // Missing capture evidence keeps the conservative complete-frame comparison.
-    for (const [worldId, materials] of worlds)
-      for (const resource of materials) if (!captured.get(worldId)?.has(resource)) return this;
+    if ((sharedCoverage?.size ?? covered) !== observed.size) return this;
+    this.selections ??= new WeakMap();
     this.selections.set(plan, { source, content });
     return content;
   }
@@ -400,6 +482,7 @@ export class ShadowMaterialContent {
   }
 
   same(previous: ShadowMaterialContent | undefined): boolean {
+    if (this.liveAtlas || previous?.liveAtlas) return false;
     if (previous === this) return true;
     if (previous === undefined || previous.entries.size !== this.entries.size) return false;
     if (

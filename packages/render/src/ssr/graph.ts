@@ -42,8 +42,8 @@ interface SsrTracePlan {
 
 interface WaterSsrTracePlan extends SsrTracePlan {
   readonly resolution: 'full';
-  readonly algorithm: 'closest-hzb-surface-ray';
-  readonly refinement: 'surface-plane';
+  readonly algorithm: 'furthest-hzb-fixed-steps';
+  readonly refinement: 'depth-crossing';
   readonly profile: typeof WATER_SSR_DEFAULT_PROFILE;
 }
 
@@ -67,7 +67,6 @@ export interface SsrSpatialGraphInputs extends SsrGBufferInput {
     depth: GraphTextureView;
     normal: GraphTextureView;
     coverage: GraphTextureView;
-    temporal: GraphTextureView;
     inputParams?: GraphBuffer;
     sceneColorHistory?: GraphTextureView;
   }>;
@@ -75,12 +74,13 @@ export interface SsrSpatialGraphInputs extends SsrGBufferInput {
   readonly width: number;
   readonly height: number;
   readonly depth?: GraphTextureView;
-  /** Hit traversal reads closest depth independently of the receiver profile. */
+  /** Both receiver types trace the furthest bound of opaque scene depth. */
   readonly depthPyramid?: DepthPyramid;
   readonly normal?: GraphTextureView;
-  /** Current-view radiance paired with depth; prior radiance belongs to the temporal resolve. */
+  /** Current radiance is the fallback when temporal scene color is unavailable. */
   readonly scene?: GraphTextureView;
-  readonly sceneColorMipCount?: number;
+  readonly sceneColorHistory?: GraphTextureView;
+  readonly forwardSampleCount?: 1 | 4 | undefined;
   /** Standard temporal-v1 source metadata, needed by trace even without history. */
   readonly currentTemporal?: GraphTextureView;
   /** Lighting-owned exact material coverage in alpha; RGB stays with composition. */
@@ -180,9 +180,16 @@ function requiredSsrInputs(input: SsrSpatialGraphInputs) {
 function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
   const memory = estimateSsrSpatialMemory(input, {
     resolutionScale: input.origin === undefined ? input.quality?.resolutionScale : 1,
+    water: input.origin !== undefined,
     execution: input.execution ?? 'compute',
-    sceneColorMipCount: input.sceneColorMipCount,
+    depthPyramidBytes: input.depthPyramid?.plan.levels.reduce(
+      (bytes, level) => bytes + level.width * level.height * Float32Array.BYTES_PER_ELEMENT,
+      0,
+    ),
     forward: input.admission.lane === 'forward' || input.admission.lane === 'cpu-webgl2',
+    ...(input.forwardSampleCount === undefined
+      ? {}
+      : { forwardSampleCount: input.forwardSampleCount }),
   });
   if (!memory.withinBudget)
     return err(
@@ -212,6 +219,7 @@ function createTraceResources<FrameCtx extends RenderGraphFrame>(
     { width: input.width, height: input.height },
     label,
     input.origin === undefined ? input.quality?.resolutionScale : 1,
+    input.origin !== undefined,
   );
 }
 
@@ -240,19 +248,19 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   if (compactMaterial !== undefined && input.gbufferV2 !== true)
     return missingInput('Default GBuffer B with its matching normal layout');
   const gbuffer = input;
-  if (depthPyramid.reduction !== 'closest')
-    return missingInput('closest depthPyramid', depthPyramid.reduction);
+  if (depthPyramid.reduction !== 'furthest')
+    return missingInput('furthest depthPyramid', depthPyramid.reduction);
 
   const resources = createTraceResources(graph, input, label);
   if (!resources.ok) return resources;
   const { trace, hitReactivity } = resources.value;
   const passNames: string[] = [];
   if (input.execution === 'fragment') {
-    if (origin !== undefined) return missingInput('compute execution for Water SSR');
+    if (hitReactivity === undefined) return missingInput('compute execution for Water SSR');
     const added = addSsrFragmentStages(
       graph,
       { ...input, ...opaque, scene, depthPyramid },
-      resources.value,
+      { trace, hitReactivity },
     );
     if (!added.ok) return added;
     return ok({
@@ -287,8 +295,11 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       { binding: 10, view: origin.normal, sampleType: 'uint' },
       { binding: 11, view: origin.coverage, sampleType: 'unfilterable-float' },
     );
-  if (waterHistory !== undefined)
-    traceTextures.push({ binding: 13, view: waterHistory.color, sampleType: 'unfilterable-float' });
+  traceTextures.push({
+    binding: 13,
+    view: waterHistory?.color ?? input.sceneColorHistory ?? scene,
+    sampleType: 'unfilterable-float',
+  });
   const createSsrComputeEntries = () => {
     const computeEntries = {
       trace: [
@@ -303,11 +314,19 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
           storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
         },
         { binding: 5, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 8,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'r32float', viewDimension: '2d' },
-        },
+        ...(hitReactivity === undefined
+          ? []
+          : [
+              {
+                binding: 8,
+                visibility: GPU_SHADER_STAGE_COMPUTE,
+                storageTexture: {
+                  access: 'write-only' as const,
+                  format: 'r32float' as const,
+                  viewDimension: '2d' as const,
+                },
+              },
+            ]),
         ...(origin === undefined
           ? []
           : [
@@ -358,7 +377,9 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       [
         ...traceTextures.map(({ view }) => ({ resource: view, usage: 'sampled-read' as const })),
         { resource: trace.view, usage: 'storage-write' },
-        { resource: hitReactivity, usage: 'storage-write' },
+        ...(hitReactivity === undefined
+          ? []
+          : [{ resource: hitReactivity, usage: 'storage-write' as const }]),
         ...(origin?.inputParams === undefined
           ? []
           : [{ resource: origin.inputParams, usage: 'uniform-read' as const }]),
@@ -394,10 +415,17 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
                     },
                   },
                 ]),
-            {
-              binding: 8,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, hitReactivity) },
-            },
+            ...(hitReactivity === undefined
+              ? []
+              : [
+                  {
+                    binding: 8,
+                    resource: {
+                      kind: 'textureView' as const,
+                      value: resolvedGraphView(resolver, hitReactivity),
+                    },
+                  },
+                ]),
             {
               binding: 4,
               resource: { kind: 'textureView', value: resolvedGraphView(resolver, trace.view) },
@@ -432,11 +460,14 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
         : {
             ...buildSsrTracePlan(input.quality),
             resolution: 'full',
-            algorithm: 'closest-hzb-surface-ray',
-            refinement: 'surface-plane',
+            algorithm: 'furthest-hzb-fixed-steps',
+            refinement: 'depth-crossing',
             profile: WATER_SSR_DEFAULT_PROFILE,
           },
     reactivity: hitReactivity,
-    reactivitySurface: { width: trace.width, height: trace.height, format: 'r32float' },
+    reactivitySurface:
+      hitReactivity === undefined
+        ? undefined
+        : { width: trace.width, height: trace.height, format: 'r32float' },
   });
 }

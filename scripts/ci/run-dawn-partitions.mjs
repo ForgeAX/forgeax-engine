@@ -24,7 +24,11 @@ export const DAWN_TEST_PARTITIONS = {
     },
     { pattern: 'keeps IOR, thickness, and roughness', count: 1 },
     { pattern: 'records sixty alternating smooth fronts', count: 2 },
-    { pattern: 'exercises both Standard render paths', count: 1 },
+    {
+      // The overlap and direct-color controls use seven renderer instances.
+      pattern: 'exercises both Standard render paths|composites current-frame stock',
+      count: 3,
+    },
     {
       // Each process pays the full shader-manifest import; the budget cases
       // are light enough to share one native instance.

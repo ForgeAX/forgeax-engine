@@ -29,6 +29,7 @@ export type ForwardShadowAdmission =
       readonly format: 'r8unorm' | 'rgba8unorm';
       /** Omitted when the primary directional light owns R. */
       readonly directional?: false;
+      readonly contact?: true;
       /** A is reserved for AO. Shadow projections use RGB. */
       readonly ambientOcclusion?: true;
       readonly viewFade?: true;
@@ -144,6 +145,7 @@ export function withForwardShadowAdmission(
     directional === 'disabled' &&
     pointCount === 0 &&
     spotCount === 0 &&
+    !topology.forwardContactShadows &&
     !topology.standardProfile.forwardShadowViewFade
   ) {
     return {
@@ -227,6 +229,7 @@ function projectForwardShadowInputs(
 function forwardProjectionView(topology: RenderPipelineTopology, ambientOcclusion: boolean) {
   return {
     ...renderInternalCopySize(topology),
+    ...(topology.forwardContactShadows ? { contact: true as const } : {}),
     ...(ambientOcclusion ? { ambientOcclusion: true as const } : {}),
     ...(topology.standardProfile?.forwardShadowSpotFilter === 'gather'
       ? { gatherSpot: true as const }
@@ -260,7 +263,8 @@ function projectForwardShadowTopology(
   shadows: () => boolean,
   ambientOcclusion: boolean,
 ): ForwardShadowAdmission {
-  const directional = topology.shadow.directional !== 'disabled';
+  const directional =
+    topology.shadow.directional !== 'disabled' || topology.forwardContactShadows === true;
   const size = forwardProjectionView(topology, ambientOcclusion);
   const plan =
     lighting === undefined
@@ -292,8 +296,7 @@ function projectForwardShadowTopology(
 /** The projected receiver reserves the existing Forward screen texture carrier. */
 function hasOtherForwardScreenInput(topology: RenderPipelineTopology): boolean {
   return (
-    (topology.forwardContactShadows ||
-      topology.forwardCapsuleShadows ||
+    (topology.forwardCapsuleShadows ||
       (topology.projectedDecals?.length ?? 0) > 0 ||
       topology.ssr?.status === 'admitted' ||
       (topology.sceneDataBindings?.length ?? 0) > 0) === true

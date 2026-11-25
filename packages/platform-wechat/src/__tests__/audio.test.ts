@@ -219,7 +219,7 @@ describe('native Web Audio lifecycle', () => {
     f.source.onAudioInterruptionBegin.mockImplementationOnce(() => {
       throw new Error('native subscribe failed');
     });
-    expect(() => f.backend.setListenerPose(pose)).toThrow('context-creation-failed');
+    expect(() => f.backend.setListenerPose(pose)).not.toThrow();
     expect(f.native.close).toHaveBeenCalledTimes(1);
     expect([f.touch.size, f.begin.size, f.end.size, f.events.size]).toEqual([0, 0, 0, 0]);
     expect(f.backend.getState().lastError?.code).toBe('context-creation-failed');
@@ -229,12 +229,41 @@ describe('native Web Audio lifecycle', () => {
       onError: (error) => errors.push(error),
     });
     expect(errors).toEqual([]);
-    expect(() => absent.setListenerPose(pose)).toThrow('context-creation-failed');
+    expect(() => absent.setListenerPose(pose)).not.toThrow();
     expect(errors[0]).toMatchObject({ detail: { cause: { code: 'platform-unavailable' } } });
     absent.destroy();
   });
 
-  it('rejects an incompatible listener at demand and preserves startup failure if its observer throws', () => {
+  it('keeps an invalid native clock from aborting future World listener updates', () => {
+    const f = fixture();
+    f.native.currentTime = Number.NaN;
+    expect(() => f.backend.setListenerPose(pose)).not.toThrow();
+    expect(() => f.backend.setListenerPose(pose)).not.toThrow();
+    expect(f.source.createWebAudioContext).toHaveBeenCalledTimes(1);
+    expect(f.backend.getState().lastError).toMatchObject({
+      code: 'context-creation-failed',
+      detail: { reason: 'native WebAudioContext is not live' },
+    });
+    expect(f.errors).toHaveLength(1);
+    f.backend.destroy();
+  });
+
+  it('preserves unexpected listener updates after Context admission', () => {
+    const f = fixture();
+    const parameter = f.native.listener.positionX;
+    const cause = new Error('unexpected native parameter failure');
+    Object.defineProperty(parameter, 'value', {
+      get: () => 0,
+      set() {
+        throw cause;
+      },
+    });
+    expect(() => f.backend.setListenerPose(pose)).toThrow(cause);
+    expect(f.errors).toEqual([]);
+    f.backend.destroy();
+  });
+
+  it('reports an incompatible listener at demand and preserves startup failure if its observer throws', () => {
     const f = fixture();
     Object.assign(f.native.listener, { positionX: 0 });
     const backend = createWechatAudioBackend(f.source, f.platform, {
@@ -242,7 +271,9 @@ describe('native Web Audio lifecycle', () => {
         throw new Error('observer failed');
       },
     });
-    expect(() => backend.setListenerPose(pose)).toThrow('context-creation-failed');
+    expect(() => backend.setListenerPose(pose)).not.toThrow();
+    expect(() => backend.setListenerPose(pose)).not.toThrow();
+    expect(f.source.createWebAudioContext).toHaveBeenCalledTimes(1);
     expect(backend.getState().lastError).toMatchObject({
       code: 'context-creation-failed',
       detail: { reason: 'native AudioListener.positionX needs AudioParam support' },

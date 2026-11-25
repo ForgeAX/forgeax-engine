@@ -2,12 +2,13 @@ import type {
   GraphBuffer,
   GraphTextureView,
   RenderGraphBuilder,
+  RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { DepthPyramid } from '../depth-pyramid/graph';
-import { addDepthPyramidPasses } from '../depth-pyramid/graph';
 import { addSingleLayerMediumRawDepthProducer } from '../pipeline/single-layer-medium-passes';
 import type { StandardForwardReceiverInputs } from '../pipeline/standard-forward-receiver';
+import { viewHzb } from '../pipeline/standard-view-hzb';
 import type {
   RenderPipelineBuildContext,
   RenderPipelineBuildError,
@@ -17,12 +18,16 @@ import type {
 } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
 import type { RendererState } from '../render-system';
-import { addSsrHitColor } from '../ssr/color-mips';
 import { addSsrSpatialPasses } from '../ssr/graph';
+import { addSsrHitColor } from '../ssr/hit-color';
 import type { SsrGBufferInput } from '../ssr/shader-layout';
 import { isWaterSsrAdmitted } from '../ssr/water-profile';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
-import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
+import {
+  addTypedFullscreenPass,
+  addTypedScenePass,
+  type TypedScenePassOptions,
+} from '../typed-render-graph-primitives';
 import { addWaterFluidGraph } from './fluid-graph';
 
 export interface WaterSlwGraphInputs {
@@ -36,6 +41,7 @@ export interface WaterSlwGraphInputs {
   readonly opaqueRawDepth?: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
   readonly opaqueTemporal?: RenderPipelineTarget;
+  readonly sceneVelocity?: RenderPipelineTarget;
   readonly opaqueSurface?: SsrGBufferInput & {
     readonly normal: RenderPipelineTarget;
     readonly fallback: RenderPipelineTarget;
@@ -54,11 +60,10 @@ export interface WaterSlwGraphInputs {
 /** Graph identities are immutable; physical generation and completion belong to FrameReceipt. */
 export interface WaterSlwGraphResources {
   readonly noWaterColor: RenderPipelineTarget;
-  readonly noWaterDepth: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
+  readonly sampledDepth: GraphTextureView;
   readonly normal?: RenderPipelineTarget;
   readonly coverage: RenderPipelineTarget;
-  readonly temporal: RenderPipelineTarget;
   readonly optics?: RenderPipelineTarget;
   readonly captureSky?: RenderPipelineTarget;
   readonly reflectionWeight?: RenderPipelineTarget;
@@ -68,7 +73,6 @@ export interface WaterSlwGraphResources {
 
 const COMPOSITE_CAPTURE = 'forgeax.water-slw-capture-composite';
 const COMPOSITE_SSR = 'forgeax.water-slw-ssr-composite';
-const SCENE_TEMPORAL = 'forgeax.water-scene-temporal';
 
 function compositeSource(ssr: boolean): string {
   return `
@@ -102,24 +106,6 @@ export function registerWaterSlwBuiltins(
 }
 
 export const WATER_SLW_POST_PROCESS_PROGRAMS = [
-  {
-    name: SCENE_TEMPORAL,
-    source: `
-struct VertexOutput { @builtin(position) position: vec4<f32> };
-@group(1) @binding(0) var waterTemporal: texture_2d<f32>;
-@group(1) @binding(1) var sceneSampler: sampler;
-@group(1) @binding(2) var waterCoverage: texture_2d<f32>;
-@vertex fn vs_main(@builtin(vertex_index) vertex: u32) -> VertexOutput {
-  var positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
-  return VertexOutput(vec4<f32>(positions[vertex], 0.0, 1.0));
-}
-@fragment fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let pixel = vec2<i32>(input.position.xy);
-  if (textureLoad(waterCoverage, pixel, 0).a <= 0.0) { discard; }
-  return textureLoad(waterTemporal, pixel, 0);
-}`,
-    reads: ['input', 'water-coverage'],
-  },
   {
     name: COMPOSITE_CAPTURE,
     source: compositeSource(false),
@@ -183,111 +169,102 @@ function prepareWaterBackdrops(
         !(topology.waterView?.kind === 'available' && topology.waterView.underwater)
       : isWaterSsrAdmitted(topology.ssr);
   return useSsr
-    ? addSsrHitColor(context, topology, noWaterColor, { width, height }, 'water-ssr-color')
+    ? addSsrHitColor(context, noWaterColor, { width, height }, 'water-ssr-color')
     : ok(undefined);
 }
 
-/** Water receiver, opaque closest HZB and current scene color have distinct graph edges. */
+/** Preserve the opaque depth only when an intervening stage can replace it. */
+function prepareWaterDepth(input: WaterSlwGraphInputs, preserveOpaqueDepth: boolean) {
+  const { graph, depth, width, height } = input;
+  const createDepth = (name: string) =>
+    createRenderPipelineTarget(graph, name, {
+      format: depth.format,
+      size: { width, height },
+      sampleCount: 1,
+    });
+  const waterDepth = createDepth('water-prepass-depth');
+  if (!waterDepth.ok) return waterDepth;
+  // Underwater translucency can write scene depth before Water SSR reads it.
+  const opaqueDepth = preserveOpaqueDepth ? createDepth('water-no-water-depth') : ok(depth);
+  if (!opaqueDepth.ok) return opaqueDepth;
+  const opaqueDepthView = graph.view(opaqueDepth.value.texture, {
+    aspect: 'depth-only',
+    dimension: '2d',
+    label: 'water-opaque-depth.sample',
+  });
+  if (!opaqueDepthView.ok) return opaqueDepthView;
+  const copiedDepths =
+    opaqueDepth.value === depth ? [waterDepth.value] : [waterDepth.value, opaqueDepth.value];
+  const copied = graph.addCopyPass('water-depth-copy', {
+    accesses: [
+      { resource: depth.view, usage: 'copy-src' },
+      ...copiedDepths.map((target) => ({ resource: target.view, usage: 'copy-dst' as const })),
+    ],
+    encodeDirect: (encoder, _frame, resources) => {
+      const source = resources.texture(depth.texture).unwrap();
+      for (const target of copiedDepths)
+        encoder.copyTextureToTexture(
+          { texture: source },
+          { texture: resources.texture(target.texture).unwrap() },
+          { width, height, depthOrArrayLayers: 1 },
+        );
+    },
+  });
+  if (!copied.ok) return copied;
+  return ok({
+    waterDepth: waterDepth.value,
+    opaqueDepth: opaqueDepth.value,
+    opaqueDepthView: opaqueDepthView.value,
+  });
+}
+
+/** Water receiver, opaque HZB and current scene color have distinct graph edges. */
 export function addWaterSlwPasses(
   input: WaterSlwGraphInputs,
 ): Result<WaterSlwGraphResources, RenderPipelineBuildError> {
   const { graph, color, depth, receiver, topology, context, width, height } = input;
-  const waterSsr = isWaterSsrAdmitted(topology.ssr) ? topology.ssr : undefined;
+  const waterSsr =
+    input.forward !== true && isWaterSsrAdmitted(topology.ssr) ? topology.ssr : undefined;
   const size = { width, height };
   const make = (name: string, format: RenderPipelineTarget['format']) =>
     createRenderPipelineTarget(graph, name, { format, size, sampleCount: 1 });
   const colorCopy = make('water-no-water-color-hdr', color.format);
   if (!colorCopy.ok) return colorCopy;
   const noWaterColor = colorCopy.value;
-  const displayCopy =
+  const display =
     input.forward === true || input.refractionColor === undefined
-      ? undefined
+      ? ok(noWaterColor)
       : make('water-no-water-display-hdr', color.format);
-  if (displayCopy !== undefined && !displayCopy.ok) return displayCopy;
-  const displayColor = displayCopy?.ok === true ? displayCopy.value : noWaterColor;
-  const noWaterDepth = make('water-no-water-depth', depth.format);
-  if (!noWaterDepth.ok) return noWaterDepth;
-  const waterDepth = make('water-prepass-depth', depth.format);
-  if (!waterDepth.ok) return waterDepth;
-  const noWaterDepthView = graph.view(noWaterDepth.value.texture, {
-    aspect: 'depth-only',
-    dimension: '2d',
-    label: 'water-no-water-depth.sample',
-  });
-  if (!noWaterDepthView.ok) return noWaterDepthView;
-  const copied = graph.addCopyPass('water-no-water-depth-copy', {
-    accesses: [
-      { resource: depth.view, usage: 'copy-src' },
-      { resource: noWaterDepth.value.view, usage: 'copy-dst' },
-      { resource: waterDepth.value.view, usage: 'copy-dst' },
-    ],
-    encodeDirect: (encoder, _frame, resources) => {
-      const source = resources.texture(depth.texture).unwrap();
-      const destination = resources.texture(noWaterDepth.value.texture).unwrap();
-      encoder.copyTextureToTexture(
-        { texture: source },
-        { texture: destination },
-        { width, height, depthOrArrayLayers: 1 },
-      );
-      encoder.copyTextureToTexture(
-        { texture: source },
-        { texture: resources.texture(waterDepth.value.texture).unwrap() },
-        { width, height, depthOrArrayLayers: 1 },
-      );
-    },
-  });
-  if (!copied.ok) return copied;
-  // The hit hierarchy is completed before any Water depth writer, from the opaque resolve.
-  let depthPyramid = input.depthPyramid;
-  const prepareOpaqueWaterDepthPyramid = () => {
-    if (waterSsr !== undefined && depthPyramid === undefined) {
-      const hitPyramid = addDepthPyramidPasses(graph, {
-        label: 'water-closest-depth-pyramid',
-        reduction: 'closest',
-        depth: noWaterDepthView.value,
-        width,
-        height,
-        view: input.view,
-      });
-      if (!hitPyramid.ok) return hitPyramid;
-      depthPyramid = hitPyramid.value.pyramid;
-    }
-    return undefined;
+  if (!display.ok) return display;
+  const displayColor = display.value;
+  const depths = prepareWaterDepth(
+    input,
+    waterSsr !== undefined && input.beforeSceneColorCopy !== undefined,
+  );
+  if (!depths.ok) return depths;
+  const { waterDepth, opaqueDepth, opaqueDepthView } = depths.value;
+  const inlineSsr =
+    input.forward === true &&
+    topology.inlineSsr === true &&
+    !(topology.waterView?.kind === 'available' && topology.waterView.underwater);
+  const buildWaterHzb = (): Result<DepthPyramid | undefined, RenderGraphError> => {
+    if (input.depthPyramid !== undefined) return ok(input.depthPyramid);
+    if (waterSsr === undefined && !inlineSsr) return ok(undefined);
+    return viewHzb(context, topology, opaqueDepthView, size, undefined, 'water-hzb')();
   };
-  const depthPyramidFailure = prepareOpaqueWaterDepthPyramid();
-  if (depthPyramidFailure !== undefined) return depthPyramidFailure;
-  // The Forward shader's level-zero tap also serves refraction. Only a
-  // paired opaque backdrop can use the reflection hierarchy.
-  const makeOpticalDepth = () => {
-    const inline =
-      input.forward === true &&
-      topology.inlineSsr === true &&
-      !(topology.waterView?.kind === 'available' && topology.waterView.underwater);
-    if (inline) {
-      const hierarchy = addDepthPyramidPasses(graph, {
-        label: 'water-forward-hiz',
-        fullResolutionSeed: true,
-        nativeInputs: context.nativeInputs,
-        depth: noWaterDepthView.value,
-        width,
-        height,
-        view: input.view,
-      });
-      return hierarchy.ok ? ok(hierarchy.value.pyramid.pyramid) : hierarchy;
-    }
-    const raw =
-      input.opaqueRawDepth === undefined
-        ? addSingleLayerMediumRawDepthProducer({
-            graph,
-            label: 'water-no-water-raw-depth',
-            sourceColor: color,
-            sourceDepth: noWaterDepth.value,
-            size,
-          })
-        : ok(input.opaqueRawDepth);
-    return raw.ok ? ok(raw.value.view) : raw;
-  };
-  const rawDepth = makeOpticalDepth();
+  const hzb = buildWaterHzb();
+  if (!hzb.ok) return hzb;
+  const depthPyramid = hzb.value;
+  const rawDepth =
+    input.opaqueRawDepth === undefined
+      ? addSingleLayerMediumRawDepthProducer({
+          graph,
+          label: 'water-no-water-raw-depth',
+          sourceColor: color,
+          sourceDepth: opaqueDepth,
+          size,
+        })
+      : ok(input.opaqueRawDepth);
   if (!rawDepth.ok) return rawDepth;
   const fluid = addWaterFluidGraph(context);
   if (!fluid.ok) return fluid;
@@ -329,7 +306,7 @@ export function addWaterSlwPasses(
   };
   const foamFailure = resolveWaterFoamSimulation();
   if (foamFailure !== undefined) return foamFailure;
-  const waterDepthView = graph.view(waterDepth.value.texture, {
+  const waterDepthView = graph.view(waterDepth.texture, {
     aspect: 'depth-only',
     dimension: '2d',
     label: 'water-prepass-depth.sample',
@@ -337,15 +314,28 @@ export function addWaterSlwPasses(
   if (!waterDepthView.ok) return waterDepthView;
   const finishWaterSlwPasses = () => {
     const normal =
-      waterSsr === undefined ? ok(undefined) : make('water-normal-roughness', 'rgba32uint');
+      waterSsr === undefined ? ok(undefined) : make('water-normal-roughness', 'r32uint');
     if (!normal.ok) return normal;
     const coverage = make('water-mask', 'rgba16float');
     if (!coverage.ok) return coverage;
-    const temporal = make('water-wpo-velocity', 'rgba16float');
-    if (!temporal.ok) return temporal;
+    const depthMotion =
+      input.forward === true ? undefined : (input.sceneVelocity ?? input.opaqueTemporal);
+    const depthAttachments = [
+      ...(normal.value === undefined ? [] : [normal.value]),
+      coverage.value,
+      ...(depthMotion === undefined ? [] : [depthMotion]),
+    ];
+    const depthMode: TypedScenePassOptions['recordMode'] =
+      normal.value !== undefined
+        ? 'water-prepass'
+        : depthMotion !== undefined && depthMotion === input.sceneVelocity
+          ? 'water-depth-velocity'
+          : depthMotion !== undefined
+            ? 'water-visibility'
+            : 'water-coverage';
     const surfacePair = {
       opaqueColor: noWaterColor.view,
-      rawDepth: { status: 'available' as const, view: rawDepth.value },
+      rawDepth: { status: 'available' as const, view: rawDepth.value.view },
     };
     const shared = {
       ...receiver,
@@ -360,15 +350,12 @@ export function addWaterSlwPasses(
       ...shared,
       transmissionBackdrop: color.view,
       surfacePair: { ...surfacePair, opaqueColor: color.view },
-      name: 'water-depth-mask-velocity',
+      name: 'water-depth-prepass',
       color: normal.value ?? coverage.value,
-      colorTargets:
-        normal.value === undefined
-          ? [coverage.value, temporal.value]
-          : [normal.value, coverage.value, temporal.value],
-      depth: waterDepth.value,
-      recordMode: normal.value === undefined ? 'water-visibility' : 'water-prepass',
-      colorLoadOp: 'clear',
+      colorTargets: depthAttachments,
+      depth: waterDepth,
+      recordMode: depthMode,
+      colorLoadOp: depthAttachments.map((target) => (target === depthMotion ? 'load' : 'clear')),
       depthLoadOp: 'load',
       colorClearValues: [
         ...(normal.value === undefined ? [] : [[0, 0, 0, 0] as const]),
@@ -383,37 +370,27 @@ export function addWaterSlwPasses(
       graph,
       label: 'water-nearest-raw-depth',
       sourceColor: coverage.value,
-      sourceDepth: waterDepth.value,
+      sourceDepth: waterDepth,
       size,
     });
     if (!nearestDepth.ok) return nearestDepth;
-    const addWaterTemporalProjection = () => {
-      if (input.opaqueTemporal !== undefined) {
-        // The prepass already resolved nearest Water motion and coverage for this exact view.
-        const velocity = addTypedFullscreenPass(graph, {
-          name: 'water-scene-temporal',
-          shader: SCENE_TEMPORAL,
-          input: temporal.value,
-          outputs: [input.opaqueTemporal],
-          additionalReads: [{ key: 'water-coverage', target: coverage.value }],
-          colorLoadOp: 'load',
-        });
-        if (!velocity.ok) return velocity;
-      }
-      return undefined;
-    };
-    const temporalProjectionFailure = addWaterTemporalProjection();
-    if (temporalProjectionFailure !== undefined) return temporalProjectionFailure;
-    if (input.forward === true) {
+    const addForwardWaterShading = () => {
+      const motion = input.sceneVelocity ?? input.opaqueTemporal;
       const shaded = addTypedScenePass(graph, {
         ...shared,
-        ...(hitColor.value === undefined
+        ...(hitColor.value === undefined || depthPyramid === undefined
           ? {}
-          : { ssrSource: { hiZ: rawDepth.value, color: hitColor.value.view } }),
+          : { ssrSource: { hiZ: depthPyramid.pyramid, color: hitColor.value.view } }),
         name: 'water-slw-inner-color',
         color,
         depth,
-        recordMode: 'water-forward-color',
+        colorTargets: motion === undefined ? [color] : [color, motion],
+        recordMode:
+          input.sceneVelocity !== undefined
+            ? 'water-forward-color-velocity'
+            : input.opaqueTemporal !== undefined
+              ? 'water-forward-color-temporal'
+              : 'water-forward-color',
         colorLoadOp: 'load',
         depthLoadOp: 'load',
         surfaceNearestLayer: coverage.value.view,
@@ -422,13 +399,13 @@ export function addWaterSlwPasses(
       if (!shaded.ok) return shaded;
       return ok({
         noWaterColor,
-        noWaterDepth: noWaterDepth.value,
-        depth: waterDepth.value,
+        depth: waterDepth,
         coverage: coverage.value,
-        temporal: temporal.value,
+        sampledDepth: waterDepthView.value,
         foamSimulation,
       });
-    }
+    };
+    if (input.forward === true) return addForwardWaterShading();
     const addDeferredWaterShading = () => {
       const optics = make('water-slw-optics-hdr', 'rgba16float');
       if (!optics.ok) return optics;
@@ -436,21 +413,6 @@ export function addWaterSlwPasses(
       if (!captureSky.ok) return captureSky;
       const reflectionWeight = make('water-env-brdf-shore-weight', 'rgba16float');
       if (!reflectionWeight.ok) return reflectionWeight;
-      // Empty optical pixels have no Water coverage; the composite retains the paired scene there.
-      const optical = addTypedScenePass(graph, {
-        ...shared,
-        name: 'water-slw-inner-color',
-        color: optics.value,
-        colorTargets: [optics.value, captureSky.value, reflectionWeight.value],
-        depth,
-        recordMode: 'water-color',
-        colorLoadOp: 'clear',
-        clearColor: [0, 0, 0, 0],
-        depthLoadOp: 'load',
-        surfaceNearestLayer: coverage.value.view,
-        surfaceNearestDepth: nearestDepth.value.view,
-      });
-      if (!optical.ok) return optical;
       let reflection: GraphTextureView | undefined;
       const addWaterSpatialReflection = () => {
         if (waterSsr !== undefined && normal.value !== undefined && hitColor.value !== undefined) {
@@ -459,7 +421,7 @@ export function addWaterSlwPasses(
             label: 'water-ssr',
             width,
             height,
-            depth: noWaterDepthView.value,
+            depth: opaqueDepthView,
             ...(input.opaqueSurface === undefined
               ? {}
               : {
@@ -468,7 +430,6 @@ export function addWaterSlwPasses(
                   fallback: input.opaqueSurface.fallback.view,
                 }),
             scene: hitColor.value.view,
-            sceneColorMipCount: hitColor.value.mipCount,
             ...(input.opaqueTemporal === undefined
               ? {}
               : { currentTemporal: input.opaqueTemporal.view }),
@@ -476,7 +437,6 @@ export function addWaterSlwPasses(
               depth: waterDepthView.value,
               normal: normal.value.view,
               coverage: coverage.value.view,
-              temporal: temporal.value.view,
               ...(context.waterSsr === undefined
                 ? {}
                 : { inputParams: context.waterSsr.inputParams }),
@@ -494,6 +454,22 @@ export function addWaterSlwPasses(
       };
       const spatialReflectionFailure = addWaterSpatialReflection();
       if (spatialReflectionFailure !== undefined) return spatialReflectionFailure;
+      // Trace reads the original opaque depth before the optics pass can write it.
+      // Empty optical pixels have no Water coverage; the composite retains the paired scene there.
+      const optical = addTypedScenePass(graph, {
+        ...shared,
+        name: 'water-slw-inner-color',
+        color: optics.value,
+        colorTargets: [optics.value, captureSky.value, reflectionWeight.value],
+        depth,
+        recordMode: 'water-color',
+        colorLoadOp: 'clear',
+        clearColor: [0, 0, 0, 0],
+        depthLoadOp: 'load',
+        surfaceNearestLayer: coverage.value.view,
+        surfaceNearestDepth: nearestDepth.value.view,
+      });
+      if (!optical.ok) return optical;
       const composeWaterSlwReflection = () => {
         const composed = addTypedFullscreenPass(graph, {
           name: 'water-reflection-composite',
@@ -512,11 +488,10 @@ export function addWaterSlwPasses(
         if (!composed.ok) return composed;
         return ok({
           noWaterColor,
-          noWaterDepth: noWaterDepth.value,
-          depth: waterDepth.value,
+          depth: waterDepth,
           ...(normal.value === undefined ? {} : { normal: normal.value }),
           coverage: coverage.value,
-          temporal: temporal.value,
+          sampledDepth: waterDepthView.value,
           optics: optics.value,
           captureSky: captureSky.value,
           reflectionWeight: reflectionWeight.value,

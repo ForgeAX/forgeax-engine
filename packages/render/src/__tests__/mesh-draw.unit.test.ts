@@ -2,21 +2,28 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { assert, expect, it, vi } from 'vitest';
+import { GpuSceneSourceRows } from '../gpu-scene-source-rows';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch } from '../scene/material-dispatch';
-import { meshDrawSnapshot, SceneDrawSlot, slotDrawSnapshot } from '../scene/mesh-draw';
+import {
+  meshDrawSnapshot,
+  SceneDrawSlot,
+  slotDrawMaterials,
+  slotDrawSnapshot,
+} from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import {
   captureMaterialOverrides,
-  createMeshMaterialReader,
+  effectiveMeshMaterials,
   type MeshMaterialBindingWrite,
   prepareMeshMaterialBindings,
   retainMeshMaterialBindings,
 } from '../scene/mesh-materials';
 import { createTemporalSnapshot } from '../scene/render-scene-snapshots';
 import { SceneSlots } from '../scene/scene-slots';
+import { StableRangeAllocator } from '../stable-range-allocator';
 
 function fixture() {
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
@@ -43,6 +50,119 @@ function writeSlot(slots: SceneSlots, at: number, source: RenderableSnapshot) {
   assert(slot);
   return slot;
 }
+
+it('resolves every edited binding against one layout and keeps the fixed provenance column', () => {
+  const f = resolvedFixture();
+  const base = f.meshes.get(7);
+  assert(base);
+  const slot = base.materialSlots[0];
+  assert(slot);
+  let layoutReads = 0;
+  const mesh = {
+    ...base,
+    get layout() {
+      layoutReads++;
+      return base.layout;
+    },
+    materialSlots: Array.from({ length: 32 }, () => slot),
+    materials: Array.from({ length: 32 }, () => f.first),
+  };
+  const first = effectiveMeshMaterials(f.source, mesh);
+  const replacement = new MaterialResource(defaultMaterialSnapshot(46));
+  const pending: MeshMaterialBindingWrite[] = [];
+  let calls = 0;
+  const next = prepareMeshMaterialBindings(
+    f.source,
+    mesh,
+    'mesh',
+    (_handle, _geometry, color) => {
+      expect(color).toBe(false);
+      return calls++ === 23 ? replacement : first.material;
+    },
+    pending,
+  );
+  expect(calls).toBe(32);
+  expect(layoutReads).toBeLessThanOrEqual(1);
+  expect(next.materialBindingSources).toBe(first.materialBindingSources);
+  expect(next.materials).not.toBe(first.materials);
+  expect(next.materials[23]).toBe(replacement);
+  expect(first.materials[23]).toBe(first.material);
+  expect(effectiveMeshMaterials(f.source, mesh)).toBe(first);
+  for (const write of pending) write.contexts[write.geometry] = write.value;
+  expect(effectiveMeshMaterials(f.source, mesh)).toBe(next);
+});
+
+it('keeps material values when a borrowed binding changes only their source', () => {
+  const f = resolvedFixture();
+  const mesh = f.meshes.get(7);
+  assert(mesh);
+  const overrides: MaterialResource[] = [];
+  const source = { ...f.source, materialOverrides: overrides };
+  const first = effectiveMeshMaterials(source, mesh);
+  overrides[0] = f.first;
+  const pending: MeshMaterialBindingWrite[] = [];
+  const next = prepareMeshMaterialBindings(source, mesh, 'mesh', () => f.first, pending);
+  expect(next.materials).toBe(first.materials);
+  expect(next.materialBindingSources).toEqual(['renderer-override']);
+  expect(first.materialBindingSources).toEqual(['mesh-default']);
+  expect(effectiveMeshMaterials(source, mesh)).toBe(first);
+  expect(pending).toHaveLength(1);
+});
+
+it('joins extracted GPU materials in row order with linear handle reads and first-match ownership', () => {
+  const f = fixture();
+  const base = f.frame.get(7);
+  assert(base);
+  const materials = Array.from(
+    { length: 32 },
+    (_, i) => new MaterialResource(defaultMaterialSnapshot(100 + i)),
+  );
+  const primary = new MaterialResource(defaultMaterialSnapshot(107));
+  const duplicate = new MaterialResource(defaultMaterialSnapshot(113));
+  const ordered = [duplicate, ...materials];
+  const mesh = {
+    ...base,
+    materialSlots: materials
+      .map((material, index) => ({
+        slotName: String(index),
+        defaultMaterial: material.snapshot
+          .materialHandle as import('@forgeax/engine-types').AssetHandle<'material'>,
+      }))
+      .reverse(),
+  };
+  const source = { ...f.source, material: primary, materials: ordered, materialOverrides: [] };
+  const range = new StableRangeAllocator();
+  const fixed = new GpuSceneSourceRows(
+    [{ slot: 1, generation: 0, entityKey: source.entityKey, snapshot: source }],
+    { primitive: range, instance: range, transform: range },
+    {
+      material: () => {
+        throw new Error('unexpected material allocation');
+      },
+      mesh: () => {
+        throw new Error('unexpected mesh allocation');
+      },
+    },
+    false,
+  );
+  const reads = vi.spyOn(MaterialResource.prototype, 'snapshot', 'get');
+  try {
+    Array.from(
+      fixed.prepareBindings(
+        () => mesh,
+        () => true,
+      ),
+    );
+    const count = reads.mock.calls.length;
+    const expected = materials.slice().reverse();
+    expected[31 - 7] = primary;
+    expected[31 - 13] = duplicate;
+    expect(fixed.snapshots[0]?.materials).toEqual(expected);
+    expect(count).toBeLessThanOrEqual(materials.length * 3 + 4);
+  } finally {
+    reads.mockRestore();
+  }
+});
 
 it('preserves instance fields and projects current shared Mesh facts', () => {
   const f = fixture();
@@ -428,6 +548,43 @@ it('keeps a captured scene slot draw valid across unrelated scene publications a
   expect(first.transform).toBe(changed.transform);
 });
 
+it('binds shared draw contents once per mesh frame across changing poses and fenced writes', () => {
+  const f = resolvedFixture();
+  const slots = new SceneSlots();
+  const mesh = f.meshes.get(7);
+  assert(mesh);
+  const lookup = vi.spyOn(f.meshes, 'get');
+  const { entityKey, transform, ...content } = f.source;
+  const pose = transform.world.slice();
+  for (let i = 0; i < 8; i++)
+    slots.write(i, { entityKey: entityKey + i, generation: 1, content, pose });
+  const draw = (i: number) => {
+    pose[12] = i;
+    return slotDrawSnapshot(slots.writePose(i % 8, pose), f.meshes);
+  };
+  const first = draw(0);
+  const pending: MeshMaterialBindingWrite[] = [];
+  const replacement = new MaterialResource(defaultMaterialSnapshot(47));
+  prepareMeshMaterialBindings(f.source, mesh, 'mesh', () => replacement, pending);
+  expect(draw(1).material).toBe(first.material);
+  for (const write of pending) write.contexts[write.geometry] = write.value;
+  for (let i = 0; i < 64; i++) {
+    const current = draw(i);
+    expect(current.material).toBe(replacement);
+    expect(current.transform.world[12]).toBe(i);
+    const slot = slots.get(i % 8);
+    assert(slot);
+    expect(slotDrawMaterials(slot, f.meshes).materials).toBe(current.materials);
+  }
+  expect(lookup).toHaveBeenCalledTimes(1);
+  expect(first.material).toBe(f.first);
+  const row = slots.get(5);
+  assert(row);
+  const removed = f.meshes.without(7);
+  expect(slotDrawSnapshot(row, removed)).toBe(row.snapshot);
+  expect(slotDrawSnapshot(row, f.meshes).material).toBe(replacement);
+});
+
 it('reads issued draws without re-registering their instances each frame', () => {
   const f = fixture();
   const slots = new SceneSlots();
@@ -520,11 +677,16 @@ it('updates an already-read Mesh binding address when a bounds-only version adop
   );
   const nextMesh = next.get(7);
   assert(nextMesh);
+  const slot = writeSlot(new SceneSlots(), 0, f.source);
+  const ownedBefore = slotDrawSnapshot(slot, next);
   const held = meshDrawSnapshot(f.source, next);
   expect(held.material).toBe(f.first);
   expect(held.materials).not.toBe(previous.materials);
   retainMeshMaterialBindings(mesh, nextMesh);
   const adopted = meshDrawSnapshot(f.source, next);
+  const ownedAfter = slotDrawSnapshot(slot, next);
+  expect(ownedBefore.materials).toBe(held.materials);
+  expect(ownedAfter.materials).toBe(previous.materials);
   expect(adopted.materials).toBe(previous.materials);
   expect(adopted).not.toBe(held);
   expect(held.material).toBe(f.first);
@@ -535,12 +697,11 @@ it('reads live fenced material contexts without caching their values or repeatin
   const f = resolvedFixture();
   const mesh = f.meshes.get(7);
   assert(mesh);
-  const read = createMeshMaterialReader(mesh);
   const skin = new MaterialResource(defaultMaterialSnapshot(45));
   const replacement = new MaterialResource(defaultMaterialSnapshot(46));
   const pending: MeshMaterialBindingWrite[] = [];
   prepareMeshMaterialBindings(f.source, mesh, 'skinned', () => skin, pending);
-  for (const write of pending) write.contexts.set(write.geometry, write.value);
+  for (const write of pending) write.contexts[write.geometry] = write.value;
   pending.length = 0;
   let reads = 0;
   const source = {
@@ -550,14 +711,14 @@ it('reads live fenced material contexts without caching their values or repeatin
       return f.source.materialOverrides;
     },
   };
-  expect(read(source, 'mesh').material).toBe(f.first);
-  expect(read(source, 'skinned').material).toBe(skin);
+  expect(effectiveMeshMaterials(source, mesh, 'mesh').material).toBe(f.first);
+  expect(effectiveMeshMaterials(source, mesh, 'skinned').material).toBe(skin);
   expect(reads).toBe(2);
   prepareMeshMaterialBindings(f.source, mesh, 'mesh', () => replacement, pending);
-  expect(read(source, 'mesh').material).toBe(f.first);
-  for (const write of pending) write.contexts.set(write.geometry, write.value);
-  expect(read(source, 'mesh').material).toBe(replacement);
-  expect(read(source, 'skinned').material).toBe(skin);
+  expect(effectiveMeshMaterials(source, mesh, 'mesh').material).toBe(f.first);
+  for (const write of pending) write.contexts[write.geometry] = write.value;
+  expect(effectiveMeshMaterials(source, mesh, 'mesh').material).toBe(replacement);
+  expect(effectiveMeshMaterials(source, mesh, 'skinned').material).toBe(skin);
   expect(reads).toBe(5);
 });
 

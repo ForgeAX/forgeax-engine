@@ -251,7 +251,7 @@ try {
     { component: render.MeshFilter, data: { assetHandle: cube } },
     { component: render.MeshRenderer, data: { materials: [material] } },
   );
-  world.spawn({
+  const sun = world.spawn({
     component: render.DirectionalLight,
     data: {
       direction: [-0.4, -0.8, -1],
@@ -261,7 +261,7 @@ try {
       mapSize: 64,
       shadowDistance: 30,
     },
-  });
+  }).unwrap();
   world.spawn(
     { component: scene.Transform, data: { pos: [0, -1.7, 0], scale: [3.5, 0.15, 3.5] } },
     { component: render.MeshFilter, data: { assetHandle: cube } },
@@ -280,11 +280,11 @@ try {
       },
     },
   );
-  world.spawn(
+  const point = world.spawn(
     { component: scene.Transform, data: { pos: [1.8, 2.6, 2.2] } },
     { component: render.PointLight, data: { color: [1, 0.72, 0.4], intensity: 18, range: 12 } },
     { component: render.PointLightShadow, data: { mapSize: 256, nearPlane: 0.1, farPlane: 25 } },
-  );
+  ).unwrap();
 
   // This is a standalone renderer host, so no scenePlugin is installed to
   // run the transform system during World.update. Propagate once explicitly
@@ -330,6 +330,34 @@ try {
   assert.equal(pointShadow.shadowAtlasOccupancy, 1);
   assert.equal(pointShadow.shadowAtlasCapacity, atlasCapacity);
   assert.equal(pointPasses.length, 6, `expected one point light x six faces, got ${pointPasses.length}`);
+  // Keep the original stationary run and its pixel comparison. A submitted
+  // depth atlas can still be sampled when no face was recorded in its last frame.
+  if (sharedDevice === undefined || renderTarget === undefined) {
+    throw new Error('point-shadow smoke: no Dawn surface to read back');
+  }
+  shadowSurface = await readSurface(sharedDevice, renderTarget);
+  assert.ok(shadowSurface.nonZeroPixels > 0, 'point-shadow recipe must produce non-black output');
+
+  // Request one real refresh of both maps at the same pose. The submission
+  // must encode all six point faces and the directional caster.
+  world.set(point, render.PointLightShadow, { shadowRevision: 1 }).unwrap();
+  world.set(sun, render.DirectionalLight, { shadowRevision: 1 }).unwrap();
+  world.update(1 / 60).unwrap();
+  await drawReadyFrame(renderer, { source: attachment.value });
+  await sharedDevice.queue.onSubmittedWorkDone();
+  const refreshed = renderer.inspect({ fields: ['perFramePassNames'] });
+  // Each face may also record retained static-layer passes (`.static`, `.static-copy`).
+  const refreshedPointPasses = refreshed.perFramePassNames.filter((name) => /^point-shadow-\d+-\d+$/.test(name));
+  assert.equal(refreshedPointPasses.length, 6, `expected one point light x six faces, got ${refreshedPointPasses.length}`);
+  assert.deepEqual(
+    [...new Set(refreshedPointPasses)].sort(),
+    Array.from({ length: 6 }, (_, face) => `point-shadow-0-${face}`),
+  );
+  const refreshedDirectional = refreshed.perFramePassNames.filter(
+    (name) => name === 'shadowCascade0' || name === 'directional-shadow-observation',
+  );
+  assert.ok(refreshedDirectional.includes('shadowCascade0'), 'refreshed directional CSM pass must be real');
+  assert.ok(refreshedDirectional.includes('directional-shadow-observation'), 'refreshed directional CSM observation must be real');
   assert.ok(directionalPassNames.includes('shadowCascade0'), 'directional CSM pass must be real');
   assert.ok(
     directionalPassNames.includes('directional-shadow-observation'),
@@ -337,15 +365,7 @@ try {
   );
   assert.equal(rendererErrors.length, 0, `renderer errors: ${JSON.stringify(rendererErrors)}`);
 
-  // Capture the shadowed output before driving the same renderer through a
-  // no-shadow World; the byte comparison is the pixel-level shadow/no-shadow
-  // witness while inspection remains the renderer-owned state proof.
-  if (sharedDevice === undefined || renderTarget === undefined) {
-    throw new Error('point-shadow smoke: no Dawn surface to read back');
-  }
-  shadowSurface = await readSurface(sharedDevice, renderTarget);
-  assert.ok(shadowSurface.nonZeroPixels > 0, 'point-shadow recipe must produce non-black output');
-
+  // Drive the same renderer through the matching no-shadow World.
   const noShadowAssets = await runtime.createPublicationAssets({ shaderManifestUrl: manifestUrl });
   const noShadowWorld = new ecs.World({assets:noShadowAssets});
   const noShadowCube = noShadowAssets.create(geometry.createPrimitiveMesh('cube').unwrap()).unwrap();
@@ -415,6 +435,7 @@ try {
   dawnEvidence = {
     status: 'pass',
     frames,
+    refreshFrames: 1,
     nonZeroPixels: shadowSurface.nonZeroPixels,
     noShadowNonZeroPixels: noShadowSurface.nonZeroPixels,
     shadowVsNoShadowPixelDifference,

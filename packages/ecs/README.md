@@ -87,7 +87,10 @@ if (!stepped.ok) console.error(stepped.error.code, stepped.error.hint);
 The normal data path is `world.query(descriptor)` with a row iterator or a
 packed `QuerySpan`. Row traversal reuses a borrowed facade; `row.get` constructs
 a component object and selected array views. Numeric columns avoid that
-materialization. Expected boundary failures use the shared `Result` carrier
+materialization. For an ordered sequence of known handles,
+`query.forEachAt(handles, visit)` checks each live match using the same rules as
+`query.at(handle)` and lends one row for the duration of each callback. Nested
+traversals have independent rows. Expected boundary failures use the shared `Result` carrier
 from `@forgeax/engine-types`.
 
 Query spans retain one latest complete-table numeric window at each physical

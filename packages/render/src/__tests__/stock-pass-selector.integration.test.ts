@@ -7,6 +7,7 @@ import { expect, it, vi } from 'vitest';
 import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
+import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import * as drawPreparation from '../record/fold-buckets';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -25,7 +26,7 @@ it('keeps shared GPU material edits free of per-entity validation and selector a
   }
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
-    undefined,
+    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, roughRefraction: true } },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
     {
       rhi,

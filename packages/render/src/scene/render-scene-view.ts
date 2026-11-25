@@ -5,7 +5,7 @@ import { type RenderResidencySelection, residencySelected } from '../gpu-driven/
 import type { InstanceBoundsCache } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { addressDrawRows } from '../record/draw-row-pages';
+import { addressDrawRows, isOrdinarySceneDrawTable } from '../record/draw-row-pages';
 import type { DrawRows, ValidatedRenderable } from '../record/frame-snapshot';
 import { MeshDrawSlots } from '../record/mesh-draw-slots';
 import { type NativeDrawRoster, NativeDrawRosterOwner } from '../record/native-draw-roster';
@@ -19,7 +19,7 @@ import {
 import type { FrameSet } from './frame-set';
 import { GenerationalWeakMap } from './generational-weak-map';
 import { MaterialFrame } from './material-dispatch';
-import { meshDrawMaterials, slotContent, slotDrawSnapshot } from './mesh-draw';
+import { slotContent, slotDrawMaterials, slotDrawSnapshot } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import {
   createTemporalSnapshot,
@@ -147,7 +147,7 @@ class SceneSurfaceRows {
     read: SurfaceColumnReader<T>,
   ): T {
     const pending = this.unavailable?.has(slot) === true;
-    const materials = pending ? content : meshDrawMaterials(content, this.meshes);
+    const materials = pending ? content : this.source.drawMaterials(content, this.meshes);
     // Keep accepted-material validation identical for rank and physical-slot reads.
     if (!pending && this.materials !== undefined && content.authorVisible !== false)
       hasDisplacementSource(materials, this.materials);
@@ -202,7 +202,7 @@ export function projectViewSources(
 
 /** Custom/overridden indexed projections retain their exact ordinary at call. */
 export function sceneSurfaceRowsOf(
-  list: FrameList<RenderableSnapshot>,
+  list: FrameList<unknown>,
   at: unknown,
 ): SceneSurfaceRows | SelectedSceneDrawRows | undefined {
   if (SelectedSceneDrawRows.indexed(list, at) && SceneSlotFrame.hasNativeAt(list.source))
@@ -244,6 +244,7 @@ export function sceneDrawContentOf(
 }
 
 interface AddressedMeshRows {
+  readonly shadowRows?: DrawRows;
   readonly rows: DrawRows;
   readonly capacity: number;
 }
@@ -287,6 +288,7 @@ export class RenderScene {
   private addressedMeshDraws:
     | {
         readonly inputs: DrawRows;
+        readonly shadow: DrawRows | undefined;
         readonly value: AddressedMeshRows;
         readonly frame: SceneSlotFrame;
         readonly revision: number;
@@ -407,7 +409,7 @@ export class RenderScene {
       (function* () {
         for (let index = nativeStart; index < nativeEnd; index++)
           yield (primary.at(index) as ValidatedRenderable).source;
-        for (const row of shadow) yield row.source;
+        if (!isOrdinarySceneDrawTable(shadow)) for (const row of shadow) yield row.source;
       })(),
     );
     this.meshDrawSlots.beginFrame(roster);
@@ -444,37 +446,55 @@ export class RenderScene {
     this.meshDrawSlots.sourceAddress(record);
 
   /** Attach stable physical addresses without modifying the phase's immutable rows. */
-  addressOwnedMeshDrawRows(inputs: DrawRows): AddressedMeshRows {
+  addressOwnedMeshDrawRows(inputs: DrawRows, shadowInputs?: DrawRows): AddressedMeshRows {
     const previous = this.addressedMeshDraws;
+    const shadow =
+      shadowInputs !== undefined && isOrdinarySceneDrawTable(shadowInputs)
+        ? shadowInputs
+        : undefined;
     if (
       previous?.inputs === inputs &&
+      previous.shadow === shadow &&
       previous.frame === this.frame &&
       previous.revision === this.meshDrawSlots.revision
     )
       return previous.value;
-    const previousAddresses =
-      previous?.revision === this.meshDrawSlots.revision ? previous : undefined;
-    const value = addressDrawRows(
-      inputs,
-      previousAddresses?.inputs,
-      previousAddresses?.value.rows,
-      (entry, old, placed) => {
-        const meshSlot = this.meshDrawSlot(entry.source, false, entry.sceneSlot);
-        if (entry.meshSlot === meshSlot && entry.foldedMeshSlot === undefined) return entry;
-        if (old === entry && placed?.meshSlot === meshSlot) return placed;
-        if (entry.foldedMeshSlot === undefined) return { ...entry, meshSlot };
-        const { foldedMeshSlot: _folded, ...ordinary } = entry;
-        return { ...ordinary, meshSlot };
-      },
-    );
+    const before = previous?.revision === this.meshDrawSlots.revision ? previous : undefined;
+    const primary = addressDrawRows(inputs, before?.inputs, before?.value.rows, this.addressDraw);
+    const caster =
+      shadow === undefined
+        ? undefined
+        : addressDrawRows(shadow, before?.shadow, before?.value.shadowRows, this.addressDraw);
+    const value =
+      caster === undefined
+        ? primary
+        : {
+            rows: primary.rows,
+            shadowRows: caster.rows,
+            capacity: Math.max(primary.capacity, caster.capacity),
+          };
     this.addressedMeshDraws = {
       inputs,
+      shadow,
       value,
       frame: this.frame,
       revision: this.meshDrawSlots.revision,
     };
     return value;
   }
+
+  private readonly addressDraw = (
+    entry: ValidatedRenderable,
+    old?: ValidatedRenderable,
+    placed?: ValidatedRenderable,
+  ): ValidatedRenderable => {
+    const meshSlot = this.meshDrawSlot(entry.source, false, entry.sceneSlot);
+    if (entry.meshSlot === meshSlot && entry.foldedMeshSlot === undefined) return entry;
+    if (old === entry && placed?.meshSlot === meshSlot) return placed;
+    if (entry.foldedMeshSlot === undefined) return { ...entry, meshSlot };
+    const { foldedMeshSlot: _folded, ...ordinary } = entry;
+    return { ...ordinary, meshSlot };
+  };
 
   /** Source, terrain and folded draws share addresses across this view and its captures. */
   meshDrawSlot(source: RenderableSnapshot, folded = false, row?: RenderSceneSlot): number {
@@ -532,6 +552,18 @@ export class RenderScene {
       },
     });
     return api;
+  }
+
+  /** Consume the disjoint rows from one local ECS presentation query. */
+  applyPresentationSpans(
+    spans: readonly import('@forgeax/engine-scene/internal').PresentationSpan[],
+  ): RenderSceneApplyResult {
+    if (!this.ownsRows) throw new Error('Local ECS presentation requires an owned Scene');
+    const delta = this.rows.commitPresentationSpans(spans);
+    let scans = 0;
+    for (const span of spans) scans += span.entities.length;
+    this.observe(delta, scans);
+    return delta;
   }
 
   apply(
@@ -605,7 +637,7 @@ export class RenderScene {
       }
     };
     if (
-      !frame.changesSince(before, (slot) => {
+      !frame.visitChangedVersions(before, (slot) => {
         const record = before.slotAt(slot);
         if (record !== undefined) retire(record);
       })
@@ -756,7 +788,7 @@ export class RenderScene {
         slot,
         submitted,
         submitted !== undefined && history.admitted(submitted),
-        hasDisplacementSource(meshDrawMaterials(slotContent(slot), meshes)),
+        hasDisplacementSource(slotDrawMaterials(slot, meshes)),
         motion,
       );
     };
@@ -1017,7 +1049,7 @@ export class RenderScene {
   private temporalSnapshot(
     slot: RenderSceneSlot,
     resetHistory = false,
-    displacementSource = hasDisplacementSource(meshDrawMaterials(slotContent(slot), this.meshes)),
+    displacementSource = hasDisplacementSource(slotDrawMaterials(slot, this.meshes)),
   ): RenderableTemporalSnapshot {
     const submitted = resetHistory ? undefined : this.history.before(slot);
     return createTemporalSnapshot(

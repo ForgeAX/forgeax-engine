@@ -460,7 +460,7 @@ const assertOnState = (state, label) => {
     fail(`${label}: fixed TAAU carrier is not producing internal extent/coverage: ${JSON.stringify(state.dynamicResolution)}`);
   }
   const passes = state.passes ?? [];
-  for (const pass of ['standard-scene-data', 'taa-resolve']) {
+  for (const pass of ['standard-depth-velocity', 'taa-resolve']) {
     if (!passes.includes(pass)) fail(`${label}: missing required pass ${pass}`);
   }
 };

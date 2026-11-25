@@ -3,9 +3,11 @@
 // reconstruct normals from depth for the depth-only and spiral paths.
 
 #define_import_path forgeax_hdrp::ssao
+#import forgeax_depth_pyramid::sample::depthPyramidViewportCell
+#import forgeax_scene_temporal::{decodeSceneVelocity, SCENE_VELOCITY_INVALID_MOTION}
 #import forgeax_pbr::gbuffer::{loadStandardSceneNormal, loadStandardSceneSurfaceValid}
 
-#import forgeax_view::common::{fullscreen_triangle, FullscreenOutput}
+#import forgeax_view::common::{fullscreen_triangle, FullscreenOutput, reconstructDepthSurface, ReconstructedDepthSurface}
 
 // ── SSAO uniform (3 mat4 + 3 vec4, padded to 256 B) ────────────────────────
 //
@@ -466,6 +468,7 @@ struct ScreenSsaoUniform {
   kernel: vec4f, // radius, world-space radius flag, normalized bias, quality permutation
   mip: vec4f, // blend, scale, setup similarity threshold, level
   phase: vec4f, // SSAO pattern phase and source-to-setup width ratio
+  sourceExtent: vec4f,
 };
 
 @group(0) @binding(14) var<uniform> screenSsao: ScreenSsaoUniform;
@@ -496,24 +499,20 @@ fn screenSsaoSafeNormal(n: vec3f) -> vec3f {
 }
 
 fn screenSsaoDepthData(pixel: vec2i, depth: f32) -> vec4f {
-  let size = vec2i(textureDimensions(hdr_depth));
-  let uv = (vec2f(pixel) + 0.5) / vec2f(size);
-  let center = screenSsaoPosition(uv, depth);
-  let left = max(pixel - vec2i(1, 0), vec2i(0));
-  let right = min(pixel + vec2i(1, 0), size - 1);
-  let top = max(pixel - vec2i(0, 1), vec2i(0));
-  let bottom = min(pixel + vec2i(0, 1), size - 1);
-  let dx0 = center - screenSsaoPosition(
-    (vec2f(left) + 0.5) / vec2f(size), textureLoad(hdr_depth, left, 0));
-  let dx1 = screenSsaoPosition(
-    (vec2f(right) + 0.5) / vec2f(size), textureLoad(hdr_depth, right, 0)) - center;
-  let dy0 = center - screenSsaoPosition(
-    (vec2f(top) + 0.5) / vec2f(size), textureLoad(hdr_depth, top, 0));
-  let dy1 = screenSsaoPosition(
-    (vec2f(bottom) + 0.5) / vec2f(size), textureLoad(hdr_depth, bottom, 0)) - center;
-  let dx = select(dx1, dx0, (pixel.x > 0 && abs(dx0.z) <= abs(dx1.z)) || pixel.x == size.x - 1);
-  let dy = select(dy1, dy0, (pixel.y > 0 && abs(dy0.z) <= abs(dy1.z)) || pixel.y == size.y - 1);
-  return vec4f(screenSsaoSafeNormal(cross(dy, dx)), -center.z);
+  let surface = screenSsaoReconstruct(hdr_depth, pixel, depth);
+  return vec4f(surface.normal, -surface.position.z);
+}
+
+fn screenSsaoReconstruct(source: texture_depth_2d, pixel: vec2i, depth: f32) -> ReconstructedDepthSurface {
+  return reconstructDepthSurface(source, pixel, depth, screenSsao.inverseProjection, vec3f(0.0, 0.0, 1.0));
+}
+
+fn screenSsaoRotateToWorld(value: vec3f) -> vec3f {
+  return transpose(mat3x3f(screenSsao.view[0].xyz, screenSsao.view[1].xyz, screenSsao.view[2].xyz)) * value;
+}
+
+fn screenAoResolvedAtPixel(pixel: vec2i) -> f32 {
+  return textureLoad(ssaoFurthestDepth, pixel, 0).r;
 }
 
 fn screenSsaoNormalData(pixel: vec2i) -> vec4f {
@@ -576,8 +575,7 @@ fn screenSsaoPattern(position: vec2f) -> vec2f {
 }
 
 fn screenSsaoWedge(uv: vec2f, center: vec3f, weightedNormal: vec3f) -> f32 {
-  let size = vec2i(textureDimensions(ssaoFurthestDepth));
-  let pixel = clamp(vec2i(uv * vec2f(size)), vec2i(0), size - 1);
+  let pixel = vec2i(depthPyramidViewportCell(uv, ssaoFurthestDepth, 0u, vec2u(screenSsao.sourceExtent.xy)));
   // The stock mip factor of 0.5 always selects the first reduced level.
   let distance = textureLoad(ssaoFurthestDepth, pixel, 0).r;
   if (distance <= 0.0) { return 0.0; }
@@ -673,7 +671,11 @@ fn fs_ssao_full_depth(in: SsaoVsOut) -> @location(0) f32 {
   let pixel = vec2i(in.position.xy);
   let depth = textureLoad(hdr_depth, pixel, 0);
   let surface = screenSsaoDepthData(pixel, depth);
-  return screenSsaoFinish(in, surface, screenSsaoVisibility(in, surface, false), depth > 0.0);
+  return screenSsaoResolvedDepth(in, surface, depth > 0.0);
+}
+
+fn screenSsaoResolvedDepth(in: SsaoVsOut, surface: vec4f, valid: bool) -> f32 {
+  return screenSsaoFinish(in, surface, screenSsaoVisibility(in, surface, false), valid);
 }
 
 @fragment
@@ -719,8 +721,7 @@ fn screenAoPixel(uv: vec2f, size: vec2u) -> vec2i {
 fn screenGtaoHorizon(uv: vec2f, center: vec3f, viewRay: vec3f, horizon: f32, lod: u32) -> f32 {
   if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return horizon; }
   let mip = min(lod, textureNumLevels(ssaoFurthestDepth) - 1u);
-  let size = max(textureDimensions(ssaoFurthestDepth, 0) >> vec2u(mip), vec2u(1u));
-  let px = screenAoPixel(uv, size);
+  let px = vec2i(depthPyramidViewportCell(uv, ssaoFurthestDepth, mip, vec2u(screenSsao.sourceExtent.xy)));
   let distance = textureLoad(ssaoFurthestDepth, px, i32(mip)).r;
   if (distance <= 0.0) { return horizon; }
   let delta = screenSsaoPositionAtDistance(uv, distance) - center;
@@ -898,12 +899,10 @@ fn fs_gtao_temporal(in: SsaoVsOut) -> @location(0) f32 {
 }
 
 fn screenGtaoPackedMotion(uv: vec2f) -> vec3f {
-  let camera = screenGtaoCameraMotion(uv);
   let word = textureLoad(gtaoVelocity, screenAoPixel(uv, textureDimensions(gtaoVelocity)), 0).r;
-  if ((word & 65535u) == 0u) { return camera; }
-  let packed = vec2f(f32(word & 65535u), f32(word >> 16u));
-  let curved = ((packed - 32767.0) / 65535.0) / 0.2495;
-  return vec3f(curved * abs(curved) * vec2f(0.25, -0.25) + screenSsao.phase.zw, 1.0);
+  if (word == 0u) { return screenGtaoCameraMotion(uv); }
+  if (word == SCENE_VELOCITY_INVALID_MOTION) { return vec3f(0.0); }
+  return vec3f(decodeSceneVelocity(word) + screenSsao.phase.zw, 1.0);
 }
 
 @fragment

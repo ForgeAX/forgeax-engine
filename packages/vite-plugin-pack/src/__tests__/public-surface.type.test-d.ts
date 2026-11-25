@@ -32,7 +32,7 @@ describe('vite-plugin-pack public type surface', () => {
       | 'producerIdentity'
     >();
     expectTypeOf<keyof PluginPackDdcOptions>().toEqualTypeOf<
-      'buildCacheRoot' | 'projectDdcRoot' | 'identityRoot'
+      'buildCacheRoot' | 'buildCacheSeedRoot' | 'projectDdcRoot' | 'identityRoot'
     >();
     expectTypeOf<AssetHostRefreshPolicy>().toBeFunction();
   });

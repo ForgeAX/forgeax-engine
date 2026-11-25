@@ -6,10 +6,10 @@ let publication = 0;
  * their storage and supply the same composition kernel for both immediate and
  * scheduled consumers. An unobserved parent supplies no reuse evidence.
  */
-export class SynchronousTransform {
+export class SynchronousTransform<Output> {
   private localDirty = true;
   private worldDirty = true;
-  private parent: SynchronousTransform | null | undefined;
+  private parent: SynchronousTransform<Output> | null | undefined;
   private parentVersion = 0;
   private published = 0;
 
@@ -18,8 +18,9 @@ export class SynchronousTransform {
   }
 
   constructor(
+    private readonly output: Output,
     private readonly composeLocal: () => void,
-    private readonly composeWorld: () => void,
+    private readonly composeWorld: (parent: Output | null | undefined) => void,
   ) {}
 
   invalidateLocal(): void {
@@ -40,7 +41,7 @@ export class SynchronousTransform {
     this.localDirty = false;
   }
 
-  resolve(parent: SynchronousTransform | null | undefined): boolean {
+  resolve(parent: SynchronousTransform<Output> | null | undefined): boolean {
     this.resolveLocal();
     if (
       parent !== undefined &&
@@ -49,7 +50,7 @@ export class SynchronousTransform {
       this.parentVersion === (parent?.published ?? 0)
     )
       return false;
-    this.composeWorld();
+    this.composeWorld(parent == null ? parent : parent.output);
     this.worldDirty = false;
     this.parent = parent;
     this.parentVersion = parent?.published ?? 0;

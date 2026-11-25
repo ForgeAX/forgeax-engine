@@ -1,5 +1,5 @@
-import { access, readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 interface SdkPackage {
@@ -65,7 +65,7 @@ interface SdkSource {
 
 export interface SdkManifest {
   readonly viewCommit: string;
-  readonly schemaVersion: '1.11.0';
+  readonly schemaVersion: '1.12.0';
   readonly sdkVersion: string;
   readonly engineCommit: string;
   readonly requirements: {
@@ -85,12 +85,19 @@ export interface SdkManifest {
     readonly bytes: number;
     readonly sha256: string;
     readonly enginePath?: string;
+    readonly sourceCopy?: true;
   }[];
 }
 
+type ProjectAuthoringManifest = Pick<
+  SdkManifest,
+  'sdkVersion' | 'engineCommit' | 'requirements' | 'packages' | 'templates' | 'skills' | 'artifacts'
+>;
+
 export interface SdkContext {
   readonly root: string;
-  readonly manifest: SdkManifest;
+  readonly manifest: ProjectAuthoringManifest;
+  readonly embedded?: true;
   /**
    * The full ZIP carries an immutable offline store. The npm carrier is a
    * deliberately smaller online surface and omits it, so consumers fall back
@@ -98,6 +105,30 @@ export interface SdkContext {
    */
   readonly store?: string;
   readonly templates: ReadonlyMap<string, string>;
+}
+
+const SDK_BUILD_CACHE_SEED = 'build-cache';
+const PROJECT_SDK_CACHE_REFERENCE = '.forgeax/sdk-build-cache.json';
+
+export async function configureSdkBuildCache(sdkRoot: string, projectRoot: string): Promise<void> {
+  const seed = resolve(sdkRoot, SDK_BUILD_CACHE_SEED);
+  if (!(await readable(seed))) return;
+  const reference = resolve(projectRoot, PROJECT_SDK_CACHE_REFERENCE);
+  await mkdir(dirname(reference), { recursive: true });
+  await writeFile(reference, JSON.stringify(await realpath(seed)));
+}
+
+export async function readSdkBuildCache(projectRoot: string): Promise<string | undefined> {
+  try {
+    const seed: unknown = JSON.parse(
+      await readFile(resolve(projectRoot, PROJECT_SDK_CACHE_REFERENCE), 'utf8'),
+    );
+    return typeof seed === 'string' && isAbsolute(seed) && (await readable(seed))
+      ? seed
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readable(path: string): Promise<boolean> {
@@ -127,14 +158,45 @@ export async function findSdkContext(): Promise<SdkContext | undefined> {
         templates,
       };
     }
+    if (configured === undefined) {
+      const authoringRoot = resolve(cursor, 'authoring');
+      const path = resolve(authoringRoot, 'engine-authoring.json');
+      if (await readable(path)) {
+        const manifest = JSON.parse(await readFile(path, 'utf8')) as ProjectAuthoringManifest;
+        const installed = JSON.parse(await readFile(resolve(cursor, 'package.json'), 'utf8')) as {
+          readonly name: string;
+          readonly version: string;
+        };
+        if (installed.name !== '@forgeax/engine' || installed.version !== manifest.sdkVersion)
+          throw new Error('engine-authoring-version-mismatch');
+        return {
+          root: authoringRoot,
+          manifest,
+          embedded: true,
+          templates: new Map(
+            manifest.templates.map((template) => [
+              template.id,
+              resolve(authoringRoot, template.root),
+            ]),
+          ),
+        };
+      }
+    }
     const parent = dirname(cursor);
     if (parent === cursor) return undefined;
     cursor = parent;
   }
 }
 
+export async function findBundledViewHost(): Promise<string | undefined> {
+  const context = await findSdkContext();
+  if (context?.embedded !== true) return undefined;
+  const path = resolve(context.root, 'tools/view/host.pack.json');
+  return (await readable(path)) ? path : undefined;
+}
+
 const UPDATE_MIGRATION_RISK =
-  'Install a newer SDK in a separate directory. Existing games remain pinned and are not migrated automatically; review release notes and migrate and test each game before changing its Engine version.';
+  'Existing games remain pinned to their Engine version. Review the release notes, migrate, and test each game when upgrading.';
 
 type SdkUpdateStatus =
   | {
@@ -234,7 +296,10 @@ function offline(): boolean {
   return ['1', 'true'].includes((process.env.npm_config_offline ?? '').toLowerCase());
 }
 
-export async function checkSdkUpdate(currentVersion: string): Promise<SdkUpdateStatus> {
+export async function checkSdkUpdate(
+  currentVersion: string,
+  embedded = false,
+): Promise<SdkUpdateStatus> {
   if (process.env.FORGEAX_DISABLE_UPDATE_CHECK === '1') {
     return { status: 'skipped', currentVersion, reason: 'disabled' };
   }
@@ -242,7 +307,10 @@ export async function checkSdkUpdate(currentVersion: string): Promise<SdkUpdateS
   try {
     const registry = process.env.npm_config_registry ?? 'https://registry.npmjs.org/';
     const response = await fetch(
-      new URL('@forgeax%2Fengine-sdk', `${registry.replace(/\/$/, '')}/`),
+      new URL(
+        embedded ? '@forgeax%2Fengine' : '@forgeax%2Fengine-sdk',
+        `${registry.replace(/\/$/, '')}/`,
+      ),
       {
         headers: { accept: 'application/vnd.npm.install-v1+json' },
         signal: AbortSignal.timeout(2_000),

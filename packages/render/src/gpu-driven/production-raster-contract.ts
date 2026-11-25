@@ -188,6 +188,7 @@ export interface GpuDrivenPrepareInput {
   /** One-cascade Vogel receiver: forward colour pipelines take the simple Standard variant. */
   readonly directionalShadowSimple?: boolean;
   readonly leanLighting?: boolean;
+  readonly forwardInlineSsr?: boolean;
   /** Entity keys admitted by the persistent visibility facet for this view. */
   readonly activeEntityKeys?: ReadonlySet<number>;
   /** Collision-free renderer-owned revision for the active visibility set. */

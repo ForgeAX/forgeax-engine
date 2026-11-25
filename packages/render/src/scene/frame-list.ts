@@ -104,6 +104,51 @@ export abstract class FrameListBase<T> implements FrameList<T> {
   }
 }
 
+export interface FrameRange<T> {
+  readonly start: number;
+  readonly rows: FrameList<T>;
+}
+
+/** Joined pass ranges hold one reference per actual phase and preserve its address space. */
+export class JoinedFrameRows<T> extends FrameListBase<T> {
+  readonly length: number;
+  constructor(readonly ranges: readonly FrameRange<T>[]) {
+    super();
+    const last = ranges.at(-1);
+    this.length = last === undefined ? 0 : last.start + last.rows.length;
+  }
+
+  at(index: number): T | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    if (index < 0 || index >= this.length) return undefined;
+    const range = this.containing(index);
+    return range?.rows.at(index - range.start);
+  }
+
+  /** Use the physical subtable after addressing when the pass owns this exact interval. */
+  exactRange(start: number, length: number): FrameList<T> | undefined {
+    const range = this.containing(start);
+    return range?.start === start && range.rows.length === length ? range.rows : undefined;
+  }
+
+  private containing(index: number) {
+    let low = 0;
+    let high = this.ranges.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const range = this.ranges[mid] as FrameRange<T>;
+      if (index < range.start) high = mid - 1;
+      else low = mid;
+    }
+    return this.ranges[low];
+  }
+
+  *[Symbol.iterator](): IterableIterator<T> {
+    for (const range of this.ranges) yield* range.rows;
+  }
+}
+
 /** A fixed input and projection; construction does no work proportional to input size. */
 export class FrameProjection<T, U> extends FrameListBase<U> {
   readonly #rowReader: object | undefined;

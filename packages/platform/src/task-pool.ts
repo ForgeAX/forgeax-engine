@@ -9,6 +9,7 @@ import {
   type TaskSubmitOptions,
   taskAbortError,
 } from '@forgeax/engine-types';
+import { nowMs } from './clock.js';
 import {
   awaitSlices,
   createSliceControl,
@@ -134,10 +135,6 @@ export function defaultTaskWorkerCount(
   return Math.max(1, Math.min(hardwareConcurrency - 3, 4));
 }
 
-function defaultNow(): number {
-  return globalThis.performance?.now() ?? Date.now();
-}
-
 function defaultYield(resume: () => void): void {
   setTimeout(resume, 0);
 }
@@ -231,7 +228,7 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
   const factory = options.workerFactory;
   const size = factory === undefined ? 1 : Math.max(1, options.workers ?? defaultTaskWorkerCount());
   const crashLimit = Math.max(1, options.crashLimit ?? 3);
-  const now = options.now ?? defaultNow;
+  const now = options.now ?? nowMs;
   const yieldTask = options.yieldTask ?? defaultYield;
   const slicer = createSlicer(now, options.sliceMs ?? 8, yieldTask);
   const queues: Record<TaskPriority, Task[]> = { critical: [], normal: [], background: [] };
@@ -776,7 +773,7 @@ export function serveTaskWorker(
   options: ServeTaskWorkerOptions = {},
 ): void {
   const slices = options.slices ?? {};
-  const now = options.now ?? defaultNow;
+  const now = options.now ?? nowMs;
   const slicer = createSlicer(now, options.sliceMs ?? 8, options.yieldTask ?? defaultYield);
   // biome-ignore lint/suspicious/noExplicitAny: kinds are heterogeneous.
   const ready = new Map<string, Promise<TaskModule<any, any, any>>>();

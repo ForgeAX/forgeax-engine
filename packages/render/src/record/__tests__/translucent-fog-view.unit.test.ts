@@ -25,6 +25,20 @@ const add = (srcFactor: GPUBlendFactor, dstFactor: GPUBlendFactor): GPUBlendComp
 const blend = (color: GPUBlendComponent): GPUBlendState => ({ color, alpha: color });
 const CAMERA_HEIGHT = 3;
 
+function slotAt(
+  writes: readonly { offset: number; floats: Float32Array }[],
+  offset: number,
+): Float32Array | undefined {
+  const write = writes.find(
+    (write) =>
+      write.offset <= offset &&
+      offset + VIEW_UNIFORM_BYTES <= write.offset + write.floats.byteLength,
+  );
+  if (write === undefined) return undefined;
+  const start = (offset - write.offset) / 4;
+  return write.floats.subarray(start, start + VIEW_UNIFORM_BYTES / 4);
+}
+
 function camera(): CameraSnapshot {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -123,7 +137,7 @@ describe('translucent fog composition', () => {
     const admitted = !capture && (!atmosphere || atmosphere === 'background') && active;
     expect(main?.[321]).toBe(admitted ? 1 : 0);
     expect(main?.[322]).toBeCloseTo(admitted ? 0.2 * Math.exp(-0.1 * CAMERA_HEIGHT) : 0, 6);
-    const disabled = writes.find((write) => write.offset === UNFOGGED_VIEW_UNIFORM_OFFSET);
+    const disabled = slotAt(writes, UNFOGGED_VIEW_UNIFORM_OFFSET);
     if (!admitted) {
       expect(disabled).toBeUndefined();
       return;
@@ -134,11 +148,11 @@ describe('translucent fog composition', () => {
     expected[289] = 0;
     expected[290] = 0;
     expected[321] = 0;
-    expect(disabled.floats).toEqual(expected);
-    expect(disabled.floats[291]).toBe(12.5);
+    expect(disabled).toEqual(expected);
+    expect(disabled[291]).toBe(12.5);
     for (const composition of ['straight', 'premultiplied', 'additive'] as const) {
-      const blended = writes.find((write) => write.offset === translucentViewOffset(composition));
-      expect(blended?.floats[321]).toBe(1);
+      const blended = slotAt(writes, translucentViewOffset(composition));
+      expect(blended?.[321]).toBe(1);
     }
     expect(UNFOGGED_VIEW_UNIFORM_OFFSET % 256).toBe(0);
     expect(UNFOGGED_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_BYTES).toBeLessThanOrEqual(
@@ -264,14 +278,14 @@ describe('translucent fog composition', () => {
     for (const [index, composition] of (
       ['straight', 'premultiplied', 'additive'] as const
     ).entries()) {
-      const copy = writes[index + 1];
-      expect(copy?.offset).toBe(translucentViewOffset(composition));
-      expect(copy?.floats[290]).toBe(index + 1);
+      const copy = slotAt(writes, translucentViewOffset(composition));
+      expect(copy?.[290]).toBe(index + 1);
       const expected = main.slice();
       expected[290] = index + 1;
-      expect(copy?.floats).toEqual(expected);
+      expect(copy).toEqual(expected);
     }
 
+    expect(writes).toHaveLength(2);
     writes.length = 0;
     writeViewUbo(
       queue,

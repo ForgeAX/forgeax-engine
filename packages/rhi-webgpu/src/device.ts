@@ -75,7 +75,6 @@ import type {
   TextureViewDescriptor,
 } from '@forgeax/engine-rhi';
 import {
-  bufferWriteRange,
   commandEncoderFinished,
   createQueueCompletionHold,
   err,
@@ -84,6 +83,7 @@ import {
   queueWriteBufferOutOfBounds,
   RhiError as RhiErrorClass,
   rayQueryUnsupported,
+  readBufferWriteRange,
   renderPassNotEnded,
   validateRayQueryBindGroupLayout,
   validateRayQueryBufferUsage,
@@ -1385,6 +1385,7 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
  *     out-of-bounds writes return 'queue-write-buffer-out-of-bounds' (D-S3 #4).
  */
 function makeQueue(rawQueue: GPUQueue): RhiQueue {
+  const sourceRange = { byteOffset: 0, byteLength: 0 };
   const completions = createQueueCompletionHold();
   const inFlight = new Set<CommandBuffer[]>();
   let completion: Promise<undefined> | undefined;
@@ -1399,10 +1400,8 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
     ): Result<void, RhiError> {
       completion = undefined;
       const rawBuffer = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
-      const bufferSize =
-        typeof (rawBuffer as { size?: number }).size === 'number'
-          ? (rawBuffer as { size: number }).size
-          : Number.MAX_SAFE_INTEGER;
+      const capacity = rawBuffer.size;
+      const bufferSize = typeof capacity === 'number' ? capacity : Number.MAX_SAFE_INTEGER;
       // 4-byte alignment validation (W3C WebGPU 23.2 writeBuffer).
       if (!Number.isSafeInteger(bufferOffset) || bufferOffset < 0 || bufferOffset % 4 !== 0) {
         return err(
@@ -1414,10 +1413,10 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           }),
         );
       }
-      const range = bufferWriteRange(data, dataOffset, size);
+      const range = readBufferWriteRange(sourceRange, data, dataOffset, size);
       if (!range.ok) return range;
       const writeStart = dataOffset ?? 0;
-      const writeSize = range.value.byteLength;
+      const writeSize = sourceRange.byteLength;
       // Bounds validation: bufferOffset + writeSize <= bufferSize.
       if (bufferOffset + writeSize > bufferSize) {
         return err(

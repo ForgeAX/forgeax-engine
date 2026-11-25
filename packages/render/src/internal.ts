@@ -14,7 +14,10 @@ export {
   retainPublishedLevelAsset,
 } from './assembly/level-source-access';
 export type { PublishedLevelPreparation } from './assembly/published-level-preparation';
-export type { SourceViewPreparation } from './assembly/source-view-preparation';
+export {
+  isObsoleteSourceViewFailure,
+  type SourceViewPreparation,
+} from './assembly/source-view-preparation';
 export { assertCameraProjectionOffset, validateCameraPerspectiveFov } from './components/camera';
 export { DeviceScope } from './device/device-scope';
 export { assertTextureMipSkip } from './device/texture-mip-skip';

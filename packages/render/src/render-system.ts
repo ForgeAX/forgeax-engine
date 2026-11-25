@@ -452,6 +452,7 @@ function createRenderOwner(
   const cubeCaptureState: CubeCaptureGraphState = { work: [] };
   /** This system's last record-attempt outcome, rewritten in place per attempt. */
 
+  const reportResidencyError = (error: RhiError) => internals.errorRegistry.fire(error);
   const sceneComposition =
     internals.sceneComposition ??
     new SceneComposition({
@@ -502,20 +503,7 @@ function createRenderOwner(
       onAssetChange: (scope, change) => {
         // Published GPU residency is adopted once by the outer view assembly.
         if (scope.world === undefined) return;
-        const content = change.removed
-          ? undefined
-          : scope.resolveAsset<import('@forgeax/engine-types').Asset>(change.handle);
-        const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
-        const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
-        if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
-        const texture =
-          content?.ok && (content.value.kind === 'texture' || content.value.kind === 'gpu-texture')
-            ? content.value
-            : undefined;
-        const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
-        if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
-        internals.gpuStore.invalidateSampler(change.handle, scope);
-        internals.gpuStore.adoptCubemapChange(change, scope);
+        internals.gpuStore.adoptAssetChange(scope, change, reportResidencyError);
       },
       instanceCollections,
     });
@@ -556,7 +544,11 @@ function createRenderOwner(
   const terrainLayers = sceneComposition.terrainLayers;
   if (terrainLayers === undefined)
     throw new Error('The Renderer composition owns its terrain layers');
-  Object.assign(internals, { preparedMaterialTexture: terrainLayers.texture.bind(terrainLayers) });
+  Object.assign(internals, {
+    preparedMaterialTexture: Object.assign(terrainLayers.texture.bind(terrainLayers), {
+      parameters: TerrainLayers.textureParameters,
+    }),
+  });
   const persistentRenderScene = new PersistentRenderScene(
     {
       getTemporalConsumerDemand: () =>
@@ -755,8 +747,6 @@ function createRenderOwner(
     materialBgPerEntity: new Map(),
     instancesBgPerEntity: new Map(),
     instancesBgShared: new WeakMap(),
-    // cross-entity shared material cache (outer Map<shaderId, WeakMap>).
-    materialBgShared: new Map(),
     // cross-frame material assembly cache; entries are only retained when all
     // explicit texture/sampler handles resolved to resident GPU resources.
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
@@ -1194,7 +1184,6 @@ function createRenderOwner(
       frameState.meshBindGroupCache = new WeakMap();
       frameState.materialBgPerEntity.clear();
       frameState.instancesBgPerEntity.clear();
-      frameState.materialBgShared.clear();
       frameState.materialBgAssemblyCache.clear();
       frameState.shadowMaterialBindGroups = new WeakMap();
       frameState.postProcessBgCache = new WeakMap();

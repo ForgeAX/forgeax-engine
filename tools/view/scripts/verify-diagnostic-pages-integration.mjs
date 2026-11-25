@@ -80,28 +80,36 @@ async function assertAuthoredSky(bytes, subject) {
  const decoded = parseImage(bytes,'image/png',{mipmap:false});
  assert.equal(decoded.ok,true,JSON.stringify(decoded));
  const {width,height,bytes:pixels}=decoded.value;
- // Keep the independent sample in the fixed outer margin, before both HUD cards.
- // Relative horizontal positions enter the HUD in the compact CI viewport.
- const x=subject === 'independent' ? 2 : Math.floor(width*.01);
- // Sample the top of the frame: an analytic atmosphere draws its planet ground below
- // the horizon, so only rows above it are sky for both a skybox and an atmosphere.
- const y=Math.floor(height*.02),lowerY=Math.floor(height*.10);
- let blue=0,gradient=0;
- const upper=[0,0,0],lower=[0,0,0];
- for(let dy=0;dy<4;dy++) for(let dx=0;dx<4;dx++) {
-  const offset=((y+dy)*width+x+dx)*4,lowerOffset=((lowerY+dy)*width+x+dx)*4;
-  const [r,g,b]=pixels.slice(offset,offset+3);
-  for(let channel=0;channel<3;channel++) {
-   upper[channel]+=pixels[offset+channel]/16;
-   lower[channel]+=pixels[lowerOffset+channel]/16;
+ // Keep the probe in the top outer margin, but let it find a clear patch when
+ // authored cloud cover moves over the corner sample.
+ const firstX=subject === 'independent' ? 2 : Math.floor(width*.01);
+ const lastX=Math.min(width-4,Math.floor(width*.10)-4);
+ // The planet ground stays below the horizon; both bands remain sky.
+ const firstY=Math.floor(height*.02),lastY=Math.min(height-4,Math.floor(height*.10)-4);
+ const lowerY=Math.min(height-4,Math.floor(height*.18));
+ assert.ok(lastX>=firstX && lastY>=firstY,`sky image is too small to sample: ${width}x${height}`);
+ let best;
+ for(let y=firstY;y<=lastY;y++) for(let x=firstX;x<=lastX;x++) {
+  let blue=0;
+  const upper=[0,0,0],lower=[0,0,0];
+  for(let dy=0;dy<4;dy++) for(let dx=0;dx<4;dx++) {
+   const offset=((y+dy)*width+x+dx)*4,lowerOffset=((lowerY+dy)*width+x+dx)*4;
+   const r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2];
+   for(let channel=0;channel<3;channel++) {
+    upper[channel]+=pixels[offset+channel]/16;
+    lower[channel]+=pixels[lowerOffset+channel]/16;
+   }
+   if(b>r+12 && b>g+4 && b>40)blue++;
   }
-  if(b>r+12 && b>g+4 && b>40)blue++;
+  let gradient=0;
+  for(let channel=0;channel<3;channel++) gradient+=Math.abs(upper[channel]-lower[channel]);
+  if(!best || blue>best.blue || (blue===best.blue && gradient>best.gradient))
+   best={x,y,blue,upper,lower,gradient};
  }
- for(let channel=0;channel<3;channel++) gradient+=Math.abs(upper[channel]-lower[channel]);
- const observation={width,height,x,y,lowerY,blue,upper,lower,gradient};
+ const observation={width,height,...best,lowerY,scan:{firstX,lastX,firstY,lastY}};
  await writeFile(resolve(output,`${subject}-sky.json`),JSON.stringify(observation,null,2));
- assert.equal(blue,16,`the authored blue sky must remain visible beyond the finite floor: ${JSON.stringify(observation)}`);
- assert.ok(gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
+ assert.equal(best.blue,16,`the authored blue sky must remain visible beyond the finite floor: ${JSON.stringify(observation)}`);
+ assert.ok(best.gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
 }
 async function prepareDiagnosticGameProject(template, gameRoot, lightweight) {
  await cp(resolve(template, 'assets'), resolve(gameRoot, 'assets'), { recursive: true });

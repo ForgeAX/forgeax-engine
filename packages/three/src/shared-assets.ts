@@ -7,7 +7,7 @@ interface DisposableSource {
   removeEventListener(type: 'dispose', listener: () => void): void;
 }
 
-export function sameValues(a: readonly unknown[], b: readonly unknown[]): boolean {
+export function sameValues(a: ArrayLike<unknown>, b: ArrayLike<unknown>): boolean {
   const length = a.length;
   if (length !== b.length) return false;
   for (let index = 0; index < length; index++)

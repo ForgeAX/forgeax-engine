@@ -55,7 +55,9 @@ it('keeps the public build compiler outside the player import closure', async ()
     if (module === undefined || visited.has(module.href)) continue;
     visited.add(module.href);
     const source = await readFile(module, 'utf8');
-    expect(source).not.toMatch(/@forgeax\/engine-shader-compiler|from\s*['"]node:/);
+    // Stock templates specialize through the browser-safe program entry.
+    expect(source).not.toMatch(/@forgeax\/engine-shader-compiler(?!\/program['"])/);
+    expect(source).not.toMatch(/(?:from\s*|import\s*\(?\s*)['"]node:/);
     for (const match of source.matchAll(
       /(?:from\s*|import\s*\(?\s*)(['"])(\.{1,2}\/[^'"]+\.mjs)\1/g,
     )) {
@@ -64,8 +66,8 @@ it('keeps the public build compiler outside the player import closure', async ()
     }
   }
   expect(visited.size).toBeGreaterThan(2);
-  expect(await readFile(new URL('../../dist/build/index.mjs', import.meta.url), 'utf8')).toContain(
-    '@forgeax/engine-shader-compiler',
+  expect(await readFile(new URL('../../dist/build/index.mjs', import.meta.url), 'utf8')).toMatch(
+    /@forgeax\/engine-shader-compiler['"]/,
   );
 });
 

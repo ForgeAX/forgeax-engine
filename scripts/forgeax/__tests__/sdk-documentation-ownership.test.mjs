@@ -23,6 +23,13 @@ test('shipped entrypoints route narrative reference guides to the canonical Harn
     for (const match of source.matchAll(/\]\(([^)\s]+)\)/g)) {
       const target = match[1];
       if (!target.includes('/references/') && !target.startsWith('references/')) continue;
+      if (
+        /^(?:skills\/|\.\.\/)?(?:forgeax-engine-authoring\/)?references\/(?:api-index|feature-catalog|api\/play)\.md$/.test(
+          target,
+        ) &&
+        /^(?:templates\/AGENTS|skills\/forgeax-engine-(?:authoring|cli)\/SKILL)/.test(entry)
+      )
+        continue;
       assert.match(
         target,
         /^https:\/\/github\.com\/ForgeAX\/forgeax-engine-harness\/blob\/main\/docs\/engine\//,
@@ -39,7 +46,7 @@ test('generated SDK discovery derives the optional guide route from its source e
   const total = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
   assert.ok(total <= API_INDEX_MAX_BYTES);
   const index = files[API_INDEX_FILE];
-  const entry = readFileSync(resolve(root, 'skills/forgeax-engine-sdk/SKILL.md'), 'utf8');
+  const entry = readFileSync(resolve(root, 'skills/forgeax-engine-authoring/SKILL.md'), 'utf8');
   const guide = entry.match(/\]\(([^)\s]*\/three-equivalents\.md)\)/)?.[1];
   if (guide === undefined) assert.doesNotMatch(index, /Three\.js names map/);
   else assert.ok(index.includes(`](${guide})`));

@@ -62,6 +62,10 @@ async function contentDependencyFailure(
 const CACHE_SCHEMA = 'scriptable-pack-product/11';
 const PRODUCT_ARTIFACT = 'product.v8.br';
 const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
+// The stream header identifies the wire format shared by compatible Node releases.
+const serializationHeader = new Serializer();
+serializationHeader.writeHeader();
+const PACK_CACHE_CODEC = `node-v8/${serializationHeader.releaseBuffer().toString('hex')}`;
 const compress = promisify(brotliCompress);
 const decompress = promisify(brotliDecompress);
 
@@ -550,6 +554,8 @@ export function bindScriptablePackMaterialGeneration(
 /** Immutable Pack products are optional DDC evidence, never author authority. */
 export async function createScriptablePackProductCache(options: {
   readonly root: string;
+  /** Immutable prebuilt products to read when the writable cache cannot satisfy the key. */
+  readonly seedRoot?: string;
   readonly outputVersions: Readonly<Record<string, string>>;
   readonly cookers: readonly NativeCooker[];
   /**
@@ -569,8 +575,15 @@ export async function createScriptablePackProductCache(options: {
   const identityRoots = await packCacheRoots(options.identityRoot);
   const sourceIdentity = (path: string): string => identityPath(identityRoots, path);
   const codec = createPackCacheCodec(identityRoots);
-  const store = new DdcEntryStore(join(options.root, 'scriptable-pack-products'));
-  const kindStore = new DdcEntryStore(join(options.root, 'scriptable-pack-product-kinds'));
+  const storesAt = (root: string) => ({
+    products: new DdcEntryStore(join(root, 'scriptable-pack-products')),
+    kinds: new DdcEntryStore(join(root, 'scriptable-pack-product-kinds')),
+  });
+  const local = storesAt(options.root);
+  const layers =
+    options.seedRoot === undefined || options.seedRoot === options.root
+      ? [local]
+      : [local, storesAt(options.seedRoot)];
   const timing = (
     state: 'hit' | 'miss' | 'write' | 'skip' | 'write-failed',
     sourcePath: string,
@@ -622,7 +635,7 @@ export async function createScriptablePackProductCache(options: {
       key: semanticDdcKey({
         schemaVersion: schema,
         importer: 'scriptable-pack',
-        codec: `node-v8/${process.versions.v8}`,
+        codec: PACK_CACHE_CODEC,
         settings: {
           sourcePath: sourceIdentity(subject.sourcePath),
           packageId: guid,
@@ -656,6 +669,7 @@ export async function createScriptablePackProductCache(options: {
     };
   };
   const readEntry = async (
+    store: DdcEntryStore,
     subject: PackBuildCacheSubject,
     resolve: ScriptablePackDependencyResolver | undefined,
     dependencies: CookerDependencies,
@@ -711,9 +725,9 @@ export async function createScriptablePackProductCache(options: {
   // A source generation determines its output kinds before native cooking.
   // This immutable discovery row selects a fully semantic product key; it is
   // never a substitute for checking current source bytes or cooker versions.
-  const readDependencies = async (subject: PackBuildCacheSubject) => {
+  const readDependencies = async (store: DdcEntryStore, subject: PackBuildCacheSubject) => {
     const { key, guid } = identity(subject, KINDS_SCHEMA);
-    const entry = await kindStore.read(key);
+    const entry = await store.read(key).catch(() => null);
     const payload = entry?.payload as
       | {
           schemaVersion?: unknown;
@@ -816,13 +830,13 @@ export async function createScriptablePackProductCache(options: {
       };
       const id = identity(subject, CACHE_SCHEMA, dependencies);
       await writePackCacheEntry(
-        store,
+        local.products,
         id,
         CACHE_SCHEMA,
         { schemaVersion: CACHE_SCHEMA, sourcePath: sourceIdentity(subject.sourcePath) },
         { name: PRODUCT_ARTIFACT, bytes: compressed },
       );
-      await writePackCacheEntry(kindStore, identity(subject, KINDS_SCHEMA), KINDS_SCHEMA, {
+      await writePackCacheEntry(local.kinds, identity(subject, KINDS_SCHEMA), KINDS_SCHEMA, {
         schemaVersion: KINDS_SCHEMA,
         sourcePath: sourceIdentity(subject.sourcePath),
         ...dependencies,
@@ -844,10 +858,12 @@ export async function createScriptablePackProductCache(options: {
       .update(JSON.stringify([engineProducerVersion(), options.outputVersions, cookerIdentity]))
       .digest('hex')}`,
     async dependencies(subject) {
-      const metadata = await readDependencies(subject);
-      return metadata?.outputs === undefined || metadata.reads === undefined
-        ? undefined
-        : { outputs: metadata.outputs, reads: metadata.reads };
+      for (const { kinds } of layers) {
+        const metadata = await readDependencies(kinds, subject);
+        if (metadata?.outputs !== undefined && metadata.reads !== undefined)
+          return { outputs: metadata.outputs, reads: metadata.reads };
+      }
+      return undefined;
     },
     async read(subject, resolve) {
       const startedAt = performance.now();
@@ -855,26 +871,35 @@ export async function createScriptablePackProductCache(options: {
         timing('miss', subject.sourcePath, startedAt, { reason: 'source-changed' });
         return undefined;
       }
-      const dependencies = await readDependencies(subject);
-      const lookup = await withDiscoveredSources(subject, dependencies);
-      if (lookup === undefined || (lookup !== subject && !(await sourceClosureCurrent(lookup)))) {
-        timing('miss', subject.sourcePath, startedAt, { reason: 'dependency-source-unavailable' });
-        return undefined;
+      let miss: Record<string, unknown> = {
+        reason: 'entry-not-found',
+        key: identity(subject, KINDS_SCHEMA).key,
+      };
+      for (const { kinds, products } of layers) {
+        const dependencies = await readDependencies(kinds, subject);
+        if (dependencies === undefined) continue;
+        const lookup = await withDiscoveredSources(subject, dependencies);
+        if (lookup === undefined || (lookup !== subject && !(await sourceClosureCurrent(lookup)))) {
+          miss = { reason: 'dependency-source-unavailable' };
+          continue;
+        }
+        const { product, key, reason, dependency } = await readEntry(
+          products,
+          lookup,
+          resolve,
+          dependencies,
+        );
+        if (product !== undefined && (await sourceClosureCurrent(lookup))) {
+          timing('hit', subject.sourcePath, startedAt, { key });
+          return product;
+        }
+        miss = {
+          key,
+          reason: product === undefined ? reason : 'source-changed',
+          ...(dependency === undefined ? {} : { dependency }),
+        };
       }
-      const current =
-        dependencies === undefined
-          ? { reason: 'entry-not-found', key: identity(subject, KINDS_SCHEMA).key }
-          : await readEntry(lookup, resolve, dependencies);
-      const { product } = current;
-      if (product !== undefined && (await sourceClosureCurrent(lookup))) {
-        timing('hit', subject.sourcePath, startedAt, { key: current.key });
-        return product;
-      }
-      timing('miss', subject.sourcePath, startedAt, {
-        key: current.key,
-        reason: product === undefined ? current.reason : 'source-changed',
-        ...(current.dependency === undefined ? {} : { dependency: current.dependency }),
-      });
+      timing('miss', subject.sourcePath, startedAt, miss);
       return undefined;
     },
     write,

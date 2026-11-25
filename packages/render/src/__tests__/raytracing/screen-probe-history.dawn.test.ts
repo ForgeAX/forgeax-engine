@@ -12,6 +12,9 @@ import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 import { rayShaderTestImports } from './ray-shader-imports.fixture';
 
+// encodeSceneVelocity(vec2f(0.0)) stores 32767 in each UNORM16 component.
+const ZERO_SCENE_VELOCITY = 0x7fff7fff;
+
 it('reprojects only geometrically supported Screen Probe history taps', async () => {
   const read = (name: string) =>
     readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8');
@@ -438,7 +441,7 @@ it('reprojects only geometrically supported Screen Probe history taps', async ()
           expect(old.output[0]).toBe(donorDepth === 2 ? 10 : 2);
           device.queue.writeTexture(
             { texture: velocity },
-            Uint32Array.of(0x7fff7fff, depthWord, 0, 0, 0, 0, 0, 0),
+            Uint32Array.of(ZERO_SCENE_VELOCITY, depthWord, 0, 0, 0, 0, 0, 0),
             { bytesPerRow: 16 },
             [2, 2],
           );

@@ -27,6 +27,8 @@ describe('private resumable record adoption', () => {
     const snapshot = records.snapshot(existing).unwrap();
     task
       .commit(() => {
+        expect(records.revisionOf(existing)).toBe(records.version(existing).unwrap());
+        expect(records.revisionOf(parent)).toBe(records.version(parent).unwrap());
         expect(records.read(existing).unwrap()).toEqual({ value: 2 });
         expect(records.read(parent).unwrap()).toEqual({ child });
         records.retain(parent).unwrap();
@@ -34,6 +36,7 @@ describe('private resumable record adoption', () => {
         expect(records.snapshot(parent)).toMatchObject({ ok: false });
       })
       .unwrap();
+    expect(records.revisionOf(existing)).toBe(records.version(existing).unwrap());
     expect(records.read(existing).unwrap()).toEqual({ value: 2 });
     expect(snapshot.read(existing).unwrap()).toEqual({ value: 1 });
     expect(snapshot.matchesCurrent()).toBe(false);
@@ -43,7 +46,9 @@ describe('private resumable record adoption', () => {
     records.release(parent).unwrap();
     records.release(parent).unwrap();
     records.release(existing).unwrap();
+    expect(records.revisionOf(existing)).toBeUndefined();
     records.dispose();
+    expect(records.revisionOf(parent)).toBeUndefined();
   });
 
   it('uses current consumer holder counts and protects its own grants from ordinary release', () => {

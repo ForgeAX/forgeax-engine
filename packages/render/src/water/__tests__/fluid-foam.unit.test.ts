@@ -4,7 +4,7 @@ import { snapshot } from '../../__tests__/gpu-driven-production-fixture';
 import { MaterialResource } from '../../material-resource';
 import { FrameProjection } from '../../scene/frame-list';
 import { RenderScene } from '../../scene/render-scene';
-import { RowViews } from '../../scene/scene-slots';
+import { SceneSlotPage } from '../../scene/scene-slots';
 import {
   captureWaterFluidFoamMaterials,
   prepareWaterFluidFoamFrame,
@@ -340,7 +340,7 @@ it('skips dry retained Scene rows and dispatch, then admits and retires a Water 
   };
   scene.apply([{ kind: 'update', entityKey: 1, snapshot: ordinary }]);
   const dry = scene.materialize();
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     expect(captureWaterFluidFoamMaterials(dry, 'view', dispatch)).toEqual([]);
     expect(read).not.toHaveBeenCalled();

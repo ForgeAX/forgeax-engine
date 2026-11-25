@@ -1,9 +1,10 @@
-import type { MeshDrawDescription, VertexLayoutProjection } from '@forgeax/engine-geometry';
+import type { MeshDrawDescription } from '@forgeax/engine-geometry';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import {
   type BatchArtifactFacts,
   type BatchArtifactResolver,
   type BatchGeometry,
+  batchVertexLayout,
   captureBatchGeometry,
   prepareBatchExecution,
 } from '../gpu-driven/batch-execution';
@@ -12,7 +13,6 @@ import type {
   GpuDrivenGeometryReceipt,
   PreparedGpuDrivenDraw,
 } from '../gpu-driven/prepared-draw';
-import { ownGpuDrivenVertexInputs } from '../gpu-driven/prepared-draw';
 import type { MaterialSnapshot } from '../render-system-extract';
 
 export {
@@ -101,29 +101,12 @@ interface BuildGpuDrivenDrawsInput {
   readonly lodMeshes?: readonly (MeshDrawDescription | undefined)[];
 }
 
-// Geometry owns immutable layouts by canonical attribute mask. Share the derived
-// input table across meshes and bindings without caching mutable author maps.
-const vertexInputsByLayout = new WeakMap<
-  VertexLayoutProjection,
-  GpuDrivenGeometryReceipt['vertexInputs']
->();
-
 export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenDrawSnapshot[] {
   const parsedMesh = input.mesh;
   if (parsedMesh === undefined) return [];
   const indexed = parsedMesh.indexFormat !== 'none';
-  const { submeshes, layout: layoutProjection } = parsedMesh;
-  let vertexInputs = vertexInputsByLayout.get(layoutProjection);
-  if (vertexInputs === undefined) {
-    vertexInputs = ownGpuDrivenVertexInputs(
-      layoutProjection.attributes.map((attribute) => ({
-        semantic: attribute.key,
-        location: attribute.shaderLocation,
-        format: attribute.format,
-      })),
-    );
-    vertexInputsByLayout.set(layoutProjection, vertexInputs);
-  }
+  const { submeshes } = parsedMesh;
+  const { layout: layoutProjection, vertexInputs } = batchVertexLayout(parsedMesh.layout);
   const geometry: GpuDrivenGeometryReceipt = {
     identity: `${parsedMesh.guid ?? '<no-guid>'}:${layoutProjection.digest}`,
     vertexInputs,
@@ -131,7 +114,9 @@ export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenD
     indexed,
   };
   let nonIndexedFirst = 0;
-  return submeshes.flatMap((submesh, drawItemIndex) => {
+  // Extraction walks all sections in order, so each lower level only needs a cursor.
+  const lowerVertexOffsets = input.lodMeshes?.map(() => 0);
+  return submeshes.map((submesh, drawItemIndex): GpuDrivenDrawSnapshot => {
     const drawMaterial = input.materials[submesh.materialSlot] ?? input.fallbackMaterial;
     const first = indexed ? submesh.indexOffset : nonIndexedFirst;
     nonIndexedFirst += submesh.vertexCount;
@@ -146,19 +131,20 @@ export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenD
       pipelineClass: `${drawMaterial.materialShaderId ?? 'forgeax::default-unlit'}|${submesh.topology}|${JSON.stringify(drawMaterial.renderState ?? null)}`,
       materialResourceClass: gpuDrivenMaterialResourceClass(drawMaterial),
     };
-    const lodRanges = input.lodMeshes?.map((lodMesh) => {
+    const lodRanges = input.lodMeshes?.map((lodMesh, level) => {
       if (lodMesh === undefined) return undefined;
       const lower = lodMesh.submeshes[drawItemIndex];
       if (lower === undefined) return undefined;
       const lowerIndexed = lodMesh.indexFormat !== 'none';
-      const lowerFirst = lowerIndexed
-        ? lower.indexOffset
-        : lodMesh.submeshes
-            .slice(0, drawItemIndex)
-            .reduce((offset, entry) => offset + entry.vertexCount, 0);
+      const count = lowerIndexed ? lower.indexCount : lower.vertexCount;
+      let lowerFirst = lower.indexOffset;
+      if (!lowerIndexed && lowerVertexOffsets !== undefined) {
+        lowerFirst = lowerVertexOffsets[level] as number;
+        lowerVertexOffsets[level] = lowerFirst + count;
+      }
       return {
         first: lowerFirst,
-        count: lowerIndexed ? lower.indexCount : lower.vertexCount,
+        count,
         baseVertex: 0,
       };
     });
@@ -211,12 +197,10 @@ export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenD
               : execution.error;
           })();
     if (prepared instanceof GpuDrivenPreparationError) {
-      return [{ ...draw, geometry: binding, preparationError: prepared, ...withLodRanges }];
+      return { ...draw, geometry: binding, preparationError: prepared, ...withLodRanges };
     }
-    return [
-      prepared === undefined
-        ? { ...draw, geometry: binding, ...withLodRanges }
-        : { ...draw, geometry: binding, prepared, ...withLodRanges },
-    ];
+    return prepared === undefined
+      ? { ...draw, geometry: binding, ...withLodRanges }
+      : { ...draw, geometry: binding, prepared, ...withLodRanges };
   });
 }

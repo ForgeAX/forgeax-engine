@@ -1,5 +1,5 @@
 import { err, ok, type Result } from '../result.js';
-import type { TextureMipPolicy, TextureShape } from './asset.js';
+import type { CustomTextureMipPolicy, TextureMipPolicy, TextureShape } from './asset.js';
 import { textureFormatBlock } from './block.js';
 import { type TextureError, textureError, validateTextureShape } from './errors.js';
 import { mipDimension, numMipLevels } from './mips.js';
@@ -7,7 +7,7 @@ import { mipDimension, numMipLevels } from './mips.js';
 export interface TextureLayoutInput {
   readonly shape: TextureShape;
   readonly format: GPUTextureFormat;
-  readonly mips: TextureMipPolicy;
+  readonly mips: TextureMipPolicy | CustomTextureMipPolicy;
   /** Authored bytes: one base level for generate; the full declared chain for packed. */
   readonly actualByteLength?: number;
   readonly order?: string;
@@ -33,9 +33,9 @@ export interface TextureLayout {
   readonly byteLength: number;
 }
 
-function mipLevelCount(shape: TextureShape, mips: TextureMipPolicy): number {
+function mipLevelCount(shape: TextureShape, mips: TextureLayoutInput['mips']): number {
   if (mips.kind === 'none') return 1;
-  if (mips.kind === 'packed') return mips.levelCount;
+  if (mips.kind === 'packed' || mips.kind === 'custom') return mips.levelCount;
   return numMipLevels(shape.extent, shape.viewDimension === '3d' ? shape.extent.depth : 1);
 }
 
@@ -62,7 +62,29 @@ function projectTextureLayout(
   input: TextureLayoutInput,
   includeLevels: boolean,
 ): Result<TextureLayout, TextureError> {
-  const shapeResult = validateTextureShape(input.shape, input.mips, input.format);
+  if (
+    input.mips.kind === 'custom' &&
+    (input.shape.viewDimension === '3d' ||
+      !Number.isSafeInteger(input.mips.levelCount) ||
+      input.mips.levelCount < 1 ||
+      input.mips.levelCount > numMipLevels(input.shape.extent))
+  )
+    return err(
+      textureError(
+        'texture-mip-policy-invalid',
+        {
+          code: 'texture-mip-policy-invalid',
+          viewDimension: input.shape.viewDimension,
+          policy: input.mips.kind,
+        },
+        'custom GPU mip count must fit the 2D extent',
+      ),
+    );
+  const physicalPolicy =
+    input.mips.kind === 'custom'
+      ? { kind: 'packed' as const, levelCount: input.mips.levelCount }
+      : input.mips;
+  const shapeResult = validateTextureShape(input.shape, physicalPolicy, input.format);
   if (!shapeResult.ok) return shapeResult;
 
   if (input.order !== undefined && input.order !== 'mip-major,image-major,row-major') {
@@ -116,7 +138,8 @@ function projectTextureLayout(
   }
 
   // Generated levels occupy GPU storage but are not present in the source payload.
-  const authoredBytes = input.mips.kind === 'generate' ? baseLevelBytes : byteOffset;
+  const authoredBytes =
+    input.mips.kind === 'custom' ? 0 : input.mips.kind === 'generate' ? baseLevelBytes : byteOffset;
   if (input.actualByteLength !== undefined && input.actualByteLength !== authoredBytes) {
     return err(
       textureError(

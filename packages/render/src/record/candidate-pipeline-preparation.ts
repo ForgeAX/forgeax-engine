@@ -407,7 +407,7 @@ export class CandidatePipelinePreparationOwner {
       canAwaitSource: (id) => shaderRegistry?.isMaterialArtifactPreparationPending(id) === true,
       clustered,
       reflectionFallback,
-      shadowViews,
+      demand: shadowViews ? 'forward-and-shadow' : 'forward',
     });
     return {
       graph,

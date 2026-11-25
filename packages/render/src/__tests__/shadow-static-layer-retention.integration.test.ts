@@ -877,6 +877,17 @@ it.each([
           view.layer === 'static' ? undefined : 'content-changed',
       },
     } as unknown as RenderPipelineFrame;
+    expect(demand?.(context, identity, true)).toBe(false);
+    const staticChange = {
+      frameState,
+      gpuDrivenShadowViews: {
+        ...hitPool,
+        invalidationReason: (view: ShadowViewIdentity) =>
+          view.layer === 'static' ? 'content-changed' : undefined,
+      },
+    } as unknown as RenderPipelineFrame;
+    expect(demand?.(staticChange, identity, true)).toBe(true);
+    expect(demand?.(dynamic, identity, true)).toBe(true);
     expect(demand?.(dynamic, identity)).toBe(true);
     expect(demand?.(dynamic, { ...identity, layer: 'static' })).toBe(false);
     const unsubmittedLayers = new ShadowDepthLayers(device);

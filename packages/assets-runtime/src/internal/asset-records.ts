@@ -138,6 +138,8 @@ interface ClosureRanges<Input> {
 }
 
 export interface AssetChange {
+  /** Producer-established identity kind. Absent for retirement or an untyped replacement. */
+  readonly stableKind?: string | undefined;
   readonly handle: AssetHandle;
   readonly revision: number;
   readonly removed: boolean;
@@ -527,11 +529,37 @@ function defineOwnedField(target: Record<string, unknown>, field: string, value:
   });
 }
 
+function measurePatchedFields(
+  current: Readonly<Record<string, unknown>>,
+  patch: Readonly<Record<string, unknown>>,
+  fields: readonly string[],
+  fieldBytes: ReadonlyMap<string, number>,
+  objectField: string | undefined,
+) {
+  // A root replacement publishes field extents. A nested edit only
+  // changes the extent of its parent in the record's byte ledger.
+  const sizes = objectField === undefined ? new Map<string, number>() : undefined;
+  let contentDelta = 0;
+  for (const field of fields) {
+    const present = Object.hasOwn(patch, field);
+    const size = present ? assetFieldBytes(field, assetDataBytes(patch[field])) : 0;
+    if (present) sizes?.set(field, size);
+    const priorSize =
+      objectField === undefined
+        ? (fieldBytes.get(field) ?? 0)
+        : Object.hasOwn(current, field)
+          ? assetFieldBytes(field, assetDataBytes(current[field]))
+          : 0;
+    contentDelta += size - priorSize;
+  }
+  return { sizes, contentDelta };
+}
+
 function applyOwnedFields(
   current: Record<string, unknown>,
   patch: Readonly<Record<string, unknown>>,
   fields: readonly string[],
-  sizes: ReadonlyMap<string, number>,
+  sizes: ReadonlyMap<string, number> | undefined,
   fieldBytes: Map<string, number>,
   objectField: string | undefined,
   contentDelta: number,
@@ -543,7 +571,7 @@ function applyOwnedFields(
       continue;
     }
     defineOwnedField(current, field, patch[field]);
-    if (objectField === undefined) fieldBytes.set(field, sizes.get(field) ?? 0);
+    if (sizes !== undefined) fieldBytes.set(field, sizes.get(field) ?? 0);
   }
   if (objectField !== undefined)
     fieldBytes.set(objectField, (fieldBytes.get(objectField) ?? 0) + contentDelta);
@@ -1744,6 +1772,11 @@ export class AssetRecords implements AssetReferenceOwner {
     return this.records.get(handle)?.holders ?? 0;
   }
 
+  /** Optional revision projection for render bindings, including staged and retired references. */
+  revisionOf(handle: number): number | undefined {
+    return this.closed ? undefined : this.visibleRecord(handle)?.revision;
+  }
+
   version(handle: number): Result<number, AssetError> {
     const found = this.entry(handle);
     return found.ok ? ok(found.value.revision) : found;
@@ -1841,22 +1874,13 @@ export class AssetRecords implements AssetReferenceOwner {
       ? [...new Set([...Object.keys(current), ...Object.keys(patch)])]
       : Object.keys(patch);
     if (fields.length === 0 && dependencies === undefined) return ok(undefined);
-    const sizes = new Map(
-      fields.map((field) => [
-        field,
-        Object.hasOwn(patch, field) ? assetFieldBytes(field, assetDataBytes(patch[field])) : 0,
-      ]),
+    const { sizes, contentDelta } = measurePatchedFields(
+      current,
+      patch,
+      fields,
+      record.fieldBytes,
+      objectField,
     );
-    let contentDelta = 0;
-    for (const [field, size] of sizes) {
-      const priorSize =
-        objectField === undefined
-          ? (record.fieldBytes.get(field) ?? 0)
-          : Object.hasOwn(current, field)
-            ? assetFieldBytes(field, assetDataBytes(current[field]))
-            : 0;
-      contentDelta += size - priorSize;
-    }
     const delta = contentDelta + (nextDependencies.length - record.dependencies.length) * 8;
     if (!this.fits(delta)) return err(failure('asset-budget-exceeded', 'available content bytes'));
     if (this.records.get(handle) !== record || record.revision !== expectedRevision)
@@ -1868,13 +1892,9 @@ export class AssetRecords implements AssetReferenceOwner {
       if (!this.fits(bytes))
         return err(failure('asset-budget-exceeded', 'available prepared content bytes'));
       for (const dependency of nextDependencies) this.retain(dependency).unwrap();
-      const stagedFields =
-        objectField === undefined
-          ? new Map([...sizes].filter(([field]) => Object.hasOwn(patch, field)))
-          : new Map(record.fieldBytes).set(
-              objectField,
-              (record.fieldBytes.get(objectField) ?? 0) + contentDelta,
-            );
+      const stagedFields = sizes ?? new Map(record.fieldBytes);
+      if (objectField !== undefined)
+        stagedFields.set(objectField, (record.fieldBytes.get(objectField) ?? 0) + contentDelta);
       this.replacements.set(handle, {
         target: record.target,
         meshCpuRetention: record.meshCpuRetention,
@@ -2802,13 +2822,22 @@ export class AssetRecords implements AssetReferenceOwner {
           node !== undefined && node.revision > cursor.revision;
           node = node.previous
         ) {
+          const record = this.records.get(node.handle);
+          const fields: string[] = [];
+          node.fields.forEach((changed, field) => {
+            if (changed > cursor.revision) fields.push(field);
+          });
           changes.push({
+            stableKind:
+              record &&
+              (node.fields.get('kind') ?? 0) <= cursor.revision &&
+              (record.value as { kind?: unknown } | null)?.kind === record.target
+                ? record.target
+                : undefined,
             handle: node.handle as AssetHandle,
             revision: node.revision,
             removed: node.removed,
-            fields: [...node.fields]
-              .filter(([, changed]) => changed > cursor.revision)
-              .map(([field]) => field),
+            fields,
             ranges: node.ranges
               .filter((range) => range.revision > cursor.revision)
               .map(({ path, byteOffset, byteLength, rowBytes, byteStride }) => ({
@@ -2980,12 +3009,17 @@ export class AssetRecords implements AssetReferenceOwner {
     return ok(record);
   }
 
-  private entry(handle: number): Result<RecordEntry, AssetError> {
-    if (this.closed) return err(failure('asset-owner-closed', this.identity));
-    const record =
+  private visibleRecord(handle: number): RecordEntry | undefined {
+    return (
       this.participatingAdoption?.values.get(handle) ??
       this.replacements?.get(handle) ??
-      this.records.get(handle);
+      this.records.get(handle)
+    );
+  }
+
+  private entry(handle: number): Result<RecordEntry, AssetError> {
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    const record = this.visibleRecord(handle);
     return record === undefined
       ? err(failure('asset-reference-invalid', `a live reference owned by ${this.identity}`))
       : ok(record);

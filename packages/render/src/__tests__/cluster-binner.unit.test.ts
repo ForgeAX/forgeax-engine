@@ -11,11 +11,55 @@ import {
   measureClusterOccupancy,
   ndcPositionToCluster,
   producerBoundsInt32Length,
+  producerKeepsLight,
+  refineTextureClusterMembership,
   spotBinningSphere,
   writeClusterMembershipFromGrid,
 } from '../cluster-binner';
 
 describe('cluster binner structured boundaries', () => {
+  it('prunes rectangle back faces and preserves later eligible lights under the run cap', () => {
+    const view = mat4.identity(mat4.create());
+    const projection = mat4.perspective(mat4.create(), Math.PI / 2, 1, 1, 16);
+    const grid = { x: 4, y: 4, z: 4 };
+    const cell = (1 * grid.y + 2) * grid.x + 2;
+    const lights = [
+      { position: vec3.create(0, 0, -1), range: 15, rectNormal: vec3.create(0, 0, 1) },
+      { position: vec3.create(0, 0, -1), range: 15, rectNormal: vec3.create(0, 0, -1) },
+    ];
+    const scratch = createClusterBinScratch();
+    const reservation = new Uint32Array(grid.x * grid.y * grid.z * 2);
+    bin(
+      lights,
+      view,
+      projection,
+      grid,
+      1,
+      16,
+      reservation,
+      new Uint32Array(64),
+      64,
+      scratch,
+    ).unwrap();
+    const payload = new Int32Array(producerBoundsInt32Length(lights.length));
+    encodeProducerBounds(lights, scratch.lightBounds, view, projection, payload);
+    expect(producerKeepsLight(payload, 0, 2, 2, 1, grid, 1, 16)).toBe(false);
+    expect(producerKeepsLight(payload, 1, 2, 2, 1, grid, 1, 16)).toBe(true);
+    expect(reservation[cell * 2 + 1]).toBe(1);
+    const result = refineTextureClusterMembership(
+      payload,
+      lights.length,
+      grid,
+      reservation,
+      64,
+      1,
+      16,
+      undefined,
+    );
+    expect(result.grid[cell * 2 + 1]).toBe(1);
+    expect(result.indices[result.grid[cell * 2] as number]).toBe(1);
+  });
+
   it('leaves clipped finite lights out of every run while retaining boundary and no-cutoff lights', () => {
     const view = mat4.identity(mat4.create());
     const grid = { x: 8, y: 4, z: 8 };

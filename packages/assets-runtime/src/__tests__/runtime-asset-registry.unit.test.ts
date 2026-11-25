@@ -138,7 +138,7 @@ describe('runtime Registry content', () => {
     });
     expect(runtimeAssets(assets).version(reference).unwrap()).toBe(revision + 1);
     expect(observer.read().unwrap().changes).toMatchObject([
-      { handle: reference, fields: ['values'], ranges: [] },
+      { handle: reference, stableKind: 'material', fields: ['values'], ranges: [] },
     ]);
     expect(fixed.read<MaterialAsset>(reference).unwrap().values?.roughness).toBe(1);
     observer.read().unwrap().accept();

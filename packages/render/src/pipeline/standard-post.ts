@@ -47,12 +47,7 @@ import {
   type RenderPipelineTarget,
   resolveOutputDither,
 } from '../render-pipeline';
-import { addSsrColorMips } from '../ssr/color-mips';
-import {
-  SSR_SCENE_COLOR_HISTORY_PROGRAM,
-  ssrColorExtent,
-  ssrColorMipCount,
-} from '../ssr/scene-color-input';
+import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
 import type { SceneVelocityInputs } from '../temporal/default-gbuffer-velocity';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
@@ -70,6 +65,7 @@ import {
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
+import { addHdrOutputEffects } from './hdr-output-effects';
 import { renderExtentSize, renderInternalSize, temporalAnalysisCapacity } from './render-extent';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 import {
@@ -609,7 +605,10 @@ function encodedPostEffects(
   preTemporalEffects: readonly string[],
 ): readonly string[] {
   return (topology.config?.postEffects ?? []).filter(
-    (identity) => !preTemporalEffects.includes(identity) && !isStandardNamedPostProcess(identity),
+    (identity) =>
+      !preTemporalEffects.includes(identity) &&
+      !topology.hdrOutputEffects?.includes(identity) &&
+      !isStandardNamedPostProcess(identity),
   );
 }
 
@@ -934,7 +933,7 @@ function addSceneFeatureStages(
       postInput,
       postTemporal,
       sceneTemporal,
-      sceneVelocity,
+      route.features.temporal && topology.opaque.lane === 'forward' ? undefined : sceneVelocity,
     );
   }
   const boundTemporal =
@@ -962,7 +961,7 @@ function addMotionBlurStage(
   sceneTemporal: RenderPipelineTarget | undefined,
   sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  if (postTemporal === undefined) {
+  if (postTemporal === undefined && (sceneTemporal === undefined || sceneVelocity === undefined)) {
     return err(
       new Error('Motion Blur requires the Standard scene-data producer') as RenderGraphError,
     );
@@ -976,7 +975,7 @@ function addMotionBlurStage(
   const features = context.contributeFeatures({
     targets: featureTargets,
     semanticTargets:
-      sceneVelocity === undefined
+      sceneVelocity === undefined && postTemporal !== undefined
         ? [bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA)]
         : [],
     namedTargets: {
@@ -1005,7 +1004,7 @@ function addMotionBlurStage(
     );
     return native.ok ? ok(blurred.value) : native;
   }
-  if (context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
+  if (postTemporal !== undefined && context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
     const fallback = addMotionBlurPass(context.graph, postInput, postTemporal, blurred.value);
     if (!fallback.ok) return fallback;
   }
@@ -1763,6 +1762,21 @@ interface StandardPostInputs {
 
 const EMPTY_POST_INPUTS: StandardPostInputs = {};
 
+function addStandardHdrOutputEffects(
+  context: StandardPostContext,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+  input: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const outlined =
+    route.distanceOutlineFirstStep === undefined
+      ? ok(input)
+      : addDistanceOutlinePasses(context.graph, input, depth, route.distanceOutlineFirstStep);
+  if (!outlined.ok || route.clearOnly || topology.camera.postProcessing === false) return outlined;
+  return addHdrOutputEffects(context, topology, outlined.value);
+}
+
 /**
  * Build the one Standard post chain shared by direct and clustered lighting.
  * Bloom is admitted before any Bloom target is declared, keeping the disabled
@@ -1829,7 +1843,7 @@ export function addStandardPost(
   );
   if (!preTemporal.ok) return preTemporal;
   let postInput = preTemporal.value;
-  let postTemporal = sceneTemporal;
+  let postTemporal = sceneVelocity === undefined ? sceneTemporal : undefined;
   let postProcessDepth: RenderPipelineTarget | undefined;
   const autoExposure = requireAutoExposure(context, route);
   if (!autoExposure.ok) return autoExposure;
@@ -1874,30 +1888,15 @@ export function addStandardPost(
   const focused = addDepthOfFieldStage(context, topology, route, depth, postInput, postTemporal);
   if (!focused.ok) return focused;
   postInput = focused.value;
-  const captureSsrSceneColorHistory = () => {
-    if (context.ssrSceneColorOutput !== undefined) {
-      const size = ssrColorExtent(topology.surface);
-      const snapshot = addTypedFullscreenPass(context.graph, {
-        name: 'ssr-scene-color-history',
-        shader: SSR_SCENE_COLOR_HISTORY_PROGRAM.name,
-        input: postInput,
-        outputs: [context.ssrSceneColorOutput],
-      });
-      if (!snapshot.ok) return snapshot;
-      const mips = addSsrColorMips(
-        context,
-        topology,
-        context.ssrSceneColorOutput,
-        size,
-        'ssr-history-color',
-        ssrColorMipCount(size),
-      );
-      if (!mips.ok) return mips;
-    }
-    return undefined;
-  };
-  const captureSsrSceneColorHistoryFailure = captureSsrSceneColorHistory();
-  if (captureSsrSceneColorHistoryFailure !== undefined) return captureSsrSceneColorHistoryFailure;
+  if (context.ssrSceneColorOutput !== undefined) {
+    const snapshot = addTypedFullscreenPass(context.graph, {
+      name: 'ssr-scene-color-history',
+      shader: SSR_SCENE_COLOR_HISTORY_PROGRAM.name,
+      input: postInput,
+      outputs: [context.ssrSceneColorOutput],
+    });
+    if (!snapshot.ok) return snapshot;
+  }
   const featureTargets = standardFeatureTargets(postInput, depth);
   const featured = addSceneFeatureStages(
     context,
@@ -1912,17 +1911,9 @@ export function addStandardPost(
   if (!featured.ok) return featured;
   const observed = addSceneObservation(context, route, scene);
   if (!observed.ok) return observed;
-  let highlighted = featured.value;
-  if (route.distanceOutlineFirstStep !== undefined) {
-    const outlined = addDistanceOutlinePasses(
-      context.graph,
-      highlighted,
-      depth,
-      route.distanceOutlineFirstStep,
-    );
-    if (!outlined.ok) return outlined;
-    highlighted = outlined.value;
-  }
+  const highlighted = addStandardHdrOutputEffects(context, topology, route, featured.value, depth);
+  if (!highlighted.ok) return highlighted;
+  const hdrColor = highlighted.value;
   const publishStandardOutput = (selectedRoute: StandardPostRoute = route) => {
     if (afterTonemap) {
       const features = context.contributeFeatures({
@@ -1949,7 +1940,7 @@ export function addStandardPost(
         context,
         topology,
         route,
-        highlighted,
+        hdrColor,
         autoExposure.value,
         finalPresent,
         depth,
@@ -1975,7 +1966,7 @@ export function addStandardPost(
         ),
       });
     }
-    const lensed = addHdrLensStages(context, topology, route, highlighted);
+    const lensed = addHdrLensStages(context, topology, route, hdrColor);
     if (!lensed.ok) return lensed;
     const exposed = addExposureWhiteBalance(
       context,

@@ -11,6 +11,7 @@ import {
 } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { rayShaderTestImports } from './ray-shader-imports.fixture';
+import { sceneVelocityWord } from './scene-velocity.fixture';
 
 const cases = [
   { current: [0, 0, -3], moved: [0, 0, 0], state: 'clear' },
@@ -34,12 +35,6 @@ function depthAndUv(matrix: readonly number[], v: readonly number[]) {
     0.5 - ((clip[1] ?? 0) / (clip[3] ?? 1)) * 0.5,
     (clip[2] ?? 0) / (clip[3] ?? 1),
   ] as const;
-}
-
-function velocityWord(x: number, y: number) {
-  const lane = (v: number) =>
-    Math.round(32767 + Math.sign(v) * Math.sqrt(4 * Math.abs(v)) * 0.2495 * 65535);
-  return (lane(x) | (lane(-y) << 16)) >>> 0;
 }
 
 it('recovers receiver world speed from encoded previous Z after camera and geometry changes', async () => {
@@ -176,7 +171,7 @@ it('recovers receiver world speed from encoded previous Z after camera and geome
         const prev = test.current.map((p, axis) => p - (test.moved[axis] ?? 0));
         const [au, av] = depthAndUv(current, test.current);
         const [bu, bv, depth] = depthAndUv(previous, prev);
-        words[i * 2] = velocityWord(au - bu, av - bv);
+        words[i * 2] = sceneVelocityWord(au - bu, av - bv);
         if (test.state === 'invalid') words[i * 2 + 1] = 0xffffffff;
         else if (test.state === 'complete') {
           words[i * 2 + 1] = (new Uint32Array(new Float32Array([depth]).buffer)[0] ?? 0) + 1;
@@ -188,7 +183,8 @@ it('recovers receiver world speed from encoded previous Z after camera and geome
         if (test.state === 'invalid' || test.state === 'xy-only') {
           expect(result.slice(i * 2, i * 2 + 2)).toEqual([-1, 0]);
         } else {
-          expect(result[i * 2]).toBeCloseTo(Math.hypot(...test.moved), 4);
+          // The two UNORM16 velocity components quantize this world-space reconstruction.
+          expect(Math.abs((result[i * 2] ?? 0) - Math.hypot(...test.moved))).toBeLessThan(1e-4);
           expect(result[i * 2 + 1]).toBeCloseTo(-test.current[2], 5);
         }
       }

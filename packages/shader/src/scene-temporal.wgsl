@@ -97,31 +97,50 @@ fn packSceneTemporalV1WithValidity(
   );
 }
 
-// Desktop SceneVelocity uses two 16-bit UNORM values. WebGPU packs them into
-// one renderable R32Uint word; zero denotes an unwritten pixel.
-fn encodeSceneVelocity(temporal : vec4<f32>) -> u32 {
-  if (temporal.w >= 2.0) { return 0u; }
-  let ndc = temporal.xy * vec2<f32>(2.0, -2.0);
+// Match UE's signed square-root transfer for two UNORM16 components.
+const SCENE_VELOCITY_BIAS = 32767.0 / 65535.0;
+const SCENE_VELOCITY_SCALE = 0.2495;
+const SCENE_VELOCITY_INVALID_MOTION = 0xffffffffu;
+@id(64009) override sceneVelocityWithDepthOutput : bool = false;
+
+fn encodeSceneVelocity(motionUv: vec2<f32>) -> u32 {
+  let ndc = motionUv * vec2<f32>(2.0, -2.0);
   let curved = sign(ndc) * sqrt(abs(ndc) * 2.0);
-  let encoded = clamp(curved * 0.2495 + 32767.0 / 65535.0, vec2<f32>(0.0), vec2<f32>(1.0));
-  let xy = vec2<u32>(floor(encoded * 65535.0 + 0.5));
-  return xy.x | (xy.y << 16u);
+  let encoded = clamp(curved * SCENE_VELOCITY_SCALE + SCENE_VELOCITY_BIAS, vec2<f32>(0.0), vec2<f32>(1.0));
+  // Reserve zero for unwritten pixels and the saturated endpoint for invalid history.
+  return clamp(pack2x16unorm(encoded), 1u, SCENE_VELOCITY_INVALID_MOTION - 1u);
 }
 
+fn decodeSceneVelocity(word: u32) -> vec2<f32> {
+  let curved = (unpack2x16unorm(word) - SCENE_VELOCITY_BIAS) / SCENE_VELOCITY_SCALE;
+  return curved * abs(curved) * vec2<f32>(0.25, -0.25);
+}
 
-// A zero depth word is the cleared pixel. Written pixels with an invalid
-// prior point are distinct from a valid projected far-plane depth of zero.
+// Screen Probe's extended attachment retains the previous device Z and
+// responsiveness in the second word. Basic velocity only stores the first.
 const SCENE_VELOCITY_INVALID_DEPTH = 0xffffffffu;
+const SCENE_VELOCITY_RESPONSIVE_BIT = 0x80000000u;
+
+fn sceneVelocityPreviousDepth(word: u32) -> f32 {
+  return bitcast<f32>((word & ~SCENE_VELOCITY_RESPONSIVE_BIT) - 1u);
+}
+
+fn sceneVelocityReactive(word: u32) -> f32 {
+  return select(0.0, 1.0, word != SCENE_VELOCITY_INVALID_DEPTH && (word & SCENE_VELOCITY_RESPONSIVE_BIT) != 0u);
+}
 
 fn encodeSceneVelocityWithDepth(temporal: vec4<f32>, previousClip: vec4<f32>) -> vec2<u32> {
-  let xy = encodeSceneVelocity(temporal);
+  let xy = encodeSceneVelocity(temporal.xy);
   let depth = previousClip.z / previousClip.w;
-  let valid = xy != 0u && previousClip.w > 0.0 && previousClip.w < 1e30 && depth >= 0.0 && depth <= 1.0;
-  let word = select(SCENE_VELOCITY_INVALID_DEPTH, bitcast<u32>(depth) + 1u, valid);
+  let valid = temporal.w < 2.0 && previousClip.w > 0.0 && previousClip.w < 1e30 && depth >= 0.0 && depth <= 1.0;
+  let responsive = select(0u, SCENE_VELOCITY_RESPONSIVE_BIT, temporal.w > 0.0);
+  let word = select(SCENE_VELOCITY_INVALID_DEPTH, (bitcast<u32>(max(depth, 0.0)) + 1u) | responsive, valid);
   return vec2<u32>(xy, word);
 }
-fn decodeSceneVelocity(word : u32) -> vec2<f32> {
-  let xy = vec2<f32>(f32(word & 65535u), f32(word >> 16u));
-  let curved = ((xy - 32767.0) / 65535.0) / 0.2495;
-  return curved * abs(curved) * vec2<f32>(0.25, -0.25);
+
+fn encodeSceneVelocityRaster(temporal: vec4<f32>, previousClip: vec4<f32>) -> vec2<u32> {
+  let packed = encodeSceneVelocityWithDepth(temporal, previousClip);
+  // When R32Uint drops the depth word, mark rejection in the remaining word.
+  let invalidBasicMotion = !sceneVelocityWithDepthOutput && temporal.w >= 2.0;
+  return vec2<u32>(select(packed.x, SCENE_VELOCITY_INVALID_MOTION, invalidBasicMotion), packed.y);
 }

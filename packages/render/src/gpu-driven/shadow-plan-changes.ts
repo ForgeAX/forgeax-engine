@@ -53,7 +53,10 @@ export class ShadowPlanChanges<Counters> {
     scene: GpuScene,
     since: SceneContentCursor,
     slots: ReadonlySet<number>,
+    maxBoxes = Number.POSITIVE_INFINITY,
   ): GpuSceneChangedBounds {
+    // Every requested slot needs at least one box for a bounded result.
+    if (slots.size > maxBoxes) return 'unbounded';
     const current = scene.contentCursor;
     const known = this.bounds.get(slots);
     if (
@@ -62,9 +65,14 @@ export class ShadowPlanChanges<Counters> {
       known.since === since &&
       known.current === current
     )
-      return known.bounds;
-    const bounds = scene.slotBoundsSince(since, slots);
-    this.bounds.set(slots, { scene, since, current, bounds });
+      return known.bounds !== 'unbounded' && known.bounds.length > maxBoxes * 6
+        ? 'unbounded'
+        : known.bounds;
+    const bounds = scene.slotBoundsSince(since, slots, maxBoxes);
+    // A capped query may have stopped at its budget. Only a complete answer
+    // can be shared with a different view asking for a larger region.
+    if (bounds !== 'unbounded' || maxBoxes === Number.POSITIVE_INFINITY)
+      this.bounds.set(slots, { scene, since, current, bounds });
     return bounds;
   }
 

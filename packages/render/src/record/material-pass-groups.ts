@@ -22,6 +22,7 @@ export interface MaterialSelectionRows {
   keys(): IterableIterator<number>;
 }
 export interface MaterialPassLookup extends MaterialSelectionRows {
+  atOffset(offset: number): MaterialPassLookup;
   readonly temporal: boolean;
   readonly size: number;
   get(index: number): MaterialPasses | undefined;
@@ -119,6 +120,7 @@ export function materialPassLookup(
   temporal: boolean,
 ): MaterialPassLookup {
   return {
+    atOffset: (start) => materialPassLookup(rows, start, size, temporal),
     size,
     temporal,
     get: (index) => rows[index - offset],

@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { type DepthPyramidExtent, nextDepthPyramidMipExtent } from '../depth-pyramid/plan';
@@ -19,12 +17,14 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
+import {
+  createTraceProbeCode,
+  depthPyramidProbeImports,
+  type Probe,
+  readShader,
+} from './depth-pyramid-odd.fixture';
 
 const EMPTY_DEPTH = 1e30;
-
-function readShader(name: string): string {
-  return readFileSync(resolve(process.cwd(), `packages/shader/src/${name}.wgsl`), 'utf8');
-}
 
 async function createDevice() {
   return (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -32,7 +32,10 @@ async function createDevice() {
 
 async function createReducerPipeline(device: Awaited<ReturnType<typeof createDevice>>) {
   const module = createShaderModuleImmediate(device, {
-    code: await compileShader('depth-pyramid-reduce', 'forgeax_depth_pyramid::odd-reduce'),
+    code: await compileShader(
+      readShader('depth-pyramid-reduce'),
+      'forgeax_depth_pyramid::odd-reduce',
+    ),
   }).unwrap();
   const layout = device
     .createBindGroupLayout({
@@ -134,12 +137,6 @@ it('retains an odd normalized boundary source texel in both reducer cells', asyn
   }
 });
 
-type Probe = {
-  readonly uv: readonly [number, number];
-  /** Coarsest trace level whose cell must still hold the probed pixel's depth. */
-  readonly coarseLevel: number;
-};
-
 type SeedReduceProbeResult = {
   readonly levels: readonly Float32Array[];
   readonly traceLevels: readonly Float32Array[];
@@ -147,7 +144,7 @@ type SeedReduceProbeResult = {
 
 type Device = Awaited<ReturnType<typeof createDevice>>;
 
-async function compileShader(name: string, id: string): Promise<string> {
+async function compileShader(source: string, id: string): Promise<string> {
   const compiler = (await import(
     /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
   )) as {
@@ -156,14 +153,9 @@ async function compileShader(name: string, id: string): Promise<string> {
       options: { id: string; imports: Record<string, string> },
     ): Promise<{ ok: boolean; value?: { wgsl: string }; error?: unknown }>;
   };
-  const result = await compiler.compileShader(readShader(name), {
+  const result = await compiler.compileShader(source, {
     id,
-    imports: {
-      'forgeax_view::common': readShader('common'),
-      'forgeax_pbr::gbuffer': readShader('standard-gbuffer'),
-      forgeax_scene_temporal: readShader('scene-temporal'),
-      'forgeax_depth_pyramid::sample': readShader('depth-pyramid-sample'),
-    },
+    imports: depthPyramidProbeImports(),
   });
   if (!result.ok || !result.value) throw new Error(JSON.stringify(result.error));
   return result.value.wgsl;
@@ -220,27 +212,6 @@ function createSeedPipeline(device: Device, code: string) {
   return { layout, pipeline };
 }
 
-// Each probe reads the trace's own depth hierarchy at trace levels 0..3 (level 0
-// is scene depth, level n is pyramid level n - 1). Hi-Z descent only reaches a
-// pixel when every coarser cell covering it holds that pixel's depth.
-function createTraceProbeCode(fullSize: DepthPyramidExtent, probes: readonly Probe[]): string {
-  const calls = probes
-    .map(
-      (probe, index) => `
-  levelProbe[${index}] = vec4<f32>(
-    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), 0u),
-    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(1u, maxLevel)),
-    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(2u, maxLevel)),
-    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(3u, maxLevel)));`,
-    )
-    .join('');
-  return `
-@group(1) @binding(0) var<storage, read_write> levelProbe: array<vec4<f32>>;
-@compute @workgroup_size(1) fn probe_levels() {
-  let maxLevel = min(maxSsrTraceLevel(vec2<u32>(${fullSize.width}u, ${fullSize.height}u)), ssrDepthPyramidLevelCount());${calls}
-}`;
-}
-
 function createTracePipeline(device: Device, code: string) {
   const module = createShaderModuleImmediate(device, { code }).unwrap();
   const inputLayout = device
@@ -291,10 +262,13 @@ async function runSeedReduceProbe(input: {
   readonly validPixel: readonly [number, number];
   readonly probes: readonly Probe[];
 }): Promise<SeedReduceProbeResult> {
-  const seedCode = await compileShader('depth-pyramid-seed', 'forgeax_depth_pyramid::odd-seed');
+  const seedCode = await compileShader(
+    readShader('depth-pyramid-seed'),
+    'forgeax_depth_pyramid::odd-seed',
+  );
   const traceCode = await compileShader(
-    'ssr-trace',
-    `forgeax_ssr::pyramid-odd-trace-${input.fullSize.width}x${input.fullSize.height}`,
+    createTraceProbeCode(input.probes),
+    `forgeax_depth_pyramid::odd-probe-${input.fullSize.width}x${input.fullSize.height}`,
   );
   const device = await createDevice();
   const extents = seedExtents(input.fullSize);
@@ -361,10 +335,7 @@ async function runSeedReduceProbe(input: {
       inputLayout,
       outputLayout,
       pipeline: tracePipeline,
-    } = createTracePipeline(
-      device,
-      `${traceCode}${createTraceProbeCode(input.fullSize, input.probes)}`,
-    );
+    } = createTracePipeline(device, traceCode);
 
     const depthView = device.createTextureView(depth, {}).unwrap();
     const seedView = device

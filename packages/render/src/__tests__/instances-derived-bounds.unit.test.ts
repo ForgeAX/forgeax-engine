@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { deriveInstancesUnionBounds, InstanceBoundsCache } from '../instances-derived-bounds';
+import {
+  deriveInstancesUnionBounds,
+  fingerprintNumericArray,
+  InstanceBoundsCache,
+} from '../instances-derived-bounds';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -24,6 +28,24 @@ describe('Instances renderer-derived union bounds', () => {
         transforms: new Float32Array([...IDENTITY, ...translated(5, 2, -3)]),
       }),
     ).toEqual(new Float32Array([-1, -1, -4, 6, 3, 1]));
+  });
+
+  it('reads only the addressed world transform in a packed pose column', () => {
+    const poses = new Float32Array(48).fill(Number.NaN);
+    poses.set(translated(3, 7, -2), 16);
+    const input = {
+      meshAabb,
+      entityWorld: poses,
+      entityWorldOffset: 16,
+      transforms: translated(5),
+    };
+    expect(deriveInstancesUnionBounds(input)).toEqual(new Float32Array([7, 6, -3, 9, 8, -1]));
+    expect(fingerprintNumericArray(poses, 16, 16)).toBe(
+      fingerprintNumericArray(translated(3, 7, -2)),
+    );
+    poses[28] = -4;
+    expect(deriveInstancesUnionBounds(input)).toEqual(new Float32Array([0, 6, -3, 2, 8, -1]));
+    expect(deriveInstancesUnionBounds({ ...input, entityWorldOffset: 40 })).toBeUndefined();
   });
 
   it('does not manufacture a visible bound for empty or malformed input', () => {

@@ -11,6 +11,7 @@ import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import {
   buildPerSubmeshMaterialBg,
+  type MaterialBindingAddress,
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialUniformRecording } from '../record/material-uniforms';
@@ -82,7 +83,20 @@ export function* prepareSourceShadowBindings(
       if (view === null) throw invalid('the original typed shadow View binding');
       yield;
       const program = yield* prepareShadowProgram(owner, camera, row, live);
-      const material = shadowMaterialBinding(ports, source, native.materialBuffer, row, uniforms);
+      const ownsMaterial = shadowBatchOwnsMaterial(row.batch, row.projection);
+      const capture: NonNullable<MaterialBindingAddress['capture']> = { current: undefined };
+      const material = shadowMaterialBinding(
+        ports,
+        source,
+        native.materialBuffer,
+        row,
+        uniforms,
+        ownsMaterial,
+        capture,
+      );
+      const binding = capture.current;
+      if (binding !== undefined && !binding())
+        throw invalid('current source shadow material binding receipt');
       if (material === null || !live()) throw invalid('current original shadow material binding');
       const indirect = row.view.indirectBuffer;
       if (indirect === undefined) throw invalid('the original shadow indirect buffer');
@@ -112,9 +126,6 @@ export function* prepareSourceShadowBindings(
         commands = row.view.shadowBundleCurrent(row.projection.bundles);
       }
       if (commands === undefined || !live()) throw invalid('completed native shadow command owner');
-      const binding = shadowBatchOwnsMaterial(row.batch, row.projection)
-        ? frameState.materialBgAssemblyCache.captureBindingCurrent(material)
-        : undefined;
       native.holdShadow(row, () => commands() && (binding?.() ?? true));
       yield;
     }
@@ -196,9 +207,11 @@ function shadowMaterialBinding(
   sceneMaterialBuffer: PerSubmeshMaterialBgDeps['sceneMaterialBuffer'],
   row: SourceShadowRow,
   uniforms: MaterialUniformRecording,
+  ownsMaterial: boolean,
+  capture: NonNullable<MaterialBindingAddress['capture']>,
 ): BindGroup | null {
   if (sceneMaterialBuffer === undefined) throw invalid('the actual Scene material buffer');
-  if (!shadowBatchOwnsMaterial(row.batch, row.projection))
+  if (!ownsMaterial)
     return prepareShadowSingletonMaterialBinding(
       ports.runtime,
       ports.frameState,
@@ -216,7 +229,6 @@ function shadowMaterialBinding(
     materialSlice: MATERIAL_UNIFORM_BYTES,
     videoHighPerfAvailable: false,
     skylightResources: skylightBindGroupResources(fallback),
-    materialBgShared: ports.frameState.materialBgShared,
     materialBgAssemblyCache: ports.frameState.materialBgAssemblyCache,
     sceneMaterialBuffer,
     bindGroupCounts: ports.bindGroupCounts,
@@ -227,9 +239,18 @@ function shadowMaterialBinding(
     artifact.material === SHADOW_CASTER_SHADER_ID
       ? 'forgeax::default-standard-pbr'
       : (artifact.specializationKey ?? artifact.material);
-  const group = uniforms.runPrepared(() =>
-    buildPerSubmeshMaterialBg(deps, row.projection.material, undefined, source, shader),
+  return uniforms.runPrepared(() =>
+    buildPerSubmeshMaterialBg(
+      deps,
+      row.projection.material,
+      undefined,
+      source,
+      shader,
+      0,
+      undefined,
+      0,
+      undefined,
+      { byteOffset: 0, dynamicOffsetCount: 1, capture },
+    ),
   );
-  uniforms.hold(ports.runtime, row.projection.material);
-  return group;
 }

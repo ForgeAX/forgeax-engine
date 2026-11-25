@@ -1,4 +1,5 @@
 import { type Buffer, RhiError, type Sampler } from '@forgeax/engine-rhi';
+import { materialShaderVariantsWithAxis } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import type { RendererGenerationFence } from '../assembly/renderer-frame-transaction';
 import { ResidencyLifetime } from '../device/residency-lifetime';
@@ -272,14 +273,18 @@ export class RendererRayDiffuse {
     const transportPublication = [...shaders.materialShaderManifestEntries()].find(
       (entry) => entry.identifier === 'forgeax::engine-ray-path-tracer',
     );
-    const transportSource = transportPublication?.variants.find(
-      (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === false,
-    )?.composedWgsl;
+    const transportVariant = (lut: boolean) =>
+      transportPublication === undefined
+        ? undefined
+        : materialShaderVariantsWithAxis(
+            transportPublication,
+            'DIRECT_DFG_LUT_AVAILABLE',
+            lut,
+          ).next().value;
+    const transportSource = transportVariant(false)?.composedWgsl;
     if (transportSource === undefined)
       throw new Error('reference diffuse GI requires the published fit path-tracer variant');
-    const transportLutSource = transportPublication?.variants.find(
-      (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
-    )?.composedWgsl;
+    const transportLutSource = transportVariant(true)?.composedWgsl;
     const rasterSource = requirePublishedKernel(
       entries,
       'generateRasterRays',

@@ -2,6 +2,7 @@ import { once } from 'node:events';
 import { Worker } from 'node:worker_threads';
 import { cookPhysicalMaterials } from '@forgeax/engine/three/build';
 import type {} from 'vitest/browser';
+import { physicalSlotsForFeature } from './features.fixture';
 import { cookSurfaceExpression } from './surface-expression-cook.fixture';
 import { cookTargetSurface } from './target-surface-cook.fixture';
 
@@ -31,8 +32,16 @@ async function cookBrowserNodeInputMaterials(): Promise<string> {
   }
 }
 
+export async function cookPhysicalFeature(name: string): Promise<readonly string[]> {
+  const slots = physicalSlotsForFeature(name);
+  return slots === undefined ? [] : [await cookPhysicalMaterials([slots])];
+}
+
 let browserPublication: Promise<string> | undefined;
 export const threeNodeInputCommands = {
+  prepareThreePhysicalFeature(_context: unknown, name: string) {
+    return cookPhysicalFeature(name);
+  },
   prepareThreeNodeInputMaterials(): Promise<string> {
     browserPublication ??= cookBrowserNodeInputMaterials();
     return browserPublication;
@@ -55,6 +64,7 @@ export function prepareThreeSurfaceExpression(kind: 'standard' | 'unlit' | 'roug
 }
 declare module 'vitest/browser' {
   interface BrowserCommands {
+    prepareThreePhysicalFeature(name: string): Promise<readonly string[]>;
     prepareThreeTargetSurface(): ReturnType<typeof cookTargetSurface>;
     prepareThreeNodeInputMaterials(): Promise<string>;
     prepareThreeSurfaceExpression(

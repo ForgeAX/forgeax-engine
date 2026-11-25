@@ -26,6 +26,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
 import { sdkLauncherSource } from '../sdk-launcher.mjs';
 import {
+  artifact,
   assertNoRetiredPackageFiles,
   detectPnpmStoreFormat,
   fetchWithRetry,
@@ -39,6 +40,7 @@ import {
   prepareWasmPackageForPack,
   SDK_TEMPLATES,
   stable,
+  verifySdkArchiveInventory,
   waitForNpmPublications,
   writePackageArchive,
 } from '../sdk-lib.mjs';
@@ -130,28 +132,23 @@ describe('SDK verifier artifact integrity admission', () => {
       isPnpmSqliteStoreArtifact,
     });
   }
-  it('rehashes every archive artifact with bounded overlapping I/O', async () => {
-    const entries = Array.from({ length: 65 }, (_, index) => ({
-      path: `store/file-${index}`,
-      bytes: index,
-      sha256: `hash-${index}`,
-    }));
-    const byPath = new Map(entries.map((entry) => [resolve('/fixture', entry.path), entry]));
-    let active = 0,
-      peak = 0;
-    const visited = [];
-    await verifier('sdk-artifact-mismatch:', { artifacts: entries }, async (_root, path) => {
-      active++;
-      peak = Math.max(peak, active);
-      visited.push(path);
-      await new Promise(setImmediate);
-      active--;
-      return byPath.get(path);
-    });
-    expect(visited.sort()).toEqual([...byPath.keys()].sort());
-    expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(32);
-    expect(active).toBe(0);
+  it('rehashes the physical artifact used by a package and source archive alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-inventory-'));
+    try {
+      const path = 'packages/engine/dist/index.mjs';
+      const sourcePath = resolve(root, 'source/engine', path);
+      await mkdir(dirname(sourcePath), { recursive: true });
+      await writeFile(sourcePath, 'original');
+      const sourceEntry = await artifact(root, sourcePath);
+      const entries = [sourceEntry, { ...sourceEntry, path, sourceCopy: true }];
+      await expect(verifySdkArchiveInventory(root, entries)).resolves.toBeUndefined();
+      await writeFile(sourcePath, 'modified');
+      await expect(verifySdkArchiveInventory(root, entries)).rejects.toThrow(
+        `sdk-artifact-mismatch: ${sourceEntry.path}`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
   it.each([
     'bytes',

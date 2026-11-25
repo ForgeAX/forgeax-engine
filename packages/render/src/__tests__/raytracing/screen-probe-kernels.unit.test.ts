@@ -199,10 +199,10 @@ it('reuses the two fixed buffer bindings and renews a changed handle or binding 
 });
 
 it.each([
-  ['half-scalar', true],
-  ['full-bent', false],
-  [undefined, false],
-] as const)('only prepares the Furthest HZB seed for half-resolution AO (%s)', async (mode, seeds) => {
+  'half-scalar',
+  'full-bent',
+  undefined,
+] as const)('only prepares short-range AO kernels for an enabled mode (%s)', async (mode) => {
   const f = await fixture();
   const prepared = createScreenProbeKernels(
     f.device,
@@ -215,6 +215,5 @@ it.each([
   );
   await f.drain();
   const { kernels } = (await prepared).unwrap();
-  expect(kernels.seedScreenProbeFurthestDepth !== undefined).toBe(seeds);
   expect(kernels.computeScreenProbeShortRangeAo !== undefined).toBe(mode !== undefined);
 });

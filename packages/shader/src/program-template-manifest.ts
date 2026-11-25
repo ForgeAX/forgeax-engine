@@ -19,7 +19,7 @@ import {
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
 } from './program-template.js';
-import { supportedVariantDefines } from './supported-variant-defines.js';
+import { ShaderVariantDomain, type VariantPreference } from './supported-variant-defines.js';
 import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from './types.js';
 
 export const SHADER_TEMPLATE_MANIFEST_VERSION = '7.0.0' as const;
@@ -71,6 +71,8 @@ const familyReaders = new WeakMap<
   object,
   {
     readonly axes: readonly string[];
+    readonly domain: () => ShaderVariantDomain;
+    readonly variant: (defines: Readonly<Record<string, boolean>>) => MaterialShaderManifestVariant;
     readonly select: (key: string) => MaterialShaderManifestVariant | undefined;
     readonly match: (
       constraints: Readonly<Record<string, boolean>>,
@@ -96,6 +98,36 @@ export function templateManifestVariantByDefines(
   constraints: Readonly<Record<string, boolean>>,
 ): MaterialShaderManifestVariant | undefined {
   return familyReaders.get(row)?.match(constraints);
+}
+
+/** Rank legal template rows by nonnegative weights on distinct axes. Ties follow canonical key order. */
+export function preferredMaterialShaderTemplateVariant(
+  entry: MaterialShaderManifestEntry,
+  constraints: Readonly<Record<string, boolean>>,
+  preferences: readonly VariantPreference[],
+): MaterialShaderManifestVariant | undefined {
+  const family = familyReaders.get(entry);
+  if (
+    family === undefined ||
+    Object.keys(constraints).some((axis) => constraints[axis] && !family.axes.includes(axis))
+  )
+    return undefined;
+  const selected = family.domain().preferred(constraints, preferences);
+  return selected === undefined ? undefined : family.variant(selected);
+}
+
+/** Visit variants which explicitly declare this axis value, in publication order. */
+export function* materialShaderVariantsWithAxis(
+  entry: MaterialShaderManifestEntry,
+  axis: string,
+  value: boolean,
+): Generator<MaterialShaderManifestVariant, undefined> {
+  const family = familyReaders.get(entry);
+  if (family === undefined) {
+    for (const row of entry.variants) if (row.defines[axis] === value) yield row;
+  } else if (family.axes.includes(axis)) {
+    for (const defines of family.domain().rows({ [axis]: value })) yield family.variant(defines);
+  }
 }
 
 /** Request CPU preparation for this selected row. Compiled publications are already ready. */
@@ -353,6 +385,8 @@ export function materializeShaderTemplateManifest(
           : JSON.stringify(program.template.engine.paramSchema);
       if (paramSchema === undefined) throw new Error('Admitted material schema is missing');
       const axes = program.template.axes;
+      let choicesDomain: ShaderVariantDomain | undefined;
+      const domain = () => (choicesDomain ??= new ShaderVariantDomain(axes));
       const choices = new Map<string, MaterialShaderManifestVariant>();
       const variant = (
         defines: Readonly<Record<string, boolean>>,
@@ -409,7 +443,7 @@ export function materializeShaderTemplateManifest(
             variants = Object.freeze([]);
             return variants;
           }
-          variants = Object.freeze(Array.from(supportedVariantDefines(axes), variant));
+          variants = Object.freeze(Array.from(domain().rows(), variant));
           return variants;
         },
       }) as MaterialShaderManifestEntry;
@@ -417,11 +451,13 @@ export function materializeShaderTemplateManifest(
       bindManifestShaderSource(row, () => boundManifestShaderSource(base) as ShaderSource);
       familyReaders.set(row, {
         axes,
+        domain,
+        variant,
         prepared: () => [...choices.values()].filter((choice) => preparedRows.has(choice)),
         match(constraints) {
           if (Object.entries(constraints).some(([axis, value]) => !axes.includes(axis) && value))
             return undefined;
-          const first = supportedVariantDefines(axes, constraints).next().value;
+          const first = domain().first(constraints);
           return first === undefined ? undefined : variant(first);
         },
         select(key) {

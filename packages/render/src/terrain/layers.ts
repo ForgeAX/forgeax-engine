@@ -43,6 +43,7 @@ interface GpuFrame {
 
 /** Shared material facts follow the asset stream. Terrain instances hold no reverse dependencies. */
 export class TerrainLayers {
+  static readonly textureParameters: ReadonlySet<string> = new Set(CHANNELS);
   private sourceScope: RenderResourceScope | undefined;
   private materials = new Map<number, MaterialRow>();
   private current = 0;

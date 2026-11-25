@@ -49,6 +49,8 @@ export interface RenderSceneSource {
  * extraction rethrows it, keeping the record-side recovery.
  */
 export interface RenderSceneAdoption {
+  /** Primary local view input, borrowed until the current views finish preparation. */
+  localFrame?: ExtractedFrame | undefined;
   featureSources?: readonly RenderFeatureSource[] | undefined;
   advance: SceneAdvance | undefined;
   failure: unknown;
@@ -152,6 +154,7 @@ function adoptScene(world: World): void {
   adoption.advance = undefined;
   adoption.failure = undefined;
   adoption.featureSources = undefined;
+  adoption.localFrame = undefined;
   rows.append(undefined);
   if (!source.staged) return;
   source.staged = false;
@@ -173,6 +176,7 @@ function adoptScene(world: World): void {
       const adopted = source.composition.extract(source.world, source.assets, build, lease);
       adoption.featureSources = source.captureFeatures?.(adopted.resourceFrame);
       adoption.advance = adopted.advance;
+      adoption.localFrame = adopted.resourceFrame;
       rows.append(adopted.stage);
       stageLightRoster(lights, adopted.resourceFrame.lights, source.quality);
       probes.facts = adopted.resourceFrame.reflectionProbes ?? NO_PROBES;

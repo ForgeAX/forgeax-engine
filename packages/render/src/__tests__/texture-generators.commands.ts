@@ -1,12 +1,22 @@
-import type { ManifestEntry, TextureGeneratorPrograms } from '@forgeax/engine-types';
-import { sha256 } from '@forgeax/engine-types';
+import type {
+  Asset,
+  ManifestEntry,
+  TextureGeneratorAsset,
+  TextureGeneratorPrograms,
+} from '@forgeax/engine-types';
+import { sha256, validateTextureGenerator } from '@forgeax/engine-types';
 import type {} from 'vitest/browser';
+import waterImpulsePack from '../../../content/assets/water/impulse-noise.pack';
+import waterSurfacePack from '../../../content/assets/water/surface-textures.pack';
+import waterVolumePack from '../../../content/assets/water/volume-noise.pack';
+import { CONTENT_SOURCE_KEYS } from '../../../content/src/ids';
 import { getCompilerFingerprint } from '../../../naga/src/index';
 import {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
   TEXTURE_GENERATOR_VERTEX_SOURCE,
 } from '../../../shader/src/texture-generator-source';
 import { compileShader } from '../../../shader-compiler/src/index';
+import { createTextureGeneratorPackCooker } from '../../../shader-compiler/src/texture-generator-cooker';
 
 export const textureGeneratorFixtureSources = [
   [
@@ -102,12 +112,51 @@ export async function prepareDerivedTextureGeneratorPrograms(): Promise<TextureG
     passes: [{ module, fragmentEntry: 'derived', colorFormats: ['rgba8unorm'] }],
   };
 }
+export async function prepareWaterVolumeRecipe(): Promise<TextureGeneratorAsset> {
+  const outputs = (await waterVolumePack.build({} as never)).unwrap();
+  const texture = outputs[CONTENT_SOURCE_KEYS.waterTexture('volume-noise')];
+  if (texture?.kind !== 'gpu-texture') throw new Error('Water volume must publish a GPU texture');
+  const source = Object.values(outputs).find((asset) => asset.kind === 'texture-generator');
+  const cooker = createTextureGeneratorPackCooker();
+  const product = await cooker.cook({ guid: texture.source.generator, source }, {} as never);
+  if (Object.keys(product.artifacts).length !== 0) throw new Error('Unexpected baked Water voxels');
+  return validateTextureGenerator(product.payload, true).unwrap();
+}
+
+export async function prepareWaterSurfaceTextures(): Promise<Readonly<Record<string, Asset>>> {
+  return prepareWaterTexturePack((await waterSurfacePack.build({} as never)).unwrap());
+}
+
+export async function prepareWaterImpulseNoise(): Promise<Readonly<Record<string, Asset>>> {
+  return prepareWaterTexturePack((await waterImpulsePack.build({} as never)).unwrap());
+}
+
+async function prepareWaterTexturePack(authored: Readonly<Record<string, Asset>>) {
+  const cooker = createTextureGeneratorPackCooker();
+  const results = await Promise.all(
+    Object.entries(authored).map(async ([key, source]) => {
+      if (source.kind !== 'texture-generator') return [key, source] as const;
+      const product = await cooker.cook({ guid: key, source }, {} as never);
+      if (Object.keys(product.artifacts).length !== 0)
+        throw new Error('Unexpected baked Water pixels');
+      return [key, validateTextureGenerator(product.payload, true).unwrap()] as const;
+    }),
+  );
+  return Object.fromEntries(results);
+}
+
 export const textureGeneratorCommands = {
+  prepareWaterImpulseNoise: () => prepareWaterImpulseNoise(),
+  prepareWaterSurfaceTextures: () => prepareWaterSurfaceTextures(),
+  prepareWaterVolumeRecipe: () => prepareWaterVolumeRecipe(),
   prepareTextureGeneratorPrograms: () => prepareTextureGeneratorPrograms(),
   prepareDerivedTextureGeneratorPrograms: () => prepareDerivedTextureGeneratorPrograms(),
 };
 declare module 'vitest/browser' {
   interface BrowserCommands {
+    prepareWaterImpulseNoise(): Promise<Readonly<Record<string, Asset>>>;
+    prepareWaterSurfaceTextures(): Promise<Readonly<Record<string, Asset>>>;
+    prepareWaterVolumeRecipe(): Promise<TextureGeneratorAsset>;
     prepareTextureGeneratorPrograms(): Promise<TextureGeneratorPrograms>;
     prepareDerivedTextureGeneratorPrograms(): Promise<TextureGeneratorPrograms>;
   }

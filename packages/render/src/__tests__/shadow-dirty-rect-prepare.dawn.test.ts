@@ -153,7 +153,6 @@ function customMaterialFixture(device: RhiDevice) {
     videoHighPerfAvailable: false,
     skylightResources: skylightBindGroupResources(fallback),
     sceneMaterialBuffer: sceneBuffer,
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
@@ -272,7 +271,7 @@ function createShadowRig(
         })),
       })
       .unwrap();
-  const viewLayout = dynamicLayout(2);
+  const viewLayout = dynamicLayout(1);
   const materialLayout = custom?.layout ?? dynamicLayout(1);
   const primitiveLayout = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
   const visibleLayout = dynamicLayout(0);
@@ -284,7 +283,7 @@ function createShadowRig(
     device,
     buffer,
     layout: materialLayout,
-    view: group(viewLayout, 2),
+    view: group(viewLayout, 1),
     shaderModuleFactory,
     shared: {
       indirectOffset: 0,
@@ -320,7 +319,6 @@ function adoptCustomMaterial(fixture: ShadowFixture, custom: CustomMaterial): vo
     materialBgAssemblyCache: deps.materialBgAssemblyCache,
     gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: custom.sceneBuffer },
   });
-  Object.assign(fixture.context.frameState, { materialBgShared: deps.materialBgShared });
   const projections = fixture.projections as unknown as Map<number, GpuDrivenShadowBatchProjection>;
   for (const [id, projection] of projections)
     projections.set(id, {

@@ -5,7 +5,7 @@ import {
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
-  materialShaderAxes,
+  materialShaderHasVariants,
   materialShaderSource,
   projectStandardCoverageDefines,
   type ShaderRegistry,
@@ -249,33 +249,26 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
   );
 }
 
-function sourceArtifactIdentifier(
-  materialShaderId: string,
+type PublishedVariant = MaterialShaderManifestEntry['variants'][number];
+
+/** Undefined selects the primary program. Null means the family cannot supply the request. */
+function selectedFamilyVariant(
   manifest: MaterialShaderManifestEntry | undefined,
-  shader: Partial<Pick<ShaderRegistry, 'materialVariantArtifactIdentifier'>>,
   options: MaterialShaderArtifactRequest,
-): string | undefined {
-  if (manifest === undefined || manifest.variants.length === 0) return materialShaderId;
-  const variant = selectPublishedVariant(manifest, materialVariantRequest(manifest, options));
-  return variant === undefined
-    ? undefined
-    : (shader.materialVariantArtifactIdentifier?.(materialShaderId, variant.definesKey) ??
-        materialShaderId);
+): PublishedVariant | null | undefined {
+  if (manifest === undefined || !materialShaderHasVariants(manifest)) return undefined;
+  return selectPublishedVariant(manifest, materialVariantRequest(manifest, options)) ?? null;
 }
 
-function findPreparedMaterialArtifact(
-  shader: SourceArtifactRegistry & Pick<ShaderRegistry, 'findMaterialArtifact'>,
-  lookupId: string,
-  manifest: MaterialShaderManifestEntry | undefined,
-  options: MaterialShaderArtifactRequest,
-  prepare: ((identifier: string) => boolean) | undefined,
-): ReturnType<ShaderRegistry['findMaterialArtifact']> | undefined {
-  if (shader.isSourceBackedMaterialArtifact?.(lookupId) !== true)
-    return shader.findMaterialArtifact(lookupId);
-  const selected = sourceArtifactIdentifier(lookupId, manifest, shader, options);
-  return selected === undefined || prepare?.(selected) === false
-    ? undefined
-    : shader.findMaterialArtifact(selected);
+function sourceArtifactIdentifier(
+  materialShaderId: string,
+  variant: PublishedVariant | undefined,
+  shader: SourceArtifactRegistry,
+): string {
+  return variant === undefined
+    ? materialShaderId
+    : (shader.materialVariantArtifactIdentifier?.(materialShaderId, variant.definesKey) ??
+        materialShaderId);
 }
 
 type SourceArtifactRegistry = Partial<
@@ -289,14 +282,14 @@ export function materialRasterSourceFacts(
   options: MaterialShaderArtifactRequest,
 ): BatchArtifactFacts | undefined {
   options = resolvedRasterArtifactRequest(options);
-  const selected = sourceArtifactIdentifier(
-    materialShaderId,
+  const variant = selectedFamilyVariant(
     shader.materialShaderManifestEntry(materialShaderId),
-    shader,
     options,
   );
-  if (selected === undefined) return undefined;
-  const declaration = shader.materialArtifactDeclaration(selected);
+  if (variant === null) return undefined;
+  const declaration = shader.materialArtifactDeclaration(
+    sourceArtifactIdentifier(materialShaderId, variant, shader),
+  );
   const receipt = materialReceiptForGeometry(
     declaration?.kind === 'ready'
       ? declaration.entry.receipt
@@ -346,8 +339,18 @@ export function resolveMaterialShaderArtifact(
   for (let index = 0; index < lookupCount; index++) {
     const lookupId = index === 0 ? firstLookupId : (fallbackLookupId ?? firstLookupId);
     const manifestEntry = shader.materialShaderManifestEntry(lookupId);
-    const lookup = findPreparedMaterialArtifact(shader, lookupId, manifestEntry, options, prepare);
-    if (lookup?.ok !== true) continue;
+    const sourceBacked = shader.isSourceBackedMaterialArtifact?.(lookupId) === true;
+    let sourceVariant: PublishedVariant | undefined;
+    let preparedId = lookupId;
+    if (sourceBacked) {
+      const selected = selectedFamilyVariant(manifestEntry, options);
+      if (selected === null) continue;
+      sourceVariant = selected;
+      preparedId = sourceArtifactIdentifier(lookupId, sourceVariant, shader);
+      if (prepare?.(preparedId) === false) continue;
+    }
+    const lookup = shader.findMaterialArtifact(preparedId);
+    if (!lookup.ok) continue;
     let cache = publishedArtifacts.get(lookup.value);
     if (cache === undefined || cache.manifest !== manifestEntry) {
       cache = { manifest: manifestEntry, requests: new Map() };
@@ -382,6 +385,7 @@ export function resolveMaterialShaderArtifact(
       shader,
       manifestEntry,
       options,
+      sourceBacked ? sourceVariant : selectedFamilyVariant(manifestEntry, options),
     );
     const shaders = shaderRequests ?? new Map();
     const variants = variantRequests ?? new Map();
@@ -442,22 +446,9 @@ function assembleRequestedArtifact(
   shader: Pick<ShaderRegistry, 'materialProgram'>,
   manifestEntry: MaterialShaderManifestEntry | undefined,
   options: MaterialShaderArtifactRequest,
+  selected: PublishedVariant | null | undefined,
 ): MaterialShaderArtifact | typeof ABSENT {
-  const hasVariants =
-    manifestEntry !== undefined &&
-    (isShaderTemplateManifestRow(manifestEntry)
-      ? materialShaderAxes(manifestEntry).length > 0
-      : manifestEntry.variants.length > 0);
-  const selected =
-    manifestEntry === undefined || !hasVariants
-      ? undefined
-      : selectPublishedVariant(manifestEntry, materialVariantRequest(manifestEntry, options));
-  // A published variant set is an explicit producer contract. Falling back
-  // to the primary entry when the requested axes have no variant would pair
-  // one source with another artifact's receipt.
-  if (hasVariants && selected === undefined) {
-    return ABSENT;
-  }
+  if (selected === null) return ABSENT;
   const selectedEntry =
     selected === undefined
       ? entry

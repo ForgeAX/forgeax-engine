@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { BatchSources, MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, type SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import { materialBindingLayout } from '../gpu-driven/fixed-task-plan';
 import { MeshBatchProjection } from '../gpu-driven/mesh-batches';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { TreeFrame } from '../scene/frame-tree-list';
@@ -49,6 +50,42 @@ function fixture(overrides = false, instances = 1) {
   const query = () => topology.query(topology.sourcePlan(), undefined).active;
   return { original, sources, scene, topology, query, firstGroup, secondGroup };
 }
+
+it('separates member publications from ordered material bindings in resident and selected windows', () => {
+  const f = fixture(false, 64);
+  f.topology.setResidencyGroupActive(f.firstGroup, true);
+  const source = f.topology.sourcePlan();
+  const projection = new MeshBatchProjection();
+  const first = projection.query(source, undefined);
+  const before = source.resident?.sourceGroups;
+  const selected = source.sourceGroups;
+  const batch = selected?.at(0);
+  if (!before || !selected || !batch || !MemberCandidates.is(batch.candidates))
+    throw new Error('Expected captured member windows');
+  if (!source.resident) throw new Error('Expected resident plan');
+  const resident = before.withMembers(batch.batchId, batch.candidates, batch.contentEpoch + 1);
+  const active = selected.withPublished(resident, batch.batchId);
+  const next = projection.query(
+    {
+      ...source,
+      batches: active,
+      sourceGroups: active,
+      resident: { ...source.resident, batches: resident, sourceGroups: resident },
+    },
+    undefined,
+  );
+  for (const kind of ['active', 'resident'] as const) {
+    expect(next[kind].batches).not.toBe(first[kind].batches);
+    const layout = materialBindingLayout(first[kind].batches);
+    expect(layout).toBeDefined();
+    expect(materialBindingLayout(next[kind].batches)).toBe(layout);
+  }
+  f.topology.setResidencyGroupActive(f.secondGroup, true);
+  const all = projection.query(f.topology.sourcePlan(), undefined);
+  expect(materialBindingLayout(all.active.batches)).not.toBe(
+    materialBindingLayout(next.active.batches),
+  );
+});
 
 it.each([
   false,

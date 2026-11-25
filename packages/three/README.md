@@ -194,11 +194,11 @@ scene.add(sun);
 await renderer.setAnimationLoop(() => renderer.render(scene, camera));
 ```
 
-Rendering requires HTTPS or localhost. `init()` admits the renderer and packaged
-compressed material publications. The first use of a packaged Physical recipe or
-the skinned-unlit family decodes and installs its programs synchronously. Mounts
-sharing an AssetRegistry reuse the installation. An ordinary Basic or Standard
-draw leaves these recipes compressed. Subsequent asset preparation can still be pending;
+Rendering requires HTTPS or localhost. `init()` admits the renderer and the
+shared Physical source for untextured materials and materials with only `map`.
+The renderer compiles each selected Physical pass when first requested. The
+skinned-unlit family decodes its cooked programs on first use. Mounts sharing an
+AssetRegistry reuse these programs. Subsequent asset preparation can still be pending;
 `renderer.inspect().receipt.presentation` reports readiness. `render()` submits
 synchronously and does not advance an AnimationMixer or simulation clock.
 `renderAsync()` additionally admits borrowed GPU/video texture inputs before
@@ -326,6 +326,18 @@ three scale axes collapsed to zero. Later matrix revisions can reactivate them.
 These paths have different costs from Three's native instancing. Native Skylight continues to own
 both diffuse environment lighting and reflections.
 
+A camera-visible `HemisphereLight` with its world position on the Y axis
+projects its sky and ground colors through the native Skylight. Moving the
+light to the negative Y axis swaps the upper and lower colors. The adapter
+converts irradiance to native radiance and observes layer, visibility and
+runtime light edits.
+
+> [!NOTE]
+> A directional hemisphere requires `Scene.environment` to be null. An
+> off-axis direction or a directional hemisphere combined with an environment
+> raises a compatibility error. A uniform contribution can use the additive
+> ambient input alongside an environment.
+
 ## Three addon post-processing
 
 The `addons/postprocessing/` subpaths support an `EffectComposer(renderer)`
@@ -339,8 +351,42 @@ the native HDR composite applies the same gain to the filtered levels.
 The GTAOPass adapter requests Standard GTAO with internal geometry inputs.
 Deferred uses GTAO and Forward uses Standard SSAO. Radius and intensity map
 to the active Standard method, and AO contributes to indirect lighting.
-The active renderer supplies the display size and GPU outputs. Caller-owned targets,
-pass-owned GPU texture reads, custom passes and GLSL are outside this sequence.
+The active renderer supplies the display size and GPU outputs. The display
+sequence also accepts one `ThreeFullscreenPass` after Bloom and before
+`OutputPass`. Import it from `@forgeax/engine/three`, register its
+`ThreeFullscreenProgram` in the renderer's `forgeax.fullscreenPrograms`
+option, and construct the pass with a `ShaderMaterial` and that same program.
+
+| Input | Contract |
+| :-- | :-- |
+| Program | Build-produced WGSL with `vs_main` and `fs_main`. Group 1 binds the preceding linear HDR texture at binding 0, its sampler at binding 1, and uniform bytes at binding 2. |
+| Material | Float and float-vector uniforms by name, with depth testing, depth writes, and transparency disabled. The publication declares uniform widths and word offsets. |
+| Execution | The graph writes a distinct HDR target. Disabled passes publish no draw. Final output uses the existing tone and color-space transform. |
+
+> [!NOTE]
+> The display route requires a cooked program. Caller-owned targets,
+> standalone shader passes and runtime GLSL compilation remain outside the
+> Composer contract.
+
+## Camera selection outline
+
+Use the native regular outline for Three objects and visible descendants of
+groups in the submitted scene. The adapter resolves their projected render
+entities on every display submission, so replacing or detaching a child does
+not leave a stale selection. Width is in output pixels.
+
+```ts
+setThreeOutline(renderer, camera, {
+  objects: [hero, enemy],
+  width: 1,
+  visibleColor: '#231c29',
+  occlusion: 'visible',
+});
+```
+
+Import `setThreeOutline` from `@forgeax/engine/three`. Pass `null` to clear
+the camera selection on its next submission. Each camera has one regular
+outline style. Explicit offscreen render targets omit the effect.
 
 ## Ordered HDR targets and cube environments
 
@@ -720,6 +766,28 @@ The API inventory reports names and TypeScript admission, including unsupported
 native-dependent surfaces. It is not a compatibility percentage. Its full-surface
 `--check` remains deliberately red while those interfaces are missing.
 
+### Pace a host-owned display loop
+
+Wrap the display draw when the host owns its own animation loop. The wrapper
+defaults to two in-flight display receipts and accepts `maxFramesInFlight` as
+a positive integer override.
+
+```ts
+import { paceThreeDisplayFrames } from '@forgeax/engine/three';
+
+const drawDisplay = paceThreeDisplayFrames(renderer, () => renderer.render(scene, camera));
+// Call once per host tick after updating the scene.
+drawDisplay();
+```
+
+Use one wrapper per display loop and submit at most one display frame in each
+synchronous callback. The wrapper also accepts an `EffectComposer.render()`
+callback. It skips saturated ticks and returns whether a new ready display
+frame was submitted. This return value describes admission and readiness.
+Completion and errors are available through the renderer's existing receipt and
+diagnostic interfaces. Explicit `render()` and offscreen rendering retain their
+existing contracts.
+
 ### Profile a render loop
 
 Use the existing Renderer profiler and GPU pass timing options to sample the CPU
@@ -1065,7 +1133,7 @@ inputs and do not change program identity. The current store and source Three
 textures remain authoritative; Engine resource caches own upload, sampler and
 retirement. Program selection includes graph structure, generated Surface bytes,
 verified compiler identity and the cooker's source identity. Parameter layouts
-come from the existing schema/reflection; the player imports no shader compiler.
+come from the existing schema and reflection of the cooked programs.
 Pure expressions are canonicalized by typed content, so upstream constant
 interning does not affect a host-neutral recipe's identity. Distinct mutable
 inputs retain separate reflected slots.

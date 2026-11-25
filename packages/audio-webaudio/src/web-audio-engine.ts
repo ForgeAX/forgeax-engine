@@ -84,12 +84,15 @@ function clipPosition(position: number, loop: boolean, duration: number): number
   return loop && duration > 0 ? position % duration : Math.min(position, duration);
 }
 
+type ContextFactory = () => BaseAudioContext | Result<BaseAudioContext, AudioError>;
+
 export class WebAudioEngine {
   reportError(error: AudioError): void {
     if (!this.closed) this.lastError = error;
   }
   private ctx: BaseAudioContext | undefined;
-  private readonly contextFactory: (() => BaseAudioContext) | undefined;
+  private readonly contextFactory: ContextFactory | undefined;
+  private contextFailure: AudioError | undefined;
   private readonly ownsContext: boolean;
   private readonly fetchStream: PcmStreamFetcher | undefined;
   private readonly enumerateOutputs: (() => Promise<readonly AudioOutputDevice[]>) | undefined;
@@ -112,7 +115,8 @@ export class WebAudioEngine {
 
   constructor(
     options: {
-      readonly context?: BaseAudioContext | (() => BaseAudioContext);
+      /** A factory can report permanent native unavailability for this Host lease. */
+      readonly context?: BaseAudioContext | ContextFactory;
       /** Transfer responsibility for closing an injected online context. */
       readonly ownsContext?: boolean;
       /** Host package transport for verified PCM ranges. */
@@ -161,8 +165,8 @@ export class WebAudioEngine {
     if (this.switchingOutput) return outputError('an output switch is already pending');
     this.switchingOutput = true;
     try {
-      const context = this.ensureContext() as OutputContext;
-      if (typeof context.setSinkId !== 'function')
+      const context = this.ensureContext() as OutputContext | undefined;
+      if (typeof context?.setSinkId !== 'function')
         return outputError('output switching is unavailable');
       if (context.sinkId !== id) {
         const running = context.state === 'running';
@@ -185,12 +189,13 @@ export class WebAudioEngine {
    */
   get listener(): AudioListener | undefined {
     if (this.retireClosedContext()) return undefined;
-    return this.ensureContext().listener;
+    return this.ensureContext()?.listener;
   }
 
   setListenerPose(pose: AudioListenerPose): void {
     if (this.retireClosedContext()) return;
-    const listener = this.ensureContext().listener;
+    const listener = this.ensureContext()?.listener;
+    if (!listener) return;
     listener.positionX.value = pose.positionX;
     listener.positionY.value = pose.positionY;
     listener.positionZ.value = pose.positionZ;
@@ -206,8 +211,14 @@ export class WebAudioEngine {
   // ensureContext -- lazy AudioContext + bus topology creation
   // -----------------------------------------------------------------------
 
-  private ensureContext(): BaseAudioContext {
-    const ctx = this.ctx ?? (this.contextFactory ? this.contextFactory() : new AudioContext());
+  private ensureContext(): BaseAudioContext | undefined {
+    if (this.contextFailure) return undefined;
+    const opened = this.ctx ?? (this.contextFactory ? this.contextFactory() : new AudioContext());
+    if ('ok' in opened && !opened.ok) {
+      this.contextFailure = opened.error;
+      return undefined;
+    }
+    const ctx = 'ok' in opened ? opened.value : opened;
     this.graph.attach(ctx);
     this.ctx = ctx;
 
@@ -252,7 +263,7 @@ export class WebAudioEngine {
 
   private async tryResume(): Promise<void> {
     if (!this.ownsContext || this.closed) return;
-    let ctx: BaseAudioContext;
+    let ctx: BaseAudioContext | undefined;
     try {
       // Create synchronously inside the trusted gesture, before any decode or Worker reply.
       ctx = this.ensureContext();
@@ -270,7 +281,7 @@ export class WebAudioEngine {
       this.registerGestureListener();
       return;
     }
-    if (ctx.state !== 'suspended') {
+    if (!ctx || ctx.state !== 'suspended') {
       this.removeGestureListener();
       return;
     }
@@ -338,6 +349,7 @@ export class WebAudioEngine {
   musicOutput(): MusicOutput | undefined {
     if (this.retireClosedContext()) return undefined;
     const context = this.ensureContext();
+    if (!context) return undefined;
     const output = this.graph.input('music');
     if (!output) return undefined;
     if (!this.musicTap) {
@@ -357,7 +369,10 @@ export class WebAudioEngine {
           detail: { code: 'decode-failed', reason: 'audio context is closed' },
         }),
       );
-    return this.ensureContext().decodeAudioData(bytes.slice().buffer as ArrayBuffer);
+    const context = this.ensureContext();
+    return context
+      ? context.decodeAudioData(bytes.slice().buffer as ArrayBuffer)
+      : Promise.reject(this.contextFailure);
   }
 
   play(entityId: number, clip: AudioBuffer | AudioClipAsset, opts: AudioPlayOptions): void {
@@ -369,16 +384,7 @@ export class WebAudioEngine {
         return;
       }
     }
-    if (
-      opts.spatialBlend > 0 &&
-      ((opts.sourcePose !== undefined && !this.validSourcePose(opts.sourcePose)) ||
-        ![opts.coneInnerAngle ?? 360, opts.coneOuterAngle ?? 360].every(
-          (angle) => Number.isFinite(angle) && angle >= 0 && angle <= 360,
-        ) ||
-        !Number.isFinite(opts.coneOuterGain ?? 0) ||
-        (opts.coneOuterGain ?? 0) < 0 ||
-        (opts.coneOuterGain ?? 0) > 1)
-    ) {
+    if (opts.spatialBlend > 0 && !this.validSpatialOptions(opts)) {
       this.recordSpatialFailure();
       return;
     }
@@ -387,27 +393,7 @@ export class WebAudioEngine {
     const fromPosition = opts.fromPosition ?? 0;
     if (!Number.isFinite(fromPosition) || fromPosition < 0) return;
     if ('kind' in clip && clip.bytes !== undefined) {
-      this.stop(entityId);
-      const pending = { sourceKey: clip.sourceKey, options: { ...opts } };
-      this.pendingClips.set(entityId, pending);
-      void this.decode(clip.bytes).then(
-        (buffer) => {
-          if (!this.closed && this.pendingClips.get(entityId) === pending) {
-            if (this.decodeErrorKey === clip.sourceKey) {
-              this.decodeErrorKey = undefined;
-              this.lastError = null;
-            }
-            this.pendingClips.delete(entityId);
-            this.play(entityId, buffer, pending.options);
-          }
-        },
-        (cause) => {
-          if (!this.closed && this.pendingClips.get(entityId) === pending) {
-            this.pendingClips.delete(entityId);
-            this.recordDecodeFailure(clip.sourceKey, cause);
-          }
-        },
-      );
+      this.playEncodedClip(entityId, clip.sourceKey, clip.bytes, opts);
       return;
     }
     const streamClip = 'kind' in clip ? clip : undefined;
@@ -434,6 +420,7 @@ export class WebAudioEngine {
     }
 
     const ctx = this.ensureContext();
+    if (!ctx) return;
 
     // Per-source GainNode for volume control
     const sourceGain = ctx.createGain();
@@ -517,9 +504,51 @@ export class WebAudioEngine {
     else if (!opts.paused) this.startSource(entityId, source);
   }
 
+  private validSpatialOptions(opts: AudioPlayOptions): boolean {
+    const gain = opts.coneOuterGain ?? 0;
+    return (
+      (opts.sourcePose === undefined || this.validSourcePose(opts.sourcePose)) &&
+      [opts.coneInnerAngle ?? 360, opts.coneOuterAngle ?? 360].every(
+        (angle) => Number.isFinite(angle) && angle >= 0 && angle <= 360,
+      ) &&
+      Number.isFinite(gain) &&
+      gain >= 0 &&
+      gain <= 1
+    );
+  }
+
+  private playEncodedClip(
+    entityId: number,
+    sourceKey: string,
+    bytes: Uint8Array,
+    opts: AudioPlayOptions,
+  ): void {
+    this.stop(entityId);
+    const pending = { sourceKey, options: { ...opts } };
+    this.pendingClips.set(entityId, pending);
+    void this.decode(bytes).then(
+      (buffer) => {
+        if (!this.closed && this.pendingClips.get(entityId) === pending) {
+          if (this.decodeErrorKey === sourceKey) {
+            this.decodeErrorKey = undefined;
+            this.lastError = null;
+          }
+          this.pendingClips.delete(entityId);
+          this.play(entityId, buffer, pending.options);
+        }
+      },
+      (cause) => {
+        if (!this.closed && this.pendingClips.get(entityId) === pending) {
+          this.pendingClips.delete(entityId);
+          this.recordDecodeFailure(sourceKey, cause);
+        }
+      },
+    );
+  }
+
   private startSource(entityId: number, source: ActiveSource): void {
-    const ctx = this.ensureContext();
-    if (!source.buffer) return;
+    const ctx = this.ctx;
+    if (!ctx || !source.buffer) return;
     if (!source.loop && source.offset >= source.buffer.duration) {
       this.stop(entityId);
       return;
@@ -1023,6 +1052,7 @@ export class WebAudioEngine {
       contextState,
       activeSourceCount: this.getActiveSourceCount(),
       lastError:
+        this.contextFailure ??
         this.lastError ??
         [...this.sources.values()].find((source) => source.stream?.state().error)?.stream?.state()
           .error ??

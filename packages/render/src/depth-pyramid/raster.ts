@@ -20,14 +20,14 @@ export function addFragmentDepthPyramidPasses<Frame extends RenderGraphFrame>(
   graph: RenderGraphBuilder<Frame>,
   input: DepthPyramidGraphInputs,
   pyramid: DepthPyramid,
+  label: string,
 ): Result<DepthPyramidProjection, RenderGraphError> {
-  const prefix = input.reduction === 'furthest' ? 'occlusion-depth-pyramid' : 'depth-pyramid';
-  const suffix = input.reduction === 'furthest' ? '_furthest' : '';
+  const suffix = pyramid.reduction === 'furthest' ? '_furthest' : '';
   const passNames: string[] = [];
   let previous = input.depth;
   for (const level of pyramid.plan.levels) {
     const seed = level.level === 0;
-    const name = `${prefix}-${seed ? 'seed' : `reduce-${level.level}`}-fragment`;
+    const name = `${label}-${seed ? 'seed' : `reduce-${level.level}`}-fragment`;
     const texture = graph.createTexture(`${name}.scratch`, {
       format: pyramid.plan.format,
       size: { width: level.width, height: level.height },
@@ -65,7 +65,7 @@ export function addFragmentDepthPyramidPasses<Frame extends RenderGraphFrame>(
             ...(seed ? [{ binding: 2, visibility: 2, buffer: { type: 'uniform' } }] : []),
           ],
           'depth_pyramid_fullscreen',
-          `depth_pyramid_${seed ? 'seed' : 'reduce'}${suffix}_fragment`,
+          `depth_pyramid_${seed ? 'seed' : 'reduce'}${suffix}${seed && input.paddedView ? '_padded' : ''}_fragment`,
           [pyramid.plan.format],
         );
         pass.setPipeline(state.pipeline);

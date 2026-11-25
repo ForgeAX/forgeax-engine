@@ -1,9 +1,12 @@
+import { hierarchyStorageKey } from './source-collections';
+
 type Notify = () => void;
 type Listeners = Notify | Map<Notify, number>;
 interface FieldAccess {
   readonly key: string;
   readonly offset: number;
   owners: number;
+  inheritedGetters?: WeakMap<object, FieldAccess['get']>;
   get(this: object): unknown;
   set(this: object, value: unknown): void;
 }
@@ -33,7 +36,9 @@ function fieldAccess(key: string, offset: number): FieldAccess {
         const row = rows.get(owner);
         if (row?.[offset] === access) {
           const value = row[offset + 1];
-          return value === inherited ? Reflect.get(Object.getPrototypeOf(owner), key) : value;
+          if (value !== inherited) return value;
+          const proto = Object.getPrototypeOf(owner);
+          return proto === null ? undefined : Reflect.get(proto, key, this);
         }
       }
       return undefined;
@@ -51,7 +56,8 @@ function fieldAccess(key: string, offset: number): FieldAccess {
       }
       const old = row[offset + 1];
       if (Object.is(old, value)) return;
-      if (old === inherited) Object.defineProperty(this, key, { enumerable: true });
+      if (old === inherited)
+        Object.defineProperty(this, key, { enumerable: true, get: access.get });
       row[offset + 1] = value;
       const listeners = row[offset + 2] as Listeners;
       if (typeof listeners === 'function') listeners();
@@ -63,6 +69,26 @@ function fieldAccess(key: string, offset: number): FieldAccess {
   return access;
 }
 
+// Inherited Three methods remain dispatched by the prototype. Reading them on the
+// enrolled instance needs no listener row. A first instance write switches the getter.
+function inheritedGetter(access: FieldAccess, proto: object | null): FieldAccess['get'] {
+  if (proto === null) return access.get;
+  access.inheritedGetters ??= new WeakMap();
+  const getters = access.inheritedGetters;
+  let getter = getters.get(proto);
+  if (!getter) {
+    const key = access.key;
+    getter = function (this: object) {
+      if (Object.getPrototypeOf(this) === proto) return Reflect.get(proto, key, this);
+      // Prototype replacement and receivers inheriting from an enrolled instance.
+      return access.get.call(this);
+    };
+    getters.set(proto, getter);
+    byGetter.set(getter, access);
+  }
+  return getter;
+}
+
 /** Enrollment grows rows incrementally. Trim spare slots once the object is admitted. */
 export function compactFieldRow(object: object): void {
   const row = rows.get(object);
@@ -72,6 +98,8 @@ export function compactFieldRow(object: object): void {
 export function ownSourceValue(object: object, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(object, key);
   if (descriptor === undefined || 'value' in descriptor) return descriptor?.value;
+  const hierarchy = hierarchyStorageKey(key, descriptor);
+  if (hierarchy) return Reflect.get(object, hierarchy);
   const access = descriptor.get && byGetter.get(descriptor.get);
   const row = rows.get(object);
   if (!access || access.key !== key || row?.[access.offset] !== access) return undefined;
@@ -96,7 +124,7 @@ export function observedData(
   key: PropertyKey,
   descriptor: PropertyDescriptor,
 ): boolean {
-  if ('value' in descriptor) return true;
+  if ('value' in descriptor || hierarchyStorageKey(key, descriptor)) return true;
   const access = descriptor.get && byGetter.get(descriptor.get);
   return !!access && access.key === key && rows.get(object)?.[access.offset] === access;
 }
@@ -144,7 +172,7 @@ export function observeField(
   Object.defineProperty(object, key, {
     configurable: true,
     enumerable: descriptor?.enumerable === true,
-    get: access.get,
+    get: descriptor ? access.get : inheritedGetter(access, Object.getPrototypeOf(object)),
     set: access.set,
   });
   const value = descriptor ? descriptor.value : inherited;
@@ -179,7 +207,7 @@ export function releaseField(object: object, key: string, notify: Notify): void 
       }
     }
     const current = Object.getOwnPropertyDescriptor(object, key);
-    if (current?.get === access.get && current.configurable) {
+    if (current?.get && byGetter.get(current.get) === access && current.configurable) {
       const value = row[i + 1];
       if (value === inherited) Reflect.deleteProperty(object, key);
       else
@@ -215,10 +243,15 @@ export function subscribe(
 
 // TRS components change and retire together. Shared accessors preserve the original
 // vector identity and require one subscription per consumer for the entire tuple.
-type PoseStorage = { [slot: symbol]: number };
-const poseListeners = new WeakMap<object, Notify | Set<Notify>>();
+const poseReaders = Symbol('poseReaders');
+// The game may seal/freeze a vector while it is observed. Its subscription
+// must remain revocable independently of the vector's property descriptors.
+type ReaderCell = { current: Listeners | undefined };
+type PoseStorage = { [slot: symbol]: number } & { [poseReaders]?: ReaderCell };
 function tupleLayout(keys: readonly string[]) {
-  const descriptors: PropertyDescriptorMap = {};
+  const descriptors: PropertyDescriptorMap = {
+    [poseReaders]: { value: undefined, configurable: true, writable: true },
+  };
   const fields = keys.map((key) => {
     const slot = Symbol(key);
     function get(this: PoseStorage) {
@@ -237,9 +270,9 @@ function tupleLayout(keys: readonly string[]) {
       const old = this[slot];
       this[slot] = value;
       if (Object.is(old, value)) return;
-      const listeners = poseListeners.get(this);
+      const listeners = this[poseReaders]?.current;
       if (typeof listeners === 'function') listeners();
-      else if (listeners) for (const listener of listeners) listener();
+      else if (listeners) for (const listener of listeners.keys()) listener();
     }
     descriptors[slot] = { value: 0, configurable: true, writable: true };
     descriptors[key] = { get, set, enumerable: true, configurable: true };
@@ -270,27 +303,46 @@ function observePoseTuple(vector: object, quaternion: boolean, notify: Notify): 
     } else if (!field.writable || typeof field.value !== 'number') return false;
   }
   if (!prepared) {
+    Object.defineProperty(
+      vector,
+      poseReaders,
+      layout.descriptors[poseReaders] as PropertyDescriptor,
+    );
     for (const { key, slot, get, set } of layout.fields) {
       const value = Reflect.get(vector, key);
       Object.defineProperty(vector, slot, { value, writable: true, configurable: true });
       Object.defineProperty(vector, key, { get, set, configurable: true, enumerable: true });
     }
   }
-  const listeners = poseListeners.get(vector);
-  if (!listeners) poseListeners.set(vector, notify);
-  else if (typeof listeners === 'function') {
-    if (notify !== listeners) poseListeners.set(vector, new Set([listeners, notify]));
-  } else listeners.add(notify);
+  storage[poseReaders] ??= { current: undefined };
+  const cell = storage[poseReaders];
+  const listeners = cell.current;
+  if (!listeners) cell.current = notify;
+  else {
+    const readers = typeof listeners === 'function' ? new Map([[listeners, 1]]) : listeners;
+    readers.set(notify, (readers.get(notify) ?? 0) + 1);
+    cell.current = readers;
+  }
   return true;
 }
 
 function releasePoseTuple(vector: object, quaternion: boolean, notify: Notify): void {
-  const listeners = poseListeners.get(vector);
-  if (listeners instanceof Set) {
-    listeners.delete(notify);
+  const storage = vector as PoseStorage;
+  const cell = storage[poseReaders];
+  if (cell === undefined) return;
+  const listeners = cell.current;
+  if (listeners instanceof Map) {
+    const count = listeners.get(notify);
+    if (count === undefined) return;
+    if (count > 1) listeners.set(notify, count - 1);
+    else listeners.delete(notify);
+    if (listeners.size === 1) {
+      for (const [reader, references] of listeners) if (references === 1) cell.current = reader;
+    }
     if (listeners.size) return;
   } else if (listeners !== notify) return;
-  poseListeners.delete(vector);
+  cell.current = undefined;
+  Reflect.deleteProperty(vector, poseReaders);
   for (const { key, slot, get } of (quaternion ? xyzw : xyz).fields) {
     const field = Object.getOwnPropertyDescriptor(vector, key);
     if (field?.get === get && field.configurable)
@@ -305,8 +357,13 @@ function releasePoseTuple(vector: object, quaternion: boolean, notify: Notify): 
 }
 
 export function observeScale(scale: object, notify: Notify): Notify | undefined {
-  if (observePoseTuple(scale, false, notify)) return () => releasePoseTuple(scale, false, notify);
-  return undefined;
+  if (!observePoseTuple(scale, false, notify)) return undefined;
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    releasePoseTuple(scale, false, notify);
+  };
 }
 
 export function observePose(
@@ -320,7 +377,10 @@ export function observePose(
   if (!observePoseTuple(position, false, translated)) return false;
   const hasScale = observePoseTuple(scale, false, changed);
   const complete = hasScale && observePoseTuple(quaternion, true, changed);
+  let active = true;
   hold(() => {
+    if (!active) return;
+    active = false;
     releasePoseTuple(position, false, translated);
     if (hasScale) releasePoseTuple(scale, false, changed);
     if (complete) releasePoseTuple(quaternion, true, changed);

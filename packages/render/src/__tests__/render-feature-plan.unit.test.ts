@@ -478,6 +478,74 @@ describe('RenderFeature plan authority', () => {
     expect(first[2]).toEqual({ resource: 'sampled-color', usage: 'sampled-read' });
   });
 
+  it('resolves sparse, reordered compute slots once across changing dispatch bindings', () => {
+    const count = 32;
+    let reads = 0;
+    const slots = Array.from({ length: count }, (_, i) => (count - i) * 3);
+    const layout = slots.map((slot) => ({
+      get binding() {
+        reads++;
+        return slot;
+      },
+      visibility: 4,
+      buffer: { type: 'uniform' as GPUBufferBindingType },
+    }));
+    // The first declaration at a duplicated address owns the access role.
+    layout.push({
+      binding: requiredFixtureValue(slots[0]),
+      visibility: 4,
+      buffer: { type: 'storage' },
+    });
+    const banks = ['base', 'second', 'third'];
+    const value: RenderFeatureWorkPlan = {
+      resources: [
+        {
+          kind: 'compute-program',
+          name: 'program',
+          program: { wgsl: 'synthetic', entryPoints: ['main'], bindings: [{ entries: layout }] },
+        },
+        ...banks.map((name) => ({
+          kind: 'compute-bindings' as const,
+          name,
+          program: 'program',
+          entries: slots.map((binding) => ({ binding, resource: name + binding })),
+        })),
+      ],
+      passes: [
+        {
+          kind: 'compute',
+          name: 'work',
+          program: 'program',
+          bindings: 'base',
+          dispatches: ['second', 'base', 'third', 'second'].map((bindings) => ({
+            kind: 'direct',
+            entryPoint: 'main',
+            workgroups: [1],
+            bindings,
+          })),
+        },
+      ],
+    };
+    const first = deriveRenderFeaturePlanAccess(value);
+    expect(first).toEqual(
+      banks.flatMap((name) =>
+        slots.map((slot) => ({
+          resource: name + slot,
+          usage: 'uniform-read',
+        })),
+      ),
+    );
+    expect(reads).toBeLessThanOrEqual(layout.length * 2);
+    requiredFixtureValue(layout[0]).buffer.type = 'storage';
+    reads = 0;
+    const second = deriveRenderFeaturePlanAccess(value);
+    expect(
+      second.filter((entry) => entry.usage === 'storage-read-write').map((entry) => entry.resource),
+    ).toEqual(banks.map((name) => name + slots[0]));
+    expect(reads).toBeLessThanOrEqual(layout.length * 2);
+    expect(first[0]?.usage).toBe('uniform-read');
+  });
+
   it('keeps buffer uploads out of the stable topology signature', () => {
     expect(renderFeaturePlanSignature(plan(new Uint32Array([1])))).toBe(
       renderFeaturePlanSignature(plan(new Uint32Array([2]))),

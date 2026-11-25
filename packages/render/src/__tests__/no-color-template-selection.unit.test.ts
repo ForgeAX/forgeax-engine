@@ -3,16 +3,23 @@ import {
   findVariantByKey,
   type MaterialShaderManifestEntry,
   materialShaderSource,
+  materialShaderVariantsWithAxis,
   publishShaderProgramTemplates,
   type ShaderProgramCompiler,
   ShaderRegistry,
   type ShaderTemplateManifest,
 } from '@forgeax/engine-shader';
 import { afterEach, expect, it, vi } from 'vitest';
+import {
+  materialRasterSourceFacts,
+  resolveMaterialShaderArtifact,
+} from '../assembly/material/assembly';
+import { createMaterialLayoutCache } from '../assembly/material/layout-cache';
 import { selectPublishedVariant } from '../assembly/material/variant-selection';
 import { selectNoColorPbrVariant } from '../assembly/material-shader-policy';
 import { selectGpuDrivenSceneIndexVariant } from '../assembly/shader-prewarm-policy';
 import { resolveEngineManifestEntries } from '../assembly/webgpu-ready-shaders';
+import { skinnedPositionProof } from '../material-program-selection';
 import { buildBindGroupLayoutDescriptor, sharedMaterialBindingDeclarations } from '../pbr-pipeline';
 
 afterEach(() => vi.restoreAllMocks());
@@ -143,6 +150,101 @@ it('selects a native fallback without allocating the feature matrix or compiling
   expect(materialShaderSource(selected).read()).toContain('@compute');
   expect(selected.uvSetCount).toBe(0);
   expect(compile).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  'source facts',
+  'gameplay lookup',
+  'skin bounds',
+  'storage layout',
+] as const)('reads one template declaration without expanding the family for %s', async (consumer) => {
+  const axes = Array.from({ length: 8 }, (_, i) => `CUSTOM_${i}`);
+  const { registry, compile } = await templateFamily(axes);
+  const id = 'forgeax::default-standard-pbr';
+  const prepare = vi.fn(() => false);
+  const freeze = vi.spyOn(Object, 'freeze');
+  let descriptors: number;
+  try {
+    if (consumer === 'source facts') materialRasterSourceFacts(registry, id, { variantSet: '' });
+    else if (consumer === 'gameplay lookup') {
+      vi.spyOn(registry, 'isSourceBackedMaterialArtifact').mockReturnValue(true);
+      expect(
+        resolveMaterialShaderArtifact(id, registry, { variantSet: '' }, prepare),
+      ).toBeUndefined();
+      expect(prepare).toHaveBeenCalledOnce();
+    } else if (consumer === 'storage layout') {
+      const unexpected = (): never => {
+        throw new Error('Missing variant reached device setup');
+      };
+      const reportError = vi.fn();
+      const layouts = createMaterialLayoutCache({
+        getShader: () => registry,
+        currentBuildDevice: unexpected,
+        currentPipelineState: unexpected,
+        currentPipelineCacheState: unexpected,
+        viewAndSceneDepthLayoutEntries: unexpected,
+        reportError,
+      });
+      expect(layouts.getOrBuildPreparedStoragePipelineLayout(id, 'UNKNOWN=false')).toBeNull();
+      expect(reportError).toHaveBeenCalledOnce();
+    } else expect(skinnedPositionProof(undefined, id, registry)).toBe(false);
+    descriptors = freeze.mock.calls.filter(
+      ([value]) =>
+        value !== null && typeof value === 'object' && Object.hasOwn(value, 'definesKey'),
+    ).length;
+  } finally {
+    freeze.mockRestore();
+  }
+  expect(descriptors).toBeLessThanOrEqual(1);
+  expect(compile).not.toHaveBeenCalled();
+});
+
+it('visits only requested template rows and preserves strict sparse legacy axis matches', async () => {
+  const { family, compile } = await templateFamily(['CUSTOM_A', 'CUSTOM_B', 'CUSTOM_C']);
+  const freeze = vi.spyOn(Object, 'freeze');
+  const visited = materialShaderVariantsWithAxis(family, 'CUSTOM_A', false);
+  const first = visited.next().value;
+  expect(first?.defines).toEqual({ CUSTOM_A: false, CUSTOM_B: true, CUSTOM_C: true });
+  expect(
+    freeze.mock.calls.filter(
+      ([row]) => row && typeof row === 'object' && Object.hasOwn(row, 'definesKey'),
+    ),
+  ).toHaveLength(1);
+  const rest = [...visited];
+  expect(rest).toHaveLength(3);
+  expect([...materialShaderVariantsWithAxis(family, 'MISSING', false)]).toEqual([]);
+  expect(compile).not.toHaveBeenCalled();
+  const legacy = { variants: [{ defines: {} }, ...rest] } as MaterialShaderManifestEntry;
+  expect([...materialShaderVariantsWithAxis(legacy, 'CUSTOM_A', false)]).toEqual(rest);
+});
+
+it('publishes only the winning row of an ambiguous raster request', async () => {
+  const { family, compile } = await templateFamily([
+    'VERTEX_COLOR_AVAILABLE',
+    'STORAGE_BUFFER_AVAILABLE',
+    'PROBE_BLEND_AVAILABLE',
+    'TRANSMISSION_AVAILABLE',
+    'CUSTOM_A',
+    'CUSTOM_B',
+    'CUSTOM_C',
+  ]);
+  const freeze = vi.spyOn(Object, 'freeze');
+  const selected = selectPublishedVariant(family, { vertexColorAvailable: false });
+  expect(selected?.defines).toEqual({
+    VERTEX_COLOR_AVAILABLE: false,
+    STORAGE_BUFFER_AVAILABLE: true,
+    PROBE_BLEND_AVAILABLE: false,
+    TRANSMISSION_AVAILABLE: false,
+    CUSTOM_A: false,
+    CUSTOM_B: false,
+    CUSTOM_C: false,
+  });
+  expect(
+    freeze.mock.calls.filter(
+      ([row]) => row && typeof row === 'object' && Object.hasOwn(row, 'definesKey'),
+    ),
+  ).toHaveLength(1);
+  expect(compile).not.toHaveBeenCalled();
 });
 
 it('requires both geometry capability axes on native fallback families', async () => {

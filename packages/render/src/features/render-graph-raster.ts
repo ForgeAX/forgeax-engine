@@ -671,7 +671,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           );
         const targetGroup = binding.descriptor?.values.group ?? group;
         if (shadowView !== undefined && targetGroup === 0) {
-          pass.setBindGroup(0, shadowView, [0, 0]);
+          pass.setBindGroup(0, shadowView, [0]);
           continue;
         }
         // Fullscreen feature bindings contain graph-owned texture views and a

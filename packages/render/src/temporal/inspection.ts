@@ -1,6 +1,6 @@
 import { cloudHistoryExtent } from '../cloud/reconstruction/history';
 import { type Antialias, isTemporalAntialias } from '../components/camera';
-import { ssrColorExtent, ssrColorMipTailTexels } from '../ssr/scene-color-input';
+import { ssrColorExtent } from '../ssr/scene-color-input';
 import { TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL } from '../tsr/layout';
 import { createTemporalCoverage } from './coverage';
 import type { TemporalGpuState } from './gpu';
@@ -45,7 +45,7 @@ function gpuBytes(state: TemporalGpuState | undefined): number {
   const ssrExtent = ssrColorExtent(state);
   const taaBytes =
     state.mode === 'scene-color'
-      ? (ssrExtent.width * ssrExtent.height + ssrColorMipTailTexels(ssrExtent)) * 16
+      ? ssrExtent.width * ssrExtent.height * 16
       : state.tsr === undefined
         ? createTemporalCoverage(state.width, state.height).bytes
         : 40 * state.width * state.height +

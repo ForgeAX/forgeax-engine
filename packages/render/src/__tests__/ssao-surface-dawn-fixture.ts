@@ -75,10 +75,16 @@ async function compilePrograms(algorithm: SsaoSurfaceAlgorithm): Promise<Compile
   );
   const gbufferSource = readShader('packages/shader/src/standard-gbuffer.wgsl');
   const ssaoSource = readShader('packages/shader/src/hdrp-ssao.wgsl');
+  const depthPyramid = readShader('packages/shader/src/depth-pyramid-sample.wgsl');
   const commonSource = readShader('packages/shader/src/common.wgsl');
   const compiled = await compiler.compileShader(ssaoSource, {
     id: 'forgeax_hdrp::ssao',
     imports: {
+      'forgeax_depth_pyramid::sample': depthPyramid,
+      forgeax_scene_temporal: readFileSync(
+        resolve('packages/shader/src/scene-temporal.wgsl'),
+        'utf8',
+      ),
       'forgeax_pbr::gbuffer': gbufferSource,
       'forgeax_view::common': commonSource,
     },
@@ -93,6 +99,11 @@ async function compilePrograms(algorithm: SsaoSurfaceAlgorithm): Promise<Compile
       computeEntry: 'cs_gtao_calc',
       imports: {
         'forgeax_hdrp::ssao': ssaoSource,
+        'forgeax_depth_pyramid::sample': depthPyramid,
+        forgeax_scene_temporal: readFileSync(
+          resolve('packages/shader/src/scene-temporal.wgsl'),
+          'utf8',
+        ),
         'forgeax_pbr::gbuffer': gbufferSource,
         'forgeax_view::common': commonSource,
       },

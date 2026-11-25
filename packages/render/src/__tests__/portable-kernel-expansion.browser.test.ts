@@ -13,7 +13,7 @@ import {
   runSsrGpuDispatch,
   SSR_PROBE_SHADER_IDENTIFIERS,
   sourcesFromManifest,
-  ssrCoordinateErrors,
+  ssrPlanarCoordinateErrors,
 } from './ssr-gpu-dispatch';
 
 it.each([
@@ -138,10 +138,10 @@ it.each([
     device,
     sources,
     60,
-    { execution: 'fragment', coordinateSource: true },
+    { execution: 'fragment', planarCoordinateSource: true },
     pack.createShaderModuleImmediate,
   );
-  const errors = ssrCoordinateErrors(ssr.tracePixels[0] ?? []);
+  const errors = ssrPlanarCoordinateErrors(ssr.tracePixels[0] ?? []);
   expect(errors.length).toBeGreaterThan(20);
   expect(Math.max(...errors)).toBeLessThan(0.02);
   // biome-ignore lint/suspicious/noConsole: preserve detached real-GPU qualification evidence.

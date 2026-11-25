@@ -135,7 +135,11 @@ export type MaterialSurfacePassKind =
   | 'color'
   | 'depth'
   | 'visibility'
+  | 'coverage'
+  | 'depth-velocity'
   | 'forward-color'
+  | 'forward-color-temporal'
+  | 'forward-color-velocity'
   | 'shadow'
   | 'velocity';
 
@@ -144,7 +148,7 @@ export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
   Record<Exclude<MaterialSurfacePassKind, 'nearest-layer'>, readonly MaterialColorOutput[]>
 > = Object.freeze({
   depth: Object.freeze([
-    { name: 'normalRoughness', format: 'rgba32uint' as const },
+    { name: 'normalRoughness', format: 'r32uint' as const },
     { name: 'coverage', format: 'rgba16float' as const },
     { name: 'temporal', format: 'rgba16float' as const },
   ]),
@@ -152,7 +156,20 @@ export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
     { name: 'coverage', format: 'rgba16float' as const },
     { name: 'temporal', format: 'rgba16float' as const },
   ]),
+  coverage: Object.freeze([{ name: 'coverage', format: 'rgba16float' as const }]),
+  'depth-velocity': Object.freeze([
+    { name: 'coverage', format: 'rgba16float' as const },
+    { name: 'velocity', format: 'r32uint' as const },
+  ]),
   'forward-color': Object.freeze([{ name: 'color', format: 'rgba16float' as const }]),
+  'forward-color-temporal': Object.freeze([
+    { name: 'color', format: 'rgba16float' as const },
+    { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  'forward-color-velocity': Object.freeze([
+    { name: 'color', format: 'rgba16float' as const },
+    { name: 'velocity', format: 'r32uint' as const },
+  ]),
   color: Object.freeze([
     { name: 'color', format: 'rgba16float' as const },
     { name: 'captureSky', format: 'rgba16float' as const },

@@ -23,6 +23,7 @@ import { RenderScenePublishOrder, RenderViewFrameOrder } from '../system-order';
 import { viewRecordHistory } from './record-history';
 import {
   composedViewCamera,
+  RenderView,
   type RenderViewFrameSource,
   RenderViewInput,
   ViewRecorder,
@@ -30,7 +31,7 @@ import {
 } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
 import { type RenderSceneAdoption, RenderSceneDelta, RenderSceneInput } from './scene-systems';
-import { readViewState, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { adoptViewRecordAttempt } from './view-record-systems';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -439,6 +440,12 @@ function prepareViewFrame(
         return followRecordPublication(world, owner, entity, adoption, publication, state.mode);
       const inputs = viewFrameScopes(world, state);
       if (inputs.world === undefined) throw new Error('A local view requires its source World');
+      if (
+        adoption.localFrame !== undefined &&
+        inputs.cameraEntityKey === source.opts.cameraEntityKey &&
+        readViewField(world, entity, RenderView, 'primary') === true
+      )
+        return owner.scene.followAdoption(adoption, undefined, session);
       return owner.scene.followAdoption(
         adoption,
         candidateFrameBuilder(world, owner, entity, inputs.world, inputs.cameraEntityKey, session),
@@ -479,6 +486,7 @@ export function registerViewFrameSystem(world: World): void {
         const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
         state.result = prepareViewFrame(world, owner, entity, source, state);
       });
+      world.getResource(RenderSceneDelta).localFrame = undefined;
     },
   });
   world.addSystem(RenderPrepare, systemToken1).unwrap();

@@ -33,6 +33,7 @@ import {
   normalizePnpmStore,
   normalizeSdkRegistryLockfile,
   prepareWasmPackageForPack,
+  referenceSdkPackageCopies,
   SDK_CAPABILITIES,
   SDK_MANIFEST_VERSION,
   SDK_RESOURCE_ALLOWLIST,
@@ -52,12 +53,24 @@ import {
 } from './sdk-lib.mjs';
 import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
-import { seedTemplateBuildCache } from './sdk-template-cache.mjs';
-import { stageViewConsumerSkills, stageViewToolPackage } from './sdk-view.mjs';
+import {
+  SDK_BUILD_CACHE_SEED,
+  seedTemplateBuildCache,
+  stageSdkBuildCache,
+} from './sdk-template-cache.mjs';
+import {
+  pinViewRegistryDependencies,
+  stageViewConsumerSkills,
+  stageViewToolPackage,
+} from './sdk-view.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const args = process.argv.slice(2);
+const engineOnly = args.includes('--engine-only');
+const emitEnginePackage = engineOnly || args.includes('--emit-engine-package');
+const engineGuideRoot = resolve(root, 'scripts/forgeax/sdk-view-guides');
+const sdkViewGuide = engineOnly ? engineGuideRoot : undefined;
 const rootPackage = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const devkitPackage = JSON.parse(
   await readFile(resolve(root, 'packages/devkit/package.json'), 'utf8'),
@@ -74,18 +87,35 @@ const version = value('--version') ?? `0.0.0-dev.${await git(['rev-parse', '--sh
 const skipGame3dTemplateCache = args.includes('--skip-game-3d-template-cache');
 if (
   skipGame3dTemplateCache &&
-  (!args.includes('--reuse-core-build') || !/^0\.0\.0-pr\.[0-9a-f]{40}$/.test(version))
+  (engineOnly ||
+    !args.includes('--reuse-core-build') ||
+    !/^0\.0\.0-pr\.[0-9a-f]{40}$/.test(version))
 )
   throw new Error('sdk-compact-template-cache-requires-pr-build');
-const outputRoot = resolve(root, value('--output') ?? 'artifacts/sdk');
-const stage = resolve(outputRoot, 'forgeax-sdk');
+const outputRoot = resolve(
+  root,
+  value('--output') ?? (engineOnly ? 'artifacts/engine' : 'artifacts/sdk'),
+);
+const stagingRoot = engineOnly
+  ? await mkdtemp(resolve(tmpdir(), 'forgeax-engine-package-'))
+  : outputRoot;
+const stage = resolve(stagingRoot, 'forgeax-sdk');
+const engineStage = engineOnly ? stage : resolve(stagingRoot, '.engine-authoring-stage');
 const archive = resolve(outputRoot, `forgeax-sdk-v${version}.zip`);
 const sourceRoot = resolve(stage, SDK_SOURCE_ROOT);
-const pnpmMetadataCache = resolve(outputRoot, '.pnpm-metadata-cache');
-const npmRoot = resolve(outputRoot, 'npm');
+const pnpmMetadataCache = resolve(stagingRoot, '.pnpm-metadata-cache');
+const npmRoot = resolve(stagingRoot, 'npm');
 const packageArchives = resolve(npmRoot, 'packages');
 const canonicalKitPackageRoot = resolve(root, 'packages/preview/assets/canonical-kit');
-const canonicalKitRoot = resolve(outputRoot, '.canonical-kit');
+const canonicalKitRoot = resolve(stagingRoot, '.canonical-kit');
+
+async function useEngineTemplateRegistryPolicy(template) {
+  const { parse, stringify } = await import('yaml');
+  const policy = resolve(template, 'pnpm-workspace.yaml');
+  const workspace = parse(await readFile(policy, 'utf8'));
+  delete workspace.supportedArchitectures;
+  await writeFile(policy, stringify(workspace));
+}
 
 function value(name) {
   const index = args.indexOf(name);
@@ -241,7 +271,7 @@ if (
 )
   throw new Error('sdk-native-player-artifact-path-missing');
 
-await rm(outputRoot, { recursive: true, force: true });
+if (!engineOnly) await rm(outputRoot, { recursive: true, force: true });
 await mkdir(resolve(stage, 'packages'), { recursive: true });
 await mkdir(resolve(stage, 'store', 'pnpm'), { recursive: true });
 await mkdir(resolve(stage, 'templates'), { recursive: true });
@@ -252,22 +282,7 @@ await mkdir(resolve(stage, 'toolchain', 'wasm'), { recursive: true });
 await mkdir(packageArchives, { recursive: true });
 await mkdir(sourceRoot, { recursive: true });
 
-// Native Dawn is an input-keyed producer artifact, just like checked WASM.
-// Its owner revalidates provenance and SHA before reuse; keep it across the JS
-// clean build rather than starting another native compiler/toolchain download.
-const nativeInputs = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-native-inputs-'));
-const nativeRoot = resolve(root, 'packages/dawn-node/dist/native');
-try {
-  await cp(nativeRoot, resolve(nativeInputs, 'native'), { recursive: true }).catch((cause) => {
-    if (cause.code !== 'ENOENT') throw cause;
-  });
-  await run('node', ['scripts/clean-build-outputs.mjs']);
-  await cp(resolve(nativeInputs, 'native'), nativeRoot, { recursive: true }).catch((cause) => {
-    if (cause.code !== 'ENOENT') throw cause;
-  });
-} finally {
-  await rm(nativeInputs, { recursive: true, force: true });
-}
+await run('node', ['scripts/clean-build-outputs.mjs']);
 const engineBuildArgs = ['build:engine'];
 if (args.includes('--reuse-core-build')) engineBuildArgs.push('--reuse-core-build');
 await run('pnpm', engineBuildArgs, {
@@ -385,7 +400,8 @@ try {
   await cp(canonicalKitBackup, canonicalKitPackageRoot, { recursive: true });
   await rm(canonicalKitBackupRoot, { recursive: true, force: true });
 }
-await stageViewToolPackage(viewRoot, resolve(stage, 'tools/view'), version);
+await stageViewToolPackage(viewRoot, resolve(stage, 'tools/view'), version, sdkViewGuide);
+if (engineOnly) await pinViewRegistryDependencies(viewRoot, resolve(stage, 'tools/view'));
 for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.endsWith('.tgz'))) {
   const { stdout } = await run('tar', ['-xOf', path, 'package/package.json']);
   const manifest = JSON.parse(stdout);
@@ -411,7 +427,7 @@ for (const path of (await filesUnder(packageArchives)).filter((entry) => entry.e
     shasum: createHash('sha1').update(bytes).digest('hex'),
   });
 }
-for (const entry of publicPackages) {
+for (const entry of engineOnly ? [] : publicPackages) {
   if (entry.role === 'tool') continue;
   const archiveEntry = tarballs.get(entry.name);
   if (archiveEntry === undefined) throw new Error(`sdk-package-archive-missing: ${entry.name}`);
@@ -515,45 +531,47 @@ const port = typeof address === 'object' && address !== null ? address.port : 0;
 
 const dependencies = { '@forgeax/engine': version };
 try {
-  const toolRuntime = resolve(stage, 'toolchain/cli-runtime');
-  await mkdir(toolRuntime, { recursive: true });
-  await writeFile(
-    resolve(toolRuntime, 'package.json'),
-    JSON.stringify(
-      {
-        name: 'forgeax-sdk-cli-runtime',
-        private: true,
-        type: 'module',
+  if (!engineOnly) {
+    const toolRuntime = resolve(stage, 'toolchain/cli-runtime');
+    await mkdir(toolRuntime, { recursive: true });
+    await writeFile(
+      resolve(toolRuntime, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'forgeax-sdk-cli-runtime',
+          private: true,
+          type: 'module',
+          packageManager,
+          dependencies: { '@forgeax/engine': version, '@forgeax/view': 'file:../../tools/view' },
+        },
+        null,
+        2,
+      ),
+    );
+    await cp(
+      resolve(root, 'templates/pnpm-workspace.yaml'),
+      resolve(toolRuntime, 'pnpm-workspace.yaml'),
+    );
+    await run(
+      'corepack',
+      [
         packageManager,
-        dependencies: { '@forgeax/engine': version, '@forgeax/view': 'file:../../tools/view' },
-      },
-      null,
-      2,
-    ),
-  );
-  await cp(
-    resolve(root, 'templates/pnpm-workspace.yaml'),
-    resolve(toolRuntime, 'pnpm-workspace.yaml'),
-  );
-  await run(
-    'corepack',
-    [
-      packageManager,
-      'install',
-      // The producer writes this lockfile; the copied project policy freezes
-      // it only for consumers.
-      '--no-frozen-lockfile',
-      '--ignore-scripts',
-      '--child-concurrency=1',
-      '--registry',
-      `http://127.0.0.1:${port}`,
-      '--store-dir',
-      resolve(stage, 'store/pnpm'),
-    ],
-    { cwd: toolRuntime, env: { ...process.env, XDG_CACHE_HOME: pnpmMetadataCache } },
-  );
-  await normalizeTemplateLockfile(toolRuntime);
-  await rm(resolve(toolRuntime, 'node_modules'), { recursive: true, force: true });
+        'install',
+        // The producer writes this lockfile; the copied project policy freezes
+        // it only for consumers.
+        '--no-frozen-lockfile',
+        '--ignore-scripts',
+        '--child-concurrency=1',
+        '--registry',
+        `http://127.0.0.1:${port}`,
+        '--store-dir',
+        resolve(stage, 'store/pnpm'),
+      ],
+      { cwd: toolRuntime, env: { ...process.env, XDG_CACHE_HOME: pnpmMetadataCache } },
+    );
+    await normalizeTemplateLockfile(toolRuntime);
+    await rm(resolve(toolRuntime, 'node_modules'), { recursive: true, force: true });
+  }
   for (const sdkTemplate of SDK_TEMPLATES) {
     const sourceTemplate = resolve(root, sdkTemplate.sourceRoot);
     const template = resolve(stage, sdkTemplate.sourceRoot);
@@ -574,11 +592,13 @@ try {
       );
       if (migrated !== source) await writeFile(path, migrated);
     }
-    await cp(resolve(root, 'templates', 'AGENTS.md'), resolve(template, 'AGENTS.md'));
+    for (const name of ['AGENTS.md', 'AGENTS.zh-CN.md'])
+      await cp(resolve(root, 'templates', name), resolve(template, name));
     await cp(
       resolve(root, 'templates', 'pnpm-workspace.yaml'),
       resolve(template, 'pnpm-workspace.yaml'),
     );
+    if (engineOnly) await useEngineTemplateRegistryPolicy(template);
     const sourceTemplateManifest = JSON.parse(
       await readFile(resolve(template, 'package.json'), 'utf8'),
     );
@@ -636,7 +656,7 @@ try {
     // must resolve owned packages through the selected consumer registry so the
     // npm carrier can install online; the ZIP's immutable store supplies those same integrities
     // offline under the generated lockfile trust boundary and complete packaged store.
-    await normalizeTemplateLockfile(template);
+    if (!engineOnly) await normalizeTemplateLockfile(template);
   }
 } finally {
   await new Promise((accept, reject) =>
@@ -644,89 +664,118 @@ try {
   );
 }
 await copySdkTemplateResources(stage);
-// Every new project otherwise cooks the template's and Engine Content's Packs
-// on its first `dev start` / `project play`. Cook each installed template once
-// with the shipped Engine and ship its location-independent Pack products;
-// `project new` copies them into the project's own build cache.
-for (const sdkTemplate of SDK_TEMPLATES) {
-  const template = resolve(stage, sdkTemplate.sourceRoot);
-  const { FORGEAX_BUILD_CACHE_DIR: _sharedCache, ...seedEnv } = process.env;
-  if (!skipGame3dTemplateCache || sdkTemplate.id !== 'game-3d')
-    await seedTemplateBuildCache(template, () =>
-      sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
-        execFileAsync(
-          process.execPath,
-          [
-            resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
-            'project',
-            'build',
-            '--json',
-          ],
-          {
-            cwd: template,
-            maxBuffer: 64 * 1024 * 1024,
-            env: { ...seedEnv, CI: 'true', FORGEAX_DISABLE_UPDATE_CHECK: '1' },
-          },
+// Build against one cache so the second template can reuse the first
+// template's Engine Content products by their normal semantic key.
+const seedBuildCache = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-build-cache-'));
+try {
+  const excludedEnginePacks = new Set(['019fb7ce-3700-7000-8000-000000000000']);
+  for (const sdkTemplate of SDK_TEMPLATES) {
+    const template = resolve(stage, sdkTemplate.sourceRoot);
+    const compactSdk = skipGame3dTemplateCache && sdkTemplate.id === 'game-3d';
+    if (compactSdk) await stageSdkBuildCache(seedBuildCache, resolve(stage, SDK_BUILD_CACHE_SEED));
+    if (!compactSdk || emitEnginePackage)
+      await seedTemplateBuildCache(template, () =>
+        sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
+          execFileAsync(
+            process.execPath,
+            [
+              resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
+              'project',
+              'build',
+              '--json',
+            ],
+            {
+              cwd: template,
+              maxBuffer: 64 * 1024 * 1024,
+              env: {
+                ...process.env,
+                CI: 'true',
+                FORGEAX_DISABLE_UPDATE_CHECK: '1',
+                FORGEAX_BUILD_CACHE_DIR: seedBuildCache,
+              },
+            },
+          ),
         ),
-      ),
+      );
+    await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
+    if (engineOnly) await rm(resolve(template, 'pnpm-lock.yaml'));
+  }
+  // The single Engine package leaves the large Convoy product to the user's
+  // first 3D build. Keep the other template products in the shared seed.
+  if (!skipGame3dTemplateCache)
+    await stageSdkBuildCache(
+      seedBuildCache,
+      resolve(stage, SDK_BUILD_CACHE_SEED),
+      engineOnly ? excludedEnginePacks : undefined,
     );
-  await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
+  if (emitEnginePackage && !engineOnly)
+    await stageSdkBuildCache(
+      seedBuildCache,
+      resolve(engineStage, SDK_BUILD_CACHE_SEED),
+      excludedEnginePacks,
+    );
+} finally {
+  await rm(seedBuildCache, { recursive: true, force: true });
 }
 await rm(pnpmMetadataCache, { recursive: true, force: true });
-const pnpmStoreFormat = await detectPnpmStoreFormat(resolve(stage, 'store', 'pnpm'));
-await rm(resolve(stage, 'store', 'pnpm', pnpmStoreFormat, 'projects'), {
-  recursive: true,
-  force: true,
-});
-await sdkStage('normalize offline store', () =>
-  normalizePnpmStore(resolve(stage, 'store', 'pnpm'), pnpmStoreFormat),
-);
-await mkdir(resolve(stage, 'bin'), { recursive: true });
-// The SDK archive intentionally has no root node_modules. Bootstrap a small
-// private CLI runtime from the shipped template lockfile/store on first use,
-// then enter the exact Engine umbrella bin so all package dependencies resolve
-// through one published graph. The generated runtime is disposable SDK state,
-// not an additional user-facing entrypoint.
-await writeFile(resolve(stage, 'bin', 'forgeax.mjs'), sdkLauncherSource(packageManager));
-await writeFile(
-  resolve(stage, 'bin', 'forgeax'),
-  '#!/bin/sh\nexec node "$(dirname "$0")/forgeax.mjs" "$@"\n',
-);
-await chmod(resolve(stage, 'bin', 'forgeax'), 0o755);
-await writeFile(
-  resolve(stage, 'bin', 'forgeax.cmd'),
-  '@echo off\r\nnode "%~dp0forgeax.mjs" %*\r\n',
-);
+const pnpmStoreFormat = engineOnly
+  ? undefined
+  : await detectPnpmStoreFormat(resolve(stage, 'store', 'pnpm'));
+if (!engineOnly) {
+  await rm(resolve(stage, 'store', 'pnpm', pnpmStoreFormat, 'projects'), {
+    recursive: true,
+    force: true,
+  });
+  await sdkStage('normalize offline store', () =>
+    normalizePnpmStore(resolve(stage, 'store', 'pnpm'), pnpmStoreFormat),
+  );
+  await mkdir(resolve(stage, 'bin'), { recursive: true });
+  // The SDK archive intentionally has no root node_modules. Bootstrap a small
+  // private CLI runtime from the shipped template lockfile/store on first use,
+  // then enter the exact Engine umbrella bin so all package dependencies resolve
+  // through one published graph. The generated runtime is disposable SDK state,
+  // not an additional user-facing entrypoint.
+  await writeFile(resolve(stage, 'bin', 'forgeax.mjs'), sdkLauncherSource(packageManager));
+  await writeFile(
+    resolve(stage, 'bin', 'forgeax'),
+    '#!/bin/sh\nexec node "$(dirname "$0")/forgeax.mjs" "$@"\n',
+  );
+  await chmod(resolve(stage, 'bin', 'forgeax'), 0o755);
+  await writeFile(
+    resolve(stage, 'bin', 'forgeax.cmd'),
+    '@echo off\r\nnode "%~dp0forgeax.mjs" %*\r\n',
+  );
 
-await Promise.all([
-  cp(
-    resolve(root, 'schemas/sdk-manifest.schema.json'),
-    resolve(stage, 'schemas', 'sdk-manifest.schema.json'),
-  ),
-  cp(
-    resolve(root, 'schemas/forgeax-dist.schema.json'),
-    resolve(stage, 'schemas', 'forgeax-dist.schema.json'),
-  ),
-  cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeAX-Apache-2.0.txt')),
-  cp(
-    resolve(root, 'packages', 'codec', 'pkg', 'basis_transcoder.wasm'),
-    resolve(stage, 'toolchain', 'wasm', 'basis_transcoder.wasm'),
-  ),
-  cp(
-    resolve(root, 'packages', 'codec', 'pkg', 'encode', 'basis_encoder.wasm'),
-    resolve(stage, 'toolchain', 'wasm', 'basis_encoder.wasm'),
-  ),
-  cp(
-    resolve(root, 'packages', 'fbx', 'pkg', 'fbx-wasm.wasm'),
-    resolve(stage, 'toolchain', 'wasm', 'fbx-wasm.wasm'),
-  ),
-  cp(
-    resolve(root, 'packages', 'wgpu-wasm', 'pkg', 'wgpu_wasm_bg.wasm'),
-    resolve(stage, 'toolchain', 'wasm', 'wgpu_wasm_bg.wasm'),
-  ),
-]);
+  await Promise.all([
+    cp(
+      resolve(root, 'schemas/sdk-manifest.schema.json'),
+      resolve(stage, 'schemas', 'sdk-manifest.schema.json'),
+    ),
+    cp(
+      resolve(root, 'schemas/forgeax-dist.schema.json'),
+      resolve(stage, 'schemas', 'forgeax-dist.schema.json'),
+    ),
+    cp(resolve(root, 'LICENSE'), resolve(stage, 'licenses', 'ForgeAX-Apache-2.0.txt')),
+    cp(
+      resolve(root, 'packages', 'codec', 'pkg', 'basis_transcoder.wasm'),
+      resolve(stage, 'toolchain', 'wasm', 'basis_transcoder.wasm'),
+    ),
+    cp(
+      resolve(root, 'packages', 'codec', 'pkg', 'encode', 'basis_encoder.wasm'),
+      resolve(stage, 'toolchain', 'wasm', 'basis_encoder.wasm'),
+    ),
+    cp(
+      resolve(root, 'packages', 'fbx', 'pkg', 'fbx-wasm.wasm'),
+      resolve(stage, 'toolchain', 'wasm', 'fbx-wasm.wasm'),
+    ),
+    cp(
+      resolve(root, 'packages', 'wgpu-wasm', 'pkg', 'wgpu_wasm_bg.wasm'),
+      resolve(stage, 'toolchain', 'wasm', 'wgpu_wasm_bg.wasm'),
+    ),
+  ]);
+}
 const sdkSkillIds = (await readdir(resolve(root, 'skills'), { withFileTypes: true }))
-  .filter((entry) => entry.isDirectory())
+  .filter((entry) => entry.isDirectory() && (!engineOnly || entry.name !== 'forgeax-engine-sdk'))
   .map((entry) => entry.name)
   .sort();
 for (const id of sdkSkillIds) {
@@ -737,25 +786,48 @@ for (const id of sdkSkillIds) {
   }
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
-sdkSkillIds.push(...(await stageViewConsumerSkills(viewRoot, resolve(stage, 'skills'))));
+sdkSkillIds.push(
+  ...(await stageViewConsumerSkills(viewRoot, resolve(stage, 'skills'), sdkViewGuide)),
+);
 sdkSkillIds.sort();
 // Source-derived SDK discovery is generated into the distribution, not committed documentation.
 // `api-index.md` is the directory; each domain file lands beside it under `api/`.
 const { writeApiReference } = await import('./sdk-api-index.mjs');
-const sdkReferenceRoot = resolve(stage, 'skills/forgeax-engine-sdk/references');
-await mkdir(sdkReferenceRoot, { recursive: true });
-writeApiReference(sdkReferenceRoot);
 const capabilityFacts = JSON.parse(
   await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
 );
-await writeFile(
-  resolve(sdkReferenceRoot, 'feature-catalog.md'),
-  '# SDK capabilities\n\nGeneration baseline commit: `' +
-    capabilityFacts.generationBaselineCommit +
-    '`\n\n| Name | Form |\n| --- | --- |\n' +
-    capabilityFacts.capabilities.map(({ name, form }) => `| ${name} | ${form} |`).join('\n') +
-    '\n',
-);
+for (const id of engineOnly
+  ? ['forgeax-engine-authoring']
+  : ['forgeax-engine-authoring', 'forgeax-engine-sdk']) {
+  const skill = resolve(stage, 'skills', id);
+  const references = resolve(skill, 'references');
+  await mkdir(references, { recursive: true });
+  writeApiReference(references);
+  await writeFile(
+    resolve(references, 'feature-catalog.md'),
+    '# Engine capabilities\n\nGeneration baseline commit: `' +
+      capabilityFacts.generationBaselineCommit +
+      '`\n\n| Name | Form |\n| --- | --- |\n' +
+      capabilityFacts.capabilities.map(({ name, form }) => `| ${name} | ${form} |`).join('\n') +
+      '\n',
+  );
+  for (const name of ['SKILL.md', 'SKILL.zh-CN.md']) {
+    const path = resolve(skill, name);
+    await writeFile(path, localSdkDiscoveryLinks(await readFile(path, 'utf8'), 'references/'));
+  }
+}
+for (const { sourceRoot } of SDK_TEMPLATES) {
+  for (const name of ['AGENTS.md', 'AGENTS.zh-CN.md']) {
+    const path = resolve(stage, sourceRoot, name);
+    await writeFile(
+      path,
+      localSdkDiscoveryLinks(
+        await readFile(path, 'utf8'),
+        'skills/forgeax-engine-authoring/references/',
+      ),
+    );
+  }
+}
 
 // The unified `forgeax dev ...` surface owns live inspection. The historical
 // standalone relay scripts remain repository-only fixtures for old smoke lanes
@@ -767,6 +839,84 @@ for (const relative of [
   'scripts/dev-live.mjs',
 ]) {
   await rm(resolve(stage, relative), { force: true });
+}
+if (emitEnginePackage) {
+  const [{ packEngineAuthoring }, { parseAllDocuments }] = await Promise.all([
+    import('./engine-authoring-package.mjs'),
+    import('yaml'),
+  ]);
+  const engineSkillIds = sdkSkillIds.filter((id) => id !== 'forgeax-engine-sdk');
+  if (!engineOnly) {
+    await cp(resolve(stage, 'templates'), resolve(engineStage, 'templates'), { recursive: true });
+    for (const { sourceRoot } of SDK_TEMPLATES) {
+      const project = resolve(engineStage, sourceRoot);
+      await rm(resolve(project, 'pnpm-lock.yaml'), { force: true });
+      await useEngineTemplateRegistryPolicy(project);
+    }
+    for (const id of engineSkillIds) {
+      if (id === 'forgeax-view-cli' || id === 'forgeax-view-start') continue;
+      await cp(resolve(stage, 'skills', id), resolve(engineStage, 'skills', id), {
+        recursive: true,
+      });
+    }
+    await stageViewConsumerSkills(viewRoot, resolve(engineStage, 'skills'), engineGuideRoot);
+    const view = resolve(engineStage, 'tools/view');
+    await stageViewToolPackage(viewRoot, view, version, engineGuideRoot);
+    await pinViewRegistryDependencies(viewRoot, view);
+  }
+  await mkdir(resolve(engineStage, 'licenses'), { recursive: true });
+  await cp(resolve(root, 'LICENSE'), resolve(engineStage, 'licenses', 'ForgeAX-Apache-2.0.txt'));
+  await writeFile(
+    resolve(engineStage, 'licenses', 'THIRD_PARTY_NOTICES.json'),
+    `${JSON.stringify(licenseReport, null, 2)}\n`,
+  );
+  const filename = `forgeax-engine-${version}.tgz`;
+  const stagedArchive = resolve(stagingRoot, filename);
+  const pnpmSnapshots = Object.assign(
+    {},
+    ...parseAllDocuments(await readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8')).map(
+      (document) => document.toJSON().snapshots,
+    ),
+  );
+  const bytes = await sdkStage('pack Engine with authoring resources', () =>
+    packEngineAuthoring({
+      engineArchive: engineTarball.path,
+      authoringStage: engineStage,
+      destination: stagedArchive,
+      version,
+      engineCommit,
+      pnpmVersion,
+      pnpmSnapshots,
+      templates: SDK_TEMPLATES.map(({ id, sourceRoot }) => ({ id, root: sourceRoot })),
+      skillIds: engineSkillIds,
+    }),
+  );
+  const sha = sha256(await readFile(stagedArchive));
+  const archiveRoot = engineOnly ? outputRoot : resolve(outputRoot, 'engine-authoring');
+  await mkdir(archiveRoot, { recursive: true });
+  const archivePath = resolve(archiveRoot, filename);
+  await cp(stagedArchive, archivePath, { errorOnExist: true, force: false });
+  const result = {
+    ok: true,
+    package: '@forgeax/engine',
+    version,
+    engineCommit,
+    viewCommit,
+    archive: archivePath,
+    bytes,
+    sha256: sha,
+  };
+  await writeFile(
+    resolve(archiveRoot, 'engine-package.json'),
+    `${JSON.stringify(result, null, 2)}\n`,
+  );
+  if (engineOnly) {
+    await rm(stagingRoot, { recursive: true, force: true });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exit(0);
+  }
+  await rm(engineStage, { recursive: true, force: true });
+  await rm(stagedArchive);
 }
 const gitDependencies = await sdkStage('archive Engine and pinned source dependencies', () =>
   archiveEngineSource({ root, destination: sourceRoot, commit: engineCommit }),
@@ -805,10 +955,8 @@ await Promise.all([
 ]);
 const discoveryRoot = 'skills/forgeax-engine-sdk/references/';
 for (const [file, prefix] of [
-  ['skills/forgeax-engine-sdk/SKILL.md', 'references/'],
   ['README.md', discoveryRoot],
   ['AGENTS.md', discoveryRoot],
-  ...SDK_TEMPLATES.map((template) => [`${template.sourceRoot}/AGENTS.md`, discoveryRoot]),
 ]) {
   const entry = resolve(stage, file);
   await writeFile(entry, localSdkDiscoveryLinks(await readFile(entry, 'utf8'), prefix));
@@ -901,6 +1049,9 @@ const sdkManifest = {
   artifacts,
 };
 await writeFile(resolve(stage, 'sdk-manifest.json'), `${JSON.stringify(sdkManifest, null, 2)}\n`);
+// The staging tree also feeds the npm carrier. Only omit ZIP aliases at the
+// final file list, once the carrier has its independent inventory.
+const archiveArtifacts = referenceSdkPackageCopies(artifacts);
 const sbom = {
   spdxVersion: 'SPDX-2.3',
   dataLicense: 'CC0-1.0',
@@ -963,12 +1114,19 @@ try {
   await rm(carrierWorktree, { recursive: true, force: true });
 }
 
+await writeFile(
+  resolve(stage, 'sdk-manifest.json'),
+  `${JSON.stringify({ ...sdkManifest, artifacts: archiveArtifacts }, null, 2)}\n`,
+);
 for (const path of await filesUnder(stage)) {
   await (await import('node:fs/promises')).utimes(path, 315532800, 315532800);
 }
-const zipEntries = (await filesUnder(stage))
-  .map((path) => relative(outputRoot, path).split(sep).join('/'))
-  .sort();
+const zipEntries = [
+  'forgeax-sdk/sdk-manifest.json',
+  ...archiveArtifacts
+    .filter(({ sourceCopy }) => sourceCopy !== true)
+    .map(({ path }) => `forgeax-sdk/${path}`),
+].sort();
 await writeFile(resolve(outputRoot, '.sdk-zip-inputs'), `${zipEntries.join('\n')}\n`);
 await sdkStage('zip archive', () =>
   zipWithInputs(['-X', '-q', archive, '-@'], outputRoot, `${zipEntries.join('\n')}\n`),

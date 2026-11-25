@@ -1,4 +1,5 @@
 import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
 import type { BindGroupLayout, RhiDevice } from '@forgeax/engine-rhi';
 import type {
   MaterialShaderArtifact,
@@ -13,7 +14,6 @@ import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '.
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
 import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../shader-prewarm-policy';
-import { hasColorAttribute } from '../webgpu-vertex-layouts';
 import { type MaterialShaderArtifactRequest, resolveMaterialShaderArtifact } from './assembly';
 
 type MaterialArtifactRegistry = Pick<
@@ -62,7 +62,7 @@ export function materialPipelineArtifactRequest(
     pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
   };
   if (vertexLayoutProjection !== undefined)
-    options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
+    options.vertexColorAvailable = vertexLayoutHasColor(vertexLayoutProjection);
   if (
     layoutKind === 'pbr-skin' ||
     layoutKind === 'gpu-driven-skin' ||

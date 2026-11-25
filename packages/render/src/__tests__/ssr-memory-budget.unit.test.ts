@@ -25,9 +25,15 @@ describe('SSR descriptor-derived memory budget', () => {
       { execution: 'fragment', forward: true },
     );
     expect(portable.fragmentScratchBytes).toBe(portable.depthPyramidBytes + 16);
-    expect(portable.forwardInputsBytes).toBe(1920 * 1080 * 28);
-    expect(portable.ssrOwnedBytes).toBe(109_208_456);
+    expect(portable.forwardInputsBytes).toBe(1920 * 1080 * 36);
+    expect(portable.ssrOwnedBytes).toBe(125_797_256);
     expect(portable.withinBudget).toBe(true);
+    const msaa = estimateSsrSpatialMemory(
+      { width: 1920, height: 1080 },
+      { execution: 'fragment', forward: true, forwardSampleCount: 4 },
+    );
+    expect(msaa.ssrOwnedBytes - portable.ssrOwnedBytes).toBe(1920 * 1080 * 96);
+    expect(msaa.withinBudget).toBe(true);
     expect(
       estimateSsrSpatialMemory(
         { width: 3840, height: 2160 },
@@ -47,14 +53,10 @@ describe('SSR descriptor-derived memory budget', () => {
     });
   });
 
-  it('charges the half-size color and its remaining levels and portable scratch at their actual odd extents', () => {
+  it('charges one half-resolution hit-color level on the portable route', () => {
     const size = { width: 17, height: 9 };
-    const baseline = estimateSsrSpatialMemory(size, { execution: 'fragment' });
-    const filtered = estimateSsrSpatialMemory(size, {
-      execution: 'fragment',
-      sceneColorMipCount: 4,
-    });
-    expect(filtered.sceneColorBytes).toBe((8 * 4 + 4 * 2 + 2 * 1 + 1) * 8);
-    expect(filtered.ssrOwnedBytes - baseline.ssrOwnedBytes).toBe(176);
+    const memory = estimateSsrSpatialMemory(size, { execution: 'fragment' });
+    expect(memory.sceneColorBytes).toBe(8 * 4 * 8);
+    expect(memory.fragmentScratchBytes).toBe(memory.depthPyramidBytes + 16);
   });
 });

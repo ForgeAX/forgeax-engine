@@ -755,3 +755,47 @@ it('relocates canonical and configured roots between checkouts while preserving 
     }),
   ).toBeUndefined();
 });
+
+it('reuses prebuilt products across project roots and writes misses only to each project cache', async () => {
+  const workspace = await scratch.make('forgeax-shared-pack-seed-');
+  const seed = join(workspace, 'seed');
+  const packageId = definePackageId('01900000-0000-7000-8000-0000000000f2');
+  let cooks = 0;
+  const run = async (project: string, cache: string, text: string, seedRoot?: string) => {
+    const sourcePath = join(project, 'node_modules/@forgeax/engine-content/assets/scene.pack.ts');
+    await mkdir(join(sourcePath, '..'), { recursive: true });
+    await writeFile(sourcePath, text);
+    return produceScriptablePackProducts({
+      cacheIdentityRoot: project,
+      buildCacheRoot: cache,
+      ...(seedRoot === undefined ? {} : { buildCacheSeedRoot: seedRoot }),
+      sources: [
+        preparedSource(sourcePath, packageId, text, () => {
+          cooks++;
+          return ok({ scene: { kind: 'scene', entities: {} } });
+        }),
+      ],
+    });
+  };
+
+  const products = (root: string) => new DdcEntryStore(join(root, 'scriptable-pack-products'));
+  expect((await run(join(workspace, 'producer'), seed, 'original')).ok).toBe(true);
+  const seedKeys = await products(seed).listKeys();
+  expect(seedKeys).toHaveLength(1);
+
+  const projectA = join(workspace, 'project-a');
+  const projectB = join(workspace, 'project-b');
+  const cacheA = join(projectA, 'cache');
+  const cacheB = join(projectB, 'cache');
+  expect((await run(projectA, cacheA, 'original', seed)).ok).toBe(true);
+  expect((await run(projectB, cacheB, 'original', seed)).ok).toBe(true);
+  expect(cooks).toBe(1);
+  expect(await products(cacheA).listKeys()).toEqual([]);
+  expect(await products(cacheB).listKeys()).toEqual([]);
+
+  expect((await run(projectA, cacheA, 'edited', seed)).ok).toBe(true);
+  expect((await run(projectA, cacheA, 'edited', seed)).ok).toBe(true);
+  expect(cooks).toBe(2);
+  expect(await products(cacheA).listKeys()).toHaveLength(1);
+  expect(await products(seed).listKeys()).toEqual(seedKeys);
+});

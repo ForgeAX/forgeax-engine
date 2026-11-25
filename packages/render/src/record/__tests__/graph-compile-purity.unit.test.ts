@@ -205,6 +205,41 @@ function unlitDisplayGraphInput(h: Harness) {
   };
 }
 
+it('binds resolved Forward color to Bloom across MSAA, fog and output changes', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = createPremultipliedForwardPipeline('rgba16float', 'custom-output');
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const install = (samples: boolean, bloomIntensity: number, analyticFog: boolean) => {
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      analyticFog,
+      camera: {
+        ...input.camera,
+        antialias: samples ? 'msaa' : 'none',
+        bloom: 'on',
+        bloomIntensity,
+      },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const sampled = install(true, 1, true);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.samples).toBe(4);
+    expect(sampled.inspect().passes.some((pass) => pass.name.includes('bloom'))).toBe(true);
+    expect(install(true, 0.5, false)).toBe(sampled);
+    const single = install(false, 0.5, true);
+    expect(single).not.toBe(sampled);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.samples).toBe(1);
+    const unfiltered = install(false, 0, true);
+    expect(unfiltered).not.toBe(single);
+    expect(unfiltered.inspect().passes.some((pass) => pass.name.includes('bloom'))).toBe(false);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
 it('records changing Standard exposures and probe faces into the same physical display stages', async () => {
   const h = await harness();
   h.frameState.activePipeline = standardPipeline;
@@ -642,7 +677,7 @@ it('rejects a failed capsule-consumer switch instead of recording a graph with t
   h.compile();
   h.accept();
   h.setFail(true);
-  const outcome = compileViewGraph({ ...h.input(), forwardCapsuleShadows: true });
+  const outcome = compileViewGraph({ ...h.input(), capsuleShadows: true });
   expect(outcome.kind).toBe('rejected');
 });
 

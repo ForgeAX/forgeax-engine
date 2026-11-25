@@ -53,10 +53,13 @@ it('shares reservations across cameras and draws the same full-resolution view w
     cascades: { cascadeCount: 1 },
     pointShadow: [],
     spot: [],
-    shadowViews: [{ identity: { kind: 'directional', index: 0 }, matrix }],
+    shadowViews: [
+      { identity: { kind: 'directional', index: 0 }, matrix, planes: new Float32Array(24) },
+    ],
   } as unknown as ViewLights;
-  const requests = (owner: ShadowDepthLayers) =>
-    gpuShadowViewRequests(lights, new Map(), size, 0, 1, size, bytes * 2, owner);
+  const requests = (owner?: ShadowDepthLayers) =>
+    gpuShadowViewRequests(lights, size, 0, 1, size, bytes * 2, owner);
+  expect(requests(undefined)[0]?.planes).toBe(lights.shadowViews[0]?.planes);
   const release = device.queue.holdCompletions?.();
   try {
     expect(requests(first)[0]?.staticLayer).toBeUndefined();

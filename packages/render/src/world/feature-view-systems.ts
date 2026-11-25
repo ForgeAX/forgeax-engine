@@ -310,14 +310,17 @@ export function walkSceneDataContributors(
     return missingStandardSurfaceProducer(header);
   const admission = new CurrentSceneSurfaceInput(header, previous);
   if (rows === undefined) {
+    // This view has already resolved its address domain. Accessors on projected lists
+    // still run at each dispatch, in rank order, through their ordinary at() call.
     dispatch.forEach((entry) => {
-      const contributor = standardSceneDataContributorAt(
-        renderables,
-        entry,
-        lane,
-        admission.previousRow,
+      admission.append(
+        standardSceneDataContributorForDispatch(
+          renderables.at(entry.renderableIndex),
+          entry,
+          lane,
+          admission.previousRow,
+        ),
       );
-      admission.append(contributor);
     });
     return createStandardSceneSurfaceAdmission(admission, previous);
   }

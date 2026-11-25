@@ -659,6 +659,7 @@ export function stageViewPassPlan(
     phaseSorted: phaseSorted && !cameraless,
     materials,
     sceneTransmission: owner.scene.transmissionTopologyDemand(),
+    roughRefraction: profile.roughRefraction === true,
     preparation: owner.frameState.candidatePipelinePreparations?.materials,
     renderPath: profile.renderPath,
     gpuOcclusion: owner.frameState.installedPipelineConfig?.gpuOcclusion,

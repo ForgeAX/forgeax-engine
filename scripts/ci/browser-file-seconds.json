@@ -2,7 +2,7 @@
   "sourceRuns": [
     38320931831, 38325569733, 39444004385, 39450499871, 39565639578, 39566289907, 39553651697,
     41725978104, 42298226755, 42300870201, 43810781689, 43830647933, 44634135861, 44652430186,
-    44905218358, 44935148512, 45032304339, 45065791584
+    44905218358, 44935148512, 45032304339, 45065791584, 45493037437
   ],
   "files": {
     "apps/game-capability-lab/__tests__/hud-ui.browser.test.ts": 6.599,
@@ -375,6 +375,7 @@
     "packages/three/src/__tests__/material-output-3.browser.test.ts": 140.347,
     "packages/three/src/__tests__/output.browser.test.ts": 66.168,
     "packages/three/src/__tests__/render.browser.test.ts": 132.156,
+    "packages/three/src/__tests__/scene-format-addons-render.browser.test.ts": 15.896,
     "packages/three/src/__tests__/shadow-alpha-standard.browser.test.ts": 97.687,
     "packages/three/src/__tests__/shadow-alpha.browser.test.ts": 216.52,
     "packages/three/src/__tests__/shadow-directional.browser.test.ts": 250.434,
@@ -382,6 +383,7 @@
     "packages/three/src/__tests__/shadow-spot.browser.test.ts": 190.789,
     "packages/three/src/__tests__/shadow-updates.browser.test.ts": 152.561,
     "packages/three/src/__tests__/shared-texture-storage.browser.test.ts": 24.122,
+    "packages/three/src/__tests__/special-lights.browser.test.ts": 11.196,
     "packages/three/src/__tests__/texture.browser.test.ts": 174.922,
     "packages/three/src/__tests__/transmission-output.browser.test.ts": 74.278,
     "packages/three/src/__tests__/transparent-order.browser.test.ts": 21.165,

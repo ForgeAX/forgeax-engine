@@ -19,14 +19,12 @@ import {
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { MeshFilter, MeshRenderer } from '../components';
 import { renderMaterialContext } from '../extract/material-context';
+import { materialSurfaceProgramsForMaterial } from '../material-program-selection';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
-import {
-  materialSurfaceProgramsForMaterial,
-  resolveMaterialSnapshot,
-} from '../render-system-extract';
+import { resolveMaterialSnapshot } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();

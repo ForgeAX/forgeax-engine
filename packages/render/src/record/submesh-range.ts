@@ -13,9 +13,15 @@ export function submeshRange(
   const range = target ?? { first: 0, count: 0, baseVertex: 0 };
   range.baseVertex = 0;
   range.count = mesh.indexed ? submesh.indexCount : submesh.vertexCount;
-  range.first = mesh.indexed ? submesh.indexOffset : 0;
-  if (!mesh.indexed)
+  if (mesh.indexed) range.first = submesh.indexOffset;
+  else if (mesh.sectionFirstVertices !== undefined)
+    range.first = mesh.sectionFirstVertices[index] as number;
+  else {
+    // Single-section resident meshes need no address column. Borrowed handles may
+    // supply only the authored section counts.
+    range.first = 0;
     for (let preceding = 0; preceding < index; preceding++)
       range.first += mesh.submeshes[preceding]?.vertexCount ?? 0;
+  }
   return range;
 }

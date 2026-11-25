@@ -45,14 +45,14 @@ it('consumes producer-owned fixed dependencies without observing them on each pa
   }
   expect(resources.resolve({ ...state }, root)).toBeUndefined();
 });
-it('follows physical growth, sampler replacement and recovery without changing held groups', () => {
+it('shares the shadow group across point/line growth and follows a changed sampler', () => {
   const state = fixture();
   const resources = new ShadowViewResources(state);
   const root = new WeakMap<object, unknown>();
   const first = resources.resolve(state, root);
   const points = state.pointsLinesViewBuffer;
   Object.assign(state, { pointsLinesViewBuffer: {} });
-  expect(resources.resolve(state, root)).not.toBe(first);
+  expect(resources.resolve(state, root)).toBe(first);
   Object.assign(state, { pointsLinesViewBuffer: points });
   expect(resources.resolve(state, root)).toBe(first);
   const sampler = state.perPassResources.shadowSampler;

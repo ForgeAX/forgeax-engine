@@ -571,7 +571,7 @@ function perFrameViewBindings(
     ? undefined
     : {
         handle: viewForPipeline(frame.runtime.device, pipeline, viewBindGroup),
-        dynamicOffsets: [viewOffset, 0],
+        dynamicOffsets: [viewOffset],
       };
 }
 
@@ -1025,7 +1025,7 @@ function resolveStandardViewDepthBindings(
   );
   return viewBindGroup === null
     ? undefined
-    : { handle: viewBindGroup, dynamicOffsets: [viewOffset, 0] };
+    : { handle: viewBindGroup, dynamicOffsets: [viewOffset] };
 }
 
 /** A standalone scene-depth group at the declared group index. */

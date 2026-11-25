@@ -773,10 +773,14 @@ function extractPointLights(
  * snapshots. URP and HDRP preserve this value downstream. A degenerate
  * direction is routed and kept unnormalized; it skips the shadow projection.
  */
-function normalizeSpotDirection(direction: ArrayLike<number>, worldInternal: WorldInternalView) {
-  const x = direction[0] ?? 0;
-  const y = direction[1] ?? -1;
-  const z = direction[2] ?? 0;
+function normalizeSpotDirection(
+  direction: ArrayLike<number>,
+  offset: number,
+  worldInternal: WorldInternalView,
+) {
+  const x = direction[offset] ?? 0;
+  const y = direction[offset + 1] ?? -1;
+  const z = direction[offset + 2] ?? 0;
   const length = Math.sqrt(x * x + y * y + z * z);
   const valid = length > 1e-6;
   if (!valid) {
@@ -910,212 +914,201 @@ function extractSpotLights(
 ): SpotLightSnapshot[] {
   const spotSnapshots: SpotLightSnapshot[] = [];
   const spotLightQuery = extractSpotLightsQuery(world).unwrap();
-  for (const row of spotLightQuery) {
-    const sLightingChannels = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'lightingChannels',
-    ) as number;
-    const sShadowCasterChannels = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowCasterChannels',
-    ) as number;
-    const sDirection = readRenderArrayView(
-      world,
-      row.entity,
-      SpotLight,
-      'direction',
-    ) as Float32Array;
-    const sCastShadow = world[worldRead].getFieldValue(row.entity, SpotLight, 'castShadow') === 1;
-    const sRange = world[worldRead].getFieldValue(row.entity, SpotLight, 'range') as number;
-    const sDecay = world[worldRead].getFieldValue(row.entity, SpotLight, 'decay') as number;
-    const decayError = validatePointLightDecay(sDecay, 'SpotLight');
-    if (decayError !== null) {
-      routeExtractError(worldInternal, decayError, 'RenderSystem.extract (spot-light-decay)');
-      continue;
-    }
-    const sNearPlane = world[worldRead].getFieldValue(row.entity, SpotLight, 'nearPlane') as number;
-    const authoredFarPlane = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'farPlane',
-    ) as number;
-    const sCookie = world[worldRead].getFieldValue(row.entity, SpotLight, 'cookie') as ShapeOf<
-      SchemaOf<typeof SpotLight>
-    >['cookie'];
-    const sProjector = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'projector',
-    ) as ShapeOf<SchemaOf<typeof SpotLight>>['projector'];
-    const sOuterConeDeg = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'outerConeDeg',
-    ) as number;
-    const sIntensity = world[worldRead].getFieldValue(row.entity, SpotLight, 'intensity') as number;
-    const sInnerConeDeg = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'innerConeDeg',
-    ) as number;
-    const sIesProfile = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'iesProfile',
-    ) as ShapeOf<SchemaOf<typeof SpotLight>>['iesProfile'];
-    const sRollDeg = world[worldRead].getFieldValue(row.entity, SpotLight, 'rollDeg') as number;
-    const sShadowProjection = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowProjection',
-    ) as number;
-    const sShadowViewProjection = readRenderArrayView(
-      world,
-      row.entity,
-      SpotLight,
-      'shadowViewProjection',
-    ) as Float32Array;
-    const sMapSize = world[worldRead].getFieldValue(row.entity, SpotLight, 'mapSize') as number;
-    const sShadowIntensity = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowIntensity',
-    ) as number;
-    const sDepthBias = world[worldRead].getFieldValue(row.entity, SpotLight, 'depthBias') as number;
-    const sNormalBias = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'normalBias',
-    ) as number;
-    const sShadowMapAspect = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowMapAspect',
-    ) as number;
-    const sShadowAutoUpdate =
-      world[worldRead].getFieldValue(row.entity, SpotLight, 'shadowAutoUpdate') === 1;
-    const sShadowRevision = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowRevision',
-    ) as number;
-    const sPcfKernelSize = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'pcfKernelSize',
-    ) as number;
-    const sShadowFilter = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowFilter',
-    ) as number;
-    const sShadowBiasMode = world[worldRead].getFieldValue(
-      row.entity,
-      SpotLight,
-      'shadowBiasMode',
-    ) as number;
-    if (!admitLightChannels(worldInternal, sLightingChannels, sShadowCasterChannels)) continue;
-    const worldMat = row.has(GlobalTransform)
-      ? copyPresentationWorldMatrix(world, row.entity)
-      : undefined;
-    const position = worldTranslationOf(worldMat);
-    const { direction: dirN, valid: hasValidDirection } = normalizeSpotDirection(
-      sDirection,
-      worldInternal,
-    );
-
-    // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
-    const castShadow = sCastShadow;
-    const shadowProjection = resolvePunctualShadowFarPlane(sRange, sNearPlane, authoredFarPlane);
-    const sFarPlane = shadowProjection.ok ? shadowProjection.value : authoredFarPlane;
-    const { cookieHandle, cookieProjection } = resolveSpotCookie(world, sCookie);
-    // `shared<T>` columns are u32-backed and zero-filled when the optional
-    // field is absent. Treat only a positive handle as an authored projector;
-    // checking nullish values alone would turn the zero sentinel into a
-    // phantom projector matrix and an avoidable asset-not-found diagnostic.
-    const hasProjector = Number(sProjector) > 0;
-    const projector = hasProjector
-      ? resolveSpotProjector(world, context.assets, worldInternal, sProjector)
-      : undefined;
-    const projectorProjection =
-      projector === undefined ? undefined : prepareCookieProjection(projector.asset);
-    const cookieSlice = assignLightTextureSlice(
-      lightTextureSlices,
-      cookieHandle,
-      cookieProjection?.source,
-    );
-    const projectorSlice = assignLightTextureSlice(
-      lightTextureSlices,
-      projector === undefined ? undefined : Number(projector.handle),
-      projectorProjection?.source,
-    );
-    let lightViewProj: Float32Array | undefined;
-
-    // A projector needs the same perspective transform even when its SpotLight
-    // has no shadow atlas tile. The matrix remains a derived light fact; the
-    // shadow tile stays -1 so shadow visibility is still independently gated.
-    const needsProjection = castShadow || hasProjector;
-    if (needsProjection && !shadowProjection.ok) {
-      routeExtractError(
+  for (const batch of spotLightQuery.batches().unwrap()) {
+    const entities = batch.entities;
+    const rows = batch.kind === 'indexed' ? batch.rows : undefined;
+    const first = batch.kind === 'range' ? batch.start : 0;
+    const hasWorld = batch.read(GlobalTransform, 'world') !== undefined;
+    const lightingChannelsColumn = batch.read(SpotLight, 'lightingChannels');
+    const shadowCasterChannelsColumn = batch.read(SpotLight, 'shadowCasterChannels');
+    const castShadowColumn = batch.read(SpotLight, 'castShadow');
+    const rangeColumn = batch.read(SpotLight, 'range');
+    const decayColumn = batch.read(SpotLight, 'decay');
+    const nearPlaneColumn = batch.read(SpotLight, 'nearPlane');
+    const farPlaneColumn = batch.read(SpotLight, 'farPlane');
+    const outerConeDegColumn = batch.read(SpotLight, 'outerConeDeg');
+    const intensityColumn = batch.read(SpotLight, 'intensity');
+    const innerConeDegColumn = batch.read(SpotLight, 'innerConeDeg');
+    const rollDegColumn = batch.read(SpotLight, 'rollDeg');
+    const mapSizeColumn = batch.read(SpotLight, 'mapSize');
+    const shadowIntensityColumn = batch.read(SpotLight, 'shadowIntensity');
+    const depthBiasColumn = batch.read(SpotLight, 'depthBias');
+    const normalBiasColumn = batch.read(SpotLight, 'normalBias');
+    const shadowMapAspectColumn = batch.read(SpotLight, 'shadowMapAspect');
+    const shadowAutoUpdateColumn = batch.read(SpotLight, 'shadowAutoUpdate');
+    const shadowRevisionColumn = batch.read(SpotLight, 'shadowRevision');
+    const pcfKernelSizeColumn = batch.read(SpotLight, 'pcfKernelSize');
+    const staticShadowCacheColumn = batch.read(SpotLight, 'staticShadowCache');
+    const colorColumn = batch.read(SpotLight, 'color');
+    const directionColumn = batch.read(SpotLight, 'direction');
+    for (let ordinal = 0; ordinal < batch.count; ordinal++) {
+      const physicalRow = rows === undefined ? first + ordinal : (rows[ordinal] as number);
+      const entity = entities[physicalRow] as EntityHandle;
+      const vectorOffset = physicalRow * 3;
+      const sLightingChannels = lightingChannelsColumn[physicalRow] as number;
+      const sShadowCasterChannels = shadowCasterChannelsColumn[physicalRow] as number;
+      const sCastShadow = castShadowColumn[physicalRow] === 1;
+      const sRange = rangeColumn[physicalRow] as number;
+      const sDecay = decayColumn[physicalRow] as number;
+      const decayError = validatePointLightDecay(sDecay, 'SpotLight');
+      if (decayError !== null) {
+        routeExtractError(worldInternal, decayError, 'RenderSystem.extract (spot-light-decay)');
+        continue;
+      }
+      const sNearPlane = nearPlaneColumn[physicalRow] as number;
+      const authoredFarPlane = farPlaneColumn[physicalRow] as number;
+      const sCookie = world[worldRead].getFieldValue(entity, SpotLight, 'cookie') as ShapeOf<
+        SchemaOf<typeof SpotLight>
+      >['cookie'];
+      const sProjector = world[worldRead].getFieldValue(entity, SpotLight, 'projector') as ShapeOf<
+        SchemaOf<typeof SpotLight>
+      >['projector'];
+      const sOuterConeDeg = outerConeDegColumn[physicalRow] as number;
+      const sIntensity = intensityColumn[physicalRow] as number;
+      const sInnerConeDeg = innerConeDegColumn[physicalRow] as number;
+      const sIesProfile = world[worldRead].getFieldValue(
+        entity,
+        SpotLight,
+        'iesProfile',
+      ) as ShapeOf<SchemaOf<typeof SpotLight>>['iesProfile'];
+      const sRollDeg = rollDegColumn[physicalRow] as number;
+      const sShadowProjection = world[worldRead].getFieldValue(
+        entity,
+        SpotLight,
+        'shadowProjection',
+      ) as number;
+      const sMapSize = mapSizeColumn[physicalRow] as number;
+      const sShadowIntensity = shadowIntensityColumn[physicalRow] as number;
+      const sDepthBias = depthBiasColumn[physicalRow] as number;
+      const sNormalBias = normalBiasColumn[physicalRow] as number;
+      const sShadowMapAspect = shadowMapAspectColumn[physicalRow] as number;
+      const sShadowAutoUpdate = shadowAutoUpdateColumn[physicalRow] === 1;
+      const sShadowRevision = shadowRevisionColumn[physicalRow] as number;
+      const sPcfKernelSize = pcfKernelSizeColumn[physicalRow] as number;
+      const sShadowFilter = world[worldRead].getFieldValue(
+        entity,
+        SpotLight,
+        'shadowFilter',
+      ) as number;
+      const sShadowBiasMode = world[worldRead].getFieldValue(
+        entity,
+        SpotLight,
+        'shadowBiasMode',
+      ) as number;
+      if (!admitLightChannels(worldInternal, sLightingChannels, sShadowCasterChannels)) continue;
+      const pose = hasWorld ? readEnvironmentPose(world, entity) : undefined;
+      const position =
+        pose === undefined
+          ? vec3.create(0, 0, 0)
+          : vec3.create(pose[12] as number, pose[13] as number, pose[14] as number);
+      const { direction: dirN, valid: hasValidDirection } = normalizeSpotDirection(
+        directionColumn,
+        vectorOffset,
         worldInternal,
-        shadowProjection.error,
-        'RenderSystem.extract (spot-shadow-projection)',
       );
-    }
-    if (needsProjection && hasValidDirection && shadowProjection.ok) {
-      lightViewProj = spotLightViewProjection(position, dirN, sOuterConeDeg, sNearPlane, sFarPlane);
-    }
 
-    spotSnapshots.push({
-      kind: 'spot',
-      lightingChannels: sLightingChannels,
-      entity: row.entity,
-      // D-6: position reflects world transform; direction stays sourced
-      // from SpotLight.direction (NOT rotated by the parent).
-      position,
-      direction: dirN,
-      color: scaledLightColor(world, row.entity, SpotLight, sIntensity),
-      intensity: sIntensity,
-      invRangeSquared: computeInvRangeSquared(sRange),
-      decay: Math.fround(sDecay),
-      cosInner: degToCos(sInnerConeDeg),
-      cosOuter: degToCos(sOuterConeDeg),
-      ...resolveIesProfile(world, worldInternal, iesProfiles, sIesProfile, row.entity),
-      ...spotLightTextureFields(
+      // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
+      const castShadow = sCastShadow;
+      const shadowProjection = resolvePunctualShadowFarPlane(sRange, sNearPlane, authoredFarPlane);
+      const sFarPlane = shadowProjection.ok ? shadowProjection.value : authoredFarPlane;
+      const { cookieHandle, cookieProjection } = resolveSpotCookie(world, sCookie);
+      // `shared<T>` columns are u32-backed and zero-filled when the optional
+      // field is absent. Treat only a positive handle as an authored projector;
+      // checking nullish values alone would turn the zero sentinel into a
+      // phantom projector matrix and an avoidable asset-not-found diagnostic.
+      const hasProjector = Number(sProjector) > 0;
+      const projector = hasProjector
+        ? resolveSpotProjector(world, context.assets, worldInternal, sProjector)
+        : undefined;
+      const projectorProjection =
+        projector === undefined ? undefined : prepareCookieProjection(projector.asset);
+      const cookieSlice = assignLightTextureSlice(
+        lightTextureSlices,
         cookieHandle,
-        cookieSlice,
-        cookieProjection,
-        projectorSlice,
-        projectorProjection,
-      ),
-      rollDeg: sRollDeg,
-      // ── shadow fields ──
-      castShadow,
-      lightViewProj:
-        sShadowProjection === 1 ? new Float32Array(sShadowViewProjection) : lightViewProj,
-      ...(sShadowProjection === 1 ? { authoredShadowMatrix: true as const } : {}),
-      mapSize: sMapSize,
-      nearPlane: sNearPlane,
-      farPlane: sFarPlane,
-      // The Render World assigns each casting spot a stable tile.
-      shadowAtlasTile: -1,
-      shadowIntensity: sShadowIntensity,
-      depthBias: sDepthBias,
-      normalBias: sNormalBias,
-      shadowMapAspect: sShadowMapAspect,
-      shadowCasterChannels: sShadowCasterChannels,
-      shadowAutoUpdate: sShadowAutoUpdate,
-      ...(world[worldRead].getFieldValue(row.entity, SpotLight, 'staticShadowCache') === 1
-        ? { staticShadowCache: true as const }
-        : {}),
-      shadowRevision: sShadowRevision,
-      pcfKernelSize: sPcfKernelSize,
-      shadowFilter: sShadowFilter,
-      shadowBiasMode: sShadowBiasMode,
-      ...spotProjectorIdentityFields(projector),
-    });
+        cookieProjection?.source,
+      );
+      const projectorSlice = assignLightTextureSlice(
+        lightTextureSlices,
+        projector === undefined ? undefined : Number(projector.handle),
+        projectorProjection?.source,
+      );
+      let lightViewProj: Float32Array | undefined;
+
+      // A projector needs the same perspective transform even when its SpotLight
+      // has no shadow atlas tile. The matrix remains a derived light fact; the
+      // shadow tile stays -1 so shadow visibility is still independently gated.
+      const needsProjection = castShadow || hasProjector;
+      if (needsProjection && !shadowProjection.ok) {
+        routeExtractError(
+          worldInternal,
+          shadowProjection.error,
+          'RenderSystem.extract (spot-shadow-projection)',
+        );
+      }
+      if (sShadowProjection === 1) {
+        lightViewProj = new Float32Array(
+          readRenderArrayView(world, entity, SpotLight, 'shadowViewProjection') as Float32Array,
+        );
+      } else if (needsProjection && hasValidDirection && shadowProjection.ok) {
+        lightViewProj = spotLightViewProjection(
+          position,
+          dirN,
+          sOuterConeDeg,
+          sNearPlane,
+          sFarPlane,
+        );
+      }
+
+      spotSnapshots.push({
+        kind: 'spot',
+        lightingChannels: sLightingChannels,
+        entity,
+        // D-6: position reflects world transform; direction stays sourced
+        // from SpotLight.direction (NOT rotated by the parent).
+        position,
+        direction: dirN,
+        color: vec3.create(
+          (colorColumn[vectorOffset] as number) * sIntensity,
+          (colorColumn[vectorOffset + 1] as number) * sIntensity,
+          (colorColumn[vectorOffset + 2] as number) * sIntensity,
+        ),
+        intensity: sIntensity,
+        invRangeSquared: computeInvRangeSquared(sRange),
+        decay: Math.fround(sDecay),
+        cosInner: degToCos(sInnerConeDeg),
+        cosOuter: degToCos(sOuterConeDeg),
+        ...resolveIesProfile(world, worldInternal, iesProfiles, sIesProfile, entity),
+        ...spotLightTextureFields(
+          cookieHandle,
+          cookieSlice,
+          cookieProjection,
+          projectorSlice,
+          projectorProjection,
+        ),
+        rollDeg: sRollDeg,
+        // ── shadow fields ──
+        castShadow,
+        lightViewProj,
+        ...(sShadowProjection === 1 ? { authoredShadowMatrix: true as const } : {}),
+        mapSize: sMapSize,
+        nearPlane: sNearPlane,
+        farPlane: sFarPlane,
+        // The Render World assigns each casting spot a stable tile.
+        shadowAtlasTile: -1,
+        shadowIntensity: sShadowIntensity,
+        depthBias: sDepthBias,
+        normalBias: sNormalBias,
+        shadowMapAspect: sShadowMapAspect,
+        shadowCasterChannels: sShadowCasterChannels,
+        shadowAutoUpdate: sShadowAutoUpdate,
+        ...(staticShadowCacheColumn[physicalRow] === 1 ? { staticShadowCache: true as const } : {}),
+        shadowRevision: sShadowRevision,
+        pcfKernelSize: sPcfKernelSize,
+        shadowFilter: sShadowFilter,
+        shadowBiasMode: sShadowBiasMode,
+        ...spotProjectorIdentityFields(projector),
+      });
+    }
   }
   return spotSnapshots;
 }

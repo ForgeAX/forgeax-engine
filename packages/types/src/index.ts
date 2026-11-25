@@ -100,11 +100,18 @@ export type {
   GeneratedTextureSource,
   GpuTextureMipFilter,
   TextureGenerationPass,
+  TextureGenerationRasterPass,
   TextureGenerationRead,
+  TextureGenerationVolumePass,
   TextureGeneratorAsset,
   TextureGeneratorPrograms,
 } from './texture/generator.js';
-export { textureGeneratorParameterLayout, validateTextureGenerator } from './texture/generator.js';
+export {
+  TEXTURE_GENERATOR_VOLUME_ENTRY,
+  textureGenerationMipShape,
+  textureGeneratorParameterLayout,
+  validateTextureGenerator,
+} from './texture/generator.js';
 export type { GpuTextureAsset, SampledTextureAsset } from './texture/gpu-asset.js';
 export { isGpuTextureAsset } from './texture/gpu-asset.js';
 export type {

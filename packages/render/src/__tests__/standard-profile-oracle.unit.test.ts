@@ -8,6 +8,7 @@ import {
   STANDARD_PIPELINE_ID,
   type StandardProfile,
 } from '../pipeline/standard-profile';
+import { renderProfileForRequirements } from '../quality';
 import { SCREEN_PROBE_DEFAULTS } from '../raytracing/screen-probe-plan';
 
 describe('Standard profile oracle', () => {
@@ -34,6 +35,18 @@ describe('Standard profile oracle', () => {
         gpuOcclusion: 0,
       } as unknown as StandardProfile),
     ).toBe('RenderProfile.gpuOcclusion must be boolean');
+  });
+  it('permits authored contact shadows by default and supports a renderer-wide veto', () => {
+    expect(DEFAULT_STANDARD_PROFILE.contactShadows).toBe(true);
+    const disabled = renderProfileForRequirements({ contactShadows: false });
+    expect(validateRenderProfile(disabled)).toBeUndefined();
+    expect(freezeRenderProfile(disabled).contactShadows).toBe(false);
+    expect(
+      validateRenderProfile({
+        ...DEFAULT_STANDARD_PROFILE,
+        contactShadows: 0,
+      } as unknown as StandardProfile),
+    ).toBe('RenderProfile.contactShadows must be boolean');
   });
   it('requires the renderPath-only profile contract', () => {
     const profile: StandardProfile = DEFAULT_STANDARD_PROFILE;

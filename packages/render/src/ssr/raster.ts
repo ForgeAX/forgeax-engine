@@ -38,7 +38,7 @@ type Inputs = SsrSpatialGraphInputs &
 export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   graph: RenderGraphBuilder<Frame>,
   input: Inputs,
-  resources: SsrSpatialResources,
+  resources: SsrSpatialResources & { readonly hitReactivity: GraphTextureView },
 ): Result<readonly string[], RenderGraphError> {
   const names: string[] = [];
   const add = (
@@ -90,9 +90,6 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
           outputs.map(({ format }) => format),
           {
             ...ssrGBufferConstants(input),
-            ...(input.sceneColorMipCount === undefined || input.sceneColorMipCount <= 1
-              ? {}
-              : { SSR_SCENE_COLOR_MIP_COUNT: input.sceneColorMipCount }),
           },
         );
         pass.setPipeline(state.pipeline);
@@ -140,6 +137,11 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
       { binding: 3, view: input.depthPyramid.pyramid, sampleType: 'unfilterable-float' },
       { binding: 6, view: input.fallback, sampleType: 'unfilterable-float' },
       { binding: 7, view: input.currentTemporal, sampleType: 'unfilterable-float' },
+      {
+        binding: 13,
+        view: input.sceneColorHistory ?? input.scene,
+        sampleType: 'unfilterable-float',
+      },
     ],
     input.view === undefined ? [] : [{ binding: 5, buffer: input.view }],
     [

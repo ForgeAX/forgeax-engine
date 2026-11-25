@@ -726,6 +726,14 @@ Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the s
 root membership, monotonicity and single-step rules in Pack production and Runtime
 replica admission. Shape validation and replica row/scope checks remain separate.
 
+Generated color outputs can choose the default `box`, `gaussian` (a separable
+4×4 binomial kernel), or `{ kind: 'sharpen', strength }` (integer 0–10).
+Sharpening adds the difference between the narrow and 8×8 broad filter's
+luminance to the narrow-filtered RGB. Alpha follows the narrow filter.
+Strength zero selects Gaussian. The wider filters clamp edge taps and use
+the same linear-light and sRGB attachment contract as the default.
+GPU-authored custom chains select their own filtering in the generator recipe.
+
 For generated normal outputs, `GeneratedTextureDescriptor.mipFilter` may select
 `normal-roughness` (default: `box`). This mode requires linear `rgba8unorm` and
 `mips: { kind: 'generate' }`. Level zero is an encoded RGB unit normal with zero

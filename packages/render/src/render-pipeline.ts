@@ -207,6 +207,7 @@ export interface RenderPipelineTopology {
   readonly materialSceneDepth?: boolean | undefined;
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
   readonly preTemporalEffects?: readonly string[];
+  readonly hdrOutputEffects?: readonly string[];
   readonly subsurface?: { readonly quality: 'low' | 'high' };
   /** One producer/reader layout for the entire Deferred view. */
   readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
@@ -215,6 +216,7 @@ export interface RenderPipelineTopology {
   readonly forwardDirectionalShadow?: import('./pipeline/forward-shadow-admission').ForwardShadowAdmission;
   readonly forwardContactShadows?: boolean;
   readonly forwardCapsuleShadows?: boolean;
+  readonly deferredCapsuleShadows?: boolean;
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
   readonly pipelineId: string;
   /** Same per-view admission catalog authorization and stock Standard graph production. */
@@ -542,7 +544,6 @@ export interface RenderPipelineFeatureTarget {
 export interface RenderPipelineGpuDrivenSourcePreparation {
   isCurrent(): boolean;
   pipelineRequests(): Iterable<() => boolean>;
-  prepareWindows(): Generator<void, Result<void, RhiError>>;
   prepareBundles(
     input: import('./gpu-driven/source-raster-bundles').SourceRasterPassBindings,
   ): Generator<void, Result<void, RhiError>>;
@@ -630,6 +631,7 @@ export type GpuDrivenDrawPhase = 'all' | 'late';
 /** Material family selected by a typed scene pass for GPU-driven encoding. */
 export type RenderPipelineGpuDrivenFilter =
   | 'opaque'
+  | 'opaque-depth-velocity'
   | 'deferred-opaque'
   | 'forward-only-opaque'
   | 'single-layer-medium';
@@ -659,6 +661,7 @@ export interface GpuDrivenStandardPbrFrameResources {
     | {
         readonly group: BindGroup;
         readonly byteOffset: number;
+        readonly dynamicOffsetCount?: 0 | 1;
         readonly reflection?: import('./reflection/primitive-bindings').PrimitiveReflection;
       }
     | undefined;

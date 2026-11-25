@@ -1,8 +1,10 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import { freezeJson, isDeepFrozenJson, type MaterialPass } from '@forgeax/engine-types';
+import { materialAlphaMask } from './material-alpha-mask';
 import { prepareMaterialLayoutIdentity } from './material-layout-facts';
-import type { MaterialSnapshot } from './render-system-extract';
+import type { DispatchEntry, MaterialSnapshot } from './render-system-extract';
 import type { StandardSceneDataContributorProgramFact } from './temporal/scene-data';
+import { standardTransmissionValue } from './transmission/projection';
 
 // A fixed value fact belongs to the snapshot, independently of its latest resource.
 // Borrowed snapshots keep the original direct resource entry.
@@ -15,6 +17,13 @@ interface MaterialProgramObservation {
 }
 
 type ProgramObservations = Map<MaterialPass, MaterialProgramObservation>;
+export type MaterialDispatchPass = Omit<
+  DispatchEntry,
+  'entityIndex' | 'renderableIndex' | 'layer' | 'materialShaderId'
+> & { readonly materialShaderId: string };
+interface MaterialPassDeclaration {
+  prepared?: readonly MaterialDispatchPass[];
+}
 type SnapshotEntry =
   | MaterialResource
   | {
@@ -22,9 +31,39 @@ type SnapshotEntry =
       readonly valuesOwned: boolean;
       temporalDisplacement?: boolean;
       readonly programDataCaptured?: true;
+      readonly rasterFlags?: number;
       programs?: ProgramObservations;
+      dispatch?: MaterialPassDeclaration;
     };
 const resources = new WeakMap<MaterialSnapshot, SnapshotEntry>();
+
+/** Scalar pipeline inputs belong to this value version, including derived parameter versions. */
+export const MATERIAL_RASTER_ALPHA_MASK = 1;
+function rasterFlags(snapshot: MaterialSnapshot): number {
+  return (
+    (materialAlphaMask(snapshot.paramSnapshot) ? MATERIAL_RASTER_ALPHA_MASK : 0) |
+    (snapshot.transparent === true ? 2 : 0) |
+    (standardTransmissionValue(snapshot) !== undefined ? 4 : 0)
+  );
+}
+
+/** Only the producer of detached pass data and owned parameter values issues these flags. */
+export function ownedMaterialRasterFlags(snapshot: MaterialSnapshot): number | undefined {
+  const entry = resources.get(snapshot);
+  return entry === undefined || entry instanceof MaterialResource ? undefined : entry.rasterFlags;
+}
+
+/** One declaration for a captured material and its producer-owned parameter projections. */
+export function ownedMaterialPassDeclaration(
+  snapshot: MaterialSnapshot,
+): MaterialPassDeclaration | undefined {
+  const entry = resources.get(snapshot);
+  if (entry === undefined || entry instanceof MaterialResource) return undefined;
+  if (entry.dispatch !== undefined) return entry.dispatch;
+  if (!entry.valuesOwned || entry.programDataCaptured !== true) return undefined;
+  entry.dispatch = {};
+  return entry.dispatch;
+}
 // Only detached, frozen metadata is compared as the previous value. Retain its
 // key order on first comparison so value edits do not enumerate it again.
 const previousProgramKeys = new WeakMap<object, readonly string[]>();
@@ -90,6 +129,7 @@ function recordOwnedMaterialSnapshot(
 ): MaterialSnapshot {
   const captured = Object.freeze(Object.assign(snapshot, { immutableValues: true as const }));
   resources.set(captured, {
+    rasterFlags: rasterFlags(captured),
     resource: undefined,
     valuesOwned: true,
     programDataCaptured: true,
@@ -116,14 +156,28 @@ function programData(snapshot: MaterialSnapshot) {
   };
 }
 
+const programFields = [
+  'passes',
+  'materialContext',
+  'materialProgramKeys',
+  'materialProgramInputs',
+  'materialPublication',
+] as const;
+
 function captureProgramData(snapshot: MaterialSnapshot) {
   const programs = programData(snapshot);
-  if (!isDeepFrozenJson(programs.passes)) return freezeJson(structuredClone(programs));
-  // A fresh context or key table must not trigger a copy of already frozen passes.
-  const { passes, ...facts } = programs;
-  if (Object.values(facts).every((value) => value === undefined || isDeepFrozenJson(value)))
-    return programs;
-  return { passes, ...freezeJson(structuredClone(facts)) };
+  let borrowed: Partial<Record<(typeof programFields)[number], object>> | undefined;
+  for (const field of programFields) {
+    const value = programs[field];
+    if (value !== undefined && !isDeepFrozenJson(value)) {
+      borrowed ??= {};
+      borrowed[field] = value;
+    }
+  }
+  // Clone borrowed roots in one operation to preserve their shared mutable descendants.
+  // Proven immutable program inputs retain the issuing shader's array and publication identities.
+  if (borrowed !== undefined) Object.assign(programs, freezeJson(structuredClone(borrowed)));
+  return programs;
 }
 
 function sameProgramData(current: MaterialSnapshot, previous: MaterialSnapshot): boolean {
@@ -188,6 +242,25 @@ function sameProgramSource(a: MaterialSnapshot, b: MaterialSnapshot): boolean {
 
 /** One renderer's accepted shared material. Entity bindings retain this identity. */
 export class MaterialResource {
+  #frameAddress?: number;
+  static #nextFrameAddress = 1;
+  static readonly #wrapperAddresses = new WeakMap<MaterialResource, number>();
+
+  /** @internal Only material identities consume lanes in the Scene material directory. */
+  static _frameAddress(resource: MaterialResource): number {
+    if (#frameAddress in resource) {
+      resource.#frameAddress ??= MaterialResource.#nextFrameAddress++;
+      return resource.#frameAddress;
+    }
+    const wrappers = MaterialResource.#wrapperAddresses;
+    let address = wrappers.get(resource);
+    if (address === undefined) {
+      address = MaterialResource.#nextFrameAddress++;
+      wrappers.set(resource, address);
+    }
+    return address;
+  }
+
   private current: MaterialSnapshot;
   private fixedValues: MaterialSnapshot | undefined;
   private fixedPrograms: ProgramObservations | undefined;
@@ -268,6 +341,7 @@ export class MaterialResource {
       this.fixedPrograms !== undefined && snapshot.passes.includes(pass)
         ? this.fixedPrograms
         : undefined;
+    const authoredShaderId = runtimeMaterialShaderId(pass.program.module, pass.name);
     const selectedProgramKey = snapshot.materialProgramKeys?.[pass.name];
     const program = snapshot.materialPublication?.programs.find(
       (entry) => entry.pass === pass.name,
@@ -275,10 +349,9 @@ export class MaterialResource {
     const fact: StandardSceneDataContributorProgramFact = Object.freeze({
       pass: pass.name,
       authoredModule: pass.program.module,
-      authoredShaderId: runtimeMaterialShaderId(pass.program.module, pass.name),
+      authoredShaderId,
       selectedProgramKey,
-      registryLookupKey:
-        selectedProgramKey ?? runtimeMaterialShaderId(pass.program.module, pass.name),
+      registryLookupKey: selectedProgramKey ?? authoredShaderId,
       fragmentEntryPoints: Object.freeze(
         (snapshot.materialProgramInputs?.[pass.name]?.entryPoints ?? [])
           .filter((entry) => entry.stage === 'fragment')
@@ -300,9 +373,7 @@ export class MaterialResource {
       candidates: Object.freeze([fact]),
       publication: JSON.stringify([
         snapshot.materialPublication?.identity ?? null,
-        snapshot.materialProgramKeys === undefined
-          ? runtimeMaterialShaderId(pass.program.module, pass.name)
-          : selectedProgramKey,
+        snapshot.materialProgramKeys === undefined ? authoredShaderId : selectedProgramKey,
       ]),
       selectedProgram: JSON.stringify(fact.program ?? null),
       identity: owner,
@@ -348,10 +419,12 @@ export function deriveOwnedMaterialParameters(
     paramSnapshot: parameters,
     immutableValues: true as const,
   });
+  const dispatch = ownedMaterialPassDeclaration(sourceSnapshot);
   resources.set(snapshot, {
     resource: undefined,
     valuesOwned: true,
     programs: sourceEntry.programs,
+    ...(dispatch === undefined ? {} : { dispatch, rasterFlags: rasterFlags(snapshot) }),
   });
   const derived = MaterialResource.from(snapshot);
   return source.snapshot === sourceSnapshot && source.ownsValues(sourceSnapshot)

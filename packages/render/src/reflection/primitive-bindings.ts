@@ -8,7 +8,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
-import { bindGroupChainLeaf } from '../record/mesh-ssbo';
+import { bindGroupChainNode } from '../record/mesh-ssbo';
 
 const REFLECTION_TEXTURE = 32;
 const REFLECTION_SAMPLER = 33;
@@ -41,16 +41,63 @@ export function samePrimitiveReflection(
   );
 }
 
-export type ReflectionLayout = {
-  readonly base: BindGroupLayout;
-  readonly layout: BindGroupLayout;
-  readonly slots: ReadonlySet<number>;
-};
+/** Each admitted layout owns the physical groups for exactly its reflected slots. */
+export class ReflectionLayout {
+  private readonly groups = new WeakMap<object, unknown>();
+
+  constructor(
+    readonly base: BindGroupLayout,
+    readonly layout: BindGroupLayout,
+    private readonly mask: number,
+  ) {}
+
+  bind(
+    device: Pick<RhiDevice, 'createBindGroup'>,
+    base: BindGroup,
+    reflection: PrimitiveReflection,
+  ): BindGroup {
+    let node = bindGroupChainNode(this.groups, base);
+    if (this.mask & 1) node = bindGroupChainNode(node, reflection.prefilterView);
+    if (this.mask & 2) node = bindGroupChainNode(node, reflection.prefilterSampler);
+    if (this.mask & 4) node = bindGroupChainNode(node, reflection.intensityBuffer);
+    const installed = node.get(this) as BindGroup | undefined;
+    if (installed !== undefined) return installed;
+
+    const descriptor = primitiveGroups.get(base);
+    if (descriptor === undefined) throw new Error('The primitive binding has no geometry receipt');
+    const entries: BindGroupEntry[] = [...descriptor.entries];
+    if (this.mask & 1)
+      entries.push({
+        binding: REFLECTION_TEXTURE,
+        resource: { kind: 'textureView', value: reflection.prefilterView },
+      });
+    if (this.mask & 2)
+      entries.push({
+        binding: REFLECTION_SAMPLER,
+        resource: { kind: 'sampler', value: reflection.prefilterSampler },
+      });
+    if (this.mask & 4)
+      entries.push({
+        binding: REFLECTION_PARAMS,
+        resource: { kind: 'buffer', value: { buffer: reflection.intensityBuffer } },
+      });
+    const group = device
+      .createBindGroup({ label: 'pbr-primitive-reflection-bg', layout: this.layout, entries })
+      .unwrap();
+    node.set(this, group);
+    return group;
+  }
+}
 
 const baseLayouts = new WeakMap<BindGroupLayout, Map<number, ReflectionLayout>>();
 const pipelines = new WeakMap<RenderPipeline, ReflectionLayout>();
 const primitiveGroups = new WeakMap<BindGroup, BindGroupDescriptor>();
-const groupCache = new WeakMap<object, unknown>();
+
+export function primitiveReflectionBindingBit(binding: number): number {
+  return binding >= REFLECTION_TEXTURE && binding <= REFLECTION_PARAMS
+    ? 1 << (binding - REFLECTION_TEXTURE)
+    : 0;
+}
 
 export function primitiveReflectionReads(
   entries: readonly ShaderEntryPointReads[] | undefined,
@@ -58,10 +105,8 @@ export function primitiveReflectionReads(
 ): number {
   const reads = entries?.find((entry) => entry.stage === 'fragment' && entry.name === fragment);
   let mask = 0;
-  for (const { group, binding } of reads?.bindings ?? []) {
-    if (group === 2 && binding >= REFLECTION_TEXTURE && binding <= REFLECTION_PARAMS)
-      mask |= 1 << (binding - REFLECTION_TEXTURE);
-  }
+  for (const { group, binding } of reads?.bindings ?? [])
+    if (group === 2) mask |= primitiveReflectionBindingBit(binding);
   return mask;
 }
 
@@ -85,7 +130,7 @@ export function projectPrimitiveReflectionLayout(
       entries: [...entries, ...selected],
     })
     .unwrap();
-  const result = { base, layout, slots: new Set(selected.map(({ binding }) => binding)) };
+  const result = new ReflectionLayout(base, layout, mask);
   byReads.set(mask, result);
   return result;
 }
@@ -116,46 +161,5 @@ export function primitiveForPipeline(
   const layout = pipelines.get(pipeline);
   if (layout === undefined) return base;
   if (reflection === undefined) throw new Error('Primitive reflection resources are required');
-  return primitiveWithReflection(device, base, layout, reflection);
-}
-
-function primitiveWithReflection(
-  device: Pick<RhiDevice, 'createBindGroup'>,
-  base: BindGroup,
-  layout: ReflectionLayout,
-  reflection: PrimitiveReflection,
-): BindGroup {
-  const descriptor = primitiveGroups.get(base);
-  if (descriptor === undefined) throw new Error('The primitive binding has no geometry receipt');
-  const slots = layout.slots;
-  const keys: object[] = [base, layout.layout];
-  if (slots.has(REFLECTION_TEXTURE)) keys.push(reflection.prefilterView);
-  if (slots.has(REFLECTION_SAMPLER)) keys.push(reflection.prefilterSampler);
-  if (slots.has(REFLECTION_PARAMS)) keys.push(reflection.intensityBuffer);
-  const cache = bindGroupChainLeaf(groupCache, keys);
-  const cached = cache.get('primitive-reflection');
-  if (cached !== undefined) return cached;
-  const extra: BindGroupEntry[] = [
-    {
-      binding: REFLECTION_TEXTURE,
-      resource: { kind: 'textureView', value: reflection.prefilterView },
-    },
-    {
-      binding: REFLECTION_SAMPLER,
-      resource: { kind: 'sampler', value: reflection.prefilterSampler },
-    },
-    {
-      binding: REFLECTION_PARAMS,
-      resource: { kind: 'buffer', value: { buffer: reflection.intensityBuffer } },
-    },
-  ];
-  const group = device
-    .createBindGroup({
-      label: 'pbr-primitive-reflection-bg',
-      layout: layout.layout,
-      entries: [...descriptor.entries, ...extra.filter(({ binding }) => slots.has(binding))],
-    })
-    .unwrap();
-  cache.set('primitive-reflection', group);
-  return group;
+  return layout.bind(device, base, reflection);
 }

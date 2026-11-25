@@ -46,17 +46,22 @@ export function validateStandardLeanRoster<T extends Pick<StandardSelection, 'de
   expect(lean.map((variant) => variant.defines)).toEqual(expectedLean);
   for (const waves of [false, true]) {
     for (const rgba16 of [false, true]) {
-      const lane = lean.filter(
-        (variant) =>
-          variant.defines.WATER_WAVES_AVAILABLE === waves &&
-          variant.defines.WATER_INFO_RGBA16 === rgba16,
-      );
-      expect(lane).toHaveLength(640);
-      const added = lane.filter(
-        ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
-      );
-      expect(added).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
+      for (const [ssr, total, clipped, generalShadow] of [
+        [false, 640, 256, 32],
+        [true, 96, 32, 8],
+      ] as const) {
+        const lane = lean.filter(
+          ({ defines }) =>
+            defines.WATER_WAVES_AVAILABLE === waves &&
+            defines.WATER_INFO_RGBA16 === rgba16 &&
+            defines.FORWARD_INLINE_SSR === ssr,
+        );
+        expect(lane).toHaveLength(total);
+        expect(lane.filter(({ defines }) => defines.CLIPPING_PLANES)).toHaveLength(clipped);
+        expect(
+          lane.filter(({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING),
+        ).toHaveLength(generalShadow);
+      }
     }
   }
   return lean;

@@ -127,6 +127,7 @@ export function addRayReflectionPasses(
             previous: resources.textureView(previous.value).unwrap(),
           },
           pixelCount,
+          reflection.composeReflection === true,
         )
         .unwrap();
     },

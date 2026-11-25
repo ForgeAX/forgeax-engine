@@ -14,10 +14,12 @@ it.each([
   const source = (name: string) =>
     readFileSync(resolve('packages/shader/src', `${name}.wgsl`), 'utf8');
   const imports = Object.fromEntries(
-    ['common', 'standard-gbuffer', 'depth-pyramid-sample', 'scene-temporal'].map((name) => {
-      const text = source(name);
-      return [text.match(/#define_import_path (\S+)/)?.[1] ?? '', text];
-    }),
+    ['common', 'standard-gbuffer', 'depth-pyramid-sample', 'scene-temporal', 'ssr-ray'].map(
+      (name) => {
+        const text = source(name);
+        return [text.match(/#define_import_path (\S+)/)?.[1] ?? '', text];
+      },
+    ),
   );
   const shaders = {} as Record<
     Exclude<keyof SsrProbeShaderSources, 'gbuffer' | 'compactGbuffer'>,

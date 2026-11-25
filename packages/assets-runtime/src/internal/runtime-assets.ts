@@ -11,6 +11,7 @@ interface RuntimeAssetOwner {
   readonly sources: ReadonlyMap<string, AssetHandle>;
   readonly origins: ReadonlyMap<number, AdoptedAssetSource>;
   readonly decoders: DecoderRegistry;
+  materialDeclaration(payload: object): object | undefined;
   source(): AssetSource | undefined;
   ownsPublicationReads(): boolean;
 }
@@ -37,6 +38,14 @@ export function runtimeAssets(owner: AssetReferenceOwner | undefined): AssetReco
   const records = owner === undefined ? undefined : owners.get(owner)?.records;
   if (records === undefined) throw new TypeError('a runtime asset owner is required');
   return records;
+}
+
+/** Identity of the admitted fields and passes. Value-only patches retain their declaration. */
+export function runtimeMaterialDeclaration(
+  owner: AssetReferenceOwner,
+  payload: object,
+): object | undefined {
+  return owners.get(owner)?.materialDeclaration(payload);
 }
 
 /** Commit admitted mesh content ranges with a producer's existing asset adoption. */

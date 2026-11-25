@@ -79,21 +79,19 @@ Games built on the engine, authored through the `forgeax` CLI and an AI-first wo
 <a id="get-started"></a>
 ## Get started
 
-Install the engine and its AI toolchain into your editor:
+Install Engine with Node.js and pnpm available. The installed `forgeax` CLI creates
+projects and opens View.
 
 ```bash
-npx -y @forgeax/game install
-```
-
-Available for Claude Code · Cursor · ChatGPT · Kimi Code · DeepSeek · VS Code.
-
-Or start a project from the engine directly:
-
-```bash
-pnpm dlx @forgeax/engine project new my-game --template game-3d
+npm install -g @forgeax/engine
+forgeax project new my-game --template game-3d
 cd my-game
-pnpm exec forgeax dev start --headless false
+forgeax dev start
 ```
+
+Use an Engine version that includes the authoring resources. See the
+[Engine package guide](packages/engine/README.md#create-a-project) for the local
+package route.
 
 `game-3d` is a third-person reference; `empty` is a minimal start. Read the generated README and skills, then see [Engine](packages/engine/README.md) and the [CLI guide](skills/forgeax-engine-cli/SKILL.md).
 
@@ -115,7 +113,7 @@ Observations carry a `revision`; captures return PNG and report references. For 
 </details>
 
 <details>
-<summary>Build from engine source / SDK</summary>
+<summary>Build from Engine source</summary>
 
 Toolchain versions are defined in [`.nvmrc`](.nvmrc), [`.pnpm-version`](.pnpm-version), and [`.bun-version`](.bun-version).
 
@@ -127,12 +125,15 @@ pnpm test
 
 | Scenario | Entry |
 |:--|:--|
-| Install the SDK | `pnpm dlx @forgeax/engine sdk install ./forgeax-sdk` |
-| SDK `source/engine/` | Independent public source with `.forgeax-public-distribution` and prebuilt WASM; run the install / build commands above without private submodules |
+| Public source checkout | Independent public source with `.forgeax-public-distribution` and prebuilt WASM; run the install / build commands above without private submodules |
 | Full contributor checkout | Clone with `--recurse-submodules` for authorized private asset access; run `pnpm build` for the complete application fleet |
 | Single demo iteration | `pnpm build:app hello/triangle`; broader acceptance follows the Smoke gate |
 
-The SDK includes built packages, templates, skills, and Engine source. See the [SDK guide](skills/forgeax-engine-sdk/SKILL.md) for release and acceptance contracts.
+`pnpm engine:pack --output <directory>` builds the Engine npm archive under
+the 64 MB compressed size limit (64,000,000 bytes). The
+[authoring guide](skills/forgeax-engine-authoring/SKILL.md) covers game work.
+Both local and GitHub development releases publish this package under `next`.
+See the [release procedure](packages/engine/RELEASING.md).
 
 </details>
 

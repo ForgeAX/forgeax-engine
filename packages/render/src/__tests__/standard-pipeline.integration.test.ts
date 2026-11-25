@@ -391,8 +391,8 @@ it.each([
   const graph = result.unwrap();
   const info = graph.inspect();
   const names = info.passes.map((pass) => pass.name);
-  expect(names).toContain('ssao-furthest-hzb-seed');
-  expect(names).not.toContain('ssao-furthest-hzb-reduce-chain');
+  expect(names).toContain('hzb-seed');
+  expect(names).not.toContain('hzb-reduce-chain');
   expect(names).not.toContain('ssao-blur');
   expect(info.resources.find((resource) => resource.label === 'ssao-calc')).toMatchObject({
     descriptor: { format: 'r8unorm', size: { width: 1281, height: 721 } },
@@ -1245,19 +1245,25 @@ describe('forgeax::standard graph', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const names = result.value.inspect().passes.map((pass) => pass.name);
-    expect(names).toContain('depth-pyramid-seed');
+    expect(names).toContain('hzb-seed');
     expect(names).toContain('ssr-trace');
     expect(names).toContain('standard-scene-data');
     expect(names).toContain('ssr-compose');
     expect(names.indexOf('skybox')).toBeLessThan(names.indexOf('lighting'));
-    expect(names.indexOf('lighting')).toBeLessThan(names.indexOf('depth-pyramid-seed'));
+    expect(names.filter((name) => name === 'hzb-seed')).toHaveLength(1);
+    expect(names.indexOf('hzb-seed')).toBeLessThan(names.indexOf('lighting'));
+    for (const name of ['ssao-calc', 'ssr-trace']) {
+      expect(
+        result.value.inspect().passes.find((pass) => pass.name === name)?.accesses,
+      ).toContainEqual({ resource: 'hzb', usage: 'sampled-read' });
+    }
     expect(names.indexOf('ssr-compose')).toBeLessThan(names.indexOf('forward'));
     expect(names).toContain('reflection-fallback-observation');
     expect(result.value.inspect().resources.map((resource) => resource.label)).toEqual(
-      expect.arrayContaining(['depth-pyramid', 'ssr-trace', 'reflection-fallback-linear-hdr']),
+      expect.arrayContaining(['hzb', 'ssr-trace', 'reflection-fallback-linear-hdr']),
     );
-    for (const label of ['ssr-trace', 'ssr-hit-reactivity', 'depth-pyramid']) {
-      const size = label === 'depth-pyramid' ? internal / 2 : internal;
+    for (const label of ['ssr-trace', 'ssr-hit-reactivity', 'hzb']) {
+      const size = label === 'hzb' ? 2 ** (Math.ceil(Math.log2(internal)) - 1) : internal;
       expect(
         result.value.inspect().resources.find((resource) => resource.label === label),
       ).toMatchObject({ descriptor: { size: { width: size, height: size } } });
@@ -1936,11 +1942,13 @@ describe('forgeax::standard graph', () => {
           'transparent',
         ]);
       expect(names).not.toContain('atmosphere-opaque-composition');
-      expect(names.includes('forward-ao-depth-resolve')).toBe(ao);
+      expect(names.includes('forward-screen-depth-resolve')).toBe(ao);
       expect(names.includes('ssao-calc')).toBe(ao);
       expect(names).not.toContain('ssao-scene-color');
       if (ao) {
-        expect(names.indexOf('forward-ao-depth-resolve')).toBeLessThan(names.indexOf('ssao-calc'));
+        expect(names.indexOf('forward-screen-depth-resolve')).toBeLessThan(
+          names.indexOf('ssao-calc'),
+        );
         expect(names.indexOf('ssao-calc')).toBeLessThan(names.indexOf('main'));
       }
     } finally {
@@ -2326,20 +2334,37 @@ it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%
   if (!result.ok) return;
   try {
     const info = result.value.inspect();
-    const producer = info.passes.find((pass) => pass.name === 'standard-scene-data');
-    expect(producer?.accesses).toContainEqual({
-      resource: 'standard-scene-surface-depth',
+    const screenDepth = 'forward-screen-depth-resolve-depth';
+    const pass = (name: string) => info.passes.find((pass) => pass.name === name);
+    expect(pass('standard-depth-prepass')).toBeUndefined();
+    expect(pass('standard-depth-velocity')?.accesses).toContainEqual({
+      resource: 'scene-depth',
       usage: 'depth-stencil-write',
     });
+    expect(pass('standard-scene-surface-center')).toBeUndefined();
+    expect(pass('forward-screen-depth-resolve')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'scene-depth', usage: 'sampled-read' },
+        { resource: 'scene-temporal-msaa', usage: 'sampled-read' },
+        { resource: screenDepth, usage: 'depth-stencil-write' },
+        { resource: 'standard-scene-temporal', usage: 'color-attachment' },
+      ]),
+    );
+    if (ao)
+      expect(pass('ssao-calc')?.accesses).toContainEqual({
+        resource: screenDepth,
+        usage: 'sampled-read',
+      });
     expect(info.resources).toContainEqual(
       expect.objectContaining({
-        label: 'standard-scene-surface-depth',
+        label: screenDepth,
         descriptor: expect.objectContaining({ sampleCount: 1 }),
       }),
     );
-    expect(info.passes.filter((pass) => pass.name === 'standard-scene-surface-data')).toHaveLength(
-      1,
-    );
+    expect(pass('motion-blur')?.accesses).toContainEqual({
+      resource: 'standard-scene-temporal',
+      usage: 'sampled-read',
+    });
     expect(
       info.resources.some((resource) => resource.label === 'standard-scene-surface-normal'),
     ).toBe(false);

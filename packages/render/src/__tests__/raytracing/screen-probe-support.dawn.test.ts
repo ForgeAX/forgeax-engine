@@ -1505,13 +1505,25 @@ function assertHandoffControls(controls: Readonly<WorldHandoffControls>) {
   }
 }
 
+function unresolvedWorldHandoffArtifactStatus(
+  status: 'pending' | 'pass' | 'fail',
+  deadlineMet: boolean,
+): 'pass' | 'fail' {
+  return status === 'pass' && deadlineMet ? 'pass' : 'fail';
+}
+
 // The first Lavapipe world dispatch took 121 seconds to compile on the CI runner.
+const unresolvedWorldHandoffDeadlineMs = 180_000;
 it('traces the whole unresolved world ray when a thin wall has no raster coverage', {
-  timeout: 180_000,
+  timeout: unresolvedWorldHandoffDeadlineMs,
 }, async () => {
   const began = performance.now();
   const phases: { stage: string; elapsedMs: number }[] = [];
-  const mark = (stage: string) => phases.push({ stage, elapsedMs: performance.now() - began });
+  const mark = (stage: string) => {
+    const observation = { stage, elapsedMs: performance.now() - began };
+    phases.push(observation);
+    if (process.env.CI) console.error('[screen-probe-handoff]', JSON.stringify(observation));
+  };
   const read = (name: string) =>
     readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8');
   const compiled = (
@@ -1707,6 +1719,7 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
  if(index==0u){rays[64].radiance=card.xyz;rays[64].hitDistance=card.w;}
  return card;
 }`;
+    mark('world-pipeline-start');
     const worldModule = device.createShaderModule({ code: worldCode });
     const world = device.createComputePipeline({
       layout: 'auto',
@@ -1715,6 +1728,7 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
         entryPoint: 'traceWorldProbes',
       },
     });
+    mark('world-pipeline-ready');
     const worldResources: Record<number, GPUBindingResource> = Object.fromEntries(
       [
         { buffer: voxels },
@@ -1843,8 +1857,11 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
         );
         command.copyBufferToBuffer(rays, 0, readback, rayBytes.byteLength, rayBytes.byteLength);
         command.copyBufferToBuffer(rays, 64 * 32 + 16, readback, rayBytes.byteLength * 2, 16);
+        mark(`${side}:${mode}:before-submit`);
         device.queue.submit([command.finish()]);
+        mark(`${side}:${mode}:submitted`);
         await readback.mapAsync(1);
+        mark(`${side}:${mode}:world-readback`);
         const bytes = readback.getMappedRange().slice(0);
         readback.unmap();
         writeFileSync(
@@ -1868,6 +1885,7 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
           new Uint8Array(bytes, rayBytes.byteLength, 32),
         );
         const reduced = await runSupportStages(device, downstream);
+        mark(`${side}:${mode}:resolve-readback`);
         const row = {
           screen: Array.from(values.slice(0, 8)),
           world: Array.from(values.slice(offset + 4, offset + 7)),
@@ -1890,11 +1908,25 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
     assertHandoffControls(controls);
     status = 'pass';
   } finally {
-    if (status !== 'pass') status = 'fail';
+    const elapsedMs = performance.now() - began;
+    const deadlineMet = elapsedMs <= unresolvedWorldHandoffDeadlineMs;
+    status = unresolvedWorldHandoffArtifactStatus(status, deadlineMet);
     mkdirSync('artifacts/screen-probe/dawn', { recursive: true });
     writeFileSync(
       'artifacts/screen-probe/dawn/handoff-result.json',
-      JSON.stringify({ status, controls, errors, phases }, null, 2),
+      JSON.stringify(
+        {
+          status,
+          elapsedMs,
+          deadlineMs: unresolvedWorldHandoffDeadlineMs,
+          deadlineMet,
+          controls,
+          errors,
+          phases,
+        },
+        null,
+        2,
+      ),
     );
     for (const value of owned) value.destroy();
     for (const value of textures) value.destroy();

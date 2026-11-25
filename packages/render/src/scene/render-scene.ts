@@ -62,7 +62,7 @@ import type { MaterialFrame } from './material-dispatch';
 import type { MeshFrame } from './mesh-frame';
 import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import type { ProbeBlendBufferProjection } from './probe-blend';
-import { type FrameCacheTally, worldBounds, writeBounds } from './render-scene-snapshots';
+import { type FrameCacheTally, writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
 import {
   GeneratedViewRows,
@@ -731,25 +731,17 @@ export class PersistentRenderScene {
   ): ExtractedFrame {
     const direct = this.directRenderWorld(assets);
     const source = direct.source;
-    let resourceFrame: ExtractedFrame | undefined;
     source.staged = true;
     source.assets = assets;
     source.world = world;
     source.lease = lease;
-    // The step's first built frame is its resource frame.
-    source.buildCandidateFrame = (request) => {
-      const frame = buildCandidateFrame(request);
-      resourceFrame ??= frame;
-      return frame;
-    };
+    source.buildCandidateFrame = buildCandidateFrame;
     const adoption = this.runDirectFrame(direct);
-    const advance = this.sharedStep(() => adoptedAdvance(adoption));
-    const frame = resourceFrame ?? buildCandidateFrame('none');
-    return this.deriveFramePlan(
-      this.follow(advance),
-      frame,
-      renderFeatureViewIdentity(frame.cameras[0]),
-    );
+    try {
+      return this.followAdoption(adoption);
+    } finally {
+      adoption.localFrame = undefined;
+    }
   }
 
   private directRenderWorld(
@@ -765,18 +757,21 @@ export class PersistentRenderScene {
 
   /**
    * Derive this view's frame from the frame's shared scene adoption (the
-   * `render-scene` system's product), building only its own resource frame,
-   * which it fences on `resourceWorld`'s asset closure. An adoption failure is
+   * `render-scene` system's product), using its adopted primary frame or
+   * fencing a separately selected view on the same asset closure. An adoption failure is
    * this view's extraction failure.
    */
   followAdoption(
     adoption: RenderSceneAdoption,
-    buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
+    buildCandidateFrame?: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     profileSession?: RecorderSession,
   ): ExtractedFrame {
     const advance = this.sharedStep(() => adoptedAdvance(adoption));
-    const resourceFrame = buildCandidateFrame('none');
-    this.shared.fenceViewResourceFrame(resourceFrame);
+    const resourceFrame =
+      buildCandidateFrame === undefined ? adoption.localFrame : buildCandidateFrame('none');
+    if (resourceFrame === undefined)
+      throw new Error('A primary local view requires its adopted frame');
+    if (buildCandidateFrame !== undefined) this.shared.fenceViewResourceFrame(resourceFrame);
     const identity = renderFeatureViewIdentity(resourceFrame.cameras[0]);
     if (profileSession === undefined)
       return this.deriveFramePlan(this.follow(advance), resourceFrame, identity);
@@ -1298,7 +1293,7 @@ export class PersistentRenderScene {
         if (!residencySelected(residencySelection, source.residencyGroup)) return false;
         const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.entityKey);
         return source.terrainSection !== undefined || source.generatedMesh !== undefined
-          ? writeBounds(worldBounds(source), out)
+          ? writeTransformedWorldBounds(out, source.localAabb, source.transform.world)
           : slot !== undefined &&
               projection.writeCullingWorldBoundsAt(slot, out, meshFrame, materialFrame, skinFrame);
       },

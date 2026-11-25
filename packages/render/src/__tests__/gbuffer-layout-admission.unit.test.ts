@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { requireStandardGBufferReceipt } from '../material-program-inputs';
 import {
   SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
 } from '../temporal/scene-data';
 import { createSceneDataCatalog } from '../temporal/scene-data-catalog';
@@ -35,7 +36,7 @@ describe('versioned Standard GBuffer admission', () => {
   it.each([
     'forward',
     'deferred',
-  ] as const)('publishes only the actual %s normal schema', (renderPath) => {
+  ] as const)('publishes supported %s surface schemas and rejects the retired Forward normal schema', (renderPath) => {
     const catalog = createSceneDataCatalog({
       featureIdentity: 'test',
       viewIdentity: 'view',
@@ -56,22 +57,21 @@ describe('versioned Standard GBuffer admission', () => {
           renderPath === 'deferred' ? 'standard-deferred-gbuffer' : 'standard-forward-surface-pass',
       },
     });
-    const requested =
-      renderPath === 'deferred'
-        ? SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
-        : SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA;
-    const other =
-      renderPath === 'deferred'
-        ? SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
-        : SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA;
-    const token = catalog.require(requested);
-    expect(token.schema).toBe(requested);
-    expect(token.format).toBe(renderPath === 'deferred' ? 'rg32uint' : 'r32uint');
-    expect(catalog.validate(token).ok).toBe(true);
-    expect(catalog.availabilityFor(other)).toMatchObject({
-      status: 'unavailable',
-      reason: 'producer-missing',
-    });
-    expect(() => catalog.require(other)).toThrow();
+    const depth = catalog.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
+    expect(depth.format).toBe('depth32float-stencil8');
+    expect(catalog.validate(depth).ok).toBe(true);
+    const unavailable = { status: 'unavailable', reason: 'producer-missing' };
+    const gbuffer = SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA;
+    if (renderPath === 'deferred') {
+      const token = catalog.require(gbuffer);
+      expect(token.format).toBe('rg32uint');
+      expect(catalog.validate(token).ok).toBe(true);
+    } else {
+      expect(catalog.availabilityFor(gbuffer)).toEqual(unavailable);
+      expect(() => catalog.require(gbuffer)).toThrow();
+    }
+    const retired = SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA;
+    expect(catalog.availabilityFor(retired)).toEqual(unavailable);
+    expect(() => catalog.require(retired)).toThrow();
   });
 });

@@ -79,6 +79,7 @@ async function dispatch(
   entries: GPUBindGroupEntry[],
   count: number,
   vectors: number,
+  constants?: Record<string, number>,
 ): Promise<Float32Array> {
   const size = count * vectors * 16;
   const output = device.createBuffer({
@@ -97,7 +98,7 @@ async function dispatch(
     ).toEqual([]);
     const pipeline = await device.createComputePipelineAsync({
       layout: 'auto',
-      compute: { module, entryPoint: 'main' },
+      compute: { module, entryPoint: 'main', ...(constants === undefined ? {} : { constants }) },
     });
     const group = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -122,6 +123,64 @@ async function dispatch(
   }
 }
 
+it.each([
+  false,
+  true,
+])('keeps both velocity axes and reserves clear velocity (extended=%s)', async (extended) => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('Dawn adapter unavailable');
+  const device = await adapter.requestDevice();
+  const temporal = readFileSync(new URL('scene-temporal.wgsl', root), 'utf8')
+    .split('\n')
+    .slice(1)
+    .join('\n');
+  try {
+    const result = await dispatch(
+      device,
+      `
+      ${temporal}
+      @group(0) @binding(100) var<storage, read_write> output: array<vec4f>;
+      @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3u) {
+        let motion = array<vec2f, 4>(vec2f(0.0), vec2f(0.00013, -0.00035),
+          vec2f(0.37, -0.52), vec2f(-8.0, 8.0))[id.x];
+        let packed = encodeSceneVelocityWithDepth(vec4f(motion, 0.0, 1.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let fallback = encodeSceneVelocityWithDepth(vec4f(motion, 0.0, 2.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let raster = encodeSceneVelocityRaster(vec4f(motion, 0.0, 2.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let expectedX = select(SCENE_VELOCITY_INVALID_MOTION, packed.x, sceneVelocityWithDepthOutput);
+        let saturated = encodeSceneVelocity(vec2f(8.0, -8.0));
+        output[id.x * 2u] = vec4f(decodeSceneVelocity(packed.x), f32(packed.x & 65535u), f32(packed.x >> 16u));
+        output[id.x * 2u + 1u] = vec4f(f32(packed.x != 0u && packed.x != SCENE_VELOCITY_INVALID_MOTION),
+          sceneVelocityPreviousDepth(packed.y), sceneVelocityReactive(packed.y),
+          f32(fallback.x == packed.x && fallback.y == SCENE_VELOCITY_INVALID_DEPTH &&
+            raster.x == expectedX && saturated != SCENE_VELOCITY_INVALID_MOTION));
+      }
+    `,
+      [],
+      4,
+      2,
+      extended ? { '64009': 1 } : undefined,
+    );
+    for (const [i, [x, y]] of [
+      [0, 0],
+      [0.00013, -0.00035],
+      [0.37, -0.52],
+    ].entries()) {
+      expect(result[i * 8]).toBeCloseTo(x, 4);
+      expect(result[i * 8 + 1]).toBeCloseTo(y, 4);
+    }
+    expect(Array.from(result.slice(2, 4))).toEqual([32767, 32767]);
+    expect(Array.from(result.slice(26, 28))).toEqual([1, 0]);
+    for (let i = 0; i < 4; i++) {
+      expect(result[i * 8 + 4]).toBe(1);
+      expect(result[i * 8 + 5]).toBeCloseTo(0.42, 6);
+      expect(result[i * 8 + 6]).toBe(1);
+      expect(result[i * 8 + 7]).toBe(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
 it('Water temporal entries distinguish animated shading normals from a frozen or static Surface', async () => {
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Water shading history requires a Dawn adapter');
@@ -145,7 +204,7 @@ struct SingleLayerWaterSurfaceData { normalWS: vec3<f32>, roughness: f32, covera
 struct WaterVertexOutput {
   bodyIndex: u32, maskAndVertexFlow: vec3<f32>, currentClip: vec4<f32>, previousClip: vec4<f32>,
 }
-struct WaterPrepassOutput { normalRoughness: vec4<u32>, coverage: vec4<f32>, temporal: vec4<f32> }
+struct WaterPrepassOutput { normalRoughness: u32, coverage: vec4<f32>, temporal: vec4<f32> }
 struct Body { timeAndMask: vec4<f32> }
 struct View { temporalProjection: vec4<f32> }
 const view = View(vec4<f32>(0.1, 100.0, 0.0, 0.0));
@@ -400,17 +459,21 @@ struct Seed { @location(0) temporal: vec4<f32>, @builtin(frag_depth) depth: f32 
 ${declarations}
 ${temporal}
 ${depth}
-struct WaterSsrHit { found: bool, uv: vec2<f32>, depth: f32 }
+struct SsrRayHit { found: bool, uv: vec2<f32>, depth: f32 }
 @group(0) @binding(1) var sceneTemporal: texture_2d<f32>;
 @group(0) @binding(2) var sceneDepth: texture_depth_2d;
 @group(0) @binding(3) var<storage, read> samples: array<Sample>;
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
 ${functionSource(trace, 'isFinite')}
-${functionSource(trace, 'waterHitPreviousScreen')}
+${functionSource(trace, 'reconstructWorldPosition')}
+${functionSource(trace, 'ssrPreviousHitUv')}
+fn ssrClipUv(clip: vec4f) -> vec2f {
+  return clip.xy / clip.w * vec2f(0.5, -0.5) + 0.5;
+}
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let uv = vec2<f32>((f32(id.x) + 0.5) / f32(arrayLength(&samples)), 0.5);
-  let hit = WaterSsrHit(true, uv, rawDepth(samples[id.x].depths.z));
-  result[id.x] = vec4<f32>(waterHitPreviousScreen(hit), textureLoad(sceneDepth, vec2<i32>(i32(id.x), 0), 0), 1.0);
+  let hit = SsrRayHit(true, uv, rawDepth(samples[id.x].depths.z));
+  result[id.x] = vec4<f32>(ssrPreviousHitUv(hit, vec2<i32>(i32(id.x), 0)), textureLoad(sceneDepth, vec2<i32>(i32(id.x), 0), 0), 1.0);
 }`,
           [
             { binding: 0, resource: { buffer: viewBuffer } },

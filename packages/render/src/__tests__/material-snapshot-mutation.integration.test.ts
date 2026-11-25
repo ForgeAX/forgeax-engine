@@ -3,8 +3,12 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
-import { deriveStandardLayerPlan, type MaterialAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import {
+  deriveStandardLayerPlan,
+  type MaterialAsset,
+  ParamSchemaProjectionOwner,
+} from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 import { projectStandardSurfacePasses } from '../assembly/material/surface-projection';
 import { samplerContribution } from '../assets/asset-decoders';
 import { MeshFilter } from '../components/mesh-filter';
@@ -109,6 +113,66 @@ describe('material snapshot mutation', () => {
     f.assets.dispose();
   });
 
+  it('owns one physical field layout through successive value edits and replaces a changed declaration', () => {
+    const f = fixture({
+      kind: 'material',
+      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
+      parameters: [{ name: 'baseColor', type: 'color' }],
+      values: { baseColor: [0.5, 0.5, 0.5, 1] },
+    });
+    const first = f.read();
+    expect(first.baseColor[0]).toBeCloseTo(0.21404, 4);
+    for (const channel of [0.25, 0.75, 0.5]) {
+      f.assets.update(f.handle, { values: { baseColor: [channel, 0, 0, 1] } }).unwrap();
+      const next = f.read();
+      expect(next.baseColor[0]).toBeCloseTo(((channel + 0.055) / 1.055) ** 2.4, 5);
+      expect(next.materialParamSchema).toBe(first.materialParamSchema);
+    }
+    f.assets.update(f.handle, { colorSpace: 'linear' }).unwrap();
+    const replaced = f.read();
+    expect(replaced.baseColor[0]).toBe(0.5);
+    expect(first.baseColor[0]).toBeCloseTo(0.21404, 4);
+    f.assets.dispose();
+  });
+
+  it('reads the current shader ABI on a value edit even when the author declaration is unchanged', () => {
+    const f = fixture({
+      kind: 'material',
+      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' } }],
+      values: { gain: 0.5 },
+    });
+    const owner = new ParamSchemaProjectionOwner();
+    const first = owner.admit({
+      ownerId: 'material-layout-test',
+      revision: 1,
+      schema: [{ name: 'gain', type: 'f32' }],
+    });
+    const second = owner.admit({
+      ownerId: 'material-layout-test',
+      revision: 2,
+      schema: [
+        { name: 'padding', type: 'vec4' },
+        { name: 'gain', type: 'f32' },
+      ],
+    });
+    const projection = vi
+      .spyOn(f.assets.shaderRegistry, 'materialParamSchemaProjection')
+      .mockReturnValue(first);
+    try {
+      const before = f.read();
+      expect(before.materialParamSchema).toBe(first.schema);
+      projection.mockReturnValue(second);
+      f.assets.update(f.handle, { values: { gain: 0.75 } }).unwrap();
+      const after = f.read();
+      expect(after.materialParamSchema).toBe(second.schema);
+      expect(after.paramSnapshot?.gain).toBe(0.75);
+      expect(before.paramSnapshot?.gain).toBe(0.5);
+    } finally {
+      projection.mockRestore();
+      f.assets.dispose();
+    }
+  });
+
   it('preserves authored texture and sampler readiness across initial and incremental preparation', () => {
     const f = fixture({
       kind: 'material',
@@ -131,6 +195,15 @@ describe('material snapshot mutation', () => {
       .unwrap();
     const sampler = f.assets.create({ kind: 'sampler', magFilter: 'nearest' }).unwrap();
     f.assets.update(f.handle, { values: { baseColorTexture: { texture, sampler } } }).unwrap();
+    const scope = worldRenderResources(f.world);
+    const resolve = vi.spyOn(scope, 'resolveAsset');
+    try {
+      const material = resolveMaterialSnapshot(f.handle, scope, f.assets);
+      expect(material.textureHandles?.get('baseColorTexture')).toBe(texture);
+      expect(resolve.mock.calls.filter(([handle]) => handle === texture)).toHaveLength(1);
+    } finally {
+      resolve.mockRestore();
+    }
     const first = f.extract().material.snapshot;
     expect(first.authoredTextureFields).toEqual(new Set(['baseColorTexture']));
     expect(first.authoredSamplerFields).toEqual(new Set(['baseColorTexture']));
@@ -232,10 +305,14 @@ describe('material snapshot mutation', () => {
       depthBiasSlopeScale: -2,
       depthBiasClamp: -0.01,
     });
-    expect(f.read().renderState).toEqual(prior.renderState);
+    f.assets.update(f.handle, { values: { roughness: 0.25 } }).unwrap();
+    const numeric = f.extract().material.snapshot;
+    expect(numeric.renderState).toBe(prior.renderState);
+    expect(numeric.passes).toBe(prior.passes);
+    expect(numeric.roughness).toBe(0.25);
     renderState.colorWriteMask = 5;
     renderState.depthBias = 2;
-    expect(f.extract().material.snapshot).toBe(prior);
+    expect(f.extract().material.snapshot).toBe(numeric);
     const edited = f.assets.read(f.handle).unwrap();
     if (edited.passes === undefined) throw new Error('Expected the root material Passes');
     const [head, ...tail] = edited.passes;

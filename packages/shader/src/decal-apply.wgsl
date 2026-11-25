@@ -1,4 +1,4 @@
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardReflectance, encodeStandardReflectance, decodeStandardGBufferNormal, encodeStandardGBufferNormal, standardGBufferValid, standardGBufferOcclusion, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT, STANDARD_GBUFFER_SCREEN_TRACE_MASK, compactGBufferLit, decodeCompactBaseColor, encodeCompactBaseColor}
+#import forgeax_pbr::gbuffer::{decodeStandardReflectance, encodeStandardReflectance, decodeStandardGBufferNormal, encodeStandardGBufferNormal, standardGBufferValid, standardGBufferOcclusion, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT, STANDARD_GBUFFER_SCREEN_TRACE_MASK, compactGBufferLit, decodeCompactBaseColor, encodeCompactBaseColor}
 
 @group(0) @binding(0) var originalNormal : texture_2d<u32>;
 @group(0) @binding(1) var originalAlbedo : texture_2d<u32>;
@@ -22,17 +22,6 @@ fn composeNormalRoughness(base: vec4<f32>, normal: vec4<f32>, roughness: vec4<f3
   var finalNormal = base.xyz;
   if (dot(normalSum, normalSum) > 0.000001) { finalNormal = normalize(normalSum); }
   return vec4<f32>(finalNormal, roughness.r + base.w * (1.0 - roughness.a));
-}
-
-@fragment
-fn fs_normal(@builtin(position) pixel: vec4<f32>) -> @location(0) u32 {
-  let coord = vec2<i32>(pixel.xy);
-  let normalBits = textureLoad(originalNormal, coord, 0).r;
-  let normal = textureLoad(decalNormal, coord, 0);
-  let roughness = textureLoad(decalRoughness, coord, 0);
-  if (normal.a == 0.0 && roughness.a == 0.0) { return normalBits; }
-  let composed = composeNormalRoughness(loadStandardNormalRoughness(originalNormal, coord), normal, roughness);
-  return encodeStandardNormalRoughness(composed.xyz, composed.w);
 }
 
 @fragment

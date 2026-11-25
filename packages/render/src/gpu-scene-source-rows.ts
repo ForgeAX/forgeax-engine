@@ -65,6 +65,33 @@ const IDENTITY = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
 const TRANSFORM = GPU_SCENE_LAYOUTS.transform.stride;
 const INSTANCE = GPU_SCENE_LAYOUTS.instance.stride;
 
+/** A reserved row owns fixed extracted materials. Resolve the primary first, then the
+ * first authored slot for each handle. The index lives only through this row's binding. */
+function extractedMaterialReader(source: RenderableSnapshot) {
+  const primary = source.material;
+  const slots = source.materials;
+  let byHandle: Map<number, MaterialResource> | undefined;
+  return (handle: number): MaterialResource => {
+    if (primary.snapshot.materialHandle === handle) return primary;
+    if (slots.length === 1) {
+      const only = slots[0];
+      if (only?.snapshot.materialHandle === handle) return only;
+    } else if (slots.length > 1) {
+      if (byHandle === undefined) {
+        byHandle = new Map();
+        for (let index = slots.length - 1; index >= 0; index--) {
+          const material = slots[index] as MaterialResource;
+          const key = material.snapshot.materialHandle;
+          if (key !== undefined) byHandle.set(key, material);
+        }
+      }
+      const material = byHandle.get(handle);
+      if (material !== undefined) return material;
+    }
+    throw new Error('Source binding has no fixed extracted material');
+  };
+}
+
 /** Source row detachments share the same bounded grant from CPU publication through GPU cleanup. */
 export const SOURCE_ROWS_PER_RETIREMENT_STEP = 32;
 
@@ -112,14 +139,7 @@ export class GpuSceneSourceRows {
         snapshot,
         mesh,
         meshMaterialGeometry(snapshot),
-        (handle) => {
-          const material = [snapshot.material, ...snapshot.materials].find(
-            (value) => value.snapshot.materialHandle === handle,
-          );
-          if (material === undefined)
-            throw new Error('Source binding has no fixed extracted material');
-          return material;
-        },
+        extractedMaterialReader(snapshot),
         this.bindings,
       );
       const projected = Object.freeze(projectMeshDrawSnapshot(snapshot, mesh, effective));

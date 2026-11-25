@@ -1,4 +1,5 @@
 // Engine owner capabilities; ordinary game code uses the public Scene entry.
+export { mobilityFromRow, readInheritedMobility } from './components/mobility';
 export { compileKeyedSceneAssetSteps } from './instances/keyed';
 export {
   prepareSceneTransformsSteps,
@@ -32,4 +33,10 @@ export {
   retainSceneSourceReferences,
   type SceneSourceReferenceCustody,
 } from './instances/source-references';
+export { createLocalPoseWriter } from './local-pose-writer';
+export {
+  collectPresentationTransformSpans,
+  createPresentationMatrixReader,
+  type PresentationSpan,
+} from './presentation';
 export { SynchronousTransform } from './synchronous-transform';

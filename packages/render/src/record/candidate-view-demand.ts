@@ -56,7 +56,7 @@ export interface CandidateViewDemand {
   readonly ssao: boolean;
   readonly reflectionFallbackDemand: boolean;
   readonly gpuDrivenGeometryLane: 'automatic' | 'direct' | undefined;
-  readonly shadowReflections: ReadonlySet<boolean>;
+  readonly shadowReflections: readonly boolean[];
   readonly hasShadowViews: boolean;
   readonly tonemapActive: boolean;
   readonly probeBlend: boolean;

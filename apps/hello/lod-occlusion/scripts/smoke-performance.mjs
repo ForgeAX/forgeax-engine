@@ -725,7 +725,7 @@ async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
     // Each isolated Renderer snapshots its options at construction. Keep every
     // condition on the same timestamp path; retain only the measured frames.
     captureGpuTimings: true,
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', gpuOcclusion: true },
     ...(profiler === undefined ? {} : { profiler }),
   };
   const rendererErrors = [];
@@ -783,11 +783,9 @@ async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
     baseColor: [0.2, 0.6, 0.95, 1],
     roughness: 0.5,
   });
-  // The occluder is fixture geometry, not a GPU-driven LOD candidate. Use the
-  // unlit path so the capable Standard PBR owner cannot claim this plain mesh
-  // on one backend while the CPU semantic producer claims it on another; its
-  // depth write remains the only fact the HZB calibration needs.
-  const occluderMaterial = Materials.unlit([0.08, 0.08, 0.08, 1]);
+  // The plain mesh has no LOD policy and enters the early G-buffer so its depth
+  // is available to HZB before the late LOD candidates are classified.
+  const occluderMaterial = Materials.standard({ baseColor: [0.08, 0.08, 0.08, 1] });
 
   function populateBenchmarkWorld(
     world,

@@ -46,7 +46,7 @@ test('CI falsifier Dawn carrier uses a reduced target, frame floor, and post-pro
 
 test('recording bridges camera-owned Motion Blur parameters into the builtin pass', () => {
   assert.match(frameScript, /const framePostProcessParams = buildFramePostProcessParams\(/);
-  assert.match(temporalFrameScript, /const params = new Map\(postProcessParams\)/);
+  assert.match(temporalFrameScript, /own \?\? new Map\(postProcessParams\)/);
   assert.match(temporalFrameScript, /camera\.motionBlur !== undefined && motionBlurDemand/);
   assert.match(temporalFrameScript, /'forgeax\.motion-blur',[\s\S]*?packMotionBlurFrameParams\(camera\.motionBlur, deltaSeconds, temporalView\.historyValid\)/);
   assert.match(frameScript, /postProcessParams: framePostProcessParams/);
@@ -55,6 +55,16 @@ test('recording bridges camera-owned Motion Blur parameters into the builtin pas
 test('hello-taa inspection keeps the semantic temporal target in the browser projection', () => {
   assert.match(taaMainScript, /temporalTarget: renderInspection\.temporalTarget \?\? null/);
   assert.match(webkitVerifyScript, /temporalTarget: on\.temporalTarget \?\? null/);
+});
+
+test('Dawn temporal acceptance validates scene-data or split depth and velocity inputs', () => {
+  assert.match(dawnScript, /function resolveTemporalInputRoute/);
+  assert.match(dawnScript, /temporalTarget\?\.identity === 'standard-scene-temporal'/);
+  assert.match(dawnScript, /passNames\.includes\('standard-depth-prepass'\)/);
+  assert.match(dawnScript, /passNames\.includes\('standard-depth-velocity'\)/);
+  assert.match(dawnScript, /hasTexture\('scene-depth', \['depth32float', 'depth32float-stencil8'\]\)/);
+  assert.match(dawnScript, /hasTexture\('scene-velocity', \['r32uint'\]\)/);
+  assert.match(dawnScript, /temporalInputRoute === undefined/);
 });
 
 test('Dawn carrier exposes adapter identity to the performance admission gate', () => {
@@ -288,6 +298,13 @@ test('active work counters separate renderer state from retained topology', () =
     }),
     { producer: 0, blur: 1 },
   );
+  const packedInspection = {
+    passes: ['standard-depth-prepass', 'standard-depth-velocity', 'taa-resolve', 'motion-blur'],
+    motionBlur: { enabled: true, status: 'active', temporalDemand: 'scene-data-temporal-v1' },
+  };
+  const velocity = { label: 'scene-velocity', format: 'r32uint', sampleCount: 1, width: 256, height: 144 };
+  assert.deepEqual(activePassCountersFromInspection(packedInspection, [velocity]), { producer: 1, blur: 1 });
+  assert.deepEqual(activePassCountersFromInspection(packedInspection, []), { producer: 0, blur: 1 });
 });
 
 test('direct Metal API probe accepts a physical registry-backed device', () => {

@@ -14,6 +14,7 @@ export type ShadowRasterBindingRow = {
 export class ShadowRasterRows {
   readonly lane = 'direct';
   private readonly rows: ShadowRasterBindingRow[] = [];
+  private readonly offsetWords = new Uint32Array(1);
   private count = 0;
   private highWater = 0;
   private recording = false;
@@ -39,7 +40,7 @@ export class ShadowRasterRows {
     let previous: PreparedRasterBindings | undefined;
     for (let i = 0; i < this.count; i++) {
       const row = this.rows[i] as PreparedRasterBindings;
-      recordPreparedRasterAfter(pass, row, previous);
+      recordPreparedRasterAfter(pass, row, previous, undefined, this.offsetWords);
       previous = row;
     }
   }

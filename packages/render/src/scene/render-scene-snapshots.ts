@@ -1,6 +1,7 @@
 import type { box3 } from '@forgeax/engine-math';
 import { captureBatchGeometry } from '../gpu-driven/batch-execution';
 import { freezePreparedGpuDrivenDraw, ownGpuDrivenVertexInputs } from '../gpu-driven/prepared-draw';
+import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
 import { captureInstanceGenerations, instanceRowsSurvived } from '../instance-generations';
 import { type MaterialResource, materialHasTemporalDisplacement } from '../material-resource';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
@@ -392,9 +393,9 @@ const ownedDrawTables = new WeakMap<
 function ownGpuDrivenDraws(
   draws: NonNullable<RenderableSnapshot['gpuDrivenDraws']>,
 ): NonNullable<RenderableSnapshot['gpuDrivenDraws']> {
+  const prior = ownedDrawTables.get(draws);
+  if (prior !== undefined) return prior;
   const shared = Object.isFrozen(draws) && draws.every((draw) => Object.isFrozen(draw));
-  const cached = shared ? ownedDrawTables.get(draws) : undefined;
-  if (cached !== undefined) return cached;
   const owned = draws.map((draw) => ({
     ...draw,
     geometry: captureBatchGeometry(draw.geometry),
@@ -408,8 +409,9 @@ function ownGpuDrivenDraws(
           }),
         }),
   }));
-  if (shared) ownedDrawTables.set(draws, owned);
-  return owned;
+  const sealed = sealSourceDraws(owned);
+  if (shared) ownedDrawTables.set(draws, sealed);
+  return sealed;
 }
 
 export function ownSnapshot(
@@ -466,76 +468,59 @@ export function ownPointsLinesSnapshot(
   };
 }
 
-export function intersects(left: RenderSceneBounds, right: RenderSceneBounds): boolean {
-  return (
-    left.min[0] <= right.max[0] &&
-    left.max[0] >= right.min[0] &&
-    left.min[1] <= right.max[1] &&
-    left.max[1] >= right.min[1] &&
-    left.min[2] <= right.max[2] &&
-    left.max[2] >= right.min[2]
-  );
+const detachedBox = new Float64Array(6);
+
+export function worldBounds(snapshot: RenderableSnapshot): RenderSceneBounds | undefined {
+  if (!writeTransformedWorldBounds(detachedBox, snapshot.localAabb, snapshot.transform.world))
+    return undefined;
+  return {
+    min: [detachedBox[0] as number, detachedBox[1] as number, detachedBox[2] as number],
+    max: [detachedBox[3] as number, detachedBox[4] as number, detachedBox[5] as number],
+  };
 }
 
-export function worldBounds(
-  snapshot: RenderableSnapshot,
-  target?: RenderSceneBounds,
-  local = snapshot.localAabb,
-): RenderSceneBounds | undefined {
-  return local === undefined || local.length < 6
-    ? undefined
-    : transformedWorldBounds(local, snapshot.transform.world, target);
-}
-
-export function transformedWorldBounds(
+/** Read the addressed matrix and local extents once and write all six world coordinates. */
+export function writeTransformedWorldBounds(
+  out: { [lane: number]: number },
   local: RowContent['localAabb'],
   world: Float32Array,
-  target?: RenderSceneBounds,
   offset = 0,
-): RenderSceneBounds | undefined {
-  if (local === undefined || local.length < 6) return undefined;
-  const min = (target?.min ?? [0, 0, 0]) as [number, number, number];
-  const max = (target?.max ?? [0, 0, 0]) as [number, number, number];
-  const centerX = ((local[0] ?? 0) + (local[3] ?? 0)) * 0.5;
-  const centerY = ((local[1] ?? 0) + (local[4] ?? 0)) * 0.5;
-  const centerZ = ((local[2] ?? 0) + (local[5] ?? 0)) * 0.5;
-  const extentX = ((local[3] ?? 0) - (local[0] ?? 0)) * 0.5;
-  const extentY = ((local[4] ?? 0) - (local[1] ?? 0)) * 0.5;
-  const extentZ = ((local[5] ?? 0) - (local[2] ?? 0)) * 0.5;
-  const worldCenterX =
-    (world[offset] ?? 0) * centerX +
-    (world[offset + 4] ?? 0) * centerY +
-    (world[offset + 8] ?? 0) * centerZ +
-    (world[offset + 12] ?? 0);
-  const worldCenterY =
-    (world[offset + 1] ?? 0) * centerX +
-    (world[offset + 5] ?? 0) * centerY +
-    (world[offset + 9] ?? 0) * centerZ +
-    (world[offset + 13] ?? 0);
-  const worldCenterZ =
-    (world[offset + 2] ?? 0) * centerX +
-    (world[offset + 6] ?? 0) * centerY +
-    (world[offset + 10] ?? 0) * centerZ +
-    (world[offset + 14] ?? 0);
-  const worldExtentX =
-    Math.abs(world[offset] ?? 0) * extentX +
-    Math.abs(world[offset + 4] ?? 0) * extentY +
-    Math.abs(world[offset + 8] ?? 0) * extentZ;
-  const worldExtentY =
-    Math.abs(world[offset + 1] ?? 0) * extentX +
-    Math.abs(world[offset + 5] ?? 0) * extentY +
-    Math.abs(world[offset + 9] ?? 0) * extentZ;
-  const worldExtentZ =
-    Math.abs(world[offset + 2] ?? 0) * extentX +
-    Math.abs(world[offset + 6] ?? 0) * extentY +
-    Math.abs(world[offset + 10] ?? 0) * extentZ;
-  min[0] = worldCenterX - worldExtentX;
-  min[1] = worldCenterY - worldExtentY;
-  min[2] = worldCenterZ - worldExtentZ;
-  max[0] = worldCenterX + worldExtentX;
-  max[1] = worldCenterY + worldExtentY;
-  max[2] = worldCenterZ + worldExtentZ;
-  return target ?? { min, max };
+): boolean {
+  if (local === undefined || local.length < 6) return false;
+  const xx = world[offset] ?? 0;
+  const xy = world[offset + 1] ?? 0;
+  const xz = world[offset + 2] ?? 0;
+  const yx = world[offset + 4] ?? 0;
+  const yy = world[offset + 5] ?? 0;
+  const yz = world[offset + 6] ?? 0;
+  const zx = world[offset + 8] ?? 0;
+  const zy = world[offset + 9] ?? 0;
+  const zz = world[offset + 10] ?? 0;
+  const minX = local[0] ?? 0;
+  const minY = local[1] ?? 0;
+  const minZ = local[2] ?? 0;
+  const maxX = local[3] ?? 0;
+  const maxY = local[4] ?? 0;
+  const maxZ = local[5] ?? 0;
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+  const centerZ = (minZ + maxZ) * 0.5;
+  const extentX = (maxX - minX) * 0.5;
+  const extentY = (maxY - minY) * 0.5;
+  const extentZ = (maxZ - minZ) * 0.5;
+  const worldCenterX = xx * centerX + yx * centerY + zx * centerZ + (world[offset + 12] ?? 0);
+  const worldCenterY = xy * centerX + yy * centerY + zy * centerZ + (world[offset + 13] ?? 0);
+  const worldCenterZ = xz * centerX + yz * centerY + zz * centerZ + (world[offset + 14] ?? 0);
+  const worldExtentX = Math.abs(xx) * extentX + Math.abs(yx) * extentY + Math.abs(zx) * extentZ;
+  const worldExtentY = Math.abs(xy) * extentX + Math.abs(yy) * extentY + Math.abs(zy) * extentZ;
+  const worldExtentZ = Math.abs(xz) * extentX + Math.abs(yz) * extentY + Math.abs(zz) * extentZ;
+  out[0] = worldCenterX - worldExtentX;
+  out[1] = worldCenterY - worldExtentY;
+  out[2] = worldCenterZ - worldExtentZ;
+  out[3] = worldCenterX + worldExtentX;
+  out[4] = worldCenterY + worldExtentY;
+  out[5] = worldCenterZ + worldExtentZ;
+  return true;
 }
 
 export function boundsFromArray(bounds: ArrayLike<number>): RenderSceneBounds | undefined {

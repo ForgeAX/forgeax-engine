@@ -659,12 +659,13 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     const inspection = renderer.inspect();
     expect(inspection.perFramePassNames).toEqual(
       expect.arrayContaining([
-        'standard-scene-data',
+        'standard-depth-velocity',
         'taa-resolve',
         'motion-blur',
         'standard-grade',
       ]),
     );
+    expect(inspection.perFramePassNames).not.toContain('standard-scene-data');
     expect(inspection.temporal).toMatchObject({ status: 'stable', historyValid: true });
     expect(inspection.motionBlur).toMatchObject({ status: 'active', historyWrites: 0 });
     await renderer.dispose();

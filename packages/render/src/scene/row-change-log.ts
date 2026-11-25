@@ -42,7 +42,7 @@ export type ContentVisit = (
 export class RowChangeLog {
   private slots = new Int32Array(MIN_CAPACITY);
   private kinds = new Uint8Array(MIN_CAPACITY);
-  /** A row entry's generation, or a box entry's position in the box ring. */
+  /** A row generation or the low 32 bits of a box sequence number. */
   private generations = new Uint32Array(MIN_CAPACITY);
   private head = 0;
   private tail = 0;
@@ -64,7 +64,10 @@ export class RowChangeLog {
   /** Append one GPU content entry, copying `box[offset..offset+6)` when flagged. */
   appendContent(slot: number, flags: number, box?: ArrayLike<number>, offset = 0): void {
     let at = 0;
-    if ((flags & CONTENT_BOX) !== 0 && box !== undefined) at = this.pushBox(box, offset);
+    if ((flags & CONTENT_BOX) !== 0) {
+      if (box === undefined) flags = (flags & ~CONTENT_BOX) | CONTENT_UNBOUNDED;
+      else at = this.pushBox(box, offset);
+    }
     this.push(slot, CONTENT | flags, at);
   }
 
@@ -124,7 +127,9 @@ export class RowChangeLog {
       let offset = 0;
       if ((flags & CONTENT_BOX) !== 0) {
         const box = this.generations[at] as number;
-        if (box < this.boxTail) return 'lapsed';
+        // The retained ring is narrower than one 32-bit cycle. Distance from its
+        // oldest sequence disambiguates live and overwritten boxes across wrap.
+        if ((box - this.boxTail) >>> 0 >= this.boxHead - this.boxTail) return 'lapsed';
         offset = (box & boxMask) * BOX;
       }
       if (visit(this.slots[at] as number, flags, this.boxes, offset) === false) return 'stopped';

@@ -3,6 +3,7 @@ export { default as WebGLCubeRenderTarget } from 'three/src/renderers/common/Cub
 export type { RendererParameters, RenderItem } from 'three/src/renderers/common/Renderer.js';
 export * from './cpu';
 export { ThreeCompatibilityError, type ThreeCompatibilityErrorCode } from './errors';
+export { ThreeFullscreenPass, type ThreeFullscreenProgram } from './fullscreen-pass';
 export { type MountThreeSceneOptions, mountThreeScene, type ThreeSceneMount } from './interop';
 export {
   bindThreeSurface,
@@ -14,10 +15,14 @@ export type * from './node-types';
 export { createThreePipeline } from './pipeline';
 export { QuadMesh } from './quad-mesh';
 export {
+  paceThreeDisplayFrames,
   readThreeFrame,
+  setThreeOutline,
   setThreePlanarReflection,
   type ThreeFrameCapture,
   type ThreeFrameObservation,
+  type ThreeFramePacingOptions,
+  type ThreeOutlineOptions,
   type ThreePlanarReflectionOptions,
   WebGPURenderer,
   type WebGPURendererParameters,

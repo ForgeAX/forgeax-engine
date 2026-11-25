@@ -38,7 +38,7 @@ import { Materials } from '../materials';
 import { extractSource } from '../render-system-extract-tail';
 import {
   SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataTarget,
   sceneDataTargetOwner,
@@ -59,7 +59,7 @@ struct CandidateVertex { @location(0) position: vec3<f32> }
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_opaque() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
-@fragment fn fs_ao_input() -> @location(0) u32 { return 0u; }
+@fragment fn fs_depth_masked() -> @location(0) u32 { return 0u; }
 `;
 
 const clusterTextureConsumerRaster = `
@@ -87,7 +87,7 @@ struct ClusterUniform {
   return vec4<f32>(f32(word ^ width) * 0.0, 1.0, 1.0, 1.0);
 }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
-@fragment fn fs_ao_input() -> @location(0) u32 { return 0u; }
+@fragment fn fs_depth_masked() -> @location(0) u32 { return 0u; }
 `;
 
 const fullscreenRasterEntryPoints: readonly ShaderEntryPointReads[] = [
@@ -96,7 +96,7 @@ const fullscreenRasterEntryPoints: readonly ShaderEntryPointReads[] = [
   { name: 'fs_main', stage: 'fragment', bindings: [] },
   { name: 'fs_opaque', stage: 'fragment', bindings: [] },
   { name: 'fs_gbuffer', stage: 'fragment', bindings: [] },
-  { name: 'fs_ao_input', stage: 'fragment', bindings: [] },
+  { name: 'fs_depth_masked', stage: 'fragment', bindings: [] },
 ];
 
 const reflectedClusterAbi = {
@@ -145,7 +145,7 @@ function sceneDataConsumer(
   onPlannedView: (view: { readonly identity: string; readonly render: boolean }) => void,
   options: {
     readonly schema?:
-      | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
+      | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA
       | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA;
     readonly onCatalog?: (catalog: SceneDataCatalog) => void;
     readonly onRequireError?: (error: unknown) => void;
@@ -154,7 +154,7 @@ function sceneDataConsumer(
   } = {},
 ): RenderFeature<null> {
   return {
-    identity: 'test.standard-surface-normal-consumer',
+    identity: 'test.standard-surface-data-consumer',
     placement: 'scene',
     extract: () => ok(null),
     plan: (_data, context) => {
@@ -167,7 +167,7 @@ function sceneDataConsumer(
       let target: SceneDataTarget;
       try {
         target = view.sceneData.require(
-          options.schema ?? SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+          options.schema ?? SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
         );
       } catch (error) {
         options.onRequireError?.(error);
@@ -185,9 +185,9 @@ function sceneDataConsumer(
                 name: 'surface-consumer-program',
                 program: {
                   wgsl: `
-                    @group(0) @binding(0) var surfaceNormal: texture_2d<u32>;
+                    @group(0) @binding(0) var surfaceSample: ${target.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA ? 'texture_depth_2d' : 'texture_2d<u32>'};
                     @compute @workgroup_size(1) fn consume() {
-                      let value = textureLoad(surfaceNormal, vec2<i32>(0), 0);
+                      let value = textureLoad(surfaceSample, vec2<i32>(0), 0);
                     }
                   `,
                   entryPoints: ['consume'],
@@ -198,7 +198,10 @@ function sceneDataConsumer(
                           binding: 0,
                           visibility: 4,
                           texture: {
-                            sampleType: 'uint' as const,
+                            sampleType:
+                              target.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA
+                                ? ('depth' as const)
+                                : ('uint' as const),
                             viewDimension: '2d' as const,
                             multisampled: false,
                           },
@@ -210,7 +213,7 @@ function sceneDataConsumer(
               },
               {
                 kind: 'prepared-gpu-resource' as const,
-                name: 'surface-normal-view',
+                name: 'surface-data-view',
                 resource: { kind: 'texture-view' as const, value: undefined },
                 logicalTarget: target,
               },
@@ -218,13 +221,13 @@ function sceneDataConsumer(
                 kind: 'compute-bindings' as const,
                 name: 'surface-consumer-bindings',
                 program: 'surface-consumer-program',
-                entries: [{ binding: 0, resource: 'surface-normal-view' }],
+                entries: [{ binding: 0, resource: 'surface-data-view' }],
               },
             ],
             passes: [
               {
                 kind: 'compute' as const,
-                name: 'surface-normal-consumer',
+                name: 'surface-data-consumer',
                 program: 'surface-consumer-program',
                 bindings: 'surface-consumer-bindings',
                 dispatches: [
@@ -1028,9 +1031,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
         (target) => target.graphGeneration === accepted.installedGraphGeneration,
       ),
     ).toBe(true);
-    expect(accepted.passNames).toEqual(
-      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
-    );
+    expect(accepted.passNames).toEqual(expect.arrayContaining(['hzb-seed', 'ssao-calc']));
 
     const requestedExtent = { width: 64, height: 64 };
     fixture.world.set(camera, AmbientOcclusion, { quality: 100 }).unwrap();
@@ -1049,7 +1050,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
           detail: {
             phase: 'post-allocation-before-promotion',
             candidateGeneration: expect.any(Number),
-            passNames: expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
+            passNames: expect.arrayContaining(['hzb-seed', 'ssao-calc']),
             resourceAllocation: { liveBytes: expect.any(Number) },
           },
         },
@@ -1123,9 +1124,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
         completion: 'completed',
       },
     });
-    expect(retry.passNames).toEqual(
-      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
-    );
+    expect(retry.passNames).toEqual(expect.arrayContaining(['hzb-seed', 'ssao-calc']));
     expect(
       retry.targets.every((target) => target.graphGeneration === retry.installedGraphGeneration),
     ).toBe(true);
@@ -1243,7 +1242,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     const ssaoReceipt = await drawTransitionFrame('SSAO fragment');
     const ssao = sceneDataAoGraphSnapshot(fixture, 'deferred');
     expectInstalledFrameIdentity(ssaoReceipt, ssao);
-    expect(ssao.passNames).toEqual(expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']));
+    expect(ssao.passNames).toEqual(expect.arrayContaining(['hzb-seed', 'ssao-calc']));
     expect(ssao.passNames).not.toContain('gtao-calc-compute');
     expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
       status: 'active',
@@ -1291,7 +1290,7 @@ it.each([
   try {
     await completeSceneDataFrame(fixture);
     await completeSceneDataFrame(fixture);
-    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
+    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA)).toMatchObject({
       status: 'available',
       completeness: 'exact',
       missingContributorIds: [],
@@ -1342,7 +1341,7 @@ it.each([
     expect(ao0Receipt.graphGeneration).toBe(ao0.installedGraphGeneration);
     expect(ao0Receipt.deviceGeneration).toBe(ao0.deviceGeneration);
     expect(ao0.intensity).toBe(0.5);
-    expect(ao0.passNames).toEqual(expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']));
+    expect(ao0.passNames).toEqual(expect.arrayContaining(['hzb-seed', 'ssao-calc']));
     expect(ao0.passNames).toContain(renderPath === 'deferred' ? 'lighting' : 'main');
 
     const ao0StableReceipt = await completeObservedSceneDataFrame(fixture, 'final-display');
@@ -1722,9 +1721,9 @@ it('samples admitted Standard Forward surface data in the same real Renderer gra
       consumerPlanCount,
       plannedView,
     }),
-  ).toEqual(expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']));
+  ).toEqual(expect.arrayContaining(['standard-scene-surface-data', 'surface-data-consumer']));
   expect(readyInspection.perFramePassNames).toEqual(
-    expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']),
+    expect.arrayContaining(['standard-scene-surface-data', 'surface-data-consumer']),
   );
   expect(errors).toEqual([]);
   await host.dispose();
@@ -1802,7 +1801,9 @@ it('admits a real cooked Standard Registry snapshot through production surface s
       selectedArtifact.program.entryPoints,
     );
     expect(material.snapshot.materialProgramInputs?.[pass.name]?.entryPoints).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: 'fs_ao_input', stage: 'fragment' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'fs_depth_masked', stage: 'fragment' }),
+      ]),
     );
     expect(contributor.facts?.selectedProgramFacts).toMatchObject({
       specializationKey: selectedProgramKey,
@@ -1811,15 +1812,15 @@ it('admits a real cooked Standard Registry snapshot through production surface s
     await completeSceneDataFrame(fixture);
     await completeSceneDataFrame(fixture);
     expect(requestedTarget).toBeDefined();
-    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
-      schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA)).toMatchObject({
+      schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
       status: 'available',
       completeness: 'exact',
       missingContributorIds: [],
     });
     expect(catalog?.surfaceAdmissionIdentity).toEqual(expect.any(String));
     expect(fixture.renderer.inspect().output.graphPassNames).toEqual(
-      expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']),
+      expect.arrayContaining(['standard-scene-surface-data', 'surface-data-consumer']),
     );
     expect(fixture.errors).toEqual([]);
   } finally {
@@ -1863,7 +1864,7 @@ it.each([
       status: 'available',
       completeness: 'exact',
     });
-    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
+    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA)).toMatchObject({
       status: 'available',
       completeness: 'exact',
     });
@@ -1885,10 +1886,9 @@ it.each([
     expect(replayedViewDeclarations).toBe(false);
     // Forward keeps one exact scene-depth attachment from the prepass to
     // read-only main shading with AO off; no depth-seed copy remains.
-    expect(passNames).toContain('standard-scene-surface-data');
-    expect(passNames.indexOf('main')).toBeGreaterThan(
-      passNames.indexOf('standard-scene-surface-data'),
-    );
+    const depthPrepass = 'standard-depth-prepass';
+    expect(passNames).toContain(depthPrepass);
+    expect(passNames.indexOf('main')).toBeGreaterThan(passNames.indexOf(depthPrepass));
     expect(passNames).not.toContain('forward-depth-seed');
     expect(passNames).not.toContain('ssao-calc');
     expect(passNames).not.toContain('ssao-blur');
@@ -1954,7 +1954,7 @@ it.each([
         expect(requireErrors.at(-1)).toMatchObject({
           code: 'scene-data-unavailable',
           detail: {
-            schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+            schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
             reason: 'coverage-incomplete',
           },
         });
@@ -2056,7 +2056,7 @@ it('reports a wrapped invalid AO radius and recovers the active SSAO graph', asy
       execution: 'fragment',
     });
     expect(fixture.renderer.inspect().output.graphPassNames).toEqual(
-      expect.arrayContaining(['ssao-furthest-hzb-seed', 'ssao-calc']),
+      expect.arrayContaining(['hzb-seed', 'ssao-calc']),
     );
   } finally {
     unsubscribe();
@@ -2072,7 +2072,7 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
     () => {},
     {
       onCatalog: (catalog) => {
-        inspection = catalog.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+        inspection = catalog.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
       },
       onRequireError: (error) => {
         unavailable = error;
@@ -2088,7 +2088,7 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
       code: 'scene-data-unavailable',
       detail: {
         featureIdentity: feature.identity,
-        schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+        schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
         lane: 'clustered',
         reason: 'producer-missing',
         missingContributorIds: [],
@@ -2157,7 +2157,7 @@ it('visits each admitted surface row once with stationary and changing World pos
         read.mockClear();
         await completeSceneDataFrame(fixture);
         expect(read).toHaveBeenCalledTimes(1);
-        expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA).status).toBe(
+        expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA).status).toBe(
           'available',
         );
       }
@@ -2230,7 +2230,7 @@ it('rejects unsupported surface tokens and recovers the feature without interrup
     expect(requireErrors.at(-1)).toMatchObject({
       code: 'scene-data-unavailable',
       detail: {
-        schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+        schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
         reason: 'coverage-incomplete',
         missingContributorIds: expect.arrayContaining([expect.any(String)]),
         recovery: 'next-frame',
@@ -2238,12 +2238,10 @@ it('rejects unsupported surface tokens and recovers the feature without interrup
     });
     const unsupportedCatalog = catalogs.at(-1);
     expect(unsupportedCatalog?.surfaceAdmissionIdentity).not.toBe(initialAdmission);
-    expect(unsupportedCatalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject(
-      {
-        status: 'unavailable',
-        reason: 'coverage-incomplete',
-      },
-    );
+    expect(unsupportedCatalog?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA)).toMatchObject({
+      status: 'unavailable',
+      reason: 'coverage-incomplete',
+    });
     expect(priorValidations.at(-1)).toBe(false);
 
     fixture.world
@@ -2265,7 +2263,7 @@ it('rejects unsupported surface tokens and recovers the feature without interrup
       expect(retry.ok, retry.ok ? '' : JSON.stringify(retry.error)).toBe(true);
       if (retry.ok) expect((await retry.value.completed).ok).toBe(true);
     }
-    expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
+    expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA)).toMatchObject({
       status: 'available',
       completeness: 'exact',
     });
@@ -2274,12 +2272,12 @@ it('rejects unsupported surface tokens and recovers the feature without interrup
     expect(
       recoveredInspection.output.graphPassNames,
       JSON.stringify({
-        lastCatalog: catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA),
+        lastCatalog: catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA),
         lastOwner: admittedTarget === undefined ? undefined : sceneDataTargetOwner(admittedTarget),
         featureDiagnostics: recoveredInspection.featureDiagnostics,
         featureGraph: recoveredInspection.featureGraph,
       }),
-    ).toEqual(expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']));
+    ).toEqual(expect.arrayContaining(['standard-scene-surface-data', 'surface-data-consumer']));
   } finally {
     await fixture.host.dispose();
   }
@@ -2319,7 +2317,7 @@ it('reports the exact visible MorphWeights custom contributor as incomplete cove
     expect(unavailable).toMatchObject({
       code: 'scene-data-unavailable',
       detail: {
-        schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+        schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
         reason: 'coverage-incomplete',
         recovery: 'next-frame',
       },

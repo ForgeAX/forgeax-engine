@@ -1,6 +1,7 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import type { BindGroup, RenderBundle, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { assert, expect, it, vi } from 'vitest';
 import type { ProjectedRasterClass } from '../gpu-driven/production-raster-classes';
 import { IndirectPassBindings } from '../gpu-driven/production-raster-encode';
@@ -11,6 +12,7 @@ import {
   type RetainedRasterInputPreparation,
   runFacts,
 } from '../gpu-driven/retained-raster-encode';
+import type { GpuDrivenView } from '../gpu-driven/view-gpu';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -684,4 +686,57 @@ it('preserves a raw pipeline getter changing to undefined on its final read', ()
   );
   expect(reads).toBe(3);
   expect(result).toEqual({ pipeline: undefined, mesh });
+});
+
+it('rebinds the same skin mesh group at the next auxiliary offset and retains its recorded values', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
+  const rigid = device.createBindGroup({ layout, entries: [] }).unwrap();
+  const uniform = device.createBuffer({ size: 768, usage: 64 }).unwrap();
+  const skinLayout = device
+    .createBindGroupLayout({
+      entries: [{ binding: 0, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } }],
+    })
+    .unwrap();
+  const skin = device
+    .createBindGroup({
+      layout: skinLayout,
+      entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: uniform, size: 16 } } }],
+    })
+    .unwrap();
+  const encoder = device.createCommandEncoder().unwrap();
+  const pass = encoder.beginRenderPass({ colorAttachments: [] });
+  const consumed: number[][] = [];
+  const skinLists = new Set<readonly number[]>();
+  const rigidLists = new Set<readonly number[]>();
+  const forward = pass.setBindGroup.bind(pass);
+  vi.spyOn(pass, 'setBindGroup').mockImplementation(
+    (slot: number, group: BindGroup, offsets?: readonly number[] | Uint32Array) => {
+      assert(Array.isArray(offsets));
+      expect(slot).toBe(2);
+      (group === skin ? skinLists : rigidLists).add(offsets);
+      consumed.push([...offsets]);
+      forward(slot, group, offsets);
+    },
+  );
+  try {
+    const writer = new IndirectPassBindings(pass, rigid, undefined, undefined, 0);
+    let auxiliaryOffset = 128;
+    const view = { skinTaskBinding: () => ({ auxiliaryOffset }) } as unknown as GpuDrivenView;
+    writer.bindMesh(rigid, 'rigid', view);
+    for (const address of [128, 256, 256, 0]) {
+      auxiliaryOffset = address;
+      writer.bindMesh(skin, 'skin', view);
+    }
+    writer.bindMesh(rigid, 'rigid', view);
+    auxiliaryOffset = 128;
+    writer.bindMesh(skin, 'skin', view);
+    expect(consumed).toEqual([[], [128], [256], [0], [], [128]]);
+    expect(skinLists.size).toBe(1);
+    expect(rigidLists.size).toBe(1);
+    expect(Object.isFrozen([...rigidLists][0])).toBe(true);
+  } finally {
+    pass.end();
+    device.destroyBuffer(uniform).unwrap();
+  }
 });

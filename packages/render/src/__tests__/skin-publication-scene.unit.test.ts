@@ -48,6 +48,56 @@ it('carries sparse Worker joint columns through Persistent admission and cold re
     f.publisher.dispose();
   }
 });
+it('passes only referenced joint windows from mixed Worker transform columns into the live Scene', () => {
+  const f = fixture();
+  const receiver = new RenderPublicationReceiver({ source: 'skin-owner', epoch: 1 });
+  const scene = new PersistentRenderScene({ assets: f.assets });
+  const write = vi.spyOn(SkinInputs.prototype, 'setJoint');
+  try {
+    f.world.set(f.second, Skin, { joints: [f.secondJoint] }).unwrap();
+    scene.consumePublication(receiver.accept(encodeRenderPublication(f.publish())).unwrap());
+    scene.skinRecordingFrame();
+    write.mockClear();
+    f.world.set(f.first, Transform, { pos: [-17, 0, 0] }).unwrap();
+    f.world.set(f.second, Transform, { pos: [-23, 0, 0] }).unwrap();
+    f.world.set(f.firstJoint, Transform, { pos: [17, 0, 0] }).unwrap();
+    f.world.set(f.secondJoint, Transform, { pos: [23, 0, 0] }).unwrap();
+    const update = receiver.accept(encodeRenderPublication(f.publish())).unwrap();
+    const { transformEntities, transforms } = update.packet;
+    const rows = update.skinJoints?.rows ?? [];
+    expect(transformEntities).toHaveLength(4);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => transformEntities[row]).sort()).toEqual(
+      [Number(f.firstJoint), Number(f.secondJoint)].sort(),
+    );
+    scene.consumePublication(update);
+    const frame = scene.skinRecordingFrame();
+    if (!frame) throw new Error('Missing accepted skin frame');
+    expect(write).toHaveBeenCalledTimes(2);
+    for (const row of rows) {
+      const call = write.mock.calls.find((args) => args[1] === transformEntities[row]);
+      expect(call?.[2]).toBe(transforms);
+      expect(call?.[3]).toBe(row * 16);
+    }
+    const out = mat4.create(),
+      inverse = mat4.create();
+    for (const [entity, value] of [
+      [f.first, 17],
+      [f.second, 23],
+    ] as const) {
+      const slot = frame.slots.lookup(Number(entity));
+      if (!slot) throw new Error('Missing published skin binding');
+      expect(frame.current.matrix(slot.slot, 0, out, inverse)).toBe(true);
+      expect(out[12]).toBe(value);
+    }
+  } finally {
+    write.mockRestore();
+    scene.dispose();
+    receiver.dispose();
+    f.publisher.dispose();
+  }
+});
+
 // This qualification uses actual RenderScene slots and the production numeric
 // adoption owner. The five-column transport is still the private cut candidate.
 function endpoint(missing = false) {

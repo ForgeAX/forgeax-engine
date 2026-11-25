@@ -6,7 +6,12 @@ export type ScenePoseStorage = Float32Array | CapturedSceneTransform;
 const POSE_FLOATS = 16;
 const POSES_PER_PAGE = 64;
 
-function copyPose(out: Float32Array, at: number, column: ArrayLike<number>, offset: number): void {
+export function copyScenePose(
+  out: Float32Array,
+  at: number,
+  column: ArrayLike<number>,
+  offset: number,
+): void {
   for (let i = 0; i < POSE_FLOATS; i++) out[at + i] = column[offset + i] ?? 0;
 }
 
@@ -14,28 +19,34 @@ function copyPose(out: Float32Array, at: number, column: ArrayLike<number>, offs
  * of the scene, receiver and future captures. Published addresses are never overwritten. */
 export class ScenePoseWriter {
   private readonly pageFloats: number;
-  private column: Float32Array | undefined;
-  private next = 0;
+  private cursor: { column: Float32Array; offset: number } | undefined;
 
   constructor(expectedRows = POSES_PER_PAGE) {
     this.pageFloats = POSE_FLOATS * Math.max(1, Math.min(POSES_PER_PAGE, expectedRows));
   }
 
+  /** Reserve an unpublished matrix. Take both coordinates before reading a caller-owned source.
+   * The cursor is borrowed until the next reservation; the numeric window is permanently issued. */
+  reserve(): { readonly column: Float32Array; readonly offset: number } {
+    let cursor = this.cursor;
+    if (cursor === undefined) {
+      cursor = { column: new Float32Array(this.pageFloats), offset: 0 };
+      this.cursor = cursor;
+    } else if (cursor.offset + POSE_FLOATS === this.pageFloats) {
+      cursor.column = new Float32Array(this.pageFloats);
+      cursor.offset = 0;
+    } else cursor.offset += POSE_FLOATS;
+    return cursor;
+  }
+
   capture(source: ArrayLike<number>, offset = 0): CapturedSceneTransform {
-    if (this.column === undefined || this.next === this.pageFloats) {
-      this.column = new Float32Array(this.pageFloats);
-      this.next = 0;
-    }
-    const column = this.column;
-    const start = this.next;
-    this.next += POSE_FLOATS;
-    copyPose(column, start, source, offset);
+    const { column, offset: start } = this.reserve();
+    copyScenePose(column, start, source, offset);
     return new CapturedSceneTransform(column, start);
   }
 
   clear(): void {
-    this.column = undefined;
-    this.next = 0;
+    this.cursor = undefined;
   }
 }
 
@@ -84,8 +95,8 @@ export class CapturedSceneTransform implements TransformSnapshot {
     storage: ArrayLike<number> | CapturedSceneTransform,
   ): void {
     if (storage instanceof CapturedSceneTransform)
-      copyPose(out, at, storage.#column, storage.#offset);
-    else copyPose(out, at, storage, 0);
+      copyScenePose(out, at, storage.#column, storage.#offset);
+    else copyScenePose(out, at, storage, 0);
   }
 
   static reflected(source: TransformSnapshot): boolean {

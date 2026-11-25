@@ -892,8 +892,6 @@ const DIRTY_RECT_MARGIN = 1 / 256;
 
 type MutableRect = { x0: number; y0: number; x1: number; y1: number };
 
-const cornerScratch = new Float32Array(4);
-
 /** The normalized target rect a world box projects to; undefined when it crosses the eye plane. */
 function projectBox(
   matrix: Float32Array,
@@ -908,33 +906,46 @@ function projectBox(
     const x = boxes[offset + (corner & 1 ? 3 : 0)] as number;
     const y = boxes[offset + (corner & 2 ? 4 : 1)] as number;
     const z = boxes[offset + (corner & 4 ? 5 : 2)] as number;
-    for (let row = 0; row < 4; row += 1) {
-      cornerScratch[row] =
-        (matrix[row] as number) * x +
-        (matrix[4 + row] as number) * y +
-        (matrix[8 + row] as number) * z +
-        (matrix[12 + row] as number);
-    }
-    const w = cornerScratch[3] as number;
+    // Match the shader's stored f32 clip coordinates. Scissoring consumes X, Y and W.
+    const w = Math.fround(
+      (matrix[3] as number) * x +
+        (matrix[7] as number) * y +
+        (matrix[11] as number) * z +
+        (matrix[15] as number),
+    );
     if (!(w > 1e-6)) return undefined;
-    const u = ((cornerScratch[0] as number) / w) * 0.5 + 0.5;
-    const v = 0.5 - ((cornerScratch[1] as number) / w) * 0.5;
+    const clipX = Math.fround(
+      (matrix[0] as number) * x +
+        (matrix[4] as number) * y +
+        (matrix[8] as number) * z +
+        (matrix[12] as number),
+    );
+    const clipY = Math.fround(
+      (matrix[1] as number) * x +
+        (matrix[5] as number) * y +
+        (matrix[9] as number) * z +
+        (matrix[13] as number),
+    );
+    const u = (clipX / w) * 0.5 + 0.5;
+    const v = 0.5 - (clipY / w) * 0.5;
     x0 = Math.min(x0, u);
     y0 = Math.min(y0, v);
     x1 = Math.max(x1, u);
     y1 = Math.max(y1, v);
   }
   if (!Number.isFinite(x0 + y0 + x1 + y1)) return undefined;
-  const rect = {
-    x0: Math.max(0, x0 - DIRTY_RECT_MARGIN),
-    y0: Math.max(0, y0 - DIRTY_RECT_MARGIN),
-    x1: Math.min(1, x1 + DIRTY_RECT_MARGIN),
-    y1: Math.min(1, y1 + DIRTY_RECT_MARGIN),
-  };
-  return rect.x0 >= rect.x1 || rect.y0 >= rect.y1 ? null : rect;
+  x0 = Math.max(0, x0 - DIRTY_RECT_MARGIN);
+  y0 = Math.max(0, y0 - DIRTY_RECT_MARGIN);
+  x1 = Math.min(1, x1 + DIRTY_RECT_MARGIN);
+  y1 = Math.min(1, y1 + DIRTY_RECT_MARGIN);
+  return x0 >= x1 || y0 >= y1 ? null : { x0, y0, x1, y1 };
 }
 
 const rectArea = (rect: MutableRect): number => (rect.x1 - rect.x0) * (rect.y1 - rect.y0);
+
+function rectsOverlap(a: MutableRect, b: MutableRect): boolean {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
 
 /**
  * Merges projected boxes into at most {@link MAX_DIRTY_RECTS} rects, each step
@@ -956,45 +967,47 @@ export function shadowDirtyRects(
       if (rect !== null) rects.push(rect);
     }
   }
-  const union = (a: MutableRect, b: MutableRect): MutableRect => ({
-    x0: Math.min(a.x0, b.x0),
-    y0: Math.min(a.y0, b.y0),
-    x1: Math.max(a.x1, b.x1),
-    y1: Math.max(a.y1, b.y1),
-  });
-  const overlaps = (a: MutableRect, b: MutableRect): boolean =>
-    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-  for (;;) {
-    let best: [number, number] | undefined;
+  while (rects.length > 1) {
+    let bestI = -1;
+    let bestJ = -1;
     let bestCost = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < rects.length; i += 1) {
-      for (let j = i + 1; j < rects.length; j += 1) {
-        const a = rects[i] as MutableRect;
+    scan: for (let i = 0; i < rects.length - 1; i++) {
+      const a = rects[i] as MutableRect;
+      const area = rectArea(a);
+      for (let j = i + 1; j < rects.length; j++) {
         const b = rects[j] as MutableRect;
-        // Overlapping rects always merge so no texel is drawn twice.
-        const cost = overlaps(a, b)
-          ? Number.NEGATIVE_INFINITY
-          : rectArea(union(a, b)) - rectArea(a) - rectArea(b);
+        // The first overlapping pair wins even in a tie. Every later cost is at least this large.
+        if (rectsOverlap(a, b)) {
+          bestI = i;
+          bestJ = j;
+          break scan;
+        }
+        if (rects.length <= MAX_DIRTY_RECTS) continue;
+        const width = Math.max(a.x1, b.x1) - Math.min(a.x0, b.x0);
+        const height = Math.max(a.y1, b.y1) - Math.min(a.y0, b.y0);
+        const cost = width * height - area - rectArea(b);
         if (cost < bestCost) {
           bestCost = cost;
-          best = [i, j];
+          bestI = i;
+          bestJ = j;
         }
       }
     }
-    if (
-      best === undefined ||
-      (rects.length <= MAX_DIRTY_RECTS && bestCost !== Number.NEGATIVE_INFINITY)
-    ) {
-      break;
-    }
-    const [i, j] = best;
-    rects[i] = union(rects[i] as MutableRect, rects[j] as MutableRect);
-    rects.splice(j, 1);
+    if (bestI < 0) break;
+    const a = rects[bestI] as MutableRect;
+    const b = rects[bestJ] as MutableRect;
+    a.x0 = Math.min(a.x0, b.x0);
+    a.y0 = Math.min(a.y0, b.y0);
+    a.x1 = Math.max(a.x1, b.x1);
+    a.y1 = Math.max(a.y1, b.y1);
+    for (let j = bestJ + 1; j < rects.length; j++) rects[j - 1] = rects[j] as MutableRect;
+    rects.pop();
   }
   let coverage = 0;
   for (const rect of rects) coverage += rectArea(rect);
   if (coverage > MAX_DIRTY_COVERAGE) return undefined;
-  return Object.freeze(rects.map((rect) => Object.freeze(rect)));
+  for (const rect of rects) Object.freeze(rect);
+  return Object.freeze(rects);
 }
 
 /**
@@ -1034,10 +1047,16 @@ function partialStaticRects(
     retainedContent,
     input.ignoredChangeSlots,
     drawn(previous.submission.plan),
+    MAX_DIRTY_BOXES,
   );
   if (changedContent === 'unbounded') return undefined;
   const changed = changes.between(previous.submission.plan, plan, previous.preparation);
-  const changedDraws = changes.boundsSince(scene, retainedContent, changed);
+  const changedDraws = changes.boundsSince(
+    scene,
+    retainedContent,
+    changed,
+    MAX_DIRTY_BOXES - changedContent.length / 6,
+  );
   if (changedDraws === 'unbounded') return undefined;
   return shadowDirtyRects(input.matrix, [changedContent, changedDraws]);
 }

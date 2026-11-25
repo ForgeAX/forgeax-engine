@@ -9,6 +9,8 @@
 #pragma variant_axis DIRECT_DFG_LUT_AVAILABLE
 #pragma variant_axis DEFERRED_DIFFUSE_GI_AVAILABLE
 #pragma variant_axis DEFERRED_LIGHT_PROBE_AVAILABLE
+#pragma variant_axis DEFERRED_SCREEN_AO_AVAILABLE
+#pragma variant_axis DEFERRED_CAPSULE_SHADOW_AVAILABLE
 
 #import forgeax_view::common::{viewDirectionToCamera, view, FullscreenOutput, fullscreen_triangle}
 #import forgeax_scene_temporal::{sceneFragmentViewZ}
@@ -30,12 +32,15 @@
 @group(1) @binding(2) var dielectricSpecularSource : texture_2d<u32>;
 @group(1) @binding(3) var lightingContext : texture_2d<u32>;
 @group(1) @binding(4) var sceneDepth : texture_depth_2d;
+#ifdef DEFERRED_SCREEN_AO_AVAILABLE
 @group(1) @binding(5) var screenOcclusion : texture_2d<f32>;
+#endif
 @group(1) @binding(6) var linearSampler : sampler;
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
 @id(64005) override standardDeferredProjectedPcf : bool = false;
 #endif
 @id(64004) override standardDeferredSubsurface : bool = false;
+@id(64007) override standardDeferredComposeReflection : bool = false;
 struct DeferredLightingParams {
   lanes : vec4<f32>,
   occlusion : vec4<f32>,
@@ -44,19 +49,21 @@ struct DeferredLightingParams {
 @group(0) @binding(34) var<uniform> skySh : SkyShPolynomial;
 @group(0) @binding(35) var<uniform> viewSkylight : SkylightUniforms;
 @group(1) @binding(9) var prefilterMap : texture_2d<f32>;
+#ifdef ENV_BRDF_LUT
 @group(1) @binding(10) var brdfLut : texture_2d<f32>;
+#endif
 @group(1) @binding(12) var<uniform> skylight : SkylightUniforms;
+#ifdef DEFERRED_CAPSULE_SHADOW_AVAILABLE
 @group(1) @binding(13) var<storage, read> capsules : array<vec4<f32>>;
 @group(1) @binding(14) var<storage, read> capsuleTiles : array<u32>;
+#endif
 @group(1) @binding(15) var receiverGeometry : texture_2d<u32>;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
 @group(1) @binding(16) var directDfgLut: texture_2d<f32>;
 // Preserve the filtering contract through the shared BRDF texture parameters.
 fn directDfgTextureFilteringWitness() {
   let sample = textureSample(directDfgLut, linearSampler, vec2<f32>(0.0));
-  let occlusion = textureSample(screenOcclusion, linearSampler, vec2<f32>(0.0));
   let prefilter = textureSample(prefilterMap, linearSampler, vec2<f32>(0.5));
-  let brdf = textureSample(brdfLut, linearSampler, vec2<f32>(0.0));
 }
 #endif
 #ifdef DEFERRED_LIGHT_PROBE_AVAILABLE
@@ -88,6 +95,7 @@ struct DeferredOutput {
   @location(3) diffuse : vec4<f32>,
 };
 
+#ifdef DEFERRED_CAPSULE_SHADOW_AVAILABLE
 const CAPSULE_TILE_SIZE : u32 = 16u;
 const CAPSULE_TILE_COUNT_BITS : u32 = 6u;
 
@@ -110,6 +118,7 @@ fn directionalCapsuleShadow(position : vec3<f32>, pixel : vec2<i32>) -> f32 {
   }
   return visibility;
 }
+#endif
 
 @vertex
 fn vs_standard_deferred(@builtin(vertex_index) index : u32) -> FullscreenOutput {
@@ -224,10 +233,14 @@ fn deferredEnvironment(surface : DeferredSurface, radiance : vec3<f32>) -> Stand
 }
 
 fn deferredScreenOcclusion(position : vec2<f32>) -> f32 {
+#ifdef DEFERRED_SCREEN_AO_AVAILABLE
   // Screen AO is final visibility, ready for indirect lighting.
   if (params.lanes.x <= 0.0) { return 1.0; }
   let uv = position / vec2<f32>(textureDimensions(sceneDepth));
   return clamp(textureSampleLevel(screenOcclusion, linearSampler, uv, 0.0).r, 0.0, 1.0);
+#else
+  return 1.0;
+#endif
 }
 
 fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, environment : StandardEnvironment,
@@ -267,9 +280,12 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
     if (view.directionalShadowFilter.w > 0.0 && shadow > 0.0) {
       shadow *= directionalContactShadow(view, sceneDepth, position, normal, pixel, params.lanes.y, normalRoughness, compact);
     }
+
+#ifdef DEFERRED_CAPSULE_SHADOW_AVAILABLE
     if (params.lanes.z > 0.0 && shadow > 0.0 && dot(normal, -view.lightDir) > 0.0) {
       shadow *= directionalCapsuleShadow(position, pixel);
     }
+#endif
   }
   let receiverChannels = receiver.y;
   let diffuseToSubsurface = standardDeferredSubsurface && standardSubsurfaceActive(context.y);
@@ -301,8 +317,10 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
   let diffuse = environment.diffuse * ao;
   let sceneDiffuse = select(diffuse, vec3<f32>(0.0), diffuseToSubsurface);
   let subsurface = select(vec3<f32>(0.0), diffuse + direct.diffuse, diffuseToSubsurface);
-  return DeferredOutput(vec4<f32>(sceneDiffuse + environment.specular * specularAo + direct.radiance, 0.0),
-    vec4<f32>(environment.specular * specularAo, 1.0),
+  let specular = environment.specular * specularAo;
+  let bakedSpecular = select(specular, vec3f(0.0), standardDeferredComposeReflection);
+  return DeferredOutput(vec4<f32>(sceneDiffuse + bakedSpecular + direct.radiance, 0.0),
+    vec4<f32>(specular, 1.0),
     vec4<f32>(environment.response.rgb * standardSpecularOcclusion(nDotV, response.a, roughness), environment.response.a),
     vec4<f32>(subsurface, 0.0));
 }
@@ -423,7 +441,8 @@ struct ReflectionOverflowOutput {
 @fragment
 fn fs_standard_deferred_reflections_overflow(in : ReflectionOverflowVertex) -> ReflectionOverflowOutput {
   let specular = resolveReflectionOverflow(in, false, 0u);
-  return ReflectionOverflowOutput(vec4<f32>(specular, 0.0), vec4<f32>(specular, 1.0));
+  let sceneSpecular = select(specular, vec3f(0.0), standardDeferredComposeReflection);
+  return ReflectionOverflowOutput(vec4<f32>(sceneSpecular, 0.0), vec4<f32>(specular, 1.0));
 }
 
 @fragment
@@ -547,6 +566,7 @@ fn resolveCompactDeferredArrays(in : FullscreenOutput, first : texture_2d_array<
 @fragment fn fs_standard_deferred_compact_reflections_overflow(in : ReflectionOverflowVertex) -> ReflectionOverflowOutput {
   let specular = resolveReflectionOverflow(in, true,
     textureLoad(receiverGeometry, vec2<i32>(in.position.xy), 0).g);
-  return ReflectionOverflowOutput(vec4<f32>(specular, 0.0), vec4<f32>(specular, 1.0));
+  let sceneSpecular = select(specular, vec3f(0.0), standardDeferredComposeReflection);
+  return ReflectionOverflowOutput(vec4<f32>(sceneSpecular, 0.0), vec4<f32>(specular, 1.0));
 }
 #endif

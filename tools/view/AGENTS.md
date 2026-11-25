@@ -14,10 +14,10 @@ process manager. View resolves its matching Engine and own Host Pack; default H 
 shared system temporary workspace per installation. `--new-instance` allocates
 a unique temporary H; explicit `--root H` selects a caller-managed instance.
 Backend termination leaves the Shell available to start it again.
-View ships only in the SDK, never inside the Engine npm package or game
-npm dependencies. SDK file startup reuses `bin/forgeax.mjs#ensureSdkRuntime`,
-then resolves Engine and View from that SDK's `.forgeax/cli-runtime`, independently
-of the game and cwd. Source startup resolves the prepared contributor installation.
+The Engine authoring package bundles its matching View as a private tool.
+Use `forgeax project view --json` from a game project. Source startup resolves the
+prepared contributor installation. Earlier SDK releases resolve their matching
+Engine and View through their own `.forgeax/cli-runtime`.
 Startup calls the public `ensureDevKitView` API directly. Use returned H explicitly
 for instance controls. Low-level `backend start` and `view start` remain usable
 separately. Normal file startup with omitted G never selects H as a

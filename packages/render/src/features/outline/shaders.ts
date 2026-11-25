@@ -76,7 +76,7 @@ const horizontal = /* wgsl */ `${vertex}
   }
   return vec4<f32>(edge, 0.0, 1.0);
 }`;
-const composite = /* wgsl */ `${vertex}
+const composite = (edgeAlpha: 'color.a' | '1.0') => /* wgsl */ `${vertex}
 @group(1) @binding(3) var mask: texture_2d<f32>;
 @group(1) @binding(4) var expanded: texture_2d<f32>;
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
@@ -89,8 +89,9 @@ const composite = /* wgsl */ `${vertex}
     let q = p + vec2<i32>(0, y);
     if (all(q >= vec2<i32>(0)) && all(q < size)) { edge = max(edge, textureLoad(expanded, q, 0).rg); }
   }
-  if (edge.x > 0.5 && params.hidden.w != 1.0) { return vec4<f32>(params.visible.rgb, color.a); }
-  if (edge.y > 0.5 && params.hidden.w != 0.0) { return vec4<f32>(params.hidden.rgb, color.a); }
+  let alpha = ${edgeAlpha};
+  if (edge.x > 0.5 && params.hidden.w != 1.0) { return vec4<f32>(params.visible.rgb, alpha); }
+  if (edge.y > 0.5 && params.hidden.w != 0.0) { return vec4<f32>(params.hidden.rgb, alpha); }
   return color;
 }`;
 const depthRead = { key: 'scene-depth', sampleType: 'depth' } as const;
@@ -130,7 +131,14 @@ const LEGACY_OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaratio
   {
     kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.composite',
-    source: composite,
+    source: composite('color.a'),
+    reads: ['scene-color', 'outline-mask', 'outline-expanded'],
+  },
+  {
+    kind: 'fullscreen-program' as const,
+    name: 'forgeax.outline.composite.premultiplied',
+    // A painted stroke adds coverage even on a transparent Three canvas.
+    source: composite('1.0'),
     reads: ['scene-color', 'outline-mask', 'outline-expanded'],
   },
 ].map((program) => ({ ...program, params: { byteSize: 32, defaultValue: new Uint8Array(32) } }));

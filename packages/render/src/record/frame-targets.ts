@@ -324,7 +324,7 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
   if (passName.startsWith('shadowCascade')) return 'record/graph-execute/shadow';
   if (passName.startsWith('point-shadow')) return 'record/graph-execute/point-shadow';
   if (passName.startsWith('spot-shadow')) return 'record/graph-execute/spot-shadow';
-  if (passName === 'depth-pyramid-seed' || passName.startsWith('depth-pyramid-reduce-')) {
+  if (passName === 'hzb-seed' || passName.startsWith('hzb-reduce-')) {
     return 'record/graph-execute/depth-pyramid';
   }
   const reflection = reflectionExecutionPhase(passName);

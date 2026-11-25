@@ -30,6 +30,10 @@ type Graph = Parameters<typeof createRenderPipelineTarget>[0];
 /** The two prepass draw sets are complements of the same accepted motion facts. */
 function writesVelocity(source: RenderableSnapshot): boolean {
   const temporal = source.temporal;
+  // Extended velocity retains previous-depth and responsiveness information
+  // for reactive or newly seeded surfaces, even with a stationary matrix.
+  if (temporal?.motionValid === false || temporal?.reactive === true) return true;
+  if (temporal === undefined) return false;
   // Skin poses and LOD crossfades can move while the object matrix is unchanged.
   if (
     source.skinBinding !== undefined ||
@@ -38,7 +42,6 @@ function writesVelocity(source: RenderableSnapshot): boolean {
     source.spriteInstances !== undefined
   )
     return true;
-  if (temporal?.motionValid !== true) return false;
   if (
     source.transform.world.some(
       (value, index) =>
@@ -61,11 +64,30 @@ function writesVelocity(source: RenderableSnapshot): boolean {
   );
 }
 
-function selectVelocityWriters(frame: RenderPipelineFrame, writes: boolean) {
+function selectVelocityWriters(
+  frame: RenderPipelineFrame,
+  writes: boolean,
+  nativeForward: boolean,
+) {
   const context = frame as _InternalRenderPipelineContext;
   const entities: number[] = [];
-  for (const { source } of context.validatedOrdered)
-    if (writesVelocity(source) === writes) entities.push(source.entityKey);
+  for (const { source } of context.validatedOrdered) {
+    // An indirect batch may contain both still and moving instances. Keep its
+    // one GPU-selected roster in the depth-and-velocity stage.
+    const nativeWriter =
+      nativeForward &&
+      source.gpuDrivenDraws?.some(
+        (draw, index) =>
+          context.gpuDrivenSelection?.owns(
+            source,
+            draw,
+            index,
+            'temporal',
+            'opaque-depth-velocity',
+          ) === true,
+      ) === true;
+    if ((nativeWriter || writesVelocity(source)) === writes) entities.push(source.entityKey);
+  }
   return { entities };
 }
 
@@ -82,14 +104,18 @@ export function createDefaultVelocityTarget(
   });
 }
 
-export function addDefaultDepthPrepass(graph: Graph, depth: RenderPipelineTarget) {
+export function addDefaultDepthPrepass(
+  graph: Graph,
+  depth: RenderPipelineTarget,
+  nativeForward = false,
+) {
   return addTypedScenePass(graph, {
     name: 'standard-depth-prepass',
     depth,
     selector: COLOR_PASS_SELECTOR,
     recordMode: 'opaque-depth',
     fragmentEntryPoint: PREDEPTH_FRAGMENT_ENTRY,
-    selectEntities: (frame) => selectVelocityWriters(frame, false),
+    selectEntities: (frame) => selectVelocityWriters(frame, false, nativeForward),
   });
 }
 
@@ -98,8 +124,10 @@ export function addDefaultDepthVelocity(
   depth: RenderPipelineTarget,
   velocity: RenderPipelineTarget,
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
-  late = false,
+  phase: 'early' | 'late' | 'forward' = 'early',
 ) {
+  const late = phase === 'late';
+  const nativeForward = phase === 'forward' && gpuDriven !== undefined;
   return addTypedScenePass(graph, {
     name: late ? 'standard-depth-velocity-late' : 'standard-depth-velocity',
     depth,
@@ -108,12 +136,13 @@ export function addDefaultDepthVelocity(
     passKind: 'temporal',
     fragmentEntryPoint: 'fs_scene_velocity',
     recordMode: 'opaque-depth',
-    gpuDrivenFilter: 'opaque',
+    gpuDrivenFilter: nativeForward ? 'opaque-depth-velocity' : 'opaque',
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     ...(late
       ? { gpuDrivenPhase: 'late' }
       : {
-          selectEntities: (frame: RenderPipelineFrame) => selectVelocityWriters(frame, true),
+          selectEntities: (frame: RenderPipelineFrame) =>
+            selectVelocityWriters(frame, true, nativeForward),
         }),
     colorLoadOp: late ? 'load' : 'clear',
     depthLoadOp: 'load',
@@ -121,7 +150,8 @@ export function addDefaultDepthVelocity(
   });
 }
 
-const DEFAULT_VELOCITY_TEMPORAL_WGSL = `
+export const SCENE_VELOCITY_TEMPORAL_LABEL = 'scene-velocity-temporal';
+export const SCENE_VELOCITY_TEMPORAL_WGSL = `
 ${SCENE_VELOCITY_RECONSTRUCTION_WGSL}
 @group(0) @binding(0) var sceneDepth : texture_depth_2d;
 @group(0) @binding(1) var velocity : texture_2d<u32>;
@@ -145,15 +175,17 @@ export function addDefaultVelocityTemporalProjection(
   velocity: RenderPipelineTarget,
   source: SceneVelocityInputs,
   size: GraphTextureDescriptor['size'],
+  label: 'ssr-scene-temporal' | 'standard-scene-temporal' = 'ssr-scene-temporal',
 ) {
-  const target = createRenderPipelineTarget(graph, 'ssr-scene-temporal', {
+  const target = createRenderPipelineTarget(graph, label, {
     format: 'rgba16float',
     size,
   });
   if (!target.ok) return target;
   const output = target.value;
   let program: RasterState | undefined;
-  const added = graph.addRasterPass('ssr-scene-temporal', {
+  const passName = label === 'standard-scene-temporal' ? 'standard-scene-data' : label;
+  const added = graph.addRasterPass(passName, {
     accesses: [
       { resource: source.depth, usage: 'sampled-read' },
       { resource: velocity.view, usage: 'sampled-read' },
@@ -164,8 +196,8 @@ export function addDefaultVelocityTemporalProjection(
     encodeDirect(pass, frame, resources) {
       program ??= createRasterState(
         frame,
-        DEFAULT_VELOCITY_TEMPORAL_WGSL,
-        'ssr-scene-temporal',
+        SCENE_VELOCITY_TEMPORAL_WGSL,
+        SCENE_VELOCITY_TEMPORAL_LABEL,
         [
           { binding: 0, visibility: 2, texture: { sampleType: 'depth', viewDimension: '2d' } },
           { binding: 1, visibility: 2, texture: { sampleType: 'uint', viewDimension: '2d' } },

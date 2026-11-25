@@ -64,7 +64,7 @@ export function projectTimingFrame(frame) {
     all: frame.passes,
     passBoundary: frame.passes.filter((pass) => pass.passKind !== 'copy'),
     copyEnvelope: frame.passes.filter((pass) => pass.passKind === 'copy'),
-    ssr: frame.passes.filter((pass) => /^(ssr-|depth-pyramid-)/.test(pass.passName)),
+    ssr: frame.passes.filter((pass) => /^(ssr-|hzb-(seed|reduce-))/.test(pass.passName)),
   };
   const coverage = {};
   for (const [name, passes] of Object.entries(groups)) {

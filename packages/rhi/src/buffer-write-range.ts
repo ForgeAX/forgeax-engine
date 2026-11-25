@@ -6,6 +6,18 @@ export function bufferWriteRange(
   dataOffset = 0,
   size?: number,
 ): Result<{ readonly byteOffset: number; readonly byteLength: number }, RhiError> {
+  const range = { byteOffset: 0, byteLength: 0 };
+  const checked = readBufferWriteRange(range, data, dataOffset, size);
+  return checked.ok ? ok(range) : checked;
+}
+
+/** Publish a validated range into caller-owned storage. Failure leaves both fields untouched. */
+export function readBufferWriteRange(
+  out: { byteOffset: number; byteLength: number },
+  data: ArrayBufferView | ArrayBuffer,
+  dataOffset = 0,
+  size?: number,
+): Result<void, RhiError> {
   const elementBytes =
     ArrayBuffer.isView(data) && 'BYTES_PER_ELEMENT' in data
       ? (data as ArrayBufferView & { readonly BYTES_PER_ELEMENT: number }).BYTES_PER_ELEMENT
@@ -28,5 +40,7 @@ export function bufferWriteRange(
       }),
     );
   }
-  return ok({ byteOffset: dataOffset * elementBytes, byteLength: count * elementBytes });
+  out.byteOffset = dataOffset * elementBytes;
+  out.byteLength = count * elementBytes;
+  return ok(undefined);
 }

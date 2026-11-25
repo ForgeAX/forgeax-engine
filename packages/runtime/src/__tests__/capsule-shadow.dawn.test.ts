@@ -31,6 +31,10 @@ const directory = 'artifacts/capsule-shadow';
 const TILE_COUNT_MASK = (1 << 6) - 1;
 const TILE_SIZE = 16;
 
+function expectedDeferredCapsuleSlots(variant: CapsuleShadowVariant): readonly number[] {
+  return variant === 'capsule' ? [13, 14] : [];
+}
+
 /** Depth-only raster works: the directional cascade (and any depth prepass) draws. */
 function depthOnlyWorks(model: FrameModel) {
   return model.works.filter(
@@ -127,7 +131,7 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
     const rasterModel = models.get('raster');
     const capsuleModel = models.get('capsule');
     if (rasterModel === undefined || capsuleModel === undefined) throw new Error('missing tapes');
-    // Declared storage inputs must be fully defined, including disabled or unused lanes.
+    // Only capsule lighting owns the two storage inputs, including their unused tails.
     for (const [variant, model] of models) {
       const decoded = decodeTape((tapes.get(variant) as EncodedTape).bytes).unwrap();
       const lighting = model.works.find((work) =>
@@ -137,7 +141,7 @@ it('capsule shadows replace the skinned cascade shadow and bin every shadowed ti
       const bindings = lighting.bindings.filter(
         (entry) => entry.groupIndex === 1 && [13, 14].includes(entry.binding),
       );
-      expect(bindings).toHaveLength(2);
+      expect(bindings.map(({ binding }) => binding)).toEqual(expectedDeferredCapsuleSlots(variant));
       for (const binding of bindings) {
         const id = binding.resourceId;
         if (!model.unseededResources.some((resource) => resource.resourceId === id)) continue;

@@ -23,6 +23,7 @@ export function addSsrCompositionPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: SsrGBufferInput & {
     readonly scene: RenderPipelineTarget;
+    readonly composeEnvironment?: boolean;
     readonly radiance: GraphTextureView;
     readonly fallback: GraphTextureView;
     readonly response: GraphTextureView;
@@ -146,7 +147,10 @@ export function addSsrCompositionPass(
             fragment: {
               module,
               entryPoint: input.compactMaterial === undefined ? entry : `${entry}_compact`,
-              constants: ssrGBufferConstants(input),
+              constants: {
+                ...ssrGBufferConstants(input),
+                ...(input.composeEnvironment === true ? { '64008': 1 } : {}),
+              },
               targets: [
                 {
                   format: input.scene.format,

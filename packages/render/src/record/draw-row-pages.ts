@@ -1,4 +1,4 @@
-import { FrameListBase } from '../scene/frame-list';
+import { FrameListBase, type FrameRange, JoinedFrameRows } from '../scene/frame-list';
 import { SceneDrawSlot } from '../scene/mesh-draw';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 
@@ -9,12 +9,19 @@ interface Page {
   readonly values: (Page | ValidatedRenderable)[];
   capacity: number;
   stable: boolean;
+  keepsNativeAddresses?: boolean;
 }
 
 function writable(page: Page | undefined, writer: symbol): Page {
   return page?.writer === writer
     ? page
-    : { writer, values: page?.values.slice() ?? [], capacity: 0, stable: false };
+    : {
+        writer,
+        values: page?.values.slice() ?? [],
+        capacity: page?.capacity ?? 0,
+        stable: page?.stable ?? false,
+        keepsNativeAddresses: page?.stable ?? false,
+      };
 }
 
 function stableAddress(row: ValidatedRenderable): boolean {
@@ -28,7 +35,7 @@ function stableAddress(row: ValidatedRenderable): boolean {
 }
 
 function seal(page: Page, stride: number, writer: symbol): void {
-  if (page.writer !== writer) return;
+  if (page.writer !== writer || (stride === 1 && page.keepsNativeAddresses)) return;
   let capacity = 0;
   let stable = true;
   if (stride === 1) {
@@ -39,6 +46,7 @@ function seal(page: Page, stride: number, writer: symbol): void {
   } else {
     for (const child of page.values as Page[]) {
       seal(child, stride / WIDTH, writer);
+      if (child.writer === writer && !child.keepsNativeAddresses) page.keepsNativeAddresses = false;
       capacity = Math.max(capacity, child.capacity);
       stable &&= child.stable;
     }
@@ -56,6 +64,7 @@ class DrawRowPages extends FrameListBase<ValidatedRenderable> {
     readonly length: number,
     readonly stride: number,
     readonly root: Page,
+    readonly previousWriter?: symbol,
   ) {
     super();
   }
@@ -76,6 +85,14 @@ class DrawRowPages extends FrameListBase<ValidatedRenderable> {
     if (index < 0) index += this.length;
     if (index < 0 || index >= this.length) return undefined;
     return this.pageAt(index).values[index % WIDTH] as ValidatedRenderable;
+  }
+
+  override forEach(consume: (row: ValidatedRenderable, index: number) => void): void {
+    for (let first = 0; first < this.length; first += WIDTH) {
+      const values = this.pageAt(first).values as ValidatedRenderable[];
+      for (let lane = 0; lane < values.length; lane++)
+        consume(values[lane] as ValidatedRenderable, first + lane);
+    }
   }
 
   [Symbol.iterator](): IterableIterator<ValidatedRenderable> {
@@ -108,6 +125,18 @@ class DrawRowPages extends FrameListBase<ValidatedRenderable> {
       },
     };
   }
+}
+
+/** Walk issued leaves directly. Other row providers own their iteration protocol. */
+export function visitDrawRows(rows: DrawRows, consume: (row: ValidatedRenderable) => void): void {
+  if (rows instanceof DrawRowPages) rows.forEach(consume);
+  else for (const row of rows) consume(row);
+}
+
+/** Every row in this issued table belongs to an ordinary Scene slot. Terrain and
+ * derived native draws have their own lifetime and need explicit roster admission. */
+export function isOrdinarySceneDrawTable(rows: DrawRows): boolean {
+  return rows instanceof DrawRowPages && rows.root.stable;
 }
 
 type FillDrawRows = (write: (index: number, row: ValidatedRenderable) => void) => void;
@@ -188,55 +217,27 @@ export function issueDrawRows(
       }
       last = key;
     }
-    leaf.values[index % WIDTH] = row;
+    const lane = index % WIDTH;
+    if (leaf.keepsNativeAddresses) {
+      const old = leaf.values[lane] as ValidatedRenderable | undefined;
+      // Pose edits preserve the exact physical peak and ownership of the other lanes.
+      leaf.keepsNativeAddresses =
+        row === old ||
+        (old !== undefined &&
+          row.foldedMeshSlot === undefined &&
+          row.meshSlot === old.meshSlot &&
+          row.sceneSlot?.slot === old.sceneSlot?.slot &&
+          row.sceneSlot?.generation === old.sceneSlot?.generation &&
+          stableAddress(row));
+    }
+    leaf.values[lane] = row;
   });
   seal(root, stride, writer);
-  return new DrawRowPages(length, stride, root);
+  return new DrawRowPages(length, stride, root, base.root.writer);
 }
 
-interface DrawRange {
-  readonly start: number;
-  readonly rows: DrawRows;
-}
-
-/** Joined pass ranges hold one reference per actual phase and preserve its address space. */
-export class JoinedDrawRows extends FrameListBase<ValidatedRenderable> {
-  readonly length: number;
-  constructor(readonly ranges: readonly DrawRange[]) {
-    super();
-    const last = ranges.at(-1);
-    this.length = last === undefined ? 0 : last.start + last.rows.length;
-  }
-
-  at(index: number): ValidatedRenderable | undefined {
-    index = Math.trunc(index) || 0;
-    if (index < 0) index += this.length;
-    if (index < 0 || index >= this.length) return undefined;
-    const range = this.containing(index);
-    return range?.rows.at(index - range.start);
-  }
-
-  /** Use the physical subtable after addressing when the pass owns this exact interval. */
-  exactRange(start: number, length: number): DrawRows | undefined {
-    const range = this.containing(start);
-    return range?.start === start && range.rows.length === length ? range.rows : undefined;
-  }
-
-  private containing(index: number) {
-    let low = 0;
-    let high = this.ranges.length - 1;
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      if (index < (this.ranges[mid] as DrawRange).start) high = mid - 1;
-      else low = mid;
-    }
-    return this.ranges[low];
-  }
-
-  *[Symbol.iterator](): IterableIterator<ValidatedRenderable> {
-    for (const range of this.ranges) yield* range.rows;
-  }
-}
+type DrawRange = FrameRange<ValidatedRenderable>;
+export class JoinedDrawRows extends JoinedFrameRows<ValidatedRenderable> {}
 
 interface AddressedDrawRows {
   readonly rows: DrawRows;
@@ -257,8 +258,16 @@ function addressPage(
   placed: Page | undefined,
   stride: number,
   address: AddressDraw,
+  currentWriter: symbol | undefined,
 ): Page {
   if (page === before && placed !== undefined && page.stable) return placed;
+  if (
+    page.writer === currentWriter &&
+    page.keepsNativeAddresses &&
+    before !== undefined &&
+    placed === before
+  )
+    return page;
   let values: Page['values'] | undefined;
   let capacity = 0;
   for (let lane = 0; lane < page.values.length; lane++) {
@@ -289,6 +298,7 @@ function addressPage(
         placed?.values[lane] as Page | undefined,
         stride / WIDTH,
         address,
+        currentWriter,
       );
       capacity = Math.max(capacity, next.capacity);
     }
@@ -321,6 +331,13 @@ export function addressDrawRows(
       aligned ? placed.root : undefined,
       inputs.stride,
       address,
+      aligned &&
+        inputs.previousWriter === before.root.writer &&
+        inputs.previousWriter !== ADDRESSED &&
+        before.length === inputs.length &&
+        placed.length === inputs.length
+        ? inputs.root.writer
+        : undefined,
     );
     return {
       rows: root === inputs.root ? inputs : new DrawRowPages(inputs.length, inputs.stride, root),

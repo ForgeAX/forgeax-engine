@@ -26,14 +26,18 @@ export const ACCELERATION_ATTESTATION_KINDS = Object.freeze([
  * topology half of this projection. The temporal target and Motion Blur
  * state are the execution authorities used by the performance contract.
  */
-export function activePassCountersFromInspection(inspection = {}) {
+export function activePassCountersFromInspection(inspection = {}, textures = []) {
   const passes = Array.isArray(inspection?.perFramePassNames)
     ? inspection.perFramePassNames
     : Array.isArray(inspection?.passes)
       ? inspection.passes
       : [];
-  const producer =
-    passes.includes('standard-scene-data') && inspection?.temporalTarget?.targetCount === 1 ? 1 : 0;
+  const packedProducer =
+    passes.includes('standard-depth-velocity') &&
+    packedVelocityTextures(textures).length === 1;
+  const sceneDataProducer =
+    passes.includes('standard-scene-data') && inspection?.temporalTarget?.targetCount === 1;
+  const producer = Number(packedProducer) + Number(sceneDataProducer);
   const motionBlur = inspection?.motionBlur;
   const blurActive =
     motionBlur?.enabled === true &&
@@ -167,8 +171,30 @@ export function cpuAffinityFromEnv(environment = process.env) {
   return { ok: true, cpuAffinity };
 }
 
-export function temporalTargetBytes(width, height) {
-  return width * height * 8;
+function packedVelocityTextures(textures) {
+  return (textures ?? []).filter(
+    (texture) =>
+      texture.label === 'scene-velocity' &&
+      texture.format === 'r32uint' &&
+      texture.sampleCount === 1 &&
+      texture.width > 0 &&
+      texture.height > 0,
+  );
+}
+
+function velocityBytes(width, height) {
+  return width * height * 4;
+}
+
+function velocityAtResolutions() {
+  return RESOLUTIONS.map((resolution) => ({
+    ...resolution,
+    temporalTarget: {
+      format: 'r32uint',
+      sampleCount: 1,
+      bytes: velocityBytes(resolution.width, resolution.height),
+    },
+  }));
 }
 
 function countPass(passes, name) {
@@ -177,11 +203,11 @@ function countPass(passes, name) {
 
 export function createCorrectnessEvidence(summary, identity) {
   const passes = Array.isArray(summary.passes) ? summary.passes : [];
-  const producerPassCount = countPass(passes, 'standard-scene-data');
+  const producerPassCount = countPass(passes, 'standard-depth-velocity');
+  const velocityTextures = packedVelocityTextures(summary.resourceProbe?.velocityTargets);
+  const target = velocityTextures[0];
   const motionBlurPassCount = countPass(passes, 'motion-blur');
   const rasterPassCount = producerPassCount + motionBlurPassCount;
-  const target = summary.temporalTarget?.descriptor;
-  const bytesPerPixel = target?.width > 0 && target?.height > 0 ? target.bytes / (target.width * target.height) : null;
   return {
     schemaVersion: PERFORMANCE_ADMISSION_SCHEMA_VERSION,
     lane: 'correctness-lavapipe',
@@ -209,19 +235,16 @@ export function createCorrectnessEvidence(summary, identity) {
       producerPassCount,
       motionBlurPassCount,
       rasterPassCount,
-      temporalTargetCount: producerPassCount,
-      temporalTarget: summary.temporalTarget,
+      temporalInputRoute: summary.temporalInputRoute,
+      temporalTargetCount: velocityTextures.length,
+      temporalTarget: target === undefined
+        ? null
+        : { ...target, bytes: velocityBytes(target.width, target.height) },
+      resolution: summary.resolution,
       creation: summary.creation,
       passes,
     },
-    resolutions: RESOLUTIONS.map((resolution) => ({
-      ...resolution,
-      temporalTarget: {
-        format: 'rgba16float',
-        sampleCount: 1,
-        bytes: resolution.width * resolution.height * bytesPerPixel,
-      },
-    })),
+    resolutions: velocityAtResolutions(),
   };
 }
 
@@ -241,18 +264,18 @@ export function validateCorrectnessEvidence(evidence) {
   if (evidence?.observed?.motionBlurPassCount !== 1) errors.push('motionBlurPassCount');
   if (evidence?.observed?.rasterPassCount !== 2) errors.push('rasterPassCount');
   if (evidence?.observed?.temporalTargetCount !== evidence?.observed?.producerPassCount) errors.push('temporalTargetCount');
+  if (evidence?.observed?.temporalInputRoute !== 'depth-velocity') errors.push('temporalInputRoute');
   const target = evidence?.observed?.temporalTarget;
+  const resolution = evidence?.observed?.resolution;
   if (
-    target?.identity !== 'standard-scene-temporal' ||
-    target?.producerId !== 'forgeax::standard::scene-data' ||
-    target?.schema !== 'forgeax::scene-data::temporal-v1' ||
-    target?.targetCount !== 1 ||
-    target?.descriptor === undefined ||
-    target.descriptor.format !== 'rgba16float' ||
-    target.descriptor.sampleCount !== 1 ||
-    target.descriptor.width <= 0 ||
-    target.descriptor.height <= 0 ||
-    target.descriptor.bytes !== target.descriptor.width * target.descriptor.height * 8
+    target?.label !== 'scene-velocity' ||
+    target.format !== 'r32uint' ||
+    target.sampleCount !== 1 ||
+    target.width <= 0 ||
+    target.height <= 0 ||
+    target.width !== resolution?.width ||
+    target.height !== resolution?.height ||
+    target.bytes !== velocityBytes(target.width, target.height)
   ) errors.push('temporalTarget');
   if (
     evidence?.observed?.creation?.texture !== 0 ||
@@ -260,19 +283,8 @@ export function validateCorrectnessEvidence(evidence) {
     evidence?.observed?.creation?.pipeline !== 0
   )
     errors.push('creation');
-  const bytesPerPixel =
-    target?.descriptor?.width > 0 && target?.descriptor?.height > 0
-      ? target.descriptor.bytes / (target.descriptor.width * target.descriptor.height)
-      : null;
-  const expected = RESOLUTIONS.map((resolution) => ({
-    ...resolution,
-    temporalTarget: {
-      format: 'rgba16float',
-      sampleCount: 1,
-      bytes: resolution.width * resolution.height * bytesPerPixel,
-    },
-  }));
-  if (JSON.stringify(evidence?.resolutions) !== JSON.stringify(expected)) errors.push('resolutions');
+  if (JSON.stringify(evidence?.resolutions) !== JSON.stringify(velocityAtResolutions()))
+    errors.push('resolutions');
   return { ok: errors.length === 0, errors };
 }
 

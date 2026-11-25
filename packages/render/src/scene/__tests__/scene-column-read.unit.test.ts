@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { snapshot } from '../../__tests__/gpu-driven-production-fixture';
-import { RowViews, SceneSlots } from '../scene-slots';
+import { SceneSlotPage, SceneSlots } from '../scene-slots';
 import { setSceneRow } from './scene-row-writes';
 
 it('reads sparse physical columns without row views and preserves held frames across slot reuse', () => {
@@ -9,7 +9,7 @@ it('reads sparse physical columns without row views and preserves held frames ac
   setSceneRow(slots, 130, { entityKey: 22, generation: 1, snapshot: snapshot(22, 1) });
   const before = slots.capture();
   const read = (_content: unknown, entity: number, slot: number) => [entity, slot];
-  const view = vi.spyOn(RowViews.prototype, 'read');
+  const view = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     expect(before.readContentSlot(3, read)).toEqual(before.readContentAt(0, read));
     expect(before.readContentSlot(130, read)).toEqual(before.readContentAt(1, read));

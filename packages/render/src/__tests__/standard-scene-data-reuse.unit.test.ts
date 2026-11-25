@@ -38,7 +38,9 @@ function source() {
     materialProgramKeys: { forward: 'cooked:forward' },
     materialPublication: undefined,
     materialProgramInputs: {
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] }] },
+      forward: {
+        entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment' as const, bindings: [] }],
+      },
     },
     materialContext: { geometry: 'mesh' as 'mesh' | 'skinned', vertexColor: false },
   };
@@ -258,7 +260,7 @@ it('captures program subtrees and shares exact program facts across draw members
   expect(second.facts?.selectedProgramFacts).toBe(first.facts?.selectedProgramFacts);
   expect(second.facts?.programCandidates).toBe(first.facts?.programCandidates);
   expect(programIdentity(held)).toBe(firstProgramIdentity);
-  expect(second.entryPoint).toBe('fs_ao_input');
+  expect(second.entryPoint).toBe('fs_depth_masked');
   expect(second.geometry).toBe('mesh');
   expect(Object.isFrozen(captured.passes[0]?.program)).toBe(true);
   expect(authored.passes[0]?.program.module).toBe('custom');
@@ -546,15 +548,15 @@ it('replaces facts on accepted program changes and preserves held snapshots thro
   };
   material.adoptProgramSnapshot({ ...material.snapshot, materialProgramInputs: entries });
   expect(programIdentity(material)).toBeUndefined();
-  requiredFirst(entries.forward.entryPoints).name = 'fs_ao_input';
-  expect(contributor(material).entryPoint).toBe('fs_ao_input');
+  requiredFirst(entries.forward.entryPoints).name = 'fs_depth_masked';
+  expect(contributor(material).entryPoint).toBe('fs_depth_masked');
   const replacement = source();
   requiredFirst(replacement.materialProgramInputs.forward.entryPoints).name = 'fs_new';
   material.adopt(captureMaterialSnapshot(replacement));
   expect(programIdentity(material)).not.toBe(firstProgramIdentity);
   expect(contributor(material).entryPoint).toBeUndefined();
   expect(programIdentity(held)).toBe(firstProgramIdentity);
-  expect(contributor(held).entryPoint).toBe('fs_ao_input');
+  expect(contributor(held).entryPoint).toBe('fs_depth_masked');
   const copied = new MaterialResource({ ...snapshot } as MaterialSnapshot);
   expect(programIdentity(copied)).toBeUndefined();
 });
@@ -565,7 +567,7 @@ it('adopts actual registry entry changes without changing held program observati
   contributor(material);
   const firstContributionProgram = programIdentity(material);
   let entryPoints = Object.freeze([
-    { name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] },
+    { name: 'fs_depth_masked', stage: 'fragment' as const, bindings: [] },
   ]);
   const registry = {
     materialArtifact: () => ({ program: { entryPoints } }),
@@ -577,7 +579,7 @@ it('adopts actual registry entry changes without changing held program observati
   rebind();
   const accepted = contributor(material);
   const acceptedProgram = programIdentity(material);
-  expect(accepted.entryPoint).toBe('fs_ao_input');
+  expect(accepted.entryPoint).toBe('fs_depth_masked');
   expect(acceptedProgram).toBeDefined();
   expect(acceptedProgram).not.toBe(firstContributionProgram);
   const snapshot = material.snapshot;
@@ -589,7 +591,7 @@ it('adopts actual registry entry changes without changing held program observati
   expect(contributor(material).entryPoint).toBeUndefined();
   expect(programIdentity(material)).not.toBe(acceptedProgram);
   expect(programIdentity(held)).toBe(firstContributionProgram);
-  expect(contributor(held).entryPoint).toBe('fs_ao_input');
+  expect(contributor(held).entryPoint).toBe('fs_depth_masked');
 });
 
 it('derives fixed programs while preserving borrowed parameters and independent old holders', () => {
@@ -617,7 +619,7 @@ it('derives fixed programs while preserving borrowed parameters and independent 
   requiredFirst(changed.materialProgramInputs.forward.entryPoints).name = 'fs_other';
   material.adopt(captureMaterialSnapshot(changed));
   expect(programIdentity(material.withParameters({}))).not.toBe(firstProgram);
-  expect(contributor(held).entryPoint).toBe('fs_ao_input');
+  expect(contributor(held).entryPoint).toBe('fs_depth_masked');
   const otherWorld = new MaterialResource(captureMaterialSnapshot(source()));
   expect(otherWorld.snapshot.materialHandle).toBe(material.snapshot.materialHandle);
   expect(programIdentity(otherWorld.withParameters({}))).not.toBe(firstProgram);

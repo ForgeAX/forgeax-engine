@@ -3413,6 +3413,7 @@ export class AssetRegistry implements AssetReferenceOwner {
       sources: this.#runtimeByGuid,
       origins: this.#runtimeGuids,
       decoders: this.#decoders,
+      materialDeclaration: (payload) => this.materialValueContracts.get(payload),
       source: () => this.#source,
       ownsPublicationReads: () =>
         this.sourceOf === AssetRegistry.#sourceRead &&

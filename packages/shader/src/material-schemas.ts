@@ -60,10 +60,11 @@ export const STANDARD_DIRECT_DFG_LUT_BINDING =
 export const STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING = 36;
 export const STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING = 37;
 
+const standardTextureNames = DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter(
+  (entry) => entry.type === 'texture2d',
+).map((entry) => entry.name);
 const standardTextureBits: ReadonlyMap<string, number> = new Map(
-  DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter((entry) => entry.type === 'texture2d').map(
-    (entry, index) => [entry.name, 2 ** index],
-  ),
+  standardTextureNames.map((name, index) => [name, 2 ** index]),
 );
 
 const STANDARD_SAMPLE_REUSE_SOURCES = [
@@ -276,6 +277,30 @@ export function standardSharedTransmissionConflicts(
   return STANDARD_SHARED_TRANSMISSION_SLOTS.map((slot) => slot.host).filter(
     (host) => (presenceMask & (standardTextureBits.get(host) ?? 0)) !== 0,
   );
+}
+
+/** Standard texture presence follows defined author values and declaration defaults. */
+export function standardTextureValueMask(
+  values: Readonly<Record<string, unknown>>,
+  defaults: number,
+): number {
+  let mask = defaults;
+  let bit = 1;
+  for (const name of standardTextureNames) {
+    if (values[name] !== undefined) mask |= bit;
+    bit *= 2;
+  }
+  return mask;
+}
+
+/** An authored default contributes the same bit as an explicitly supplied texture value. */
+export function standardTextureDefaultMask(
+  parameters: readonly { readonly name: string; readonly default?: unknown }[],
+): number {
+  let mask = 0;
+  for (const parameter of parameters)
+    if (parameter.default !== undefined) mask |= standardTextureBits.get(parameter.name) ?? 0;
+  return mask;
 }
 
 /** Presence follows the authored contract, never asynchronous GPU residency. */

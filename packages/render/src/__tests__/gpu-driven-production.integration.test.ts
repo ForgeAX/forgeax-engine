@@ -2425,9 +2425,15 @@ describe('GPU-driven production projection', () => {
           const originalBind = pass.setBindGroup.bind(pass);
           const bindings = vi
             .spyOn(pass, 'setBindGroup')
-            .mockImplementation((index, value, offsets) => {
-              bound.set(index, { group: value, offsets: [...(offsets ?? [])] });
-              originalBind(index, value, [...(offsets ?? [])]);
+            .mockImplementation((index, value, offsets, start?, length?) => {
+              const selected =
+                offsets instanceof Uint32Array && start !== undefined && length !== undefined
+                  ? offsets.subarray(start, start + length)
+                  : offsets;
+              bound.set(index, { group: value, offsets: Array.from(selected ?? []) });
+              if (offsets instanceof Uint32Array && start !== undefined && length !== undefined)
+                originalBind(index, value, offsets, start, length);
+              else originalBind(index, value, Array.from(offsets ?? []));
             });
           const originalPipeline = pass.setPipeline.bind(pass);
           const pipelines = vi.spyOn(pass, 'setPipeline').mockImplementation((value) => {

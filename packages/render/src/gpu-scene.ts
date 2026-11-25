@@ -607,8 +607,15 @@ export class GpuScene {
     since: SceneContentCursor,
     ignoredSlots?: ReadonlySet<number>,
     observedSlots?: { has(slot: number): boolean },
+    maxBoxes?: number,
   ): GpuSceneChangedBounds {
-    return this.contentBoxes.changedSince(since, this.contentAt, ignoredSlots, observedSlots);
+    return this.contentBoxes.changedSince(
+      since,
+      this.contentAt,
+      ignoredSlots,
+      observedSlots,
+      maxBoxes,
+    );
   }
 
   /** Whether every box changed after `since` misses; see {@link GpuSceneContentBoxes.changedBoundsMiss}. */
@@ -638,8 +645,12 @@ export class GpuScene {
   }
 
   /** Every world box `slots` occupied after `since`; see {@link GpuSceneContentBoxes}. */
-  slotBoundsSince(since: SceneContentCursor, slots: Iterable<number>): GpuSceneChangedBounds {
-    return this.contentBoxes.slotBoundsSince(since, this.contentAt, slots);
+  slotBoundsSince(
+    since: SceneContentCursor,
+    slots: Iterable<number>,
+    maxBoxes?: number,
+  ): GpuSceneChangedBounds {
+    return this.contentBoxes.slotBoundsSince(since, this.contentAt, slots, maxBoxes);
   }
 
   /**
@@ -2179,7 +2190,7 @@ export class GpuScene {
       row.stamp = this.allocations.stamp(row.source.source.slot);
       this.allocationRevisionValue++;
     }
-    for (const { contexts, geometry, value } of source.bindings) contexts.set(geometry, value);
+    for (const { contexts, geometry, value } of source.bindings) contexts[geometry] = value;
   }
 
   /** Capacity-only transfer. Source row custody requires its complete owning handoff. */

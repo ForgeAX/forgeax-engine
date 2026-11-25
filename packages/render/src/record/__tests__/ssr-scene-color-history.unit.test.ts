@@ -7,12 +7,8 @@ import {
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../../gpu-texture-usage';
-import {
-  createRenderPipelineTarget,
-  type RenderPipelineFrame,
-  type RenderPipelineTopology,
-} from '../../render-pipeline';
-import { addSsrHitColor } from '../../ssr/color-mips';
+import { createRenderPipelineTarget, type RenderPipelineFrame } from '../../render-pipeline';
+import { addSsrHitColor } from '../../ssr/hit-color';
 import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../../ssr/scene-color-input';
 import {
   abortStagedTemporalGpuState,
@@ -27,16 +23,10 @@ import { addTypedFullscreenPass } from '../../typed-render-graph-primitives';
 import type { RenderFrameState } from '../frame-snapshot';
 
 describe('SSR scene-color producer admission', () => {
-  it.each([
-    ['none', 4],
-    ['fxaa', 4],
-    ['taa', 1],
-    ['tsr', 1],
-  ] as const)('only produces extra SSR color levels without temporal AA (%s)', async (antialias, levels) => {
+  it('produces a single half-resolution color level and one downsample', async () => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const context = { graph, encodeTransmissionMip: vi.fn() };
-    const topology = { camera: { antialias }, lane: { compute: true } } as RenderPipelineTopology;
+    const context = { graph };
     const size = { width: 17, height: 9 };
     const source = createRenderPipelineTarget(graph, 'scene', {
       format: 'rgba16float',
@@ -49,8 +39,7 @@ describe('SSR scene-color producer admission', () => {
         encode: () => {},
       })
       .unwrap();
-    const color = addSsrHitColor(context, topology, source, size, 'ssr-color').unwrap();
-    expect(color.mipCount).toBe(levels);
+    const color = addSsrHitColor(context, source, size, 'ssr-color').unwrap();
     graph
       .addComputePass('ssr-trace', {
         accesses: [{ resource: color.view, usage: 'sampled-read' }],
@@ -59,23 +48,16 @@ describe('SSR scene-color producer admission', () => {
       .unwrap();
     const plan = graph.compile({ device, surfaceSize: size }).unwrap();
     try {
-      expect(plan.inspect().passes.map(({ name }) => name)).toEqual(
-        levels === 4
-          ? [
-              'scene-opaque',
-              'ssr-color-downsample',
-              'ssr-color-mip-1',
-              'ssr-color-mip-2',
-              'ssr-color-mip-3',
-              'ssr-trace',
-            ]
-          : ['scene-opaque', 'ssr-color-downsample', 'ssr-trace'],
-      );
+      expect(plan.inspect().passes.map(({ name }) => name)).toEqual([
+        'scene-opaque',
+        'ssr-color-downsample',
+        'ssr-trace',
+      ]);
       expect(
         plan.inspect().resources.filter((resource) => resource.kind === 'texture'),
       ).toHaveLength(2);
       expect(plan.inspect().resources.find(({ label }) => label === 'ssr-color')).toMatchObject({
-        descriptor: { width: 8, height: 4, mipLevelCount: levels },
+        descriptor: { width: 8, height: 4, mipLevelCount: 1 },
       });
     } finally {
       (await plan.retire()).unwrap();

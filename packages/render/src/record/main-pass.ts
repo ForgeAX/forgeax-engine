@@ -14,7 +14,6 @@ import type {
   PassSelector,
 } from '@forgeax/engine-types';
 import { waterBodyOwnerKey } from '@forgeax/engine-water';
-import { meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import { prepareMorphGeometryPipeline } from '../device/morph-geometry';
 import { viewWithSkylight } from '../environment/bindings';
 import { atmosphereStoragePinned, currentAtmosphereStorage } from '../environment/storage';
@@ -23,13 +22,8 @@ import { RendererContractFailureError } from '../errors/render';
 import type { EnvironmentSource } from '../extract/environment';
 import { renderFeatureViewIdentity } from '../features/view';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
-import {
-  isCanonicalStandardPbrMaterialShader,
-  materialLayoutSlotKey,
-  materialUsesLitSceneInputs,
-} from '../pbr-pipeline';
+import { isCanonicalStandardPbrMaterialShader, materialLayoutSlotKey } from '../pbr-pipeline';
 import { standardTopologyBindGroupReady } from '../pipeline-spec';
-import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderRecordPhase } from '../render-contract';
 import type {
@@ -67,6 +61,7 @@ import {
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
 import type { GraphBindingViews } from './graph-binding-views';
+import { IblBindingObservation } from './ibl-binding-observation';
 import { recordGeometryDraws, recordIblPipelineBinding } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
@@ -74,6 +69,7 @@ import {
   type MainPassMaterialBindingResolver,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
+  type RasterMaterialAddress,
   resolveMaterialReflection,
 } from './main-pass-material';
 import { recordSpritePass } from './main-pass-sprite-draws';
@@ -87,15 +83,15 @@ import {
   type MaterialRecordMode,
   matchesRecordMode,
   materialMatchesPass,
+  waterRecordPass,
 } from './material-pass-selection';
-import { materialUniformSlot } from './material-uniforms';
 import { reflectionProbeMaterial } from './reflection-probe-material';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
   WaterMaterialRecordCacheCandidate,
 } from './render-context';
-import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
+import { MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
 import { SingleMaterialHandleSet } from './single-material-handle-set';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
@@ -690,7 +686,7 @@ export function encodeMainPass(
   // A preparation-only lane (hidden transparent PSOs, no validated rows) has
   // no frame view group and records no draws; binding null with dynamic
   // offsets is a GPU validation error that fails the whole frame.
-  if (viewBindGroup !== null) pass.setBindGroup(0, viewBindGroup, [viewBindGroupDynamicOffset, 0]);
+  if (viewBindGroup !== null) pass.setBindGroup(0, viewBindGroup, [viewBindGroupDynamicOffset]);
 
   const waterAdmission = resolveWaterMaterialFrameBindings(c, options, matchedMaterials).admission;
   if (waterAdmission === undefined) throw new Error('Water material admission returned no result');
@@ -728,6 +724,7 @@ export function encodeMainPass(
       recordMode === 'opaque-depth',
       options?.opaqueDepthPrimed ?? false,
       options?.materialSceneDepth,
+      options?.gpuDrivenFilter,
     );
   };
   // The late occlusion pass only adds GPU items the HZB revealed; the CPU
@@ -761,10 +758,9 @@ function assertRecordModeBackdrop(
     recordMode === 'translucent' ||
     recordMode === 'single-layer-medium-nearest-layer' ||
     recordMode === 'single-layer-medium-color' ||
-    recordMode === 'water-prepass' ||
-    recordMode === 'water-color' ||
-    recordMode === 'water-visibility' ||
-    recordMode === 'water-forward-color'
+    (waterRecordPass(recordMode) !== undefined &&
+      recordMode !== 'water-shadow' &&
+      recordMode !== 'water-velocity')
   )
     throw new RhiError({
       code: 'webgpu-runtime-error',
@@ -1458,12 +1454,7 @@ function surfacePassForRecordMode(
 ): MaterialSurfacePassKind | undefined {
   if (mode === 'single-layer-medium-nearest-layer') return 'nearest-layer';
   if (mode === 'single-layer-medium-color' || mode === 'water-color') return 'color';
-  if (mode === 'water-prepass') return 'depth';
-  if (mode === 'water-visibility') return 'visibility';
-  if (mode === 'water-forward-color') return 'forward-color';
-  if (mode === 'water-shadow') return 'shadow';
-  if (mode === 'water-velocity') return 'velocity';
-  return undefined;
+  return waterRecordPass(mode)?.[0];
 }
 
 function oitPhaseForRecordMode(
@@ -1529,7 +1520,7 @@ function publishIblBindingInspection(
     samplerIdentity: getOpaqueResourceIdentity(sampler),
     deviceGeneration,
   });
-  frameState.iblBindingInspection = {
+  frameState.iblBindings = new IblBindingObservation({
     status: 'binding-chain-consistent',
     frameId: frameState.frameNumber,
     deviceGeneration,
@@ -1575,43 +1566,29 @@ function publishIblBindingInspection(
       ),
     },
     errors: [],
-  };
+  });
 }
 
-/**
- * Per-submesh material bind-group resolver shared by the geometry pass and
- * the LDR blend sub-pass, so a transparent PBR submesh binds the identical
- * metallic/roughness/normal/emissive/occlusion + Skylight layout the geometry
- * pass uses. Material snapshots are interned by extract-owned identity before
- * this pass; repeated scene instances share one UBO slot, and a pass prepares
- * a slot's group only when its first actual draw consumes it. Selection keys
- * use the extracted frame index, never RenderResourceScope.identity.
- */
+/** Each draw resolves its live resources. Share the returned value only after its
+ * physical group, address, layout and reflection inputs have been established. */
 function createMaterialBindGroupResolver(
   c: _InternalRenderPipelineContext,
   options: MainPassOptions | undefined,
   skylightResources: SkylightBindGroupResources,
-): MainPassMaterialBindingResolver & { clear(): void } {
-  const { world, materialBindings, pipelineState, runtime } = c;
+): MainPassMaterialBindingResolver {
+  const { world, materialBindings } = c;
   const hasProbeBindings = (c.reflectionProbes?.table.rows.length ?? 0) > 0;
   const deps = createPerSubmeshMaterialBgDeps(c, options, skylightResources, hasProbeBindings);
-  const preparedBindings = new Map<number, MainPassMaterialBinding>();
-  const resolve: MainPassMaterialBindingResolver = (
+  return (
     materialSlot: number,
     material: MaterialSnapshot,
     entityKey: number | undefined,
     materialWorld: RenderResourceScope = world,
+    address: RasterMaterialAddress,
     materialShaderId: string | undefined = material.materialShaderId,
     standardMaterialLayoutIndex = 0,
+    selectedLayout,
   ) => {
-    const shared =
-      !hasProbeBindings &&
-      (material.videoTextureFields?.size ?? 0) === 0 &&
-      materialShaderId === material.materialShaderId &&
-      materialShaderId !== POINTS_LINES_MATERIAL_SHADER_ID;
-    const key = materialLayoutSlotKey(materialSlot, standardMaterialLayoutIndex);
-    const cached = shared ? preparedBindings.get(key) : undefined;
-    if (cached !== undefined) return cached;
     const resourceClass = materialBindings[materialSlot]?.resourceClass;
     const reflection = resolveMaterialReflection(
       deps,
@@ -1630,24 +1607,12 @@ function createMaterialBindGroupResolver(
       resourceClass,
       standardMaterialLayoutIndex,
       reflection ?? null,
+      address,
+      selectedLayout,
     );
-    const binding: MainPassMaterialBinding = {
-      group,
-      reflection: reflection?.resources ?? skylightResources,
-      byteOffset: meshSsboByteOffset(
-        pipelineState.materialUniformBuffer,
-        materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
-      ),
-      dynamicOffsetCount:
-        materialUsesLitSceneInputs(runtime.shaderRegistry, materialShaderId) &&
-        runtime.getParamSchema?.(materialShaderId ?? '')?.length === 0
-          ? 0
-          : 1,
-    };
-    if (shared) preparedBindings.set(key, binding);
-    return binding;
+    address.reflection = reflection?.resources ?? skylightResources;
+    return group;
   };
-  return Object.assign(resolve, { clear: () => preparedBindings.clear() });
 }
 
 /**
@@ -1711,7 +1676,6 @@ export function createPerSubmeshMaterialBgDeps(
     ...(c.planarReflectionView === undefined
       ? {}
       : { planarReflectionView: c.planarReflectionView }),
-    materialBgShared: frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
     frameState,
     bindGroupCounts: c.bindGroupCounts,
@@ -1833,17 +1797,6 @@ function publishGpuDrivenMaterialSlots(
     c.materialBindingSlots ?? materialSlotsByClass(c.materialBindings);
 }
 
-/** Prepare a batch's exact physical material binding only when it is recorded. */
-export function materialBindingByteOffset(
-  c: Pick<_InternalRenderPipelineContext, 'runtime' | 'pipelineState'>,
-  material: MaterialSnapshot,
-): number {
-  return meshSsboByteOffset(
-    c.pipelineState.materialUniformBuffer,
-    materialUniformSlot(c.runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
-  );
-}
-
 export function publishMaterialBindingPreparer(
   c: _InternalRenderPipelineContext,
   resources: GpuDrivenStandardPbrFrameResources,
@@ -1851,6 +1804,9 @@ export function publishMaterialBindingPreparer(
   resolveMaterialBinding: MainPassMaterialBindingResolver,
 ): void {
   const { world, materialSlots, materialBindings } = c;
+  // Only consumers retaining indirect material selections need independently owned results.
+  const address: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
+  let preparedBindings: Map<number, MainPassMaterialBinding> | undefined;
   resources.prepareMaterialBinding = (slot, standardMaterialLayoutIndex, program) => {
     const material = materialSlots[slot];
     const binding = materialBindings[slot];
@@ -1876,14 +1832,33 @@ export function publishMaterialBindingPreparer(
       }
       if (materialShaderId === undefined) return undefined;
     }
-    return resolveMaterialBinding(
+    const group = resolveMaterialBinding(
       slot,
       material,
       binding.entityKey,
       binding.world ?? world,
+      address,
       materialShaderId,
       standardMaterialLayoutIndex,
     );
+    const key = materialLayoutSlotKey(slot, standardMaterialLayoutIndex ?? 0);
+    const previous = preparedBindings?.get(key);
+    if (
+      previous?.group === group &&
+      previous.byteOffset === address.byteOffset &&
+      previous.dynamicOffsetCount === address.dynamicOffsetCount &&
+      previous.reflection === address.reflection
+    )
+      return previous;
+    const result: MainPassMaterialBinding = {
+      group,
+      byteOffset: address.byteOffset,
+      dynamicOffsetCount: address.dynamicOffsetCount,
+      ...(address.reflection === undefined ? {} : { reflection: address.reflection }),
+    };
+    preparedBindings ??= new Map();
+    preparedBindings.set(key, result);
+    return result;
   };
   resources.recordMaterialPipelineBinding = (slot, pipeline, group) => {
     const material = materialSlots[slot];

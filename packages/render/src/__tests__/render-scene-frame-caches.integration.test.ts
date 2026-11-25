@@ -16,7 +16,7 @@ import {
   PersistentRenderScene,
 } from '../scene/render-scene';
 
-import { RowViews, SlotIdentityKeys } from '../scene/scene-slots';
+import { SceneSlotPage, SlotIdentityKeys } from '../scene/scene-slots';
 
 const material: MaterialAsset = {
   kind: 'material',
@@ -89,7 +89,7 @@ describe('PersistentRenderScene frame caches', () => {
     try {
       const first = draw();
       const inspectKeys = (frame: ExtractedFrame, expected: readonly number[]) => {
-        const views = vi.spyOn(RowViews.prototype, 'read');
+        const views = vi.spyOn(SceneSlotPage.prototype, 'read');
         try {
           const projection = scene.projectVisibility(undefined, frame.renderables, frame.dispatch);
           expect(projection.activeEntityKeys).toBeInstanceOf(SlotIdentityKeys);

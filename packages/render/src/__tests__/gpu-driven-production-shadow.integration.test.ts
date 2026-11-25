@@ -588,7 +588,6 @@ describe('GPU-driven production shadow projection', () => {
         meshBindGroupCache: new Map(),
         instancesBgPerEntity: new Map(),
         shadowMaterialBindGroups: new WeakMap(),
-        materialBgShared: new Map(),
       },
       materialSlotIndices: [[0, 1, 2]],
       materialSlots: materials.map((material) => material.snapshot),

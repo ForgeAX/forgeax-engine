@@ -104,10 +104,8 @@ export interface RenderPipelineAsset {
     /** Saved assets without this field retain the V1 linear-FXAA output contract. */
     readonly outputContract?: 'standard-output-v1' | 'standard-output-v2';
     /**
-     * Two-phase GPU-driven occlusion against a conservative furthest-depth
-     * pyramid (HZB), including every sample of an MSAA attachment. This is
-     * separate from hardware occlusion queries. Omission is off for Forward
-     * and on for Deferred; explicit true/false overrides the path default.
+     * Two-phase GPU instance occlusion for Standard Deferred using a
+     * conservative furthest-depth pyramid. Omission enables it for Deferred.
      */
     readonly gpuOcclusion?: boolean;
     /**

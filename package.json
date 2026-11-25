@@ -58,6 +58,7 @@
     "skills:check": "node scripts/forgeax/check-engine-skills.mjs",
     "skills:api-index": "node scripts/forgeax/sdk-api-index.mjs",
     "test:sdk:contracts": "node --test scripts/forgeax/__tests__/sdk-documentation-ownership.test.mjs scripts/__tests__/sdk-source-contract.test.mjs packages/wgpu-wasm/scripts/__tests__/source-key.test.mjs scripts/forgeax/__tests__/sdk-carrier.test.mjs scripts/forgeax/__tests__/sdk-source.test.mjs scripts/forgeax/__tests__/engine-bundle.test.mjs scripts/forgeax/__tests__/release-policy.test.mjs scripts/forgeax/__tests__/release-promotion.test.mjs scripts/forgeax/__tests__/sdk-view.test.mjs scripts/forgeax/__tests__/pnpm-version.test.mjs scripts/forgeax/__tests__/verify-sdk-process.test.mjs scripts/forgeax/__tests__/sdk-gpu-admission.test.mjs scripts/forgeax/__tests__/sdk-live-progress.test.mjs scripts/forgeax/__tests__/sdk-api-index.test.mjs scripts/forgeax/__tests__/sdk-project-identity.test.mjs scripts/forgeax/__tests__/sdk-template-cache.test.mjs && vitest run --config scripts/forgeax/vitest.config.mjs",
+    "engine:pack": "node scripts/forgeax/build-sdk.mjs --engine-only",
     "sdk:build": "node scripts/forgeax/build-sdk.mjs",
     "sdk:check:npm": "node scripts/forgeax/check-sdk-npm-consumer.mjs",
     "sdk:release:local": "node scripts/forgeax/local-sdk-release.mjs",

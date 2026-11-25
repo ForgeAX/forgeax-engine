@@ -128,7 +128,7 @@ export function stagePreparedViewGraph(prepared: PreparedFrameGraph): void {
       rendererRecording: prepared.rendererRecording,
       currentGpuCamera:
         prepared.gpuDriven !== undefined && prepared.gpuDriven.geometryLane !== 'direct',
-      forwardCapsuleShadows: prepared.forwardCapsuleShadows,
+      capsuleShadows: prepared.capsuleShadows,
       shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
     });
   const frame = renderSubmission(world).frame;

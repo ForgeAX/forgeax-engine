@@ -378,6 +378,12 @@ describe('typed built-in pipeline topology', () => {
       expect(lookup.mock.calls.some((args) => args[6] === 'temporal')).toBe(motionBlur);
       expect(lookup.mock.calls.some((args) => args[19] === 'fs_ao_input_msaa')).toBe(false);
       const inspection = compiled.inspect();
+      const order = inspection.passes.map(({ name }) => name);
+      if (motionBlur) {
+        expect(order).toContain('standard-depth-velocity');
+        expect(order.indexOf('standard-depth-velocity')).toBeLessThan(order.indexOf('main'));
+        expect(order).not.toContain('standard-scene-data');
+      }
       const resources = inspection.resources.map(({ label }) => label);
       expect(resources.includes('water-opaque-temporal-msaa')).toBe(motionBlur);
       expect(resources.includes('standard-scene-temporal')).toBe(motionBlur);
@@ -532,15 +538,20 @@ describe('typed built-in pipeline topology', () => {
     expect(names).not.toContain('water-reflection-composite');
     expect(names).not.toContain('water-ssr-trace');
     expect(names).not.toContain('water-slw-current-scene');
-    expect(names).not.toContain('water-furthest-depth-pyramid-seed');
+    expect(names).not.toContain('water-hzb-seed');
   });
 
-  it('renders single-sample Forward Water before above-water transparency and publishes Water motion', () => {
+  it.each([
+    false,
+    true,
+  ])('renders single-sample Forward Water with optical depth and motion (SSR=%s)', (inlineSsr) => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
         camera: { antialias: 'taa', bloom: 'off' },
         water: true,
+        inlineSsr,
+        config: { ambientOcclusion: { enabled: true, method: 'ssao' } },
         waterView: { kind: 'available', underwater: false },
       }),
     ).unwrap();
@@ -553,12 +564,32 @@ describe('typed built-in pipeline topology', () => {
     expect(names).toContain('transparent');
     expect(names.indexOf('water-slw-inner-color')).toBeLessThan(names.indexOf('transparent'));
     expect(names).not.toContain('water-ssr-trace');
-    expect(
-      info.passes.find(({ name }) => name === 'water-scene-temporal')?.accesses,
-    ).toContainEqual({
-      resource: 'standard-scene-temporal',
+    const color = info.passes.find((pass) => pass.name === 'water-slw-inner-color');
+    expect(color?.accesses).toContainEqual({
+      resource: 'water-no-water-raw-depth',
+      usage: 'sampled-read',
+    });
+    expect(color?.accesses.some(({ resource }) => resource === 'hzb')).toBe(inlineSsr);
+    expect(info.resources.filter(({ label }) => label === 'hzb')).toHaveLength(1);
+    expect(info.resources.find(({ label }) => label === 'water-hzb')).toBeUndefined();
+    expect(color?.accesses).toContainEqual({
+      resource: 'scene-velocity',
       usage: 'color-attachment',
     });
+    expect(info.resources.find(({ label }) => label === 'water-no-water-depth')).toBeUndefined();
+    expect(info.passes.find(({ name }) => name === 'water-depth-copy')?.accesses).toEqual([
+      { resource: 'scene-depth', usage: 'copy-src' },
+      { resource: 'water-prepass-depth', usage: 'copy-dst' },
+    ]);
+    expect(info.resources.find(({ label }) => label === 'water-wpo-velocity')).toBeUndefined();
+    expect(names).not.toContain('water-scene-temporal');
+    expect(names).not.toContain('standard-scene-data');
+    expect(info.passes.find(({ name }) => name === 'taa-resolve')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'scene-velocity', usage: 'sampled-read' },
+        { resource: 'water-prepass-depth', usage: 'sampled-read' },
+      ]),
+    );
   });
   it('snapshots no-TAA HDR after actual DoF and before Motion Blur and Bloom in the Standard caller', () => {
     const compiled = compile(
@@ -1095,7 +1126,7 @@ describe('typed built-in pipeline topology', () => {
       'g-buffer',
       'shadowCascade0',
       'directional-shadow-observation',
-      'ssao-furthest-hzb-seed',
+      'hzb-seed',
       'ssao-half',
       'ssao-calc',
       'lighting',
@@ -1161,7 +1192,7 @@ describe('typed built-in pipeline topology', () => {
     expect(info.passes.find((pass) => pass.name === 'ssao-calc')?.accesses).toEqual(
       expect.arrayContaining([
         { resource: 'scene-depth', usage: 'sampled-read' },
-        { resource: 'ssao-furthest-hzb', usage: 'sampled-read' },
+        { resource: 'hzb', usage: 'sampled-read' },
         { resource: 'ssao-calc', usage: 'color-attachment' },
       ]),
     );
@@ -1188,7 +1219,7 @@ describe('typed built-in pipeline topology', () => {
     'scene-data-normal',
     'scene-data-depth',
     'compute-gtao',
-  ] as const)('derives the Forward prepass normal from the actual %s reader', (reader) => {
+  ] as const)('keeps Forward prepass colorless with a %s consumer', (reader) => {
     const ssr =
       reader === 'ssr'
         ? admitSsrSpatial({
@@ -1262,19 +1293,26 @@ describe('typed built-in pipeline topology', () => {
     const normal = info.resources.find(
       (resource) => resource.label === 'standard-scene-surface-normal',
     );
-    const primary = info.passes.find((pass) => pass.name === 'standard-scene-surface-data');
-    if (reader === 'scene-data-depth' || reader === 'compute-gtao') {
-      expect(normal).toBeUndefined();
-      expect(primary?.accesses).not.toContainEqual({
-        resource: 'standard-scene-surface-normal',
+    const primary = info.passes.find(
+      (pass) =>
+        pass.name === 'standard-scene-surface-data' || pass.name === 'standard-depth-prepass',
+    );
+    expect(normal).toBeUndefined();
+    expect(primary).toBeDefined();
+    expect(primary?.accesses).not.toContainEqual(
+      expect.objectContaining({ usage: 'color-attachment' }),
+    );
+    if (reader === 'ssr') {
+      expect(info.passes.find(({ name }) => name === 'main')?.accesses).toContainEqual({
+        resource: 'reflection-surface-linear-hdr',
         usage: 'color-attachment',
       });
-    } else {
-      expect(primary?.accesses).toContainEqual({
-        resource: 'standard-scene-surface-normal',
-        usage: 'color-attachment',
+      expect(
+        info.passes.find(({ name }) => name === 'ssr-forward-pack-surface')?.accesses,
+      ).toContainEqual({
+        resource: 'reflection-surface-linear-hdr',
+        usage: 'sampled-read',
       });
-      expect(normal).toBeDefined();
     }
   });
 
@@ -1289,8 +1327,8 @@ describe('typed built-in pipeline topology', () => {
     if (!plain.ok) return;
     const names = plain.value.inspect().passes.map((pass) => pass.name);
     for (const name of ['ssao-calc', 'ssao-blur']) expect(names).not.toContain(name);
-    // Forward keeps its depth prepass without AO (UE ShouldForceFullDepthPass).
-    expect(names.indexOf('standard-scene-surface-data')).toBeLessThan(names.indexOf('main'));
+    expect(names).toContain('main');
+    expect(names).not.toContain('standard-scene-surface-data');
 
     const msaa = compile(
       standardPipeline,
@@ -1316,7 +1354,7 @@ describe('typed built-in pipeline topology', () => {
     'none',
     'msaa',
     'msaa-fxaa',
-  ] as const)('shares the exact %s scene depth between predepth and Forward color without a copy', (antialias) => {
+  ] as const)('writes %s scene depth in Forward color with no early consumer', (antialias) => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
@@ -1331,8 +1369,8 @@ describe('typed built-in pipeline topology', () => {
     expect(compiled.ok).toBe(true);
     if (!compiled.ok) return;
     const info = compiled.value.inspect();
-    const predepth = info.passes.find((pass) => pass.name === 'standard-scene-surface-data');
-    expect(predepth?.accesses).toContainEqual({
+    expect(info.passes.some((pass) => pass.name === 'standard-scene-surface-data')).toBe(false);
+    expect(info.passes.find((pass) => pass.name === 'main')?.accesses).toContainEqual({
       resource: 'scene-depth',
       usage: 'depth-stencil-write',
     });
@@ -1343,6 +1381,75 @@ describe('typed built-in pipeline topology', () => {
     expect(
       info.resources.some((resource) => resource.label === 'standard-scene-surface-depth'),
     ).toBe(false);
+  });
+
+  it.each([false, true])('reuses MSAA scene depth for inline SSR with AO=%s', (ao) => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+        camera: { antialias: 'msaa' },
+        inlineSsr: true,
+        config: { ambientOcclusion: { enabled: ao } },
+      }),
+      undefined,
+      (graph) => {
+        const format = 'rgba16float' as const;
+        const texture = graph
+          .importTexture(
+            'previous-ssr-color',
+            { format, size: { width: 400, height: 300 }, usage: 0x04 },
+            (frame) => frame.outputTarget().texture,
+          )
+          .unwrap();
+        return {
+          ssrSceneColorHistory: {
+            texture,
+            view: graph.view(texture).unwrap(),
+            format,
+            sampleCount: 1 as const,
+          },
+        };
+      },
+    );
+    if (!compiled.ok) throw compiled.error;
+    const { passes, resources } = compiled.value.inspect();
+    expect(passes.some((pass) => pass.name === 'standard-scene-surface-center')).toBe(false);
+    expect(resources.find(({ label }) => label === 'scene-depth')).toMatchObject({
+      descriptor: { sampleCount: 4 },
+    });
+    expect(passes.filter(({ name }) => name === 'forward-screen-depth-resolve')).toHaveLength(
+      ao ? 1 : 0,
+    );
+    expect(passes.find(({ name }) => name === 'hzb-seed')?.accesses).toContainEqual({
+      resource: ao ? 'forward-screen-depth-resolve-depth' : 'scene-depth',
+      usage: 'sampled-read',
+    });
+  });
+
+  it('resolves MSAA motion with its selected opaque depth sample', () => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        camera: { antialias: 'msaa' },
+        temporal: { taa: false, motionBlur: true },
+      }),
+    );
+    if (!compiled.ok) throw compiled.error;
+    const { passes, resources } = compiled.value.inspect();
+    const resolve = passes.find(({ name }) => name === 'forward-screen-depth-resolve');
+    expect(resources.find(({ label }) => label === 'scene-temporal-msaa')).toMatchObject({
+      descriptor: { sampleCount: 4 },
+    });
+    expect(resolve?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'scene-depth', usage: 'sampled-read' },
+        { resource: 'scene-temporal-msaa', usage: 'sampled-read' },
+        { resource: 'standard-scene-temporal', usage: 'color-attachment' },
+      ]),
+    );
+    expect(passes.some(({ name }) => name === 'standard-scene-surface-center')).toBe(false);
+    expect(passes.some(({ name }) => name === 'motion-blur')).toBe(true);
   });
 
   it('resolves MSAA depth for ordinary Forward AO without another geometry depth producer', () => {
@@ -1364,7 +1471,7 @@ describe('typed built-in pipeline topology', () => {
       info.passes.find((pass) => pass.name === 'standard-scene-surface-data')?.accesses,
     ).toContainEqual({ resource: 'scene-depth', usage: 'depth-stencil-write' });
     expect(
-      info.passes.find((pass) => pass.name === 'forward-ao-depth-resolve')?.accesses,
+      info.passes.find((pass) => pass.name === 'forward-screen-depth-resolve')?.accesses,
     ).toContainEqual({ resource: 'scene-depth', usage: 'sampled-read' });
     expect(
       info.resources.some((resource) => resource.label === 'standard-scene-surface-normal'),
@@ -1503,7 +1610,31 @@ describe('typed built-in pipeline topology', () => {
     expect(info.passes.some((pass) => pass.name.startsWith('post-effect-'))).toBe(true);
   });
 
-  it('declares one TAA producer and resolve for TAA demand', () => {
+  it('runs Forward contact shadows from depth and keeps packed velocity in the prepass', () => {
+    const graph = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        camera: { antialias: 'taa' },
+        forwardContactShadows: true,
+      }),
+    )
+      .unwrap()
+      .inspect();
+    const order = graph.passes.map(({ name }) => name);
+    const contact = graph.passes.find(({ name }) => name === 'forward-contact-shadow');
+    expect(contact?.accesses).toEqual(
+      expect.arrayContaining([{ resource: 'scene-depth', usage: 'sampled-read' }]),
+    );
+    expect(order.indexOf('forward-contact-shadow')).toBeGreaterThan(
+      order.indexOf('standard-depth-velocity'),
+    );
+    expect(order.indexOf('main')).toBeGreaterThan(order.indexOf('forward-contact-shadow'));
+    expect(graph.resources.map(({ label }) => label)).not.toContain(
+      'standard-scene-surface-normal',
+    );
+  });
+
+  it('writes Forward depth and velocity before the BasePass and TAA', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
@@ -1513,8 +1644,15 @@ describe('typed built-in pipeline topology', () => {
     expect(compiled.ok).toBe(true);
     if (!compiled.ok) return;
     const names = compiled.value.inspect().passes.map((pass) => pass.name);
-    expect(names.filter((name) => name === 'standard-scene-data')).toHaveLength(1);
-    expect(names.filter((name) => name === 'taa-resolve')).toHaveLength(1);
+    const order = ['standard-depth-prepass', 'standard-depth-velocity', 'main', 'taa-resolve'];
+    for (const [index, name] of order.entries()) {
+      expect(names.filter((candidate) => candidate === name)).toHaveLength(1);
+      if (index > 0)
+        expect(names.indexOf(name)).toBeGreaterThan(
+          names.indexOf(requiredFixtureValue(order[index - 1])),
+        );
+    }
+    expect(names).not.toContain('standard-scene-data');
     expect(names.filter((name) => name.includes('taa')).length).toBe(1);
     expect(compiled.value.inspect().resources.map((resource) => resource.label)).toEqual(
       expect.arrayContaining([
@@ -1528,6 +1666,8 @@ describe('typed built-in pipeline topology', () => {
       compiled.value.inspect().passes.find((pass) => pass.name === 'taa-resolve')?.accesses,
     ).toEqual(
       expect.arrayContaining([
+        { resource: 'scene-velocity', usage: 'sampled-read' },
+        { resource: 'scene-depth', usage: 'sampled-read' },
         { resource: 'taa-history-previous-color', usage: 'sampled-read' },
         { resource: 'taa-history-previous-temporal', usage: 'sampled-read' },
       ]),
@@ -1634,7 +1774,7 @@ describe('typed built-in pipeline topology', () => {
     );
     expect(producers).toHaveLength(1);
     for (const name of [
-      'water-depth-mask-velocity',
+      'water-depth-prepass',
       'water-slw-inner-color',
       'standard-post-process-water-velocity',
     ]) {
@@ -1648,11 +1788,37 @@ describe('typed built-in pipeline topology', () => {
         requiredFixtureValue(consumer).executionIndex,
       );
     }
-    expect(info.passes.find((pass) => pass.name === 'water-scene-temporal')?.accesses).toEqual([
-      { resource: 'water-wpo-velocity', usage: 'sampled-read' },
-      { resource: 'standard-scene-temporal', usage: 'color-attachment' },
-      { resource: 'water-mask', usage: 'sampled-read' },
-    ]);
+    expect(
+      info.passes.find((pass) => pass.name === 'water-depth-prepass')?.accesses,
+    ).toContainEqual({ resource: 'standard-scene-temporal', usage: 'color-attachment' });
+    expect(info.passes.some((pass) => pass.name === 'water-scene-temporal')).toBe(false);
+  });
+
+  it('writes compact Deferred Water velocity in the depth pass and feeds it directly to TAA', () => {
+    const info = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+        compactGbuffer: 'standard-gbuffer/4',
+        camera: { antialias: 'taa', bloom: 'off' },
+        water: true,
+      }),
+    )
+      .unwrap()
+      .inspect();
+    const pass = (name: string) => info.passes.find((row) => row.name === name);
+    expect(pass('water-depth-prepass')?.accesses).toContainEqual({
+      resource: 'scene-velocity',
+      usage: 'color-attachment',
+    });
+    expect(pass('taa-resolve')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'scene-velocity', usage: 'sampled-read' },
+        { resource: 'water-prepass-depth', usage: 'sampled-read' },
+      ]),
+    );
+    expect(pass('water-scene-temporal')).toBeUndefined();
+    expect(pass('standard-scene-data')).toBeUndefined();
   });
 
   it.each([
@@ -1665,6 +1831,13 @@ describe('typed built-in pipeline topology', () => {
       label: 'Default with decals',
     },
     { compactGbuffer: undefined, decals: false, water: true, label: 'full Water' },
+    {
+      compactGbuffer: undefined,
+      decals: false,
+      water: true,
+      label: 'full Water from below',
+      underwater: true,
+    },
     { compactGbuffer: 'standard-gbuffer/4', decals: false, water: true, label: 'Default Water' },
     {
       compactGbuffer: 'standard-gbuffer/4',
@@ -1672,11 +1845,9 @@ describe('typed built-in pipeline topology', () => {
       water: true,
       label: 'Default Water with decals',
     },
-  ] as const)('feeds SSR source reactivity to TAA ($label)', ({
-    compactGbuffer,
-    decals,
-    water,
-  }) => {
+  ] as const)('feeds SSR source reactivity to TAA ($label)', (scenario) => {
+    const { compactGbuffer, decals, water } = scenario;
+    const underwater = 'underwater' in scenario && scenario.underwater;
     const ssr = admitSsrSpatial({
       camera: {
         projection: 'perspective',
@@ -1712,6 +1883,7 @@ describe('typed built-in pipeline topology', () => {
         reflectionFallback: { enabled: true },
         ssr,
         water,
+        ...(underwater ? { waterView: { kind: 'available', underwater } } : {}),
       }),
     ).unwrap();
     const info = compiled.inspect();
@@ -1723,6 +1895,27 @@ describe('typed built-in pipeline topology', () => {
       resource: 'ssr-hit-reactivity',
       usage: 'storage-write',
     });
+    if (water) {
+      expect(
+        info.resources.find(({ label }) => label === 'water-ssr-hit-reactivity'),
+      ).toBeUndefined();
+      expect(info.resources.find(({ label }) => label === 'water-wpo-velocity')).toBeUndefined();
+      const depthCopy = info.passes.find(({ name }) => name === 'water-depth-copy');
+      const opaqueDepth = underwater
+        ? 'water-no-water-depth'
+        : depthCopy?.accesses.find(({ usage }) => usage === 'copy-src')?.resource;
+      if (underwater) {
+        expect(depthCopy?.accesses).toContainEqual({ resource: opaqueDepth, usage: 'copy-dst' });
+      }
+      const trace = info.passes.find(({ name }) => name === 'water-ssr-trace');
+      const optics = info.passes.find(({ name }) => name === 'water-slw-inner-color');
+      expect(trace?.accesses).toContainEqual({ resource: opaqueDepth, usage: 'sampled-read' });
+      expect(trace?.executionIndex).toBeLessThan(optics?.executionIndex ?? -1);
+      expect(
+        info.resources.find(({ label }) => label === 'water-normal-roughness')?.descriptor,
+      ).toMatchObject({ format: 'r32uint' });
+      expect(info.resources.some(({ label }) => label === 'water-no-water-depth')).toBe(underwater);
+    }
     for (const name of water ? ['water-ssr-trace'] : []) {
       expect(info.passes.find((pass) => pass.name === name)?.accesses).toEqual(
         expect.arrayContaining([
@@ -2033,14 +2226,9 @@ describe('Standard two-phase GPU occlusion topology', () => {
       requests,
     );
     expect(requests).not.toContain(true);
-    for (const name of [
-      'standard-scene-surface-data',
-      'ssao-furthest-hzb-seed',
-      'ssao-calc',
-      'main',
-    ])
+    for (const name of ['standard-scene-surface-data', 'hzb-seed', 'ssao-calc', 'main'])
       expect(names).toContain(name);
-    expect(names.some((name) => name.startsWith('occlusion-depth-pyramid'))).toBe(false);
+    expect(names.some((name) => name.startsWith('occlusion-hzb'))).toBe(false);
     for (const name of [
       'gpu-driven.occlusion-cull',
       'standard-scene-surface-data-late',
@@ -2049,42 +2237,23 @@ describe('Standard two-phase GPU occlusion topology', () => {
       expect(names).not.toContain(name);
   });
 
-  it('builds the furthest pyramid from the forward depth prepass before the late prepass', () => {
-    // Forward always rasterizes its depth prepass, so two-phase occlusion
-    // resolves there and `main` draws once after the late cull.
-    const requests: boolean[] = [];
-    const names = passNames(
-      topology('forgeax::standard', { config: { gpuOcclusion: true } }),
-      requests,
-    );
-    expect(requests).toContain(true);
-    expectOrder(names, [
-      'standard-scene-surface-data',
-      'occlusion-depth-pyramid-seed',
-      'gpu-driven.occlusion-cull',
-      'standard-scene-surface-data-late',
-      'main',
-    ]);
-    expect(names).not.toContain('main-late');
-  });
-
-  it('completes MSAA late visibility in the shared predepth before a single main pass', () => {
+  it.each([
+    'none',
+    'msaa',
+  ] as const)('uses a single Forward depth pass despite a shared occlusion setting (%s)', (antialias) => {
     const requests: boolean[] = [];
     const names = passNames(
       topology('forgeax::standard', {
-        camera: { antialias: 'msaa' },
+        camera: { antialias },
         config: { gpuOcclusion: true },
       }),
       requests,
     );
-    expect(requests).toContain(true);
-    expectOrder(names, [
-      'standard-scene-surface-data',
-      'occlusion-depth-pyramid-seed',
-      'gpu-driven.occlusion-cull',
-      'standard-scene-surface-data-late',
-      'main',
-    ]);
+    expect(requests).not.toContain(true);
+    expectOrder(names, ['standard-scene-surface-data', 'main']);
+    expect(names).not.toContain('gpu-driven.occlusion-cull');
+    expect(names).not.toContain('standard-scene-surface-data-late');
+    expect(names).not.toContain('main-late');
   });
 
   it.each([
@@ -2092,7 +2261,7 @@ describe('Standard two-phase GPU occlusion topology', () => {
     'contact',
     'capsules',
     'decals',
-  ] as const)('completes late visibility before Forward %s consumes its surface', (consumer) => {
+  ] as const)('completes Forward depth before %s consumes its surface', (consumer) => {
     const names = passNames(
       topology('forgeax::standard', {
         standardProfile: {
@@ -2115,15 +2284,8 @@ describe('Standard two-phase GPU occlusion topology', () => {
         : consumer === 'contact' || consumer === 'capsules'
           ? 'forward-contact-shadow'
           : 'decal-project';
-    expectOrder(names, [
-      'standard-scene-surface-data',
-      'occlusion-depth-pyramid-seed',
-      'gpu-driven.occlusion-cull',
-      'standard-scene-surface-data-late',
-      firstConsumer,
-      'main',
-    ]);
-    expect(names.filter((name) => name === 'gpu-driven.occlusion-cull')).toHaveLength(1);
+    expectOrder(names, ['standard-scene-surface-data', firstConsumer, 'main']);
+    expect(names).not.toContain('gpu-driven.occlusion-cull');
     expect(names).not.toContain('main-late');
   });
 
@@ -2135,26 +2297,11 @@ describe('Standard two-phase GPU occlusion topology', () => {
     );
     expectOrder(names, [
       'g-buffer',
-      'occlusion-depth-pyramid-seed',
+      'occlusion-hzb-seed',
       'gpu-driven.occlusion-cull',
       'g-buffer-late',
       'lighting',
     ]);
-  });
-
-  it('seeds the late phase from every MSAA sample', () => {
-    const msaaRequests: boolean[] = [];
-    const msaa = passNames(
-      topology('forgeax::standard', {
-        camera: { antialias: 'msaa' },
-        config: { gpuOcclusion: true },
-      }),
-      msaaRequests,
-    );
-    expect(msaaRequests).toContain(true);
-    expect(msaa).toContain('standard-scene-surface-data-late');
-    expect(msaa).not.toContain('main-late');
-    expect(msaa).toContain('occlusion-depth-pyramid-seed');
   });
 
   it('adds no late phase when the asset opts out or without a reservation', () => {
@@ -2170,6 +2317,6 @@ describe('Standard two-phase GPU occlusion topology', () => {
     if (!compiled.ok) throw compiled.error;
     const plain = compiled.value.inspect().passes.map((pass) => pass.name);
     expect(plain).not.toContain('main-late');
-    expect(plain).not.toContain('occlusion-depth-pyramid-seed');
+    expect(plain).not.toContain('occlusion-hzb-seed');
   });
 });

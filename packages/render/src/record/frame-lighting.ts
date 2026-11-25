@@ -134,7 +134,7 @@ import type {
   RenderSystemInternals,
 } from './render-context';
 import { standardLightingPipelineDemand } from './view-pipeline-demand';
-import { POINTS_LINES_VIEW_BYTES, SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
+import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
 
 export function projectDeviceOwnedBindGroup<T>(
   state:
@@ -386,7 +386,6 @@ export function buildViewBindGroup(
       pushTexture(11, b11View);
       keys.push(b12Sampler);
     }
-    keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
     if (!lowLimitCloudBindings) pushTexture(16, cloudShadowView);
     keys.push(pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
     return { keys, viewLayout };
@@ -467,16 +466,6 @@ export function buildViewBindGroup(
           resource: {
             kind: 'textureView',
             value: b8View,
-          },
-        },
-        {
-          binding: 10,
-          resource: {
-            kind: 'buffer',
-            value: {
-              buffer: pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer,
-              size: POINTS_LINES_VIEW_BYTES,
-            },
           },
         },
         ...(extendedLightingResources === undefined && projectorAvailable
@@ -821,7 +810,12 @@ export function prepareFrameLighting(
 > {
   prepareFrameShadowSnapshots(internals, frameState, lights);
 
-  const directionalLight = lights.directional;
+  const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const directional = lights.directional;
+  const directionalLight =
+    profile?.contactShadows === false && directional && directional.contactShadowLength > 0
+      ? { ...directional, contactShadowLength: 0 }
+      : directional;
   const pointLights = lights.point;
   const spotLights = lights.spot;
   const rectLights = lights.rect;
@@ -1036,12 +1030,13 @@ export function createStandardLocalLights(
       kind: 'rect-area' as const,
       shadowed: false,
       position: source.position,
+      rectNormal: vec3.cross(vec3.create(), source.axisX, source.axisY),
       range: binningRange(
         'rect-area',
         source,
-        (Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
+        Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
-          : Number.POSITIVE_INFINITY) + Math.hypot(source.halfWidth, source.halfHeight),
+          : Number.POSITIVE_INFINITY,
       ),
       source,
     })),
@@ -1793,6 +1788,7 @@ export function writeHdrpClusterAndSsaoBuffers(
     'record/scene-state/hdrp-cluster/buffer-upload',
     (): Result<void, RenderError> => {
       if (hdrpBuffers.kind === 'texture') {
+        const membership = hdrpBuffers.table.prepareMembership(prepared);
         const upload = hdrpBuffers.table.write({
           device: internals.device,
           texture: hdrpBuffers.texture,
@@ -1800,9 +1796,9 @@ export function writeHdrpClusterAndSsaoBuffers(
           local: prepared.local,
           projectorSlot: projectorLightSlotIndex,
           channelMapping,
-          clusterGrid: prepared.clusterGrid,
-          lightIndices: prepared.lightIndexList,
-          lightIndexCount: prepared.membershipEntryCount,
+          clusterGrid: membership.grid,
+          lightIndices: membership.indices,
+          lightIndexCount: membership.indices.length,
           slotLayout: reflectedAbi.directLightSlot,
         });
         if (frameState.standardClusterWorkConformance?.enabled) {

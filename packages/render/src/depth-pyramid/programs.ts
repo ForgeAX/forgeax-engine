@@ -16,8 +16,10 @@ type Variant =
   | 'seed'
   | 'seed_furthest'
   | 'seed_furthest_multisampled'
+  | 'seed_furthest_resolve_msaa'
   | 'reduce'
-  | 'reduce_furthest';
+  | 'reduce_furthest'
+  | 'reduce_furthest_batch';
 type Factory = NonNullable<RenderPipelineFrame['runtime']['shaderModuleFactory']>;
 interface ProgramFacts {
   readonly source: string | ShaderSource;
@@ -84,7 +86,7 @@ function scopedDepthPrograms(scope: DeviceScope, device: RhiDevice): Programs {
   return owned;
 }
 function stageOf(variant: Variant): 'seed' | 'reduce' {
-  return variant === 'reduce' || variant === 'reduce_furthest' ? 'reduce' : 'seed';
+  return variant.startsWith('reduce') ? 'reduce' : 'seed';
 }
 function matches(prior: Program | undefined, facts: ProgramFacts): prior is Program {
   return (

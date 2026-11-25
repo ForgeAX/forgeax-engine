@@ -191,7 +191,8 @@ it.each([
 
 it.each([true, false])('uploads draw parameters by physical slot (storage=%s)', (storageBuffer) => {
   const source = receiptRow().source;
-  let values: readonly number[] | undefined = [1, 0.25, 0, 0.5, 7, 0.75, 0, 0];
+  const supplied = [1, 0.25, 0, 0.5, 7, 0.75, 0, 0];
+  let values: readonly number[] | undefined = supplied;
   const writeBuffer = vi.fn().mockReturnValue(ok(undefined));
   const queue = { writeBuffer } as unknown as RhiQueue;
   const buffer = { buffer: {} as Buffer };
@@ -215,6 +216,12 @@ it.each([true, false])('uploads draw parameters by physical slot (storage=%s)', 
   expect(Array.from(floats.subarray(offset, offset + 8))).toEqual(values);
   prepareMeshDraw(c, row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(0);
+  supplied[0] = 2.5;
+  supplied[7] = -0;
+  prepareMeshDraw(c, row);
+  expect(flushMeshDrawUploads(queue, buffer)).toBe(1);
+  expect(floats[offset]).toBe(2.5);
+  expect(Object.is(floats[offset + 7], -0)).toBe(true);
   values = undefined;
   prepareMeshDraw(c, row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(1);

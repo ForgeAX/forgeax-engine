@@ -257,8 +257,9 @@ export async function verifyAdaptiveDrs(
       status: 'adaptive',
       extent: { scale: 0.5, internalWidth: 64, internalHeight: 64 },
     });
-    expect(renderer.inspect().temporalTarget?.descriptor).toMatchObject({ width: 64, height: 64 });
     expect(renderer.inspect().temporal.coverage).toEqual({ width: 128, height: 128 });
+    expect(renderer.inspect().perFramePassNames).toContain('standard-depth-velocity');
+    expect(renderer.inspect().perFramePassNames).toContain('taa-resolve');
     await capture('reduced');
     world.set(camera, DynamicResolution, { targetGpuMs: 10000 }).unwrap();
     await draw();
@@ -272,6 +273,8 @@ export async function verifyAdaptiveDrs(
     world.removeComponent(camera, DynamicResolution).unwrap();
     for (let i = 0; i < 60; i++) await draw();
     expect(renderer.inspect().dynamicResolution).toBeUndefined();
+    expect(renderer.inspect().perFramePassNames).toContain('standard-depth-velocity');
+    expect(renderer.inspect().perFramePassNames).toContain('taa-resolve');
     expect(renderer.inspect().perFramePassNames).not.toContain('standard-scene-coverage');
     expect(errors, JSON.stringify(errors)).toEqual([]);
     await save(

@@ -1,7 +1,13 @@
 import { World } from '@forgeax/engine-ecs';
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
-import type { Buffer, RhiDevice, RhiRenderPassEncoder, ShaderModule } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  Buffer,
+  RhiDevice,
+  RhiRenderPassEncoder,
+  ShaderModule,
+} from '@forgeax/engine-rhi';
 import { assert } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
@@ -15,6 +21,7 @@ import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
+import type { MainPassMaterialBindingResolver } from '../main-pass-material';
 import { MaterialPasses } from '../material-pass-groups';
 import { flushMeshDrawUploads } from '../mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../render-context';
@@ -31,6 +38,17 @@ struct Instance { current: mat4x4<f32>, previous: mat4x4<f32> };
 @fragment fn fragment() -> @location(0) vec4<f32> { return tint; }
 `;
 const matrix = (x = 0) => Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1);
+
+export function fixtureMaterialBinding(
+  group: BindGroup,
+  byteOffset: (slot: number) => number = () => 0,
+): MainPassMaterialBindingResolver {
+  return (slot, _material, _entity, _world, address) => {
+    address.byteOffset = byteOffset(slot);
+    address.dynamicOffsetCount = 1;
+    return group;
+  };
+}
 
 /** Native phase selection and current physical bindings for the ordinary Direct recorder. */
 export function nativeGeometryFixture(
@@ -98,11 +116,10 @@ export function nativeGeometryFixture(
         1,
         f.meshGroup,
         f.meshGroup,
-        (slot) => ({
-          group: f.materialGroup,
-          byteOffset: (typeof offset === 'number' ? offset : offset(slot)) + slot * 256,
-          dynamicOffsetCount: 1,
-        }),
+        fixtureMaterialBinding(
+          f.materialGroup,
+          (slot) => (typeof offset === 'number' ? offset : offset(slot)) + slot * 256,
+        ),
         'forward',
         dispatch,
         ['rgba8unorm'],
@@ -441,7 +458,7 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
         1,
         meshGroup,
         meshGroup,
-        () => ({ group: materialGroup, byteOffset: 0, dynamicOffsetCount: 1 }),
+        fixtureMaterialBinding(materialGroup),
         kind,
       );
       afterRecord?.();

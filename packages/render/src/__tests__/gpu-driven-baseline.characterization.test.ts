@@ -53,7 +53,7 @@ describe('GPU-driven baseline characterization', () => {
   });
 
   it('keeps CPU-only video slots out of the global GPU receipt gate', () => {
-    expect(mainPass).toContain('videoTextureFields?.size');
+    expect(read('../gpu-driven/batch-execution.ts')).toContain('videoTextureFields?.size');
     expect(mainPass).toMatch(
       /prepareMaterialBinding = \(slot, standardMaterialLayoutIndex, program\)/,
     );

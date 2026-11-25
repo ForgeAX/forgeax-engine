@@ -291,11 +291,17 @@ async function runCommand(run, stepName, command, commandArgs, options = {}) {
     delete childEnvironment.FORGEAX_GAMES_GITHUB_TOKEN;
   }
   process.stdout.write(`[local SDK] ${stepName}\n`);
-  const child = spawn('forgeax-task-gate', fullArgs, {
-    cwd: options.cwd ?? root,
-    env: childEnvironment,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const sharedGate =
+    process.env.GITHUB_ACTIONS !== 'true' || spawnSync('which', ['forgeax-task-gate']).status === 0;
+  const child = spawn(
+    sharedGate ? 'forgeax-task-gate' : command,
+    sharedGate ? fullArgs : commandArgs,
+    {
+      cwd: options.cwd ?? root,
+      env: childEnvironment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (chunk) => {
@@ -386,15 +392,17 @@ async function findCommitByPrefix(branchTip, prefix) {
   return matches[0];
 }
 
-async function resumeCurrentRelease(base, requestedVersion) {
+async function resumeCurrentRelease(base, requestedVersion, requestedSha) {
   if (requestedVersion) return undefined;
   const currentPath = resolve(base, 'current.json');
   if (!(await exists(currentPath))) return undefined;
   const current = JSON.parse(await readFile(currentPath, 'utf8'));
   if (current.status === 'complete') return undefined;
-  const statePath = resolve(current.statePath);
+  const statePath = resolve(base, current.version, 'local-release-state.json');
   if (!(await exists(statePath))) return undefined;
   const state = JSON.parse(await readFile(statePath, 'utf8'));
+  if (requestedSha && requestedSha !== state.sourceCommit)
+    throw new Error('local-sdk-pinned-source-cannot-change');
   return { base, version: state.version, sourceCommit: state.sourceCommit, state };
 }
 
@@ -414,7 +422,7 @@ async function resolveMainSource(version, requestedSource) {
   await execCapture(
     'git',
     ['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
-    { cwd: root },
+    { cwd: root, env: releaseEnvironment() },
   );
   const branchTip = git(root, 'rev-parse', 'origin/main');
   let sourceCommit = requestedSource;
@@ -434,12 +442,11 @@ async function resolveMainSource(version, requestedSource) {
 }
 
 async function nextDevelopmentVersion(sourceCommit) {
-  const [engineTags, sdkTags] = await Promise.all([
-    readRegistryTags('@forgeax/engine'),
-    readRegistryTags('@forgeax/engine-sdk'),
-  ]);
-  if (engineTags.latest !== sdkTags.latest || engineTags.next !== sdkTags.next) {
-    throw new Error('local-sdk-registry-channel-tags-diverged');
+  const engineTags = await readRegistryTags('@forgeax/engine');
+  if (has('legacy-sdk')) {
+    const previousSdk = await readRegistryTags('@forgeax/engine-sdk');
+    if (engineTags.latest !== previousSdk.latest || engineTags.next !== previousSdk.next)
+      throw new Error('local-sdk-registry-channel-tags-diverged');
   }
   return developmentVersion(engineTags.latest, engineTags.next, sourceCommit);
 }
@@ -452,10 +459,13 @@ function assertVersionSource(version, sourceCommit) {
 }
 
 async function selectRelease() {
-  const base = resolve(root, option('output') ?? 'artifacts/sdk-local');
+  const base = resolve(
+    root,
+    option('output') ?? (has('legacy-sdk') ? 'artifacts/sdk-local' : 'artifacts/engine-release'),
+  );
   const requestedVersion = option('version');
   const requestedSha = option('source-sha');
-  const current = await resumeCurrentRelease(base, requestedVersion);
+  const current = await resumeCurrentRelease(base, requestedVersion, requestedSha);
   if (current) return current;
   const existing = await resumeSelectedVersion(base, requestedVersion, requestedSha);
   if (existing) return existing;
@@ -485,8 +495,7 @@ async function createRun(selection) {
     witnessCommit: option('witness-sha') ?? selection.sourceCommit,
     controllerCommit: git(root, 'rev-parse', 'HEAD'),
     worktreesRoot: resolve(
-      process.env.HOME ?? homedir(),
-      '.worktrees',
+      option('worktrees') ?? resolve(process.env.HOME ?? homedir(), '.worktrees'),
       `forgeax-sdk-local-${selection.version}-${randomUUID().slice(0, 8)}`,
     ),
     createdAt: new Date().toISOString(),
@@ -1039,10 +1048,10 @@ async function prepareController(run) {
   );
 }
 
-async function prepareLanes(run) {
+async function prepareLanes(run, lanes = LANES) {
   await verifyLocalHost(run);
   await prepareController(run);
-  for (const name of LANES) await prepareWorktree(run, name);
+  for (const name of lanes) await prepareWorktree(run, name);
   const native = lanePath(run, 'native');
   await step(
     run,
@@ -1070,16 +1079,18 @@ async function prepareLanes(run) {
       }
     },
   );
-  for (const name of LANES.filter((item) => item !== 'native')) {
+  for (const name of lanes.filter((item) => item !== 'native')) {
     const lane = lanePath(run, name);
     if (!run.state.worktrees[name].nativeInputsCopied)
       await copyNativeInputs(run, native, name, lane);
   }
-  for (const lane of ['build', 'reproducibility', 'collision']) {
+  for (const lane of lanes.filter((item) =>
+    ['build', 'reproducibility', 'collision'].includes(item),
+  )) {
     await mountSharedSubmodule(run, 'native', lane, 'third_party/blitz');
     await mountSharedSubmodule(run, 'native', lane, 'third_party/wgpu');
   }
-  for (const lane of ['reproducibility', 'collision']) {
+  for (const lane of lanes.filter((item) => ['reproducibility', 'collision'].includes(item))) {
     await mountSharedSubmodule(run, 'build', lane, 'forgeax-engine-assets');
   }
 }
@@ -1900,6 +1911,195 @@ async function runPromotion(run, { preflightOnly = false } = {}) {
   await cleanupWorktrees(run);
 }
 
+async function runEngineRelease(run, stage) {
+  const script = resolve(root, 'scripts/forgeax/engine-package-release.mjs');
+  const candidateArgs = [run.candidateRoot, run.version, run.sourceCommit];
+  const candidateFile = resolve(run.candidateRoot, 'engine-candidate.json');
+  const packFile = resolve(run.candidateRoot, `forgeax-engine-${run.version}.tgz`);
+  const proofDir = resolve(run.root, 'proofs');
+  const candidateStep = run.state.steps['engine-candidate'];
+  if (run.state.status === 'complete') {
+    await cleanupWorktrees(run);
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, version: run.version, sourceCommit: run.sourceCommit, status: 'complete', candidate: run.candidateRoot })}\n`,
+    );
+    return;
+  }
+  if (
+    (stage === 'all' || stage === 'candidate') &&
+    (candidateStep?.status !== 'passed' || !(await exists(candidateFile)))
+  ) {
+    await prepareLanes(run, ['native', 'build']);
+    await step(
+      run,
+      'engine-pack',
+      async () => {
+        await rm(run.candidateRoot, { recursive: true, force: true });
+        await runCommand(
+          run,
+          'engine-pack',
+          'pnpm',
+          ['engine:pack', '--version', run.version, '--output', run.candidateRoot],
+          { cwd: lanePath(run, 'build'), env: releaseEnvironment(), githubAuth: true },
+        );
+      },
+      async () =>
+        (await exists(packFile)) &&
+        (await exists(resolve(run.candidateRoot, 'engine-package.json'))),
+    );
+    await step(
+      run,
+      'engine-candidate',
+      () =>
+        runCommand(run, 'engine-candidate', 'xvfb-run', [
+          '-a',
+          process.execPath,
+          script,
+          'seal',
+          ...candidateArgs,
+        ]),
+      () => exists(candidateFile),
+    );
+  }
+  await prepareController(run);
+  const { readEngineCandidate } = await import('./engine-package-release.mjs');
+  const item = await readEngineCandidate(...candidateArgs);
+  if (stage === 'candidate') {
+    run.state.status = 'candidate-ready';
+    await saveState(run);
+  } else {
+    await verifyLocalHost(run);
+    run.state.status = 'promotion';
+    await saveState(run);
+    await mkdir(proofDir, { recursive: true });
+    const githubToken = await ensureGitHubAuth();
+    const mirrorEnabled = await sourceMirrorEnabled();
+    const preflight = resolve(proofDir, 'public-source-preflight.json');
+    const projection = resolve(run.root, 'public-source');
+    if (mirrorEnabled) {
+      await step(
+        run,
+        'engine-source-preflight',
+        async () => {
+          if (!(await exists(resolve(lanePath(run, 'build'), 'packages/codec/pkg'))))
+            await prepareLanes(run, ['native', 'build']);
+          const mirror = await prepareWorktree(run, 'mirror');
+          await rm(projection, { recursive: true, force: true });
+          await rm(preflight, { force: true });
+          await runCommand(
+            run,
+            'engine-source-preflight',
+            process.execPath,
+            [
+              script,
+              'mirror-preflight',
+              ...candidateArgs,
+              mirror,
+              lanePath(run, 'build'),
+              projection,
+              preflight,
+            ],
+            { env: await sourceMirrorEnvironment(githubToken), githubAuth: true },
+          );
+        },
+        async () =>
+          (await exists(preflight)) && (await exists(resolve(projection, 'forgeax-export.json'))),
+      );
+    }
+    if (stage === 'preflight') return;
+    const npmProof = resolve(proofDir, 'npm-publication.json');
+    const registryStep = async (name, file, args) =>
+      step(
+        run,
+        name,
+        async () => {
+          const result = await runCommand(
+            run,
+            name,
+            'xvfb-run',
+            ['-a', process.execPath, script, ...args],
+            { npmAuth: true },
+          );
+          await writeFile(file, `${result.stdout.trim().split('\n').at(-1)}\n`);
+        },
+        () => exists(file),
+      );
+    await registryStep('engine-npm-publish', npmProof, ['publish', ...candidateArgs]);
+    const releaseProof = resolve(proofDir, 'github-release.json');
+    await step(
+      run,
+      'engine-github-release',
+      async () => {
+        const notes = resolve(run.root, 'release-notes.md');
+        await writeFile(
+          notes,
+          `Install @forgeax/engine@${run.version}. The Engine package includes the CLI, View, two game templates, and authoring guides.\n`,
+        );
+        const hashes = resolve(run.candidateRoot, 'SHA256SUMS');
+        await writeFile(hashes, `${item.sha256}  ${basename(packFile)}\n`);
+        const result = await runCommand(
+          run,
+          'engine-github-release',
+          process.execPath,
+          [
+            resolve(root, 'scripts/forgeax/finalize-sdk-release.mjs'),
+            '--tag',
+            `sdk-v${run.version}`,
+            '--commit',
+            run.sourceCommit,
+            '--title',
+            `ForgeAX Engine ${run.version}`,
+            '--notes-file',
+            notes,
+            '--asset',
+            packFile,
+            '--asset',
+            candidateFile,
+            '--asset',
+            hashes,
+          ],
+          {
+            env: { GH_TOKEN: githubToken, GITHUB_REPOSITORY: githubRepository() },
+            githubAuth: true,
+          },
+        );
+        await writeFile(releaseProof, `${result.stdout.trim().split('\n').at(-1)}\n`);
+      },
+      () => exists(releaseProof),
+    );
+    await registryStep('engine-npm-next', resolve(proofDir, 'npm-promotion.json'), [
+      'promote',
+      ...candidateArgs,
+      npmProof,
+    ]);
+    if (mirrorEnabled) {
+      const mirrorProof = resolve(proofDir, 'public-source-mirror.json');
+      await step(
+        run,
+        'engine-source-mirror',
+        async () => {
+          const result = await runCommand(
+            run,
+            'engine-source-mirror',
+            process.execPath,
+            [script, 'mirror-publish', ...candidateArgs, projection, preflight],
+            { env: await sourceMirrorEnvironment(githubToken), githubAuth: true },
+          );
+          await writeFile(mirrorProof, `${result.stdout.trim().split('\n').at(-1)}\n`);
+        },
+        () => exists(mirrorProof),
+      );
+    }
+    run.state.status = 'complete';
+    run.state.completedAt = new Date().toISOString();
+    await saveState(run);
+    await cleanupWorktrees(run);
+  }
+  process.stdout.write(
+    `${JSON.stringify({ ok: true, version: run.version, sourceCommit: run.sourceCommit, status: run.state.status, candidate: run.candidateRoot })}\n`,
+  );
+}
+
 async function cleanupWorktrees(run) {
   for (const [key, entry] of Object.entries(run.state.sharedSubmoduleWorktrees ?? {})) {
     try {
@@ -1935,7 +2135,7 @@ async function main() {
   if (nodeBootstrap === 'reexecuted') return;
   if (has('help')) {
     process.stdout.write(
-      'Usage: pnpm sdk:release:local -- [--version <dev-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>]\n',
+      'Usage: pnpm sdk:release:local -- [--version <dev-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>] [--worktrees <path>]\n',
     );
     return;
   }
@@ -1950,6 +2150,18 @@ async function main() {
     );
     if (stageName === 'preflight' || stageName === 'promote' || stageName === 'all')
       await prepareNpmAuth(run);
+    if (!has('legacy-sdk')) {
+      await runEngineRelease(run, stageName);
+      return;
+    }
+    if (
+      spawnSync(
+        'git',
+        ['cat-file', '-e', `${run.sourceCommit}:scripts/forgeax/engine-authoring-package.mjs`],
+        { cwd: root },
+      ).status === 0
+    )
+      throw new Error('local-sdk-legacy-source-forbidden');
     if (stageName === 'candidate' || stageName === 'all') {
       run.state.status = 'candidate';
       await saveState(run);

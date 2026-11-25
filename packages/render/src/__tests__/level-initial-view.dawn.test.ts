@@ -6,7 +6,10 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it, vi } from 'vitest';
 import type { LevelCandidate } from '../../../app/src/levels/candidate';
 import { loadRhiPack } from '../assembly/backend-contract';
-import type { SourceViewPreparation } from '../assembly/source-view-preparation';
+import {
+  isObsoleteSourceViewFailure,
+  type SourceViewPreparation,
+} from '../assembly/source-view-preparation';
 import { DirectionalLight } from '../components/directional-light';
 import { PointLight } from '../components/point-light';
 import { PointLightShadow } from '../components/point-light-shadow';
@@ -174,12 +177,7 @@ async function prepareCurrentNativeSource(
         hint: 'reprepare an obsolete native demand',
       });
     } catch (cause) {
-      if (
-        !(cause instanceof RhiError) ||
-        cause.code !== 'rhi-descriptor-invalid' ||
-        !work.isObsolete()
-      )
-        throw cause;
+      if (!isObsoleteSourceViewFailure(work, cause)) throw cause;
       (await work.retire()).unwrap();
     }
   }

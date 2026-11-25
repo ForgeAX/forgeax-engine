@@ -26,10 +26,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
-import {
-  decodeMaterialNormalX12Y12,
-  reverseZDeviceDepth,
-} from '../../../render/src/__tests__/gtao-reference';
+import { reverseZDeviceDepth } from '../../../render/src/__tests__/gtao-reference';
 import { GPU_BUFFER_USAGE_COPY_SRC, GPU_BUFFER_USAGE_STORAGE } from '../../../render/src/gpu-usage';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
@@ -208,44 +205,29 @@ function targetCaptureIdentity(capture: Awaited<ReturnType<typeof captureForward
 function verifySceneDataBytes(args: {
   readonly width: number;
   readonly height: number;
-  readonly normalTarget: Uint8Array;
   readonly consumer: Uint8Array;
   readonly field: ReturnType<typeof createForwardGtaoAlphaMaskReferenceField>;
 }) {
   const pixels = args.width * args.height;
-  if (args.normalTarget.byteLength !== pixels * 4 || args.consumer.byteLength !== pixels * 8) {
-    throw new Error(
-      `surface consumer readback size mismatch: target=${args.normalTarget.byteLength}, consumer=${args.consumer.byteLength}, pixels=${pixels}`,
-    );
-  }
-  const target = new DataView(
-    args.normalTarget.buffer,
-    args.normalTarget.byteOffset,
-    args.normalTarget.byteLength,
-  );
+  expect(args.consumer.byteLength).toBe(pixels * 4);
   const consumer = new DataView(
     args.consumer.buffer,
     args.consumer.byteOffset,
     args.consumer.byteLength,
   );
-  let normalMismatchCount = 0;
   let depthCount = 0;
   let maximumDepthError = 0;
   let squaredDepthError = 0;
   for (let pixel = 0; pixel < pixels; pixel += 1) {
-    if (consumer.getUint32(pixel * 8, true) !== target.getUint32(pixel * 4, true)) {
-      normalMismatchCount += 1;
-    }
     const position = args.field.positions[pixel];
     if (position === undefined) continue;
     const expectedDepth = reverseZDeviceDepth(args.field.projection, position);
-    const error = Math.abs(consumer.getFloat32(pixel * 8 + 4, true) - expectedDepth);
+    const error = Math.abs(consumer.getFloat32(pixel * 4, true) - expectedDepth);
     maximumDepthError = Math.max(maximumDepthError, error);
     squaredDepthError += error * error;
     depthCount += 1;
   }
   return {
-    normalMismatchCount,
     depth: {
       count: depthCount,
       maximumAbsolute: maximumDepthError,
@@ -256,14 +238,7 @@ function verifySceneDataBytes(args: {
 
 function pixelDepth(bytes: Uint8Array, width: number, x: number, y: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(
-    (y * width + x) * 8 + 4,
-    true,
-  );
-}
-
-function pixelNormal(bytes: Uint8Array, width: number, x: number, y: number): number {
-  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
-    (y * width + x) * 8,
+    (y * width + x) * 4,
     true,
   );
 }
@@ -279,43 +254,7 @@ function skinVertexVariants(model: ReturnType<typeof buildFrameModel>) {
   });
 }
 
-function assertSurfaceIdentity(
-  capture: Awaited<ReturnType<typeof captureForwardGtaoTarget>>,
-  plan: NonNullable<
-    ReturnType<ReturnType<typeof createForwardGtaoSceneDataConsumer>['latestPlan']>
-  >,
-) {
-  expect(plan.normal.schema).toBe('forgeax::scene-data::standard-surface-normal-v1');
-  expect(plan.depth.schema).toBe('forgeax::scene-data::standard-surface-depth-v1');
-  expect(plan.normalOwner).toMatchObject({
-    featureIdentity: expect.any(String),
-    viewIdentity: plan.viewIdentity,
-    planIdentity: expect.any(String),
-    generation: expect.any(Number),
-    deviceGeneration: capture.deviceGeneration,
-    surfaceAdmissionIdentity: expect.any(String),
-    surfaceAdmissionRevision: expect.any(Number),
-  });
-  expect(plan.depthOwner).toMatchObject({
-    featureIdentity: plan.normalOwner?.featureIdentity,
-    viewIdentity: plan.viewIdentity,
-    planIdentity: plan.normalOwner?.planIdentity,
-    generation: plan.normalOwner?.generation,
-    deviceGeneration: capture.deviceGeneration,
-    surfaceAdmissionIdentity: plan.normalOwner?.surfaceAdmissionIdentity,
-    surfaceAdmissionRevision: plan.normalOwner?.surfaceAdmissionRevision,
-  });
-  expect(capture.graphGeneration).toBe(capture.preparation.graphGeneration);
-  expect(capture.textureIdentity).toBe(capture.preparation.textureIdentity);
-  expect(capture.preparation.descriptor).toEqual({
-    format: capture.format,
-    size: { width: capture.width, height: capture.height },
-    usage: capture.usage,
-    sample: capture.sample,
-  });
-}
-
-it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO', {
+it('samples admitted SceneData depth for Alpha Mask holes and posed Skin AO', {
   timeout: 180_000,
 }, async () => {
   const width = 129;
@@ -434,8 +373,8 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     failureFrameSummary = {
       frameId: receipt.frameId,
       featureFrameNumber: plan?.frameNumber,
-      planIdentity: plan?.normalOwner?.planIdentity,
-      generation: plan?.normalOwner?.generation,
+      planIdentity: plan?.depthOwner?.planIdentity,
+      generation: plan?.depthOwner?.generation,
       presentation: receipt.presentation,
     };
     failureDiagnostics = { frameSummary: failureFrameSummary };
@@ -474,7 +413,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       }
       const plan = plansByReceipt.get(receipt.frameId);
       const trace = debugHost.clusterWorkFrameTraceForConformance();
-      const target = debugHost.getCurrentGraphTarget('standard-scene-surface-normal');
+      const target = debugHost.getCurrentGraphTarget('scene-depth');
       if (plan === undefined || trace === undefined || target === undefined) {
         throw new Error(
           `ready SceneData settlement omitted its plan, trace, or surface target: ${JSON.stringify({
@@ -499,13 +438,12 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       expect(inspection.output.graphPassNames).toEqual(
         expect.arrayContaining(['standard-scene-surface-data', 'ssao-calc']),
       );
-      expect(inspection.perFramePassNames).toContain('surface-normal-depth-consumer');
-      if (plan.normalOwner === undefined || plan.depthOwner === undefined) {
+      expect(inspection.perFramePassNames).toContain('surface-depth-consumer');
+      if (plan.depthOwner === undefined) {
         throw new Error(`completed SceneData settlement has no token owner for ${receipt.frameId}`);
       }
-      expect(plan.normal.schema).toBe('forgeax::scene-data::standard-surface-normal-v1');
       expect(plan.depth.schema).toBe('forgeax::scene-data::standard-surface-depth-v1');
-      expect(plan.normalOwner).toMatchObject({
+      expect(plan.depthOwner).toMatchObject({
         featureIdentity: expect.any(String),
         viewIdentity: plan.viewIdentity,
         planIdentity: expect.any(String),
@@ -513,15 +451,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         deviceGeneration: receipt.deviceGeneration,
         surfaceAdmissionIdentity: expect.any(String),
         surfaceAdmissionRevision: expect.any(Number),
-      });
-      expect(plan.depthOwner).toMatchObject({
-        featureIdentity: plan.normalOwner.featureIdentity,
-        viewIdentity: plan.normalOwner.viewIdentity,
-        planIdentity: plan.normalOwner.planIdentity,
-        generation: plan.normalOwner.generation,
-        deviceGeneration: plan.normalOwner.deviceGeneration,
-        surfaceAdmissionIdentity: plan.normalOwner.surfaceAdmissionIdentity,
-        surfaceAdmissionRevision: plan.normalOwner.surfaceAdmissionRevision,
       });
       expect(events).toEqual([]);
       return Object.freeze({
@@ -531,7 +460,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         recordFrameNumber: trace.recordFrameNumber,
         graphGeneration: target.graphGeneration,
         textureIdentity: target.textureIdentity,
-        owner: Object.freeze({ ...plan.normalOwner }),
+        owner: Object.freeze({ ...plan.depthOwner }),
         descriptor: {
           format: target.descriptor.format,
           size: {
@@ -566,7 +495,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       })}`,
     );
   };
-  const captureTarget = async (name: 'standard-scene-surface-normal' | 'ssao-calc') => {
+  const captureTarget = async (name: 'ssao-calc') => {
     failureOperation = `capture-target:${name}`;
     for (let attempt = 0; attempt < 120; attempt += 1) {
       try {
@@ -601,20 +530,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     surfaceConsumer.setEnabled(true);
     try {
       const settlement = await settleSurfaceConsumer();
-      const normal = await captureTarget('standard-scene-surface-normal');
-      expect(renderer.inspect().perFramePassNames).toContain('surface-normal-depth-consumer');
-      expect(normal.preparation.recordFrameNumber).toBeGreaterThan(settlement.recordFrameNumber);
-      expect(normal.preparation.graphGeneration).toBe(settlement.graphGeneration);
-      expect(normal.preparation.textureIdentity).toBe(settlement.textureIdentity);
-      expect(normal.preparation.descriptor).toEqual(settlement.descriptor);
-      const plan = plansByReceipt.get(normal.publicReceiptFrameId);
-      if (plan === undefined) {
-        throw new Error(
-          `SceneData consumer omitted completed receipt ${normal.publicReceiptFrameId}`,
-        );
-      }
-      expect(plan.normalOwner).toMatchObject(settlement.owner);
+      const plan = plansByReceipt.get(settlement.publicReceiptFrameId);
+      if (plan === undefined) throw new Error('Missing settled depth plan');
       expect(plan.depthOwner).toMatchObject(settlement.owner);
+      expect(debugHost.getCurrentGraphTarget('standard-scene-surface-normal')).toBeUndefined();
       const output = await captureForwardGtaoBuffer(
         debugHost,
         observationBuffer,
@@ -622,15 +541,15 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       );
       failureOperation = 'scene-data-consumer-readback';
       failureReadback = {
-        target: 'surface-normal-depth-consumer',
-        frameId: normal.publicReceiptFrameId,
-        graphGeneration: normal.graphGeneration,
-        textureIdentity: normal.textureIdentity,
-        format: 'rgba32float',
+        target: 'surface-depth-consumer',
+        frameId: settlement.publicReceiptFrameId,
+        graphGeneration: settlement.graphGeneration,
+        textureIdentity: settlement.textureIdentity,
+        format: 'depth32float',
         byteLength: output.byteLength,
         sha256: await sha256Hex(output),
       };
-      return { normal, output, plan, settlement };
+      return { output, plan, settlement };
     } finally {
       surfaceConsumer.setEnabled(false);
     }
@@ -658,7 +577,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     const alphaMetrics = verifySceneDataBytes({
       width,
       height,
-      normalTarget: alphaSurface.normal.bytes,
       consumer: alphaSurface.output,
       field: alphaField,
     });
@@ -678,12 +596,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         (holeOutputY * backgroundOnlyRaw.width + holeOutputX) * backgroundOnlyRaw.bytesPerTexel
       ];
     const holeBackgroundDelta = Math.abs((maskedHoleVisibility ?? 0) - (backgroundVisibility ?? 0));
-    const holeNormal = decodeMaterialNormalX12Y12(
-      pixelNormal(alphaSurface.output, width, holeX, sampleY),
-    );
-    const keptNormal = decodeMaterialNormalX12Y12(
-      pixelNormal(alphaSurface.output, width, keptX, sampleY),
-    );
     await commands.writeFile(
       'packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-alpha-mask-surface.json',
       JSON.stringify(
@@ -704,17 +616,13 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
           },
           surface: {
             settlement: alphaSurface.settlement,
-            frame: alphaSurface.normal.publicReceiptFrameId,
-            recordFrameNumber: alphaSurface.normal.targetRecordFrameNumber,
-            graphGeneration: alphaSurface.normal.graphGeneration,
-            textureIdentity: alphaSurface.normal.textureIdentity,
-            deviceGeneration: alphaSurface.normal.deviceGeneration,
-            owner: alphaSurface.plan.normalOwner,
+            frame: alphaSurface.settlement.publicReceiptFrameId,
+            recordFrameNumber: alphaSurface.settlement.recordFrameNumber,
+            graphGeneration: alphaSurface.settlement.graphGeneration,
+            textureIdentity: alphaSurface.settlement.textureIdentity,
+            deviceGeneration: alphaSurface.settlement.deviceGeneration,
+            owner: alphaSurface.plan.depthOwner,
             depthOwner: alphaSurface.plan.depthOwner,
-            normal: {
-              byteLength: alphaSurface.normal.bytes.byteLength,
-              base64: base64Bytes(alphaSurface.normal.bytes),
-            },
             consumer: {
               byteLength: alphaSurface.output.byteLength,
               base64: base64Bytes(alphaSurface.output),
@@ -725,14 +633,12 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
               y: sampleY,
               position: holePosition,
               depth: pixelDepth(alphaSurface.output, width, holeX, sampleY),
-              normalWord: pixelNormal(alphaSurface.output, width, holeX, sampleY),
             },
             kept: {
               x: keptX,
               y: sampleY,
               position: keptPosition,
               depth: pixelDepth(alphaSurface.output, width, keptX, sampleY),
-              normalWord: pixelNormal(alphaSurface.output, width, keptX, sampleY),
             },
           },
           ao: {
@@ -766,14 +672,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         2,
       ),
     );
-    assertSurfaceIdentity(alphaSurface.normal, alphaSurface.plan);
-    expect(alphaMetrics.normalMismatchCount).toBe(0);
     expect(alphaMetrics.depth.count).toBe(width * height);
     expect(alphaMetrics.depth.maximumAbsolute).toBeLessThanOrEqual(1e-5);
     expect(holePosition?.[2]).toBeLessThan(-5.8);
     expect(keptPosition?.[2]).toBeGreaterThan(-4.1);
-    expect(holeNormal[2]).toBeGreaterThan(0.999);
-    expect(keptNormal[0]).toBeGreaterThan(0.96);
     expect(holeBackgroundDelta).toBeLessThanOrEqual(1);
 
     const skinNormalTexture = assets
@@ -802,8 +704,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     const skinRawSha256 = await sha256Hex(skinRaw.bytes);
     const settledSkinSurfaceEvidence = {
       settlement: skinSurface.settlement,
-      capture: targetCaptureIdentity(skinSurface.normal),
-      owner: skinSurface.plan.normalOwner,
       depthOwner: skinSurface.plan.depthOwner,
     };
     let posedSkinRawEvidence: {
@@ -1057,15 +957,14 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       unposedControl: unposedControlEvidence,
     };
     const skinField = createForwardGtaoSkinReferenceField(width, height, pose);
-    const _skinMetrics = verifySceneDataBytes({
+    const skinMetrics = verifySceneDataBytes({
       width,
       height,
-      normalTarget: skinSurface.normal.bytes,
       consumer: skinSurface.output,
       field: skinField,
     });
+    expect(skinMetrics.depth.maximumAbsolute).toBeLessThanOrEqual(1e-5);
     const actualPoseVisibilityDelta = byteErrorMetrics(skinRaw.bytes, unposedGpuRaw.bytes);
-    const _skinNormalSha256 = await sha256Hex(skinSurface.normal.bytes);
     const _skinConsumerSha256 = await sha256Hex(skinSurface.output);
     const _posedSkinRawComparison = {
       capture: posedSkinRawEvidence.capture,

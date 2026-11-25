@@ -9,6 +9,7 @@ import type { SsaoParameterConfig } from './ssao-config';
 export const RENDERING_REQUIREMENT_KEYS = [
   'renderPath',
   'pbr',
+  'contactShadows',
   'ibl',
   'ambientOcclusion',
   'lightCount',
@@ -17,6 +18,7 @@ export const RENDERING_REQUIREMENT_KEYS = [
   'probePlacement',
   'gpuOcclusion',
   'featureReadOnlyDepthBatching',
+  'roughRefraction',
 ] as const;
 export type RenderingRequirements = Partial<
   Pick<RenderProfile, Exclude<(typeof RENDERING_REQUIREMENT_KEYS)[number], 'ambientOcclusion'>>

@@ -80,6 +80,7 @@ class DeferredDisplayPorts {
   readonly lighting: string | undefined;
   readonly perPixelAtmosphere: boolean | undefined;
   readonly lightProbes: boolean;
+  readonly capsuleShadows: boolean;
 
   constructor(topology: RenderPipelineTopology) {
     this.gbuffer = topology.compactGbuffer;
@@ -89,6 +90,7 @@ class DeferredDisplayPorts {
     this.lighting = topology.standardLightingTopologySignature;
     this.perPixelAtmosphere = topology.perPixelAtmosphereTransmittance;
     this.lightProbes = topology.deferredLightProbes === true;
+    this.capsuleShadows = topology.deferredCapsuleShadows === true;
   }
 
   accepts(topology: RenderPipelineTopology): boolean {
@@ -100,7 +102,8 @@ class DeferredDisplayPorts {
       this.pcf === (topology.deferredPcfLighting === true) &&
       this.lighting === topology.standardLightingTopologySignature &&
       this.perPixelAtmosphere === topology.perPixelAtmosphereTransmittance &&
-      this.lightProbes === (topology.deferredLightProbes === true)
+      this.lightProbes === (topology.deferredLightProbes === true) &&
+      this.capsuleShadows === (topology.deferredCapsuleShadows === true)
     );
   }
 }
@@ -161,6 +164,9 @@ export class DisplayPorts {
   readonly view: string;
   readonly surfaceKind: string | undefined;
 
+  readonly samples: 1 | 4;
+  readonly outputBloom: boolean;
+  readonly multisampledResidual: boolean | undefined;
   readonly color: PremultipliedForwardOutput['format'];
   readonly compute: boolean;
   readonly directional: boolean;
@@ -199,6 +205,9 @@ export class DisplayPorts {
     this.spotMapSize = shadow.spotCount > 0 ? shadow.spotMapSize : 0;
     this.pointFaceSize = shadow.pointCount > 0 ? shadow.pointFaceSize : 0;
     this.#depthLayers = this.directional || this.spotMapSize > 0 ? depthLayers : undefined;
+    this.samples = displaySampleCount(topology);
+    this.multisampledResidual = this.samples === 4 ? topology.transparency?.residual : undefined;
+    this.outputBloom = typeof output !== 'string' && standardBloomAdmitted(topology.camera);
     this.color = typeof output === 'string' ? 'rgba16float' : output.format;
     this.compute = topology.lane.compute;
     this.standardPost =
@@ -234,6 +243,8 @@ export class DisplayPorts {
     return (
       this.acceptsAmbientOcclusion(topology) &&
       this.acceptsSurface(topology) &&
+      this.samples === displaySampleCount(topology) &&
+      (this.samples === 1 || this.multisampledResidual === topology.transparency?.residual) &&
       this.compute === topology.lane.compute &&
       this.textureLighting === textureLighting &&
       this.acceptsShadows(topology, shadowLightBytes, depthLayers) &&
@@ -282,7 +293,9 @@ export class DisplayPorts {
     }
     return typeof output === 'string'
       ? this.standardPost?.accepts(topology, observeLinear) === true
-      : this.standardPost === undefined && this.color === output.format;
+      : this.standardPost === undefined &&
+          this.color === output.format &&
+          this.outputBloom === standardBloomAdmitted(topology.camera);
   }
 
   private acceptsShadows(
@@ -327,7 +340,7 @@ function admitsOrderedPost(
   rgba16floatRenderable: boolean,
 ): boolean {
   const { camera } = topology;
-  if (typeof output !== 'string') return !standardBloomAdmitted(camera);
+  if (typeof output !== 'string') return true;
   return (
     camera.antialias !== 'smaa' &&
     !camera.editorOutline &&
@@ -353,7 +366,7 @@ function admitsOrderedScene(topology: RenderPipelineTopology, output: DisplayOut
     !topology.subsurface &&
     (output === 'deferred' || !topology.compactGbuffer) &&
     !topology.atmosphere &&
-    !topology.analyticFog &&
+    (output !== 'deferred' || !topology.analyticFog) &&
     !topology.volumetricFog?.enabled &&
     !topology.water &&
     !topology.singleLayerMedium
@@ -369,6 +382,20 @@ function admitsOrderedShadows({ shadow }: RenderPipelineTopology): boolean {
   );
 }
 
+function displaySampleCount(topology: RenderPipelineTopology): 1 | 4 {
+  return isMultisampleAntialias(topology.camera.antialias) && topology.lane.multisample ? 4 : 1;
+}
+
+/** Multisampled transmission and material depth need independent resolved copies. */
+function admitsDisplaySamples(topology: RenderPipelineTopology, output: DisplayOutput): boolean {
+  return (
+    displaySampleCount(topology) === 1 ||
+    (output !== 'deferred' &&
+      !topology.materialSceneDepth &&
+      !topology.transmissionDemand?.activeCount)
+  );
+}
+
 /** The output owns tone mapping and display encoding. Other physical products
  * keep their declared inputs and outputs with the Standard stage that issues them. */
 export function admitsOrderedDisplay(
@@ -381,7 +408,7 @@ export function admitsOrderedDisplay(
     (surface.storageFormat === 'rgba8unorm' || surface.storageFormat === 'bgra8unorm') &&
     admitsOrderedLane(topology, output) &&
     !topology.clearOnly &&
-    !(isMultisampleAntialias(camera.antialias) && topology.lane.multisample) &&
+    admitsDisplaySamples(topology, output) &&
     !isTemporalAntialias(camera.antialias) &&
     camera.dynamicResolution === undefined &&
     !topology.temporal?.motionBlur &&

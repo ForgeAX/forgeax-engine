@@ -95,9 +95,7 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
         'water-slw-inner-color',
         'water-no-water-color-hdr',
         'copy-dst',
-      ) &&
-      texture('water-no-water-depth') !== undefined &&
-      access('water-no-water-depth-copy', 'water-no-water-depth', 'copy-dst');
+      ) && edge('water-depth-copy', 'water-depth-prepass', 'water-prepass-depth', 'copy-dst');
     const colorPass = pass('water-slw-inner-color');
     const direct =
       pass('water-reflection-composite') === undefined &&
@@ -121,26 +119,18 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
         'color-attachment',
       );
     const visibility =
-      ['water-mask', 'water-wpo-velocity'].every(
-        (label) =>
-          access('water-depth-mask-velocity', label, 'color-attachment') &&
-          texture(label) !== undefined,
-      ) && access('water-depth-mask-velocity', 'water-prepass-depth', 'depth-stencil-write');
+      edge('water-depth-prepass', 'water-slw-inner-color', 'water-mask', 'color-attachment') &&
+      access('water-depth-prepass', 'water-prepass-depth', 'depth-stencil-write');
     const prepass =
       visibility &&
-      texture('water-normal-roughness') !== undefined &&
-      access('water-depth-mask-velocity', 'water-normal-roughness', 'color-attachment');
+      access('water-depth-prepass', 'water-normal-roughness', 'color-attachment') &&
+      access('water-depth-prepass', 'standard-scene-temporal', 'color-attachment');
     const trace = pass('water-ssr-trace');
     const ssrOrigin =
       ['water-normal-roughness', 'water-mask'].every((label) =>
-        edge('water-depth-mask-velocity', 'water-ssr-trace', label, 'color-attachment'),
+        edge('water-depth-prepass', 'water-ssr-trace', label, 'color-attachment'),
       ) &&
-      edge(
-        'water-depth-mask-velocity',
-        'water-ssr-trace',
-        'water-prepass-depth',
-        'depth-stencil-write',
-      );
+      edge('water-depth-prepass', 'water-ssr-trace', 'water-prepass-depth', 'depth-stencil-write');
     const ssrOutput =
       trace?.accesses.some(
         (write) =>
@@ -150,11 +140,10 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
     const inlineSsr =
       inspection.ssr?.status === 'admitted' &&
       inspection.ssr.lane === 'forward' &&
-      edge(
-        'water-forward-hiz-reduce-chain',
-        'water-slw-inner-color',
-        'water-forward-hiz',
-        'storage-write',
+      ['hzb', 'water-hzb'].some(
+        (label) =>
+          edge(`${label}-seed`, 'water-slw-inner-color', label, 'storage-write') ||
+          edge(`${label}-reduce-chain`, 'water-slw-inner-color', label, 'storage-write'),
       );
 
     return {
@@ -176,7 +165,7 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
       : undefined;
   const materialConsumer = (row: WaterRenderGraphInspection['passes'][number]) =>
     row.kind === 'raster' &&
-    ['water-slw-inner-color', 'water-depth-mask-velocity'].some((name) => row.name.endsWith(name));
+    ['water-slw-inner-color', 'water-depth-prepass'].some((name) => row.name.endsWith(name));
   const composedCompute = (needle: string) => {
     for (const owner of [graph, currentShared]) {
       if (owner === undefined) continue;

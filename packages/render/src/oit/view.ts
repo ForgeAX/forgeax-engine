@@ -2,14 +2,14 @@ import type { Transparency } from '../components/camera';
 import type { MaterialResource } from '../material-resource';
 import { isTransparentLaneMaterial } from '../record/main-pass';
 import type { RenderPipelineTopology } from '../render-pipeline';
-import type { DispatchList, RenderableSnapshot } from '../render-system-extract';
+import type { DispatchEntry, DispatchList, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import {
   type DispatchPassWork,
   dispatchPassWork,
   type MaterialFrame,
 } from '../scene/material-dispatch';
-import { sceneSkinSlotsOf } from '../scene/render-scene-view';
+import { sceneSkinSlotsOf, sceneSurfaceRowsOf } from '../scene/render-scene-view';
 import { FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { classifyOitDraw, type OitIneligibleReason } from './eligibility';
 
@@ -281,27 +281,46 @@ function resolveTransparencyEntries(
   const resolved: Transparency = capabilityAbsent ? 'sorted' : input.requested;
   const counts = emptyCounts();
   if (input.dispatch.length > 0) {
-    for (const entry of input.dispatch) {
-      const row = input.renderables.at(entry.renderableIndex);
-      if (row === undefined || !matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
-      let resource = row.material;
-      for (const candidate of row.materials)
-        if (
-          (input.materialFrame.get(candidate)?.snapshot.materialHandle ?? 0) ===
-          entry.materialHandle
-        ) {
+    const rows = input.renderables;
+    const columns = sceneSurfaceRowsOf(rows, rows.at);
+    const classify = (
+      entry: DispatchEntry,
+      bindings: Pick<RenderableSnapshot, 'material' | 'materials'>,
+      content: Pick<RenderableSnapshot, 'skinBinding'>,
+    ) => {
+      const frame = input.materialFrame;
+      let resource = bindings.material;
+      for (const candidate of bindings.materials) {
+        if ((frame.get(candidate)?.snapshot.materialHandle ?? 0) === entry.materialHandle) {
           resource = candidate;
           break;
         }
-      const material = input.materialFrame.get(resource)?.snapshot;
+      }
+      const material = frame.get(resource)?.snapshot;
       if (material === undefined)
         throw new Error('Transparency requires its accepted material frame');
-      if (!isTransparentLaneMaterial(material)) continue;
-      if (resolved === 'sorted') {
-        counts.sorted += 1;
-        continue;
+      if (!isTransparentLaneMaterial(material)) return;
+      if (resolved === 'sorted') counts.sorted++;
+      else countDraw(counts, entry, content.skinBinding !== undefined);
+    };
+    let current: DispatchEntry;
+    const readRow = (entry: DispatchEntry, selected: boolean) => {
+      const row = rows.at(entry.renderableIndex);
+      if (row !== undefined && (selected || matchPass(entry.tags, FORWARD_PASS_SELECTOR)))
+        classify(entry, row, row);
+    };
+    // A culled or reordered dispatch still addresses this view by rank.
+    // Its material and skin inputs require no public draw or temporal pose.
+    const walk = columns?.surfaceWalk((_entity, content, bindings) => {
+      if (bindings === undefined || content === undefined) readRow(current, true);
+      else classify(current, bindings, content);
+    });
+    for (const entry of input.dispatch) {
+      if (walk === undefined) readRow(entry, false);
+      else if (matchPass(entry.tags, FORWARD_PASS_SELECTOR)) {
+        current = entry;
+        walk.readRank(entry.renderableIndex);
       }
-      countDraw(counts, entry, row.skinBinding !== undefined);
     }
   }
   return transparencyResolution(input.requested, resolved, capabilityAbsent, counts);

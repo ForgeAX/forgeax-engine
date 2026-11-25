@@ -97,7 +97,7 @@ it.each([
     depth,
     width: WIDTH,
     height: HEIGHT,
-    reduction: 'closest',
+    reduction: 'furthest',
   }).unwrap();
   const origin = {
     depth: input(graph, 'water-depth', 'r32float'),
@@ -123,7 +123,8 @@ it.each([
     .find(([name]) => name === 'water-ssr-trace')?.[1]
     .accesses.filter(({ usage }) => usage === 'sampled-read')
     .map(({ resource }) => resource);
-  expect(sampled).toHaveLength(history ? 10 : 9);
+  expect(sampled).toHaveLength(10);
+  expect(sampled?.at(-1)).toEqual(history ? previousColor : scene);
   expect(sampled).toEqual(
     expect.arrayContaining([
       scene,
@@ -135,7 +136,6 @@ it.each([
       normal,
       fallback,
       motion,
-      ...(history ? [previousColor] : []),
     ]),
   );
 });
@@ -391,13 +391,13 @@ describe('SSR spatial RhiNull integration', () => {
     expect(queue.submitted).toHaveLength(1);
     expect(device.framePassNames).toEqual([
       'seed-inputs',
-      'depth-pyramid-seed',
-      'depth-pyramid-reduce-chain',
+      'hzb-seed',
+      'hzb-reduce-chain',
       'ssr-trace',
     ]);
     expect(compiled.value.inspect().resources).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: 'depth-pyramid', format: 'r32float' }),
+        expect.objectContaining({ label: 'hzb', format: 'r32float' }),
         expect.objectContaining({ label: 'ssr-trace', format: 'rgba16float' }),
       ]),
     );

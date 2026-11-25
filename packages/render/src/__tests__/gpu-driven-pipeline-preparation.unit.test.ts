@@ -61,7 +61,7 @@ it.each([
     clustered: false,
     reflectionFallback: false,
     probeBlend: false,
-    shadowViews: false,
+    demand: 'forward',
   });
   let released = false;
   const pipeline = device
@@ -142,6 +142,7 @@ it.each([
     );
     expect(ordinary).not.toHaveBeenCalled();
     expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare.mock.calls[0]?.[6]).toBe('deferred');
     expect(prepare.mock.calls[0]?.[8]).toBe(1);
     expect(prepare.mock.calls[0]?.[15]).toBe('gpu-driven-pbr');
     expect(prepare.mock.calls[0]?.[16]).toBe('vs_scene_index');

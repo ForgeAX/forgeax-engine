@@ -88,6 +88,7 @@ export interface BuildProductionOptions
   readonly enginePackageRoot?: string;
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
+  readonly buildCacheSeedRoot?: string;
   readonly producerIdentity?: string;
   readonly sink: BuildProductionSink;
   readonly fail: (failure: BuildProductionFailure) => Error;
@@ -252,6 +253,9 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
       ...(context.buildCacheRoot === undefined
         ? {}
         : { buildCacheRoot: context.buildCacheRoot, cacheIdentityRoot: context.cwd }),
+      ...(context.buildCacheSeedRoot === undefined
+        ? {}
+        : { buildCacheSeedRoot: context.buildCacheSeedRoot }),
     });
     if (!built.ok) dynamicFailure(context, built.error);
 

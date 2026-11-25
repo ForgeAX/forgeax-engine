@@ -12,26 +12,30 @@ import {
 } from 'three/src/Three.Core.js';
 import { unsupported } from './errors';
 import type { SourceTransform } from './scene-state';
+import { SourcePoseEdits } from './scene-walk';
 import type { SceneChanges } from './source-changes';
 
 export const POSE_LANES = 10;
 const EMPTY_POSES = new Float64Array(0);
+const RECORD_BLOCK_ROWS = 8;
 
 /** A synchronous source walk validates all poses before it writes a native hierarchy. */
 export class SourcePosePage {
   values = EMPTY_POSES;
   used = 0;
+  private recordBlock = EMPTY_POSES;
+  private recordOffset = 0;
   readonly pendingParents: (Object3D | undefined)[] = [];
   parentCount = 0;
-  private capturedEdits?: Set<Object3D>;
+  private capturedEdits?: SourcePoseEdits;
   private hierarchy?: Set<Object3D>;
   private tracked = false;
 
   /** Transfer the current inputs to this validation. Later source callbacks write to the next batch. */
-  takeEdits(changes: SceneChanges): Set<Object3D> {
+  takeEdits(changes: SceneChanges): SourcePoseEdits {
     const edits = changes.pose;
     const hierarchy = changes.poseTopology;
-    changes.pose = this.capturedEdits ?? new Set();
+    changes.pose = this.capturedEdits ?? new SourcePoseEdits();
     changes.poseTopology = this.hierarchy ?? new Set();
     this.capturedEdits = edits;
     this.hierarchy = hierarchy;
@@ -53,8 +57,40 @@ export class SourcePosePage {
     return this.values;
   }
 
+  /** The node holds its exact source lanes. A surviving node pins at most eight poses. */
+  issueRecord(): Float64Array {
+    if (this.recordOffset === this.recordBlock.length) {
+      this.recordBlock = new Float64Array(RECORD_BLOCK_ROWS * POSE_LANES);
+      this.recordOffset = 0;
+    }
+    const start = this.recordOffset;
+    this.recordOffset += POSE_LANES;
+    return this.recordBlock.subarray(start, this.recordOffset);
+  }
+
+  /** All staged lanes are finite. Preserve both signed zeros and sub-f32 source edits. */
+  matchesRecord(record: ArrayLike<number>, offset: number): boolean {
+    if (record.length !== POSE_LANES) return false;
+    const values = this.values;
+    for (let i = 0; i < POSE_LANES; i++) {
+      const previous = record[i] as number;
+      const current = values[offset + i] as number;
+      if (previous !== current || (current === 0 && 1 / previous !== 1 / current)) return false;
+    }
+    return true;
+  }
+
+  writeRecord(record: Float64Array, offset: number): void {
+    const values = this.values;
+    for (let i = 0; i < POSE_LANES; i++) record[i] = values[offset + i] as number;
+  }
+
   release(residents: number): void {
-    this.capturedEdits?.clear();
+    if (residents === 0) {
+      this.recordBlock = EMPTY_POSES;
+      this.recordOffset = 0;
+    }
+    this.capturedEdits?.release();
     this.hierarchy?.clear();
     this.tracked = false;
     this.used = 0;

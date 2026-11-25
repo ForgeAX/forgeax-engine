@@ -12,7 +12,7 @@ it('uses the production import authority at every historical missing-import call
   let count = 0;
   for (const [owner, expected] of [
     ['history', 1],
-    ['interpolation', 1],
+    ['interpolation', 2],
     ['order', 3],
     ['radiance-history', 1],
     ['ray-sequence', 1],
@@ -50,7 +50,7 @@ it('uses the production import authority at every historical missing-import call
       count++;
     }
   }
-  expect(count).toBe(11);
+  expect(count).toBe(12);
 });
 
 it('matches the entire actual World receiver and hint prefix without accepting the obsolete seam', () => {

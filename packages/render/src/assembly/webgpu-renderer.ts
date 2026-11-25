@@ -1,11 +1,13 @@
 import { CloudAdoptionReceipts } from '../cloud/reconstruction/adoption-receipts';
 import { retainPipelineView } from '../environment/bindings';
 import { editorAssistancePresentation } from '../features/editor-assistance/feature';
+import { retainPipelineRasterWindow } from '../gpu-driven/raster-window-layout';
+import { retainStandardPipelineMaterialLayout } from '../pbr-pipeline';
 import {
-  canProjectOpaqueStandardMaterial,
-  retainStandardPipelineMaterialLayout,
-} from '../pbr-pipeline';
-import { defaultMaterialFragmentEntry, defaultMaterialVertexEntry } from '../pipeline-builder';
+  defaultMaterialFragmentEntry,
+  defaultMaterialVertexEntry,
+  positionOnlyMaterialBuffer,
+} from '../pipeline-builder';
 import { retainPipelinePrimitiveReflection } from '../reflection/primitive-bindings';
 import {
   prepareTargetEnvironment,
@@ -22,6 +24,7 @@ import { materialFragmentEntry } from './material-fragment-entry';
 import {
   type MaterialPipelineSelection,
   materialLayoutProjections,
+  materialPipelineSelection,
   runBuildMaterialShaderPipeline,
   runBuildPipelineContext,
   runGetMaterialShaderPipelineEntryFor,
@@ -76,7 +79,6 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, probeMultisampleRenderCapability, RhiError } from '@forgeax/engine-rhi';
-import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
@@ -88,7 +90,6 @@ import type {
   MaterialRenderState,
   PassKind,
   PrimitiveTopology,
-  ShaderEntryPointReads,
   VertexAttributeMap,
 } from '@forgeax/engine-types';
 import { shaderSourceForDescriptor } from '@forgeax/engine-types';
@@ -156,6 +157,7 @@ import {
   preparedRenderPipelineOwner,
 } from './material/prepared-pipeline-owner';
 import { resolveFeatureShaderSource } from './material-shader-policy';
+import { recoveryMaterialShaders } from './material-shader-prewarm';
 import {
   createPublishedMeshResidencyHost,
   inspectPublishedMeshResidency,
@@ -275,7 +277,6 @@ import type { RendererAssemblyImplementation } from './host-contract';
 import type { LodObservationCaptureValidity } from './lod-observation';
 import {
   hasPackedTangentFrame,
-  isEngineOwnedMaterialShader,
   resolveCompiledMaterialGroup2Contract,
   resolveMaterialPipelineVertexEntry,
   resolveRendererMaterialShaderArtifact,
@@ -862,7 +863,7 @@ async function makeWebGPURenderer(
   // per-slot coordinate selection. Their vertex layout must therefore always
   // carry the declared UV slots or CreateRenderPipeline rejects the module.
   // in VertexState"). `materialShaderUvSetCounts` is the SSOT both PSO paths read
-  // (buildPipelineContext + getMaterialShaderPipeline) to drive the clamp-to-last
+  // (runBuildPipelineContext + getMaterialShaderPipeline) to drive the clamp-to-last
   // alias; naga reflection can be stale for engine-shipped modules, so the
   // count is asserted explicitly. Missing mesh sets are clamp-to-last aliases.
   const packShaderFactory = internals.pack.createShaderModule;
@@ -1026,16 +1027,7 @@ async function makeWebGPURenderer(
       internals.errorRegistry,
       buildState === undefined
         ? requiredMaterialShaders
-        : [
-            ...new Set([...requiredMaterialShaders, ...registry.materialShaderIdentifiers()]),
-          ].filter(
-            // Material publication installs all cooked alternatives, including
-            // optional outputs the active device never compiled. Recover only
-            // successfully used modules plus explicitly required feature inputs.
-            (id) =>
-              requiredMaterialShaders.includes(id) ||
-              (!isEngineOwnedMaterialShader(id) && drewWithModule(`module-${id}`)),
-          ),
+        : recoveryMaterialShaders(requiredMaterialShaders, registry, drewWithModule),
       materialShaderUvSetCounts.get('forgeax::default-standard-pbr') ?? 0,
       requiredFullscreenPostProcesses,
       (hook, state) => {
@@ -1280,59 +1272,6 @@ async function makeWebGPURenderer(
     internals,
     currentBuildDevice,
   );
-  const buildPipelineContext = (
-    variantSet?: string,
-    materialShaderId?: string,
-    group2Contract: PipelineGroup2Contract = 'mesh',
-    // Skin layouts derive their vertex ABI from the shared attribute projection.
-    meshAttributes?: VertexAttributeMap,
-    vertexLayout?: string,
-    vertexLayoutProjection?: VertexLayoutProjection,
-    shaderModuleMode?: RenderFeatureShaderModuleMode,
-    layoutKindOverride?: LayoutKind,
-    particleInputLanes?: number,
-    waterInfoFormat?: 'rgba16float' | 'rgba32float',
-    programIdentity?: string,
-    entryPoints?: readonly ShaderEntryPointReads[],
-    waterSystemInputs = false,
-    preparedStorageBindings = false,
-    projectOpaqueLayout = false,
-    projections?: import('./material-pipeline-requests').MaterialLayoutProjections,
-  ) => {
-    return runBuildPipelineContext(
-      getShader,
-      currentPipelineState,
-      waterWavesPipelineLayout,
-      currentMaterialShaderUvSetCounts,
-      currentBuildDevice,
-      internals,
-      getShaderModuleAdapter,
-      getOrBuildPerShaderMaterialLayout,
-      getMaterialShaderBindingContract,
-      getOrBuildGroup0MaterialLayout,
-      getOrBuildGroup0ResourceLayout,
-      getOrBuildViewOnlyMaterialPipelineLayout,
-      getOrBuildViewAndSceneDepthMaterialPipelineLayout,
-      getOrBuildPreparedMaterialPipelineLayout,
-      getOrBuildPreparedStoragePipelineLayout,
-      variantSet,
-      materialShaderId,
-      group2Contract,
-      meshAttributes,
-      vertexLayout,
-      vertexLayoutProjection,
-      shaderModuleMode,
-      layoutKindOverride,
-      particleInputLanes,
-      waterInfoFormat,
-      programIdentity,
-      entryPoints,
-      waterSystemInputs,
-      preparedStorageBindings,
-      projectOpaqueLayout,
-      projections,
-    );
-  };
   /**
    * Builds a pipeline for the given entry, caches it keyed by cacheKey,
    * and returns it. Returns null on build failure (firing errorRegistry
@@ -1361,7 +1300,7 @@ async function makeWebGPURenderer(
     variantSet?: string,
     passKind: PassKind = 'forward',
     // bug-20260611-skin-pipeline-layout: thread materialShaderId so
-    // buildPipelineContext can derive `LayoutKind === 'pbr-skin'` and pick
+    // the pipeline builder can derive `LayoutKind === 'pbr-skin'` and pick
     // the 2-entry mesh-array BGL chain.
     materialShaderId?: string,
     // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w16 (D-4):
@@ -1369,7 +1308,7 @@ async function makeWebGPURenderer(
     // vertex buffer layout flows from the SSOT `deriveVertexBufferLayout`
     // (vertex-attribute-layout.ts) instead of a parallel hardcoded copy.
     // Undefined falls into the synthetic 6-key sentinel inside
-    // `buildPipelineContext` (key-presence-only); non-skin layoutKinds
+    // the pipeline builder (key-presence-only); non-skin layoutKinds
     // ignore this parameter entirely.
     meshAttributes?: VertexAttributeMap,
     // Sample count follows camera attachments and participates in PSO identity.
@@ -1425,7 +1364,43 @@ async function makeWebGPURenderer(
     const reflectedVertex = resolvedVertexEntry ?? defaultMaterialVertexEntry(passKind);
     const reflectedFragment =
       fragmentEntry === undefined ? defaultMaterialFragmentEntry(passKind) : fragmentEntry;
-    const ctx = buildPipelineContext(
+    const projectSurface =
+      projectSurfaceResources || passKind === 'deferred' || fragmentEntry === null;
+    const projections = materialLayoutProjections(
+      program.entryPoints,
+      reflectedVertex,
+      reflectedFragment,
+      projectSurface,
+    );
+    const stockStandardVertexProgram = materialShaderId === 'forgeax::default-standard-pbr';
+    const selectPositionOnly = (vertexBuffers: readonly GPUVertexBufferLayout[]) =>
+      positionOnlyMaterialBuffer(
+        entry,
+        { device: currentBuildDevice(), vertexBuffers, constants, stockStandardVertexProgram },
+        renderState,
+        resolvedVertexEntry,
+        fragmentEntry,
+        passKind,
+        attachments.colorFormats.length,
+      ) === undefined
+        ? undefined
+        : materialLayoutProjections(program.entryPoints, 'vs_position_only', null, true);
+    const ctx = runBuildPipelineContext(
+      getShader,
+      currentPipelineState,
+      waterWavesPipelineLayout,
+      currentMaterialShaderUvSetCounts,
+      currentBuildDevice,
+      internals,
+      getShaderModuleAdapter,
+      getOrBuildPerShaderMaterialLayout,
+      getMaterialShaderBindingContract,
+      getOrBuildGroup0MaterialLayout,
+      getOrBuildGroup0ResourceLayout,
+      getOrBuildViewOnlyMaterialPipelineLayout,
+      getOrBuildViewAndSceneDepthMaterialPipelineLayout,
+      getOrBuildPreparedMaterialPipelineLayout,
+      getOrBuildPreparedStoragePipelineLayout,
       variantSet,
       materialShaderId,
       group2Contract,
@@ -1440,18 +1415,14 @@ async function makeWebGPURenderer(
       program.entryPoints,
       usesWaterResources,
       preparedStorageBindings,
-      canProjectOpaqueStandardMaterial(program.entryPoints, resolvedVertexEntry, fragmentEntry),
-      materialLayoutProjections(
-        program.entryPoints,
-        reflectedVertex,
-        reflectedFragment,
-        projectSurfaceResources || passKind === 'deferred',
-      ),
+      projections.opaqueStandard === true,
+      projections,
+      selectPositionOnly,
     );
     if (ctx === null) return null;
     const cache = currentPipelineCacheState();
     const prepareCompiledPipelineOwner = (
-      ctx: NonNullable<ReturnType<typeof buildPipelineContext>>,
+      ctx: NonNullable<ReturnType<typeof runBuildPipelineContext>>,
     ) => {
       const prepared =
         pipelinePreparation && ctx.device.createRenderPipelineAsync !== undefined
@@ -1474,7 +1445,9 @@ async function makeWebGPURenderer(
     // caller decides: `null` arrives only when no coverage source can discard
     // (see shadowCasterDepthOnly); otherwise the producer's fragment stage stays.
     const preparedSource = program.sourceReference;
-    const compileMaterialPipeline = (ctx: NonNullable<ReturnType<typeof buildPipelineContext>>) => {
+    const compileMaterialPipeline = (
+      ctx: NonNullable<ReturnType<typeof runBuildPipelineContext>>,
+    ) => {
       return runCompileMaterialPipeline(
         cacheKey,
         entry,
@@ -1495,7 +1468,7 @@ async function makeWebGPURenderer(
         passKind,
         {
           ...ctx,
-          stockStandardVertexProgram: materialShaderId === 'forgeax::default-standard-pbr',
+          stockStandardVertexProgram,
         },
       );
     };
@@ -1519,15 +1492,25 @@ async function makeWebGPURenderer(
     }
     retainStandardPipelineMaterialLayout(built.value, ctx.standardMaterialLayoutIndex);
     retainPipelineView(built.value, ctx.standardViewLayout);
+    retainPipelineRasterWindow(built.value, ctx.rasterWindowLayout);
     retainPipelinePrimitiveReflection(built.value, ctx.primitiveReflectionLayout);
     currentPipelineCacheState().materialShaderPipelineCache.set(cacheKey, built.value);
-    materialShaderPipelineSelections.set(built.value as object, {
-      contract: group2Contract,
-      ...(ctx.waterGroup2Layout === undefined ? {} : { waterLayout: ctx.waterGroup2Layout }),
-      ...(entry.receipt === undefined || materialShaderId === undefined
-        ? {}
-        : { selected: { material: materialShaderId, program, receipt: entry.receipt } }),
-    });
+    materialShaderPipelineSelections.set(
+      built.value as object,
+      materialPipelineSelection(
+        group2Contract,
+        ctx,
+        passKind,
+        {
+          entryPoints: program.entryPoints,
+          vertex: ctx.reflectedPositionOnly ? 'vs_position_only' : resolvedVertexEntry,
+          fragment: reflectedFragment,
+        },
+        entry.receipt === undefined || materialShaderId === undefined
+          ? undefined
+          : { material: materialShaderId, program, receipt: entry.receipt },
+      ),
+    );
     return built.value;
   };
   // A descriptor rejection (e.g. the mesh layout lacks a vertex input the

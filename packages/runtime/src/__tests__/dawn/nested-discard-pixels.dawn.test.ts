@@ -4,6 +4,7 @@ import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
   Camera,
   DirectionalLight,
   Materials,
@@ -14,10 +15,12 @@ import {
 } from '@forgeax/engine-render';
 import {
   attachRecorder,
+  bindingReadRequest,
   buildFrameModel,
   decodeTape,
   openReplay,
   type RecorderAttachment,
+  summarizePasses,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -162,7 +165,7 @@ function spawnReceiver(world: World, assets: Assets): void {
 }
 
 function antialiasOf(scene: Scene): number {
-  if (scene.temporal === true) return 3;
+  if (scene.temporal === true) return ANTIALIAS_TAA;
   return scene.alphaToCoverage === true ? ANTIALIAS_MSAA : ANTIALIAS_NONE;
 }
 
@@ -367,7 +370,7 @@ async function readColor(device: GPUDevice, target: GPUTexture): Promise<Uint8Ar
 const render = (scene: Scene): Promise<Uint8Array> =>
   withScene(scene, { frames: 1, finish: ({ device, target }) => readColor(device, target) });
 
-/** Fraction of the central region the scene-temporal target marks as uncovered (z < 0). */
+/** Check the resolved metadata against its input coverage, then measure raw discard. */
 async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
   const recorder = temporalCapture();
   return withScene(
@@ -379,11 +382,10 @@ async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
         if (capture === undefined) throw new Error('missing frame capture');
         const tape = decodeTape((await capture).unwrap().bytes).unwrap();
         const model = buildFrameModel(tape);
-        const producer = model.works.find((work) =>
-          work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_temporal'),
-        );
-        if (producer?.attachments === undefined) throw new Error('missing fs_temporal work');
-        const id = producer.attachments.colorViewHandleIds[0];
+        const projection = summarizePasses(model).find((pass) => pass.label === 'taa-resolve');
+        const producer = model.works.find((work) => work.passIndex === projection?.passIndex);
+        if (!producer?.attachments) throw new Error('missing Forward TAA metadata producer');
+        const id = producer.attachments.colorViewHandleIds[1];
         if (id === undefined) throw new Error('missing temporal attachment');
         const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
         const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
@@ -391,23 +393,60 @@ async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
           await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
         ).unwrap();
         try {
-          const temporal = (await replay.readResourceAtWork(id, producer.workIndex)).unwrap();
+          const [depthRead, paramsRead, temporalRead] = (
+            await replay.readAtWorks([
+              bindingReadRequest(producer, 1, 14).unwrap(),
+              bindingReadRequest(producer, 1, 8).unwrap(),
+              { resourceId: id, workIndex: producer.workIndex },
+            ])
+          ).unwrap();
+          const depth = depthRead?.unwrap();
+          const params = paramsRead?.unwrap();
+          const temporal = temporalRead?.unwrap();
+          if (!depth || !params || !temporal) throw new Error('missing TAA replay readback');
+          expect(['depth32float', 'depth32float-stencil8']).toContain(depth.format);
           expect(temporal.format).toBe('rgba16float');
-          const view = new DataView(
+          expect([depth.width, depth.height]).toEqual([SIZE, SIZE]);
+          expect([temporal.width, temporal.height]).toEqual([SIZE, SIZE]);
+          const input = new DataView(
+            depth.bytes.buffer,
+            depth.bytes.byteOffset,
+            depth.bytes.byteLength,
+          );
+          const uniform = new DataView(
+            params.bytes.buffer,
+            params.bytes.byteOffset,
+            params.bytes.byteLength,
+          );
+          const output = new DataView(
             temporal.bytes.buffer,
             temporal.bytes.byteOffset,
             temporal.bytes.byteLength,
           );
-          const width = temporal.width ?? SIZE;
-          const height = temporal.height ?? SIZE;
+          const jitterX = uniform.getFloat32(0, true) * SIZE;
+          const jitterY = uniform.getFloat32(4, true) * SIZE;
+          expect(uniform.getUint32(20, true)).toBe(0); // Native-scale TAA has no output-domain geometry.
+          const covered = (x: number, y: number) => input.getFloat32((y * SIZE + x) * 4, true) > 0;
           let uncovered = 0;
           let total = 0;
-          for (let y = Math.floor(height * 0.375); y < Math.floor(height * 0.625); y++)
-            for (let x = Math.floor(width * 0.375); x < Math.floor(width * 0.625); x++) {
+          let mismatched = 0;
+          for (let y = 24; y < 40; y++) {
+            for (let x = 24; x < 40; x++) {
               total++;
-              if (halfFloat.f16ToF32(view.getUint16((y * width + x) * 8 + 4, true)) < 0)
-                uncovered++;
+              const cx = Math.floor(x + 0.5 + jitterX);
+              const cy = Math.floor(y + 0.5 + jitterY);
+              if (!covered(cx, cy)) uncovered++;
+              // A legitimate stochastic survivor supplies velocity to the full 3x3 TAA footprint.
+              let expected = false;
+              for (let dy = -1; dy <= 1; dy++)
+                for (let dx = -1; dx <= 1; dx++) expected ||= covered(cx + dx, cy + dy);
+              const resolved = halfFloat.f16ToF32(output.getUint16((y * SIZE + x) * 8 + 4, true));
+              if (resolved >= 0 !== expected) mismatched++;
             }
+          }
+          expect(mismatched, 'TAA metadata coverage must match the jittered depth footprint').toBe(
+            0,
+          );
           return uncovered / total;
         } finally {
           (await replay.dispose()).unwrap();

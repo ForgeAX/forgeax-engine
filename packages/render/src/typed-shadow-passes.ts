@@ -108,11 +108,20 @@ export function shadowPipelinePreparationDemand(graph: RenderGraphBuilder<Render
   const views = shadowPreparationByGraph.get(graph);
   return views == null
     ? undefined
-    : (frame: RenderPipelineFrame, identity: ShadowViewIdentity): boolean =>
-        (views.get(shadowViewIdentityKey(identity)) ?? views.get(identity.kind))?.(
-          frame,
-          identity,
-        ) ?? true;
+    : (
+        frame: RenderPipelineFrame,
+        identity: ShadowViewIdentity,
+        includeStaticLayer = false,
+      ): boolean => {
+        const exact = views.get(shadowViewIdentityKey(identity));
+        const demand = exact ?? views.get(identity.kind);
+        if (demand === undefined || demand(frame, identity)) return true;
+        // A direct draw serves both physical layers of a logical light view.
+        // Dynamic atlas subgraphs only register a kind and have no static child.
+        if (!includeStaticLayer || exact === undefined) return false;
+        const layer = staticShadowViewIdentity(identity);
+        return views.get(shadowViewIdentityKey(layer))?.(frame, layer) ?? false;
+      };
 }
 
 function registerShadowPreparation(

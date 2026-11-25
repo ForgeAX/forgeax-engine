@@ -234,6 +234,28 @@ describe('RenderLights', () => {
     expect(spies.spawn).toHaveBeenCalledTimes(7);
   });
 
+  it('publishes only the changed cube face and preserves previously issued matrices', () => {
+    const { owner, reset, frame, spies } = fixture();
+    frame(lights([10], [20]));
+    const previous = owner.shadowViews;
+    const next = lights([10], [20]);
+    const face = 3;
+    const old = previous[face]?.matrix[12];
+    const projection = next.pointShadow[0];
+    if (projection === undefined) throw Error('point shadow missing');
+    projection.shadowMatrices[face * 16 + 12] = 91;
+    reset();
+    frame(next);
+    expect(spies.set.mock.calls.filter(([, component]) => component === ShadowView)).toHaveLength(
+      1,
+    );
+    expect(previous[face]?.matrix[12]).toBe(old);
+    expect(owner.shadowViews[face]?.matrix[12]).toBe(91);
+    owner.shadowViews.forEach((view, index) => {
+      if (index !== face) expect(view).toBe(previous[index]);
+    });
+  });
+
   it('rewrites only the moved light and its views', () => {
     const { owner, spies, reset, frame } = fixture();
     frame(lights([10, 11]));

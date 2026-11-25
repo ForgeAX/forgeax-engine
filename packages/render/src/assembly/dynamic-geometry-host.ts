@@ -10,6 +10,7 @@ import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { nowMs } from '@forgeax/engine-platform';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle } from '@forgeax/engine-types';
@@ -2414,11 +2415,11 @@ export function createDynamicGeometryHost(
         observePhase === undefined
           ? undefined
           : <T>(phase: RenderRecordPhase, action: () => T): T => {
-              const startMs = performance.now();
+              const startMs = nowMs();
               try {
                 return action();
               } finally {
-                observePhase(phase, startMs, performance.now());
+                observePhase(phase, startMs, nowMs());
               }
             };
       const resident = store.prepareMeshResidency(

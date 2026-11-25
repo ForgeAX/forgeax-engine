@@ -21,33 +21,31 @@ describe('material module prewarm and lazy pipeline agreement', () => {
   it.each([16, 32])('seeds the same source on a %i-texture device', async (limit) => {
     const entry = { source, paramSchema: [] };
     const variantSource = `${source}\n// published variant`;
+    const row = {
+      identifier: 'game::surface',
+      variants: [
+        { defines: { STYLE: true }, definesKey: 'STYLE=true', composedWgsl: variantSource },
+        ...[true, false].map((atmosphere) => ({
+          defines: { ATMOSPHERE_AVAILABLE: atmosphere },
+          definesKey: `ATMOSPHERE_AVAILABLE=${atmosphere}`,
+          composedWgsl: `// atmosphere ${atmosphere}\n${source}`,
+        })),
+        {
+          defines: { VISIBLE_SURFACE_AVAILABLE: true },
+          definesKey: 'VISIBLE_SURFACE_AVAILABLE=true',
+          composedWgsl: 'enable primitive_index;\n// opt-in receiver output',
+        },
+        {
+          defines: { COVERAGE_ONLY: true },
+          definesKey: 'COVERAGE_ONLY=true',
+          composedWgsl: '// depth-only optional producer',
+        },
+      ],
+    };
     const registry = {
       findMaterialArtifact: () => ok(entry),
-      materialShaderManifestEntry: () => undefined,
-      materialShaderManifestEntries: () =>
-        [
-          {
-            identifier: 'game::surface',
-            variants: [
-              { defines: { STYLE: true }, definesKey: 'STYLE=true', composedWgsl: variantSource },
-              ...[true, false].map((atmosphere) => ({
-                defines: { ATMOSPHERE_AVAILABLE: atmosphere },
-                definesKey: `ATMOSPHERE_AVAILABLE=${atmosphere}`,
-                composedWgsl: `// atmosphere ${atmosphere}\n${source}`,
-              })),
-              {
-                defines: { VISIBLE_SURFACE_AVAILABLE: true },
-                definesKey: 'VISIBLE_SURFACE_AVAILABLE=true',
-                composedWgsl: 'enable primitive_index;\n// opt-in receiver output',
-              },
-              {
-                defines: { COVERAGE_ONLY: true },
-                definesKey: 'COVERAGE_ONLY=true',
-                composedWgsl: '// depth-only optional producer',
-              },
-            ],
-          },
-        ][Symbol.iterator](),
+      materialShaderManifestEntry: (identifier: string) =>
+        identifier === row.identifier ? row : undefined,
     } as unknown as ShaderCatalog;
     const device = {
       caps: { storageBuffer: true, backendKind: 'webgpu' },

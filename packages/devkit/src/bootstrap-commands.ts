@@ -28,7 +28,7 @@ import {
   inspectRunDependencyClosure,
   localDependencyProtocol,
 } from './run-snapshot.js';
-import { checkSdkUpdate, findSdkContext } from './sdk.js';
+import { checkSdkUpdate, configureSdkBuildCache, findSdkContext, type SdkContext } from './sdk.js';
 import {
   agentOnboarding,
   MINIMUM_SUPPORTED_PNPM,
@@ -202,51 +202,49 @@ async function registerInitializedProject(
   return registered.ok ? result : registered;
 }
 
+async function prepareInitializedProject(sdk: SdkContext, root: string): Promise<void> {
+  const template = sdk.templates.get('empty');
+  if (template === undefined) throw new Error('sdk-bootstrap-template-missing');
+  if (!sdk.embedded)
+    await copyFile(resolve(template, 'pnpm-lock.yaml'), resolve(root, 'pnpm-lock.yaml'));
+  await copyFile(resolve(template, 'pnpm-workspace.yaml'), resolve(root, 'pnpm-workspace.yaml'));
+  try {
+    await readFile(resolve(root, '.npmrc'), 'utf8');
+  } catch (cause) {
+    if (!isMissingPathError(cause)) throw cause;
+    try {
+      await copyFile(resolve(template, '.npmrc'), resolve(root, '.npmrc'));
+    } catch (templateCause) {
+      if (!isMissingPathError(templateCause)) throw templateCause;
+    }
+  }
+  await copySdkSkills(sdk, root);
+  await configureSdkBuildCache(sdk.root, root);
+  await installProjectSkills(root, sdk.manifest);
+  await configureSdkStore(
+    root,
+    sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
+  );
+}
+
 export async function initCommand(options: InitOptions = {}): Promise<CommandResult<unknown>> {
   try {
     const sdk = await findSdkContext();
     const root = await canonicalProspectivePath(options.root ?? process.cwd());
-    if (sdk !== undefined && root === (await canonicalProspectivePath(sdk.root))) {
+    if (sdk !== undefined && !sdk.embedded && root === (await canonicalProspectivePath(sdk.root))) {
       return sdkInitCommand(sdk, options);
     }
     const facts = await readProjectFacts(root);
     if (!facts.ok) return facts;
-    const plan = createInitPlan(facts.value, sdk?.manifest);
+    const plan = createInitPlan(facts.value, sdk?.manifest, sdk?.embedded);
     if (!plan.ok) return plan;
-    if (sdk !== undefined && options.dryRun !== true) {
+    if (sdk !== undefined && !sdk.embedded && options.dryRun !== true) {
       const initialized = await requireSdkInitialization(sdk);
       if (!initialized.ok) return initialized;
     }
     const applied = await applyInitPlan(facts.value, plan.value, options);
     if (!applied.ok || options.dryRun === true) return applied;
-    if (sdk !== undefined) {
-      const template = sdk.templates.get('empty');
-      if (template === undefined) throw new Error('sdk-bootstrap-template-missing');
-      await copyFile(
-        resolve(template, 'pnpm-lock.yaml'),
-        resolve(facts.value.root, 'pnpm-lock.yaml'),
-      );
-      await copyFile(
-        resolve(template, 'pnpm-workspace.yaml'),
-        resolve(facts.value.root, 'pnpm-workspace.yaml'),
-      );
-      try {
-        await readFile(resolve(facts.value.root, '.npmrc'), 'utf8');
-      } catch (cause) {
-        if (!isMissingPathError(cause)) throw cause;
-        try {
-          await copyFile(resolve(template, '.npmrc'), resolve(facts.value.root, '.npmrc'));
-        } catch (templateCause) {
-          if (!isMissingPathError(templateCause)) throw templateCause;
-        }
-      }
-      await copySdkSkills(sdk, facts.value.root);
-      await installProjectSkills(facts.value.root, sdk.manifest);
-      await configureSdkStore(
-        facts.value.root,
-        sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
-      );
-    }
+    if (sdk !== undefined) await prepareInitializedProject(sdk, facts.value.root);
     if (options.install === false) {
       return await registerInitializedProject(facts.value.root, applied);
     }
@@ -255,7 +253,9 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
         ? undefined
         : await canonicalProspectivePath(sdk.store);
     const installArgs =
-      sdk === undefined ? ['install', '--frozen-lockfile=false'] : sdkProjectInstallArgs(store);
+      sdk === undefined
+        ? ['install', '--no-frozen-lockfile']
+        : sdkProjectInstallArgs(store, sdk.embedded === true);
     await execFileCommand('pnpm', installArgs, {
       cwd: facts.value.root,
       env: { ...process.env, CI: 'true' },
@@ -267,64 +267,67 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
   }
 }
 
+async function selectInstalledTemplate(sdk: SdkContext, requested: NewOptions['template']) {
+  if (requested === undefined) {
+    const available = [...sdk.templates.keys()].sort();
+    return failCommand(
+      'sdk-template-required',
+      'forgeax project new to select exactly one template with --template',
+      `Choose one of: ${available.join(', ')}.`,
+      { templates: available },
+    );
+  }
+  const templateId = requested;
+  const template = sdk.templates.get(templateId);
+  if (template === undefined) {
+    return failCommand(
+      'sdk-template-not-found',
+      'a template ID provided by the installed Engine',
+      `Choose one of: ${[...sdk.templates.keys()].sort().join(', ')}.`,
+      { template: templateId },
+    );
+  }
+  const descriptor = await readTemplateDescriptor(template);
+  if (!descriptor.ok) return descriptor;
+  if (descriptor.value.id !== templateId) {
+    return failCommand(
+      'template-invalid',
+      `template.json#id to match the selected template ${templateId}`,
+      'Repair the descriptor identity or refresh the Engine before creating a project.',
+      { id: descriptor.value.id },
+    );
+  }
+  return completeCommand({ templateId, template, descriptor: descriptor.value });
+}
+
 export async function newCommand(options: NewOptions = {}): Promise<CommandResult<unknown>> {
   try {
     const sdk = await findSdkContext();
     if (sdk === undefined) {
       return failCommand(
         'sdk-context-missing',
-        'forgeax project new to run from an unpacked ForgeAX SDK',
-        'Install the matching SDK outside the game: forgeax sdk install --root <sdk-root>; ' +
-          'then run node <sdk-root>/bin/forgeax.mjs project init --root <sdk-root> and ' +
-          `node <sdk-root>/bin/forgeax.mjs project new <game-root> --template ${options.template ?? 'empty'}. ` +
-          'For an existing SDK, run its bin/forgeax.mjs entry ' +
-          'or set FORGEAX_SDK_ROOT to its root.',
+        'a packaged ForgeAX Engine with project templates',
+        'Install @forgeax/engine globally and rerun forgeax project new. For a previous offline release use its bin/forgeax.mjs entry.',
         {},
       );
     }
     const root = resolve(options.root ?? process.cwd());
     if (
       isFilesystemPathWithin(
-        await canonicalProspectivePath(sdk.root),
+        await canonicalProspectivePath(sdk.embedded ? dirname(sdk.root) : sdk.root),
         await canonicalProspectivePath(root),
       )
     ) {
       return failCommand(
         'project-target-inside-sdk',
-        'forgeax project new target to be outside the unpacked SDK root',
-        'Choose a sibling directory or an absolute path outside the SDK.',
+        'forgeax project new target to be outside the Engine installation',
+        'Choose a sibling directory or an absolute path outside the Engine installation.',
         { root, sdkRoot: sdk.root },
       );
     }
-    if (options.template === undefined) {
-      const available = [...sdk.templates.keys()].sort();
-      return failCommand(
-        'sdk-template-required',
-        'forgeax project new to select exactly one template with --template',
-        `Choose one of: ${available.join(', ')}.`,
-        { templates: available },
-      );
-    }
-    const templateId = options.template;
-    const template = sdk.templates.get(templateId);
-    if (template === undefined) {
-      return failCommand(
-        'sdk-template-not-found',
-        'a template id declared by sdk-manifest.json',
-        `Choose one of: ${[...sdk.templates.keys()].sort().join(', ')}.`,
-        { template: templateId },
-      );
-    }
-    const descriptor = await readTemplateDescriptor(template);
-    if (!descriptor.ok) return descriptor;
-    if (descriptor.value.id !== templateId) {
-      return failCommand(
-        'template-invalid',
-        `template.json#id to match the selected template ${templateId}`,
-        'Repair the descriptor identity or refresh the SDK before creating a project.',
-        { id: descriptor.value.id },
-      );
-    }
+    const selected = await selectInstalledTemplate(sdk, options.template);
+    if (!selected.ok) return selected;
+    const { templateId, template, descriptor } = selected.value;
     const occupancy = await directoryOccupancy(root);
     if (occupancy === 'occupied') {
       return failCommand(
@@ -336,7 +339,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
     }
     const identity = resolveProjectIdentity({
       targetBasename: basename(root),
-      descriptor: descriptor.value,
+      descriptor,
       overrides: {
         ...(options.id === undefined ? {} : { id: options.id }),
         ...(options.name === undefined ? {} : { name: options.name }),
@@ -349,11 +352,15 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
         root,
         template: templateId,
         identity: identity.value,
-        sdkVersion: sdk.manifest.sdkVersion,
+        ...(sdk.embedded
+          ? { engineVersion: sdk.manifest.sdkVersion }
+          : { sdkVersion: sdk.manifest.sdkVersion }),
       });
     }
-    const initialized = await requireSdkInitialization(sdk);
-    if (!initialized.ok) return initialized;
+    if (!sdk.embedded) {
+      const initialized = await requireSdkInitialization(sdk);
+      if (!initialized.ok) return initialized;
+    }
     const parent = dirname(root);
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(resolve(parent, `.${basename(root)}.forgeax-staging-`));
@@ -367,6 +374,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
       }
       await writeProjectIdentity(staging, identity.value);
       await copySdkSkills(sdk, staging);
+      await configureSdkBuildCache(sdk.root, staging);
       const store = sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store);
       await configureSdkStore(staging, store);
       return await publishPreparedDirectory(
@@ -376,21 +384,22 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
         async () => {
           // Create junctions and install packages only at the final project path.
           await installProjectSkills(root, sdk.manifest);
-          await execFileCommand('pnpm', sdkProjectInstallArgs(store), {
+          await execFileCommand('pnpm', sdkProjectInstallArgs(store, sdk.embedded === true), {
             cwd: root,
             env: { ...process.env, CI: 'true' },
             maxBuffer: 16 * 1024 * 1024,
           });
-          const sdkUpdate = await checkSdkUpdate(sdk.manifest.sdkVersion);
+          const update = await checkSdkUpdate(sdk.manifest.sdkVersion, sdk.embedded === true);
           return registerInitializedProject(
             root,
             completeCommand({
               root,
               template: templateId,
               identity: identity.value,
-              sdkVersion: sdk.manifest.sdkVersion,
+              ...(sdk.embedded
+                ? { engineVersion: sdk.manifest.sdkVersion, engineUpdate: update }
+                : { sdkVersion: sdk.manifest.sdkVersion, sdkUpdate: update }),
               onboarding: agentOnboarding(sdk, root),
-              sdkUpdate,
             }),
           );
         },

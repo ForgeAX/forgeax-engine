@@ -104,7 +104,10 @@ it.each(
       ?.find((entry) => entry.name === name)
       ?.bindings.filter(({ group }) => group === groupId)
       .map(({ binding }) => binding);
-  const overflowMaterialBindings = [0, 1, 2, 3, 4, 5, 6, 7];
+  const overflowMaterialBindings = [0, 1, 2, 3, 4];
+  if (defines.DEFERRED_SCREEN_AO_AVAILABLE === true) overflowMaterialBindings.push(5);
+  overflowMaterialBindings.push(6);
+  if (defines.DEFERRED_SCREEN_AO_AVAILABLE === true) overflowMaterialBindings.push(7);
   if (defines.ENV_BRDF_LUT === true) overflowMaterialBindings.push(10);
   for (const entry of [
     'fs_standard_deferred_reflection_overflow',

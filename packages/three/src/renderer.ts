@@ -1,4 +1,5 @@
 import { createRhiInstrumentation } from '@forgeax/engine-app';
+import type { EntityHandle } from '@forgeax/engine-ecs';
 import {
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
@@ -10,6 +11,10 @@ import {
   buildCubeCameraFaceViews,
   type FrameReceipt,
   type FrameReceiptObservation,
+  MeshRenderer,
+  Outline,
+  type OutlineData,
+  OutlineOcclusionValue,
   PlanarReflection,
   type PlanarReflectionData,
   type Renderer,
@@ -63,6 +68,7 @@ import {
   ExternalTextures,
   isExternalTexture,
 } from './external-textures';
+import { type ThreeFullscreenProgram, ThreeFullscreenPrograms } from './fullscreen-pass';
 import { prepareMaterialPrograms } from './material-programs';
 import { createThreePipeline } from './pipeline';
 import { renderThreePostProcessing, type ThreePostProcessing } from './post-processing';
@@ -79,6 +85,7 @@ export interface WebGPURendererParameters extends Omit<UpstreamParameters, 'canv
     readonly bundler?: BundlerOptions;
     /** Build-produced publications. A pending load can overlap device initialization. */
     readonly materialPrograms?: readonly string[] | PromiseLike<readonly string[]>;
+    readonly fullscreenPrograms?: readonly ThreeFullscreenProgram[];
   };
 }
 
@@ -92,8 +99,24 @@ export interface ThreeFrameCapture {
 
 /** Settings for a native capture owned by a projected display camera. */
 export type ThreePlanarReflectionOptions = Partial<Omit<PlanarReflectionData, 'target'>>;
+/** Native selection outline authored with original Three scene objects. */
+export interface ThreeOutlineOptions {
+  readonly objects: readonly Object3D[];
+  readonly width?: number;
+  readonly visibleColor?: ColorRepresentation;
+  readonly hiddenColor?: ColorRepresentation;
+  readonly occlusion?: keyof typeof OutlineOcclusionValue;
+}
+
+interface ThreeOutlineSelection {
+  readonly objects: readonly Object3D[];
+  readonly style: Partial<OutlineData>;
+}
+
+const configureOutline = Symbol('configureOutline');
 const configurePlanarReflection = Symbol('configurePlanarReflection');
 const readFrame = Symbol('readFrame');
+const readFrameReceipt = Symbol('readFrameReceipt');
 
 export interface ThreeFrameObservation {
   readonly receipt: FrameReceipt;
@@ -107,6 +130,43 @@ export function readThreeFrame(renderer: WebGPURenderer): ThreeFrameObservation 
   return renderer[readFrame]();
 }
 
+export interface ThreeFramePacingOptions {
+  /** Maximum outstanding display receipts. Defaults to two. */
+  readonly maxFramesInFlight?: number;
+}
+
+/** Admit a synchronous display draw on a host tick when a frame credit is available. */
+export function paceThreeDisplayFrames<Args extends unknown[]>(
+  renderer: WebGPURenderer,
+  draw: (...args: Args) => void,
+  { maxFramesInFlight = 2 }: ThreeFramePacingOptions = {},
+): (...args: Args) => boolean {
+  if (!Number.isSafeInteger(maxFramesInFlight) || maxFramesInFlight < 1)
+    invalid('maxFramesInFlight must be a positive safe integer').unwrap();
+  let pending = 0;
+  let submitting = false;
+  const release = () => {
+    pending -= 1;
+  };
+  return (...args) => {
+    if (submitting || pending >= maxFramesInFlight) return false;
+    const previous = renderer[readFrameReceipt]();
+    let receipt: FrameReceipt | undefined;
+    submitting = true;
+    try {
+      draw(...args);
+    } finally {
+      submitting = false;
+      receipt = renderer[readFrameReceipt]();
+      if (receipt !== undefined && receipt !== previous) {
+        pending += 1;
+        void (receipt.creditCompleted ?? receipt.completed).then(release, release);
+      }
+    }
+    return receipt !== previous && receipt?.presentation === 'ready';
+  };
+}
+
 /** ForgeaX integration entry; source cameras retain the upstream Three contract. */
 export function setThreePlanarReflection(
   renderer: WebGPURenderer,
@@ -114,6 +174,15 @@ export function setThreePlanarReflection(
   options: ThreePlanarReflectionOptions | null,
 ): void {
   renderer[configurePlanarReflection](camera, options);
+}
+
+/** Use the native regular outline on one projected display camera. */
+export function setThreeOutline(
+  renderer: WebGPURenderer,
+  camera: Camera,
+  options: ThreeOutlineOptions | null,
+): void {
+  renderer[configureOutline](camera, options);
 }
 
 function value<T>(
@@ -155,6 +224,37 @@ function hasBeforeRender(scene: Object3D): boolean {
 
 /** Three's authoring objects, one Forgeax Renderer, and no upstream GPU renderer. */
 export class WebGPURenderer {
+  private readonly outlines = new WeakMap<Camera, ThreeOutlineSelection>();
+  private readonly appliedOutlines = new WeakMap<
+    Camera,
+    {
+      readonly selection: ThreeOutlineSelection;
+      readonly entity: EntityHandle;
+      readonly members: readonly EntityHandle[];
+    }
+  >();
+
+  [configureOutline](camera: Camera, options: ThreeOutlineOptions | null): void {
+    if (options === null) {
+      this.outlines.delete(camera);
+      return;
+    }
+    const { objects, width, visibleColor, hiddenColor, occlusion } = options;
+    this.outlines.set(camera, {
+      objects: [...objects],
+      style: {
+        ...(width === undefined ? {} : { width }),
+        ...(visibleColor === undefined
+          ? {}
+          : { visibleColor: new Float32Array(new Color(visibleColor).toArray()) }),
+        ...(hiddenColor === undefined
+          ? {}
+          : { hiddenColor: new Float32Array(new Color(hiddenColor).toArray()) }),
+        ...(occlusion === undefined ? {} : { occlusion: OutlineOcclusionValue[occlusion] }),
+      },
+    });
+  }
+
   private planarReflections?: WeakMap<Camera, ThreePlanarReflectionOptions>;
 
   [configurePlanarReflection](camera: Camera, options: ThreePlanarReflectionOptions | null): void {
@@ -217,6 +317,7 @@ export class WebGPURenderer {
   outputColorSpace: string = SRGBColorSpace;
   private readonly recorder: RecorderAttachment;
   private readonly initializing: Promise<void>;
+  private readonly fullscreenPrograms: ThreeFullscreenPrograms;
   private readonly profiler: RendererOptions['profiler'];
   private runtime:
     | {
@@ -288,6 +389,7 @@ export class WebGPURenderer {
     this.canvasTarget = new CanvasTarget(this.domElement);
     this.recorder = attachRecorder(parameters.forgeax?.backend ?? webgpu).unwrap();
     this.profiler = parameters.forgeax?.renderer?.profiler;
+    this.fullscreenPrograms = new ThreeFullscreenPrograms(parameters.forgeax?.fullscreenPrograms);
     this.initializing = this.initialize(
       parameters.forgeax,
       output === HalfFloatType ? 'rgba16float' : 'rgba8unorm',
@@ -316,6 +418,7 @@ export class WebGPURenderer {
           this.domElement,
           {
             ...options?.renderer,
+            features: [...(options?.renderer?.features ?? []), ...this.fullscreenPrograms.features],
             pipeline: createThreePipeline(format),
             rhi: this.recorder.backend.rhi,
             rhiInstrumentation: createRhiInstrumentation(this.recorder),
@@ -761,10 +864,14 @@ export class WebGPURenderer {
     };
   }
 
+  [readFrameReceipt](): FrameReceipt | undefined {
+    return this.runtime === undefined || this.disposed ? undefined : this.receipt;
+  }
+
   [readFrame](): ThreeFrameObservation | undefined {
-    const receipt = this.receipt;
+    const receipt = this[readFrameReceipt]();
     const native = this.runtime?.native;
-    if (receipt === undefined || native === undefined || this.disposed) return undefined;
+    if (receipt === undefined || native === undefined) return undefined;
     return { receipt, observe: (request) => native.observe(receipt, request) };
   }
 
@@ -1288,8 +1395,47 @@ export class WebGPURenderer {
       },
     );
     this.projectCameraEffects(projection, entity, camera, post);
+    this.projectOutline(projection, entity, camera);
     this.projectComposerProfile(native, post);
+    this.fullscreenPrograms.select(post?.fullscreen);
     return entity;
+  }
+
+  private projectOutline(projection: SceneProjection, entity: EntityHandle, camera: Camera): void {
+    const world = projection.world;
+    const selection = this.renderTarget === null ? this.outlines.get(camera) : undefined;
+    const previous = this.appliedOutlines.get(camera);
+    if (selection === undefined && previous === undefined) return;
+    const handles = new Set<EntityHandle>();
+    for (const root of selection?.objects ?? []) {
+      root.traverseVisible((object) => {
+        const handle = projection.entityFor(object);
+        if (handle !== undefined && world.hasComponent(handle, MeshRenderer)) handles.add(handle);
+      });
+    }
+    const hasOutline = world.hasComponent(entity, Outline);
+    if (selection === undefined || handles.size === 0) {
+      if (hasOutline) world.removeComponent(entity, Outline).unwrap();
+      this.appliedOutlines.delete(camera);
+      return;
+    }
+    if (
+      hasOutline &&
+      previous?.entity === entity &&
+      previous.selection === selection &&
+      previous.members.length === handles.size &&
+      previous.members.every((member) => handles.has(member))
+    )
+      return;
+    const members = [...handles];
+    const data = { ...selection.style, entities: members };
+    if (hasOutline && previous?.selection === selection) {
+      world.set(entity, Outline, { entities: members }).unwrap();
+    } else {
+      if (hasOutline) world.removeComponent(entity, Outline).unwrap();
+      world.addComponent(entity, { component: Outline, data }).unwrap();
+    }
+    this.appliedOutlines.set(camera, { selection, entity, members });
   }
 
   private projectComposerProfile(

@@ -26,6 +26,7 @@ import {
   AmbientLight,
   type Camera,
   DirectionalLight,
+  HemisphereLight,
   type Material,
   type Object3D,
   PointLight,
@@ -115,7 +116,14 @@ export async function renderReference(
       resources.copy(source, copy);
     }
   }
-  const constructors = { AmbientLight, DirectionalLight, PointLight, SpotLight, RectAreaLight };
+  const constructors = {
+    AmbientLight,
+    DirectionalLight,
+    HemisphereLight,
+    PointLight,
+    SpotLight,
+    RectAreaLight,
+  };
   const replaceLights = (parent: Object3D) => {
     for (const child of [...parent.children]) {
       const Constructor =

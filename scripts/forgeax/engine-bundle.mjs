@@ -161,13 +161,23 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       const manifest = JSON.parse(await readFile(path, 'utf8'));
       // Development dependencies do not belong to the delivered runtime graph.
       delete manifest.devDependencies;
-      // The Engine root owns optional registry edges. Keeping the same edge
-      // on a bundled parent makes npm's nested installer treat the missing leaf
-      // as bundled too, so it skips fetching the native binding entirely.
-      for (const [name, target] of node.dependencies) {
-        const owner = external.get(name);
-        if (owner?.node === target && owner.optional && manifest.optionalDependencies) {
-          delete manifest.optionalDependencies[name];
+      // The Engine manifest owns the exact registry edges lifted out of its
+      // archive. Repeating a lifted edge under a bundled owner lets npm mark
+      // its absent leaf as already bundled during a default global install.
+      for (const [name, { node: target }] of external) {
+        const direct = node.dependencies.get(name);
+        const resolvedOptionalPeer =
+          direct === undefined &&
+          manifest.peerDependenciesMeta?.[name]?.optional === true &&
+          (await dependencyRoot(node.source, name)) === target.source;
+        if (direct !== target && !resolvedOptionalPeer) continue;
+        for (const field of [
+          'dependencies',
+          'optionalDependencies',
+          'peerDependencies',
+          'peerDependenciesMeta',
+        ]) {
+          if (manifest[field] !== undefined) delete manifest[field][name];
         }
       }
       await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);

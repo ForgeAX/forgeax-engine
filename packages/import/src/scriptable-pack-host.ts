@@ -168,6 +168,7 @@ export interface ScriptablePackProductionOptions {
   readonly buildCacheRoot?: string;
   /** Project root that Pack-product cache keys spell source paths relative to. */
   readonly cacheIdentityRoot?: string;
+  readonly buildCacheSeedRoot?: string;
   readonly declaredExternalOutputs?: readonly ScriptablePackStagedOutput[];
   readonly assetSource?: ScriptablePackAssetSnapshotSource;
   /** Build-time producers used for custom or otherwise uncooked asset rows. */
@@ -850,6 +851,7 @@ async function createProductionCaches(
   const product = await createScriptablePackProductCache({
     root: options.buildCacheRoot,
     ...identity,
+    ...(options.buildCacheSeedRoot === undefined ? {} : { seedRoot: options.buildCacheSeedRoot }),
     outputVersions,
     cookers: options.cookers ?? [],
   });

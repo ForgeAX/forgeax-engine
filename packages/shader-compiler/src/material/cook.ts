@@ -1937,6 +1937,10 @@ const WATER_FRAGMENT_OUTPUTS: Readonly<
   Record<string, keyof typeof SINGLE_LAYER_WATER_PASS_OUTPUTS>
 > = {
   fs_water_prepass: 'depth',
+  fs_water_coverage: 'coverage',
+  fs_water_depth_velocity: 'depth-velocity',
+  fs_water_forward_color_temporal: 'forward-color-temporal',
+  fs_water_forward_color_velocity: 'forward-color-velocity',
   fs_water_visibility: 'visibility',
   fs_water_color: 'color',
   fs_water_forward_color: 'forward-color',

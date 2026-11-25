@@ -60,6 +60,8 @@ interface SourceMaterialReady {
 
 export interface MaterialRenderPassProjection {
   readonly name: string;
+  /** Alternate raster state using a declared source-template pass. */
+  readonly templatePass?: string;
   readonly module: string;
   readonly outputs?: import('@forgeax/engine-types').MaterialPass['outputs'];
   readonly vertexEntry?: string;
@@ -511,7 +513,7 @@ export function bindMaterialTemplateProjection(
       new TextEncoder().encode(
         canonicalJson([
           identity,
-          pass.name,
+          pass.templatePass ?? pass.name,
           pass.module,
           materialProgramContextKey(context),
           address,
@@ -523,7 +525,7 @@ export function bindMaterialTemplateProjection(
     const metadata = {
       module: pass.module,
       templateIdentity: identity,
-      templatePass: pass.name,
+      templatePass: pass.templatePass ?? pass.name,
       paramSchema: schema,
       ...(program.abi === undefined ? {} : { abi: program.abi, receipt: program.abi }),
     };
@@ -551,9 +553,10 @@ export function bindMaterialTemplateProjection(
   const select: ResolveTemplate = (passName, context, address, vertexColorAvailable) => {
     const pass = passes.find(({ name }) => name === passName);
     if (pass === undefined) return undefined;
+    const templatePass = pass.templatePass ?? passName;
     const selection = JSON.stringify([
       identity,
-      passName,
+      templatePass,
       materialProgramContextKey(context),
       vertexColorAvailable,
       address,
@@ -567,7 +570,7 @@ export function bindMaterialTemplateProjection(
           sources: template.sources,
         })
         .unwrap();
-      const request = { pass: passName, context, vertexColorAvailable };
+      const request = { pass: templatePass, context, vertexColorAvailable };
       const legacy =
         prepared.selectAddress === undefined ? prepared.select(request).unwrap() : undefined;
       const selected = prepared.selectAddress?.(request, address).unwrap();
@@ -589,7 +592,12 @@ export function bindMaterialTemplateProjection(
     select,
     owns(pass, key) {
       const metadata = artifactRegistry.get(key)?.metadata;
-      return metadata?.templateIdentity === identity && metadata.templatePass === pass;
+      const declared = passes.find(({ name }) => name === pass);
+      return (
+        declared !== undefined &&
+        metadata?.templateIdentity === identity &&
+        metadata.templatePass === (declared.templatePass ?? declared.name)
+      );
     },
   });
 }

@@ -46,18 +46,17 @@ describe('SSR luminance weighting (Unreal SSRTReflections)', () => {
       'return rgb / (1.0 + max(0.0, ssrLuminance(rgb)));',
     );
     const evaluate = body(trace, 'evaluateSsrTrace');
-    // Exactly one published color write carries hit radiance, and it is weighted.
-    expect(evaluate.match(/output\.color = vec4<f32>\(ssrLuminanceWeight\(/g)).toHaveLength(1);
-    expect(evaluate).not.toMatch(/output\.color = vec4<f32>\(hitColor/);
+    expect(evaluate.match(/ssrLuminanceWeight\(color\)/g)).toHaveLength(1);
+    expect(evaluate).toContain('accum += vec4f(ssrLuminanceWeight(color) * weight, weight);');
     expect(evaluate).toContain(
-      'output.color = vec4<f32>(ssrLuminanceWeight(color), confidence * hitSample.coverage);',
+      'output.color = vec4f(accum.rgb / max(accum.a, 1e-6), fade * accum.a / f32(rays));',
     );
     // The finite check still sees raw radiance so NaN/Inf hits are rejected first.
     expect(evaluate.indexOf('isFinite(color.r)')).toBeLessThan(
       evaluate.indexOf('ssrLuminanceWeight(color)'),
     );
     // The bilinear hit reconstruction itself is not weighted (one ray, one weight).
-    expect(body(trace, 'sampleSsrHit')).not.toContain('ssrLuminanceWeight');
+    expect(body(trace, 'ssrPreviousHitUv')).not.toContain('ssrLuminanceWeight');
   });
 
   it('inverts the weight in compose after the confidence divide and every filter', () => {

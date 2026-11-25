@@ -1,4 +1,12 @@
-import type { BindGroupLayout } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  BindGroupDescriptor,
+  BindGroupLayout,
+  Buffer,
+  RenderPipeline,
+  Sampler,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import {
   ShaderRegistry,
   STANDARD_PIPELINE_PARAM_SCHEMA,
@@ -16,7 +24,12 @@ import {
   standardInputField,
 } from '../pbr-pipeline';
 import type { PipelineSpec } from '../pipeline-spec';
-import { projectPrimitiveReflectionLayout } from '../reflection/primitive-bindings';
+import {
+  createPrimitiveBindGroup,
+  primitiveForPipeline,
+  projectPrimitiveReflectionLayout,
+  retainPipelinePrimitiveReflection,
+} from '../reflection/primitive-bindings';
 
 it('fits the cooked physical carrier, extended view and clustered SSAO in the device budget', () => {
   const textureFields = new Set([
@@ -237,4 +250,37 @@ it('keeps IBL intact when shared storage extends the material user region', () =
       8,
     ),
   ]).toEqual([14]);
+});
+
+it('projects only the occupied reflection slots for each primitive layout', () => {
+  const issued: BindGroupDescriptor[] = [];
+  const device = {
+    createBindGroupLayout: () => ok({} as BindGroupLayout),
+    createBindGroup: (descriptor: BindGroupDescriptor) => {
+      issued.push(descriptor);
+      return ok({} as BindGroup);
+    },
+  };
+  const layout = {} as BindGroupLayout;
+  const geometry = createPrimitiveBindGroup(device, { layout, entries: [] }).unwrap();
+  const reflection = {
+    prefilterView: {} as TextureView,
+    prefilterSampler: {} as Sampler,
+    intensityBuffer: {} as Buffer,
+  };
+  for (const mask of [1, 2, 3, 4, 5, 6, 7]) {
+    const pipeline = {} as RenderPipeline;
+    retainPipelinePrimitiveReflection(
+      pipeline,
+      projectPrimitiveReflectionLayout(device, layout, [], mask),
+    );
+    const first = primitiveForPipeline(device, pipeline, geometry, reflection);
+    expect(issued.at(-1)?.entries.map((entry) => entry.binding)).toEqual(
+      [32, 33, 34].filter((_, i) => mask & (1 << i)),
+    );
+    const changed = { ...reflection, prefilterSampler: {} as Sampler };
+    expect(primitiveForPipeline(device, pipeline, geometry, changed) === first).toBe(
+      (mask & 2) === 0,
+    );
+  }
 });

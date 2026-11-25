@@ -30,7 +30,8 @@ function nativeSurface() {
 }
 
 test('native binding instantiates the canonical WASM without browser globals and admits exact identities', async t => {
-  const { module, bytes } = await fixture(t);
+  const { module, bytes, directory } = await fixture(t);
+  await assert.rejects(module.nativeWgpuReady(), { operation: 'host-readiness' });
   const { canvas, context } = nativeSurface();
   let calls = 0;
   const host = {
@@ -49,7 +50,9 @@ test('native binding instantiates the canonical WASM without browser globals and
   };
   const first = module.initializeNativeWgpu(host);
   assert.equal(first, module.initializeNativeWgpu(host));
-  await first;
+  assert.equal(first, module.nativeWgpuReady());
+  const { canonical } = JSON.parse(await readFile(join(directory, 'provenance.json'), 'utf8'));
+  assert.equal(await module.getCompilerFingerprint(), canonical.compilerFingerprint);
   const parsed = module.parse('@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }');
   parsed.free();
   assert.equal(calls, 1);

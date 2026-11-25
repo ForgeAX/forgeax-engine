@@ -106,11 +106,11 @@ export function standardPbrInputs(
   device: RhiDevice,
   shader: ShaderModule,
   viewLayout: BindGroupLayout,
+  materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap(),
 ): Pick<
   Parameters<GpuDrivenProduction['prepare']>[0],
   'materialArtifact' | 'materialPipelineState'
 > {
-  const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const meshLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const instancesLayout = device
     .createBindGroupLayout({
@@ -311,7 +311,7 @@ export function admitGpuFixture(
           clustered: input.clustered ?? false,
           reflectionFallback: false,
           probeBlend: input.probeBlendRecordBuffer !== undefined,
-          shadowViews: input.shadowViews ?? false,
+          demand: input.shadowViews ? 'forward-and-shadow' : 'forward',
         })
       : {
           batchExecutions: input.batchExecutions,

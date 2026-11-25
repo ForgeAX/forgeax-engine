@@ -1,5 +1,6 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
+import { MaterialBgAssemblyCache } from '../../record/material-bg-assembly-cache';
 import { RenderScenePublishOrder, RenderViewFrameOrder } from '../../system-order';
 import { TemporalViewHistory } from '../../temporal/frame';
 import { ViewRecorder } from '../render-views';
@@ -28,6 +29,7 @@ export function withInertTemporal<T extends object>(
   // A test's frame state keeps its identity and gains the inert temporal fields it omits.
   const frameState = Object.assign(
     {
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       temporalFrameTransaction: { inspect: () => ({ staged: false }) },
       temporalView: new TemporalViewHistory(),
     },

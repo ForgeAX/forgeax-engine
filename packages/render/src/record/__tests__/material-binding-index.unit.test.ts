@@ -90,6 +90,51 @@ describe('persistent material reader membership', () => {
     expect(owner.work).toEqual(storage);
   });
 
+  it('pins accepted versions to physical material slots through rebinding and frame replacement', () => {
+    const rows = [row(81, ab), row(82, cc)];
+    const main = capture(new MaterialRelations(), rows);
+    const index = new MaterialBindingIndex();
+    const old = index.build([main], [], accepted, rows).accepted;
+    expect(old?.frame).toBe(accepted);
+    expect(old?.slots[1]).toBe(accepted.get(b));
+    const replacement = accepted.with(b, 1, { ...b.snapshot, roughness: 0.7 });
+    const current = index.build([main], [], replacement, rows).accepted;
+    expect(current?.frame).toBe(replacement);
+    expect(current?.slots[1]).toBe(replacement.get(b));
+    expect(old?.slots[1]?.snapshot).toBe(b.snapshot);
+    const borrowed = new Proxy(replacement, {});
+    expect(index.build([main], [], borrowed, rows).accepted).toBeUndefined();
+  });
+
+  it('consumes issued caster relations once and re-reads projected fallback rows', () => {
+    const primary = [row(2, ab)];
+    const shadows = Array.from({ length: 130 }, (_, i) => row(i + 3, cc));
+    const main = capture(new MaterialRelations(), primary);
+    const owner = new MaterialRelations();
+    const caster = capture(owner, shadows);
+    const index = new MaterialBindingIndex();
+    const writes = vi.spyOn(MaterialRelations.prototype, 'write');
+    try {
+      const plan = index.build([main], shadows, accepted, primary, caster);
+      expect(writes).not.toHaveBeenCalled();
+      expectOrdinary(plan, [...primary, ...shadows]);
+      shadows[74] = row(77, ab);
+      owner.begin(accepted);
+      owner.write(74, shadows[74]);
+      const next = owner.finish(shadows.length);
+      writes.mockClear();
+      const moved = index.build([main], shadows, accepted, primary, next);
+      expect(writes).not.toHaveBeenCalled();
+      expectOrdinary(moved, [...primary, ...shadows]);
+      expect(plan.slotIndices.at(75)).not.toEqual(moved.slotIndices.at(75));
+      const projected = shadows.slice(31, 80);
+      expectOrdinary(index.build([main], projected, accepted, primary), [...primary, ...projected]);
+      expect(writes).toHaveBeenCalledTimes(projected.length);
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
   it('indexes only changed binding rows and retains older accepted tables', () => {
     const owner = new MaterialRelations();
     const index = new MaterialBindingIndex();
@@ -240,6 +285,32 @@ describe('persistent material reader membership', () => {
     const frame = capture(owner, [empty]);
     expect(index.build([frame], [], accepted, [empty]).slotIndices.at(0)).toEqual([0]);
     expect(frame.at(0)).toEqual([a]);
+  });
+
+  it('reconciles moving rows against sealed bindings through mutation, sprite selection and entity replacement', () => {
+    const owner = new MaterialRelations();
+    const authored = [a, b];
+    const moving = row(7, authored);
+    const first = capture(owner, [moving]);
+    const move = (frame: MaterialFrame, value: ValidatedRenderable) => {
+      owner.begin(frame);
+      owner.move(0, value);
+      return owner.finish(1);
+    };
+    authored[1] = c;
+    const changed = move(accepted, moving);
+    expect(first.at(0)).toEqual([a, b]);
+    expect(changed.at(0)).toEqual([a, c]);
+    const sprite = accepted.with(a, 1, {
+      ...a.snapshot,
+      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+    });
+    const one = move(sprite, moving);
+    expect(one.at(0)).toEqual([a]);
+    expect(move(sprite, row(8, authored))).not.toBe(one);
+    expect(move(accepted, moving).at(0)).toEqual([a, c]);
+    owner.begin(new MaterialFrame(undefined));
+    expect(() => owner.move(0, moving)).toThrow();
   });
 
   it('uses the accepted Sprite program to select only the primary binding', () => {

@@ -1,6 +1,7 @@
 import type { box3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import { MaterialResource } from '../../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../../record/frame-snapshot';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import { MaterialFrame } from '../material-dispatch';
@@ -99,6 +100,10 @@ it('honors the current frustum opt-out before testing a native slot on consecuti
       undefined,
       bounds,
     );
+    const admission = result.frame.cameraAdmission;
+    expect(admission).toBeDefined();
+    expect(admission?.hidden.size).toBe(optOut ? 0 : 1);
+    expect(result.frame.cameraVisible?.(snapshot)).toBe(optOut);
     expect(result.frame.renderables.length).toBe(optOut ? 1 : 0);
     expect(bounds).toHaveBeenCalledTimes(optOut ? 0 : 1);
     bounds.mockClear();
@@ -166,6 +171,59 @@ it('shares equal material selections across moving rows and splits at actual exc
     },
   ]);
   expect(clipped?.sourceSubsurface).toBe(clipped?.authorSubsurface);
-  expect(clipped?.admittedSubsurface).not.toBe(clipped?.authorSubsurface);
+  expect(clipped?.admittedSubsurface).toBe(clipped?.authorSubsurface);
   expect(clipped?.renderables).toEqual([visible]);
+});
+
+it('selects active subsurface profiles through material edits with fixed and changing visibility', () => {
+  const source = receiptRow().source;
+  const material = () =>
+    new MaterialResource({
+      ...source.material.snapshot,
+      surfaceModel: 'standard',
+      deferredPass: true,
+      paramSnapshot: { subsurfaceWeight: 0, subsurfaceRadius: [2, 1, 1] },
+    });
+  const near = material(),
+    far = material();
+  let materials = new MaterialFrame(undefined).with(near).with(far);
+  const memo: ViewCullStorage = { value: undefined };
+  const visible = Float32Array.of(-1, -1, -10, 1, 1, -8);
+  const hidden = Float32Array.of(100, -1, -10, 102, 1, -8);
+  const rows = [near, far].map((binding, entityKey) => ({
+    ...source,
+    entityKey,
+    material: binding,
+    materials: [binding],
+    localAabb: entityKey ? hidden : visible,
+  }));
+  const frame = {
+    cameras: [makeZeroCameraFallbackSnapshot()],
+    renderables: rows,
+    dispatch: [],
+  } as unknown as ExtractedFrame;
+  const read = () => cullPersistentFrame(frame, materials, undefined, memo).subsurface;
+  const edit = (resource: MaterialResource, weight: number) => {
+    resource.adopt({
+      ...resource.snapshot,
+      paramSnapshot: { ...resource.snapshot.paramSnapshot, subsurfaceWeight: weight },
+    });
+    materials = materials.with(resource);
+  };
+  expect(read()).toEqual({ source: 0, authorVisible: 0, admitted: 0 });
+  edit(far, 1);
+  expect(read()).toEqual({
+    source: expect.any(Array),
+    authorVisible: expect.any(Array),
+    admitted: 0,
+  });
+  edit(near, 1);
+  expect(read().admitted).toHaveLength(1);
+  edit(far, 0);
+  for (const row of rows) row.localAabb = row.material === near ? hidden : visible;
+  expect(read().admitted).toBe(0);
+  edit(near, 0);
+  expect(read().source).toBe(0);
+  edit(far, 2);
+  expect(read().admitted).toBe('invalid-values');
 });

@@ -321,6 +321,12 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_temporal_depth(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  if (spriteTemporalRejected(in)) { discard; }
+  return materialTemporal(in);
+}
+
+@fragment
 fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
   if (spriteTemporalRejected(in)) { discard; }
   return encodeSceneVelocityWithDepth(materialTemporal(in), in.previousClip);

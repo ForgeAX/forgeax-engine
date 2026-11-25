@@ -33,8 +33,7 @@ export function consumeGtaoCandidatePreparationFault(
     return false;
   }
   const ssao =
-    passNames.includes('ssao-calc') &&
-    passNames.some((name) => name.startsWith('ssao-furthest-hzb-seed'));
+    passNames.includes('ssao-calc') && passNames.some((name) => name.startsWith('hzb-seed'));
   const gtao =
     passNames.includes('gtao-resolve') &&
     (passNames.includes('gtao-calc') || passNames.includes('gtao-calc-compute'));

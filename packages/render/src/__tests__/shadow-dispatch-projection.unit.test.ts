@@ -107,7 +107,6 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
       },
     },
     frameState: {
-      materialBgShared: new Map(),
       instancesBgShared: new WeakMap(),
       meshBindGroupCache: new WeakMap(),
       viewBindGroupCache: new WeakMap(),

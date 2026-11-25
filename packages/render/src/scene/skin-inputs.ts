@@ -258,11 +258,7 @@ class JointStore {
   stamps = new Float64Array(64);
   readonly free: number[] = [];
   size = 0;
-  /** Bumped when an entity gains or loses its cell; Bindings then re-resolve. */
-  layout = 0;
-  cell(entity: number): number {
-    const known = this.cells.get(entity);
-    if (known !== undefined) return known;
+  newCell(entity: number): number {
     let cell = this.free.pop();
     if (cell === undefined) {
       cell = this.size++;
@@ -277,18 +273,195 @@ class JointStore {
     }
     this.stamps[cell] = 0;
     this.cells.set(entity, cell);
-    this.layout++;
     return cell;
   }
 }
 
+/** One dependency per actually bound source joint. All its readers see the
+ * same cell, including removal and reuse by a different entity. */
+interface PoseJoint {
+  readonly entity: number;
+  readers: PoseBinding | Set<PoseBinding>;
+  cell: number;
+}
+
 interface PoseBinding {
   readonly source: Slot;
-  readonly entities: Uint32Array;
-  readonly cells: Int32Array;
-  layout: number;
+  readonly hash: number;
+  readonly slots: Set<number>;
+  /** Non-owning. Fixed roots retain the physical rows they reference. */
+  row?: Row | undefined;
+  unlinked?: Set<number> | undefined;
+  readonly joints: PoseJoint[];
+  previous?: PoseBinding | undefined;
+  next?: PoseBinding | undefined;
+  ticket: number;
   /** Epoch of the last published pose; -1 republishes once complete. */
   published: number;
+}
+
+function addPoseReader(joint: PoseJoint, pose: PoseBinding): void {
+  const readers = joint.readers;
+  if (readers instanceof Set) readers.add(pose);
+  else if (readers !== pose) joint.readers = new Set([readers, pose]);
+}
+
+function removePoseReader(joint: PoseJoint, pose: PoseBinding): boolean {
+  const readers = joint.readers;
+  if (!(readers instanceof Set)) return readers !== pose;
+  readers.delete(pose);
+  if (readers.size === 1) joint.readers = readers.values().next().value as PoseBinding;
+  return readers.size !== 0;
+}
+
+function matchesPose(pose: PoseBinding, source: Slot, data: DataView, count: number): boolean {
+  if (pose.source !== source || pose.joints.length !== count) return false;
+  for (let i = 0; i < count; i++)
+    if (pose.joints[i]?.entity !== data.getUint32(16 + i * 4, true)) return false;
+  return true;
+}
+
+class PoseBindings {
+  private readonly buckets = new Map<number, PoseBinding[]>();
+  private readonly slots = new Map<number, PoseBinding>();
+  private readonly joints = new Map<Slot, Map<number, PoseJoint>>();
+  private first: PoseBinding | undefined;
+  private last: PoseBinding | undefined;
+  sequence = 0;
+  private readonly enqueueReader = (pose: PoseBinding): void => this.enqueue(pose);
+
+  private update(joint: PoseJoint, cell: number): void {
+    joint.cell = cell;
+    if (joint.readers instanceof Set) joint.readers.forEach(this.enqueueReader);
+    else this.enqueue(joint.readers);
+  }
+
+  enqueue(pose: PoseBinding): void {
+    if (pose.ticket !== 0 || pose.slots.size === 0) return;
+    pose.ticket = ++this.sequence;
+    pose.previous = this.last;
+    if (this.last === undefined) this.first = pose;
+    else this.last.next = pose;
+    this.last = pose;
+  }
+
+  private dequeue(pose: PoseBinding): void {
+    if (pose.ticket === 0) return;
+    if (pose.previous === undefined) this.first = pose.next;
+    else pose.previous.next = pose.next;
+    if (pose.next === undefined) this.last = pose.previous;
+    else pose.next.previous = pose.previous;
+    pose.previous = pose.next = undefined;
+    pose.ticket = 0;
+  }
+
+  /** Newly queued writes stay pending past this capture's publication boundary. */
+  take(through: number): PoseBinding | undefined {
+    const pose = this.first;
+    if (pose === undefined || pose.ticket > through) return undefined;
+    this.dequeue(pose);
+    return pose;
+  }
+
+  joint(source: Slot, entity: number, cell: number): void {
+    const joint = this.joints.get(source)?.get(entity);
+    if (joint === undefined) return;
+    this.update(joint, cell);
+  }
+
+  removeSource(source: Slot): void {
+    const joints = this.joints.get(source);
+    if (joints === undefined) return;
+    for (const joint of joints.values()) this.update(joint, -1);
+  }
+
+  private create(
+    source: Slot,
+    data: DataView,
+    count: number,
+    hash: number,
+    store?: JointStore,
+  ): PoseBinding {
+    let sourceJoints = this.joints.get(source);
+    if (sourceJoints === undefined) {
+      sourceJoints = new Map();
+      this.joints.set(source, sourceJoints);
+    }
+    const pose: PoseBinding = {
+      source,
+      hash,
+      joints: [],
+      slots: new Set(),
+      ticket: 0,
+      published: -1,
+    };
+    for (let i = 0; i < count; i++) {
+      const entity = data.getUint32(16 + i * 4, true);
+      let joint = sourceJoints.get(entity);
+      if (joint === undefined) {
+        joint = { entity, cell: store?.cells.get(entity) ?? -1, readers: pose };
+        sourceJoints.set(entity, joint);
+      } else addPoseReader(joint, pose);
+      pose.joints.push(joint);
+    }
+    const bucket = this.buckets.get(hash);
+    if (bucket === undefined) this.buckets.set(hash, [pose]);
+    else bucket.push(pose);
+    return pose;
+  }
+
+  bind(
+    slot: number,
+    source: Slot,
+    data: DataView,
+    count: number,
+    hash: number,
+    store?: JointStore,
+  ): void {
+    const bucket = this.buckets.get(hash);
+    let pose: PoseBinding | undefined;
+    if (bucket !== undefined)
+      for (const candidate of bucket) {
+        if (matchesPose(candidate, source, data, count)) {
+          pose = candidate;
+          break;
+        }
+      }
+    if (pose !== undefined && this.slots.get(slot) === pose) return;
+    this.unbind(slot);
+    pose ??= this.create(source, data, count, hash, store);
+    pose.slots.add(slot);
+    if (pose.published >= 0) {
+      pose.unlinked ??= new Set();
+      pose.unlinked.add(slot);
+    }
+    this.slots.set(slot, pose);
+    this.enqueue(pose);
+  }
+
+  unbind(slot: number): void {
+    const pose = this.slots.get(slot);
+    if (pose === undefined) return;
+    this.slots.delete(slot);
+    pose.slots.delete(slot);
+    pose.unlinked?.delete(slot);
+    if (pose.slots.size !== 0) return;
+    this.dequeue(pose);
+    const sourceJoints = this.joints.get(pose.source) as Map<number, PoseJoint>;
+    for (const joint of pose.joints)
+      if (!removePoseReader(joint, pose)) sourceJoints.delete(joint.entity);
+    if (sourceJoints.size === 0) this.joints.delete(pose.source);
+    const bucket = this.buckets.get(pose.hash) as PoseBinding[];
+    if (bucket.length === 1) this.buckets.delete(pose.hash);
+    else bucket.splice(bucket.indexOf(pose), 1);
+  }
+
+  clear(): void {
+    this.slots.clear();
+    this.buckets.clear();
+    this.joints.clear();
+    this.first = this.last = undefined;
+  }
 }
 
 /** All GPU-readable Skin facts have one owning root, including static Binding bytes. */
@@ -306,9 +479,8 @@ export class SkinInputs {
   private leaf: { root: Page; space: number; high: number; page: LeafPage } | undefined;
   private readonly scratch = new DataView(new ArrayBuffer(4));
   private readonly stores = new Map<Slot, JointStore>();
-  private readonly poses = new Map<number, PoseBinding>();
+  private readonly poses = new PoseBindings();
   private epoch = 1;
-  private flushed = 1;
   private poseWords = new Uint32Array(1 + 64 * 16);
   private poseFloats = new Float32Array(this.poseWords.buffer);
   private poseView = new DataView(this.poseWords.buffer);
@@ -411,10 +583,16 @@ export class SkinInputs {
     }
   }
 
-  private publish(space: number, key: number, row: Row, data: DataView): void {
+  private publish(
+    space: number,
+    key: number | ReadonlySet<number>,
+    row: Row,
+    data: DataView,
+  ): void {
     try {
       this.inputs.writeDescriptor(row.address, data, row.words);
-      this.replace(space, key, row);
+      if (typeof key === 'number') this.replace(space, key, row);
+      else for (const slot of key) this.replace(space, slot, row);
     } catch (cause) {
       try {
         retireRow(this.inputs, this.state, row);
@@ -426,17 +604,23 @@ export class SkinInputs {
     retireRow(this.inputs, this.state, row);
   }
 
-  setJoint(source: SkinInputSlot, entity: number, world: Float32Array): void {
+  setJoint(source: SkinInputSlot, entity: number, world: Float32Array, offset?: number): void {
     this.healthy();
     const slot = this.slot(source, 'source');
     u32(entity);
-    if (world.length !== 16) throw invalid('one finite presentation matrix per joint');
+    const first = offset ?? 0;
+    if (
+      offset === undefined
+        ? world.length !== 16
+        : !Number.isSafeInteger(first) || first < 0 || first + 16 > world.length
+    )
+      throw invalid('one finite presentation matrix per joint');
     let store = this.stores.get(slot);
     const known = store?.cells.get(entity);
     const base = known === undefined ? -1 : known * 16;
     let equal = known !== undefined && store?.stamps[known] !== 0;
     for (let lane = 0; lane < 16; lane++) {
-      const value = world[lane];
+      const value = world[first + lane];
       if (value === undefined || !Number.isFinite(value))
         throw invalid('finite presentation joint matrices');
       const captured = Math.fround(value);
@@ -450,10 +634,12 @@ export class SkinInputs {
       store = new JointStore();
       this.stores.set(slot, store);
     }
-    const cell = known ?? store.cell(entity);
+    const cell = known ?? store.newCell(entity);
     const matrices = store.matrices;
-    for (let lane = 0; lane < 16; lane++) matrices[cell * 16 + lane] = world[lane] as number;
+    for (let lane = 0; lane < 16; lane++)
+      matrices[cell * 16 + lane] = world[first + lane] as number;
     store.stamps[cell] = ++this.epoch;
+    this.poses.joint(slot, entity, cell);
   }
 
   removeJoint(source: SkinInputSlot, entity: number): void {
@@ -466,62 +652,73 @@ export class SkinInputs {
     store.cells.delete(entity);
     store.stamps[cell] = 0;
     store.free.push(cell);
-    store.layout++;
-    this.epoch++;
+    this.poses.joint(slot, entity, -1);
   }
 
   /** Publish each Binding whose joints changed as one immutable pose row:
    * [count, count × 16 f32] in Binding order. An incomplete pose has no row. */
   private flushPoses(): void {
-    if (this.flushed === this.epoch) return;
-    for (const [bindingSlot, pose] of this.poses) {
-      const store = this.stores.get(pose.source);
-      const count = pose.entities.length;
-      let complete = store !== undefined;
-      let changed = pose.published < 0;
-      if (store !== undefined) {
-        if (pose.layout !== store.layout) {
-          for (let index = 0; index < count; index++)
-            pose.cells[index] = store.cells.get(pose.entities[index] as number) ?? -1;
-          pose.layout = store.layout;
-        }
-        const stamps = store.stamps;
-        for (let index = 0; index < count; index++) {
-          const cell = pose.cells[index] as number;
-          const stamp = cell < 0 ? 0 : (stamps[cell] as number);
-          if (stamp === 0) {
-            complete = false;
-            break;
-          }
-          if (stamp > pose.published) changed = true;
-        }
+    const until = this.poses.sequence;
+    const through = this.epoch;
+    for (let pose = this.poses.take(until); pose !== undefined; pose = this.poses.take(until)) {
+      try {
+        this.flushPose(pose, through);
+      } catch (cause) {
+        this.poses.enqueue(pose);
+        throw cause;
       }
-      if (!complete || store === undefined) {
-        if (find(this.current, POSES, bindingSlot) !== undefined)
-          this.replace(POSES, bindingSlot, undefined);
-        pose.published = -1;
-        continue;
-      }
-      if (!changed) continue;
-      const words = 1 + count * 16;
-      if (this.poseWords.length < words) {
-        this.poseWords = new Uint32Array(words);
-        this.poseFloats = new Float32Array(this.poseWords.buffer);
-        this.poseView = new DataView(this.poseWords.buffer);
-      }
-      const out = this.poseFloats,
-        matrices = store.matrices;
-      this.poseWords[0] = count;
-      for (let index = 0; index < count; index++) {
-        const from = (pose.cells[index] as number) * 16,
-          to = 1 + index * 16;
-        for (let lane = 0; lane < 16; lane++) out[to + lane] = matrices[from + lane] as number;
-      }
-      const row = this.allocate(words, 'pose', pose.source);
-      this.publish(POSES, bindingSlot, row, this.poseView);
-      pose.published = this.epoch;
     }
-    this.flushed = this.epoch;
+  }
+
+  private flushPose(pose: PoseBinding, through: number): void {
+    const store = this.stores.get(pose.source);
+    const count = pose.joints.length;
+    let complete = true;
+    let changed = pose.published < 0;
+    if (store !== undefined)
+      for (const joint of pose.joints) {
+        if (joint.cell < 0) {
+          complete = false;
+          break;
+        }
+        if ((store.stamps[joint.cell] as number) > pose.published) changed = true;
+      }
+    if (!complete || store === undefined) {
+      for (const slot of pose.slots)
+        if (find(this.current, POSES, slot) !== undefined) this.replace(POSES, slot, undefined);
+      pose.row = undefined;
+      pose.unlinked = undefined;
+      pose.published = -1;
+      return;
+    }
+    if (!changed) {
+      const pending = pose.unlinked;
+      if (pending === undefined) return;
+      if (pose.row !== undefined && pose.row.holders > 0) {
+        for (const slot of pending) this.replace(POSES, slot, pose.row);
+        pose.unlinked = undefined;
+        return;
+      }
+    }
+    const words = 1 + count * 16;
+    if (this.poseWords.length < words) {
+      this.poseWords = new Uint32Array(words);
+      this.poseFloats = new Float32Array(this.poseWords.buffer);
+      this.poseView = new DataView(this.poseWords.buffer);
+    }
+    const out = this.poseFloats,
+      matrices = store.matrices;
+    this.poseWords[0] = count;
+    for (let index = 0; index < count; index++) {
+      const from = (pose.joints[index] as PoseJoint).cell * 16,
+        to = 1 + index * 16;
+      for (let lane = 0; lane < 16; lane++) out[to + lane] = matrices[from + lane] as number;
+    }
+    const row = this.allocate(words, 'pose', pose.source);
+    this.publish(POSES, pose.slots, row, this.poseView);
+    pose.row = row;
+    pose.unlinked = undefined;
+    pose.published = through;
   }
 
   updateSkeleton(
@@ -687,13 +884,7 @@ export class SkinInputs {
     }
     if (joints.length !== count) throw invalid('stable ordered Skin binding extent');
     if (equal) return;
-    const pose: PoseBinding = {
-      source: namespace,
-      entities: Uint32Array.from(joints),
-      cells: new Int32Array(count),
-      layout: -1,
-      published: -1,
-    };
+    let hash = namespace.id;
     const row = this.allocate(4 + count, 'binding', namespace, asset);
     let data: DataView;
     try {
@@ -707,6 +898,7 @@ export class SkinInputs {
         if (entity === undefined) throw invalid('complete ordered joint identities');
         u32(entity);
         data.setUint32((4 + index) * 4, entity, true);
+        hash = Math.imul(hash ^ entity, 16777619);
       }
       if (joints.length !== count) throw invalid('stable ordered Skin binding extent');
     } catch (cause) {
@@ -720,14 +912,13 @@ export class SkinInputs {
       throw cause;
     }
     this.publish(BINDINGS, bindingSlot, row, data);
-    this.poses.set(bindingSlot, pose);
-    this.epoch++;
+    this.poses.bind(bindingSlot, namespace, data, count, hash, this.stores.get(namespace));
   }
 
   unbind(bindingSlot: number): void {
     this.healthy();
     u32(bindingSlot);
-    this.poses.delete(bindingSlot);
+    this.poses.unbind(bindingSlot);
     if (find(this.current, POSES, bindingSlot) !== undefined)
       this.replace(POSES, bindingSlot, undefined);
     if (find(this.current, BINDINGS, bindingSlot) !== undefined)
@@ -740,7 +931,7 @@ export class SkinInputs {
     if (slot.kind === 'source') {
       // Its Bindings stay admitted but can never complete a pose again.
       this.stores.delete(slot);
-      this.epoch++;
+      this.poses.removeSource(slot);
     } else if (find(this.current, SKELETONS, slot.id) !== undefined)
       this.replace(SKELETONS, slot.id, undefined);
     slot.retire();
@@ -1357,6 +1548,7 @@ export class SkinInputFrame {
     out: Float32Array,
     matrix: Mat4,
     inverse: Mat4,
+    offset = 0,
   ): void {
     // The complete-pose check precedes all output writes, including joints not used by this mesh.
     const binding = find(this.#page, BINDINGS, slot) as Row;
@@ -1369,7 +1561,7 @@ export class SkinInputFrame {
       for (let lane = 0; lane < 16; lane++) {
         const value = matrix[lane] as number;
         if (!Number.isFinite(value)) throw invalid('finite composed Skin matrices');
-        out[index * 16 + lane] = value;
+        out[offset + index * 16 + lane] = value;
       }
     }
   }
@@ -1382,7 +1574,8 @@ export class SkinInputFrame {
     slot: number,
     previous: SkinInputFrame | undefined,
     currentOut: Float32Array,
-    previousOut: Float32Array,
+    /** Omit to place history immediately after the current matrices in the same output. */
+    previousOut: Float32Array | undefined,
     matrix: Mat4,
     inverse: Mat4,
     /** The previous frame's palette for this slot, already composed from its exact inputs. */
@@ -1391,14 +1584,20 @@ export class SkinInputFrame {
     const inputs = this.live();
     const count = this.jointCount(slot);
     if (count === undefined || !this.available(slot)) return 0;
-    if (currentOut.length < count * 16 || previousOut.length < count * 16)
+    const lanes = count * 16;
+    const history = previousOut ?? currentOut;
+    const offset = previousOut === undefined ? lanes : 0;
+    if (currentOut.length < lanes || history.length < offset + lanes)
       throw invalid('enough caller-owned current and previous Skin palette output');
     validateMatrixOutputs(matrix, inverse);
-    disjoint(currentOut, previousOut);
+
     disjoint(currentOut, matrix);
     disjoint(currentOut, inverse);
-    disjoint(previousOut, matrix);
-    disjoint(previousOut, inverse);
+    if (previousOut !== undefined) {
+      disjoint(currentOut, previousOut);
+      disjoint(previousOut, matrix);
+      disjoint(previousOut, inverse);
+    }
     // The current pose was proved available above; only the previous frame is checked again.
     const compatible = previous !== undefined && this.#historyCompatible(inputs, previous, slot);
     // Finite source matrices can still overflow when composed. Like GPU
@@ -1412,23 +1611,25 @@ export class SkinInputFrame {
       return 0;
     }
     if (compatible && previousPalette !== undefined && previousPalette.length >= count * 16) {
-      previousOut.set(
+      history.set(
         previousPalette.length === count * 16
           ? previousPalette
           : previousPalette.subarray(0, count * 16),
+        offset,
       );
       return 3;
     }
     if (compatible) {
       try {
         // A compatible previous frame is live and its pose is available with the same count.
-        previous.compose(previous.live(), slot, count, previousOut, matrix, inverse);
+        previous.compose(previous.live(), slot, count, history, matrix, inverse, offset);
         return 3;
       } catch (cause) {
         if (!composedOverflow(cause)) throw cause;
       }
     }
-    for (let lane = 0; lane < count * 16; lane++) previousOut[lane] = currentOut[lane] as number;
+    if (previousOut === undefined) currentOut.copyWithin(offset, 0, lanes);
+    else for (let lane = 0; lane < lanes; lane++) previousOut[lane] = currentOut[lane] as number;
     return 1;
   }
 

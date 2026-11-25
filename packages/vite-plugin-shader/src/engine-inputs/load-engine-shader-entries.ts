@@ -516,6 +516,7 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_pbr::gbuffer_output': readSource('standard-gbuffer-output.wgsl'),
     'forgeax_depth_pyramid::sample': readSource('depth-pyramid-sample.wgsl'),
     'forgeax_ssr::forward': readSource('ssr-forward.wgsl'),
+    'forgeax_ssr::ray': readSource('ssr-ray.wgsl'),
     'forgeax_pbr::shadow_pcf': readSource('shadow-pcf.wgsl'),
     'forgeax_pbr::clearcoat': readSource('material/physical/clearcoat.wgsl'),
     'forgeax_pbr::anisotropy': readSource('material/physical/anisotropy.wgsl'),

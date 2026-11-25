@@ -46,7 +46,7 @@ function makeSpec(shaderId: string): PipelineSpec {
 
 describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
   describe('pbr-view BGL (Cluster lights live in group(2))', () => {
-    it('sprite-lit vs sprite share the same 12-entry pbr-view BGL under storage-buffer caps', () => {
+    it('sprite-lit vs sprite share the same 11-entry pbr-view BGL under storage-buffer caps', () => {
       const spriteSpec = makeSpec('forgeax::sprite');
       const spriteLitSpec = makeSpec('forgeax::sprite-lit');
       const sprite = buildBindGroupLayoutDescriptor(spriteSpec, {
@@ -58,13 +58,13 @@ describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
         caps: { storageBuffer: true, extendedLighting: false },
       });
       expect(JSON.stringify(spriteLit)).toBe(JSON.stringify(sprite));
-      // Binding 10 is the shared Points/Lines view UBO; bindings 11/12 are
-      // the optional SpotLight projector resources, and 16/17 are the cloud
-      // shadow texture and sampler on the standard view contract.
-      expect(spriteLit.entries.length).toBe(12);
+      // Bindings 11/12 are the optional SpotLight projector resources, and
+      // 16/17 are the cloud shadow texture and sampler on the standard view
+      // contract. Points/Lines use their own view inputs.
+      expect(spriteLit.entries.length).toBe(11);
     });
 
-    it('sprite-lit vs sprite share the same 10-entry pbr-view BGL under uniform fallback caps (AC-10)', () => {
+    it('sprite-lit vs sprite share the same 9-entry pbr-view BGL under uniform fallback caps (AC-10)', () => {
       const spriteSpec = makeSpec('forgeax::sprite');
       const spriteLitSpec = makeSpec('forgeax::sprite-lit');
       const sprite = buildBindGroupLayoutDescriptor(spriteSpec, {
@@ -76,6 +76,7 @@ describe('sprite-lit BGL byte-identical to sprite (AC-07, w4/w5 close)', () => {
         caps: { storageBuffer: false, extendedLighting: false },
       });
       expect(JSON.stringify(spriteLit)).toBe(JSON.stringify(sprite));
+      expect(spriteLit.entries.length).toBe(9);
     });
 
     it('does not expose point/spot light bindings on storageBuffer=true', () => {

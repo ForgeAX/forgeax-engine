@@ -140,6 +140,7 @@ export { createTerrainGrids } from './terrain-grid.js';
 export { createTorusGeometry } from './torus';
 export {
   buildMeshAttributeMapForUvSets,
+  captureVertexLayoutProjection,
   DEFAULT_VERTEX_ATTRIBUTE_MAP,
   deriveVertexBufferLayout,
   deriveVertexBufferLayoutFromProjection,
@@ -159,6 +160,8 @@ export {
   type VertexLayoutProjection,
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
+  vertexLayoutHasColor,
+  visitVertexUvAliases,
 } from './vertex-attribute-layout';
 export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';
 export {

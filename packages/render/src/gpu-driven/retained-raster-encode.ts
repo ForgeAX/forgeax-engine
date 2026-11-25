@@ -1,5 +1,6 @@
 import type { RenderBundle } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import { rasterMaterialOffset } from '../record/geometry-bind-offsets';
 import {
   type PrimitiveReflection,
   samePrimitiveReflection,
@@ -33,7 +34,8 @@ function stalePreparation(): RhiError {
 
 type MaterialOwner = {
   readonly group: object;
-  readonly offset: number;
+  readonly offset: number | undefined;
+  readonly uniformRequired?: boolean | undefined;
   readonly reflection?: PrimitiveReflection | undefined;
   readonly program?: string | undefined;
 };
@@ -201,14 +203,19 @@ export class RetainedPassEncode {
   readonly #classes: ResolvedOwners<object, ClassOwner>;
   constructor(
     private readonly previous: RetainedPassInputs | undefined,
-    resolveMaterial: (slot: number, program?: string) => MaterialOwner | undefined,
+    resolveMaterial: (
+      slot: number,
+      program?: string,
+      uniformRequired?: boolean,
+    ) => MaterialOwner | undefined,
     resolveClass: (rasterClass: object) => ClassOwner | undefined,
     private readonly fixedLives?: readonly object[],
   ) {
     this.#materials = new ResolvedOwners(
-      (slot, owner) => resolveMaterial(slot, owner.program),
+      (slot, owner) => resolveMaterial(slot, owner.program, owner.uniformRequired),
       sameMaterial,
-      (prior, next) => prior.program === next.program,
+      (prior, next) =>
+        prior.program === next.program && prior.uniformRequired === next.uniformRequired,
     );
     this.#classes = new ResolvedOwners(resolveClass, sameClass);
   }
@@ -472,7 +479,11 @@ export class RetainedRasterEncodes {
   begin(
     key: object,
     identities: readonly unknown[],
-    resolveMaterial: (slot: number, program?: string) => MaterialOwner | undefined,
+    resolveMaterial: (
+      slot: number,
+      program?: string,
+      uniformRequired?: boolean,
+    ) => MaterialOwner | undefined,
     resolveClass: (rasterClass: object) => ClassOwner | undefined,
     fixed?: FixedRasterInputs,
   ): RetainedPassEncode {
@@ -518,17 +529,24 @@ export function materialOwner(
     | {
         readonly group: object;
         readonly byteOffset: number;
+        readonly dynamicOffsetCount?: 0 | 1;
         readonly reflection?: PrimitiveReflection | undefined;
       }
     | undefined,
   program?: string,
+  uniformRequired?: boolean,
 ): MaterialOwner | undefined {
   return prepared === undefined
     ? undefined
     : {
         group: prepared.group,
-        offset: prepared.byteOffset,
+        offset: rasterMaterialOffset(
+          prepared.byteOffset,
+          prepared.dynamicOffsetCount,
+          uniformRequired,
+        ),
         program,
+        uniformRequired,
         reflection: prepared.reflection,
       };
 }

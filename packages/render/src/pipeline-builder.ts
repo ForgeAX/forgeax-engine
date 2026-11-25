@@ -1,4 +1,4 @@
-import { STANDARD_TEXTURE_MASK_OVERRIDE } from '@forgeax/engine-shader';
+import { findMaterialShaderEntry, STANDARD_TEXTURE_MASK_OVERRIDE } from '@forgeax/engine-shader';
 import { isStripTopology } from '@forgeax/engine-types';
 import { markPositionOnlyMeshPipeline } from './device/mesh-vertex-streams';
 import { pipelineVertexConstants } from './material-stage-constants';
@@ -58,10 +58,11 @@ import {
   RhiError,
   type ShaderModule,
 } from '@forgeax/engine-rhi';
-import type {
-  MaterialShaderEntry,
-  MaterialShaderProgram,
-  RegisteredMaterialShaderEntry,
+import {
+  type MaterialShaderEntry,
+  type MaterialShaderProgram,
+  type RegisteredMaterialShaderEntry,
+  SCENE_VELOCITY_WITH_DEPTH_OVERRIDE,
 } from '@forgeax/engine-shader';
 import type { MaterialRenderState, PassKind, PrimitiveTopology } from '@forgeax/engine-types';
 import { materialColorTarget, materialDepthStencil } from './material-render-state';
@@ -200,9 +201,7 @@ export interface PipelineBuilderContext {
 
 function hasStandardCoverageEntries(source: string | MaterialShaderProgram): boolean {
   if (typeof source !== 'string' && source.entryPoints !== undefined) {
-    return source.entryPoints.some(
-      ({ stage, name }) => stage === 'fragment' && name === 'fs_coverage',
-    );
+    return findMaterialShaderEntry(source.entryPoints, 'fs_coverage', 'fragment') !== undefined;
   }
   const code = typeof source === 'string' ? source : source.source;
   return code.includes('fn vs_coverage') && code.includes('fn fs_coverage');
@@ -332,7 +331,7 @@ export function defaultMaterialFragmentEntry(passKind: PassKind): string {
   }
 }
 
-function pipelineVertexEntry(
+export function pipelineVertexEntry(
   vertexEntry: string | undefined,
   passKind: PassKind,
   buffers: PipelineBuilderContext['vertexBuffers'],
@@ -419,13 +418,15 @@ function materialVertexInput(
   passKind: PassKind,
   colorAttachmentCount: number,
 ) {
-  const position =
-    fragmentEntry === null &&
-    passKind === 'forward' &&
-    colorAttachmentCount === 0 &&
-    renderState?.alphaToCoverageEnabled !== true
-      ? positionOnlyBuffer(entry, ctx, vertexEntry)
-      : undefined;
+  const position = positionOnlyMaterialBuffer(
+    entry,
+    ctx,
+    renderState,
+    vertexEntry,
+    fragmentEntry,
+    passKind,
+    colorAttachmentCount,
+  );
   if (position === undefined)
     return {
       vsEntry: pipelineVertexEntry(vertexEntry, passKind, ctx.vertexBuffers),
@@ -440,6 +441,22 @@ function materialVertexInput(
     vertexContext: { ...ctx, vertexBuffers },
     positionOnly: true,
   };
+}
+
+function materialFragmentConstants(
+  source: string | MaterialShaderProgram,
+  entry: string,
+  format: GPUTextureFormat | undefined,
+  constants: PipelineBuilderContext['constants'],
+): PipelineBuilderContext['constants'] {
+  if (entry !== 'fs_scene_velocity' || format !== 'rg32uint') return constants;
+  const supportsExtendedVelocity =
+    typeof source === 'string'
+      ? source.includes('override sceneVelocityWithDepthOutput')
+      : source.overrideIds.includes(SCENE_VELOCITY_WITH_DEPTH_OVERRIDE);
+  return supportsExtendedVelocity
+    ? { ...constants, [SCENE_VELOCITY_WITH_DEPTH_OVERRIDE]: 1 }
+    : constants;
 }
 
 export function buildPipelineForMaterialShader(
@@ -499,6 +516,12 @@ export function buildPipelineForMaterialShader(
   // One projection defines both equality against warmup state and cold admission.
   // A hit visits one field at a time, without building the complete dictionary.
   const vertexConstants = positionOnly ? undefined : pipelineVertexConstants(ctx);
+  const fragmentConstants = materialFragmentConstants(
+    source,
+    fsEntry,
+    attachmentFormats[0],
+    ctx.constants,
+  );
   const fields = function* (): Iterable<readonly [string, unknown]> {
     yield [
       'vertex',
@@ -513,7 +536,7 @@ export function buildPipelineForMaterialShader(
         'fragment',
         {
           entryPoint: fsEntry,
-          ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
+          ...(fragmentConstants === undefined ? {} : { constants: fragmentConstants }),
           targets: attachmentFormats.map((format, index) =>
             materialColorTarget(format, renderState, index),
           ),
@@ -619,9 +642,32 @@ export function buildPipelineForMaterialShader(
 }
 
 /** A known stock vertex path, with no per-material vertex displacement. */
+export function positionOnlyMaterialBuffer(
+  entry: MaterialShaderEntry,
+  ctx: Pick<
+    PipelineBuilderContext,
+    'device' | 'vertexBuffers' | 'stockStandardVertexProgram' | 'constants'
+  >,
+  renderState: MaterialRenderState | undefined,
+  vertex: string | undefined,
+  fragment: string | null | undefined,
+  passKind: PassKind,
+  colorCount: number,
+): GPUVertexBufferLayout | undefined {
+  return fragment === null &&
+    passKind === 'forward' &&
+    colorCount === 0 &&
+    renderState?.alphaToCoverageEnabled !== true
+    ? positionOnlyBuffer(entry, ctx, vertex)
+    : undefined;
+}
+
 function positionOnlyBuffer(
   entry: MaterialShaderEntry,
-  ctx: PipelineBuilderContext,
+  ctx: Pick<
+    PipelineBuilderContext,
+    'device' | 'vertexBuffers' | 'stockStandardVertexProgram' | 'constants'
+  >,
   vertexEntry: string | undefined,
 ): GPUVertexBufferLayout | undefined {
   if (
@@ -666,8 +712,6 @@ function retainMaterialRasterSource(
   materialRasterSources.set(pipeline, {
     descriptor: materialize(),
     fragmentSource: source,
-    fragmentEffects: entries?.find(
-      (entry) => entry.stage === 'fragment' && entry.name === fragmentEntry,
-    )?.effects,
+    fragmentEffects: findMaterialShaderEntry(entries, fragmentEntry, 'fragment')?.effects,
   });
 }

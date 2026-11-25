@@ -18,7 +18,16 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, createSphereGeometry } from '@forgeax/engine-geometry';
-import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, TONEMAP_LINEAR } from '@forgeax/engine-render';
+import {
+  Camera,
+  DEFAULT_STANDARD_PROFILE,
+  DirectionalLight,
+  Materials,
+  MeshFilter,
+  MeshRenderer,
+  perspective,
+  TONEMAP_LINEAR,
+} from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -174,7 +183,7 @@ function installCaptureHook(target: HTMLCanvasElement, app: App, world: World): 
   };
 }
 
-function publishInspection(app: App): void {
+function publishInspection(app: App, showOverlay: boolean): void {
   const inspection = app.renderer.inspect();
   window.__transmissionInspection = {
     status: 'ready',
@@ -188,17 +197,23 @@ function publishInspection(app: App): void {
       thickness,
       queue: queue ?? 2000,
     })),
-    ordinaryBlend: {
-      queue: 3000,
-      depthWriteEnabled: false,
-      blend: true,
-    },
+    ...(showOverlay
+      ? { ordinaryBlend: { queue: 3000, depthWriteEnabled: false, blend: true } }
+      : {}),
     passNames: inspection.perFramePassNames,
   };
 }
 
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
-  const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
+  // The frosted-glass demo opts in to background filtering.
+  const query = new URLSearchParams(location.search);
+  const roughRefraction = query.get('roughRefraction') !== 'off';
+  const showOverlay = query.get('overlay') !== 'off';
+  const appResult = await createApp(
+    target,
+    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, roughRefraction } },
+    forgeaxBundlerAdapter(),
+  );
   if (!appResult.ok) {
     reportBootstrapError(appResult.error);
     return;
@@ -232,14 +247,18 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
 
   // A regular Standard BLEND consumer is intentionally separate from the
   // transmission cases: the pipe must order transmission before transparency.
-  const blendMaterial = app.assets.create(Materials.standard({
-      baseColor: [0.15, 0.55, 1, 0.38],
-      metallic: 0,
-      roughness: 0.28,
-      queue: 3000,
-      renderState: { depthWriteEnabled: false, blend: ALPHA_BLEND },
-    })).unwrap();
-  spawnMesh(world, sphereMesh, blendMaterial, [0, 0.15, 0.18], [0.48, 0.48, 0.48]);
+  if (showOverlay) {
+    const blendMaterial = app.assets.create(
+      Materials.standard({
+        baseColor: [0.15, 0.55, 1, 0.38],
+        metallic: 0,
+        roughness: 0.28,
+        queue: 3000,
+        renderState: { depthWriteEnabled: false, blend: ALPHA_BLEND },
+      }),
+    ).unwrap();
+    spawnMesh(world, sphereMesh, blendMaterial, [0, 0.15, 0.18], [0.48, 0.48, 0.48]);
+  }
 
   world.spawn(
     { component: Transform, data: { pos: [0, 0.2, 8] } },
@@ -263,7 +282,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     console.error('[learn-render 6.pbr 4.transmission-refraction] app.start failed:', started.error);
     return;
   }
-  publishInspection(app);
+  publishInspection(app, showOverlay);
   console.warn(
     `[learn-render 6.pbr 4.transmission-refraction] backend=${app.renderer.inspect().capabilities.backendKind}`,
   );

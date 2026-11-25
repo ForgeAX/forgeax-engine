@@ -136,7 +136,8 @@ const ownedVertexInputs = new GenerationalWeakMap<
   readonly MaterialProgramVertexInput[],
   {
     readonly admissions: WeakMap<readonly MaterialProgramVertexInput[], boolean>;
-    readonly vertexColor: boolean;
+    readonly color: boolean;
+    readonly tangentFrame: boolean;
   }
 >();
 const immutableVertexInputs = new WeakSet<readonly MaterialProgramVertexInput[]>();
@@ -158,15 +159,19 @@ export function ownGpuDrivenVertexInputs(
   if (!isImmutableVertexInputs(owned)) return owned;
   ownedVertexInputs.set(owned, {
     admissions: new WeakMap(),
-    vertexColor: owned.some((input) => input.semantic === 'color'),
+    color: owned.some((input) => input.semantic === 'color'),
+    tangentFrame: owned.some((input) => input.semantic === 'tangentFrame'),
   });
   return owned;
 }
 
 /** Derived from the existing scene-owned immutable table; borrowed inputs stay live. */
-export function hasGpuDrivenVertexColor(inputs: readonly MaterialProgramVertexInput[]): boolean {
+export function hasGpuDrivenVertexSemantic(
+  inputs: readonly MaterialProgramVertexInput[],
+  semantic: 'color' | 'tangentFrame',
+): boolean {
   return (
-    ownedVertexInputs.get(inputs)?.vertexColor ?? inputs.some((input) => input.semantic === 'color')
+    ownedVertexInputs.get(inputs)?.[semantic] ?? inputs.some((input) => input.semantic === semantic)
   );
 }
 

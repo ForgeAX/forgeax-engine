@@ -9,7 +9,7 @@ import {
   Vector3,
 } from 'three/src/Three.Core.js';
 import { expect, it } from 'vitest';
-import { hasPositiveUniformSourceBasis, readLocalPose } from '../pose';
+import { hasPositiveUniformSourceBasis, POSE_LANES, readLocalPose, SourcePosePage } from '../pose';
 import { SpritePoseReader, spriteMatrix } from '../sprite';
 
 function compose(pose: number[]): Matrix4 {
@@ -61,6 +61,34 @@ it('publishes a Sprite pose through a turning perspective or orthographic camera
   } finally {
     material.dispose();
   }
+});
+
+it('issues independent bounded pose rows that preserve the exact validated scalar values', () => {
+  const page = new SourcePosePage();
+  const rows = Array.from({ length: 65 }, () => page.issueRecord());
+  const first = rows[0] as Float64Array;
+  const last = rows[64] as Float64Array;
+  expect(first.length).toBe(POSE_LANES);
+  expect(rows[1]?.buffer).toBe(first.buffer);
+  expect(last.buffer).not.toBe(first.buffer);
+  expect(first.buffer.byteLength).toBeLessThanOrEqual(
+    8 * POSE_LANES * Float64Array.BYTES_PER_ELEMENT,
+  );
+  const staged = page.reserve(2);
+  staged.set([-0, 1 + 2 ** -40, 2, 0, 0, 0, 1, 1, 1, 1], POSE_LANES);
+  const offset = POSE_LANES;
+  page.writeRecord(first, offset);
+  expect(page.matchesRecord(first, offset)).toBe(true);
+  staged[offset] = 0;
+  expect(page.matchesRecord(first, offset)).toBe(false);
+  staged[offset] = -0;
+  staged[offset + 1] = 1;
+  expect(page.matchesRecord(first, offset)).toBe(false);
+  page.release(0);
+  expect(Object.is(first[0], -0)).toBe(true);
+  expect(first[1]).toBe(1 + 2 ** -40);
+  expect(last).toEqual(new Float64Array(POSE_LANES));
+  expect(page.issueRecord().buffer).not.toBe(last.buffer);
 });
 
 it('reads the source local pose independently of the inherited world transform', () => {

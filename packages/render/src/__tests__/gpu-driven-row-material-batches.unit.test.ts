@@ -91,6 +91,24 @@ describe('row-material GPU batches', () => {
     expect(scene([...unique.slice(0, 4), masked]).topology.sourcePlan().batches).toHaveLength(2);
   });
 
+  it('carries a group across geometry replacement and retires it with its final row', () => {
+    const resource = material(0);
+    const source = row(1, resource);
+
+    const { projection, topology } = scene([resource]);
+    const first = topology.sourcePlan().batches.at(0)?.binding?.rowGroup;
+    expect(first?.rows.get(resource)).toBe(1);
+    // The new geometry still uses the same group even when replacement temporarily removes its last row.
+    topology.apply(projection.apply([update({ ...source, assetHandle: 8 })]));
+    expect(topology.sourcePlan().batches.at(0)?.binding?.rowGroup).toBe(first);
+    topology.apply(projection.apply([{ kind: 'remove', entityKey: 1 }]));
+    topology.apply(projection.apply([update(row(2, resource))]));
+    const replacement = topology.sourcePlan().batches.at(0)?.binding?.rowGroup;
+    expect(replacement).not.toBe(first);
+    expect(replacement?.rows.get(resource)).toBe(1);
+    expect(first?.rows.size).toBe(0);
+  });
+
   it('moves the batch binding when its material loses the last member', () => {
     const resources = [material(0), material(1), material(2)];
     const { projection, topology } = scene(resources);

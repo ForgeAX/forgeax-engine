@@ -13,6 +13,7 @@ type RetainedInputs = Pick<
   | 'shadow'
   | 'forwardDirectionalShadow'
   | 'forwardCapsuleShadows'
+  | 'deferredCapsuleShadows'
   | 'compactGbuffer'
   | 'deferredPcfLighting'
 >;
@@ -34,7 +35,7 @@ export function retainedFrameGraphPolicy(topology: RetainedInputs): RetainedFram
   const receivers = directional === 'disabled' ? undefined : directional.terrainReceivers;
   return {
     screen: topology.forwardDirectionalShadow?.mode === 'screen',
-    capsule: topology.forwardCapsuleShadows === true,
+    capsule: topology.forwardCapsuleShadows === true || topology.deferredCapsuleShadows === true,
     gbuffer: topology.compactGbuffer,
     pcf: topology.deferredPcfLighting === true,
     staticDirectional: directional !== 'disabled' && directional.staticLayer !== false,
@@ -54,14 +55,14 @@ export function retainedFrameGraphPolicy(topology: RetainedInputs): RetainedFram
 export function retainedFrameGraphPolicyMatches(
   policy: RetainedFrameGraphPolicy | undefined,
   directional: Directional,
-  forwardCapsuleShadows: boolean,
+  capsuleShadows: boolean,
   compactGbuffer?: RenderPipelineTopology['compactGbuffer'],
   deferredPcfLighting = false,
   staticLayers?: Readonly<StaticShadowLayout>,
 ): boolean {
   return (
     policy?.screen !== true &&
-    (policy?.capsule === true) === forwardCapsuleShadows &&
+    (policy?.capsule === true) === capsuleShadows &&
     policy?.gbuffer === compactGbuffer &&
     (policy?.pcf === true) === deferredPcfLighting &&
     (staticLayers === undefined ||

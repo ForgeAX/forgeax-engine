@@ -1,5 +1,6 @@
 import { projectedProbeCount } from '../scene/probe-blend';
 import type { DrawRows } from './frame-snapshot';
+import type { MaterialRelationFrame } from './material-binding-index';
 // GPU-driven lane preparation for one display frame: producer artifacts,
 // the GPU owner's prepare request, its shadow view roster, and the direct
 // shadow rows that remain CPU-recorded beside it.
@@ -13,6 +14,7 @@ import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import {
   type CollectedMaterialArtifacts,
   collectGpuDrivenMaterialArtifacts,
+  type MaterialArtifactDemand,
 } from '../gpu-driven/material-artifacts';
 import type {
   GpuDrivenPrepareInput,
@@ -21,10 +23,9 @@ import type {
 } from '../gpu-driven/production-raster';
 import {
   type ShadowCameraCullDilation,
-  type ShadowViewIdentity,
   shadowCameraCullDilation,
-  shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
+import type { MaterialResource } from '../material-resource';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
@@ -36,8 +37,12 @@ import type {
   SpotLightSnapshot,
 } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import { dispatchPassWork, type MaterialFrame } from '../scene/material-dispatch';
-import type { ShadowMaterialContent } from '../scene/material-shadow-content';
+import {
+  MaterialFrame,
+  someCapturedMaterialPass,
+  visitCapturedCasterMaterials,
+} from '../scene/material-dispatch';
+import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type {
   PersistentGpuDrivenState,
   PersistentShadowCasterProjection,
@@ -47,7 +52,12 @@ import { shadowPlanes } from '../shadow-frustum';
 import { DEFAULT_STATIC_SHADOW_BUDGET_BYTES } from '../static-shadow-memory';
 import { SHADOW_CASTER_PASS_SELECTOR } from '../systems/pass-selector';
 import { storeViewGpuDrivenOutcome } from '../world/gpu-driven-systems';
-import { shadowViewCasterChannels, shadowViewLight, type ViewLights } from '../world/render-lights';
+import {
+  type ShadowViewProjection,
+  shadowViewCasterChannels,
+  shadowViewLight,
+  type ViewLights,
+} from '../world/render-lights';
 import { renderWorldFor } from '../world/render-world';
 import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
 import type { ViewDrawPhases } from './direct-draw-phase';
@@ -89,7 +99,7 @@ export function collectFrameGpuDrivenArtifacts(
   scene: PersistentGpuDrivenState | undefined,
   programs: PersistentShadowCasterProjection['materialPrograms'] | undefined,
   standard: StandardTopologyInputValue,
-  shadowViews: boolean,
+  demand: MaterialArtifactDemand,
 ): CollectedMaterialArtifacts {
   return collectGpuDrivenMaterialArtifacts({
     batches: scene?.plan.batches ?? [],
@@ -102,61 +112,73 @@ export function collectFrameGpuDrivenArtifacts(
       ).isMaterialArtifactPreparationPending(id),
     clustered: clusteredLightingActive(standard),
     reflectionFallback: reflectionFallbackDemandOf(internals),
-    shadowViews,
+    demand,
   });
+}
+
+/** The Scene dispatch includes offscreen casters and each distinct row material. */
+function captureSceneCasterMaterials(
+  internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
+  scope: RenderResourceScope,
+  content: ShadowMaterialContent,
+  projection: PersistentShadowCasterProjection | undefined,
+): boolean {
+  return (
+    projection !== undefined &&
+    visitCapturedCasterMaterials(projection.dispatch, (resource) =>
+      content.addFromFrame(
+        resource,
+        projection.content.materials,
+        scope,
+        internals.preparedMaterialTexture,
+        0,
+      ),
+    )
+  );
 }
 
 export function collectGpuShadowMaterials(
   internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
   sourceScope: RenderResourceScope,
   batchExecutions: CollectedMaterialArtifacts['batchExecutions'],
-  meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
   shadowMaterials: ShadowMaterialContent,
-  meshReads: ShadowMeshInput | undefined,
   projection?: PersistentShadowCasterProjection,
-): void {
-  const casterWork = projection === undefined ? undefined : dispatchPassWork(projection.dispatch);
-  if (casterWork !== undefined) {
-    // Native ShadowCaster work already excludes non-casters and retains each
-    // material root even when GPU row batching binds one representative.
-    for (const work of casterWork.work) {
-      if (work.pass.tags.LightMode !== 'ShadowCaster') continue;
-      const accepted = projection?.content.materials.get(work.resource);
-      if (accepted !== undefined)
-        shadowMaterials.add(
-          work.resource,
-          accepted.snapshot,
-          sourceScope,
-          internals.preparedMaterialTexture,
-          0,
-        );
-    }
-  }
-  for (const binding of batchExecutions.keys()) {
-    const execution = batchExecutions.get(binding);
-    if (execution === undefined || execution.shadow.route === 'none') continue;
-    // A batch whose members all opt out of casting rasters nothing; its
-    // material edits cannot invalidate retained shadow depth.
-    const scope = sourceScope;
-    if (casterWork === undefined && scope !== undefined) {
+): PersistentShadowCasterProjection | undefined {
+  if (captureSceneCasterMaterials(internals, sourceScope, shadowMaterials, projection))
+    return projection;
+  if (sourceScope !== undefined) {
+    batchExecutions.forEach((execution, binding) => {
+      if (execution.shadow.route === 'none') return;
       shadowMaterials.add(
         binding.material,
         execution.shadow.material,
-        scope,
+        sourceScope,
         internals.preparedMaterialTexture,
         0,
       );
       if (binding.rowGroup !== undefined)
         shadowMaterials.addRows(
           binding.rowGroup.rows.keys(),
-          scope,
+          sourceScope,
           internals.preparedMaterialTexture,
           0,
         );
-    }
-    const mesh = meshes.get(binding);
-    meshReads?.reads.add(mesh?.changeToken);
+    });
   }
+  return undefined;
+}
+
+/** The consumer owns a concrete record of the physical versions it may retain. */
+export function captureCasterMaterialReads(
+  internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
+  scope: RenderResourceScope,
+  executions: CollectedMaterialArtifacts['batchExecutions'],
+  materials: MaterialFrame,
+  scene: PersistentShadowCasterProjection | undefined,
+) {
+  const content = new ShadowMaterialContent(materials);
+  const source = collectGpuShadowMaterials(internals, scope, executions, content, scene);
+  return { content, source };
 }
 
 export function gpuProbeBlendBufferFor(
@@ -239,7 +261,7 @@ export function gpuDrivenPrepareRequest(
   visibleSurface: VisibleSurfaceProjection | undefined,
   probeBlendRecordBuffer: Buffer | undefined,
   shadowViews: boolean,
-  shadowMaterials: ShadowMaterialContent,
+  shadowMaterials: ShadowMaterialContent | undefined,
   materialBindingClasses: ReadonlyMap<string, string>,
   shadowCasterProjection: PersistentShadowCasterProjection | undefined,
   profilePhase: RecordProfileRunner | undefined,
@@ -278,7 +300,7 @@ export function gpuDrivenPrepareRequest(
     ...gpuDrivenArtifactInputs(artifacts, probeBlendRecordBuffer),
     materialPipelineState: pipelineState,
     shadowViews,
-    shadowMaterials,
+    ...(shadowMaterials === undefined ? {} : { shadowMaterials }),
     ...(shadowCasterProjection === undefined
       ? {}
       : { materialFrame: shadowCasterProjection.content.materials }),
@@ -293,19 +315,18 @@ export function gpuDrivenPrepareRequest(
 function pushShadowViewRequest(
   views: ShadowViewRequest[],
   lights: ViewLights,
-  planesByView: ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
-  identity: ShadowViewIdentity,
-  matrix: Float32Array,
+  view: ShadowViewProjection,
   layers: ReturnType<typeof staticShadowAdmission>,
   cameraCull?: ShadowCameraCullDilation,
 ): void {
+  const { identity, planes, matrix } = view;
   views.push({
     identity,
     casterChannels: shadowViewCasterChannels(lights, identity),
     planes:
-      planesByView.get(shadowViewIdentityKey(identity)) ??
+      planes ??
       shadowPlanes(
         matrix,
         identity.kind === 'directional' &&
@@ -334,7 +355,6 @@ function pushShadowViewRequest(
  */
 export function gpuShadowViewRequests(
   lights: ViewLights,
-  planesByView: ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
@@ -370,11 +390,9 @@ export function gpuShadowViewRequests(
     pushShadowViewRequest(
       views,
       lights,
-      planesByView,
       targetSize,
       graphGeneration,
-      identity,
-      view.matrix,
+      view,
       layers,
       identity.kind === 'directional'
         ? directionalCameraCull
@@ -402,7 +420,6 @@ export function updateGpuDrivenShadowViews(
   profilePhase: RecordProfileRunner | undefined,
   gpuShadowViews: boolean,
   lights: ViewLights,
-  shadowPlanesByView: () => ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
@@ -416,7 +433,6 @@ export function updateGpuDrivenShadowViews(
   const requests = gpuShadowViews
     ? gpuShadowViewRequests(
         lights,
-        shadowPlanesByView(),
         targetSize,
         graphGeneration,
         directionalLimit,
@@ -463,12 +479,14 @@ const DIRECT_SHADOWS = {};
 
 /** Shadow rows of one retained phase; `derived` reports material-derived geometry. */
 export interface DirectShadowRows {
+  readonly materialRows?: MaterialRelationFrame | undefined;
   readonly rows: DrawRows;
   readonly derived: boolean;
 }
 
 /** Inputs both shadow consumers share. */
 export interface DirectShadowInputs {
+  readonly retainMaterialBindings?: boolean | undefined;
   readonly scene: PersistentGpuDrivenState;
   readonly phases: ViewDrawPhases;
   readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
@@ -491,6 +509,7 @@ function shadowRows(
   // Record owns this graph-dependent cache: only the compiled graph names its
   // shadow consumers. This queues direct rows, not a World schedule or submit.
   phase.queue({
+    retainMaterialBindings: inputs.retainMaterialBindings === true,
     scene: inputs.scene,
     selection,
     select,
@@ -503,7 +522,13 @@ function shadowRows(
     prepareGeometry: inputs.prepareGeometry,
     geometry: inputs.geometry,
   });
-  return { rows: inputs.lodRows(phase.emit().rows), derived: phase.derivesGeometry };
+  const output = phase.emit();
+  const rows = inputs.lodRows(output.rows);
+  return {
+    rows,
+    materialRows: rows === output.rows ? output.materialRows : undefined,
+    derived: phase.derivesGeometry,
+  };
 }
 
 /** Unbatched and capture-visible shadow casters beside the GPU shadow view pool. */
@@ -543,31 +568,106 @@ export function validateDirectShadowRows(inputs: DirectShadowInputs): DirectShad
   });
 }
 
-export function collectDirectShadowMaterials(
-  internals: RenderSystemInternals,
+/** The atlas reads physical mesh generations and material inputs from their respective owners. */
+export function directionalAtlasMaterialReads(
+  internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
+  sourceScope: RenderResourceScope,
+  rows: DrawRows | undefined,
+  materials: MaterialFrame,
+  gpuInput: {
+    readonly shadowReads?: ReturnType<typeof captureCasterMaterialReads> | undefined;
+    readonly request: Pick<GpuDrivenPrepareInput, 'batchExecutions'> | undefined;
+  },
+  scene: PersistentShadowCasterProjection | undefined,
+  meshReads: ShadowMeshInput | undefined,
+  sceneOwnsRows = true,
+): readonly ShadowMaterialContent[] {
+  // The directional atlas is retained as one texture. A live binding on any
+  // occupied caster invalidates it all, including the other fixed materials.
+  // GPU shadow views keep their full inputs for independently selected casters.
+  if (
+    gpuInput.shadowReads === undefined &&
+    sceneOwnsRows &&
+    scene !== undefined &&
+    (gpuInput.request !== undefined || (rows?.length ?? 0) > 0) &&
+    MaterialFrame.fixedProgramRoot(scene.content.materials) !== undefined &&
+    (internals.preparedMaterialTexture === undefined ||
+      internals.preparedMaterialTexture.parameters !== undefined)
+  ) {
+    const content = new ShadowMaterialContent(materials, 'whole-atlas');
+    const captured = someCapturedMaterialPass(scene.dispatch, (pass, resource) => {
+      if (pass.tags.LightMode !== 'ShadowCaster') return false;
+      content.addFromFrame(
+        resource,
+        scene.content.materials,
+        sourceScope,
+        internals.preparedMaterialTexture,
+        0,
+      );
+      return content.requiresAtlasRedraw;
+    });
+    if (captured !== undefined) {
+      if (meshReads !== undefined && rows !== undefined)
+        for (const row of rows) meshReads.reads.add(row.mesh.changeToken);
+      return [content];
+    }
+  }
+  const reads =
+    gpuInput.shadowReads ??
+    (gpuInput.request === undefined
+      ? undefined
+      : captureCasterMaterialReads(
+          internals,
+          sourceScope,
+          gpuInput.request.batchExecutions,
+          materials,
+          scene,
+        ));
+  if (rows === undefined || rows.length === 0) return reads === undefined ? [] : [reads.content];
+  if (sceneOwnsRows && scene !== undefined) {
+    const queued = reads?.source === scene;
+    const content = queued ? reads.content : new ShadowMaterialContent(materials);
+    if (queued || captureSceneCasterMaterials(internals, sourceScope, content, scene)) {
+      if (meshReads !== undefined)
+        for (const row of rows) meshReads.reads.add(row.mesh.changeToken);
+      return queued || reads === undefined ? [content] : [reads.content, content];
+    }
+  }
+  const direct = new ShadowMaterialContent();
+  collectDirectShadowMaterials(internals, sourceScope, rows, materials, direct, meshReads);
+  return reads === undefined ? [direct] : [reads.content, direct];
+}
+
+function collectDirectShadowMaterials(
+  internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
   sourceScope: RenderResourceScope,
   rows: DrawRows | undefined,
   materials: MaterialFrame,
   shadowMaterials: ShadowMaterialContent,
   meshReads: ShadowMeshInput | undefined,
 ): void {
-  for (const row of rows ?? []) {
+  if (rows === undefined) return;
+  let previous: MaterialResource | undefined;
+  for (const row of rows) {
     meshReads?.reads.add(row.mesh.changeToken);
-    const scope = sourceScope;
-    if (scope === undefined) continue;
-    for (const index of row.submeshIndices ?? row.mesh.submeshes.keys()) {
-      const submesh = row.mesh.submeshes[index];
+    if (sourceScope === undefined) continue;
+    const selection = row.submeshIndices;
+    const submeshes = row.mesh.submeshes;
+    const count = selection?.length ?? submeshes.length;
+    for (let cursor = 0; cursor < count; cursor++) {
+      const index = selection === undefined ? cursor : selection[cursor];
+      const submesh = index === undefined ? undefined : submeshes[index];
       if (submesh === undefined) continue;
       const resource = row.source.materials[submesh.materialSlot] ?? row.source.material;
-      const accepted = materials.get(resource);
-      if (accepted !== undefined)
-        shadowMaterials.add(
-          resource,
-          accepted.snapshot,
-          scope,
-          internals.preparedMaterialTexture,
-          0,
-        );
+      if (resource === previous) continue;
+      previous = resource;
+      shadowMaterials.addFromFrame(
+        resource,
+        materials,
+        sourceScope,
+        internals.preparedMaterialTexture,
+        0,
+      );
     }
   }
 }

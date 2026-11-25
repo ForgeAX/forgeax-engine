@@ -165,6 +165,7 @@ function prepareMaterialPatch(
   return {
     value: { ...current, values: values as Record<string, MaterialValue | null> },
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,
@@ -360,6 +361,7 @@ function prepareBinaryPatch(
   return {
     value: next as unknown as Asset,
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,
@@ -472,6 +474,7 @@ function prepareTerrainPatch(
   return {
     value,
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,

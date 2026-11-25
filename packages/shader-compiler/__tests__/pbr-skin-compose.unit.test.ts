@@ -74,6 +74,7 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_pbr::gbuffer_output': read('standard-gbuffer-output.wgsl'),
     'forgeax_ssr::forward': read('ssr-forward.wgsl'),
     'forgeax_depth_pyramid::sample': read('depth-pyramid-sample.wgsl'),
+    'forgeax_ssr::ray': read('ssr-ray.wgsl'),
     'forgeax_pbr::lighting_spot_modifiers': read('lighting-spot-modifiers.wgsl'),
     'forgeax_pbr::lighting_ies_profile': read('lighting-ies-profile.wgsl'),
     'forgeax_pbr::lighting_rect_area': read('lighting-rect-area.wgsl'),

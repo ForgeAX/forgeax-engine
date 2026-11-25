@@ -336,6 +336,23 @@ const isolatedCoverageFileSets = [
     weight,
   })),
   {
+    // Run 45388190303 exceeded the 15 s doctor source/cook check in the
+    // two-worker DevKit child. Keep the entire bootstrap suite instrumented.
+    project: '@forgeax/engine-devkit',
+    files: ['packages/devkit/src/__tests__/bootstrap-commands.test.ts'],
+    splitFromReceipt: '@forgeax/engine-devkit:shard-2-of-2',
+    weight: 30,
+  },
+  {
+    // Run 45381712639 exceeded the 5 s cold SVG Worker case in the shared
+    // child. Keep all format tests instrumented in a single-worker process.
+    project: '@forgeax/engine-mesh-io',
+    files: ['packages/mesh-io/src/__tests__/formats.integration.test.ts'],
+    splitFromReceipt:
+      '@forgeax/engine-intelligence-dsh,@forgeax/engine-intelligence-fake,@forgeax/engine-interaction,@forgeax/engine-math,@forgeax/engine-mesh-io',
+    weight: 10,
+  },
+  {
     // Run 39497388005 shared cold 100k World initialization with Render's
     // instrumented child: 5.702 s at the original 5 s deadline. Keep all rows
     // and the same deadline, without competing with another coverage child.

@@ -6,8 +6,15 @@ export function gpuTemporalEligible(
   material: string | undefined,
   deformation: 'rigid' | 'skin' | undefined,
   lodLevels: number,
+  filter?: RenderPipelineGpuDrivenFilter,
 ): boolean {
-  return isStandardPbrMaterialShader(material) && deformation === 'rigid' && lodLevels > 1;
+  const depthVelocity = filter === 'opaque-depth-velocity';
+  return (
+    deformation === 'rigid' &&
+    (isStandardPbrMaterialShader(material) ||
+      (depthVelocity && material === 'forgeax::default-unlit')) &&
+    (depthVelocity || lodLevels > 1)
+  );
 }
 
 export function gpuRasterFilterMatches(
@@ -17,7 +24,10 @@ export function gpuRasterFilterMatches(
 ): boolean {
   return !(
     (filter === 'single-layer-medium' && !medium) ||
-    ((filter === 'opaque' || filter === 'deferred-opaque' || filter === 'forward-only-opaque') &&
+    ((filter === 'opaque' ||
+      filter === 'opaque-depth-velocity' ||
+      filter === 'deferred-opaque' ||
+      filter === 'forward-only-opaque') &&
       medium) ||
     (filter === 'deferred-opaque' && materialPass !== 'deferred') ||
     (filter === 'forward-only-opaque' && materialPass === 'deferred')
@@ -25,5 +35,9 @@ export function gpuRasterFilterMatches(
 }
 
 export function isVelocityRasterEntry(entry: string | undefined): boolean {
-  return entry === 'fs_temporal' || entry === 'fs_scene_velocity';
+  return entry === 'fs_temporal' || isDepthVelocityEntry(entry);
+}
+
+export function isDepthVelocityEntry(entry: string | undefined): boolean {
+  return entry === 'fs_temporal_depth' || entry === 'fs_scene_velocity';
 }

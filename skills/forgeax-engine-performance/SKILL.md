@@ -1333,6 +1333,19 @@ node <skill>/scripts/gpu.mjs images /outside/source/gpu-view
 node <skill>/scripts/gpu.mjs timing capture.json --pointer /gpu/samples/0/observation/frame --out-dir /outside/source/gpu-time
 ```
 
+For a binding audit:
+
+1. Use `forgeax rhi inspect --artifact frame.rhitape --work-index <index> --json`.
+   Record the selected shader entries, group slots, buffer ranges, and dynamic
+   offsets. Read stage visibility from the bind group layout descriptor.
+2. Count distinct buffer handles by owner label. Use cold captures for creation
+   and steady captures for live requested bytes and `writeBuffer` counts.
+3. Enable `renderer.inspect({ pipelineLibraryCollection: true })` on a supported
+   backend before the diagnostic frame. Read
+   `renderer.inspect({ fields: ['shaderTemplates', 'pipelineLibrary', 'rasterPassRequests'], runtimeRequests: true })`
+   to compare program selection, native layouts, and pipeline reuse. Record
+   completed-frame timings with route collection and RHI capture disabled.
+
 `report` uses the built RHI Debug module at `packages/rhi-debug/dist/index.mjs`
 under the current directory; supply `--rhi-module` for another installation.
 Alternatively pass `{identity:{tapeDigest},frameModel}` JSON from the canonical

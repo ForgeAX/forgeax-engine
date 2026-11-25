@@ -20,6 +20,9 @@ it.each([
     // One joint: current and previous matrices.
     expect(tasks.paletteUploadBytes).toBe(128);
     const writes = write.mock.calls.length;
+    if (storage) {
+      expect(write.mock.calls.map((call) => call[4])).toEqual([160, 16]);
+    }
     expect(tasks.demand(f.first)).toBe(a);
     expect(write).toHaveBeenCalledTimes(writes);
     expect(tasks.paletteUploadBytes).toBe(128);
@@ -43,6 +46,34 @@ it.each([
     tasks.dispose();
     write.mockRestore();
     f.dispose();
+  }
+});
+
+it('writes history directly after the actual palette when a smaller rig reuses scratch', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const tasks = new SkinTasks(device, true);
+  const large = skinTaskFixture(8),
+    small = skinTaskFixture(2);
+  const write = vi.spyOn(device.queue, 'writeBuffer');
+  try {
+    tasks.begin(large.frame);
+    expect(tasks.demand(large.first)).toBeDefined();
+    await tasks.complete();
+    write.mockClear();
+    tasks.begin(small.frame);
+    expect(tasks.demand(small.first)).toBeDefined();
+    expect(write.mock.calls.map((call) => call[4])).toEqual([288, 16]);
+    const bytes = write.mock.calls[0]?.[2] as ArrayBuffer;
+    expect(new Uint32Array(bytes, 0, 4)[1]).toBe(2);
+    const current = new Float32Array(bytes, 32, 32);
+    expect(Array.from(new Float32Array(bytes, 160, 32))).toEqual(Array.from(current));
+    expect(current[0]).toBe(1);
+  } finally {
+    write.mockRestore();
+    await tasks.complete();
+    await tasks.dispose();
+    small.dispose();
+    large.dispose();
   }
 });
 
@@ -128,21 +159,20 @@ it('omits missing current pose instead of producing a valid task descriptor', as
   }
 });
 
-it('retries scratch growth after the second allocation fails without publishing mismatched arrays', async () => {
+it('retries scratch growth after constructing the palette view fails without publishing mismatched arrays', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap(),
     f = skinTaskFixture(),
     tasks = new SkinTasks(device, true);
   const original = Float32Array,
-    failure = new Error('second scratch allocation failed');
-  let allocations = 0;
+    failure = new Error('scratch view construction failed');
+
   try {
     tasks.begin(f.frame);
     vi.stubGlobal(
       'Float32Array',
       new Proxy(original, {
-        construct(target, args) {
-          if (++allocations === 2) throw failure;
-          return Reflect.construct(target, args);
+        construct() {
+          throw failure;
         },
       }),
     );
@@ -198,16 +228,16 @@ it.each([
     f = skinTaskFixture(),
     tasks = new SkinTasks(device, storage);
   const actual = device.queue.writeBuffer.bind(device.queue),
-    cause = new Error('injected previous palette write failure');
+    cause = new Error('injected Skin task write failure');
   let writes = 0;
   const write = vi.spyOn(device.queue, 'writeBuffer').mockImplementation((...args) => {
-    if (++writes === 3) throw cause;
+    if (++writes === (storage ? 2 : 3)) throw cause;
     return actual(...args);
   });
   try {
     tasks.begin(f.frame);
     expect(() => tasks.demand(f.first)).toThrow(cause);
-    expect(tasks.paletteUploadBytes).toBe(64);
+    expect(tasks.paletteUploadBytes).toBe(storage ? 128 : 64);
   } finally {
     write.mockRestore();
     await tasks.complete();

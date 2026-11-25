@@ -679,6 +679,7 @@ const RENDER_PROFILE_KEYS = new Set([
   'configurationRevision',
   'outputContract',
   'featureReadOnlyDepthBatching',
+  'roughRefraction',
   'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
   'lightCount',
@@ -694,6 +695,7 @@ const RENDER_PROFILE_KEYS = new Set([
   'diffuseGi',
   'probePlacement',
   'pbr',
+  'contactShadows',
   'ibl',
   'ambientOcclusion',
   'volumetricFog',
@@ -708,6 +710,8 @@ function validateConfigurationProfile(profile: RenderProfile): string | undefine
     (!Number.isSafeInteger(profile.configurationRevision) || profile.configurationRevision < 1)
   )
     return 'configurationRevision must be a positive safe integer';
+  if (profile.contactShadows !== undefined && typeof profile.contactShadows !== 'boolean')
+    return 'RenderProfile.contactShadows must be boolean';
   const qualityFailure = validateRenderQualityBudgets(profile.quality);
   if (qualityFailure !== undefined) return qualityFailure;
   return undefined;
@@ -853,6 +857,8 @@ function validateVolumetricFogProfile(volume: RenderProfile['volumetricFog']): s
 
 /** Optional boolean switches for experiments and diagnostics. */
 function validateDiagnosticFlags(profile: RenderProfile): string | undefined {
+  if (profile.roughRefraction !== undefined && typeof profile.roughRefraction !== 'boolean')
+    return 'RenderProfile.roughRefraction must be boolean';
   if (
     profile.featureReadOnlyDepthBatching !== undefined &&
     typeof profile.featureReadOnlyDepthBatching !== 'boolean'

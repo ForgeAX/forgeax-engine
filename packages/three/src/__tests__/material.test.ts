@@ -1,4 +1,4 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, findMaterialPassProgram } from '@forgeax/engine-assets-runtime';
 import {
   AdditiveBlending,
   BackSide,
@@ -191,35 +191,46 @@ describe('Three material projection', () => {
     });
   });
 
-  it('installs only requested bundled programs and shares the admitted recipe across instances', async () => {
+  it('admits both stock Physical shapes from one source and compiles only a selected pass', async () => {
     const assets = new AssetRegistry();
     owners.push(assets);
     const install = vi.spyOn(assets.materialArtifactRegistry, 'register');
     const project = await prepareMaterialPrograms(assets);
     const basic = projectMaterial(new MeshBasicMaterial(), {}).unwrap();
     expect(project(basic)).toBe(basic);
+    const source = new MeshPhysicalMaterial({ clearcoat: 0.5 });
+    const plain = project(projectMaterial(source, {}).unwrap());
+    const texture = assets
+      .create(projectTexture(new DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1)).unwrap())
+      .unwrap();
+    const mapped = project(projectMaterial(source, { baseColorTexture: { texture } }).unwrap());
+    const plainProgram = assets.materialPayloadProjections.get(plain);
+    const mappedProgram = assets.materialPayloadProjections.get(mapped);
+    if (!plainProgram || !mappedProgram) throw new Error('Missing stock Physical projection');
+    expect(plainProgram.sourceTemplate?.sources).toBe(mappedProgram.sourceTemplate?.sources);
+    expect(mapped.values?.baseColorTexture).toEqual({ texture });
+    expect(plain.values?.baseColorTexture).toBeUndefined();
     expect(install).not.toHaveBeenCalled();
-    const physical = projectMaterial(new MeshPhysicalMaterial({ clearcoat: 0.5 }), {}).unwrap();
-    expect(project(physical).parameters?.length).toBeGreaterThan(0);
-    const installed = install.mock.calls.length;
-    expect(installed).toBeGreaterThan(0);
-    project(projectMaterial(new MeshPhysicalMaterial({ clearcoat: 0.8 }), {}).unwrap());
-    expect(install.mock.calls.length).toBe(installed);
-  });
-
-  it('loads and shares only the requested packaged Physical variant in its asset registry', async () => {
-    const assets = new AssetRegistry();
-    owners.push(assets);
-    const project = await prepareMaterialPrograms(assets);
-    const other = await prepareMaterialPrograms(assets);
-    expect(assets.materialArtifactRegistry.storageStats().artifacts).toBe(0);
-    const projected = projectMaterial(new MeshPhysicalMaterial({ clearcoat: 1 }), {}).unwrap();
-    expect(project(projected).values?.clearcoat).toBeDefined();
-    const first = assets.materialArtifactRegistry.storageStats();
-    expect(first.compressedArtifacts).toBeGreaterThan(0);
-    expect(first.compressedGroups).toBe(1);
-    other(projected);
-    expect(assets.materialArtifactRegistry.storageStats()).toEqual(first);
+    const context = {
+      pipeline: 'forward',
+      backend: 'webgpu',
+      capability: 'storage-buffer',
+      geometry: 'mesh',
+      pass: 'forward',
+      instrumentation: 'none',
+      profile: 'forgeax-material-wgsl-v1',
+      toolchain: 'naga-oil',
+    } as const;
+    const program = findMaterialPassProgram(mappedProgram, 'forward', context);
+    expect(program).toBeDefined();
+    expect(install).toHaveBeenCalledTimes(1);
+    const next = (await prepareMaterialPrograms(assets))(
+      projectMaterial(source, { baseColorTexture: { texture } }).unwrap(),
+    );
+    const nextProgram = assets.materialPayloadProjections.get(next);
+    if (!nextProgram) throw new Error('Missing stock Physical projection');
+    expect(findMaterialPassProgram(nextProgram, 'forward', context)).toBe(program);
+    expect(install).toHaveBeenCalledTimes(1);
   });
 
   it('admits an exact application-cooked texture combination and rejects a missing variant', {

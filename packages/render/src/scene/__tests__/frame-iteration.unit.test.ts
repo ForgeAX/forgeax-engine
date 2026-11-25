@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MemberCandidates } from '../../gpu-driven/batch-members';
 import { FrameProjection, RetainedFrameProjection } from '../frame-list';
-import { nodes, put, remove } from '../frame-tree';
+import { changes, type Node, nodes, put, remove, treeKind } from '../frame-tree';
 import { TreeFrame } from '../frame-tree-list';
 
 function tree(keys: readonly number[]) {
@@ -11,6 +11,61 @@ function tree(keys: readonly number[]) {
 }
 
 describe('frame tree iteration and no-op edits', () => {
+  it('diffs mixed queue and key edits in order without constructing temporary tree nodes', () => {
+    const kind = treeKind();
+    let previous: Node<number> | undefined;
+    const expected = new Map<number, number>();
+    for (let key = 0; key < 256; key++) {
+      previous = put(previous, key, key % 3, key, 1, kind);
+      expected.set(key, key);
+    }
+    let current = previous;
+    const updated = new Map(expected);
+    for (let key = 0; key < 320; key++) {
+      if (key % 4 === 0) {
+        current = remove(current, key % 3, key);
+        updated.delete(key);
+      } else if (key % 3 === 0 || key >= 256) {
+        current = put(current, -key, key % 3, key, 2, kind);
+        updated.set(key, -key);
+      }
+    }
+    let constructorReads = 0;
+    Object.defineProperty(kind.prototype, 'constructor', {
+      get() {
+        constructorReads++;
+        return kind;
+      },
+    });
+    const diff = (a: typeof previous, b: typeof previous) => {
+      const rows: unknown[][] = [];
+      changes(a, b, (before, after, key, queue) => rows.push([queue, key, before, after]));
+      return rows;
+    };
+    const edits = Array.from(new Set([...expected.keys(), ...updated.keys()]))
+      .filter((key) => expected.get(key) !== updated.get(key))
+      .sort((a, b) => (a % 3) - (b % 3) || a - b);
+    expect(diff(previous, current)).toEqual(
+      edits.map((k) => [k % 3, k, expected.get(k), updated.get(k)]),
+    );
+    expect(diff(current, previous)).toEqual(
+      edits.map((k) => [k % 3, k, updated.get(k), expected.get(k)]),
+    );
+    expect(constructorReads).toBe(0);
+  });
+
+  it('compares matching keys when equal heap priorities produce different roots', () => {
+    // The queue multiplier cancels this key in the node priority hash.
+    const key = 0x85ebca6b;
+    const first = put(put(undefined, 'left', 0, 0, 1), 'right', 1, key, 1);
+    const second = put(put(undefined, 'right', 1, key, 1), 'edited', 0, 0, 1);
+    expect(first.key).not.toBe(second.key);
+    expect(first.priority).toBe(second.priority);
+    const rows: unknown[][] = [];
+    changes(first, second, (...row) => rows.push(row));
+    expect(rows).toEqual([['left', 'edited', 0, 0]]);
+  });
+
   it('walks nodes in key order and supports independent nested walks', () => {
     const root = tree([5, 1, 9, 3, 7]);
     expect([...nodes(root)].map((node) => node.key)).toEqual([1, 3, 5, 7, 9]);

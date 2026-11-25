@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import {
   copyMeshAttribute,
@@ -14,7 +15,11 @@ import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { PackageRequest } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WechatCacheFiles } from '../download-cache.js';
-import { createWechatRemotePackageFetcher, type WechatDownloadSource } from '../remote-fetch.js';
+import {
+  createWechatRemotePackageFetcher,
+  type WechatDownloadSource,
+  type WechatRemotePackageOptions,
+} from '../remote-fetch.js';
 
 const baseUrl = 'https://cdn.example/game/';
 const cleanup: (() => Promise<void>)[] = [];
@@ -34,7 +39,18 @@ async function fixture(maxBytes = 4096) {
   const root = (await fs.mkdtemp(join(tmpdir(), 'forgeax-download-'))).replaceAll('\\', '/');
   cleanup.push(() => fs.rm(root, { recursive: true, force: true }));
   const cacheDirectory = `${root}/cache`;
-  const files: WechatCacheFiles = {
+  const readCompressedFile = vi.fn<
+    NonNullable<ReturnType<WechatDownloadSource['getFileSystemManager']>['readCompressedFile']>
+  >((options) =>
+    complete(
+      fs
+        .readFile(options.filePath)
+        .then((data) => ({ data: new Uint8Array(brotliDecompressSync(data)).buffer })),
+      options,
+    ),
+  );
+  const files: WechatCacheFiles & { readCompressedFile: typeof readCompressedFile } = {
+    readCompressedFile,
     readFile: (options) =>
       complete(
         fs.readFile(options.filePath).then((data) => ({ data: new Uint8Array(data).buffer })),
@@ -92,6 +108,7 @@ async function fixture(maxBytes = 4096) {
   const create = (
     overrides: Partial<Omit<typeof options, 'cache'>> & {
       cache?: typeof options.cache | undefined;
+      brotli?: NonNullable<WechatRemotePackageOptions['brotli']>;
     } = {},
   ) => {
     const { cache, ...rest } = { ...options, ...overrides };
@@ -106,6 +123,57 @@ async function fixture(maxBytes = 4096) {
 }
 
 describe('native remote PackageFetcher', () => {
+  it.each([
+    'packed',
+    'decoded',
+    'truncated',
+  ] as const)('reads a Brotli publication with a %s native body', async (mode) => {
+    const f = await fixture();
+    const decoded = new TextEncoder().encode('transport asset bytes '.repeat(20));
+    const packed = brotliCompressSync(decoded);
+    const url = `${baseUrl}mesh.bin`;
+    f.bodies.set(
+      `${url}.br`,
+      mode === 'packed' ? packed : mode === 'decoded' ? decoded : packed.subarray(0, -1),
+    );
+    const reader = f.create({
+      brotli: (path) =>
+        path === 'mesh.bin'
+          ? { packedBytes: packed.byteLength, decodedBytes: decoded.byteLength }
+          : undefined,
+    });
+    if (mode === 'truncated') {
+      await expect(reader.fetch(url)).rejects.toMatchObject({
+        detail: {
+          operation: 'read download',
+          cause: { message: expect.stringContaining('Brotli') },
+        },
+      });
+      f.bodies.set(`${url}.br`, decoded);
+    }
+    for (let i = 0; i < 2; i++) {
+      const response = await reader.fetch(url);
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(decoded);
+    }
+    expect(f.files.readCompressedFile).toHaveBeenCalledTimes(mode === 'packed' ? 1 : 0);
+    expect(f.downloadFile).toHaveBeenCalledTimes(mode === 'truncated' ? 2 : 1);
+  });
+
+  it('refreshes a lost staging file once and retains the native read error', async () => {
+    const f = await fixture();
+    const body = new TextEncoder().encode('published content');
+    const cause = { errMsg: 'readFile:fail staging file expired' };
+    f.bodies.set(`${baseUrl}body`, body);
+    vi.spyOn(f.files, 'readFile').mockImplementationOnce((options) => options.fail(cause));
+    const reader = f.create();
+    expect(await (await reader.fetch('body')).text()).toBe('published content');
+    expect(await (await reader.fetch('body')).text()).toBe('published content');
+    expect(f.downloadFile).toHaveBeenCalledTimes(2);
+    expect(f.errors).toMatchObject([
+      { detail: { operation: 'FileSystemManager.readFile', cause } },
+    ]);
+  });
+
   it.each([
     false,
     true,

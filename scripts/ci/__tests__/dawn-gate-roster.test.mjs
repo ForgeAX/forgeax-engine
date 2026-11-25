@@ -166,6 +166,12 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
       group.softwareGpuHeapRasterThreads !== undefined ? '131072' : undefined,
     );
     assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, bounded ? '1' : undefined);
+    assert.equal(
+      env.GALLIVM_PERF,
+      ['default-gbuffer-gi', 'screen-probe-support', 'world-card-bounds'].includes(group.id)
+        ? 'nopt'
+        : undefined,
+    );
     const parallel = ordinary && !group.serialOrdinary;
     assert.ok(args.includes(`--maxWorkers=${parallel ? 2 : 1}`));
     assert.equal(args.includes('--pool=forks'), parallel);
@@ -1261,8 +1267,10 @@ test('run 44113035424 conserves complete workers and excludes interrupted VFX ti
 test('actual core discovery uses matching costs and conserves every ordinary file', () => {
   // Case deadlines plus 30 s process startup reserve are forecasts, never measurements.
   const unmeasured = [
+    'packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts',
     'packages/render/src/__tests__/target-environment.dawn.test.ts',
     'packages/render/src/__tests__/target-subresources.dawn.test.ts',
+    'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts',
     'packages/three/src/__tests__/procedural-addons-render.dawn.test.ts',
     'packages/three/src/__tests__/surface-expression.dawn.test.ts',
     'packages/three/src/__tests__/target-surface.dawn.test.ts',
@@ -1293,13 +1301,27 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
         // also admits new files, charged at the sequencer's conservative fallback.
         const measured = Object.keys(ledger.coreProfile.files);
         const native = new Set(DAWN_GATE_GROUPS.flatMap(({ files }) => files));
-        const retired = 'packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts';
-        assert.ok(measured.includes(retired));
-        assert.ok(!paths.includes(retired));
+        const retired = new Set([
+          'packages/render/src/__tests__/ssr-hit-color.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-texel-crossing.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-trace-pyramid-rescue.dawn.test.ts',
+          'packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts',
+        ]);
+        for (const file of retired) {
+          assert.ok(measured.includes(file));
+          assert.ok(!paths.includes(file));
+        }
         const declared = coreValidationFiles([...measured, ...Object.keys(ledger.fileReserves)])
-          .filter((path) => path !== retired)
+          .filter((path) => !retired.has(path))
           .filter((path) => !native.has(path));
         assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
+        for (const file of [
+          'packages/render/src/__tests__/depth-pyramid-odd-reduction.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-roughness-mip.dawn.test.ts',
+          'packages/shader/src/__tests__/ssr-ray.dawn.test.ts',
+        ]) {
+          assert.ok(paths.includes(file), file);
+        }
         const added = paths.filter((path) => !declared.includes(path));
         const quick = files.find(({ moduleId }) => moduleId.endsWith('/integer-readback.dawn.test.ts'));
         const lighting = files.find(({ moduleId }) => moduleId.endsWith('/lighting-channels.dawn.test.ts'));
@@ -1313,6 +1335,9 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           project: { name: project.name, config: { maxWorkers: 1 } },
         }));
         process.env.FORGEAX_DAWN_SERIAL_ORDINARY = '2';
+        const gbuffer = 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts';
+        assert.ok(native.has(gbuffer));
+        assert.ok(!paths.includes(gbuffer));
         try {
           const serialContext = { ...context, config: { ...context.config, shard: { index: 4, count: 4 } } };
           const serialLane = await new DawnSequencer(serialContext).shard(serialFiles);
@@ -1332,15 +1357,20 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           'packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts',
         ]);
         const nativeReserves = new Map(DAWN_GATE_GROUPS.filter(({ files }) => files.length > 0)
-          .map(group => [group.id, coreValidationFiles(group.files).length === 0 ? 0 :
-            Math.max(owners.get(group.id) ?? 0, group.placementReserveSeconds ?? 0)]));
+          .map(group => {
+            const selected = coreValidationFiles(group.files);
+            const history = owners.get(group.id) ??
+              selected.reduce((seconds, path) => seconds + (costs.get(path) ?? fallback), 0);
+            return [group.id, selected.length === 0 ? 0 :
+              Math.max(history, group.placementReserveSeconds ?? 0)];
+          }));
         const loads = lanes.map((lane, index) =>
           lane.reduce((sum, { moduleId }) => {
             const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
             return sum + (children.has(path) ? 0 : (costs.get(path) ?? fallback) / 2);
           }, 0) + dawnNativeLaneReserve(DAWN_GATE_GROUPS.filter(group => DAWN_GATE_SHARDS[index].includes(group.id)),
             nativeReserves, 2));
-        assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
+        assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6, 'complete core loads: ' + loads + ', allowed spread: ' + (Math.max(...costs.values()) / 2));
         // Replay the retained measured population; new files still use forecasts.
         const historical = files.filter(({ moduleId }) =>
           Object.hasOwn(ledger.coreProfile.files, relative(process.cwd(), moduleId).replaceAll('\\\\', '/')));
@@ -1502,42 +1532,59 @@ test('completed cohorts distribute complete native tails before ordinary backfil
       'ordinary-1',
       'compact-1',
       'direct-light',
-      'feature-depth',
+      'shadow-quality',
       'nested-discard',
-      'gi-3',
       'heavy-3',
       'modeling-s6',
-      'rect-source',
-      'three-surface-expression',
+      'path-tracer',
+      'surface-pipelines',
+      'gi-3',
     ],
     [
       'ordinary-2',
       'compact-2',
       'gi-2',
-      'heavy-2',
-      'specular-aa',
-      'shadow-quality',
-      'surface-pipelines',
+      'alpha-hash',
+      'feature-depth',
       'transmission',
+      'rect-source',
+      'three-surface-expression',
+      'shadow-fields',
+      'world-card-bounds',
+      'gi-6',
     ],
-    ['ordinary-3', 'alpha-hash', 'compact-3', 'gi-4', 'heavy-1', 'modeling-show', 'screen-probe'],
+    [
+      'ordinary-3',
+      'heavy-2',
+      'compact-3',
+      'gi-4',
+      'heavy-1',
+      'modeling-show',
+      'screen-probe',
+      'screen-probe-support',
+    ],
     [
       'ordinary-4',
       'gi-5',
-      'gi-6',
       'heavy-4',
       'gi-1',
-      'path-tracer',
-      'shadow-fields',
       'renderer',
       'vfx-depth',
+      'default-gbuffer-gi',
+      'specular-aa',
     ],
   ]);
 });
 
-test('Alpha Hash and Three Surface each reserve a fresh serial Dawn fork', () => {
+test('Heavy standalone Dawn files each reserve a fresh serial fork', () => {
   for (const [id, file, forecast] of [
     ['alpha-hash', 'packages/runtime/src/__tests__/alpha-hash.dawn.test.ts', 186.15],
+    ['default-gbuffer-gi', 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts', 750],
+    [
+      'screen-probe-support',
+      'packages/render/src/__tests__/raytracing/screen-probe-support.dawn.test.ts',
+      240,
+    ],
     [
       'three-surface-expression',
       'packages/three/src/__tests__/surface-expression.dawn.test.ts',

@@ -39,7 +39,7 @@
 > [!IMPORTANT]
 > forgeax 是 Engine 命令入口。逐层使用 help 发现命令；help --tree --json 返回完整结构化命令树。ToolContribution、ToolClient、ToolRun 是 CLI 内部组合契约，不是其他产品入口。
 
-可选 View 只随 SDK 分发，不进入游戏的 Engine npm 依赖。交互式场景/资产审查读取 SDK 的 `tools/view/skills/forgeax-view-start/SKILL.md` 或游戏中复制的技能。游戏根执行 `node /absolute/forgeax-sdk/tools/view/start.mjs --project .`，入口初始化 SDK 自己的运行环境并解析匹配的 Engine。冷启动 forgeax help 不发现此启动器，普通 Engine 命令无需 View。
+在游戏根运行 `forgeax project view --json`。打开返回的 URL，确认项目和就绪状态。通过同一项目根运行 `forgeax backend status` 或 `forgeax backend stop`。
 
 --json 默认紧凑：较大字段概括并列入 omitted.fields。仅决策需要时加 --detail，例如 project build --detail --json 查看全部产物摘要（也在 dist/forgeax-dist.json），dev status --detail --json 查看完整执行报告。
 
@@ -108,7 +108,7 @@ HUD 正常而 Canvas 白/透明通常是渲染错误；JSON 带 rendererError（
 | 意图 | 入口 |
 |:--|:--|
 | 外部 forge.json 游戏静态构建 | forgeax project build <project> --base <url> --out-dir <dir> --json |
-| npm 安装 SDK | forgeax sdk install <dir> [--version VERSION] |
+| 安装 Engine 与 CLI | `npm install -g @forgeax/engine` |
 | 新建/初始化/检查外部项目 | project new [dir] --template empty\|game-3d / project init / project check |
 | 本地 Engine 技能 | project skill install / project skill verify |
 | 含 Engine 的 Web ZIP | project package --format web-zip [--output release/game-web.zip] [--compress=false]；默认较大 JSON 用 zstd 存储，false 保留明文 |
@@ -121,7 +121,7 @@ HUD 正常而 Canvas 白/透明通常是渲染错误；JSON 带 rendererError（
 | 多检查点自定义会话 | node <scenario.mjs> + createBrowserCapture(root).open() / session.capture() |
 | 发现命令/参数 | help [path] [--tree] [--json] |
 | 构建/资源预览/创作 | project ... / asset ... / rhi ... / profile ... / preview analyze |
-| 程序组合 | 普通 Node/Bun 模块导入 SDK command client |
+| 程序组合 | 普通 Node/Bun 模块导入 Engine command client |
 | 插件维护 | project plugin list\|inspect\|configure\|disable\|enable\|install\|uninstall |
 | 实时 World/Renderer 查询/修改 | 下文 eval(script) |
 | 离线 RHI tape | forgeax-engine-rhi-debug |
@@ -131,9 +131,11 @@ Tauri 打包要求新输出目录（--output，默认 release/<id>-tauri-<platfo
 区分 ForgeAX 导出/构建与平台工具配置、人工同意。登录、签名凭据、手机信任/开发者模式、首次 keychain 提示由操作人员准备；配置后工具可自动化后续签名部署。ADB 测试不同于普通 APK 安装；iOS 开发测试不同于 App Store/TestFlight。代理辅助安装/快捷方式设置应与 Engine 能力分开描述。见平台配置。设备验收前检查 Android ELF/APK 16 KB 页对齐。原生包在 artifacts/，结果区分 prepared/built，运行时验收仍为 not-run；另跑桌面包 smoke（60 完成帧及 Host 清理），Android/iOS 需设备验收。签名/输出见 [DevKit](../../packages/devkit/README.md)。
 
 > [!IMPORTANT]
-> project new 必须明确模板：3D 用 game-3d，其余 empty。目标必须在解包 SDK 外，根或子目录报 project-target-inside-sdk；已有外部项目用 project init。game-3d 复制可运行第三人称参考（场景、可见对象/碰撞体、角色/材质/动画 Pack、UI）；保留、调整、替换、删除前读生成 README，同步更新场景、运行代码和 Pack 引用。
+> project new 必须明确模板：3D 用 game-3d，其余 empty。目标必须在 Engine 安装目录外，根或子目录报 project-target-inside-sdk；已有外部项目用 project init。game-3d 复制可运行第三人称参考（场景、可见对象/碰撞体、角色/材质/动画 Pack、UI）；保留、调整、替换、删除前读生成 README，同步更新场景、运行代码和 Pack 引用。
 
-sdk install 从公共 npm 下载同版本 @forgeax/engine-sdk；npm integrity 验传输，sdk-manifest.json 验 SDK 身份。私有 GitHub Release 是内部归档，不是消费者下载源。目标需空；下载/版本/复制失败清理 staging。项目操作、组合、预览证据、可选服务加速按需读创作操作。
+项目创建使用已安装 Engine 的模板，并为项目固定该 Engine 版本。将项目的锁文件与游戏源文件一起管理。
+
+项目操作、组合、预览证据、可选服务加速按需读创作操作。
 
 资源预览归 Engine host-realm 插件所有；help asset preview --json 获取精确请求，asset preview --kind material --guid <guid> --json 选择既有操作。支持 material/mesh/texture/VFX/scene。asset preview --kind scene --guid <guid> --json 用创作相机渲染 SceneAsset，不运行游戏逻辑；GUID 用 asset list --type scene --json。Mesh 按 AABB 框选；texture 采用保宽高比无光照呈现。Standard 材质返回 sampledTextureBudget（limit/required/transmission/conflicts），可移植上限 16 纹理；transmission:"exceeded" 表示 16 纹理设备丢失折射。dev start 使用源码开发资产路径；project preview 验证并提供 dist，不启动源码开发服务器。实时控制/下一帧 RHI 捕获需要同项目所属 dev/run session，静态浏览器图片不能接受这些命令。离线 RHI summary/inspect 保留产物身份；GPU replay/read 另需指定原生 provider。
 
@@ -157,7 +159,7 @@ auto 在无 WebGPU adapter 时软件回退，hardware 要非软件适配器，so
 
 ### 脚本游玩
 
-project play <script> --json 是默认交互循环：启动临时游戏与私有 sandbox 浏览器，等首个就绪帧 html[data-forgeax-input="open"]，以 play helper 调用模块 default export，最终帧执行 dev verify（无 fatal、console/page 错误，非均匀 Canvas，健康执行；--require-ui 再要 #game-ui 子节点）。无需 dev start/revision/轮询/手写就绪等待。每次 play 固定启动成本：timings.openMs 是自身 Vite（新增/变化 Pack cooking 常 10–30 秒，否则数秒，浏览器并行启动），readyMs 是 Engine 到输入开放。每次新 browser profile；Pack 产品和 .forgeax/play/vite 优化依赖保留，一脚本覆盖多项检查。Pack 产品按内容和 Engine release 定址，不按位置：复制项目保留 .forgeax/ddc，project new 带 SDK cooked 模板/Engine Content，FORGEAX_BUILD_CACHE_DIR 跨项目共享。
+project play <script> --json 是默认交互循环：启动临时游戏与私有 sandbox 浏览器，等首个就绪帧 html[data-forgeax-input="open"]，以 play helper 调用模块 default export，最终帧执行 dev verify（无 fatal、console/page 错误，非均匀 Canvas，健康执行；--require-ui 再要 #game-ui 子节点）。无需 dev start/revision/轮询/手写就绪等待。每次 play 固定启动成本：timings.openMs 是自身 Vite（新增/变化 Pack cooking 常 10–30 秒，否则数秒，浏览器并行启动），readyMs 是 Engine 到输入开放。每次新 browser profile；Pack 产品和 .forgeax/play/vite 优化依赖保留，一脚本覆盖多项检查。Pack 产品按内容和 Engine release 定址，不按位置：复制项目保留 .forgeax/ddc，project new 复用 Engine 包内模板及预烘焙缓存，FORGEAX_BUILD_CACHE_DIR 跨项目共享。
 
 ```js
 // scripts/playthrough.mjs (new empty projects include an editable example)
@@ -174,7 +176,7 @@ export default async function playthrough(play) {
 }
 ```
 
-PlayContext 来自 @forgeax/engine/devkit；完整签名见api/play.md 或 help project play --json。
+PlayContext 来自 @forgeax/engine/devkit；完整签名见[api/play.md](../forgeax-engine-authoring/references/api/play.md) 或 help project play --json。
 
 helper：step(name,run)、state(read?)、waitFor(predicate,{read,timeoutMs})、advance(seconds,{stepSeconds,read})、keyboard.press(key)、keyboard.hold(keys,ms|predicate)、mouse.click/move(point)、mouse.look(dx,dy)（movementDelta 像素，指针锁下直接发送）、mouse.drag(from,to,{button})、screenshot(name)、reload()、wait(ms)、原始 page 和 abort signal。press/click 保持至再完成三帧。state 读 gameHost.gameProjection.registerRead({id,read})，唯一 read 时 id 可省略。脚本 console 进入报告，--json stdout 保持单文档。
 
@@ -227,7 +229,7 @@ node tests/playthrough.mjs
 |:--|:--|:--|
 | Dawn/Node smoke | Mesa lavapipe | GPUTexture 回读，不含 DOM |
 | project capture --backend auto | Chrome 硬件，无可用时软件 | Canvas + DOM/Shadow DOM 最终合成 |
-| project capture --backend software / 常驻 SDK command client | SwiftShader，无头或 Xvfb | 最终合成；常驻会话跨截图保游戏状态 |
+| project capture --backend software / 常驻 Engine command client | SwiftShader，无头或 Xvfb | 最终合成；常驻会话跨截图保游戏状态 |
 
 > [!CAUTION]
 > 软件像素支持截图迭代和确定性回归，不能证明物理 GPU 性能、厂商驱动兼容性、HDR 显示或发布验收。
@@ -262,7 +264,7 @@ forgeax project package --format web-zip --json
 forgeax project package --format web-zip --output release/my-game-web.zip --json
 ```
 
-package 用相对 base 重建生产输出，校验 forgeax-dist.json 每项 size/SHA-256，再输出格式；默认 web-zip。ZIP 根含 index.html、哈希 JS/WASM、shader manifest、Pack index、cooked assets 及 Engine runtime；排除 SDK 源、node_modules、创作源、远程调试服务。
+package 用相对 base 重建生产输出，校验 forgeax-dist.json 每项 size/SHA-256，再输出格式；默认 web-zip。ZIP 根含 index.html、哈希 JS/WASM、shader manifest、Pack index、cooked assets 及 Engine runtime；排除 Engine 源码、node_modules、创作源、远程调试服务。
 
 | 动作 | 入口 | 证据 |
 |:--|:--|:--|
@@ -523,7 +525,7 @@ dev eval 查询当前实例；领域插件拥有 import/Cook/Meta/LKG 策略。
 - 浏览器实例缺失：status 检查 phase/bridgeConnected/worldIdentity，复用已有 Page。只有 Node/Dawn 显式启 remote/server。
 - 退役独立 bin 缺失：help --tree 发现统一 asset/debug/dev 命令。
 
-开发 Engine capability 冲突需保留两解析 ID，查物理包所有权/program session。DevKit 自动统一 Vite v cache 版本；重复清 cache/修改安装 SDK 字节不修复包或会话身份冲突。
+开发 Engine capability 冲突需保留两解析 ID，查物理包所有权/program session。DevKit 自动统一 Vite v cache 版本；重复清 cache/修改安装包字节不修复包或会话身份冲突。
 
 ## 延伸阅读
 

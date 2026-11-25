@@ -5,13 +5,23 @@ import {
   projectStaticMeshVertexStreams,
 } from '@forgeax/engine-geometry';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
-import type { MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
+import type { Submesh, MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
 import { deriveRenderDataMesh, type MeshRenderData } from '../render-data';
 
 export interface MeshGpuRange {
   readonly first: number;
   readonly count: number;
   readonly baseVertex: number;
+}
+
+/** Root geometry exposes random section access to every instance, including morphed draws. */
+export function vertexSectionStarts(sections: readonly Submesh[]): Uint32Array {
+  const starts = new Uint32Array(sections.length);
+  for (let i = 1, first = 0; i < sections.length; i++) {
+    first += (sections[i - 1] as Submesh).vertexCount;
+    starts[i] = first;
+  }
+  return starts;
 }
 
 interface PackedMeshLodGeometry {
@@ -139,6 +149,7 @@ function projectMeshLodRanges(
   vertexBase: number,
 ): Result<MeshGpuRange[], RhiError> {
   const levelRanges: MeshGpuRange[] = [];
+  let firstVertex = vertexBase;
   for (let submeshIndex = 0; submeshIndex < data.submeshes.length; submeshIndex += 1) {
     const submesh = data.submeshes[submeshIndex];
     const rootSubmesh = rootData.submeshes[submeshIndex];
@@ -156,11 +167,13 @@ function projectMeshLodRanges(
         }),
       );
     }
-    levelRanges.push(
-      indexed
-        ? { first: indexCursor + submesh.indexOffset, count: submesh.indexCount, baseVertex: 0 }
-        : { first: vertexBase, count: submesh.vertexCount, baseVertex: 0 },
-    );
+    const count = indexed ? submesh.indexCount : submesh.vertexCount;
+    levelRanges.push({
+      first: indexed ? indexCursor + submesh.indexOffset : firstVertex,
+      count,
+      baseVertex: 0,
+    });
+    if (!indexed) firstVertex += count;
   }
   return ok(levelRanges);
 }

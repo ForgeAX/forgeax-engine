@@ -1,3 +1,4 @@
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
 import type { BindGroup, Buffer, Result } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
@@ -431,9 +432,7 @@ export function createShadowBatchProjection(
       ? {}
       : { shadowFragmentEntry: shadowEntry.fragmentEntry }),
     material: facts.material,
-    vertexColorAvailable: facts.mesh.layoutProjection.attributes.some(
-      (attribute) => attribute.key === 'color',
-    ),
+    vertexColorAvailable: vertexLayoutHasColor(facts.mesh.layoutProjection),
   });
 }
 

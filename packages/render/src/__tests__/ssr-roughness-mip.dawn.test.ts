@@ -25,11 +25,6 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
   const end = source.indexOf('fn evaluateSsrCompose(', start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  const common = readFileSync(resolve(process.cwd(), 'packages/shader/src/common.wgsl'), 'utf8');
-  const colorMipStart = common.indexOf('fn ssrSceneColorLod(');
-  const colorMipEnd = common.indexOf('// Direct Mesh draws', colorMipStart);
-  expect(colorMipStart).toBeGreaterThan(0);
-  expect(colorMipEnd).toBeGreaterThan(colorMipStart);
   const temporalSource = readFileSync(
     resolve(process.cwd(), 'packages/shader/src/ssr-temporal.wgsl'),
     'utf8',
@@ -54,10 +49,10 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
     })
     .unwrap();
   const output = device
-    .createBuffer({ size: 240, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC })
+    .createBuffer({ size: 160, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC })
     .unwrap();
   const readback = device
-    .createBuffer({ size: 240, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+    .createBuffer({ size: 160, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
     .unwrap();
   try {
     // Distinct levels falsify accidental mip-zero-only sampling. The middle
@@ -88,9 +83,7 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
 @group(0) @binding(0) var radiance: texture_2d<f32>;
 @group(0) @binding(1) var radianceSampler: sampler;
 @group(0) @binding(2) var<storage, read_write> result: array<vec4<f32>>;
-@group(0) @binding(3) var sceneColor: texture_2d<f32>;
 ${source.slice(start, end)}
-${common.slice(colorMipStart, colorMipEnd)}
 struct ProbeParams { historyValid: u32, maxHistoryWeight: f32 };
 const params = ProbeParams(1u, 0.9);
 ${temporalHelpers}
@@ -120,22 +113,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
     if (phase >= 248u) { mass += thin.r * thin.a; }
   }
   result[9] = vec4<f32>(mass / 8.0);
-  let mipCount = textureNumLevels(sceneColor);
-  result[10] = vec4<f32>(
-    ssrSceneColorLod(0.06, 0.6, mipCount),
-    ssrSceneColorLod(0.3, 0.6, mipCount),
-    ssrSceneColorLod(0.45, 0.6, mipCount),
-    ssrSceneColorLod(0.6, 0.6, mipCount));
-  result[11] = vec4<f32>(
-    ssrSceneColorLod(0.6, 0.6, 1u),
-    ssrSceneColorLod(0.2, 0.4, mipCount),
-    ssrSceneColorLod(0.8, 0.4, mipCount),
-    0.0);
-  let uv = vec2<f32>(0.5);
-  result[12] = vec4<f32>(sampleSsrSceneColor(sceneColor, uv, result[10].y), 1.0);
-  result[13] = vec4<f32>(sampleSsrSceneColor(sceneColor, uv, result[10].z), 1.0);
-  result[14] = vec4<f32>(sampleSsrSceneColor(sceneColor, uv, result[11].x), 1.0);
-
 }`;
     const compiler = await import(
       /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
@@ -156,11 +133,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
           },
           { binding: 1, visibility: GPU_SHADER_STAGE_COMPUTE, sampler: { type: 'filtering' } },
           { binding: 2, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'storage' } },
-          {
-            binding: 3,
-            visibility: GPU_SHADER_STAGE_COMPUTE,
-            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-          },
         ],
       })
       .unwrap();
@@ -169,9 +141,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
       .createComputePipeline({ layout, compute: { module, entryPoint: 'probe' } })
       .unwrap();
     const view = device.createTextureView(texture, { baseMipLevel: 0, mipLevelCount: 3 }).unwrap();
-    const sceneColorView = device
-      .createTextureView(texture, { baseMipLevel: 1, mipLevelCount: 4 })
-      .unwrap();
     const sampler = device
       .createSampler({
         addressModeU: 'clamp-to-edge',
@@ -188,7 +157,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
           { binding: 0, resource: { kind: 'textureView', value: view } },
           { binding: 1, resource: { kind: 'sampler', value: sampler } },
           { binding: 2, resource: { kind: 'buffer', value: { buffer: output } } },
-          { binding: 3, resource: { kind: 'textureView', value: sceneColorView } },
         ],
       })
       .unwrap();
@@ -198,7 +166,7 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
     pass.setBindGroup(0, group);
     pass.dispatchWorkgroups(1);
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, 240);
+    encoder.copyBufferToBuffer(output, 0, readback, 0, 160);
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     const mapped = (await readback.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
     const values = [...new Float32Array(mapped.getMappedRange().unwrap().slice(0))];
@@ -224,31 +192,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
       0.05,
       2,
     );
-    const mipBlend = 6 / 13;
-    const expectedSceneColor = [
-      0,
-      1 + mipBlend,
-      3,
-      3,
-      0,
-      1 + mipBlend,
-      3,
-      0,
-      0,
-      mipBlend,
-      1 - mipBlend,
-      1,
-      1,
-      1,
-      1,
-      1,
-      0,
-      0,
-      0,
-      1,
-    ];
-    for (const [i, value] of expectedSceneColor.entries())
-      expect(values[40 + i]).toBeCloseTo(value, 5);
   } finally {
     device.destroyTexture(texture).unwrap();
     device.destroyBuffer(output).unwrap();

@@ -1208,3 +1208,22 @@ texture references, or return the helper map from `.pack.ts`. The build prepares
 GPU programs, never pixels. Runtime Packs reuse an already prepared generator's
 `programs`; raw WGSL cooking is a build responsibility. Generated pixel data and
 GPU objects never enter the Pack or its portable snapshot.
+
+For a custom 2D or 2D-array mip chain, declare
+`mips: { kind: 'custom', levelCount }` on the output. Use `mipLevel` on the
+raster pass for its destination attachments, and
+`{ kind: 'local', name, mipLevel }` for each selected source mip. The source
+is bound as a single-level view, so the shader reads it at LOD zero.
+`_textureSize` is the destination level's extent. Transients can declare a
+custom chain to carry intermediate values across levels. Generate every
+published level before sampling the output. Select `mips: { kind: 'generate' }`
+and a [built-in filter](../assets-runtime/README.md#gpu-mip-generation) for
+ordinary reductions.
+
+A `compute-volume` pass writes one published 3D `r8unorm` output with a single
+mip. Its module defines `fn volumeValue(position: vec3<u32>, extent: vec3<u32>) -> f32`.
+The pass has empty `reads` and declares the output name in `writes`. The compiler
+wraps the function in a fixed compute entry. Renderer writes four adjacent
+voxels per invocation into a row-aligned storage buffer, then copies the whole
+volume into the sampled texture. The scratch buffer is released when generation
+completes.

@@ -853,6 +853,12 @@ texture/sampler inputs, output descriptors and transient targets. Prepared progr
 artifacts carry WGSL, reflection, compiler provenance and selected target formats.
 `validateTextureGenerator(value, true)` requires that prepared closure.
 
-Generated outputs may select `mipFilter: 'normal-roughness'` only with linear
-RGBA8 and generated mips. Omission preserves box filtering. See the numerical
-and lifetime contract in [GPU mip generation](../assets-runtime/README.md#gpu-mip-generation).
+Generated outputs select built-in reductions through `mipFilter` on
+`mips: { kind: 'generate' }`. Omission selects `box`. An output with
+`mips: { kind: 'custom', levelCount }` is filled by the recipe's own raster
+passes and cannot select a built-in filter. Custom transient chains use the
+same policy. Raster destinations share the pass's `mipLevel`; each local
+sampled read may select its own `mipLevel`. Both selectors default to zero.
+The validator checks bounds, prior writes, attachment extent and layers,
+non-overlapping reads and writes, and coverage of every published level.
+See [GPU mip generation](../assets-runtime/README.md#gpu-mip-generation).

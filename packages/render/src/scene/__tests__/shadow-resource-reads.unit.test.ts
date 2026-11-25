@@ -1,10 +1,19 @@
 import { World } from '@forgeax/engine-ecs';
-import type { ParamSchemaEntry, ShaderBindingReads } from '@forgeax/engine-types';
+import {
+  type AssetHandle,
+  type ParamSchemaEntry,
+  ParamSchemaProjectionOwner,
+  type ShaderBindingReads,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { MaterialResource } from '../../material-resource';
+import {
+  captureMaterialSnapshot,
+  deriveOwnedMaterialParameters,
+  MaterialResource,
+} from '../../material-resource';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
-import { ShadowMaterialContent } from '../material-shadow-content';
+import { ShadowMaterialContent, sameShadowMaterial } from '../material-shadow-content';
 
 function snapshot(
   schema: readonly ParamSchemaEntry[],
@@ -78,10 +87,74 @@ it('keeps unknown read contracts conservative and retains ordered resource selec
   expect(capture(snapshot(schema, [{ group: 1, binding: 99 }]))).toEqual([]);
 });
 
+it('a volatile caster prevents whole-atlas retention while each view still captures all fields', () => {
+  const material: MaterialSnapshot = {
+    ...snapshot(
+      [
+        { name: 'movie', type: 'texture2d' },
+        { name: 'next', type: 'texture2d' },
+      ],
+      undefined,
+    ),
+    videoTextureFields: new Map([['movie', 3 as AssetHandle<'video'>]]),
+  };
+  const resource = new MaterialResource(material);
+  const scope = worldRenderResources(new World());
+  const provider = vi.fn((_material: MaterialSnapshot, _name: string) => undefined);
+  const atlas = new ShadowMaterialContent(undefined, 'whole-atlas');
+  atlas.add(resource, material, scope, provider);
+  expect(atlas.requiresAtlasRedraw).toBe(true);
+  expect(atlas.same(atlas)).toBe(false);
+  expect(provider.mock.calls.map((call) => call[1])).toEqual(['movie']);
+
+  provider.mockClear();
+  const view = new ShadowMaterialContent();
+  view.add(resource, material, scope, provider);
+  expect(view.requiresAtlasRedraw).toBe(false);
+  expect(provider.mock.calls.map((call) => call[1])).toContain('next');
+  expect(view.same(atlas)).toBe(false);
+  expect(atlas.same(view)).toBe(false);
+});
+
 it('continues deriving the live borrowed schema after the Pass read contract is prepared', () => {
   const schema: ParamSchemaEntry[] = [{ name: 'first', type: 'texture2d' }];
   const material = snapshot(schema, [{ group: 1, binding: 2 }]);
   expect(capture(material)).toEqual(['first']);
   schema[0] = { name: 'next', type: 'texture2d' };
   expect(capture(material)).toEqual(['next']);
+});
+
+it('reads the actual sampler at binding zero when a material changes its handle', () => {
+  const base = snapshot([{ name: 'source', type: 'sampler' }], [{ group: 1, binding: 0 }]);
+  const material = (handle: number) => ({
+    ...base,
+    samplerHandles: new Map([['source', handle as AssetHandle<'sampler'>]]),
+  });
+  expect(sameShadowMaterial(material(3), material(3))).toBe(true);
+  expect(sameShadowMaterial(material(3), material(7))).toBe(false);
+});
+
+it('reuses an admitted shadow declaration across numeric edits and still resolves live assets', () => {
+  const schema = new ParamSchemaProjectionOwner().admit({
+    ownerId: 'shadow',
+    revision: 1,
+    schema: [
+      { name: 'tint', type: 'vec4' },
+      { name: 'mask', type: 'texture2d' },
+    ],
+  }).schema;
+  const first = captureMaterialSnapshot(snapshot(schema, [{ group: 1, binding: 2 }]));
+  const source = MaterialResource.from(first);
+  const second = deriveOwnedMaterialParameters(source, first, { tint: [0.5, 0.5, 0.5, 1] });
+  if (second === undefined) throw new Error('Expected an owned numeric projection');
+  const scope = worldRenderResources(new World());
+  const resolved: MaterialSnapshot[] = [];
+  for (const resource of [source, second]) {
+    new ShadowMaterialContent().add(resource, resource.snapshot, scope, (current, name) => {
+      expect(name).toBe('mask');
+      resolved.push(current);
+      return undefined;
+    });
+  }
+  expect(resolved).toEqual([first, second.snapshot]);
 });

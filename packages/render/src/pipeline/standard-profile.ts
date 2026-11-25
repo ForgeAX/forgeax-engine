@@ -271,6 +271,8 @@ export interface StandardProfile {
   readonly outputContract?: StandardOutputContract;
   /** Merge ready native view raster passes whose shaders only read depth. */
   readonly featureReadOnlyDepthBatching?: boolean;
+  /** Generate filtered scene color for rough transmission. Defaults to off. */
+  readonly roughRefraction?: boolean;
   /** Explicit off/on diagnostic override of the production policy. */
   readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
   readonly pipelineId: typeof STANDARD_PIPELINE_ID;
@@ -283,6 +285,8 @@ export interface StandardProfile {
   readonly atmosphere?: StandardAtmosphereProfile | undefined;
   /** Opt-in projected receiver for automatically biased Deferred directional Vogel PCF. */
   readonly deferredDirectionalShadowReceiver?: 'projected';
+  /** Allows directional lights to opt into screen-space contact shadows. Defaults to true. */
+  readonly contactShadows?: boolean;
   /** Screen projection is the default for eligible Forward views. */
   readonly forwardDirectionalShadowReceiver?: 'screen';
   /** Fade local projected shadows by their estimated screen texel demand. */
@@ -299,7 +303,7 @@ export interface StandardProfile {
   /** Sample directional environment reflections. Sky SH and diffuse GI are independent. */
   readonly ibl: boolean;
   readonly ambientOcclusion: AmbientOcclusionSettings;
-  /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted is off for Forward, on for Deferred. */
+  /** Controls Standard Deferred GPU occlusion; omitted means on. */
   readonly gpuOcclusion?: boolean | undefined;
   /** Opt-in ordering experiment only; omitted preserves production GBuffer order. */
   readonly gbufferBatchOrderDiagnostic?:
@@ -312,6 +316,7 @@ export interface StandardProfile {
 
 export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   featureReadOnlyDepthBatching: true,
+  roughRefraction: false,
   pipelineId: STANDARD_PIPELINE_ID,
   // Runtime light admission follows the selected profile; physical Cluster
   // capacity comes from the published DirectLightSlot reflection.
@@ -320,6 +325,7 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   outputContract: 'standard-output-v2',
   pbr: true,
   ibl: true,
+  contactShadows: true,
   ambientOcclusion: Object.freeze({ enabled: true, method: DEFAULT_AMBIENT_OCCLUSION_METHOD }),
   postStages: STANDARD_POST_STAGE_NAMES,
 });

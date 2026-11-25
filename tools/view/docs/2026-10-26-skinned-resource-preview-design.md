@@ -32,5 +32,4 @@ The View evidence script checks Player and Steve meshes, six materials, four
 primitive shapes, wireframe restoration, UV availability, close rejection and
 eight native thumbnails. Opaque preview captures must retain the entire opaque
 background, which detects holes that a nonempty-model check misses. See
-`docs/evidence/2026-10-26-skinned-resource-preview/` for captured results and
 the Engine App report for replay controls and validation limits.

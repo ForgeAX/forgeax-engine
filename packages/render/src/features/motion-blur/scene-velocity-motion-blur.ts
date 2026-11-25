@@ -18,7 +18,7 @@ import type { SceneVelocityInputs } from '../../temporal/default-gbuffer-velocit
 import { recordContext } from '../../world/view-record-context';
 import { MOTION_BLUR_COMPUTE_WGSL, MOTION_BLUR_FEATURE_IDENTITY } from './motion-blur-feature';
 
-const sceneVelocityComputeSource = () =>
+export const sceneVelocityComputeSource = () =>
   [
     SCENE_VELOCITY_RECONSTRUCTION_WGSL,
     '@group(0) @binding(5) var velocityDepth : texture_depth_2d;',

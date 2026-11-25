@@ -1,6 +1,6 @@
 import { type AssetVersion, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { nowMs } from '@forgeax/engine-platform';
 
 import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 
@@ -436,10 +436,6 @@ function releaseFeatureAssetVersionOwners(slot: FeatureSlot): void {
   for (const assets of slot.assetVersionOwners.values())
     for (const owner of assets.values()) owner.version.dispose();
   slot.assetVersionOwners.clear();
-}
-
-function now(): number {
-  return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
 
 function createFeatureSlot(feature: RenderFeature<unknown>, order: number): FeatureSlot {
@@ -1777,7 +1773,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     execution: RenderFeaturePlanExecution,
     scope: string,
   ): string {
-    const started = now();
+    const started = nowMs();
     const cache = slot.nativeSignatures;
     const previous = cache.get(scope);
     const hit =
@@ -1787,7 +1783,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     if (!hit) cache.set(scope, { execution, signature });
     const stats = signatureInspection(slot);
     stats.nativeCalls = (stats.nativeCalls ?? 0) + 1;
-    stats.cpuMs += now() - started;
+    stats.cpuMs += nowMs() - started;
     if (hit) stats.cacheHits++;
     else stats.cacheMisses++;
     return signature;
@@ -1801,7 +1797,7 @@ class FeatureHostImpl implements RenderFeatureHost {
   }
 
   planSignature(slot: FeatureSlot, plan: RenderFeatureWorkPlan, scope: string): string {
-    const started = now();
+    const started = nowMs();
     const cache = slot.planSignatures;
     const previous = cache.get(scope);
     // Snapshot capture already compares every declaration and returns the prior
@@ -1810,7 +1806,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     const snapshot = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan, previous?.snapshot);
     if (previous !== undefined && snapshot === previous.snapshot) {
       const stats = signatureInspection(slot);
-      stats.cpuMs += now() - started;
+      stats.cpuMs += nowMs() - started;
       stats.cacheHits++;
       // The graph validator receives a fresh plan object every frame. Reuse
       // is safe only because it will perform the same exact structural check
@@ -1838,7 +1834,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     stats.calls += metrics.calls;
     stats.typedArrayBytes += metrics.typedArrayBytes;
     stats.outputChars += metrics.outputChars;
-    stats.cpuMs += now() - started;
+    stats.cpuMs += nowMs() - started;
     stats.cacheMisses++;
     return signature;
   }

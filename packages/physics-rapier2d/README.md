@@ -23,7 +23,9 @@ World owns scheduling and time; the backend owns native bodies and their cleanup
 The KCC enables native contact impulses for dynamic-body pushing, matching 3D;
 sensor obstacles remain excluded without game-side duplicate impulses.
 
-The default `loadRapier2D()` uses the self-contained package-local browser module.
+The default `loadRapier2D()` loads the package-local `rapier.wasm` through its
+JavaScript bindings. Node reads the file directly. Browser builds serve it as an
+asset. Both use the same bytes as the native transport.
 Native targets select `forgeax-native` and call `initializeNativeRapier2D(host)`
 from `@forgeax/engine-physics-rapier2d/native` before activating the plugin.
 `PhysicsWasmHost.readWasm()` and `instantiate(imports)` must use the same immutable

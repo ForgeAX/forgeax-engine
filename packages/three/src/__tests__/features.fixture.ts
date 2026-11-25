@@ -687,6 +687,35 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       };
     },
     'skin-lit-rigid': (scene) => litSkin(THREE, scene, true),
+    'physical-stock-map': (scene) => {
+      const material = new THREE.MeshPhysicalMaterial({
+        clearcoat: 0.8,
+        color: 0x60b080,
+        roughness: 0.7,
+      });
+      const map = new THREE.DataTexture(
+        new Uint8Array([200, 50, 30, 255, 30, 120, 180, 255, 105, 180, 70, 255, 220, 180, 80, 255]),
+        2,
+        2,
+      );
+      map.needsUpdate = true;
+      scene.add(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
+          material,
+        ),
+      );
+      const sun = new THREE.DirectionalLight(0xffffff, 3);
+      sun.position.set(2, 3, 5);
+      scene.add(sun);
+      return () => {
+        material.map = map;
+      };
+    },
   } satisfies Readonly<Record<string, (scene: ThreeCore.Scene) => () => void>>;
 }
 
@@ -745,4 +774,11 @@ function litSkin(THREE: typeof ThreeCore, scene: ThreeCore.Scene, rigid: boolean
     mesh.position.x = 0.3;
     mesh.rotation.y = 0.2;
   };
+}
+
+export function physicalSlotsForFeature(name: string) {
+  if (name === 'physical-clearcoat-map') return ['clearcoatMap'] as const;
+  if (name === 'physical-map-combination')
+    return ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'clearcoatMap'] as const;
+  return undefined;
 }

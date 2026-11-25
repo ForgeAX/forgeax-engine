@@ -187,6 +187,7 @@ async function generatedHost(
     { compilerOptions },
   ).outputText;
   const scope = {
+    __forgeaxRegisterWechatPayload: (launch: () => void) => launch(),
     ...configurationHostScope,
     createGameRenderFeatures: runInNewContext(`${featureCode}\ncreateGameRenderFeatures`, {}),
     createGameVfx: runInNewContext(`${vfxCode}\ncreateGameVfx`, { createVfxRuntimeHost }),

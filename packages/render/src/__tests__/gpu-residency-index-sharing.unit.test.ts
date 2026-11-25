@@ -9,6 +9,7 @@ import { GpuResidencyCache } from '../device/gpu-residency';
 import { copyPublishedMesh } from '../publication/mesh';
 import { beforePublishedMeshBufferWrite } from '../publication/mesh-buffer-ownership';
 import { worldRenderResources } from '../publication/resource-scope';
+import { submeshRange } from '../record/submesh-range';
 import { editResidentMesh } from './managed-mesh-edit';
 
 function comparisonBytes(store: GpuResidencyCache, buffer: object | null): number {
@@ -75,6 +76,75 @@ async function fixture() {
   };
   return { device, store, worlds, upload };
 }
+
+function vertexOnlyMesh(counts: readonly number[]): MeshAsset {
+  const { indices: _indices, ...geometry } = mesh(new Uint16Array());
+  return {
+    ...geometry,
+    submeshes: counts.map((count) => ({
+      indexCount: 0,
+      indexOffset: 0,
+      vertexCount: count,
+      materialSlot: 0,
+      topology: 'triangle-list',
+    })),
+  };
+}
+
+it('addresses selected non-indexed sections without rereading preceding sections', async () => {
+  const { store, upload } = await fixture();
+  const source = vertexOnlyMesh([3, 3, 0, 6, 12]);
+  try {
+    const { entry } = upload(source);
+    let reads = 0;
+    const measured = {
+      ...entry,
+      submeshes: new Proxy(entry.submeshes, {
+        get(sections, key, receiver) {
+          if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+          return Reflect.get(sections, key, receiver);
+        },
+      }),
+    };
+    const order = [4, 2, 3, 1, 0, 4];
+    const range = { first: 0, count: 0, baseVertex: 0 };
+    expect(order.map((i) => submeshRange(measured, i, range).first)).toEqual([12, 6, 6, 3, 0, 12]);
+    expect(reads).toBeLessThanOrEqual(order.length);
+  } finally {
+    store.destroyAll();
+  }
+});
+
+it('addresses each vertex-only section inside its own physical LOD', async () => {
+  const { store, upload } = await fixture();
+  const root = vertexOnlyMesh([3, 0, 6, 15]);
+  const lower = vertexOnlyMesh([6, 3, 0, 15]);
+  try {
+    const { handle, world } = upload(root);
+    const resident = store
+      .ensureResident(handle, root, worldRenderResources(world), [undefined, lower])
+      .unwrap();
+    expect(
+      resident.lodRanges?.map((level) => level.map(({ first, count }) => [first, count])),
+    ).toEqual([
+      [
+        [0, 3],
+        [3, 0],
+        [3, 6],
+        [9, 15],
+      ],
+      [],
+      [
+        [24, 6],
+        [30, 3],
+        [33, 0],
+        [33, 15],
+      ],
+    ]);
+  } finally {
+    store.destroyAll();
+  }
+});
 
 it('borrows publication-owned comparison bytes and rejects a changed source even at a real hash collision', async () => {
   const { store, upload } = await fixture();

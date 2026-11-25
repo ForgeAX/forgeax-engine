@@ -15,7 +15,8 @@ import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ec
 export const ScreenSpaceReflection = defineComponent('ScreenSpaceReflection', {
   maxDistance: { type: 'f32', default: 1 },
   thickness: { type: 'f32', default: 0.1 },
-  // SSR keeps full weight through half this value and reaches zero at it.
+  // Glossy SSR fades from half this value to zero at the limit. The
+  // deterministic mirror path uses half of that roughness range.
   maxRoughness: { type: 'f32', default: 0.6 },
 });
 

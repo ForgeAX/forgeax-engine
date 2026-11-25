@@ -1,4 +1,3 @@
-import type { Mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
@@ -306,13 +305,13 @@ export class SkinSceneInputs {
     this.healthy();
     return this.sourceValue?.first;
   }
-  joint(entity: number, matrix: Mat4 | undefined): void {
+  joint(entity: number, matrix: Float32Array | undefined, offset?: number): void {
     this.healthy();
     const source = this.sourceValue;
     if (source === undefined || !source.joints.has(entity)) return;
     try {
       if (matrix === undefined) this.inputs.removeJoint(source.slot, entity);
-      else this.inputs.setJoint(source.slot, entity, matrix);
+      else this.inputs.setJoint(source.slot, entity, matrix, offset);
       source.first.delete(entity);
     } catch (cause) {
       this.failed = true;

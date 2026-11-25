@@ -25,8 +25,7 @@ Use Standard HDR with a single-sample camera, an `Atmosphere`, a
 `DirectionalLight`, and one `VolumetricCloudLayer` per World. Copy the
 [Render package example](../../packages/render/examples/volumetric-clouds)
 into a project asset root. Find it at `examples/volumetric-clouds` in the
-installed `@forgeax/engine-render` package, or at
-`source/engine/packages/render/examples/volumetric-clouds` in the SDK ZIP.
+bundled Render package under `node_modules/@forgeax/engine` in an installed game.
 
 Load `cloudGuids.material` with `cloudMaterialKind` and both instance GUIDs
 with `cloudMaterialInstanceKind` from `@forgeax/engine/render/authoring`.
@@ -639,6 +638,11 @@ adds no second query, buffer, UBO, binding, atlas, pass, RPC, or recovery owner.
 
 ## Selection outline
 
+For the standalone Three renderer, use `setThreeOutline(renderer, camera, options)`
+with original Three objects or group roots. It projects visible descendants into
+the existing regular Outline stage for that display camera. See the
+[Three camera selection contract](../../packages/three/README.md#camera-selection-outline).
+
 Use `Outline` on the active camera for an explicit camera-World entity set,
 linear visible/hidden colors, integer output-pixel width, and
 `OutlineOcclusionValue.visible`, `.hidden` or `.all`. Read the
@@ -1102,13 +1106,13 @@ The GPU lane culls only residual CPU-drawn rows on the CPU: `ExtractedFrame.gpuO
 
 ## GPU-driven occlusion (two-phase HZB)
 
-Two-phase HZB is the only main-view occlusion owner. The main camera's GPU
-lane splits the scene pass (single-sampled or MSAA): the early pass (`g-buffer` / `main`) draws last frame's visible items, a
-furthest depth pyramid (`occlusion-depth-pyramid-*`) builds from its depth,
-`gpu-driven.occlusion-cull` tests the rest, and `g-buffer-late` / `main-late`
-draws what was revealed. It is on by default; opt out per pipeline with
-`RenderPipelineAsset.config.gpuOcclusion: false`; there is no CPU occlusion
-fallback. Under Deferred, shadow passes follow `g-buffer-late`. Directional and spot final-layer
+The Standard Deferred GPU view splits GBuffer drawing. The first pass draws
+last frame's visible instances, `occlusion-hzb-*` builds from its depth, and
+`gpu-driven.occlusion-cull` identifies instances to append in `g-buffer-late`.
+Disable the Deferred optimization with `RenderPipelineAsset.config.gpuOcclusion: false`.
+The Standard Forward view consumes a single GPU instance selection for its
+prepass and color pass. Its AO and SSR pyramids follow their consumers. Deferred
+shadow passes follow `g-buffer-late`. Directional and spot final-layer
 casters whose receiver prism the camera pyramid hides are skipped
 (`shadowRaster.views[].cameraCulled`). This is off for Forward, point lights, static
 layers, and any frame where another camera, capture, probe, fog or ray-diffuse

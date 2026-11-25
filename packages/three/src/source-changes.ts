@@ -45,15 +45,17 @@ import { PointContentChannels } from './geometry';
 import type { StockMaterialEdit } from './material';
 import { NODE_MATERIAL_INPUTS, plainNodeMaterial, watchNodeMaterialHooks } from './node-materials';
 import { boundSurfaceRoot, hasSurfaceBinding, watchThreeSurfaceInputs } from './node-surface';
+import { SourcePoseEdits } from './scene-walk';
 import { type ShadowLight, shadowCasterChannels } from './shadow';
 import { SkeletonChanges, type SkinCursor } from './skeleton-changes';
 import {
   createdTracked,
-  matrixStorage,
   ownsCollection,
   publishWorldMatrix,
+  sourceCollectionStorage,
   watchCollection,
   watchPublishedWorldMatrix,
+  watchSourceHierarchy,
   watchTargetMatrix,
 } from './source-collections';
 import {
@@ -90,6 +92,27 @@ export function localTransparentOrder(node: Object3D): node is Mesh {
 }
 
 type Notify = () => void;
+
+/** An externally writable array has one accepted snapshot per live projection. */
+class ForeignInput {
+  private readonly accepted: unknown[];
+  readonly readers = new Map<Notify, number>();
+
+  constructor(private readonly read: () => readonly unknown[]) {
+    this.accepted = read().slice();
+  }
+
+  sample(): void {
+    const current = this.read();
+    const accepted = this.accepted;
+    let i = 0;
+    while (i < current.length && i < accepted.length && Object.is(accepted[i], current[i])) i++;
+    if (i === current.length && i === accepted.length) return;
+    accepted.length = current.length;
+    for (; i < current.length; i++) accepted[i] = current[i];
+    for (const notify of this.readers.keys()) notify();
+  }
+}
 // Entries are either a release callback or a field key (or key list), source, listener.
 // Keeping the field operands allows each scope to release subscriptions without per-field closures.
 type CleanupScope = (object | string)[];
@@ -108,7 +131,8 @@ function releaseFrom(scope: CleanupScope, start = 0): void {
   scope.length = start;
 }
 let localPoseVersion = 0;
-const matrixMethods = ['updateMatrix', 'updateMatrixWorld', 'updateWorldMatrix'];
+// Scene schedules the implicit update. Explicit world reads dispatch through Three at the call site.
+const matrixMethods = ['updateMatrix', 'updateMatrixWorld'];
 const branchFields = ['matrixAutoUpdate', 'matrixWorldAutoUpdate', 'pivot'];
 const drawFields = ['geometry', 'material', 'castShadow', 'receiveShadow', 'frustumCulled'];
 const drawHooks = ['onBeforeRender', 'onAfterRender', 'morphTargetInfluences'];
@@ -156,6 +180,16 @@ export function separateDrawPose(node: Object3D): node is Sprite | RectAreaLight
 }
 
 type Admission = boolean | 'view';
+type ViewAncestry = 'ordinary' | 'residual' | 'hidden';
+type AdmitNode = (node: Object3D, hidden: boolean) => Admission;
+
+function childViewAncestry(node: Object3D, ancestry: ViewAncestry): ViewAncestry {
+  // LOD updates its direct children's visibility while visiting the view.
+  if (ancestry === 'hidden' || (!node.visible && !(node.parent instanceof LOD))) return 'hidden';
+  return ancestry === 'ordinary' && node.visible && node.renderOrder === 0 && passiveParent(node)
+    ? 'ordinary'
+    : 'residual';
+}
 type SavedUse = {
   view: boolean;
   direct: boolean;
@@ -188,15 +222,17 @@ export class SceneChanges {
   jointReads = 0;
   rosterEntries = 0;
   private readonly probes = new Set<Notify>();
+  private readonly foreignInputs = new Map<object, ForeignInput>();
 
   readonly structural = new Set<Object3D>();
+  private readonly visibilityBranches = new Set<Object3D>();
   private readonly dirtyBindings = new Set<Object3D>();
   readonly retired = new Set<Object3D>();
   private readonly admitted = new Map<Object3D, 'branch' | 'binding'>();
-  pose = new Set<Object3D>();
+  pose = new SourcePoseEdits();
   poseTopology = new Set<Object3D>();
   private readonly translations = new Set<Object3D>();
-  private sparePose = new Set<Object3D>();
+  private sparePose = new SourcePoseEdits();
   /** Source edits to Three's mirrored caches that the ECS publisher must repair. */
   readonly matrixRepairs = new Set<Object3D>();
   /** World-pose edits with remaining compatibility-side consumers. */
@@ -346,6 +382,11 @@ export class SceneChanges {
   }
 
   watch(object: object, key: string, notify: Notify, inherited = false): boolean {
+    const hierarchy = watchSourceHierarchy(object, key, notify);
+    if (hierarchy) {
+      this.hold(hierarchy);
+      return true;
+    }
     if (!observeField(object, key, notify, inherited)) return false;
     this.cleanups.push(key, object, notify);
     return true;
@@ -405,8 +446,8 @@ export class SceneChanges {
         return;
     }
     this.lodUpdates.set(lod, (camera) => {
-      const a = matrixStorage(lod.matrixWorld.elements),
-        b = matrixStorage(camera.matrixWorld.elements);
+      const a = sourceCollectionStorage(lod.matrixWorld.elements),
+        b = sourceCollectionStorage(camera.matrixWorld.elements);
       const x = a[12] - b[12],
         y = a[13] - b[13],
         z = a[14] - b[14];
@@ -560,6 +601,7 @@ export class SceneChanges {
       if (node instanceof Sprite && node.children.length === 0 && this.retainedSprites.has(node))
         this.spriteVisibility.add(node);
       else if (draw && node.children.length === 0) this.invalidateBinding(node);
+      else if (this.ecsPoses) this.visibilityBranches.add(node);
       else branch();
     };
     if (!(node.parent instanceof LOD) && !this.watch(node, 'visible', visibility))
@@ -574,25 +616,37 @@ export class SceneChanges {
 
   private watchSourceTransform(node: Object3D, structural: Notify): void {
     let synchronous: ReturnType<typeof bindSourceWorldPose> | undefined;
+    let observedAddress: number | undefined;
+    const enqueuePose = () => {
+      observedAddress = this.pose.add(node, observedAddress);
+    };
     const queuePose = () => {
       if (!this.ecsPoses) {
         this.translations.delete(node);
         this.resolvedLocal.delete(node);
       }
-      this.pose.add(node);
+      enqueuePose();
     };
-    const poseChanged = () => {
+    const nativePoseChanged = () => {
       synchronous?.transform.invalidateLocal();
-      queuePose();
+      enqueuePose();
     };
-    const translated = () => {
-      if (synchronous !== undefined) {
-        synchronous.transform.invalidateLocal();
-        this.resolvedLocal.delete(node);
-      }
-      if (!this.ecsPoses && !this.pose.has(node)) this.translations.add(node);
-      this.pose.add(node);
-    };
+    const poseChanged = this.ecsPoses
+      ? nativePoseChanged
+      : () => {
+          synchronous?.transform.invalidateLocal();
+          queuePose();
+        };
+    const translated = this.ecsPoses
+      ? nativePoseChanged
+      : () => {
+          if (synchronous !== undefined) {
+            synchronous.transform.invalidateLocal();
+            this.resolvedLocal.delete(node);
+          }
+          if (!this.pose.has(node)) this.translations.add(node);
+          enqueuePose();
+        };
     const repairMatrix = () => {
       queuePose();
       if (this.ecsPoses) this.matrixRepairs.add(node);
@@ -610,7 +664,7 @@ export class SceneChanges {
       revoke();
       this.invalidate();
     };
-    this.watchSourceMatrix(
+    const localStorageObserved = this.watchSourceMatrix(
       node.matrix,
       () => {
         synchronous?.transform.invalidateLocal();
@@ -618,7 +672,7 @@ export class SceneChanges {
       },
       branch,
     );
-    this.watchSourceMatrix(
+    const worldStorageObserved = this.watchSourceMatrix(
       node.matrixWorld,
       () => {
         synchronous?.transform.replaceWorld();
@@ -626,18 +680,27 @@ export class SceneChanges {
       },
       branch,
     );
-    this.watch(node, 'matrix', invalidateMatrix);
-    this.watch(node, 'matrixWorld', invalidateMatrix);
+    const localObserved = this.watch(node, 'matrix', invalidateMatrix);
+    const worldObserved = this.watch(node, 'matrixWorld', invalidateMatrix);
     if (
       this.observeStockPose(node, branch, translated, poseChanged) &&
+      localObserved &&
+      worldObserved &&
+      localStorageObserved &&
+      worldStorageObserved &&
       this.hasObservablePoseStorage(node, branch)
     ) {
-      synchronous = bindSourceWorldPose(node, SynchronousTransform, () => {
-        if (this.ecsPoses) return;
-        this.projectedPose.add(node);
-        if (!this.resolvedLocal.has(node)) this.resolvedLocal.set(node, ++localPoseVersion);
-      });
-      this.pose.add(node);
+      synchronous = bindSourceWorldPose(
+        node,
+        SynchronousTransform,
+        this.ecsPoses
+          ? undefined
+          : () => {
+              this.projectedPose.add(node);
+              if (!this.resolvedLocal.has(node)) this.resolvedLocal.set(node, ++localPoseVersion);
+            },
+      );
+      enqueuePose();
       this.hold(revoke);
     }
   }
@@ -667,8 +730,9 @@ export class SceneChanges {
       this.unobservedNativePoses.add(node);
       this.hold(() => this.unobservedNativePoses.delete(node));
     }
-    if (!this.fields(node, branch, branchFields)) this.invalid = true;
-    return stock && watchedMethods;
+    const watchedMode = this.fields(node, branch, branchFields);
+    if (!watchedMode) this.invalid = true;
+    return stock && watchedMethods && watchedMode;
   }
 
   private observeSkinPose(node: Object3D, branch: Notify): node is SkinnedMesh {
@@ -687,8 +751,8 @@ export class SceneChanges {
         node instanceof Group ||
         node instanceof Scene ||
         Object.getPrototypeOf(node) === Object3D.prototype ||
+        Object.getPrototypeOf(node) === Mesh.prototype ||
         this.stockSkins.has(node as SkinnedMesh)) &&
-      node.updateWorldMatrix === Object3D.prototype.updateWorldMatrix &&
       ownsCollection(node.matrix.elements) &&
       ownsCollection(node.matrixWorld.elements) &&
       node.matrix.compose === Matrix4.prototype.compose &&
@@ -703,37 +767,31 @@ export class SceneChanges {
   private watchSourceMatrix(matrix: Matrix4, changed: Notify, branch: Notify): boolean {
     const off = watchCollection(matrix.elements, changed);
     if (off) this.hold(off);
-    else {
-      const accepted = matrix.elements.slice();
-      this.probe(() => {
-        const values = matrix.elements;
-        if (
-          accepted.length === values.length &&
-          accepted.every((v, index) => Object.is(v, values[index]))
-        )
-          return;
-        accepted.length = values.length;
-        for (let index = 0; index < values.length; index++)
-          accepted[index] = values[index] as number;
-        changed();
-      });
-    }
+    else this.watchForeignInput(matrix, () => matrix.elements, changed);
     return this.watch(matrix, 'elements', branch);
   }
 
   /** Keep only paths reaching source objects that need ordinary per-view preparation. */
-  index(node: Object3D, canSkip: (node: Object3D) => Admission, inherited = true): boolean {
+  index(
+    node: Object3D,
+    canSkip: AdmitNode,
+    ancestry: ViewAncestry = 'ordinary',
+    rebind = false,
+  ): boolean {
     const entering = !this.members.has(node);
     if (entering) this.scope(node, () => this.registerNode(node));
-    const retained: Object3D[] = [];
-    const safe = inherited && node.visible && node.renderOrder === 0;
-    const simpleParent = passiveParent(node);
-    for (const child of node.children)
-      if (this.index(child, canSkip, safe && simpleParent)) retained.push(child);
-    if (retained.length) this.children.set(node, retained);
+    else if (rebind) this.releaseBinding(node);
+    let retained: Object3D[] | undefined;
+    const descendants = childViewAncestry(node, ancestry);
+    for (const child of node.children) {
+      if (!this.index(child, canSkip, descendants, rebind)) continue;
+      retained ??= [];
+      retained.push(child);
+    }
+    if (retained) this.children.set(node, retained);
     else this.children.delete(node);
     if (this.residualEdges.has(node)) this.dirtyResidualParents.add(node);
-    const resident = this.admitBinding(node, canSkip, inherited);
+    const resident = this.admitBinding(node, canSkip, ancestry);
     if (entering) {
       compactFieldRow(node);
       const scope = this.scopes.get(node);
@@ -741,14 +799,11 @@ export class SceneChanges {
       const binding = this.bindingScopes.get(node);
       if (binding) this.bindingScopes.set(node, binding.slice());
     }
-    return !resident || retained.length !== 0;
+    return !resident || retained !== undefined;
   }
 
-  private admitBinding(
-    node: Object3D,
-    canSkip: (node: Object3D) => Admission,
-    inherited: boolean,
-  ): boolean {
+  private admitBinding(node: Object3D, canSkip: AdmitNode, ancestry: ViewAncestry): boolean {
+    const inherited = ancestry === 'ordinary';
     const safe = inherited && node.visible && node.renderOrder === 0;
     const orderedLeaf =
       inherited &&
@@ -761,14 +816,14 @@ export class SceneChanges {
     const dormant = inherited && !node.visible && node.renderOrder === 0;
     const resident =
       this.residents.has(node) ||
-      ((safe || dormant || orderedLeaf) &&
+      ((safe || dormant || orderedLeaf || ancestry === 'hidden') &&
         !this.hasViewBinding(node) &&
         !this.dynamicMatrices.has(node) &&
         this.scope(
           node,
           () => {
             const start = this.cleanups.length;
-            const kind = canSkip(node);
+            const kind = canSkip(node, ancestry === 'hidden');
             if (kind === 'view') return false;
             if (kind) return true;
             releaseFrom(this.cleanups, start);
@@ -904,7 +959,8 @@ export class SceneChanges {
   }
 
   reconcile(): void {
-    this.checkedInputs += this.probes.size;
+    this.checkedInputs += this.foreignInputs.size + this.probes.size;
+    for (const input of this.foreignInputs.values()) input.sample();
     for (const check of this.probes) check();
     for (const parent of this.deletedTail.keys()) this.rosters.add(parent);
     this.deletedTail.clear();
@@ -964,9 +1020,21 @@ export class SceneChanges {
       }
       this.layouts.clear();
     }
-    if (!this.structural.size && !this.dirtyBindings.size) return;
+    if (!this.structural.size && !this.dirtyBindings.size && !this.visibilityBranches.size) return;
     this.viewChanged = true;
     if (this.structural.size) this.reconcileBranches();
+    // A visibility change revises draw demand for the subtree. The source hierarchy,
+    // field subscriptions and pending local poses remain live throughout that change.
+    for (const node of this.visibilityBranches) {
+      if (!this.members.has(node)) continue;
+      let parent = node.parent;
+      while (parent && !this.visibilityBranches.has(parent)) parent = parent.parent;
+      if (parent) continue;
+      this.index(node, () => false, 'ordinary', true);
+      this.admitted.set(node, 'branch');
+      if (node.parent) this.refreshChild(node.parent, node);
+    }
+    this.visibilityBranches.clear();
     this.reconcileBindings();
   }
 
@@ -1008,14 +1076,14 @@ export class SceneChanges {
     }
   }
 
-  promote(canSkip: (node: Object3D) => Admission): void {
+  promote(canSkip: AdmitNode): void {
     for (const [node, kind] of this.admitted) {
       if (!this.members.has(node)) continue;
-      let safe = true;
-      for (let p = node.parent; p; p = p.parent)
-        if (!p.visible || p.renderOrder !== 0 || !passiveParent(p)) safe = false;
-      if (kind === 'branch') this.index(node, canSkip, safe);
-      else this.admitBinding(node, canSkip, safe);
+      let ancestry: ViewAncestry = 'ordinary';
+      for (let p = node.parent; p && ancestry !== 'hidden'; p = p.parent)
+        ancestry = childViewAncestry(p, ancestry);
+      if (kind === 'branch') this.index(node, canSkip, ancestry);
+      else this.admitBinding(node, canSkip, ancestry);
       if (node.parent) this.refreshChild(node.parent, node);
     }
     if (this.admitted.size) this.viewChanged = true;
@@ -1040,7 +1108,7 @@ export class SceneChanges {
         if (!this.translations.has(root) || !this.updateLeafTranslation(root))
           this.updateBranch(root, true);
       }
-      roots.clear();
+      roots.release();
       this.translations.clear();
       if (!this.dynamicMatrices.size)
         for (const mesh of this.stockSkins)
@@ -1065,14 +1133,14 @@ export class SceneChanges {
     )
       return false;
     if (resolveSourceWorldPose(node)) return true;
-    const local = matrixStorage(node.matrix.elements),
-      world = matrixStorage(node.matrixWorld.elements);
+    const local = sourceCollectionStorage(node.matrix.elements),
+      world = sourceCollectionStorage(node.matrixWorld.elements);
     const { x, y, z } = node.position;
     local[12] = x;
     local[13] = y;
     local[14] = z;
     if (node.parent) {
-      const p = matrixStorage(node.parent.matrixWorld.elements);
+      const p = sourceCollectionStorage(node.parent.matrixWorld.elements);
       world[12] = p[0] * x + p[4] * y + p[8] * z + p[12];
       world[13] = p[1] * x + p[5] * y + p[9] * z + p[13];
       world[14] = p[2] * x + p[6] * y + p[10] * z + p[14];
@@ -1115,7 +1183,7 @@ export class SceneChanges {
     if (node.matrixAutoUpdate) {
       if (stockLocal) {
         if (!reuseLocal) {
-          this.output.elements = matrixStorage(node.matrix.elements);
+          this.output.elements = sourceCollectionStorage(node.matrix.elements);
           this.output.compose(node.position, node.quaternion, node.scale);
           this.output.elements = this.scratchElements;
         }
@@ -1129,10 +1197,10 @@ export class SceneChanges {
           world.copy === Matrix4.prototype.copy &&
           world.multiplyMatrices === Matrix4.prototype.multiplyMatrices;
         if (stock) {
-          this.output.elements = matrixStorage(world.elements);
-          this.right.elements = matrixStorage(node.matrix.elements);
+          this.output.elements = sourceCollectionStorage(world.elements);
+          this.right.elements = sourceCollectionStorage(node.matrix.elements);
           if (node.parent) {
-            this.left.elements = matrixStorage(node.parent.matrixWorld.elements);
+            this.left.elements = sourceCollectionStorage(node.parent.matrixWorld.elements);
             this.output.multiplyMatrices(this.left, this.right);
           } else this.output.copy(this.right);
           this.output.elements = this.scratchElements;
@@ -1436,16 +1504,27 @@ export class SceneChanges {
   private watchSequence(input: readonly unknown[], dirty: Notify): void {
     const off = watchCollection(input, dirty);
     if (off) this.hold(off);
-    else {
-      const before = input.slice();
-      this.probe(() => {
-        if (
-          before.length !== input.length ||
-          !before.every((value, i) => Object.is(value, input[i]))
-        )
-          dirty();
-      });
+    else this.watchForeignInput(input, () => input, dirty);
+  }
+
+  private watchForeignInput(source: object, read: () => readonly unknown[], dirty: Notify): void {
+    let input = this.foreignInputs.get(source);
+    if (input) {
+      // Deliver an outstanding write to existing readers before accepting a new reader.
+      input.sample();
+    } else {
+      input = new ForeignInput(read);
+      this.foreignInputs.set(source, input);
     }
+    const { readers } = input;
+    readers.set(dirty, (readers.get(dirty) ?? 0) + 1);
+    this.hold(() => {
+      const count = readers.get(dirty);
+      if (count === undefined) return;
+      if (count > 1) readers.set(dirty, count - 1);
+      else readers.delete(dirty);
+      if (!readers.size) this.foreignInputs.delete(source);
+    });
   }
 
   watchGeometry(geometry: BufferGeometry): boolean {
@@ -1842,8 +1921,8 @@ export class SceneChanges {
       ]) ||
       !this.watch(shadow, 'needsUpdate', requested) ||
       !this.fields(shadow.mapSize, changed, ['x', 'y']) ||
+      !this.watch(camera, 'parent', layout) ||
       !this.fields(camera, layout, [
-        'parent',
         'matrixAutoUpdate',
         'matrixWorldAutoUpdate',
         'pivot',

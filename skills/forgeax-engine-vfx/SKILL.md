@@ -44,8 +44,6 @@ One-shot bursts (sparks, hit flashes, an enemy dissipating; Three.js additive
 emitter `schedule: { rate: 0, bursts: [{ time: 0, count }] }` and a billboard
 renderer with `blend: 'additive'`, then spawn one `ParticleEffectPlayer` per burst
 (a distinct `seed` varies it) and despawn it after the last scheduled birth plus its particle tail. Reused effects retain their authored burst times, looping and local transform conventions; an asset name does not imply a single short flash. Inspect the timeline before adapting it, and keep gameplay hit feedback synchronous. Authorized source or parameter adaptation may change schedules and recook them while retaining stable identity and provenance.
-The complete files are recipe 5 of the
-effects cookbook.
 
 Players advance once per World frame: the `vfx-gpu-runtime` Update system runs
 after `FixedUpdate` and steps each simulating player by `Time.delta` times its

@@ -443,6 +443,9 @@ async function publishWithExecutors(
           ...(context.opts.ddc?.buildCacheRoot === undefined
             ? {}
             : { buildCacheRoot: context.opts.ddc.buildCacheRoot }),
+          ...(context.opts.ddc?.buildCacheSeedRoot === undefined
+            ? {}
+            : { buildCacheSeedRoot: context.opts.ddc.buildCacheSeedRoot }),
           ...(context.opts.ddc?.identityRoot === undefined
             ? {}
             : { cacheIdentityRoot: context.opts.ddc.identityRoot }),

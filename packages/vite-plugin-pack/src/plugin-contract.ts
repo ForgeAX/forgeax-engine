@@ -97,6 +97,7 @@ export interface PluginPackOptions extends Pick<PackageFinalizePolicy, 'material
 
 export interface PluginPackDdcOptions {
   readonly buildCacheRoot?: string | undefined;
+  readonly buildCacheSeedRoot?: string | undefined;
   readonly projectDdcRoot?: string | undefined;
   /**
    * Project root that build-cache keys spell source paths relative to, so an

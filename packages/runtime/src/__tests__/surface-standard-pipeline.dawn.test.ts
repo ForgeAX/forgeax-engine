@@ -401,10 +401,14 @@ class SurfaceDawnDeviceObserver {
 
   private observeRenderPass(descriptor: GPURenderPassDescriptor): void {
     const attachments = Array.from(descriptor.colorAttachments);
-    const view = attachments.at(-1)?.view;
+    const view =
+      descriptor.label === 'taa-resolve' ? attachments[1]?.view : attachments.at(-1)?.view;
     const target = view == null ? undefined : this.textureViews.get(view);
     if (
       descriptor.label === 'standard-scene-data' ||
+      (descriptor.label === 'taa-resolve' &&
+        this.temporalTarget === undefined &&
+        target?.format === 'rgba16float') ||
       ((descriptor.label === 'g-buffer' || descriptor.label === 'g-buffer-late') &&
         attachments.length >= 6 &&
         target?.format === 'rgba16float')

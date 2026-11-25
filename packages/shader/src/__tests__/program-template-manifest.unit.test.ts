@@ -231,6 +231,24 @@ it('loads source declarations atomically, selects exact keys and keeps per-devic
   expect(registry.programTemplateInspection().requests).toBe(requests + 1);
 });
 
+it('selects a native shader template when performance is absent', async () => {
+  const service = compiler();
+  const registry = new ShaderRegistry({
+    manifestUrl: '/native-no-performance',
+    readText: async () => JSON.stringify(wire()),
+    programCompiler: service,
+  });
+  (await registry.loadManifest()).unwrap();
+  registry.installMaterialManifestTemplate('test::compute', 'RED=false').unwrap();
+
+  vi.stubGlobal('performance', undefined);
+  try {
+    expect(registry.findMaterialArtifact('test::compute').unwrap().source).toContain('2u');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 it('keeps the compiled publication at a shared URL when another host loads templates', async () => {
   const manifestUrl = '/alternating-manifest';
   const compiled = { entries: [{ hash: 'compiled', wgsl: 'fn compiled() {}', bindings: '[]' }] };

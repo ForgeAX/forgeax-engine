@@ -15,6 +15,7 @@ import { worldRenderResources } from '../../publication/resource-scope';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { selectCpuLodRows } from '../cpu-lod';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import { getOrCreateFromChain } from '../mesh-ssbo';
 import { recordShadowCasterDraws } from '../shadow-pass';
 import { cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -27,8 +28,11 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   const assets = new AssetRegistry();
   const world = new World({ assets });
   const skylightFallback = createSkylightFallback(device, device.queue);
-  Object.assign(f.c, { world: worldRenderResources(world), skylightCount: 0 });
-  Object.assign(f.c.frameState, { materialBgShared: new Map() });
+  Object.assign(f.c, {
+    world: worldRenderResources(world),
+    skylightCount: 0,
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+  });
   const first = f.add({ entity: 1, submeshes: 1 });
   const second = f.add({ entity: 2, submeshes: 1, claimed: [0] });
   for (const entry of [first, second])

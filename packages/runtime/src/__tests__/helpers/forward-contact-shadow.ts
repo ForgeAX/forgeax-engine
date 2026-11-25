@@ -38,8 +38,8 @@ export async function verifyForwardContactShadow(
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const profile = renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' });
-  if (!profile.ok) throw profile.error;
+  const profile = { ...renderer.inspect().profile, renderPath: 'forward' as const };
+  renderer.setProfile(profile).unwrap();
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
@@ -96,6 +96,10 @@ export async function verifyForwardContactShadow(
     expect(sumX / count, JSON.stringify(facts)).toBeLessThan(CONTACT_SHADOW_SIZE / 2);
     expect(lightSide, JSON.stringify(facts)).toBe(0);
     expect(farField, JSON.stringify(facts)).toBeLessThan(0.005);
+    renderer.setProfile({ ...profile, contactShadows: false }).unwrap();
+    expect(delta(off, await sample('profile-disabled', 0.5))).toBeLessThan(0.001);
+    expect(world.get(scene.sun, DirectionalLight).unwrap().contactShadowLength).toBe(0.5);
+    renderer.setProfile(profile).unwrap();
     expect(delta(on, await sample('on-repeat', 0.5))).toBeLessThan(0.001);
     for (const entity of [scene.ground, scene.cube])
       world

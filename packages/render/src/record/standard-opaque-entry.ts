@@ -1,4 +1,5 @@
 import type { MaterialShaderProgram } from '@forgeax/engine-shader';
+import { findMaterialShaderEntry } from '@forgeax/engine-shader';
 import {
   FORWARD_SHADOW_COLOR_ENTRY,
   isForwardShadowColorEntry,
@@ -35,7 +36,7 @@ function declaresStandardForwardEntry(
   if (source === undefined) return false;
   if (typeof source === 'string') return source.includes(`fn ${entry}(`);
   if (source.entryPoints !== undefined)
-    return source.entryPoints.some((candidate) => candidate.name === entry);
+    return findMaterialShaderEntry(source.entryPoints, entry) !== undefined;
   let mask = declaredByProgram.get(source);
   if (mask === undefined) {
     mask = 0;
@@ -98,9 +99,7 @@ export function lacksSurfaceDataEntry(
   if (bit === 0) return false;
   if (program === undefined) return !builtIn && materialShaderId !== undefined;
   if (program.entryPoints !== undefined)
-    return !program.entryPoints.some(
-      (candidate) => candidate.stage === 'fragment' && candidate.name === fragmentEntry,
-    );
+    return findMaterialShaderEntry(program.entryPoints, fragmentEntry, 'fragment') === undefined;
   let mask = surfaceDataByProgram.get(program);
   if (mask === undefined) {
     mask =

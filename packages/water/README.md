@@ -80,7 +80,9 @@ Both versions select the four Shallow stages, the solver's normal pass and
 optional WaveFoam. The recipe owns their numeric
 parameters and target descriptors. `materialGuids` and `textureGuids` must be
 empty; nonempty overrides fail source admission. `impulseNoiseGuid` is the
-explicit, consumed texture input. The separate `water-advanced` recipe retains
+explicit 2D sampled texture input. It accepts a byte-backed texture or the
+accepted output of a GPU generator. Pending GPU noise defers the affected
+simulation without consuming its impulses. The separate `water-advanced` recipe retains
 its existing source contract.
 
 `waveFoam: { resolution, gridExtentM }` is a separate square capture domain.

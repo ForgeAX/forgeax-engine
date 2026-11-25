@@ -27,7 +27,7 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
     );
   }
 
-  static indexed(rows: Iterable<RenderableSnapshot>, at: unknown): rows is SelectedSceneDrawRows {
+  static indexed(rows: Iterable<unknown>, at: unknown): rows is SelectedSceneDrawRows {
     return rows instanceof SelectedSceneDrawRows && at === selectedAt;
   }
 

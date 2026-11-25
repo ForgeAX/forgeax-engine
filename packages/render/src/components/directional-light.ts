@@ -100,7 +100,8 @@ export {
  * toward the light that darkens small-scale occlusion the shadow map cannot
  * resolve (grass blades, pebbles, feet on the ground). It is independent of
  * castShadow, so geometry excluded from shadow maps still self-shadows.
- * Deferred-path only; forward-lit surfaces ignore it. Typical values: 0.1-0.5.
+ * The render profile can veto the effect with contactShadows=false.
+ * Typical values: 0.1-0.5.
  *
  * sourceAngle (degrees, finite, >= 0, default 0.5357 = the sun's apparent
  * diameter) gives the light an angular size. Direct specular then follows

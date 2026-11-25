@@ -165,7 +165,10 @@ const BIND_GROUP_CHAIN_LEAF_KEY: object = {};
 const BYTE_RANGE_LEAF_KEY = {};
 const SKIN_RANGE_LEAF_KEY = {};
 
-function bindGroupChainNode(root: WeakMap<object, unknown>, key: object): WeakMap<object, unknown> {
+export function bindGroupChainNode(
+  root: WeakMap<object, unknown>,
+  key: object,
+): WeakMap<object, unknown> {
   let next = root.get(key) as WeakMap<object, unknown> | undefined;
   if (next === undefined) {
     next = new WeakMap();
@@ -501,7 +504,7 @@ function newMeshPage(page: number, first: number): MeshSsboMirror {
     bits: new Uint32Array(bytes.buffer),
     known: new Uint8Array(1),
     dirty: [],
-    stamps: new Float64Array(3),
+    stamps: new Float64Array(2),
     modes: new Uint8Array(1),
   };
 }
@@ -522,11 +525,11 @@ function reserveMeshRow(
   const shift = page.first - first;
   const bytes = new Uint8Array(capacity * MESH_PER_ENTITY_STRIDE);
   const known = new Uint8Array(capacity);
-  const stamps = new Float64Array(capacity * 3);
+  const stamps = new Float64Array(capacity * 2);
   const modes = new Uint8Array(capacity);
   bytes.set(page.bytes, shift * MESH_PER_ENTITY_STRIDE);
   known.set(page.known, shift);
-  stamps.set(page.stamps, shift * 3);
+  stamps.set(page.stamps, shift * 2);
   modes.set(page.modes, shift);
   page.first = first;
   page.bytes = bytes;
@@ -591,9 +594,21 @@ class MeshUploadPages {
 const mirrors = new WeakMap<object, MeshUploadPages>();
 const candidate = new Float32Array(MESH_SLOT_FLOATS + MESH_DRAW_PARAMETER_FLOATS);
 const candidateBits = new Uint32Array(candidate.buffer);
+const parameterRead = new Array<number>(MESH_DRAW_PARAMETER_FLOATS);
+const MESH_HAS_PARAMETERS = 1 << 3;
+const STORAGE_WITH_PARAMETERS = 1 | MESH_HAS_PARAMETERS;
+
+/** Compare the eight physical F32 words, including signed zero and already rounded values. */
+function parametersMatch(mirror: MeshSsboMirror, row: number, offset: number): boolean {
+  const start = row * MESH_STRIDE_FLOATS + offset;
+  for (let i = 0; i < MESH_DRAW_PARAMETER_FLOATS; i++)
+    if (mirror.bits[start + i] !== candidateBits[MESH_DRAW_PARAMETER_OFFSET + i]) return false;
+  return true;
+}
 
 function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
-  candidate.fill(0);
+  // A real draw writes both matrices in full. Fold heads construct their identity matrices here.
+  candidate.fill(0, foldHead ? 0 : 32, MESH_SLOT_FLOATS);
   candidateBits[38] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
   if (foldHead) {
     candidate[0] = 1;
@@ -624,7 +639,7 @@ function stageMeshSlot(mirror: MeshSsboMirror, slot: number, length: number): bo
   const base = slot * MESH_STRIDE_FLOATS;
   let dirty = mirror.known[slot] !== 1;
   for (let k = 0; k < length; k++) {
-    const value = candidateBits[k] ?? 0;
+    const value = candidateBits[k] as number;
     if (mirror.bits[base + k] !== value) {
       mirror.bits[base + k] = value;
       dirty = true;
@@ -671,7 +686,7 @@ function stageMeshDraw(
   visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
   storageBuffer: boolean,
   slot = meshDrawSlot(entry, folded),
-  parameters?: readonly number[],
+  context?: Pick<_InternalRenderPipelineContext, 'world'>,
 ): void {
   const buffer =
     meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
@@ -687,46 +702,69 @@ function stageMeshDraw(
   const mirror = pages.row(slot);
   const row = slot - mirror.first;
   const surfaceBase = visibleSurfaceBases?.get(entry.source.entityKey);
-  const stamp = row * 3;
+  const stamp = row * 2;
   const record = entry.sceneSlot;
   const nativeVersion =
     record instanceof SceneDrawSlot ? record.meshUploadVersion(entry.source) : undefined;
   const sourceIdentity = nativeVersion ?? getOpaqueResourceIdentity(entry.source);
-  const parameterIdentity = parameters === undefined ? 0 : getOpaqueResourceIdentity(parameters);
+  const parameters = folded
+    ? undefined
+    : (entry.world ?? context?.world)?.drawParameters?.(entry.source.entityKey, parameterRead);
+  const offset = storageBuffer ? MESH_DRAW_PARAMETER_OFFSET : MESH_UNIFORM_DRAW_PARAMETER_OFFSET;
+  if (parameters !== undefined) {
+    if (parameters.length < MESH_DRAW_PARAMETER_FLOATS)
+      candidate.fill(0, MESH_DRAW_PARAMETER_OFFSET + parameters.length);
+    candidate.set(parameters, MESH_DRAW_PARAMETER_OFFSET);
+  }
+  const previousMode = mirror.modes[row] ?? 0;
   const mode =
     Number(storageBuffer) |
     (Number(folded) << 1) |
-    (Number(visibleSurfaceBases !== undefined) << 2);
+    (Number(visibleSurfaceBases !== undefined) << 2) |
+    (parameters === undefined ? 0 : MESH_HAS_PARAMETERS);
   // An absent surface index and a valid zero have distinct shader inputs
   // only through hasSurface, which is encoded in mode.
   const base = surfaceBase ?? 0;
   if (
     mirror.known[row] !== 0 &&
     mirror.stamps[stamp] === sourceIdentity &&
-    mirror.stamps[stamp + 1] === parameterIdentity &&
-    mirror.stamps[stamp + 2] === base &&
-    mirror.modes[row] === mode
+    mirror.stamps[stamp + 1] === base &&
+    previousMode === mode &&
+    (parameters === undefined || parametersMatch(mirror, row, offset))
   )
     return;
   writeMeshSlotCandidate(entry, folded);
   writeMeshSurfaceCandidate(entry, visibleSurfaceBases, surfaceBase, storageBuffer);
-  const offset = storageBuffer ? MESH_DRAW_PARAMETER_OFFSET : MESH_UNIFORM_DRAW_PARAMETER_OFFSET;
-  if (parameters !== undefined) candidate.set(parameters, offset);
-  else if (!storageBuffer) candidate.fill(0, offset, offset + MESH_DRAW_PARAMETER_FLOATS);
-  // Uniform parameters are inside the original storage footprint.
-  const hasStorageParameters =
-    (storageBuffer && parameters !== undefined) ||
-    (((mirror.modes[row] ?? 0) & 1) !== 0 && mirror.stamps[stamp + 1] !== 0);
-  const length = hasStorageParameters ? candidate.length : MESH_SLOT_FLOATS;
+  const length = finishMeshParameterSlot(
+    previousMode,
+    storageBuffer,
+    parameters !== undefined,
+    offset,
+  );
   if (stageMeshSlot(mirror, row, length) && mirror.known[row] !== 2) {
     if (mirror.dirty.length === 0) pages.pending.push(mirror);
     mirror.dirty.push(slot);
     mirror.known[row] = 2;
   }
   mirror.stamps[stamp] = sourceIdentity;
-  mirror.stamps[stamp + 1] = parameterIdentity;
-  mirror.stamps[stamp + 2] = base;
+  mirror.stamps[stamp + 1] = base;
   mirror.modes[row] = mode;
+}
+
+/** Pack the active lane and clear any storage tail left by the preceding row mode. */
+function finishMeshParameterSlot(
+  previousMode: number,
+  storage: boolean,
+  hasParameters: boolean,
+  offset: number,
+): number {
+  const hadStorage = (previousMode & STORAGE_WITH_PARAMETERS) === STORAGE_WITH_PARAMETERS;
+  if (!storage) {
+    if (hasParameters) candidate.copyWithin(offset, MESH_DRAW_PARAMETER_OFFSET);
+    else candidate.fill(0, offset, offset + MESH_DRAW_PARAMETER_FLOATS);
+  }
+  if (hadStorage && !(storage && hasParameters)) candidate.fill(0, MESH_DRAW_PARAMETER_OFFSET);
+  return (storage && hasParameters) || hadStorage ? candidate.length : MESH_SLOT_FLOATS;
 }
 
 /** Encode the shared surface tail without changing the Mesh binding layout. */
@@ -764,7 +802,7 @@ export function prepareMeshDraw(
     c.visibleSurface?.entityBases,
     c.runtime.device.caps.storageBuffer,
     slot,
-    folded ? undefined : (entry.world ?? c.world)?.drawParameters?.(entry.source.entityKey),
+    c,
   );
   return slot;
 }

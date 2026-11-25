@@ -1,5 +1,14 @@
 import { constants, rmSync } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -22,13 +31,14 @@ import {
   sdkResourceManifest,
   sdkTemplateResourceManifest,
   sha256,
+  verifySdkArchiveInventory,
   verifySdkViewRuntime,
 } from './sdk-lib.mjs';
 import { SDK_ARCHIVE_VERIFY_GROUPS, SDK_COMPACT_PREVIEW_FRAMES } from './sdk-pr-preflight.mjs';
 import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
-import { buildCacheEntries } from './sdk-template-cache.mjs';
+import { buildCacheEntries, SDK_BUILD_CACHE_SEED } from './sdk-template-cache.mjs';
 import { verifySdkModeling } from './verify-sdk-modeling.mjs';
 import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
@@ -97,47 +107,39 @@ if (manifest.schemaVersion !== SDK_MANIFEST_VERSION) throw new Error('sdk-manife
 if (JSON.stringify(manifest.capabilities) !== JSON.stringify(SDK_CAPABILITIES))
   throw new Error('sdk-capability-closure');
 await sdkStage('verifySdkArtifactInventory', () =>
-  mapConcurrent(manifest.artifacts, async (expected) => {
-    const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
-      throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
-  }),
+  verifySdkArchiveInventory(sdkRoot, manifest.artifacts),
 );
 
-const files = await filesUnder(sdkRoot);
-if (files.length !== manifest.artifacts.length + 1) throw new Error('sdk-unmanifested-artifact');
-if ((await filesUnder(resolve(sdkRoot, 'packages'))).some((path) => path.endsWith('.tgz')))
-  throw new Error('sdk-package-archive-leaked');
 for (const entry of manifest.packages) {
   const packageRoot = resolve(sdkRoot, entry.root);
   if (!contained(sdkRoot, packageRoot)) throw new Error(`sdk-package-path: ${entry.name}`);
-  const packageManifest = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
+  const prefix = `${entry.root}/`;
+  const packageFiles = manifest.artifacts.filter((file) => file.path.startsWith(prefix));
+  const manifestFile = packageFiles.find((file) => file.path === `${prefix}package.json`);
+  if (manifestFile === undefined) throw new Error(`sdk-package-manifest: ${entry.name}`);
+  const packageManifest = JSON.parse(
+    await readFile(
+      resolve(
+        sdkRoot,
+        manifestFile.sourceCopy === true
+          ? `${manifest.source.root}/${manifestFile.path}`
+          : manifestFile.path,
+      ),
+      'utf8',
+    ),
+  );
   if (packageManifest.name !== entry.name || packageManifest.version !== entry.version)
     throw new Error(`sdk-package-identity: ${entry.name}`);
-  try {
-    await readFile(resolve(packageRoot, 'package', 'package.json'));
+  const packagePaths = packageFiles.map(({ path }) => path.slice(prefix.length));
+  if (packagePaths.includes('package/package.json'))
     throw new Error(`sdk-package-wrapper-leaked: ${entry.name}`);
-  } catch (cause) {
-    if (cause instanceof Error && cause.message.startsWith('sdk-package-wrapper-leaked'))
-      throw cause;
-  }
-  const packageFiles = await filesUnder(packageRoot);
-  assertNoRetiredPackageFiles(
-    entry.name,
-    packageFiles.map((path) => relative(packageRoot, path).split(sep).join('/')),
-  );
+  if (packagePaths.some((path) => path.endsWith('.tgz')))
+    throw new Error('sdk-package-archive-leaked');
+  assertNoRetiredPackageFiles(entry.name, packagePaths);
   if (packageFiles.length !== entry.fileCount)
     throw new Error(`sdk-package-file-count: ${entry.name}`);
-  const byteCount = (
-    await Promise.all(packageFiles.map(async (path) => (await readFile(path)).byteLength))
-  ).reduce((sum, bytes) => sum + bytes, 0);
-  if (byteCount !== entry.byteCount) throw new Error(`sdk-package-byte-count: ${entry.name}`);
-  const prefix = `${entry.root}/`;
-  if (
-    manifest.artifacts.filter((artifactEntry) => artifactEntry.path.startsWith(prefix)).length !==
-    entry.fileCount
-  )
-    throw new Error(`sdk-package-artifact-closure: ${entry.name}`);
+  if (packageFiles.reduce((sum, file) => sum + file.bytes, 0) !== entry.byteCount)
+    throw new Error(`sdk-package-byte-count: ${entry.name}`);
 }
 const tool = manifest.packages.find((entry) => entry.name === '@forgeax/view');
 if (
@@ -270,8 +272,10 @@ for (const resource of manifest.resources) {
   const packageResourceRoot = resolve(packageArchive, resource.packageRoot);
   if (!contained(packageArchive, packageResourceRoot))
     throw new Error(`sdk-resource-package-path: ${resource.id}`);
-  const listing = (await filesUnder(packageResourceRoot))
-    .map((path) => relative(packageResourceRoot, path).split(sep).join('/'))
+  const packageResourcePrefix = `${packageEntry.root}/${resource.packageRoot}/`;
+  const listing = manifest.artifacts
+    .filter(({ path }) => path.startsWith(packageResourcePrefix))
+    .map(({ path }) => path.slice(packageResourcePrefix.length))
     .sort();
   if (JSON.stringify(listing) !== JSON.stringify(expectedFiles))
     throw new Error(`sdk-resource-package-drift: ${resource.id}`);
@@ -449,9 +453,10 @@ const initializedSdk = await execFileAsync(
   },
 );
 const initializedSdkEnvelope = JSON.parse(initializedSdk.stdout.trim());
+const authoringGuide = 'skills/forgeax-engine-authoring';
 if (
   initializedSdkEnvelope.value?.onboarding?.read?.join('\n') !==
-  [resolve(sdkRoot, 'AGENTS.md'), resolve(sdkRoot, 'skills/forgeax-engine-sdk/SKILL.md')].join('\n')
+  [resolve(sdkRoot, 'AGENTS.md'), resolve(sdkRoot, authoringGuide, 'SKILL.md')].join('\n')
 ) {
   throw new Error('sdk-init-agent-onboarding');
 }
@@ -513,29 +518,35 @@ if (selected('project')) {
   const createdProjectEnvelope = JSON.parse(createdProject.stdout.trim());
   if (
     createdProjectEnvelope.value?.onboarding?.read?.join('\n') !==
-    [resolve(project, 'AGENTS.md'), resolve(project, 'skills/forgeax-engine-sdk/SKILL.md')].join(
-      '\n',
-    )
+    [resolve(project, 'AGENTS.md'), resolve(project, authoringGuide, 'SKILL.md')].join('\n')
   ) {
     throw new Error('sdk-new-agent-onboarding');
   }
   if (createdProjectEnvelope.value?.sdkUpdate?.status !== 'skipped')
     throw new Error('sdk-new-update-check-offline');
-  // The template ships its cooked Pack products; the project's first cook must
-  // reuse them instead of writing its own (checked after the first build).
-  const shippedBuildCache = await buildCacheEntries(project);
-  if (!shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')))
-    throw new Error('sdk-new-template-build-cache-missing');
+  const sharedBuildCache = resolve(sdkRoot, SDK_BUILD_CACHE_SEED);
+  const shippedBuildCache = await buildCacheEntries(sharedBuildCache);
+  const projectBuildCache = resolve(project, '.forgeax/ddc/build-cache');
+  const buildCacheReference = JSON.parse(
+    await readFile(resolve(project, '.forgeax/sdk-build-cache.json'), 'utf8'),
+  );
+  if (
+    buildCacheReference !== (await realpath(sharedBuildCache)) ||
+    !shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')) ||
+    (await buildCacheEntries(projectBuildCache)).length !== 0
+  ) {
+    throw new Error('sdk-new-shared-build-cache-missing');
+  }
   // The API directory links one file per domain; every link must resolve in the project.
-  const apiReferenceRoot = resolve(project, 'skills/forgeax-engine-sdk/references');
+  const apiReferenceRoot = resolve(project, authoringGuide, 'references');
   const apiDirectory = await readFile(resolve(apiReferenceRoot, 'api-index.md'), 'utf8');
   const apiDomainFiles = [...apiDirectory.matchAll(/\]\((api\/[a-z0-9-]+\.md)\)/g)].map(
     (match) => match[1],
   );
   if (apiDomainFiles.length === 0) throw new Error('sdk-api-index-domains-missing');
   for (const file of apiDomainFiles) await readFile(resolve(apiReferenceRoot, file));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/SKILL.md'));
+  await readFile(resolve(apiReferenceRoot, 'feature-catalog.md'));
+  await readFile(resolve(project, authoringGuide, 'SKILL.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');
   if (!projectWorkspace.includes('trustLockfile: true'))
     throw new Error('sdk-game-lockfile-trust-missing');
@@ -678,11 +689,13 @@ if (selected('project')) {
       maxBuffer: 128 * 1024 * 1024,
     },
   );
-  const cookedBuildCache = (await buildCacheEntries(project)).filter(
-    (entry) => !shippedBuildCache.includes(entry),
-  );
+  const cookedBuildCache = await buildCacheEntries(projectBuildCache);
   if (cookedBuildCache.length > 0)
-    throw new Error(`sdk-new-template-build-cache-miss: ${cookedBuildCache.join(', ')}`);
+    throw new Error(`sdk-new-shared-build-cache-miss: ${cookedBuildCache.join(', ')}`);
+  if (
+    JSON.stringify(await buildCacheEntries(sharedBuildCache)) !== JSON.stringify(shippedBuildCache)
+  )
+    throw new Error('sdk-new-shared-build-cache-mutated');
   const staticManifest = JSON.parse(
     await readFile(resolve(staticOutput, 'forgeax-dist.json'), 'utf8'),
   );

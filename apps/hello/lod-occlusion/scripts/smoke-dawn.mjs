@@ -122,7 +122,7 @@ let lastLodEvidenceFailure;
 try {
   const constructed = await constructRuntimeRendererHost(
     shim.mockCanvas,
-    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
+    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', gpuOcclusion: true } },
     {
       shaderManifestUrl,
     },
@@ -466,19 +466,21 @@ try {
       `renderer did not submit the main GPU-driven lane: ${JSON.stringify(mainGpuChannel)}`,
     );
   }
-  // Camera selection may record native commands inside a parent graph pass.
-  const passNames = inspection.perFramePassNames;
-  if (!passNames.includes('gpu-driven.view-selection')) {
-    throw new Error(`renderer did not submit GPU-driven LOD selection: ${JSON.stringify(passNames)}`);
+  const declared = inspection.output.graphPassNames;
+  const issued = inspection.perFramePassNames;
+  if (!declared.includes('camera-gpu-selection') || !issued.includes('gpu-driven.view-selection')) {
+    throw new Error(`renderer did not submit GPU-driven view selection from the camera graph: ${JSON.stringify({ declared, issued })}`);
   }
-  // Forward resolves the late phase in its depth prepass when one runs; main
-  // then draws the early + late union, so `main-late` only exists without it.
+  // The late phase may be declared separately from the issued camera work.
   const lateOcclusion =
-    passNames.includes('gpu-driven.occlusion-cull') &&
-    (passNames.includes('main-late') || passNames.includes('standard-scene-surface-data-late'));
+    declared.includes('camera-late-selection') &&
+    issued.includes('gpu-driven.occlusion-cull') &&
+    issued.includes('gpu-driven.occlusion-finalize-indirect') &&
+    declared.includes('g-buffer-late') &&
+    issued.includes('g-buffer-late');
   if (lateOcclusion !== (inspection.capabilities.firstInstanceIndirect === true)) {
     throw new Error(
-      `two-phase GPU occlusion must follow firstInstanceIndirect: ${JSON.stringify(passNames)}`,
+      `two-phase GPU occlusion must follow firstInstanceIndirect: ${JSON.stringify({ declared, issued })}`,
     );
   }
 

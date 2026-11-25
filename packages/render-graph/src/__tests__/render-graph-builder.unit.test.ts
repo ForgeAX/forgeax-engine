@@ -135,6 +135,39 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     expect(Object.isFrozen(before[0])).toBe(true);
   });
 
+  it('appends unique feature reads in declaration order after existing scene accesses', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const resources = Array.from({ length: 32 }, (_, i) =>
+      graph.createBuffer(`source-${i}`, { size: 16 }).unwrap(),
+    );
+    for (const resource of resources)
+      graph.publishConsumerRead('scene', resource, 'vertex-read').unwrap();
+    const prior = graph.consumerReads('scene');
+    const last = graph.createBuffer('last', { size: 16 }).unwrap();
+    graph.publishConsumerRead('scene', last, 'vertex-read').unwrap();
+    const first = resources[0];
+    if (first === undefined) throw new Error('missing first scene buffer');
+    const accesses: GraphAccess[] = [
+      { resource: first, usage: 'vertex-read' },
+      { resource: first, usage: 'vertex-read' },
+      { resource: last, usage: 'storage-read' },
+    ];
+    graph.appendConsumerReads('scene', accesses);
+    expect(accesses.slice(0, 3).map(({ usage }) => usage)).toEqual([
+      'vertex-read',
+      'vertex-read',
+      'storage-read',
+    ]);
+    expect(accesses.slice(3)).toEqual([
+      ...prior.slice(1),
+      { resource: last, usage: 'vertex-read' },
+    ]);
+    const length = accesses.length;
+    graph.appendConsumerReads('scene', accesses);
+    expect(accesses).toHaveLength(length);
+    expect(prior).toHaveLength(32);
+  });
+
   it.each([
     { ordered: true, initialized: true },
     { ordered: true, initialized: false },

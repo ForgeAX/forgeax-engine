@@ -67,6 +67,33 @@ describe('isDeepFrozenJson', () => {
     expect(isDeepFrozenJson(Object.freeze(cyclic))).toBe(false);
   });
 
+  it('retains ancestry across shared immutable leaves without reading hidden or accessor values', () => {
+    const leaf = Object.freeze({ value: 1 });
+    expect(isDeepFrozenJson(leaf)).toBe(true);
+    const nested: { leaf: object; back?: object } = { leaf };
+    const cycle = Object.freeze({ left: leaf, right: nested });
+    nested.back = cycle;
+    Object.freeze(nested);
+    expect(isDeepFrozenJson(cycle)).toBe(false);
+    let reads = 0;
+    const accessor = Object.freeze({
+      get field() {
+        reads++;
+        return leaf;
+      },
+    });
+    const withHidden = Object.freeze(Object.defineProperty({ leaf }, 'hidden', { value: leaf }));
+    const withSymbol = Object.freeze({ leaf, [Symbol('extra')]: leaf });
+    const frozenView = Object.freeze(new Uint8Array(0));
+    for (const value of [accessor, withHidden, withSymbol, frozenView]) {
+      expect(isDeepFrozenJson(Object.freeze({ left: leaf, right: value }))).toBe(false);
+    }
+    expect(reads).toBe(0);
+    expect(
+      isDeepFrozenJson(Object.freeze({ left: leaf, right: Object.freeze([leaf, leaf]) })),
+    ).toBe(true);
+  });
+
   it('rejects accessors, hidden or symbol keys, foreign prototypes, functions and views', () => {
     const rejected: object[] = [
       Object.defineProperty({}, 'a', { get: () => 1, enumerable: true }),

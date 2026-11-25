@@ -152,7 +152,7 @@ function fixture(count = 1) {
     resolve,
     clustered: false,
     reflectionFallback: false,
-    shadowViews: true,
+    demand: 'forward-and-shadow' as const,
   };
   return {
     input,
@@ -281,6 +281,27 @@ it('retains hidden preparation joins across rows and passes, but rechecks accept
   const next = read(changed);
   expect(next.draw.binding).not.toBe(first.draw.binding);
   expect(next.draw.key.count).toBe(3);
+});
+
+it('prepares a hidden shadow caster while its unused Forward program is unavailable', () => {
+  const f = fixture();
+  const row = f.rows[0];
+  if (row === undefined) throw new Error('Expected a hidden row');
+  const entry = {
+    ...row,
+    meshSlot: 0,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderState: undefined,
+    stencilReference: undefined,
+  };
+  const resolve = vi.fn((shader: string) =>
+    shader === 'game::shadow-scene' ? f.artifact : undefined,
+  );
+  const selected = [
+    ...prepareHiddenMaterialExecutions(entry, f.owner.materials(), 'shadow', resolve),
+  ];
+  expect(selected.map(({ execution }) => execution.route)).toEqual(['gpu']);
+  expect(resolve.mock.calls.map(([id]) => id)).toEqual(['game::shadow-scene']);
 });
 
 it('selects shared Forward and Shadow programs without expanding dispatch', () => {
@@ -435,7 +456,7 @@ it('resolves availability on each collection and only requests demanded shadow p
     'missing-material-receipt',
   );
   expect(
-    collectGpuDrivenMaterialArtifacts({ ...f.input, shadowViews: false }).materialArtifacts.size,
+    collectGpuDrivenMaterialArtifacts({ ...f.input, demand: 'forward' }).materialArtifacts.size,
   ).toBe(1);
   expect(f.input.resolve.mock.calls.map(([id]) => id)).toEqual(['game::surface-scene']);
   f.input.resolve.mockClear();
@@ -686,7 +707,7 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
       layoutIdentity: receipt.reflection.layoutIdentity,
     };
   });
-  const result = collectGpuDrivenMaterialArtifacts({
+  const input = {
     ...f.input,
     batches,
     programs: f.projection.project(f.guarded, frame),
@@ -694,7 +715,8 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
     clustered: true,
     probeBlend: true,
     reflectionFallback: true,
-  });
+  };
+  const result = collectGpuDrivenMaterialArtifacts(input);
   expect(resolve).toHaveBeenCalledTimes(16);
   const requests = resolve.mock.calls.map(([id, request]) => {
     if (typeof request !== 'object') throw new Error('Expected concrete artifact request');
@@ -714,6 +736,52 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
       if (pass.route === 'gpu') expect(pass.artifact.specializationKey).toBe(shader);
     }
   }
+  const issued = new Map(requests.map((key, index) => [key, resolve.mock.results[index]?.value]));
+  resolve.mockImplementation((id, request) => {
+    if (typeof request !== 'object') throw new Error('Expected concrete artifact request');
+    return issued.get(
+      `${id}:${request.pass}:${request.deformation}:${request.vertexColorAvailable}`,
+    );
+  });
+  resolve.mockClear();
+  const reduced = collectGpuDrivenMaterialArtifacts({ ...input, batches: batches.slice(-1) });
+  expect(reduced.batchExecutions.size).toBe(1);
+  expect(resolve).toHaveBeenCalledTimes(2);
+  for (const [, request] of resolve.mock.calls)
+    expect(request).toMatchObject({ deformation: 'skin', vertexColorAvailable: true });
+  resolve.mockClear();
+  expect(collectGpuDrivenMaterialArtifacts({ ...input, batches: [] }).batchExecutions.size).toBe(0);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(result.batchExecutions.size).toBe(batches.length / 2);
+});
+
+it('selects each geometry tangent encoding when batches share the same material', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw new Error('Expected shared geometry');
+  const geometry = batch.binding.geometry;
+  const packed = {
+    ...batch,
+    binding: {
+      ...batch.binding,
+      geometry: {
+        ...geometry,
+        receipt: {
+          ...geometry.receipt,
+          vertexInputs: [
+            ...geometry.receipt.vertexInputs,
+            { semantic: 'tangentFrame', location: 14, format: 'uint32' },
+          ],
+        },
+      },
+    },
+  };
+  collectGpuDrivenMaterialArtifacts({ ...f.input, batches: [batch, packed, packed] });
+  expect(f.input.resolve).toHaveBeenCalledTimes(4);
+  expect(f.input.resolve).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({ tangentFrame32: true }),
+  );
 });
 
 it('deduplicates unavailable artifacts locally and retries with current collection flags', () => {
@@ -865,9 +933,22 @@ it('keeps the collected frame identity when every retained execution is unchange
   f.input = { ...f.input, resolve };
   const first = collectGpuDrivenMaterialArtifacts({ ...f.input, retention });
   expect(collectGpuDrivenMaterialArtifacts({ ...f.input, retention })).toBe(first);
-  const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, shadowViews: false });
+  const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, demand: 'forward' });
   expect(noShadow).not.toBe(first);
   expect(noShadow.shadowMaterialArtifacts.size).toBe(0);
+  for (const demand of [
+    'forward-with-direct-shadows',
+    'forward-and-shadow',
+    'forward-with-direct-shadows',
+  ] as const) {
+    resolve.mockClear();
+    const collected = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, demand });
+    const indirect = demand === 'forward-and-shadow';
+    expect(collected.batchExecutions.values().next().value?.shadow.route).toBe(
+      indirect ? 'gpu' : 'direct',
+    );
+    expect(resolve.mock.calls.some(([id]) => id === 'game::shadow-scene')).toBe(indirect);
+  }
 });
 
 it('retains the native program join across dispatch-only changes without revisiting batches', () => {
@@ -918,6 +999,54 @@ it('retains the native program join across dispatch-only changes without revisit
   expect(first.batchExecutions.get(binding)?.forward).toMatchObject({
     material: { roughness: 0.5 },
   });
+});
+
+it('reconciles an issued layout with Scene edits and retains its live shader observations', () => {
+  const f = fixture(4);
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const unrelated = new MaterialResource(
+    captureMaterialSnapshot({ ...f.snapshot, materialHandle: 2 }),
+  );
+  let frame = f.owner.materials().with(unrelated);
+  let surface = f.artifact;
+  const resolve = vi.fn((shader: string) =>
+    shader === 'game::surface-scene' ? surface : f.artifact,
+  );
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      resolve,
+      retention,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const first = collect();
+  const prepared = retention.prepared;
+  unrelated.adopt(captureMaterialSnapshot({ ...unrelated.snapshot, roughness: 0.125 }));
+  frame = frame.with(unrelated);
+  resolve.mockClear();
+  expect(collect()).toBe(first);
+  expect(retention.prepared).toBe(prepared);
+  expect(retention.reused).toBe(0);
+  expect(resolve.mock.calls.map(([id]) => id)).toEqual([
+    'game::surface-scene',
+    'game::shadow-scene',
+  ]);
+
+  surface = { ...surface };
+  const second = collect();
+  expect(second.firstArtifact).not.toBe(first.firstArtifact);
+  expect(retention.prepared).toBe(prepared + 1);
+  f.material.adopt(captureMaterialSnapshot({ ...f.snapshot, materialSceneIndexProgramKeys: {} }));
+  frame = frame.with(f.material);
+  resolve.mockClear();
+  const direct = collect();
+  expect(direct.materialArtifacts.size).toBe(0);
+  expect(direct.shadowMaterialArtifacts.size).toBe(0);
+  expect(direct.batchExecutions.values().next().value?.forward.route).toBe('direct');
+  expect(first.batchExecutions.values().next().value?.forward.route).toBe('gpu');
+  expect(resolve).not.toHaveBeenCalled();
 });
 
 it('keeps overwritten native program getters on the original observed path', () => {

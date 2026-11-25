@@ -107,7 +107,6 @@ function dependencies(
       brdfLutView: resource(),
       intensityBuffer: resource(),
     },
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},

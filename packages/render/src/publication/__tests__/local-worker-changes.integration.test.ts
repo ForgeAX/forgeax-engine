@@ -5,7 +5,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MeshAsset } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   Camera,
   Instances,
@@ -81,15 +81,18 @@ it('applies the same accepted edit sequence locally and through transferred reco
       )
       .unwrap();
   let entity: EntityHandle = spawn();
-  const build = (renderables: PersistentRenderCandidateRequest) =>
+  const build = vi.fn((renderables: PersistentRenderCandidateRequest) =>
     extractSource(world, assets, local.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables,
-    });
+    }),
+  );
   const compare = () => {
     world.update(1 / 60).unwrap();
+    build.mockClear();
     const direct = local.extractComposition(world, assets, build, lease);
+    expect(build).toHaveBeenCalledTimes(1);
     const candidate = publisher.prepare(0).unwrap();
     const message = structuredClone(candidate.message, {
       transfer: renderPublicationTransfers(candidate.message),
@@ -115,8 +118,11 @@ it('applies the same accepted edit sequence locally and through transferred reco
       .addComponent(entity, { component: Instances, data: { transforms: new Float32Array(32) } })
       .unwrap();
     compare();
+    world.set(camera, Camera, { exposure: 1.5 }).unwrap();
     world.set(entity, Instances, { transforms: new Float32Array(16).fill(1) }).unwrap();
-    compare();
+    const moved = compare();
+    expect(moved.cameras[0]?.exposure).toBe(1.5);
+    expect(moved.rows[0]?.instances).toHaveLength(16);
     world.removeComponent(entity, Instances).unwrap();
     compare();
     world.set(parent, Visibility, { state: VisibilityStateValue.hidden }).unwrap();

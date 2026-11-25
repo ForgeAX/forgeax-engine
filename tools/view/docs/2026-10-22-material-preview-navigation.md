@@ -76,5 +76,3 @@ View `1221ee96ccbf5141deb6bb3eedf8b10182aab612`. The paired PRs carry subsequent
 documentation and exact gitlink updates. Product documentation and browser
 evidence are published in this View repository; the earlier Harness record is
 retained as historical local evidence.
-See [delivery checks](evidence/material-preview-primitives-navigation/delivery.md)
-and [desktop toolbar PNG](evidence/material-preview-primitives-navigation/material-toolbar.png).

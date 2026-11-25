@@ -67,12 +67,14 @@ const IMPORT_SOURCES = {
   forgeax_scene_temporal: SCENE_TEMPORAL,
   'forgeax_pbr::gbuffer': GBUFFER,
   'forgeax_depth_pyramid::sample': PYRAMID_SAMPLE,
+  'forgeax_ssr::ray': readFileSync(resolve(import.meta.dirname, '../ssr-ray.wgsl'), 'utf8'),
 } as const;
 
 const STAGE_IMPORTS: Record<keyof typeof SOURCES, readonly (keyof typeof IMPORT_SOURCES)[]> = {
   pyramidSeed: ['forgeax_depth_pyramid::sample', 'forgeax_view::common'],
   pyramidReduce: ['forgeax_depth_pyramid::sample'],
   trace: [
+    'forgeax_ssr::ray',
     'forgeax_depth_pyramid::sample',
     'forgeax_pbr::gbuffer',
     'forgeax_scene_temporal',
@@ -121,10 +123,8 @@ describe('SSR built-in shader artifacts', () => {
     expect(SOURCES.pyramidSeed).toContain('linearizeViewDepth');
     expect(SOURCES.pyramidSeed).toContain('view.temporalProjection');
     expect(SOURCES.pyramidReduce).toContain('reduceDepthPyramidFootprint');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_REFINE_STEPS');
-    expect(SOURCES.trace).toContain('traceScreenRay');
-    expect(SOURCES.trace).toContain('textureLoad(depthPyramid');
+    expect(SOURCES.trace).toContain('traceSsrRay');
+    expect(IMPORT_SOURCES['forgeax_ssr::ray']).toContain('textureLoad(pyramid');
     expect(SOURCES.trace).toContain('view.ssrParams.w > 0.5');
     expect(SOURCES.temporal).toContain('SsrTemporalParams');
     expect(SOURCES.temporal).toContain('resolvedOutput');
@@ -134,32 +134,14 @@ describe('SSR built-in shader artifacts', () => {
     expect(SOURCES.temporal).toContain('count += 1.0');
   });
 
-  it('retains the full traversal budget while keeping tangent validation outside the march', () => {
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS : u32 = 64u;');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_REFINE_STEPS : u32 = 5u;');
-    const traversal = SOURCES.trace.slice(
-      SOURCES.trace.indexOf('fn traceScreenRay('),
-      SOURCES.trace.indexOf('fn ssrHitTapAdmitted('),
-    );
-    expect(traversal.match(/var iteration = 0u;/g)).toHaveLength(1);
-    expect(traversal.match(/iteration \+= 1u;/g)).toHaveLength(1);
-    const march = traversal.slice(
-      traversal.indexOf('for (; iteration'),
-      traversal.indexOf('if (!candidateReady)'),
-    );
-    expect(march).toContain('iteration < SSR_TRACE_MAX_LINEAR_ITERATIONS');
-    expect(march).toContain('iteration >= iterationBudget');
-    expect(march).toContain('candidateReady = true;');
-    expect(march).not.toContain('ssrRefineHit(');
-    expect(march).not.toContain('var refine = 0u;');
-    expect(traversal.slice(traversal.indexOf('if (!candidateReady)'))).toContain(
-      'let planeHit = ssrRefineHit(',
-    );
-    expect(traversal).toContain(
-      'refine < u32(select(f32(SSR_TRACE_MAX_REFINE_STEPS), view.ssrQuality.w, view.ssrQuality.w > 0.0))',
-    );
-    expect(traversal).toContain('return ssrRefineGeometricHit(');
+  it('uses the same bounded marcher for inline and spatial SSR', () => {
+    const ray = IMPORT_SOURCES['forgeax_ssr::ray'];
+    const forward = readFileSync(resolve(import.meta.dirname, '../ssr-forward.wgsl'), 'utf8');
+    expect(forward).toContain('#import forgeax_ssr::ray::');
+    expect(SOURCES.trace).toContain('#import forgeax_ssr::ray::');
+    expect(ray).toContain('index < stepCount');
+    expect(ray).toContain('depthPyramidViewportCell');
+    expect(ray).not.toContain('sceneDepth');
   });
 
   it('compiles and reflects every artifact through the build-time compiler', async () => {
@@ -170,7 +152,7 @@ describe('SSR built-in shader artifacts', () => {
       expect(value.manifestEntry.wgsl).toBe(value.wgsl);
       if (name !== 'compose') expect(value.manifestEntry.glsl ?? '').toBe('');
       expect(value.manifestEntry.hash).toMatch(/^[0-9a-f]{8,64}$/);
-      expect([...value.deps].sort()).toEqual([...STAGE_IMPORTS[name]]);
+      expect([...value.deps].sort()).toEqual([...STAGE_IMPORTS[name]].sort());
       expect(JSON.parse(value.manifestEntry.bindings)).toEqual(value.bindings);
     }
   });

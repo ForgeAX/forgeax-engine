@@ -1,4 +1,7 @@
-import { deriveVertexBufferLayoutFromProjection } from '@forgeax/engine-geometry';
+import {
+  deriveVertexBufferLayoutFromProjection,
+  vertexLayoutHasColor,
+} from '@forgeax/engine-geometry';
 import type {
   BindGroup,
   BindGroupLayout,
@@ -37,7 +40,7 @@ import {
   materialAbiRasterConstants,
   materialVertexConstants,
 } from '../material-stage-constants';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import { isCanonicalStandardPbrMaterialShader, isStandardGBufferEntry } from '../pbr-pipeline';
 import { INSTANCE_STORAGE_STRIDE_FLOATS, packInstanceStorageBuffer } from '../record/mesh-ssbo';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { SkinTaskBinding } from '../record/skin-tasks';
@@ -52,7 +55,6 @@ import type {
   ReadonlyDynamicInputPage,
   SurfaceDynamicInputFrame,
 } from '../surface/dynamic-input';
-import { batchLevelStride, batchLodLevelCount } from './batch-layout';
 import type { GpuDrivenBatch, SubmissionPlan } from './batch-topology';
 import type { GpuDrivenPbrProgram } from './pbr-program';
 import { resolveStandardPbrProgram } from './pbr-program';
@@ -70,6 +72,7 @@ import {
   remapRasterWindowBase,
 } from './raster-input-bindings';
 import { isVelocityRasterEntry } from './raster-selection';
+import { type RasterWindowLayout, rasterWindowLayout } from './raster-window-layout';
 import { gpuDrivenReflectionFallbackRenderState } from './reflection-fallback-output';
 import {
   GpuResourceAllocationLedger,
@@ -198,7 +201,8 @@ interface SurfaceFrameRow {
 }
 
 interface SurfaceSharedFrameState {
-  readonly buffer: Buffer;
+  buffer: Buffer;
+  readonly fallback: Buffer;
   frameTime: number;
   writes: number;
 }
@@ -506,6 +510,15 @@ export function requestMaterialAbiRasterPipeline(
       ? 'gpu-driven-skin'
       : 'gpu-driven-pbr';
   const surfaceDiscards = effectiveStandardSurfaceDiscards(artifact, input.standardSurfaceDiscards);
+  const fragmentEntry = colorlessFragmentEntry(
+    input.format === null,
+    artifact.variantSet,
+    receipt,
+    surfaceDiscards,
+    artifact.fragmentEntry,
+    artifact.program,
+    input.renderState?.alphaToCoverageEnabled === true,
+  );
   return factory(
     artifact.specializationKey ?? artifact.material,
     false,
@@ -519,7 +532,7 @@ export function requestMaterialAbiRasterPipeline(
     input.topology,
     input.stripIndexFormat,
     artifact.variantSet,
-    'forward',
+    isStandardGBufferEntry(fragmentEntry) ? 'deferred' : 'forward',
     undefined,
     input.sampleCount,
     input.format,
@@ -534,15 +547,7 @@ export function requestMaterialAbiRasterPipeline(
     sceneEntry,
     input.additionalColorFormats,
     artifact.vertexEntry,
-    colorlessFragmentEntry(
-      input.format === null,
-      artifact.variantSet,
-      receipt,
-      surfaceDiscards,
-      artifact.fragmentEntry,
-      artifact.program,
-      input.renderState?.alphaToCoverageEnabled === true,
-    ),
+    fragmentEntry,
     undefined,
     materialAbiRasterConstants(input.standardTextureMask, surfaceDiscards),
   );
@@ -603,7 +608,9 @@ export class MaterialAbiRasterAdapter {
   private dynamicInputBufferSize: number;
   private dynamicFrameBuffer: Buffer;
   private dynamicFrameBufferSize: number;
+  private boundSharedFrame: Buffer;
   private readonly dynamicSharedFrame: SurfaceSharedFrameState;
+  private readonly emptySurfaceBuffer: Buffer;
   private directAddressBuffer: Buffer;
   private directAddressBufferSize: number;
   private directAddresses = new SurfaceDrawLayout();
@@ -643,32 +650,25 @@ export class MaterialAbiRasterAdapter {
     private readonly artifact: MaterialShaderArtifact,
     private readonly deformation: 'rigid' | 'skin',
     private readonly pipelineFactory: MaterialPipelineFactory | undefined,
-    dynamicInputBuffer: Buffer,
-    dynamicInputFrameBuffer: Buffer,
     dynamicSharedFrame: SurfaceSharedFrameState,
     directAddressBuffer: Buffer,
-    ownsDynamicSharedFrame: boolean,
     allocationLedger: GpuResourceAllocationLedger,
   ) {
     this.allocationLedger = allocationLedger;
-    this.dynamicInputBuffer = dynamicInputBuffer;
+    // The original zeroed address stripe also covers legacy layouts whose
+    // selected entries never touch dynamic Surface slots.
+    this.dynamicInputBuffer = directAddressBuffer;
     this.dynamicInputBufferSize = 16;
-    this.dynamicFrameBuffer = dynamicInputFrameBuffer;
-    this.dynamicFrameBufferSize = SURFACE_FRAME_RECORD_BYTES;
+    this.dynamicFrameBuffer = directAddressBuffer;
+    this.dynamicFrameBufferSize = 0;
     this.dynamicSharedFrame = dynamicSharedFrame;
+    this.boundSharedFrame = dynamicSharedFrame.buffer;
+    this.emptySurfaceBuffer = directAddressBuffer;
     this.directAddressBuffer = directAddressBuffer;
     this.directAddressBufferSize = SURFACE_DIRECT_ADDRESS_STRIDE;
-    this.surfaceInputBuffers.add(dynamicInputBuffer);
-    this.surfaceInputBuffers.add(dynamicInputFrameBuffer);
     this.surfaceInputBuffers.add(directAddressBuffer);
-    if (ownsDynamicSharedFrame) this.surfaceInputBuffers.add(dynamicSharedFrame.buffer);
     this.trackOwnedBuffer(instanceBuffer, instanceBufferSize);
-    this.trackOwnedBuffer(dynamicInputBuffer, 16);
-    this.trackOwnedBuffer(dynamicInputFrameBuffer, SURFACE_FRAME_RECORD_BYTES);
     this.trackOwnedBuffer(directAddressBuffer, SURFACE_DIRECT_ADDRESS_STRIDE);
-    if (ownsDynamicSharedFrame) {
-      this.trackOwnedBuffer(dynamicSharedFrame.buffer, SURFACE_SHARED_FRAME_BYTES);
-    }
   }
 
   static create(input: {
@@ -810,86 +810,22 @@ export class MaterialAbiRasterAdapter {
       cleanupCreatedBuffers();
       return instanceWrite;
     }
-    const dynamicInputBuffer = input.device.createBuffer({
-      label: 'surface-dynamic-input-page',
-      size: 16,
-      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-    });
-    if (!dynamicInputBuffer.ok) {
-      cleanupCreatedBuffers();
-      return dynamicInputBuffer;
-    }
-    createdBuffers.push(dynamicInputBuffer.value);
-    const dynamicInputWrite = input.device.queue.writeBuffer(
-      dynamicInputBuffer.value,
-      0,
-      new Uint32Array(4),
-    );
-    if (!dynamicInputWrite.ok) {
-      cleanupCreatedBuffers();
-      return dynamicInputWrite;
-    }
-    const dynamicFrameBuffer = input.device.createBuffer({
-      label: 'surface-dynamic-frame-input',
-      size: SURFACE_FRAME_RECORD_BYTES,
-      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
-    });
-    if (!dynamicFrameBuffer.ok) {
-      cleanupCreatedBuffers();
-      return dynamicFrameBuffer;
-    }
-    createdBuffers.push(dynamicFrameBuffer.value);
-    const dynamicFramePayload = new Uint8Array(SURFACE_FRAME_RECORD_BYTES);
-    writeSurfaceFrameRecord(new DataView(dynamicFramePayload.buffer), 0, 0, 0, 0);
-    const dynamicFrameWrite = input.device.queue.writeBuffer(
-      dynamicFrameBuffer.value,
-      0,
-      dynamicFramePayload,
-    );
-    if (!dynamicFrameWrite.ok) {
-      cleanupCreatedBuffers();
-      return dynamicFrameWrite;
-    }
     const directAddressBuffer = input.device.createBuffer({
       label: 'surface-direct-addresses',
       size: SURFACE_DIRECT_ADDRESS_STRIDE,
-      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     });
     if (!directAddressBuffer.ok) {
       cleanupCreatedBuffers();
       return directAddressBuffer;
     }
     createdBuffers.push(directAddressBuffer.value);
-    const directAddressWrite = input.device.queue.writeBuffer(
-      directAddressBuffer.value,
-      0,
-      new Uint32Array(4),
-    );
-    if (!directAddressWrite.ok) {
-      cleanupCreatedBuffers();
-      return directAddressWrite;
-    }
-    let ownsDynamicSharedFrame = false;
-    let dynamicSharedFrame = input.sharedSurfaceFrame;
-    if (dynamicSharedFrame === undefined) {
-      const created = input.device.createBuffer({
-        label: 'surface-dynamic-shared-frame-input',
-        size: SURFACE_SHARED_FRAME_BYTES,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      });
-      if (!created.ok) {
-        cleanupCreatedBuffers();
-        return created;
-      }
-      createdBuffers.push(created.value);
-      const initialized = input.device.queue.writeBuffer(created.value, 0, new Float32Array(4));
-      if (!initialized.ok) {
-        cleanupCreatedBuffers();
-        return initialized;
-      }
-      dynamicSharedFrame = { buffer: created.value, frameTime: 0, writes: 0 };
-      ownsDynamicSharedFrame = true;
-    }
+    const dynamicSharedFrame = input.sharedSurfaceFrame ?? {
+      buffer: directAddressBuffer.value,
+      fallback: directAddressBuffer.value,
+      frameTime: 0,
+      writes: 0,
+    };
     const instancesBindGroup = input.device.createBindGroup({
       label: 'standard-pbr-gpu-driven-visible-instances-bg',
       layout: instancesBindGroupLayout,
@@ -906,9 +842,15 @@ export class MaterialAbiRasterAdapter {
           binding: 2,
           resource: bufferBinding(input.visibleBuffer),
         },
-        { binding: 3, resource: bufferBinding(dynamicInputBuffer.value) },
-        { binding: 4, resource: bufferBinding(dynamicFrameBuffer.value) },
-        { binding: 5, resource: bufferBinding(dynamicSharedFrame.buffer) },
+        { binding: 3, resource: bufferBinding(directAddressBuffer.value, 0, 16) },
+        {
+          binding: 4,
+          resource: bufferBinding(directAddressBuffer.value, 0, SURFACE_FRAME_RECORD_BYTES),
+        },
+        {
+          binding: 5,
+          resource: bufferBinding(dynamicSharedFrame.buffer, 0, SURFACE_SHARED_FRAME_BYTES),
+        },
         // Frame-level placeholder; scene-index draws bind visible windows.
         {
           binding: 6,
@@ -940,11 +882,8 @@ export class MaterialAbiRasterAdapter {
         input.artifact,
         deformation,
         input.pipelineFactory,
-        dynamicInputBuffer.value,
-        dynamicFrameBuffer.value,
         dynamicSharedFrame,
         directAddressBuffer.value,
-        ownsDynamicSharedFrame,
         allocationLedger,
       ),
     );
@@ -973,9 +912,18 @@ export class MaterialAbiRasterAdapter {
         },
         { binding: 1, resource: bufferBinding(this.probeBlendRecordBuffer ?? visibleBuffer) },
         { binding: 2, resource: bufferBinding(visibleBuffer) },
-        { binding: 3, resource: bufferBinding(this.dynamicInputBuffer) },
-        { binding: 4, resource: bufferBinding(this.dynamicFrameBuffer) },
-        { binding: 5, resource: bufferBinding(this.dynamicSharedFrame.buffer) },
+        {
+          binding: 3,
+          resource: bufferBinding(this.dynamicInputBuffer, 0, this.dynamicInputBufferSize),
+        },
+        {
+          binding: 4,
+          resource: bufferBinding(this.dynamicFrameBuffer, 0, this.surfaceDynamicFrameBufferSize),
+        },
+        {
+          binding: 5,
+          resource: bufferBinding(this.boundSharedFrame, 0, SURFACE_SHARED_FRAME_BYTES),
+        },
         { binding: 6, resource: bufferBinding(this.instanceBuffer, 0, this.instanceBufferSize) },
         {
           binding: 7,
@@ -1079,41 +1027,11 @@ export class MaterialAbiRasterAdapter {
     return inputs.isCurrentBuffer(tables.sceneInputs) ? 'current' : 'stale';
   }
 
-  /** One real window binding per resume, through the same cache encoding consumes. */
-  *prepareVisibleWindows(
-    plan: SubmissionPlan,
-    regions: readonly number[],
-    current: () => boolean,
-  ): Generator<void, Result<void, RhiError>> {
-    const invalid = () =>
-      err(
-        new RhiError({
-          code: 'rhi-descriptor-invalid',
-          expected: 'current native visible-window preparation',
-          hint: 'reprepare from the actual batch/LOD and View owners',
-        }),
-      );
-    for (const batch of plan.batches) {
-      if (batch.visibleCapacity === 0) continue;
-      for (const base of regions)
-        for (let level = 0; level < batchLodLevelCount(batch); level++) {
-          if (!current()) return invalid();
-          const result = this.visibleWindowBindGroup(
-            base + batch.visibleBase + level * batchLevelStride(batch),
-            batch.visibleAllocationCapacity ?? batch.visibleCapacity,
-            current,
-          );
-          if (!result.ok) return result;
-          yield;
-        }
-    }
-    return current() ? ok(undefined) : invalid();
-  }
-
   visibleWindowBindGroup(
     visibleBase: number,
     visibleCapacity: number,
     current?: () => boolean,
+    projection?: RasterWindowLayout,
   ): Result<BindGroup, RhiError> {
     return this.visibleWindowBindGroupForBuffer(
       this.visibleBuffer,
@@ -1121,6 +1039,7 @@ export class MaterialAbiRasterAdapter {
       visibleCapacity,
       false,
       current,
+      projection,
     );
   }
 
@@ -1130,6 +1049,7 @@ export class MaterialAbiRasterAdapter {
     visibleCapacity: number,
     shadowVisibleAlias = false,
     current?: () => boolean,
+    projection?: RasterWindowLayout,
   ): Result<BindGroup, RhiError> {
     const invalid = () =>
       err(
@@ -1170,11 +1090,9 @@ export class MaterialAbiRasterAdapter {
     // The view finalizer writes the absolute visible row into firstInstance
     // on capable devices, so all batches share this physical binding.
     const wholeVisibleBuffer = this.device.caps.firstInstanceIndirect;
-    const key = wholeVisibleBuffer
-      ? shadowVisibleAlias
-        ? 'shadow'
-        : 'main'
-      : `${visibleBase}:${visibleCapacity}:${shadowVisibleAlias ? 'shadow' : 'main'}`;
+    const mode = shadowVisibleAlias ? 'shadow' : 'main';
+    const region = wholeVisibleBuffer ? mode : `${visibleBase}:${visibleCapacity}:${mode}`;
+    const key = projection === undefined ? region : `${region}:${projection.index}`;
     const cached = groups.get(key);
     if (cached !== undefined) {
       this.visibleWindowCounters.hits += 1;
@@ -1188,6 +1106,7 @@ export class MaterialAbiRasterAdapter {
       visibleBase,
       visibleCapacity,
       shadowVisibleAlias,
+      projection,
     );
     if (!created.ok) return created;
     if (!this.windowStorageCurrent(sceneTables, cache, current)) return invalid();
@@ -1212,7 +1131,7 @@ export class MaterialAbiRasterAdapter {
       probe: this.probeBlendRecordBuffer,
       dynamicInput: this.dynamicInputBuffer,
       dynamicFrame: this.dynamicFrameBuffer,
-      sharedFrame: this.dynamicSharedFrame.buffer,
+      sharedFrame: this.boundSharedFrame,
     };
   }
 
@@ -1393,12 +1312,13 @@ export class MaterialAbiRasterAdapter {
         nextBuffer,
         whole ? 0 : base,
         whole ? 1 : Number(parts[1]),
-        whole ? key === 'shadow' : parts[2] === 'shadow',
+        parts[whole ? 0 : 2] === 'shadow',
+        rasterWindowLayout(previous),
       );
       if (!created.ok) return created;
       if (!current() || rasterInputTarget(inputs, demand)?.buffer !== target.buffer)
         return err(rasterInputBindingError());
-      const nextKey = whole ? key : `${base}:${parts[1]}:${parts[2]}`;
+      const nextKey = whole ? key : `${base}${key.slice(key.indexOf(':'))}`;
       groups.set(nextKey, created.value);
       role.replacements.set(previous, created.value);
     }
@@ -1420,7 +1340,7 @@ export class MaterialAbiRasterAdapter {
       this.probeBlendRecordBuffer !== storage.probe ||
       this.dynamicInputBuffer !== storage.dynamicInput ||
       this.dynamicFrameBuffer !== storage.dynamicFrame ||
-      this.dynamicSharedFrame.buffer !== storage.sharedFrame
+      this.boundSharedFrame !== storage.sharedFrame
     )
       return false;
     // Each private map only appends on a miss; reset/replacement changes the root identity.
@@ -1526,8 +1446,7 @@ export class MaterialAbiRasterAdapter {
     this.directAddresses = addresses.layout;
     this.directBindGroups.clear();
     this.surfaceInputBuffers.add(replacement.value);
-    this.surfaceInputBuffers.delete(previous);
-    this.retireOwnedBuffer(previous);
+    this.retireSurfaceBuffer(previous);
     return ok(undefined);
   }
 
@@ -1621,9 +1540,18 @@ export class MaterialAbiRasterAdapter {
             retainedProbeBuffer === undefined ? 16 : PROBE_BLEND_RECORD_BYTE_SIZE,
           ),
         },
-        { binding: 3, resource: bufferBinding(this.dynamicInputBuffer) },
-        { binding: 4, resource: bufferBinding(this.dynamicFrameBuffer) },
-        { binding: 5, resource: bufferBinding(this.dynamicSharedFrame.buffer) },
+        {
+          binding: 3,
+          resource: bufferBinding(this.dynamicInputBuffer, 0, this.dynamicInputBufferSize),
+        },
+        {
+          binding: 4,
+          resource: bufferBinding(this.dynamicFrameBuffer, 0, this.surfaceDynamicFrameBufferSize),
+        },
+        {
+          binding: 5,
+          resource: bufferBinding(this.boundSharedFrame, 0, SURFACE_SHARED_FRAME_BYTES),
+        },
         {
           binding: 6,
           resource: bufferBinding(
@@ -1695,6 +1623,8 @@ export class MaterialAbiRasterAdapter {
     const compactRangeCapacity = frameRangesChanged
       ? compactFrameRanges.reduce((capacity, entry) => Math.max(capacity, entry.frameIndex + 1), 0)
       : this.dynamicFrameRangeCapacity;
+    const shared = this.ensureSurfaceSharedFrame();
+    if (!shared.ok) return shared;
     const frameBuffer = this.ensureSurfaceFrameBuffer(
       Math.max(1, recordCapacity, compactRangeCapacity),
     );
@@ -1857,7 +1787,7 @@ export class MaterialAbiRasterAdapter {
     }
     this.resetVisibleWindows();
     this.directBindGroups.clear();
-    this.retireOwnedBuffer(previous);
+    this.retireSurfaceBuffer(previous);
     return ok(undefined);
   }
 
@@ -1901,17 +1831,43 @@ export class MaterialAbiRasterAdapter {
     }
     this.resetVisibleWindows();
     this.directBindGroups.clear();
-    this.retireOwnedBuffer(previous);
+    this.retireSurfaceBuffer(previous);
     this.dynamicFrameRows.clear();
     this.dynamicFrameRangeSource = undefined;
     return ok(true);
+  }
+
+  private ensureSurfaceSharedFrame(): Result<void, RhiError> {
+    const state = this.dynamicSharedFrame;
+    if (state.buffer === state.fallback && state.fallback === this.emptySurfaceBuffer) {
+      const created = this.device.createBuffer({
+        label: 'surface-dynamic-shared-frame-input',
+        size: SURFACE_SHARED_FRAME_BYTES,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+      });
+      if (!created.ok) return created;
+      this.trackOwnedBuffer(created.value, SURFACE_SHARED_FRAME_BYTES);
+      this.surfaceInputBuffers.add(created.value);
+      state.buffer = created.value;
+    }
+    if (this.boundSharedFrame === state.buffer) return ok(undefined);
+    const previous = this.boundSharedFrame;
+    this.boundSharedFrame = state.buffer;
+    const rebound = this.rebuildInstancesBindGroup();
+    if (!rebound.ok) {
+      this.boundSharedFrame = previous;
+      return rebound;
+    }
+    this.resetVisibleWindows();
+    this.directBindGroups.clear();
+    return ok(undefined);
   }
 
   private writeSurfaceFrameTime(frameTime: number): Result<void, RhiError> {
     if (frameTime === this.dynamicSharedFrame.frameTime) return ok(undefined);
     const payload = new Float32Array(4);
     payload[0] = frameTime;
-    const write = this.device.queue.writeBuffer(this.dynamicSharedFrame.buffer, 0, payload);
+    const write = this.device.queue.writeBuffer(this.boundSharedFrame, 0, payload);
     if (!write.ok) return write;
     this.dynamicSharedFrame.frameTime = frameTime;
     this.dynamicSharedFrame.writes += 1;
@@ -2058,7 +2014,7 @@ export class MaterialAbiRasterAdapter {
         : resolveStandardPbrProgram(
             this.programs,
             this.artifact.material,
-            layoutProjection.attributes.some((attribute) => attribute.key === 'color'),
+            vertexLayoutHasColor(layoutProjection),
           );
     if (this.pipelineFactory === undefined && program === undefined) {
       return err(
@@ -2275,6 +2231,11 @@ export class MaterialAbiRasterAdapter {
     this.surfaceInputBuffers.clear();
   }
 
+  private retireSurfaceBuffer(buffer: Buffer): void {
+    if (buffer === this.emptySurfaceBuffer) return;
+    this.retireOwnedBuffer(buffer);
+  }
+
   private retireOwnedBuffer(buffer: Buffer): void {
     if (this.destroyedBuffers.has(buffer)) return;
     if (this.disposed) {
@@ -2333,7 +2294,7 @@ export class MaterialAbiRasterAdapter {
   }
 
   get surfaceDynamicSharedFrameBuffer(): Buffer {
-    return this.dynamicSharedFrame.buffer;
+    return this.boundSharedFrame;
   }
 
   get surfaceDynamicInputBufferSize(): number {
@@ -2341,7 +2302,7 @@ export class MaterialAbiRasterAdapter {
   }
 
   get surfaceDynamicFrameBufferSize(): number {
-    return this.dynamicFrameBufferSize;
+    return Math.max(SURFACE_FRAME_RECORD_BYTES, this.dynamicFrameBufferSize);
   }
 
   get surfaceDynamicSharedFrameBufferSize(): number {

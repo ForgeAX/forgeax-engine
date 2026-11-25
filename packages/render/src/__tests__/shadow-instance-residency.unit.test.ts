@@ -3,6 +3,7 @@ import type { BindGroup, RenderPipeline, RhiRenderPassEncoder } from '@forgeax/e
 import { rhi } from '@forgeax/engine-rhi-null';
 import { waterBodyOwnerKey } from '@forgeax/engine-water';
 import { expect, it, vi } from 'vitest';
+import { shadowStagesIgnoreMaterial } from '../assembly/material-pipeline-requests';
 import { GpuBuffer } from '../gpu-resource';
 import { disposeInstanceBuffers } from '../instance-buffer-cache';
 import { MaterialResource } from '../material-resource';
@@ -15,6 +16,22 @@ import { createShadowPipelineSelectionOwner, recordShadowCasterDraws } from '../
 import { MaterialDispatch } from '../scene/material-dispatch';
 
 const matrix = (x: number) => Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1);
+
+it('selects pass material from the active shadow entries including packed and vertex-only variants', () => {
+  const read = { group: 1, binding: 0 };
+  const entries = [
+    { stage: 'vertex', name: 'vs_main', bindings: [] },
+    { stage: 'vertex', name: 'vs_main_packed', bindings: [read] },
+    { stage: 'fragment', name: 'opaque', bindings: [] },
+    { stage: 'fragment', name: 'masked', bindings: [read] },
+  ] as const;
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_main', 'opaque')).toBe(true);
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_main', null)).toBe(true);
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_main_packed', 'opaque')).toBe(false);
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_main', 'masked')).toBe(false);
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_missing', null)).toBe(false);
+  expect(shadowStagesIgnoreMaterial(entries, 'vs_main', 'missing')).toBe(false);
+});
 
 it.each([
   true,
@@ -47,7 +64,10 @@ it.each([
       ..._args: Parameters<
         NonNullable<_InternalRenderPipelineContext['runtime']['getMaterialShaderPipelineEntry']>
       >
-    ) => ({ pipeline, group2Contract: 'mesh' as const }),
+    ): { pipeline: RenderPipeline; group2Contract: 'mesh'; shadowPassMaterialLayout?: object } => ({
+      pipeline,
+      group2Contract: 'mesh',
+    }),
   );
   const counts = { createBindGroup: 0, keys: [] };
   const shadowMaterialBindGroups = new WeakMap<object, unknown>();
@@ -176,7 +196,6 @@ it.each([
     },
     frameState: {
       instanceBuffers: new Map(),
-      materialBgShared: new Map(),
       instancesBgShared: new WeakMap(),
       shadowMaterialBindGroups,
     },
@@ -242,6 +261,68 @@ it.each([
     );
     expect(writes.mock.calls.filter(([buffer]) => buffer !== identity)).toHaveLength(60);
     expect(pass.draw).toHaveBeenCalledTimes(180);
+
+    // The physical pass group is sufficient only for the exact layout certified by the PSO.
+    const passGroup = {} as BindGroup;
+    for (const expectedLayout of [materialLayout, {}]) {
+      pipelineLookup.mockReturnValueOnce({
+        pipeline,
+        group2Contract: 'mesh',
+        shadowPassMaterialLayout: expectedLayout,
+      });
+      setBindGroup.mockClear();
+      recordShadowCasterDraws(
+        c,
+        pass,
+        pipeline,
+        materialGroup,
+        undefined,
+        false,
+        undefined,
+        false,
+        undefined,
+        0xffffffff,
+        false,
+        passGroup,
+      );
+      const group = setBindGroup.mock.calls.find(([index]) => index === 1)?.[1];
+      expect(group).toBeDefined();
+      expect(group === passGroup).toBe(expectedLayout === materialLayout);
+    }
+
+    // Surface parameters vary independently of the ShadowCaster PSO. The texture mask
+    // does select a pipeline. All three casters still submit their own geometry.
+    const dull = new MaterialResource({ ...material.snapshot, materialHandle: 3, roughness: 1 });
+    const masked = new MaterialResource({
+      ...dull.snapshot,
+      materialHandle: 4,
+      standardTextureMask: 1,
+    });
+    const variants = [material, dull, masked];
+    const casterContext = {
+      ...c,
+      validatedOrdered: variants.map((resource, index) => ({
+        ...entry,
+        renderableIndex: index,
+        source: {
+          ...entry.source,
+          entityKey: index + 1,
+          material: resource,
+          materials: [resource],
+        },
+      })),
+      materialFrame: c.materialFrame.with(dull).with(masked),
+      materialSlots: variants.map((resource) => resource.snapshot),
+      materialSlotIndices: [[0], [1], [2]],
+    };
+    Object.assign(casterContext, {
+      shadowPipelineSelectionOwner: createShadowPipelineSelectionOwner(casterContext),
+    });
+    pipelineLookup.mockClear();
+    drawShadow.mockClear();
+    record(casterContext as unknown as _InternalRenderPipelineContext);
+    expect(drawShadow).toHaveBeenCalledTimes(3);
+    expect(pipelineLookup.mock.calls.map((args) => args[21])).toEqual([undefined, { '64000': 1 }]);
 
     const waterEntry = {
       ...entry,

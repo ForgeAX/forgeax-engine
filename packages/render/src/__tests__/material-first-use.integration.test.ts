@@ -368,6 +368,8 @@ it.each([
         0,
       );
       expect(errors).toEqual([]);
+      expect(renderer.inspect().perFramePassNames).toContain('transmission-forward-merge');
+      expect(renderer.inspect().perFramePassNames).not.toContain('transmission-backdrop-copy');
       expect(asyncTargetRequests()).toHaveLength(beforeAsyncRequests);
       if (generation === 1) expect(requests).toHaveLength(beforeRequests + (immediate ? 1 : 0));
       expect(targetModules(device, 'async')).toHaveLength(beforeAsync);

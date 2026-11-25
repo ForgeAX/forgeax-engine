@@ -10,10 +10,18 @@ import {
   STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
   STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING,
 } from '@forgeax/engine-shader';
-import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
+import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import type { PipelineState } from '../record/render-context';
+import { POINTS_LINES_VIEW_BYTES } from '../record/view-ubo';
+import { shaderBindingVisibility } from '../shader-binding-visibility';
 
+export const POINTS_LINES_VIEW_SLOT = 10;
+const POINTS_LINES_VIEW_LAYOUT_ENTRY: GPUBindGroupLayoutEntry = {
+  binding: POINTS_LINES_VIEW_SLOT,
+  visibility: GPU_SHADER_STAGE_VERTEX,
+  buffer: { type: 'uniform', hasDynamicOffset: true },
+};
 export const FORWARD_HIZ_VIEW_SLOT = 27;
 export const FORWARD_SCREEN_SURFACE_VIEW_SLOT = 29;
 export const FORWARD_SSR_COLOR_VIEW_SLOT = 28;
@@ -142,21 +150,11 @@ export function viewEntryReads(
   vertex: string | undefined,
   fragment: string | null | undefined,
 ): ViewReads | undefined {
-  const vs = entries?.find(
-    (entry) => entry.stage === 'vertex' && entry.name === (vertex ?? 'vs_main'),
-  );
-  const fs = entries?.find((entry) => entry.stage === 'fragment' && entry.name === fragment);
-  if (vs === undefined || fs === undefined) return;
-  const reads = new Map<number, number>();
-  for (const [entry, visibility] of [
-    [vs, 1],
-    [fs, 2],
-  ] as const) {
-    for (const { group, binding } of entry.bindings) {
-      if (group === 0) reads.set(binding, (reads.get(binding) ?? 0) | visibility);
-    }
-  }
-  return reads;
+  if (fragment === undefined) return undefined;
+  return shaderBindingVisibility(entries, 0, {
+    vertex: vertex ?? 'vs_main',
+    ...(fragment === null ? {} : { fragment }),
+  });
 }
 
 const viewFamilies = new WeakMap<
@@ -164,6 +162,7 @@ const viewFamilies = new WeakMap<
   {
     readonly entries: readonly GPUBindGroupLayoutEntry[];
     readonly projections: Map<string, BindGroupLayout>;
+    readonly byReads: WeakMap<ViewReads, BindGroupLayout>;
     readonly slots: ReadonlySet<number>;
     readonly clusterEntries: readonly GPUBindGroupLayoutEntry[];
   }
@@ -185,11 +184,12 @@ export function retainViewLayout(
     entries,
     clusterEntries: storage === undefined ? [] : clusterViewLayoutEntries(storage),
     projections: new Map(),
+    byReads: new WeakMap(),
     slots: new Set(entries.map(({ binding }) => binding)),
   });
 }
 
-/** Keep the two View dynamic offsets stable and project all other resources by entry reads. */
+/** The ordinary View offset is stable. The point/line offset belongs to its own program. */
 export function projectViewLayout(
   device: Pick<RhiDevice, 'createBindGroupLayout'>,
   layout: BindGroupLayout,
@@ -197,11 +197,14 @@ export function projectViewLayout(
 ): BindGroupLayout {
   const family = viewFamilies.get(layout);
   if (family === undefined) return layout;
+  const byIdentity = family.byReads.get(reads);
+  if (byIdentity !== undefined) return byIdentity;
   const entries = family.entries.flatMap((entry) => {
-    if (entry.buffer?.hasDynamicOffset === true) return [entry];
+    if (entry.binding === 0 && entry.buffer?.hasDynamicOffset === true) return [entry];
     const visibility = reads.get(entry.binding);
     return visibility === undefined ? [] : [{ ...entry, visibility }];
   });
+  if (reads.has(POINTS_LINES_VIEW_SLOT)) entries.push(POINTS_LINES_VIEW_LAYOUT_ENTRY);
   for (const entry of [...family.clusterEntries, ...STANDARD_VIEW_LAYOUT_ENTRIES]) {
     const visibility = reads.get(entry.binding);
     if (visibility !== undefined) entries.push({ ...entry, visibility });
@@ -213,14 +216,18 @@ export function projectViewLayout(
       texture: { sampleType: 'float', viewDimension: '2d' },
     });
   }
+  const key = entries.map(({ binding, visibility }) => `${binding}:${visibility}`).join(',');
+  const existing = family.projections.get(key);
+  if (existing !== undefined) {
+    family.byReads.set(reads, existing);
+    return existing;
+  }
   const textures = entries
     .filter(({ texture }) => texture !== undefined)
     .map(({ binding, visibility }) => Object.freeze({ binding, visibility }));
-  const key = entries.map(({ binding, visibility }) => `${binding}:${visibility}`).join(',');
-  const existing = family.projections.get(key);
-  if (existing !== undefined) return existing;
   const projected = device.createBindGroupLayout({ label: `pbr-view[${key}]`, entries }).unwrap();
   family.projections.set(key, projected);
+  family.byReads.set(reads, projected);
   projectedViews.set(projected, {
     slots: new Set(entries.map(({ binding }) => binding)),
     textures: Object.freeze(textures),
@@ -352,6 +359,24 @@ const viewGroups = new WeakMap<
   }
 >();
 const pipelineViews = new WeakMap<import('@forgeax/engine-rhi').RenderPipeline, BindGroupLayout>();
+const pointsLinesViewProjections = new WeakMap<
+  BindGroup,
+  WeakMap<Buffer, WeakMap<BindGroupLayout, BindGroup>>
+>();
+
+function pointsLinesViewLayouts(group: BindGroup, buffer: Buffer) {
+  let buffers = pointsLinesViewProjections.get(group);
+  if (buffers === undefined) {
+    buffers = new WeakMap();
+    pointsLinesViewProjections.set(group, buffers);
+  }
+  let layouts = buffers.get(buffer);
+  if (layouts === undefined) {
+    layouts = new WeakMap();
+    buffers.set(buffer, layouts);
+  }
+  return layouts;
+}
 
 export function retainViewGroup(
   group: BindGroup,
@@ -441,16 +466,34 @@ export function viewForPipeline(
   device: Pick<RhiDevice, 'createBindGroup'>,
   pipeline: import('@forgeax/engine-rhi').RenderPipeline,
   group: BindGroup,
+  pointsLinesBuffer?: Buffer,
 ): BindGroup {
   const layout = pipelineViews.get(pipeline);
-  if (layout === undefined || !projectedViews.has(layout)) return group;
+  if (layout === undefined) return group;
+  const projection = projectedViews.get(layout);
+  if (projection === undefined) return group;
   const family = viewGroups.get(group);
   if (family === undefined) throw new Error('projected pipeline requires its Standard View group');
-  const existing = family.projections.get(layout);
+  const { slots } = projection;
+  const usesPointsLines = slots.has(POINTS_LINES_VIEW_SLOT);
+  if (usesPointsLines && pointsLinesBuffer === undefined)
+    throw new Error('Points/Lines pipeline requires its prepared View buffer');
+  const projections =
+    usesPointsLines && pointsLinesBuffer !== undefined
+      ? pointsLinesViewLayouts(group, pointsLinesBuffer)
+      : family.projections;
+  const existing = projections.get(layout);
   if (existing !== undefined) return existing;
-  const slots = viewLayoutSlots(layout);
-  const entries = family.entries.filter(({ binding }) => slots?.has(binding));
-  if (slots?.has(DIRECT_DFG_VIEW_SLOT)) {
+  const entries = family.entries.filter(({ binding }) => slots.has(binding));
+  if (usesPointsLines && pointsLinesBuffer !== undefined)
+    entries.push({
+      binding: POINTS_LINES_VIEW_SLOT,
+      resource: {
+        kind: 'buffer',
+        value: { buffer: pointsLinesBuffer, size: POINTS_LINES_VIEW_BYTES },
+      },
+    });
+  if (slots.has(DIRECT_DFG_VIEW_SLOT)) {
     if (family.loadDirectDfg === undefined) throw new Error('missing View direct DFG owner');
     entries.push(directDfgViewBinding(family.loadDirectDfg()));
   }
@@ -461,6 +504,6 @@ export function viewForPipeline(
       entries,
     })
     .unwrap();
-  family.projections.set(layout, projected);
+  projections.set(layout, projected);
   return projected;
 }

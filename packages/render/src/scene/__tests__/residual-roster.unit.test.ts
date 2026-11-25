@@ -405,7 +405,7 @@ it.each([
     bounds.mockClear();
     const next = f.view.cull(f.current());
     expect(bounds).toHaveBeenCalledTimes(1);
-    expect(next.frame.cameraAdmission?.residual.size).toBe(count + 8);
+    expect(next.frame.cameraAdmission?.residual?.size).toBe(count + 8);
     expect(old.frame.cameraAdmission?.hidden.size).toBe(0);
     expect(old.frame.cameraVisible?.(row)).toBe(true);
     bounds.mockClear();
@@ -474,7 +474,10 @@ it('falls back to a complete residual test when the row journal cannot prove its
   const journal = f.scene.slotsSnapshot().journal;
   if (journal === undefined) throw new Error('Missing owned row journal');
   journal.reset();
+  // A one-frame delta is carried by the published row versions. Skipping a frame
+  // leaves only the journal to prove the delta, and a reset journal cannot.
   f.write([source(0, covered)]);
+  f.write([source(1, covered)]);
   const bounds = vi.spyOn(f.scene, 'writeCullingWorldBoundsAt');
   try {
     f.view.cull(f.current());

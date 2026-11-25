@@ -50,6 +50,14 @@ export default definePack({
 });
 ```
 
+## Build-time texture baking
+
+`bakeMaps` is the portable CPU path. Build hosts can pass an owned WebGPU device
+to `bakeMapsWithGpu` for chart filtering and group-local ambient occlusion on
+supported atlas inputs. Both APIs export ordinary texture assets and retain the
+CPU correspondence and diagnostics. GPU rounding can change individual texel
+values. Use the CPU path when a build requires the same bytes on every host.
+
 ## Data model
 
 | Element | Storage | Notes |

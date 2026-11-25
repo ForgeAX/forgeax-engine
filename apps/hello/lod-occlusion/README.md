@@ -65,6 +65,9 @@ vertices/8928 indices; LOD1: 16x12, 221/1056; LOD2: 8x6, 63/240). Rebuild the ap
 the source or sidecar; ignored `dist/` output is disposable and must never be
 treated as an independently authored asset.
 
+The Dawn smoke and native performance fixture select Standard Deferred to
+exercise the two-phase GPU occlusion path.
+
 The browser and Dawn scripts fail closed when their backend or compositor is
 unavailable. They do not replace the asset with procedural geometry, hand-write
 a pack index, or treat canvas liveness as visual evidence. Renderer inspection

@@ -57,28 +57,46 @@ fn cardLinkVisible(a:vec3f,na:vec3f,b:vec3f,nb:vec3f)->u32 {
  let texel=pixel.y*radiosity.atlas.x+pixel.x;let surface=surfaces[texel];
  let geometric=cardGeometricNormal(textureLoad(normal,vec2i(pixel),0).zw);
  let q=vec2f(local)/f32(radiosity.sampling.y);let base=vec2u(floor(q));let f=fract(q);
+ let probeAnchor=all(local%vec2u(radiosity.sampling.y)==vec2u(0u));
+ let center=local/radiosity.sampling.y;
+ let probe=tile*cardProbeCount()+center.y*radiosity.sampling.x+center.x;
  var visible=vec4u(0u);
- for(var tap=0u;tap<4u;tap++){
-  let offset=vec2u(tap&1u,tap>>1u);
-  let interpolation=select(1.0-f.x,f.x,offset.x!=0u)*select(1.0-f.y,f.y,offset.y!=0u);
-  if(!(interpolation>0.0)||surface.valid==0u){continue;}
-  let p=min(base+offset,vec2u(radiosity.sampling.x-1u));
-  let origin=origins[tile*cardProbeCount()+p.y*radiosity.sampling.x+p.x];
-  if(origin.valid!=0u){visible[tap]=cardLinkVisible(origin.position,origin.normal,surface.position,geometric);}
+ var neighbors=vec4u(0u);
+ // Texel links and probe neighbors share one world trace call site.
+ for(var work=0u;work<select(4u,8u,probeAnchor);work++){
+  let tap=work&3u;
+  var a:vec3f;
+  var na:vec3f;
+  var b:vec3f;
+  var nb:vec3f;
+  if(work<4u){
+   let offset=vec2u(tap&1u,tap>>1u);
+   let interpolation=select(1.0-f.x,f.x,offset.x!=0u)*select(1.0-f.y,f.y,offset.y!=0u);
+   if(!(interpolation>0.0)||surface.valid==0u){continue;}
+   let p=min(base+offset,vec2u(radiosity.sampling.x-1u));
+   let origin=origins[tile*cardProbeCount()+p.y*radiosity.sampling.x+p.x];
+   if(origin.valid==0u){continue;}
+   a=origin.position;
+   na=origin.normal;
+   b=surface.position;
+   nb=geometric;
+  } else {
+   let offset=array<vec2i,4>(vec2i(-1,0),vec2i(1,0),vec2i(0,-1),vec2i(0,1))[tap];
+   let next=vec2i(center)+offset;
+   if(any(next<vec2i(0))||any(next>=vec2i(i32(radiosity.sampling.x)))){continue;}
+   let origin=origins[probe];
+   let other=origins[tile*cardProbeCount()+u32(next.y)*radiosity.sampling.x+u32(next.x)];
+   if(origin.valid==0u||other.valid==0u){continue;}
+   a=origin.position;
+   na=origin.normal;
+   b=other.position;
+   nb=other.normal;
+  }
+  let accepted=cardLinkVisible(a,na,b,nb);
+  if(work<4u){visible[tap]=accepted;}else{neighbors[tap]=accepted;}
  }
  links[texel]=visible;
- if(all(local%vec2u(radiosity.sampling.y)==vec2u(0u))){
-  let p=local/radiosity.sampling.y;let probe=tile*cardProbeCount()+p.y*radiosity.sampling.x+p.x;
-  let origin=origins[probe];var neighbors=vec4u(0u);
-  for(var neighbor=0u;neighbor<4u;neighbor++){
-   let offset=array<vec2i,4>(vec2i(-1,0),vec2i(1,0),vec2i(0,-1),vec2i(0,1))[neighbor];
-   let next=vec2i(p)+offset;
-   if(any(next<vec2i(0))||any(next>=vec2i(i32(radiosity.sampling.x)))){continue;}
-   let other=origins[tile*cardProbeCount()+u32(next.y)*radiosity.sampling.x+u32(next.x)];
-   if(origin.valid!=0u&&other.valid!=0u){neighbors[neighbor]=cardLinkVisible(origin.position,origin.normal,other.position,other.normal);}
-  }
-  links[cardLinkProbeBase()+probe]=neighbors;
- }
+ if(probeAnchor){links[cardLinkProbeBase()+probe]=neighbors;}
  if(all(local==vec2u(0u))){links[cardLinkStamp(tile)]=vec4u(radiosity.sampling.w,radiosity.update.y,${CARD_RADIOSITY_LINK_MODEL}u,0u);}
 }
 `;

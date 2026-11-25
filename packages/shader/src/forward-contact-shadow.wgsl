@@ -1,11 +1,9 @@
-#import forgeax_view::common::{view, FullscreenOutput, fullscreen_triangle}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
-#import forgeax_pbr::contact_shadow::{directionalContactShadow}
+#import forgeax_view::common::{view, FullscreenOutput, fullscreen_triangle, depthSurfaceCameraFacing, depthSurfacePosition, reconstructDepthSurface}
+#import forgeax_pbr::contact_shadow::{traceDirectionalContactShadow}
 #import forgeax_shadow::capsule::{capsuleVisibility}
 
 @group(1) @binding(0) var sceneDepth : texture_depth_2d;
-@group(1) @binding(1) var sceneNormal : texture_2d<u32>;
-@group(1) @binding(2) var<uniform> frame : vec4<f32>;
+@group(1) @binding(1) var<uniform> frame : vec4<f32>;
 @group(1) @binding(3) var capsules : texture_2d<f32>;
 @group(1) @binding(4) var capsuleTiles : texture_2d<u32>;
 
@@ -43,13 +41,13 @@ fn capsuleShadow(position : vec3<f32>, pixel : vec2<i32>) -> f32 {
   let pixel = vec2<i32>(input.position.xy);
   let depth = textureLoad(sceneDepth, pixel, 0);
   if (depth <= 0.0) { return vec4<f32>(1.0); }
-  let uv = input.position.xy / vec2<f32>(textureDimensions(sceneDepth));
-  let homogeneous = view.inverseViewProj * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth, 1.0);
-  let position = homogeneous.xyz / homogeneous.w;
-  let normal = loadStandardNormalRoughness(sceneNormal, pixel).xyz;
-  var visibility = capsuleShadow(position, pixel);
   if (frame.y > 0.0) {
-    visibility *= directionalContactShadow(view, sceneDepth, position, normal, pixel, frame.x, sceneNormal, false);
+    let fallback = depthSurfaceCameraFacing(view.worldViewProj, view.temporalProjection.z > 0.5);
+    let surface = reconstructDepthSurface(sceneDepth, pixel, depth, view.inverseViewProj, fallback);
+    let contact = traceDirectionalContactShadow(view, sceneDepth, surface.position, surface.normal, pixel, frame.x);
+    return vec4<f32>(capsuleShadow(surface.position, pixel) * contact.visibility);
   }
-  return vec4<f32>(visibility);
+  let position = depthSurfacePosition(vec2<f32>(pixel),
+    1.0 / vec2<f32>(textureDimensions(sceneDepth)), depth, view.inverseViewProj);
+  return vec4<f32>(capsuleShadow(position, pixel));
 }

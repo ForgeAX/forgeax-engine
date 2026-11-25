@@ -3,6 +3,7 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { emit_reflection, parse, parseReflectionWire, validate } from '../../../naga/src/index';
 import type { RenderFeatureExecutionFrame } from '../features/frame-execution';
 import { createRenderFeatureHost } from '../features/host';
 import { type RenderFeatureWorkPlan, validateRenderFeaturePlan } from '../features/plan';
@@ -17,9 +18,21 @@ it('reuses one compiled graph for current zero/nonzero XYZ counts and preserves 
   raw.pushErrorScope('validation');
   const code = `@group(0) @binding(0) var<storage, read_write> count: atomic<u32>;
 @compute @workgroup_size(1) fn step(){ atomicAdd(&count, 1u); }
-@compute @workgroup_size(1) fn indirect(){ atomicAdd(&count, 100u); }`;
+@compute @workgroup_size(1) fn indirect(){ atomicAdd(&count, 100u); }
+@group(0) @binding(1) var<storage, read_write> other: atomic<u32>;
+@compute @workgroup_size(1) fn alternate(){ atomicAdd(&other, 7u); }`;
+  const validated = (await validate((await parse(code)).unwrap())).unwrap();
+  const reflection = parseReflectionWire((await emit_reflection(validated, '{}')).unwrap());
+  validated.free();
+  const entryPointReads = reflection.entryPoints;
+  if (entryPointReads === undefined) throw new Error('Missing compute reflection');
+  expect(entryPointReads.find((entry) => entry.name === 'alternate')?.bindings).toEqual([
+    { group: 0, binding: 1 },
+  ]);
   const shader = (await createShaderModule(device, { code })).unwrap();
   const pipelines = vi.spyOn(device, 'createComputePipeline');
+  const layouts = vi.spyOn(device, 'createBindGroupLayout');
+  const groups = vi.spyOn(device, 'createBindGroup');
   const owner = createRenderFeatureGpuWorkOwner({
     getDevice: () => device,
     getShaderModuleFactory: () => ({ createShaderModule: () => ok(shader) }),
@@ -31,7 +44,16 @@ it('reuses one compiled graph for current zero/nonzero XYZ counts and preserves 
   const programDeclaration = {
     wgsl: code,
     entryPoints: ['step', 'indirect'],
-    bindings: [{ entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' as const } }] }],
+    entryPointReads,
+    bindings: [
+      {
+        entries: [0, 1].map((binding) => ({
+          binding,
+          visibility: 4,
+          buffer: { type: 'storage' as const },
+        })),
+      },
+    ],
   };
   const program = session.prepareProgram('program', programDeclaration).unwrap();
   const counter = session
@@ -152,6 +174,16 @@ it('reuses one compiled graph for current zero/nonzero XYZ counts and preserves 
     ]);
     expect(recordedIndirect).toBe(counts.length);
     expect(pipelines).toHaveBeenCalledTimes(2);
+    expect(
+      layouts.mock.calls.map(([layout]) => layout.entries.map((entry) => entry.binding)),
+    ).toEqual([[0]]);
+    expect(groups.mock.calls.map(([group]) => group.entries.map((entry) => entry.binding))).toEqual(
+      [[0]],
+    );
+    expect(initial.buffers.map(({ name, access }) => [name, access])).toEqual([
+      ['counter', 'storage-read-write'],
+      ['args', 'indirect-read'],
+    ]);
     expect(host.inspection?.().signatures[0]).toMatchObject({
       cacheHits: counts.length - 1,
       cacheMisses: 1,

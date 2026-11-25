@@ -3,7 +3,9 @@
 
 # ForgeAX Empty Game
 
-This is the SDK's minimal authoring starting point: one asset directory, one native scene Pack with zero entities, and an extensible plugin-composition entry.
+This project pins one dependency for the Engine and its authoring tools, `@forgeax/engine`. Start with [AGENTS.md](AGENTS.md).
+
+This is the Engine's minimal authoring starting point: one asset directory, one native scene Pack with zero entities, and an extensible plugin-composition entry.
 It supplies neutral initial content for 2D and other game types.
 Add each behavior as a native Cordis Plugin under `assets/` and declare the
 project entry in `forge.json#roots`; runtime composes everything through that entry.
@@ -21,17 +23,7 @@ pnpm exec forgeax project package --output release/empty-game-web.zip --json
 
 ## Optional View
 
-From this game root, open the optional View shipped in the SDK:
-
-```sh
-node /absolute/forgeax-sdk/tools/view/start.mjs --project .
-```
-
-Keep the terminal open and open the returned URL. The page reports Backend and
-project readiness; the URL alone is not readiness. The launcher initializes the
-SDK tool runtime and uses its matching Engine. View is absent from this game's
-npm dependencies. Read `skills/forgeax-view-start/SKILL.md` or the SDK copy at
-`tools/view/skills/forgeax-view-start/SKILL.md` for instance controls.
+From the game root, run `pnpm exec forgeax project view --json`. Open the returned URL and confirm the selected project. For service controls, read the [View startup guide](skills/forgeax-view-start/SKILL.md).
 
 ## Project Boundaries
 
@@ -41,7 +33,7 @@ npm dependencies. Read `skills/forgeax-view-start/SKILL.md` or the SDK copy at
 | `assets/` | Sole content root for scenes, `*.pack.ts`, `*.pack.json`, external files and their `.meta.json`. |
 | `assets/__tests__/` | Vitest tests beside authored source. |
 | `assets/world/world.scene.pack.json` | Directly loadable zero-entity scene asset for 2D and other game types. |
-| `docs/feedback.md` | Confirmed Engine, SDK, build, asset or browser issues found during development. |
+| `docs/feedback.md` | Confirmed Engine, build, asset or browser issues found during development. |
 
 Builds regenerate `pack-index.json`, cooked packages, DDC and `dist/` from authored
 source. External images, glTF, fonts and audio retain stable identity in sibling

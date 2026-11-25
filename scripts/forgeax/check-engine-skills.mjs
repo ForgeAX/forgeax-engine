@@ -86,6 +86,14 @@ async function headingSlugs(file) {
 async function checkLinks(file, source) {
   for (const match of source.matchAll(/\]\(([^)\s]+)(?:\s+['"][^)]*['"])?\)/g)) {
     const raw = match[1].replace(/^<|>$/g, '');
+    // These references are generated from the Engine source into each distribution.
+    if (
+      /^(?:\.\.\/forgeax-engine-authoring\/)?references\/(?:api-index|feature-catalog|api\/play)\.md$/.test(
+        raw,
+      ) &&
+      /forgeax-engine-(?:authoring|cli)[/\\]SKILL/.test(file)
+    )
+      continue;
     if (/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(raw)) continue;
     const [pathAndQuery, fragment] = raw.split('#', 2);
     const pathText = pathAndQuery.split('?', 1)[0];

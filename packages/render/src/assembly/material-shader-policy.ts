@@ -848,6 +848,7 @@ export function isSharedMaterialUserRegionCompatible(
  */
 const BOOT_OFF_RECORD_TIME_AXES = [
   'GPU_DRIVEN_SCENE_INDEX_EXPLICIT',
+  'FORWARD_INLINE_SSR',
   'GPU_SCENE_DIRECT',
   'ALPHA_MASK',
   'DIRECTIONAL_SHADOW_SIMPLE',
@@ -1240,7 +1241,11 @@ export function resolveCachedMaterialShaderVariant(
  */
 // Receiver shape and lean lighting are independent opt-ins. Each requested
 // row is checked independently against the publication rules below.
-const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
+const RULE_GATED_OPT_IN_AXES = [
+  'FORWARD_INLINE_SSR',
+  'DIRECTIONAL_SHADOW_SIMPLE',
+  'LEAN_LIGHTING',
+] as const;
 
 /**
  * Producer-owned admission axes: the boot program leaves them off and only a
@@ -1257,6 +1262,7 @@ function isProducerOptInAxis(axis: string): boolean {
     axis === 'GPU_SCENE_DIRECT' ||
     axis === 'COVERAGE_ONLY' ||
     axis === 'VISIBLE_SURFACE_AVAILABLE' ||
+    axis === 'FORWARD_INLINE_SSR' ||
     axis === 'WATER_WAVES_AVAILABLE' ||
     axis === 'WATER_INFO_RGBA16' ||
     axis === 'STANDARD_LEAN_INPUTS'

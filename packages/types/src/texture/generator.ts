@@ -7,37 +7,58 @@ import type {
 } from '../runtime-contracts.js';
 import { isShaderReflection, type ManifestEntry } from '../runtime-contracts.js';
 import { sha256 } from '../sha256.js';
-import type { TextureMipPolicy, TextureShape } from './asset.js';
+import type { CustomTextureMipPolicy, TextureMipPolicy, TextureShape } from './asset.js';
+import { mipDimension, numMipLevels } from './mips.js';
 
-/** GPU-generated RGB unit normals with an alpha roughness floor in generated mips. */
-export type GpuTextureMipFilter = 'box' | 'normal-roughness';
+export type GpuTextureMipFilter =
+  | 'box'
+  | 'gaussian'
+  | 'normal-roughness'
+  | { readonly kind: 'sharpen'; readonly strength: number };
 
 export interface GeneratedTextureDescriptor {
   readonly shape: TextureShape;
   readonly format: GPUTextureFormat;
   readonly colorSpace: 'srgb' | 'linear';
   readonly mipFilter?: GpuTextureMipFilter;
-  readonly mips: Exclude<TextureMipPolicy, { readonly kind: 'packed' }>;
+  readonly mips: Exclude<TextureMipPolicy, { readonly kind: 'packed' }> | CustomTextureMipPolicy;
 }
 
 export type TextureGenerationRead =
   | { readonly kind: 'input'; readonly name: string }
-  | { readonly kind: 'local'; readonly name: string };
+  | { readonly kind: 'local'; readonly name: string; readonly mipLevel?: number };
 
-export interface TextureGenerationPass {
+export interface TextureGenerationRasterPass {
   readonly kind: 'raster';
+  /** Destination mip shared by the pass attachments. Omitted means mip zero. */
+  readonly mipLevel?: number;
   readonly program: { readonly module: string; readonly fragmentEntry: string };
   readonly reads: Readonly<Record<string, TextureGenerationRead>>;
   readonly writes: readonly string[];
 }
 
+/** Evaluate a scalar WGSL volumeValue function over a 3D R8 target. */
+export interface TextureGenerationVolumePass {
+  readonly kind: 'compute-volume';
+  readonly program: { readonly module: string };
+  readonly reads: Readonly<Record<string, never>>;
+  readonly writes: readonly [string];
+}
+
+export type TextureGenerationPass = TextureGenerationRasterPass | TextureGenerationVolumePass;
+
+export const TEXTURE_GENERATOR_VOLUME_ENTRY = 'cs_generator_volume';
+
 export interface TextureGeneratorPrograms {
   readonly compilerFingerprint: string;
-  readonly passes: readonly {
-    readonly module: string;
-    readonly fragmentEntry: string;
-    readonly colorFormats: readonly GPUTextureFormat[];
-  }[];
+  readonly passes: readonly (
+    | {
+        readonly module: string;
+        readonly fragmentEntry: string;
+        readonly colorFormats: readonly GPUTextureFormat[];
+      }
+    | { readonly module: string; readonly computeEntry: typeof TEXTURE_GENERATOR_VOLUME_ENTRY }
+  )[];
   readonly entries: readonly ManifestEntry[];
 }
 
@@ -49,7 +70,12 @@ export interface TextureGeneratorAsset {
   readonly inputs: Readonly<Record<string, string>>;
   readonly outputs: Readonly<Record<string, GeneratedTextureDescriptor>>;
   readonly transient: Readonly<
-    Record<string, Pick<GeneratedTextureDescriptor, 'shape' | 'format'>>
+    Record<
+      string,
+      Pick<GeneratedTextureDescriptor, 'shape' | 'format'> & {
+        readonly mips?: CustomTextureMipPolicy;
+      }
+    >
   >;
   readonly passes: readonly TextureGenerationPass[];
 }
@@ -118,7 +144,7 @@ export function validateTextureGenerator(
     value.passes.length === 0 ||
     value.passes.length > 32
   )
-    return invalid('one or more outputs, at most 64 resources and 1..32 raster passes');
+    return invalid('one or more outputs, at most 64 resources and 1..32 generation passes');
   const passes = validatePasses(value.passes, value.inputs, value.outputs, resources.value);
   if (!passes.ok) return passes;
   if (requirePrograms || value.programs !== undefined) {
@@ -156,15 +182,50 @@ function validateParameters(
 }
 
 function validateOutputMipFilter(descriptor: Record<string, unknown>): Result<void, AssetError> {
+  const filter = descriptor.mipFilter;
+  if (filter === undefined) return ok(undefined);
+  const generated = object(descriptor.mips) && descriptor.mips.kind === 'generate';
   if (
-    descriptor.mipFilter !== undefined &&
-    ((descriptor.mipFilter !== 'box' && descriptor.mipFilter !== 'normal-roughness') ||
-      (descriptor.mipFilter === 'normal-roughness' &&
-        (descriptor.format !== 'rgba8unorm' ||
-          !object(descriptor.mips) ||
-          descriptor.mips.kind !== 'generate')))
+    (filter === 'box' && (!object(descriptor.mips) || descriptor.mips.kind !== 'custom')) ||
+    (generated &&
+      (filter === 'gaussian' ||
+        (filter === 'normal-roughness' && descriptor.format === 'rgba8unorm') ||
+        (object(filter) &&
+          only(filter, ['kind', 'strength']) &&
+          filter.kind === 'sharpen' &&
+          typeof filter.strength === 'number' &&
+          Number.isInteger(filter.strength) &&
+          filter.strength >= 0 &&
+          filter.strength <= 10)))
   )
-    return invalid('box mip filtering, or generated linear RGBA8 normal-roughness filtering');
+    return ok(undefined);
+  return invalid('a built-in mip filter with a compatible generated output and valid parameters');
+}
+
+function validateGenerationMips(
+  descriptor: Record<string, unknown>,
+  output: boolean,
+): Result<void, AssetError> {
+  const { mips } = descriptor;
+  const target = descriptor.shape as unknown as TextureShape;
+  if (object(mips) && mips.kind === 'custom') {
+    if (
+      !only(mips, ['kind', 'levelCount']) ||
+      typeof mips.levelCount !== 'number' ||
+      !Number.isSafeInteger(mips.levelCount) ||
+      mips.levelCount < 1 ||
+      mips.levelCount > numMipLevels(target.extent) ||
+      target.viewDimension === '3d'
+    )
+      return invalid('a finite custom mip count within the 2D target extent');
+  } else if (
+    output
+      ? !object(mips) || !only(mips, ['kind']) || !['none', 'generate'].includes(String(mips.kind))
+      : mips !== undefined
+  )
+    return invalid(
+      'none, generate, or bounded custom output mips and optional custom transient mips',
+    );
   return ok(undefined);
 }
 
@@ -182,22 +243,21 @@ function collectResources(
         descriptor,
         Object.hasOwn(outputs, name)
           ? ['shape', 'format', 'colorSpace', 'mips', 'mipFilter']
-          : ['shape', 'format'],
+          : ['shape', 'format', 'mips'],
       ) ||
       !object(descriptor.shape)
     )
       return invalid('distinct named output and transient descriptors');
     const shape = validateTargetShape(descriptor);
     if (!shape.ok) return shape;
+    const output = Object.hasOwn(outputs, name);
+    const mipPolicy = validateGenerationMips(descriptor, output);
+    if (!mipPolicy.ok) return mipPolicy;
     if (
-      Object.hasOwn(outputs, name) &&
-      (descriptor.colorSpace !==
-        (String(descriptor.format).endsWith('-srgb') ? 'srgb' : 'linear') ||
-        !object(descriptor.mips) ||
-        !only(descriptor.mips, ['kind']) ||
-        !['none', 'generate'].includes(String(descriptor.mips.kind)))
+      output &&
+      descriptor.colorSpace !== (String(descriptor.format).endsWith('-srgb') ? 'srgb' : 'linear')
     )
-      return invalid('matching output color space and none/generate mip policy');
+      return invalid('matching output format and color space');
     if (Object.hasOwn(outputs, name)) {
       if (
         descriptor.shape.viewDimension === '3d' &&
@@ -212,6 +272,34 @@ function collectResources(
   return ok(resources);
 }
 
+const subresource = (name: string, level: number) => `${name}/${level}`;
+
+function validateRasterReads(
+  current: TextureGenerationRasterPass,
+  inputs: Record<string, unknown>,
+  written: ReadonlySet<string>,
+  level: number,
+): Result<void, AssetError> {
+  for (const [binding, read] of Object.entries(current.reads)) {
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding) ||
+      !object(read) ||
+      !only(read, read.kind === 'local' ? ['kind', 'name', 'mipLevel'] : ['kind', 'name']) ||
+      typeof read.name !== 'string' ||
+      (read.kind === 'input'
+        ? !Object.hasOwn(inputs, read.name)
+        : read.kind !== 'local' ||
+          !validMipIndex(read.mipLevel) ||
+          !written.has(subresource(read.name, read.mipLevel ?? 0)) ||
+          ((read.mipLevel ?? 0) === level && current.writes.includes(read.name)))
+    )
+      return invalid(
+        'reads of declared external inputs or previously written local targets without feedback',
+      );
+  }
+  return ok(undefined);
+}
+
 function validatePasses(
   passes: readonly unknown[],
   inputs: Record<string, unknown>,
@@ -219,36 +307,63 @@ function validatePasses(
   resources: ReadonlyMap<string, Record<string, unknown>>,
 ): Result<void, AssetError> {
   const written = new Set<string>();
+  const levels = (target: Record<string, unknown> | undefined) =>
+    target !== undefined && object(target.mips) && target.mips.kind === 'custom'
+      ? (target.mips.levelCount as number)
+      : 1;
   for (const pass of passes) {
     const admitted = validatePassShape(pass, resources);
     if (!admitted.ok) return admitted;
     const current = admitted.value;
-    const shape = resources.get(current.writes[0] as string)?.shape;
+    if (current.kind === 'compute-volume') {
+      const name = current.writes[0];
+      const target = resources.get(name);
+      if (
+        !Object.hasOwn(outputs, name) ||
+        target?.format !== 'r8unorm' ||
+        (target.shape as TextureShape).viewDimension !== '3d'
+      )
+        return invalid('one published 3D r8unorm output for a volume compute pass');
+      written.add(subresource(name, 0));
+      continue;
+    }
+    const level = current.mipLevel ?? 0;
+    const shapeAt = (name: string) =>
+      textureGenerationMipShape(resources.get(name)?.shape as TextureShape, level);
+    const shape = JSON.stringify(shapeAt(current.writes[0] as string));
     if (
       !current.writes.every(
-        (n) => JSON.stringify(resources.get(n)?.shape) === JSON.stringify(shape),
+        (name) => level < levels(resources.get(name)) && JSON.stringify(shapeAt(name)) === shape,
       )
     )
-      return invalid('equal attachment extents and layers within each raster pass');
-    for (const [binding, read] of Object.entries(current.reads)) {
-      if (
-        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding) ||
-        !object(read) ||
-        !only(read, ['kind', 'name']) ||
-        typeof read.name !== 'string' ||
-        (read.kind === 'input'
-          ? !Object.hasOwn(inputs, read.name)
-          : read.kind !== 'local' || !written.has(read.name) || current.writes.includes(read.name))
-      )
-        return invalid(
-          'reads of declared external inputs or previously written local targets without feedback',
-        );
-    }
-    for (const name of current.writes) written.add(name);
+      return invalid('in-range raster target mips with equal attachment extents and layers');
+    const reads = validateRasterReads(current, inputs, written, level);
+    if (!reads.ok) return reads;
+    for (const name of current.writes) written.add(subresource(name, level));
   }
-  if (!Object.keys(outputs).every((name) => written.has(name)))
-    return invalid('every published output fully written before sampling');
+  for (const name of Object.keys(outputs)) {
+    for (let level = 0; level < levels(resources.get(name)); level++)
+      if (!written.has(subresource(name, level)))
+        return invalid('every published output mip fully written before sampling');
+  }
   return ok(undefined);
+}
+
+/** Shape seen by a generator pass whose destination selects one mip. */
+export function textureGenerationMipShape(shape: TextureShape, level: number): TextureShape {
+  if (level === 0) return shape;
+  const extent = {
+    ...shape.extent,
+    width: mipDimension(shape.extent.width, level),
+    height: mipDimension(shape.extent.height, level),
+  };
+  return { ...shape, extent } as TextureShape;
+}
+
+function validMipIndex(level: unknown): level is number | undefined {
+  return (
+    level === undefined || (typeof level === 'number' && Number.isSafeInteger(level) && level >= 0)
+  );
 }
 
 function representable(number: unknown, scalarKind: string): boolean {
@@ -365,6 +480,44 @@ function validatePrograms(
   return ok(modules);
 }
 
+function validateVolumeProgram(
+  module: string,
+  receipt: unknown,
+  reflection: unknown,
+): Result<void, AssetError> {
+  if (
+    !object(receipt) ||
+    !only(receipt, ['module', 'computeEntry']) ||
+    receipt.module !== module ||
+    receipt.computeEntry !== TEXTURE_GENERATOR_VOLUME_ENTRY ||
+    !isShaderReflection(reflection)
+  )
+    return invalid('a prepared volume compute program');
+  const entry = reflection.entryPoints?.find(
+    (point) => point.stage === 'compute' && point.name === TEXTURE_GENERATOR_VOLUME_ENTRY,
+  );
+  const packed = reflection.boundGlobals.find(
+    (global) => global.group === 0 && global.binding === 0,
+  );
+  const extent = reflection.boundGlobals.find(
+    (global) => global.group === 0 && global.binding === 1,
+  );
+  if (
+    entry?.bindings.length !== 2 ||
+    !entry.bindings.every((binding) => binding.group === 0 && binding.binding <= 1) ||
+    packed?.resourceKind !== 'storage-buffer' ||
+    packed.resourceAccess !== 'read-write' ||
+    packed.elementType !== 'u32' ||
+    packed.arrayLength !== undefined ||
+    extent?.addressSpace !== 'uniform' ||
+    extent.typeDescriptor?.kind !== 'vector' ||
+    extent.typeDescriptor.scalarKind !== 'uint' ||
+    extent.typeDescriptor.byteSize !== 16
+  )
+    return invalid('the packed output and extent bindings for the volume compute program');
+  return ok(undefined);
+}
+
 function validateProgramPass(
   pass: TextureGenerationPass,
   receipt: unknown,
@@ -372,6 +525,9 @@ function validateProgramPass(
   resources: ReadonlyMap<string, Record<string, unknown>>,
   values: TextureGeneratorAsset['values'],
 ): Result<void, AssetError> {
+  const reflection = modules.get(pass.program.module)?.reflection;
+  if (pass.kind === 'compute-volume')
+    return validateVolumeProgram(pass.program.module, receipt, reflection);
   const formats = pass.writes.map((name) => resources.get(name)?.format);
   if (
     !object(receipt) ||
@@ -380,8 +536,6 @@ function validateProgramPass(
     JSON.stringify(receipt.colorFormats) !== JSON.stringify(formats)
   )
     return invalid('each pass matches its build-validated fragment output interface');
-  const entry = modules.get(pass.program.module);
-  const reflection = entry?.reflection;
   if (
     !isShaderReflection(reflection) ||
     !reflection.entryPoints?.some(
@@ -466,28 +620,44 @@ function validateTargetShape(descriptor: Record<string, unknown>): Result<void, 
   return ok(undefined);
 }
 
+function hasPublishedGenerationModule(program: unknown): program is Record<string, unknown> {
+  return object(program) && typeof program.module === 'string' && program.module.length > 0;
+}
+
 function validatePassShape(
   pass: unknown,
   resources: ReadonlyMap<string, unknown>,
 ): Result<TextureGenerationPass, AssetError> {
   if (
     !object(pass) ||
-    !only(pass, ['kind', 'program', 'reads', 'writes']) ||
-    pass.kind !== 'raster' ||
-    !object(pass.program) ||
-    !only(pass.program, ['module', 'fragmentEntry']) ||
-    typeof pass.program.module !== 'string' ||
-    pass.program.module.length === 0 ||
-    typeof pass.program.fragmentEntry !== 'string' ||
-    pass.program.fragmentEntry.length === 0 ||
+    !only(
+      pass,
+      pass.kind === 'raster'
+        ? ['kind', 'program', 'reads', 'writes', 'mipLevel']
+        : ['kind', 'program', 'reads', 'writes'],
+    ) ||
+    !hasPublishedGenerationModule(pass.program) ||
     !object(pass.reads) ||
     !Array.isArray(pass.writes) ||
     pass.writes.length === 0 ||
     new Set(pass.writes).size !== pass.writes.length ||
     !Array.from(pass.writes).every((n) => typeof n === 'string' && resources.has(n))
   )
-    return invalid(
-      'raster passes with a published program, reads and distinct declared color targets',
-    );
-  return ok(pass as unknown as TextureGenerationPass);
+    return invalid('generation passes with a published module and distinct declared targets');
+  if (
+    pass.kind === 'compute-volume' &&
+    only(pass.program, ['module']) &&
+    Object.keys(pass.reads).length === 0 &&
+    pass.writes.length === 1
+  )
+    return ok(pass as unknown as TextureGenerationVolumePass);
+  if (
+    pass.kind === 'raster' &&
+    validMipIndex(pass.mipLevel) &&
+    only(pass.program, ['module', 'fragmentEntry']) &&
+    typeof pass.program.fragmentEntry === 'string' &&
+    pass.program.fragmentEntry.length > 0
+  )
+    return ok(pass as unknown as TextureGenerationRasterPass);
+  return invalid('a raster pass or one compute volume target with no external reads');
 }

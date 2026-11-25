@@ -5,7 +5,7 @@ import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch } from '../../scene/material-dispatch';
 import { RenderScene, sceneDrawContentOf, sceneSurfaceRowsOf } from '../../scene/render-scene-view';
-import { RowViews, SceneSlots } from '../../scene/scene-slots';
+import { SceneSlotPage, SceneSlots } from '../../scene/scene-slots';
 import { SelectedSceneDrawRows } from '../../scene/selected-draw-rows';
 import { walkSceneDataContributors } from '../feature-view-systems';
 
@@ -124,7 +124,7 @@ it('reads the compact surface rank after culling without projecting a pose or tr
       undefined,
       undefined,
     );
-    const projected = vi.spyOn(RowViews.prototype, 'read');
+    const projected = vi.spyOn(SceneSlotPage.prototype, 'read');
     try {
       expect(
         walkSceneDataContributors(

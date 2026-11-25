@@ -306,7 +306,6 @@ afterEach(() => vi.restoreAllMocks());
           meshBindGroupCache: new Map(),
           materialBgPerEntity: new Map(),
           instancesBgPerEntity: new Map(),
-          materialBgShared: new Map(),
           singletonMaterialCache: new Map(),
           installedPipelineHandle: 0,
           activePipeline: urpPipeline,

@@ -349,7 +349,6 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
         fallbackTextureView: fallback.brdfLutView,
       },
       frameState: {
-        materialBgShared: new Map(),
         instancesBgShared: new WeakMap(),
         meshBindGroupCache: new WeakMap(),
       },
@@ -422,16 +421,17 @@ async function depth(
         1,
         f.meshGroup,
         f.meshGroup,
-        (_slot, material) => ({
-          group: defined(
+        (_slot, material, _entity, _world, address) => {
+          const group = defined(
             c.materialBgAssemblyCache.get(c.world.identity, material.materialHandle, SHADER),
-          ).bindGroup,
-          byteOffset: meshSsboByteOffset(
+          ).bindGroup;
+          address.byteOffset = meshSsboByteOffset(
             c.pipelineState.materialUniformBuffer,
             materialUniformSlot(c.runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
-          ),
-          dynamicOffsetCount: 1,
-        }),
+          );
+          address.dynamicOffsetCount = 1;
+          return group;
+        },
         passKind,
         selectedDispatch,
       );

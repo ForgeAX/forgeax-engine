@@ -23,8 +23,11 @@ import {
 } from '../../publication/programs';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareDirectionalShadowCache } from '../../record/directional-shadow-cache';
-import { collectGpuShadowMaterials } from '../../record/frame-gpu-driven';
-import type { RenderFrameState } from '../../record/frame-snapshot';
+import {
+  collectGpuShadowMaterials,
+  directionalAtlasMaterialReads,
+} from '../../record/frame-gpu-driven';
+import type { DrawRows, RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
 import type { ViewLights } from '../../world/render-lights';
@@ -284,15 +287,66 @@ it.each([
           pass: { kind: 'shadow', shaderId: 'fixture-shadow' },
         },
       });
-    collectGpuShadowMaterials(
-      { preparedMaterialTexture: () => undefined },
-      worldRenderResources(world),
+    const materialRead = vi.spyOn(materials, 'get');
+    const internals = { preparedMaterialTexture: () => undefined };
+    const scope = worldRenderResources(world);
+    const casterMaterialSource = collectGpuShadowMaterials(
+      internals,
+      scope,
       executions,
-      new Map(),
       content,
-      undefined,
       projection,
     );
+    expect(casterMaterialSource).toBe(projection);
+    const changes = new MeshChanges();
+    const token = changes.create();
+    const physical = [{ mesh: { changeToken: token } }];
+    const walk = vi.spyOn(physical, Symbol.iterator);
+    const draws = physical as unknown as DrawRows;
+    const input = { shadowReads: { content, source: casterMaterialSource }, request: undefined };
+    const atlas = directionalAtlasMaterialReads(
+      internals,
+      scope,
+      draws,
+      materials,
+      input,
+      projection,
+      undefined,
+    );
+    expect(atlas).toHaveLength(1);
+    expect(atlas[0]).toBe(content);
+    expect(walk).not.toHaveBeenCalled();
+    const reads = new ShadowMeshReads(changes);
+    try {
+      directionalAtlasMaterialReads(internals, scope, draws, materials, input, projection, {
+        reads,
+        epoch: changes.epoch,
+        change: 'invalidated',
+      });
+      expect(reads.tokens.has(token)).toBe(true);
+      expect(walk).toHaveBeenCalledTimes(1);
+    } finally {
+      reads.release();
+      changes.retire(token);
+    }
+    expect(materialRead.mock.calls.map(([resource]) => resource)).toEqual(
+      expect.arrayContaining([primary, member]),
+    );
+    expect(materialRead).toHaveBeenCalledTimes(2);
+    materialRead.mockRestore();
+    // A direct directional atlas can be the first and only physical reader,
+    // including frames where the visible camera submitted no direct rows.
+    const atlasOnly = directionalAtlasMaterialReads(
+      internals,
+      scope,
+      undefined,
+      materials,
+      { request: { batchExecutions: executions } },
+      projection,
+      undefined,
+    );
+    expect(atlasOnly).toHaveLength(1);
+    expect(atlasOnly[0]?.same(content)).toBe(true);
     return content;
   };
   const before = capture(),
@@ -538,14 +592,7 @@ it.each([
       assert(binding);
       executions.set(binding, { shadow: { route: 'gpu', material: binding.material.snapshot } });
     }
-    collectGpuShadowMaterials(
-      {} as RenderSystemInternals,
-      scope,
-      executions,
-      new Map(),
-      shadowMaterials,
-      undefined,
-    );
+    collectGpuShadowMaterials({} as RenderSystemInternals, scope, executions, shadowMaterials);
     return {
       ...base,
       candidatePrimitiveIndices: [selectedSlot],
@@ -629,6 +676,38 @@ it.each([
     expect(selected[0]?.same(selected[1])).toBe(false);
   } finally {
     for (const fixture of fixtures) fixture.dispose();
+  }
+});
+
+it('requires distinct selected materials across overlapping scope captures', async () => {
+  const fixture = await staticShadowFixture();
+  const first = new MaterialResource(opaque);
+  const second = new MaterialResource(alpha);
+  const frame = new MaterialFrame(undefined).with(first).with(second);
+  const content = new ShadowMaterialContent(frame);
+  const a = worldRenderResources(new World());
+  const b = worldRenderResources(new World());
+  try {
+    for (const [index, material] of [first, second].entries()) {
+      fixture.update({
+        ...shadowSourceSnapshot(index + 1, index * 10),
+        material,
+        materials: [material],
+        mobility: 'static',
+      });
+    }
+    const plan = fixture.input().sourcePlan;
+    content.addFromFrame(first, frame, a, undefined, 0);
+    content.addFromFrame(first, frame, b, undefined, 0);
+    expect(content.select(plan, fixture.projection)).toBe(content);
+    content.addFromFrame(second, frame, b, undefined, 0);
+    const selected = content.select(plan, fixture.projection);
+    expect(selected).not.toBe(content);
+    expect(content.select(plan, fixture.projection)).toBe(selected);
+    content.addFromFrame(second, frame, worldRenderResources(new World()), undefined, 0);
+    expect(content.select(plan, fixture.projection).same(selected)).toBe(false);
+  } finally {
+    fixture.dispose();
   }
 });
 

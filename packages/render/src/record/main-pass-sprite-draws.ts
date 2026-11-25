@@ -1,6 +1,6 @@
-import type { MeshVertexStreamRange, VertexLayoutProjection } from '@forgeax/engine-geometry';
+import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
-import { bindMeshVertexStreams } from '../device/mesh-vertex-streams';
+import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
 import { viewForPipeline } from '../environment/bindings';
 import type { MaterialResource } from '../material-resource';
 import type { FrameList } from '../scene/frame-list';
@@ -9,6 +9,7 @@ import type { ValidatedRenderable } from './frame-snapshot';
 import {
   detectNineSliceScaleTooSmall,
   type MainPassMaterialBindingResolver,
+  type RasterMaterialAddress,
 } from './main-pass-material';
 import { materialFromSubmittedSlots } from './material-pass-selection';
 // @forgeax/engine-runtime - RendererState record stage: main-pass sprite draws.
@@ -129,7 +130,7 @@ export function recordSpritePass(
   const spriteIsHdr =
     c.tonemapActive || transparentPassColorFormat(c, pipelineState) === 'rgba16float';
   if (splitLdrSprite) {
-    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
+    pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset]);
 
     const spritePremulBlend: MaterialRenderState = {
       depthWriteEnabled: false,
@@ -338,10 +339,11 @@ function recordSpriteEntityDraws(
 ): void {
   const { runtime, world, pipelineState, validatedOrdered, foldDispatchPlan, materialSlotIndices } =
     c;
+  const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
+  const materialOffset = new Uint32Array(1);
   const recordPresented = createFoldedDrawRecorder(c);
   let lastSpritePipelineHandle: RenderPipeline | null = null;
-  let lastSpriteVertexBuffer: GpuBuffer | null = null;
-  let lastSpriteVertexStreams: readonly MeshVertexStreamRange[] | undefined;
+  const vertices = new PassMeshVertexBindings(pass);
   let lastSpriteIndexBuffer: GpuBuffer | null = null;
   const pipelineForMesh = (
     mesh: ValidatedRenderable['mesh'],
@@ -438,14 +440,7 @@ function recordSpriteEntityDraws(
       lastSpritePipelineHandle = activeSpritePH;
     }
 
-    if (
-      mesh.vertexBuffer !== lastSpriteVertexBuffer ||
-      mesh.vertexStreams !== lastSpriteVertexStreams
-    ) {
-      bindMeshVertexStreams(pass, mesh.vertexBuffer.handle, mesh.vertexStreams);
-      lastSpriteVertexBuffer = mesh.vertexBuffer;
-      lastSpriteVertexStreams = mesh.vertexStreams;
-    }
+    vertices.bind(mesh.vertexBuffer.handle, mesh.vertexStreams, activeSpritePH);
     const indexBuffer = spriteEntry.mesh.indexBuffer;
     if (indexBuffer !== null && indexBuffer !== lastSpriteIndexBuffer) {
       pass.setIndexBuffer(indexBuffer.handle, spriteEntry.mesh.indexFormat);
@@ -473,9 +468,11 @@ function recordSpriteEntityDraws(
       material,
       spriteEntry.source.entityKey,
       spriteEntry.world ?? world,
+      materialAddress,
     );
 
-    pass.setBindGroup(1, spriteBinding.group, [spriteBinding.byteOffset]);
+    materialOffset[0] = materialAddress.byteOffset;
+    pass.setBindGroup(1, spriteBinding, materialOffset, 0, materialAddress.dynamicOffsetCount);
     for (const draw of instanceDraws) {
       pass.setBindGroup(3, draw.instanceBindGroup);
       pass.drawIndexed(

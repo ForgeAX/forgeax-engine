@@ -129,7 +129,20 @@ export interface ReflectionProbeRecordState {
   ) => Promise<void>;
 }
 
+/** Group 1 selected by an ordinary raster PSO. Resource values and uniform addresses remain live. */
+export interface RasterMaterialLayout {
+  readonly layout: BindGroupLayout;
+  readonly index: number;
+  readonly shader: string;
+  readonly schema: readonly ParamSchemaEntry[];
+  readonly perShaderLayout: BindGroupLayout | undefined;
+  readonly lit: boolean;
+}
+
 export interface MaterialShaderPipelineEntry {
+  readonly rasterMaterialLayout?: RasterMaterialLayout;
+  /** Both selected shadow stages ignore group 1 and the pass binding supplies this exact layout. */
+  readonly shadowPassMaterialLayout?: BindGroupLayout;
   readonly pipeline: RhiRenderPipeline;
   readonly materialProgramKey?: string;
   readonly group2Contract: PipelineGroup2Contract;
@@ -344,10 +357,14 @@ export interface RenderSystemRuntime {
   ) => BindGroupLayout | undefined;
   /** Fixed renderer-owned resources for one shared material parameter. The owner
    * retains the binding object while its content is unchanged, even across view reuse. */
-  readonly preparedMaterialTexture?: (
-    material: MaterialSnapshot,
-    parameter: string,
-  ) => { readonly textureView: TextureView; readonly sampler: Sampler } | undefined;
+  readonly preparedMaterialTexture?: {
+    (
+      material: MaterialSnapshot,
+      parameter: string,
+    ): { readonly textureView: TextureView; readonly sampler: Sampler } | undefined;
+    /** Complete, immutable field domain, when declared. Missing values within it stay live. */
+    readonly parameters?: ReadonlySet<string>;
+  };
   /** Complete immutable numeric parameters for a renderer-owned preparation.
    * Preserve the object while addresses are unchanged; authored values remain on the snapshot. */
   readonly preparedMaterialParameters?: (
@@ -496,7 +513,7 @@ export interface PipelineState {
   readonly materialBindGroupLayout: BindGroupLayout;
   readonly meshBindGroupLayout: BindGroupLayout;
   readonly viewUniformBuffer: Buffer;
-  readonly pointsLinesViewBuffer?: Buffer;
+  readonly pointsLinesViewBuffer?: Buffer | undefined;
   readonly ensurePointsLinesViewCapacity?: (slots: number) => void;
   readonly shadowCasterCascadeBuffer: Buffer;
   readonly materialUniformBuffer: MeshSsboBufferWrapper;
@@ -832,6 +849,7 @@ export interface _StandardForwardSceneView {
   readonly foldDispatchPlan: FoldDispatchPlan | null;
   readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly materialSlots: readonly MaterialSnapshot[];
+  readonly acceptedMaterialSlots?: import('./fold-buckets').SubmittedMaterialSlots | undefined;
   readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
   /** Absent for a direct helper caller that has not prepared a native table. */
   readonly materialBindingSlots?: import('./fold-buckets').MaterialBindingSlots;

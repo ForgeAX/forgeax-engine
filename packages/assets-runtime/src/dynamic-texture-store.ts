@@ -7,7 +7,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
-import { type Handle, numMipLevels } from '@forgeax/engine-types';
+import { type Handle, numMipLevels, type ResultOk } from '@forgeax/engine-types';
 import { encodeMipmaps } from './mipmap-generator';
 
 /**
@@ -109,16 +109,37 @@ export function adaptDynamicTextureDevice(device: RhiDevice): DynamicTextureDevi
   };
 }
 
+function copyableExtent(width: number, height: number): boolean {
+  return Number.isSafeInteger(width) && Number.isSafeInteger(height) && width > 0 && height > 0;
+}
+
 type DynamicTextureKey = Handle<'VideoAsset', 'shared'> | object;
 
 interface TransientEntry {
   texture: Texture;
-  view: TextureView;
+  ready: ResultOk<TextureView>;
   width: number;
   height: number;
   mipLevelCount: number;
+  generateMipmaps: boolean;
+  flipY?: boolean;
+  writes: number;
   version?: number | undefined;
   unsubscribe?: (() => void) | undefined;
+}
+
+function matchesCanvasView(
+  entry: TransientEntry | undefined,
+  view: TextureView,
+  width: number,
+  height: number,
+): boolean {
+  return (
+    entry?.ready.value === view &&
+    entry.width === width &&
+    entry.height === height &&
+    entry.generateMipmaps
+  );
 }
 
 /**
@@ -129,8 +150,9 @@ interface TransientEntry {
 export class DynamicTextureStore {
   private device: DynamicTextureDevice | undefined = undefined;
   private readonly entries = new Map<DynamicTextureKey, TransientEntry>();
+  private generation = 0;
   /** Only successful uploads enter this queue; each token identifies the bytes to acknowledge. */
-  private readonly pendingMips = new Map<TransientEntry, object>();
+  private readonly pendingMips = new Map<TransientEntry, number>();
 
   /**
    * Wire the GPU device the store uploads through. Called once after the
@@ -167,30 +189,113 @@ export class DynamicTextureStore {
       readonly generateMipmaps?: boolean;
     },
   ): Result<TextureView, RhiError> | undefined {
+    return this.synchronize(
+      key,
+      source,
+      width,
+      height,
+      options?.version,
+      options?.flipY ?? true,
+      options?.generateMipmaps ?? false,
+      options?.signal,
+    );
+  }
+
+  /** Canvas pixels have an explicit revision and a full mip chain in every realm. */
+  uploadCanvasFrame(
+    key: object,
+    source: CopyExternalImageSource,
+    width: number,
+    height: number,
+    version: number,
+    flipY: boolean,
+    signal: AbortSignal,
+    boundView?: TextureView,
+  ): Result<TextureView, RhiError> | undefined {
+    return this.synchronize(key, source, width, height, version, flipY, true, signal, boundView);
+  }
+
+  /** A resize or a new device needs a different group even if the source token survived. */
+  hasCanvasView(key: object, view: TextureView, width: number, height: number): boolean {
+    return matchesCanvasView(this.entries.get(key), view, width, height);
+  }
+
+  private synchronize(
+    key: DynamicTextureKey,
+    source: CopyExternalImageSource,
+    width: number,
+    height: number,
+    version: number | undefined,
+    flipY: boolean,
+    generateMipmaps: boolean,
+    signal?: AbortSignal,
+    boundView?: TextureView,
+  ): Result<TextureView, RhiError> | undefined {
     const device = this.device;
     if (device === undefined) return undefined;
-    if (options?.signal?.aborted) {
+    const previous = this.entries.get(key);
+    if (boundView !== undefined && !matchesCanvasView(previous, boundView, width, height))
+      return undefined;
+    if (signal?.aborted) {
       this.release(key);
       return undefined;
     }
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
-      return undefined;
 
-    const previous = this.entries.get(key);
-    const mipLevelCount = options?.generateMipmaps ? numMipLevels({ width, height }) : 1;
-    const sameSize =
-      previous?.width === width &&
-      previous.height === height &&
-      previous.mipLevelCount === mipLevelCount;
-    if (sameSize && options?.version !== undefined && previous.version === options.version)
-      return ok(previous.view);
-    const ensured = sameSize
-      ? ok(previous)
-      : this.createEntry(device, width, height, mipLevelCount);
-    if (!ensured.ok) return ensured;
-    const entry = ensured.value;
+    // Installed dimensions came from a successful allocation. Both repainting
+    // this surface and drawing it again use the same physical entry.
+    const generation = this.generation;
+    const sameExtent = previous?.width === width && previous.height === height;
+    let entry: TransientEntry;
+    if (sameExtent && previous.generateMipmaps === generateMipmaps) entry = previous;
+    else {
+      if (!copyableExtent(width, height)) return undefined;
+      const mipLevelCount = generateMipmaps ? numMipLevels({ width, height }) : 1;
+      if (sameExtent && previous.mipLevelCount === mipLevelCount) entry = previous;
+      else {
+        const created = this.createEntry(device, width, height, mipLevelCount, generateMipmaps);
+        if (!created.ok) return created;
+        entry = created.value;
+      }
+    }
+    if (
+      entry === previous &&
+      version !== undefined &&
+      entry.version === version &&
+      entry.flipY === flipY
+    ) {
+      entry.generateMipmaps = generateMipmaps;
+      return entry.ready;
+    }
+    return this.copyAndPublish(
+      device,
+      generation,
+      key,
+      previous,
+      entry,
+      source,
+      version,
+      flipY,
+      generateMipmaps,
+      signal,
+    );
+  }
+
+  /** Commit only bytes written to the current device and source lifetime. */
+  private copyAndPublish(
+    device: DynamicTextureDevice,
+    generation: number,
+    key: DynamicTextureKey,
+    previous: TransientEntry | undefined,
+    entry: TransientEntry,
+    source: CopyExternalImageSource,
+    version: number | undefined,
+    flipY: boolean,
+    generateMipmaps: boolean,
+    signal: AbortSignal | undefined,
+  ): Result<TextureView, RhiError> | undefined {
+    const { width, height, writes } = entry;
     const copied = device.queue.copyExternalImageToTexture(
-      { source, flipY: options?.flipY ?? true },
+      { source, flipY },
       { texture: entry.texture },
       { width, height, depthOrArrayLayers: 1 },
     );
@@ -198,19 +303,40 @@ export class DynamicTextureStore {
       if (entry !== previous) device.destroyTexture(entry.texture);
       return copied;
     }
-    entry.version = options?.version;
+    // A device hook can retire the source or replace its physical row during a copy.
+    if (signal?.aborted || this.generation !== generation || this.entries.get(key) !== previous) {
+      if (entry !== previous) device.destroyTexture(entry.texture);
+      return undefined;
+    }
+    // Reentrant writes to this same texture do not establish a unique source revision.
+    entry.version = entry.writes === writes ? version : undefined;
+    entry.writes++;
+    entry.flipY = flipY;
+    entry.generateMipmaps = generateMipmaps;
+    if (entry.mipLevelCount > 1) {
+      this.pendingMips.set(entry, entry.writes);
+    }
     if (entry !== previous) {
-      this.release(key);
-      this.entries.set(key, entry);
-      const signal = options?.signal;
-      if (signal !== undefined) {
-        const release = () => this.release(key);
-        signal.addEventListener('abort', release, { once: true });
-        entry.unsubscribe = () => signal.removeEventListener('abort', release);
+      this.install(key, entry, signal);
+      if (previous !== undefined) {
+        this.retire(device, previous);
+        if (this.entries.get(key) !== entry) return undefined;
       }
     }
-    if (mipLevelCount > 1) this.pendingMips.set(entry, {});
-    return ok(entry.view);
+    return entry.ready;
+  }
+
+  private install(
+    key: DynamicTextureKey,
+    entry: TransientEntry,
+    signal: AbortSignal | undefined,
+  ): void {
+    this.entries.set(key, entry);
+    if (signal !== undefined) {
+      const release = () => this.release(key);
+      signal.addEventListener('abort', release, { once: true });
+      entry.unsubscribe = () => signal.removeEventListener('abort', release);
+    }
   }
 
   /** Record actual uploads after scene recording, then submit their mips before scene commands. */
@@ -223,7 +349,7 @@ export class DynamicTextureStore {
     const created = device.createCommandEncoder({ label: 'dynamic-texture-mips' });
     if (!created.ok) return created;
     const encoder = created.value;
-    const work: { entry: TransientEntry; upload: object; release: () => void }[] = [];
+    const work: { entry: TransientEntry; upload: number; release: () => void }[] = [];
     let finished = false;
     let completed = false;
     const complete = (submitted: boolean) => {
@@ -278,21 +404,26 @@ export class DynamicTextureStore {
    * (a frame that has not uploaded yet falls back to the default view).
    */
   getView(key: DynamicTextureKey): TextureView | undefined {
-    return this.entries.get(key)?.view;
+    return this.entries.get(key)?.ready.value;
   }
 
   /** Release one source without disturbing other videos or canvases. */
   release(key: DynamicTextureKey): void {
     const entry = this.entries.get(key);
     if (entry === undefined) return;
+    this.entries.delete(key);
+    this.retire(this.device, entry);
+  }
+
+  private retire(device: DynamicTextureDevice | undefined, entry: TransientEntry): void {
     this.pendingMips.delete(entry);
     entry.unsubscribe?.();
-    this.device?.destroyTexture(entry.texture);
-    this.entries.delete(key);
+    device?.destroyTexture(entry.texture);
   }
 
   /** Renderer teardown or device replacement invalidates all uploaded versions. */
   destroyAll(): void {
+    this.generation++;
     for (const key of this.entries.keys()) this.release(key);
   }
 
@@ -301,6 +432,7 @@ export class DynamicTextureStore {
     width: number,
     height: number,
     mipLevelCount: number,
+    generateMipmaps: boolean,
   ): Result<TransientEntry, RhiError> {
     const texture = device.createTexture({
       size: { width, height, depthOrArrayLayers: 1 },
@@ -317,7 +449,9 @@ export class DynamicTextureStore {
     }
     return ok({
       texture: texture.value,
-      view: view.value,
+      ready: view,
+      writes: 0,
+      generateMipmaps,
       width,
       height,
       mipLevelCount,

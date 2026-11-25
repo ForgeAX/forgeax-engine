@@ -257,12 +257,14 @@ flowchart LR
 `loadRapier3D()` selects the browser or native transport through the existing
 `wasm-runtime` export. Browser/Node loading probes the actual WebAssembly runtime
 once and selects the self-contained `rapier-simd.mjs` when SIMD is supported;
-otherwise it loads `rapier.mjs`. Both come from the same patched sources, retain
+otherwise `rapier.mjs` loads the package-local scalar `rapier.wasm`. Both come
+from the same patched sources, retain
 scalar geometry math and use the same solver policy. SIMD accelerates the
 solver's packed arithmetic without reducing iterations, contacts or CCD.
 The native Host transport continues to use `rapier-native.mjs` and its identical
-external scalar `rapier.wasm`; it does not infer native capability from the JS
-runtime. No network request or Rust toolchain is needed by either browser payload.
+scalar `rapier.wasm`. Node reads that file locally and browser builds serve it
+as an asset. The native Host chooses its own capabilities. The released payloads
+are ready to use without a Rust toolchain.
 There is no unpatched npm 3D backend. SDK source includes the complete nine-file
 `pkg/` closure through `SDK_SOURCE_WASM`, including SIMD declarations and the
 shared license/provenance; npm packing carries the same closure.

@@ -6,7 +6,6 @@ import type { PipelineState } from './render-context';
 interface ShadowBindingKeys {
   readonly keys: object[];
   readonly samplerIndex: number;
-  readonly pointsIndex: number;
 }
 
 /** One complete ABI projection; borrowed callers reconstruct it from current inputs. */
@@ -50,14 +49,12 @@ export function shadowViewBindingKeys(state: PipelineState): ShadowBindingKeys |
       matrices as object,
     );
   else if (projector) keys.push(state.defaultWhiteTextureView, state.defaultSampler);
-  const pointsIndex = keys.length;
-  keys.push(state.pointsLinesViewBuffer ?? state.viewUniformBuffer);
   if (extended || projector) keys.push(state.defaultWhiteTextureView, state.defaultSampler);
-  return { keys, samplerIndex, pointsIndex };
+  return { keys, samplerIndex };
 }
 
 /** Issued only by physical PipelineState producers. Fixed resources belong to
- * that device/view lifetime; only Points/Lines growth and the sampler can vary.
+ * that device/view lifetime; the sampler can vary.
  * The existing weak cache owns bind groups and all variant entries. */
 export class ShadowViewResources {
   private readonly owner: PipelineState;
@@ -80,12 +77,8 @@ export class ShadowViewResources {
     this.binding ??= shadowViewBindingKeys(state);
     const binding = this.binding;
     if (binding === undefined) return undefined;
-    const points = state.pointsLinesViewBuffer ?? state.viewUniformBuffer;
-    const changed =
-      binding.keys[binding.pointsIndex] !== points ||
-      binding.keys[binding.samplerIndex] !== sampler;
+    const changed = binding.keys[binding.samplerIndex] !== sampler;
     if (changed || root !== this.root || this.leaf === undefined) {
-      binding.keys[binding.pointsIndex] = points;
       binding.keys[binding.samplerIndex] = sampler;
       this.leaf = bindGroupChainLeaf(root, binding.keys);
       this.root = root;

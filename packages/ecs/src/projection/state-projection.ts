@@ -44,6 +44,8 @@ export interface StateProjection {
   /** Whether the accepted source still matches the live World, without creating a candidate. */
   isCurrent(): boolean;
   read(): StateProjectionBatch;
+  /** Accept a synchronous full publication. Only structural edits need membership reconciliation. */
+  acceptFullRead(): void;
   /** Resolve the final live generation directly through the World record. */
   entity(index: number): EntityHandle | undefined;
   changed(entity: EntityHandle, component: Component): boolean;
@@ -88,6 +90,7 @@ class CurrentStateProjection implements StateProjection {
     | {
         readonly flags: Map<number, number>;
         enqueue(index: number): void;
+        appendDistinct(index: number): void;
       }
     | undefined;
   #membershipWork = false;
@@ -96,7 +99,6 @@ class CurrentStateProjection implements StateProjection {
   #acceptedStructure = -1;
   #invalid = true;
   #readToken = 0;
-  #scannedRows = 0;
   #partialChanges: readonly Component[] | undefined;
 
   readonly #world: World;
@@ -116,14 +118,19 @@ class CurrentStateProjection implements StateProjection {
       const flags = new Map<number, number>();
       this.#observed = {
         flags,
+        // A single component enumerates each live row once across its owning tables.
+        appendDistinct: (index) => {
+          if (observedIndices.has(index)) this.work.push(index);
+        },
         enqueue: (index) => {
           if (!observedIndices.has(index)) return;
           const previous = flags.get(index);
           if (previous === undefined) {
-            this.#scannedRows++;
             this.work.push(index);
+            flags.set(index, this.#membershipWork ? QUEUED | MEMBERSHIP : QUEUED);
+          } else if (this.#membershipWork && (previous & MEMBERSHIP) === 0) {
+            flags.set(index, previous | MEMBERSHIP);
           }
-          flags.set(index, (previous ?? QUEUED) | (this.#membershipWork ? MEMBERSHIP : 0));
         },
       };
       this.assertReadable();
@@ -135,6 +142,7 @@ class CurrentStateProjection implements StateProjection {
     }
     // Public callbacks keep their original detached-call behavior and identity.
     this.resetBaseline = this.resetBaseline.bind(this);
+    this.acceptFullRead = this.acceptFullRead.bind(this);
     this.isCurrent = this.isCurrent.bind(this);
     this.read = this.read.bind(this);
     this.entity = this.entity.bind(this);
@@ -174,7 +182,6 @@ class CurrentStateProjection implements StateProjection {
       if (this.#membershipWork) this.#flags[index] = previous | MEMBERSHIP;
       return;
     }
-    this.#scannedRows++;
     if ((previous & ACCEPTED) === 0 && !this.#matches(index)) return;
     if (index >= this.#flags.length) {
       let size = this.#flags.length;
@@ -211,23 +218,33 @@ class CurrentStateProjection implements StateProjection {
     this.#readToken++;
     this.#invalid = true;
   }
+  acceptFullRead(): void {
+    if (this.#invalid || this.#acceptedStructure !== this.#owner.getStructureEpoch()) {
+      this.#read(true).accept();
+    } else {
+      this.resetBaseline();
+    }
+  }
   read(): StateProjectionBatch {
+    return this.#read(false);
+  }
+  #read(membershipOnly: boolean): StateProjectionBatch {
     this.assertReadable();
     const poisoned = worldPoisonedError(this.#world.execution);
     if (poisoned !== undefined) throw poisoned;
     const token = ++this.#readToken;
     const epoch = this.#owner.getMutationEpoch();
     const structure = this.#owner.getStructureEpoch();
-    if (this.#observed !== undefined) this.#observed.flags.clear();
-    else if (this.#stamped)
+    if (this.#observed !== undefined) {
+      if (this.#observed.flags.size) this.#observed.flags.clear();
+    } else if (this.#stamped)
       for (let cursor = 0; cursor < this.work.length; cursor++) {
         const index = this.work[cursor] as number;
         this.#flags[index] = (this.#flags[index] ?? 0) & ACCEPTED;
       }
     this.work.length = 0;
-    this.#scannedRows = 0;
     this.#stamped = true;
-    const changedComponents = this.#changedComponents();
+    const changedComponents = membershipOnly ? NO_CHANGED_COMPONENTS : this.#changedComponents();
     const enqueue = this.#observed?.enqueue ?? this.#enqueue;
     const mutationEpochs = this.#owner.componentMutationEpochs;
     let checkedIndexEntries = 0;
@@ -245,14 +262,18 @@ class CurrentStateProjection implements StateProjection {
       }
     } else {
       this.#membershipWork = false;
-      for (let cursor = 0; cursor < this.#ids.length; cursor++) {
+      const visitChanged =
+        this.#observed && changedComponents.length === 1 && structure === this.#acceptedStructure
+          ? this.#observed.appendDistinct
+          : enqueue;
+      for (let cursor = 0; !membershipOnly && cursor < this.#ids.length; cursor++) {
         const id = this.#ids[cursor] as number;
         if ((mutationEpochs[id] ?? 0) <= this.#acceptedEpoch) continue;
         checkedIndexEntries += this.#owner.visitComponentChanged(
           id,
           this.#acceptedEpoch,
           epoch,
-          enqueue,
+          visitChanged,
         );
       }
       if (structure !== this.#acceptedStructure) {
@@ -267,7 +288,7 @@ class CurrentStateProjection implements StateProjection {
       token,
       structure,
       epoch,
-      this.#scannedRows,
+      this.work.length,
       checkedIndexEntries,
       this.#invalid || structure !== this.#acceptedStructure,
       changedComponents,
@@ -323,8 +344,9 @@ class CurrentStateProjection implements StateProjection {
     return (flags & MEMBERSHIP) !== 0;
   }
   commitCandidate(epoch: number, structure: number): void {
-    if (this.#observed !== undefined) this.#observed.flags.clear();
-    else
+    if (this.#observed !== undefined) {
+      if (this.#observed.flags.size) this.#observed.flags.clear();
+    } else
       for (let cursor = 0; cursor < this.work.length; cursor++) {
         const index = this.work[cursor] as number;
         const state = this.#flags[index] ?? 0;

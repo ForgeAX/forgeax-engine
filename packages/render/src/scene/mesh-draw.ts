@@ -3,7 +3,12 @@ import type { RenderableSnapshot } from '../render-system-extract';
 import { offsetWaterMeshAdmissionDraw } from '../water/mesh-source-admission';
 import { CapturedSceneTransform } from './captured-transform';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
-import { createMeshMaterialReader, meshMaterialGeometry } from './mesh-materials';
+import {
+  BoundMeshMaterials,
+  type EffectiveMeshMaterials,
+  effectiveMeshMaterials,
+  meshMaterialGeometry,
+} from './mesh-materials';
 import type { RenderSceneSlot } from './render-scene-types';
 import type { RowContent } from './row-contents';
 
@@ -12,25 +17,17 @@ import type { RowContent } from './row-contents';
  * replacements reuse the per-Mesh override binding, so temporal and GPU Scene
  * readers avoid rebuilding the complete draw row for every moved instance.
  */
-export function meshDrawMaterials(
-  source: Pick<
-    RenderableSnapshot,
-    | 'terrain'
-    | 'materialOverrides'
-    | 'assetHandle'
-    | 'material'
-    | 'materials'
-    | 'materialBindingSources'
-    | 'skinBinding'
-    | 'spriteInstances'
-  >,
+export function slotDrawMaterials(
+  slot: RenderSceneSlot,
   meshes: MeshFrame,
 ): Pick<RenderableSnapshot, 'material' | 'materials'> {
+  if (slot instanceof SceneDrawSlot) return slot.drawMaterials(meshes);
+  const source = slot.snapshot;
   if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
   const mesh = meshes.get(source.assetHandle);
   return mesh === undefined
     ? source
-    : createMeshMaterialReader(mesh)(source, meshMaterialGeometry(source));
+    : effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
 }
 
 function offsetWaterMeshSource(
@@ -56,7 +53,7 @@ function offsetWaterMeshSource(
 
 function meshDrawMaterialsWithWaterSource(
   source: RowContent,
-  ordinary: ReturnType<ReturnType<typeof createMeshMaterialReader>>,
+  ordinary: EffectiveMeshMaterials,
 ): Pick<
   RenderableSnapshot,
   'material' | 'materials' | 'materialBindingSources' | 'waterMeshSource'
@@ -78,37 +75,59 @@ function meshDrawMaterialsWithWaterSource(
   };
 }
 
-/** The retained row owner shares geometry and material projection across equal row contents.
- * A pose edit publishes a new matrix and entity address without rebuilding mesh sections.
- * Each live content holds at most its last binding, independent of the number of poses or views. */
-export class SceneMeshDrawShapes {
-  readonly #shapes = new WeakMap<
-    RowContent,
-    {
-      readonly mesh: MeshGeometry;
-      readonly read: ReturnType<typeof createMeshMaterialReader>;
-      readonly materials: RenderableSnapshot['materials'];
-      readonly shape: RowContent;
+/** One live mesh/material address per admitted row content, shared by all its poses. */
+class MeshDrawShape extends BoundMeshMaterials {
+  private binding?: EffectiveMeshMaterials;
+  private shape?: RowContent;
+
+  constructor(
+    mesh: MeshGeometry,
+    content: RowContent,
+    overrides: NonNullable<RowContent['materialOverrides']>,
+    public frame: symbol,
+  ) {
+    super(mesh, overrides, meshMaterialGeometry(content));
+  }
+
+  project(content: RowContent): RowContent {
+    const ordinary = this.read();
+    if (ordinary !== this.binding || this.shape === undefined) {
+      const materials = meshDrawMaterialsWithWaterSource(content, ordinary);
+      this.shape = projectMeshFields(content, this.mesh, materials, ordinary.materials);
+      this.binding = ordinary;
     }
-  >();
+    return this.shape;
+  }
+}
+
+export class SceneMeshDrawShapes {
+  readonly #shapes = new WeakMap<RowContent, MeshDrawShape>();
 
   resolve(content: RowContent, meshes: MeshFrame): RowContent {
-    if (content.terrain !== undefined || content.materialOverrides === undefined) return content;
-    const mesh = meshes.get(content.assetHandle);
-    if (mesh === undefined) {
-      this.#shapes.delete(content);
-      return content;
-    }
+    return this.binding(content, meshes)?.project(content) ?? content;
+  }
+
+  materials(content: RowContent, meshes: MeshFrame): EffectiveMeshMaterials {
+    return this.binding(content, meshes)?.read() ?? content;
+  }
+
+  private binding(content: RowContent, meshes: MeshFrame): MeshDrawShape | undefined {
+    const overrides = content.materialOverrides;
+    if (content.terrain !== undefined || overrides === undefined) return undefined;
     let entry = this.#shapes.get(content);
-    const read = entry?.mesh === mesh ? entry.read : createMeshMaterialReader(mesh);
-    const ordinary = read(content, meshMaterialGeometry(content));
-    if (entry?.mesh !== mesh || entry.materials !== ordinary.materials) {
-      const materials = meshDrawMaterialsWithWaterSource(content, ordinary);
-      const shape = projectMeshFields(content, mesh, materials, ordinary.materials);
-      entry = { mesh, read, materials: ordinary.materials, shape };
-      this.#shapes.set(content, entry);
+    if (entry === undefined || entry.frame !== meshes.identity) {
+      const mesh = meshes.get(content.assetHandle);
+      if (mesh === undefined) {
+        this.#shapes.delete(content);
+        return undefined;
+      }
+      if (entry?.mesh === mesh) entry.frame = meshes.identity;
+      else {
+        entry = new MeshDrawShape(mesh, content, overrides, meshes.identity);
+        this.#shapes.set(content, entry);
+      }
     }
-    return entry.shape;
+    return entry;
   }
 }
 
@@ -155,6 +174,19 @@ export class SceneDrawSlot implements RenderSceneSlot {
     return this.#content;
   }
 
+  /** A pose publication keeps the owning Scene, row lifetime and authored geometry facts. */
+  retainsContentOf(previous: RenderSceneSlot | undefined): boolean {
+    return (
+      previous instanceof SceneDrawSlot &&
+      this !== previous &&
+      this.#shapes === previous.#shapes &&
+      this.slot === previous.slot &&
+      this.generation === previous.generation &&
+      this.entityKey === previous.entityKey &&
+      this.#content === previous.#content
+    );
+  }
+
   /** The column and its offset remain valid for the full lifetime of this issued row. */
   get poseColumn(): Float32Array {
     return this.#pose;
@@ -194,6 +226,10 @@ export class SceneDrawSlot implements RenderSceneSlot {
       transform: this.transform,
     };
     return this.#authored;
+  }
+
+  drawMaterials(meshes: MeshFrame): EffectiveMeshMaterials {
+    return this.#shapes.materials(this.#content, meshes);
   }
 
   draw(meshes: MeshFrame): RenderableSnapshot {
@@ -243,7 +279,7 @@ export function meshDrawSnapshot(
   if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
   const mesh = meshes.get(source.assetHandle);
   if (mesh === undefined) return source;
-  const ordinary = createMeshMaterialReader(mesh)(source, meshMaterialGeometry(source));
+  const ordinary = effectiveMeshMaterials(source, mesh, meshMaterialGeometry(source));
   return projectMeshDrawSnapshot(
     source,
     mesh,

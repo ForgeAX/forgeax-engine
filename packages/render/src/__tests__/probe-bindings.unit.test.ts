@@ -131,12 +131,12 @@ describe('ProbeBlendRecord renderer lane', () => {
     });
     const extended = buildPbrViewBglEntries({ storageBuffer: true, extendedLighting: true });
 
-    expect(base.map((entry) => entry.binding)).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
+    expect(base.map((entry) => entry.binding)).toEqual([0, 3, 4, 5, 6, 7, 8, 17]);
     expect(base.some((entry) => [9, 11, 12, 13, 14].includes(entry.binding))).toBe(false);
     expect(extended.map((entry) => entry.binding)).toEqual(
       expect.arrayContaining([9, 11, 12, 13, 14, 15, 27, 28]),
     );
-    expect(extended).toHaveLength(18);
+    expect(extended).toHaveLength(17);
   });
 
   it('keeps the shared medium sampler without a cloud map on the uniform layout', () => {

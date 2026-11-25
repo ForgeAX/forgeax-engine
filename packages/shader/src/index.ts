@@ -153,7 +153,9 @@ export {
   standardSampleReuseMask,
   standardSharedTransmissionConflicts,
   standardSharedTransmissionDefines,
+  standardTextureDefaultMask,
   standardTextureMask,
+  standardTextureValueMask,
   standardVertexTextureMask,
 } from './material-schemas.js';
 export {
@@ -348,6 +350,12 @@ export { FIELD_VISIBILITY_BOUNDS_WGSL } from './field-visibility-wgsl';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
 export {
+  findMaterialShaderEntry,
+  materialDepthCoversEntry,
+  materialDepthFragmentEntry,
+  PREDEPTH_FRAGMENT_ENTRY,
+} from './material/depth-entries.js';
+export {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
   materialShaderUvSetCount,
@@ -387,6 +395,8 @@ export {
   admitShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materialShaderPreparedSourceRows,
+  materialShaderVariantsWithAxis,
+  preferredMaterialShaderTemplateVariant,
   prepareMaterialShaderTemplateVariant,
   SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
@@ -396,6 +406,7 @@ export {
 export {
   MOTION_BLUR_SCENE_VELOCITY_WGSL,
   SCENE_VELOCITY_RECONSTRUCTION_WGSL,
+  SCENE_VELOCITY_WITH_DEPTH_OVERRIDE,
   TAA_SCENE_VELOCITY_WGSL,
 } from './scene-velocity-source';
 export {
@@ -408,6 +419,8 @@ export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
 export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
   TEXTURE_GENERATOR_VERTEX_SOURCE,
+  TEXTURE_GENERATOR_VOLUME_GROUP,
+  TEXTURE_GENERATOR_VOLUME_SOURCE,
 } from './texture-generator-source.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
 /** Renderer-owned TSR analysis and reconstruction programs. */
@@ -423,4 +436,4 @@ export {
   TSR_RECONSTRUCT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';
-export { materialShaderAxes } from './types.js';
+export { materialShaderAxes, materialShaderHasVariants } from './types.js';

@@ -1,7 +1,8 @@
 import { vec3 } from '@forgeax/engine-math';
 import { assert, expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
-import { MaterialResource } from '../../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
+import { getOpaqueResourceIdentity } from '../../opaque-resource-identity';
 import { hasForwardShadowCoverage } from '../../pipeline/forward-shadow-admission';
 import type {
   DispatchList,
@@ -11,11 +12,12 @@ import type {
 import {
   appendGeneratedQueue,
   captureGeneratedQueueSource,
-  dispatchCasterMaterials,
   dispatchPassWork,
+  hasShadowPasses,
   MaterialDispatch,
   MaterialFrame,
   someCapturedMaterialPass,
+  visitCapturedCasterMaterials,
   visitCapturedPassRanks,
 } from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
@@ -148,6 +150,92 @@ it('diffs retained shared roots across replacement, insertion, removal and skipp
   next.changesSince(next, () => {
     throw new Error('unchanged roots were enumerated');
   });
+});
+
+it('keeps sparse material addresses and wrapper identities independent across retained frames', () => {
+  const empty = new MaterialFrame(undefined);
+  const source = new MaterialResource(material(12));
+  const alias = new Proxy(source, {});
+  const far = new MaterialResource(material(13));
+  let first = empty.with(source).with(alias);
+  for (let i = 0; i < 48; i++) MaterialResource._frameAddress(new MaterialResource(material(i)));
+  first = first.with(far);
+  const former = first.get(source);
+  const wrapped = first.get(alias);
+  expect(wrapped?.resource).toBe(alias);
+  expect(former?.resource).toBe(source);
+  const left = first.without(source).without(far);
+  const right = first.with(far, 9);
+  expect(left.get(alias)).toBe(wrapped);
+  expect(left.get(source)).toBeUndefined();
+  expect(first.get(far)?.bindings).toBe(1);
+  expect(right.get(far)?.bindings).toBe(9);
+  expect(right.get(source)).toBe(former);
+  const removed = new Set<MaterialResource>();
+  empty.changesSince(first, (before, after) => {
+    expect(after).toBeUndefined();
+    if (before !== undefined) removed.add(before.resource);
+  });
+  expect(removed).toEqual(new Set([source, alias, far]));
+});
+
+it('issues changed material lanes once to multiple Pass readers and preserves skipped versions', () => {
+  const owner = new MaterialDispatch();
+  const resources = Array.from({ length: 80 }, (_, index) => new MaterialResource(material(index)));
+  for (const resource of resources) owner.adopt(resource);
+  const first = owner.materials();
+  const edited = resources.filter((_, index) => index % 3 === 0);
+  for (const roughness of [0.4, 0.8]) {
+    for (const resource of edited) {
+      resource.adopt({ ...resource.snapshot, roughness });
+      owner.adopt(resource);
+    }
+  }
+  const second = owner.materials();
+  const expected = edited.map((resource) => [first.get(resource), second.get(resource)]);
+  // Publication is complete. Neither reader should enter a tree, even for a dense edit.
+  const root = Object.getOwnPropertyDescriptor(second, 'root');
+  assert(root !== undefined);
+  Object.defineProperty(second, 'root', {
+    configurable: true,
+    get() {
+      throw new Error('Pass rediscovered issued material changes');
+    },
+  });
+  try {
+    for (let reader = 0; reader < 2; reader++) {
+      const actual: unknown[] = [];
+      second.changesSince(first, (before, after) => actual.push([before, after]));
+      expect(actual).toEqual(expected);
+    }
+  } finally {
+    Object.defineProperty(second, 'root', root);
+  }
+  const added = new MaterialResource(material(100));
+  owner.adopt(added);
+  const third = owner.materials();
+  const changed: MaterialResource[] = [];
+  third.changesSince(first, (_before, after) => {
+    if (after !== undefined) changed.push(after.resource);
+  });
+  expect(changed).toEqual([...edited, added]);
+  expect(owner.materials()).toBe(third);
+});
+
+it('addresses accepted material pages independently of geometry and Pass identities', () => {
+  let frame = new MaterialFrame(undefined);
+  const resources: MaterialResource[] = [];
+  for (let index = 0; index < 64; index++) {
+    for (let other = 0; other < 40; other++) getOpaqueResourceIdentity({});
+    const resource = new MaterialResource(material(index));
+    // Structural wrappers must still have their own material addresses.
+    const accepted = index % 4 === 0 ? new Proxy(resource, {}) : resource;
+    frame = frame.with(accepted);
+    resources.push(accepted);
+  }
+  const addresses = resources.map((resource) => MaterialResource._frameAddress(resource));
+  expect((addresses.at(-1) as number) - (addresses[0] as number)).toBe(resources.length - 1);
+  for (const resource of resources) expect(frame.get(resource)?.resource).toBe(resource);
 });
 
 it('visits only copied tree paths for a local change among 10000 unrelated assets', () => {
@@ -310,6 +398,47 @@ it('captures fixed shared versions and prepares programs without iterating bindi
   expect(programs.get(resource)?.snapshot.roughness).toBe(0.5);
   expect(before.get(resource)?.snapshot).toBe(original);
   expect(after.get(resource)?.snapshot).toBe(next);
+});
+
+it('publishes one shadow program roster for direct and GPU draws through parameter changes', () => {
+  const snapshot = captureMaterialSnapshot(material(801, 2000, true));
+  const resource = new MaterialResource(snapshot);
+  const fixed = new MaterialFrame(undefined).with(resource);
+  const first = fixed.get(resource);
+  assert(first?.programs !== undefined);
+  const gpu = new GpuDrivenMaterialProgramProjection().project([], fixed);
+  expect(gpu.get(resource)).toBe(first.programs);
+  expect(first.programs.shadow).toBe(gpu.get(resource)?.shadow);
+  expect(first.programs.prepareShadow).toEqual(first.programs.shadow);
+  const changed = fixed.with(resource, 8, captureMaterialSnapshot({ ...snapshot, roughness: 0.9 }));
+  const second = changed.get(resource);
+  assert(second?.programs !== undefined);
+  expect(second.programs.snapshot.roughness).toBe(0.9);
+  expect(second.programs.shadow).toBe(first.programs.shadow);
+  expect(first.programs.snapshot.roughness).toBe(0.5);
+  const removed = changed.with(resource, 1, captureMaterialSnapshot(material(801)));
+  expect(removed.get(resource)?.programs?.shadow).toHaveLength(0);
+  expect(hasShadowPasses(first)).toBe(true);
+  const replaced = changed.withAccepted({ ...second, passes: [] });
+  const replacement = replaced.get(resource);
+  assert(replacement !== undefined);
+  expect(hasShadowPasses(replacement)).toBe(false);
+});
+
+it('keeps an unassigned GPU material handle distinct from slot zero for equal passes', () => {
+  const { materialHandle: _handle, ...unassigned } = material(0, 2000, true);
+  const resource = new MaterialResource(captureMaterialSnapshot(unassigned));
+  const initial = new MaterialFrame(undefined).with(resource);
+  const assigned = initial.with(
+    resource,
+    1,
+    captureMaterialSnapshot({ ...unassigned, materialHandle: 0 }),
+  );
+  const old = initial.get(resource)?.programs;
+  const current = assigned.get(resource)?.programs;
+  expect(old?.materialHandle).toBe(-1);
+  expect(current?.materialHandle).toBe(0);
+  expect(current?.shadow).toBe(old?.shadow);
 });
 
 it('reads the issuing numeric roster on every walk while material values change', () => {
@@ -1349,23 +1478,25 @@ it('shares the caster set with members until a visible non-caster forks it, and 
   expect(casters([rows[0], rows[2]] as RenderSceneSlot[])).toEqual([0, 2]);
 });
 
-it('names only materials some caster draws with, as a stable set per frame', () => {
+it('visits only occupied caster materials of the specified dispatch frame', () => {
   const cast = new MaterialResource(material(140, 2000, true));
   const quiet = new MaterialResource(material(141, 2000, true));
   const owner = new MaterialDispatch();
   const rows = [slot(0, cast), slot(1, cast, false), slot(2, quiet, false)];
   for (const row of rows) owner.bind(row.slot, row.snapshot);
   const frame = query(owner, fixedSlots(rows));
-  const materials = dispatchCasterMaterials(frame);
-  expect(materials && [...materials]).toEqual([cast]);
-  expect(dispatchCasterMaterials(frame)).toBe(materials);
-  expect(dispatchCasterMaterials([...frame] as unknown as DispatchList)).toBeUndefined();
+  const visit = (list: DispatchList) => {
+    const materials: MaterialResource[] = [];
+    const captured = visitCapturedCasterMaterials(list, (material) => materials.push(material));
+    return captured ? materials : undefined;
+  };
+  expect(visit(frame)).toEqual([cast]);
+  expect(visit([...frame] as unknown as DispatchList)).toBeUndefined();
   const loud = slot(2, quiet);
   owner.bind(loud.slot, loud.snapshot);
-  const next = dispatchCasterMaterials(
-    query(owner, fixedSlots([rows[0], rows[1], loud] as RenderSceneSlot[])),
-  );
-  expect(next && new Set(next)).toEqual(new Set([cast, quiet]));
+  const next = query(owner, fixedSlots([rows[0], rows[1], loud] as RenderSceneSlot[]));
+  expect(new Set(visit(next))).toEqual(new Set([cast, quiet]));
+  expect(visit(frame)).toEqual([cast]);
 });
 
 it('bulk binding appends member pages instead of copying one roster page per member', () => {

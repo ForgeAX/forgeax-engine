@@ -1,11 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
-import { ChildOf, Transform } from '@forgeax/engine-scene';
+import { ChildOf, Mobility, MobilityKindValue, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
-import { Visibility, VisibilityStateValue } from '../components';
+import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import {
   acceptRenderSourceEntities,
   captureRenderSourceEntities,
   createRenderSourceState,
+  readRenderSourceChanges,
   renderSourceHierarchyChanged,
 } from '../scene/render-source';
 
@@ -105,4 +106,30 @@ it('captures exact generation identity and never samples a later World during ac
     f.world.hasComponent = has;
   }
   expect(f.source.entities.get(index)).toEqual(row);
+});
+
+it('publishes descendants when a live parent loses its mobility declaration', () => {
+  const world = new World();
+  const parent = world
+    .spawn({ component: Mobility, data: { kind: MobilityKindValue.static } })
+    .unwrap();
+  const child = world
+    .spawn(
+      { component: ChildOf, data: { parent } },
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: {} },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  const source = createRenderSourceState(world);
+  source.batch.accept();
+  world.removeComponent(parent, Mobility).unwrap();
+  const members = { has: (entity: number) => entity === child };
+  const first = readRenderSourceChanges(world, source, members);
+  expect([...first.changes.content]).toEqual([child]);
+  first.discard();
+  const retry = readRenderSourceChanges(world, source, members);
+  expect([...retry.changes.content]).toEqual([child]);
+  retry.accept();
+  expect(readRenderSourceChanges(world, source, members).changes.content.size).toBe(0);
 });

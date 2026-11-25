@@ -42,8 +42,12 @@ function fixture(withPair = true) {
       row: typeof material,
       _entity: number | undefined,
       _world: unknown,
+      address: { byteOffset: number },
       key: string = row.materialShaderId,
-    ) => ({ group: groups.get(key), byteOffset: 256, dynamicOffsetCount: 1 }),
+    ) => {
+      address.byteOffset = 256;
+      return groups.get(key);
+    },
   );
   const publish = (selected?: ReadonlySet<number>) =>
     publishMaterialBindingPreparer(c, resources, selected, resolve as never);
@@ -55,7 +59,15 @@ it('binds the accepted forward scene program with its exact physical group1 layo
   f.publish();
   const prepared = f.resources.prepareMaterialBinding(0);
   expect(prepared).toMatchObject({ group: f.groups.get(scene), byteOffset: 256 });
-  expect(f.resolve).toHaveBeenCalledWith(0, f.material, 17, f.bindingWorld, scene, undefined);
+  expect(f.resolve).toHaveBeenCalledWith(
+    0,
+    f.material,
+    17,
+    f.bindingWorld,
+    expect.objectContaining({ byteOffset: 256 }),
+    scene,
+    undefined,
+  );
 });
 
 it('uses the program selected by the raster pass even when its layout differs from Forward', () => {
@@ -65,7 +77,15 @@ it('uses the program selected by the raster pass even when its layout differs fr
   f.groups.set(depth, group);
   f.publish();
   expect(f.resources.prepareMaterialBinding(0, 3, depth)?.group).toBe(group);
-  expect(f.resolve).toHaveBeenCalledWith(0, f.material, 17, f.bindingWorld, depth, 3);
+  expect(f.resolve).toHaveBeenCalledWith(
+    0,
+    f.material,
+    17,
+    f.bindingWorld,
+    expect.objectContaining({ byteOffset: 256 }),
+    depth,
+    3,
+  );
   expect(f.resources.prepareMaterialBinding(0)?.group).toBe(f.groups.get(scene));
 });
 

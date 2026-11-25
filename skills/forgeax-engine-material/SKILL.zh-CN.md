@@ -283,9 +283,9 @@ opaque rigid Materials.unlit（queue低于Transparent、声明program）像Stand
 
 ## 材质与点光默认行为
 
-Standard roughness/emissiveIntensity/sheenRoughness 默认1，黑 emissive/sheen 仍关贡献，physical sheen 另要 static switch，显式零 intensity 保留零。emissive scene-linear 经 exposure/tone，ACES 下大面>约1.5趋白丢色，panel/window 用0.8–1.5，小 bloom source 才3–10，见 emissive recipe。
+Standard roughness/emissiveIntensity/sheenRoughness 默认1，黑 emissive/sheen 仍关贡献，physical sheen 另要 static switch，显式零 intensity 保留零。emissive scene-linear 经 exposure/tone，ACES 下大面>约1.5趋白丢色，panel/window 用0.8–1.5，小 bloom source 才3–10。
 
-glow beam/pillar 增光用 emission-only Surface：forgeax_material::surface_v1 的 surfaceEmissionOnly(input,color,opacity) 清 sun Fresnel glare/sky reflection，模板仍对 additive Surface lighting。color one/one、alpha zero/one（engine-render/authoring ADDITIVE_BLEND、UE BLEND_Additive）；Materials.unlit(color,{blendMode:'additive'}) 也关 depth write、用 Transparent、按 opacity 预乘。peak 低于 bloom threshold，renderState.fog:false 跳 scene fog（任意forward，deferred opaque仍雾），open tapered mesh 按高度衰 alpha，见 beam-pillar。Surface 仅定义材质属性，无 sun/sky/camera；海用内置 single-layer-medium，见 Render Sea sun and sky。
+glow beam/pillar 增光用 emission-only Surface：forgeax_material::surface_v1 的 surfaceEmissionOnly(input,color,opacity) 清 sun Fresnel glare/sky reflection，模板仍对 additive Surface lighting。color one/one、alpha zero/one（engine-render/authoring ADDITIVE_BLEND、UE BLEND_Additive）；Materials.unlit(color,{blendMode:'additive'}) 也关 depth write、用 Transparent、按 opacity 预乘。peak 低于 bloom threshold，renderState.fog:false 跳 scene fog（任意forward，deferred opaque仍雾），open tapered mesh 按高度衰 alpha。Surface 仅定义材质属性，无 sun/sky/camera；海用内置 single-layer-medium，见 Render Sea sun and sky。
 
 Point/Spot 默认无 cutoff，多光场景显式 finite range 限 cluster/shading。无 cutoff 影响所有 camera cluster，光源在视锥外也如此。默认 Spot outer half-angle60°、inner0°，全 cone falloff，单改 outerConeDeg 可收窄。相等角为合法 hard cone，无论 shadow 开关，surface/volume 用 defined hard step。Spot shadow farPlane 仍独立 range。
 

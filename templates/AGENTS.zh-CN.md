@@ -7,11 +7,13 @@
 
 基于 `@forgeax/engine` 的 TypeScript 游戏。只有在任务相关时才阅读对应参考。
 
+本项目在 `package.json` 中固定 `@forgeax/engine` 的确切版本。通过 `pnpm exec forgeax` 使用项目里的 CLI。
+
 ## 编写代码前先了解引擎
 
 每个游戏执行一次，在首次编辑 `assets/` 之前完成；阅读量约一页，花费几分钟，而不是几十分钟：
 
-1. 阅读[引擎概览](../skills/forgeax-engine-sdk/ENGINE-OVERVIEW.md)，了解能力、边界和缺口；浏览能力目录及 API 索引，这两份资料在 SDK 中会成为发行版本地文件；然后阅读游戏涉及的每个技能的快速契约。帧循环和输入对应 `forgeax-engine-app`；相机、灯光、天空和后处理对应 `forgeax-engine-render-pipeline`；其他按物理、VFX、音频、建模选择。
+1. 阅读[引擎概览](skills/forgeax-engine-authoring/ENGINE-OVERVIEW.md)，了解能力、边界和缺口；浏览[能力目录](skills/forgeax-engine-authoring/references/feature-catalog.md)及 [API 索引](skills/forgeax-engine-authoring/references/api-index.md)，这两份资料由已安装的 Engine 版本生成；然后阅读游戏涉及的每个技能的快速契约。帧循环和输入对应 `forgeax-engine-app`；相机、灯光、天空和后处理对应 `forgeax-engine-render-pipeline`；其他按物理、VFX、音频、建模选择。
 2. 编写 `docs/engine-plan.md`，每项游戏功能一行：需求 → 引擎能力（技能或 API）→ 入口 → 限制或缺口。
 3. 每项功能都基于该行标明的能力实现。编写辅助函数、网格构建器、着色器、相机装置、输入处理器、粒子系统、碰撞测试或 UI 控件前，先查 API 索引和能力目录。仅对已确认的缺口手写实现：在该行标记“gap”，记录检索结果，保持自定义部分最小，并记入 `docs/feedback.md`。
 
@@ -22,8 +24,8 @@
 - 游戏逻辑是原生 Cordis `Plugin`；清理由 `ctx.effect()` 负责。DOM、Web Audio 和浏览器 SDK 放在 frontend 根；游戏逻辑由 Engine Worker 承载。
 - 点击画布时，引擎会锁定指针用于鼠标视角；需要光标瞄准的游戏在启动时调用一次 `gameHost.setPointerLockAllowed(false)`。
 - 仅导入 `@forgeax/engine` 或 `@forgeax/engine/<package-directory>`。
-- 导入路径和签名先查 API 索引；命令使用 `pnpm exec forgeax help <command> --json`。
-- 将已确认的 Engine 或 SDK 问题记录在 `docs/feedback.md`，不得包含秘密信息。
+- 导入路径和签名先查 [API 索引](skills/forgeax-engine-authoring/references/api-index.md)；命令使用 `pnpm exec forgeax help <command> --json`。
+- 将已确认的 Engine 问题记录在 `docs/feedback.md`，不得包含秘密信息。
 
 ## HDR
 
@@ -31,15 +33,13 @@
 
 ## 运行、测试、构建与发布
 
-- **Open optional View:** read `skills/forgeax-view-start/SKILL.md` or the SDK's `tools/view/skills/forgeax-view-start/SKILL.md`. From the game root run `node /absolute/forgeax-sdk/tools/view/start.mjs --project .`. View ships only in the SDK, whose launcher initializes its own matching Engine and tool runtime. Keep the terminal open and verify the project in the page.
-- **本地迭代：** `pnpm exec forgeax dev start` 提供源码服务；Vite 和 DevKit 按需处理 TypeScript 与 Pack 资产。不需要预先运行 `project build`、单独构建资产或手动编译 TypeScript。
-- **构建与预览：** `pnpm exec forgeax project build` 通过 Vite 和资产生产器生成生产 `dist/`；`pnpm exec forgeax project preview` 提供该产物。`pnpm typecheck` 是独立检查，不是启动前提。
+- **打开 View**。在游戏根运行 `pnpm exec forgeax project view --json`，打开返回的 URL 并确认当前项目及就绪状态。
 
 | 用户意图 | 路由 |
 |:--|:--|
-| 创建、修改或本地游玩（默认） | 本地可玩交付 |
-| 发布、部署或分发 | 游戏发布 |
-| Engine 或 SDK 变更、SDK 发布、性能 | 所属包、SDK 生产和性能技能 |
+| 创建、修改或本地游玩（默认） | 运行下方项目检查和 playthrough |
+| 发布、部署或分发 | 构建正式产物并运行下方发布验收 |
+| 引擎变更、性能 | Engine 所属包和适用的性能技能 |
 
 ```bash
 pnpm exec forgeax project check --json          # 工程和依赖检查
@@ -50,7 +50,7 @@ pnpm exec forgeax project build --out-dir release --base ./    # 静态游戏：
 pnpm exec forgeax project play scripts/playthrough.mjs --release --dist release --json  # 最终验收构建后的发行版
 ```
 
-先看画面，再游玩。场景可构建后启动 `dev start`，每次修改灯光、材质、雾、天空、后处理或相机后运行 `dev look`。打开 PNG，对[视觉自审](../skills/forgeax-engine-sdk/SKILL.zh-CN.md#visual-self-review)的每个问题用一句话回答；修复每个否定项并重新观察。通过代码检查不代表画面完成：look-dev 应在编写游玩脚本之前进行。
+先看画面，再游玩。场景可构建后启动 `dev start`，每次修改灯光、材质、雾、天空、后处理或相机后运行 `dev look`。打开 PNG，对[视觉自审](skills/forgeax-engine-authoring/SKILL.zh-CN.md#visual-self-review)的每个问题用一句话回答；修复每个否定项并重新观察。通过代码检查不代表画面完成：look-dev 应在编写游玩脚本之前进行。
 
 `project play` 用于玩法验收：为游戏自己的流程编辑 `scripts/playthrough.mjs`，计时使用 `play.advance(seconds)`，投影使用 `play.state()` 或 `play.waitFor()`；API 索引的 playthrough 文件列出了所有辅助方法。针对构建后的 `release/` 进行其他浏览器检查也可计入验收。完成意味着：核心输入在游玩中有效，且已打开最终截图，确认其通过针对目标视觉效果的自审。使用 `forgeax project preview` 提供 `release/`，它设置 COOP/COEP 响应头并支持多个连接。
 

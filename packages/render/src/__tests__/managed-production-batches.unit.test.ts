@@ -280,7 +280,7 @@ async function fixture(
       clustered: false,
       reflectionFallback: false,
       probeBlend: false,
-      shadowViews: shadows,
+      demand: shadows ? 'forward-and-shadow' : 'forward',
     });
     const result = production
       .prepare({
@@ -322,7 +322,7 @@ async function fixture(
       clustered: false,
       reflectionFallback: false,
       probeBlend: false,
-      shadowViews: shadows,
+      demand: shadows ? 'forward-and-shadow' : 'forward',
     });
     return {
       scene: state,

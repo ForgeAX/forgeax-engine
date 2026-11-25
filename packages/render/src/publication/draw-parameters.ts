@@ -4,6 +4,7 @@ import {
   readComponentMutationEpoch,
   type StateProjection,
 } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { unpackSlot } from '@forgeax/engine-types';
 import { MESH_DRAW_PARAMETER_FLOATS, MeshDrawParameters } from '../components/mesh-draw-parameters';
 
@@ -39,20 +40,36 @@ export function drawParameterComponent(world: World): typeof MeshDrawParameters 
   return component;
 }
 
+const PARAMETER_FIELDS = ['x', 'y', 'z', 'w', 'extraX', 'extraY', 'extraZ', 'extraW'] as const;
+
+/** A missing first scalar is an ordinary non-owner. Native recording supplies its
+ * synchronous destination; an unbound caller receives its own retained value. */
 export function readDrawParameters(
   world: World,
   component: typeof MeshDrawParameters,
   entity: EntityHandle,
+  into?: number[],
 ): Row | undefined {
-  const row = world.get(entity, component);
-  if (!row.ok) return undefined;
-  const { x, y, z, w, extraX, extraY, extraZ, extraW } = row.value;
-  return [x, y, z, w, extraX, extraY, extraZ, extraW];
+  const read = world[worldRead].getFieldValue;
+  const first = read(entity, component, 'x');
+  if (first === undefined) return undefined;
+  const values = into ?? new Array<number>(MESH_DRAW_PARAMETER_FLOATS);
+  if (values.length > MESH_DRAW_PARAMETER_FLOATS) values.length = MESH_DRAW_PARAMETER_FLOATS;
+  values[0] = first;
+  for (let i = 1; i < PARAMETER_FIELDS.length; i++)
+    values[i] = read(entity, component, PARAMETER_FIELDS[i] as string) as number;
+  return values;
+}
+
+function sameParameterValues(a: Row, b: Row): boolean {
+  for (let i = 0; i < MESH_DRAW_PARAMETER_FLOATS; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
 }
 
 /** Capture only this channel's writes. Ordinary renderable templates never observe it. */
 export class DrawParameterPublisher {
   private readonly projection: StateProjection;
+  private readonly scratch = new Array<number>(MESH_DRAW_PARAMETER_FLOATS);
   private readonly accepted = new Map<number, { entity: number; values: Row }>();
 
   constructor(
@@ -74,20 +91,19 @@ export class DrawParameterPublisher {
       const before = this.accepted.get(index);
       const entity = this.projection.entity(index);
       const value =
-        entity !== undefined && hasDraw(entity) && this.world.hasComponent(entity, this.component)
-          ? readDrawParameters(this.world, this.component, entity)
+        entity !== undefined && hasDraw(entity)
+          ? readDrawParameters(this.world, this.component, entity, this.scratch)
           : undefined;
       if (before !== undefined && (entity !== before.entity || value === undefined)) removals++;
       if (entity === undefined || value === undefined) {
         if (before !== undefined) rows.set(index, undefined);
         continue;
       }
-      if (before?.entity === entity && value.every((v, i) => Object.is(v, before.values[i])))
-        continue;
+      if (before?.entity === entity && sameParameterValues(value, before.values)) continue;
       if (!value.every(Number.isFinite))
         throw new RangeError('Mesh draw parameters must be finite');
       updates++;
-      rows.set(index, { entity, values: value });
+      rows.set(index, { entity, values: value.slice() });
     }
     let packet: OwnedDrawParameterColumns | undefined;
     if (updates + removals > 0) {
@@ -140,8 +156,12 @@ export function stageDrawParameters(
     const entity = packet.entities[index] as number;
     if (rows.has(entity) || removed.has(entity) || !hasDraw(entity)) return undefined;
     const start = index * MESH_DRAW_PARAMETER_FLOATS;
-    const values = Array.from(packet.values.subarray(start, start + MESH_DRAW_PARAMETER_FLOATS));
-    if (!values.every(Number.isFinite)) return undefined;
+    const values = new Array<number>(MESH_DRAW_PARAMETER_FLOATS);
+    for (let field = 0; field < MESH_DRAW_PARAMETER_FLOATS; field++) {
+      const value = packet.values[start + field] as number;
+      if (!Number.isFinite(value)) return undefined;
+      values[field] = value;
+    }
     rows.set(entity, values);
   }
   return {

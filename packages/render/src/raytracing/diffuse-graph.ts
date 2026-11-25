@@ -36,12 +36,15 @@ export interface RayDiffuseTargets {
   readonly motion: RenderPipelineTarget;
   /** Compact velocity carries previous device Z beside the legacy XY word. */
   readonly motionWithDepth?: RenderPipelineTarget;
-  /** The view's shared closest-depth pyramid, created on first request. */
-  readonly depthPyramid?: () => Result<GraphTextureView, RenderGraphError>;
+  /** The view HZB used by short-range AO. */
+  readonly sceneHzb?: () => Result<GraphTextureView, RenderGraphError>;
+  /** The closest HZB used only by hierarchical screen tracing. */
+  readonly closestHzb?: () => Result<GraphTextureView, RenderGraphError>;
   /** Deferred split-sum response and the SSR-replaceable fallback; present when any
    * reflection consumer is admitted. Lite reflections add world specular into both. */
   readonly reflection?: {
     readonly fallback: RenderPipelineTarget;
+    readonly composeReflection?: true;
     readonly response: RenderPipelineTarget;
   };
 }

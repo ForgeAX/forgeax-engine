@@ -7,13 +7,16 @@ import {
   type DirectionalLight,
   Fog,
   FogExp2,
+  HemisphereLight,
   type Object3D,
   PointLight,
   RectAreaLight,
   type Scene,
   SpotLight,
+  Vector3,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
+import { sameValues } from './shared-assets';
 import type { SceneChanges } from './source-changes';
 
 export function validateLight(
@@ -73,6 +76,10 @@ export interface SceneLighting {
   readonly fog?: ReturnType<typeof projectFog>;
 }
 
+export function hasLightingEnvironment(lighting: SceneLighting): boolean {
+  return lighting.lighting !== NO_EQUIRECT || lighting.targetEnvironment !== undefined;
+}
+
 export function projectFog(scene: Scene) {
   const fog = scene.fog;
   if (fog === null) return undefined;
@@ -114,22 +121,101 @@ export function projectFog(scene: Scene) {
   };
 }
 
-export function sceneAmbientIrradiance(
+type RGB = [number, number, number];
+
+export interface SceneAmbientLighting {
+  readonly irradiance: RGB;
+  readonly hemisphere?: { readonly sky: RGB; readonly ground: RGB };
+}
+
+function sameHemisphere(
+  a: SceneAmbientLighting['hemisphere'],
+  b: SceneAmbientLighting['hemisphere'],
+): boolean {
+  return (
+    a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      sameValues(a.sky, b.sky) &&
+      sameValues(a.ground, b.ground))
+  );
+}
+
+export function sameAmbientLighting(a: SceneAmbientLighting, b: SceneAmbientLighting): boolean {
+  return sameValues(a.irradiance, b.irradiance) && sameHemisphere(a.hemisphere, b.hemisphere);
+}
+
+function addHemisphereIrradiance(
+  light: HemisphereLight,
+  positionScratch: Vector3,
+  irradiance: RGB,
+  hemisphere: SceneAmbientLighting['hemisphere'],
+  hasEnvironment: boolean,
+): SceneAmbientLighting['hemisphere'] {
+  const { color, groundColor, intensity } = light;
+  const top: RGB = [color.r, color.g, color.b];
+  const bottom: RGB = [groundColor.r, groundColor.g, groundColor.b];
+  if (
+    ![...top, ...bottom, intensity].every(
+      (value) => Number.isFinite(Math.fround(value)) && value >= 0,
+    )
+  )
+    invalid('HemisphereLight color/groundColor/intensity', light.uuid).unwrap();
+  const position = light.getWorldPosition(positionScratch);
+  if (![position.x, position.y, position.z].every(Number.isFinite))
+    invalid('HemisphereLight world position', light.uuid).unwrap();
+  if (color.equals(groundColor) || (position.x === 0 && position.y === 0 && position.z === 0)) {
+    for (const channel of [0, 1, 2] as const)
+      irradiance[channel] += (top[channel] + bottom[channel]) * 0.5 * intensity;
+    return hemisphere;
+  }
+  if (position.x !== 0 || position.z !== 0)
+    unsupported('HemisphereLight direction requires a world Y axis', light.uuid).unwrap();
+  if (hasEnvironment)
+    unsupported(
+      'HemisphereLight with Scene.environment requires independent directional diffuse irradiance',
+      light.uuid,
+    ).unwrap();
+  const upper = position.y > 0 ? top : bottom;
+  const lower = position.y > 0 ? bottom : top;
+  const sum = hemisphere ?? { sky: [0, 0, 0], ground: [0, 0, 0] };
+  for (const channel of [0, 1, 2] as const) {
+    sum.sky[channel] += (upper[channel] * intensity) / Math.PI;
+    sum.ground[channel] += (lower[channel] * intensity) / Math.PI;
+  }
+  return sum;
+}
+
+export function sceneAmbientLighting(
   scene: Object3D,
   visible: Iterable<Object3D>,
   changes: SceneChanges | undefined,
   mask: number,
-): [number, number, number] {
-  const ambientIrradiance: [number, number, number] = changes
-    ? [...changes.ambientIrradiance(mask)]
-    : [0, 0, 0];
-  for (const object of visible) {
-    if (!(object instanceof AmbientLight) || changes?.lights.has(object)) continue;
-    ambientIrradiance[0] = ambientIrradiance[0] + object.color.r * object.intensity;
-    ambientIrradiance[1] = ambientIrradiance[1] + object.color.g * object.intensity;
-    ambientIrradiance[2] = ambientIrradiance[2] + object.color.b * object.intensity;
+  hasEnvironment: boolean,
+): SceneAmbientLighting {
+  const irradiance: RGB = changes ? [...changes.ambientIrradiance(mask)] : [0, 0, 0];
+  let hemisphere: SceneAmbientLighting['hemisphere'];
+  let position: Vector3 | undefined;
+  for (const light of visible) {
+    if (light instanceof AmbientLight && !changes?.lights.has(light)) {
+      irradiance[0] += light.color.r * light.intensity;
+      irradiance[1] += light.color.g * light.intensity;
+      irradiance[2] += light.color.b * light.intensity;
+    } else if (light instanceof HemisphereLight && light.intensity !== 0) {
+      position ??= new Vector3();
+      hemisphere = addHemisphereIrradiance(light, position, irradiance, hemisphere, hasEnvironment);
+    }
   }
-  if (!ambientIrradiance.every((value) => Number.isFinite(Math.fround(value))))
-    invalid('AmbientLight total irradiance', scene.uuid).unwrap();
-  return ambientIrradiance;
+  const isFiniteRgb = (values: RGB) => values.every((value) => Number.isFinite(Math.fround(value)));
+  if (
+    !isFiniteRgb(irradiance) ||
+    (hemisphere && (!isFiniteRgb(hemisphere.sky) || !isFiniteRgb(hemisphere.ground)))
+  )
+    invalid('Total ambient irradiance', scene.uuid).unwrap();
+  if (hemisphere === undefined) return { irradiance };
+  // Skylight reserves a zero ground color for uniform sky. The smallest
+  // positive normal f32 enables the hemisphere and rounds to black at HDR16.
+  if (hemisphere.ground.every((value) => Math.fround(value) === 0))
+    hemisphere.ground[0] = 2 ** -126;
+  return { irradiance, hemisphere };
 }

@@ -84,9 +84,8 @@ export class MaterialSourceEntries extends Map<number, MaterialSnapshotCacheEntr
           into.add(handle);
   }
 
-  collectPlanarChanges(demanded: boolean, into: Set<number>): void {
-    if (this.planar !== undefined)
-      for (const handle of this.planar)
-        if (this.get(handle)?.planarRouted !== demanded) into.add(handle);
+  /** A demand flip republishes shared receivers, including those already sampled by changed rows. */
+  collectPlanarReceivers(into: Set<number>): void {
+    if (this.planar !== undefined) for (const handle of this.planar) into.add(handle);
   }
 }

@@ -9,22 +9,20 @@ import {
 import { viewForPipeline } from '../environment/bindings';
 import type { MaterialResource } from '../material-resource';
 import { standardPipelineMaterialLayoutIndex } from '../pbr-pipeline';
+import { rasterMaterialOffset } from '../record/geometry-bind-offsets';
 import type { ScenePipelineDemand } from '../record/scene-pipeline-preparation';
 import { type PrimitiveReflection, primitiveForPipeline } from '../reflection/primitive-bindings';
 import type { GpuDrivenDrawPhase } from '../render-pipeline';
 import type { PreparedRasterCounters, PreparedRasterPassCache } from './prepared-raster-bundle';
 import { rasterClassFor, selectRasterPipeline } from './production-raster-classes';
-import {
-  IndirectPassBindings,
-  preparedVisibleWindows,
-  rasterMaterialOffset,
-} from './production-raster-encode';
+import { IndirectPassBindings, preparedVisibleWindows } from './production-raster-encode';
 import type { ProjectedRasterGraph, RasterProjectionFrame } from './production-raster-frame';
 import { captureRasterMeshBinding } from './raster-mesh-bindings';
 
 export interface SourceRasterMaterialBinding {
   readonly group: BindGroup;
   readonly byteOffset: number;
+  readonly dynamicOffsetCount?: 0 | 1;
   readonly reflection?: PrimitiveReflection;
 }
 export type SourceRasterMaterialResolver = (
@@ -179,23 +177,31 @@ function prepareSourceBundleBatch(
   );
   const mesh = batch.raster.primitiveBindGroup(frame.view.skinTaskBinding()).unwrap();
   const primitive = primitiveForPipeline(device, pipeline.value, mesh, binding.reflection);
+  const windows = preparedVisibleWindows(
+    live,
+    batch,
+    phase === 'late' ? 'late' : 'early',
+    region?.visibleBase ?? 0,
+    pipeline.value,
+  );
   // A directly encoded pass prepares its physical bindings, with no native command object to retain.
   if (bindings === undefined) {
     viewForPipeline(device, pipeline.value, input.view);
     return current() ? ok(undefined) : invalid();
   }
   bindings.bindPipeline(pipeline.value, device);
-  bindings.bindMaterial(binding.group, rasterMaterialOffset(batch, binding.byteOffset));
+  bindings.bindMaterial(
+    binding.group,
+    rasterMaterialOffset(
+      binding.byteOffset,
+      binding.dynamicOffsetCount,
+      batch.artifact.program.materialUniformRequired,
+    ),
+  );
   bindings.bindMesh(primitive, batch.deformation, frame.view);
   captureRasterMeshBinding(live.meshBinding);
   if (!current()) return invalid();
   bindings.bindRecordedGeometry(live.meshBinding, live.mesh.indexFormat);
-  const windows = preparedVisibleWindows(
-    live,
-    batch,
-    phase === 'late' ? 'late' : 'early',
-    region?.visibleBase ?? 0,
-  );
   bindings.recordBundle(
     live,
     windows,

@@ -357,8 +357,8 @@ export class RowProjection<T> {
     if (
       previous.slots !== slots &&
       slots instanceof SceneSlotFrame &&
-      !slots.changesSince(previous.slots as SceneSlotFrame, (slot) => {
-        if (slots.versionAt(slot) !== (versions[slot] ?? 0)) dirty.add(slot);
+      !slots.visitChangedVersions(previous.slots as SceneSlotFrame, (slot, version) => {
+        if (version !== (versions[slot] ?? 0)) dirty.add(slot);
       })
     )
       return false;

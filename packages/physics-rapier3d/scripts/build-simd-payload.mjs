@@ -36,6 +36,13 @@ export async function buildSimdPayload({ root, work, bindings, staged, cache, ru
   await cp(join(work, 'js'), js, { recursive: true });
   for (const name of ['rapier_wasm3d.js', 'rapier_wasm3d.d.ts', 'rapier_wasm3d_bg.wasm'])
     await cp(join(wasm, name), join(js, name));
+  await writeFile(
+    join(js, 'init.ts'),
+    `import initWasm from './rapier_wasm3d.js';
+import bytes from './rapier_wasm3d_bg.wasm';
+export async function init() { await initWasm({ module_or_path: bytes }); }
+`,
+  );
   await build({
     entryPoints: [join(js, 'rapier.ts')],
     bundle: true,

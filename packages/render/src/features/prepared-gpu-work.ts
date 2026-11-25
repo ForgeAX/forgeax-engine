@@ -20,11 +20,13 @@ import {
   isDeepFrozenJson,
   ok,
   type Result,
+  type ShaderEntryPointReads,
   ShaderSource,
   shaderSourceDescriptor,
 } from '@forgeax/engine-types';
 import { DeviceScope } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
+import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { sameValue } from '../same-value';
 import {
@@ -112,6 +114,8 @@ export interface RenderFeatureGpuProgramDescriptor {
   readonly wgsl: string | ShaderSource;
   readonly entryPoints: readonly string[];
   readonly bindings?: readonly BindGroupLayoutDescriptor[];
+  /** Cooked reads for the selected entry points. Entries sharing a recipe must share a layout. */
+  readonly entryPointReads?: readonly ShaderEntryPointReads[];
 }
 
 export interface RenderFeatureGpuBufferDescriptor {
@@ -1096,6 +1100,7 @@ function createRenderFeatureGpuWorkSession(input: {
   let disposed = false;
   interface PreparingProgram {
     readonly module: ShaderModule;
+    readonly reflected: BindGroupLayoutDescriptor | undefined;
     readonly bindGroupLayout?: BindGroupLayout;
     readonly pipelines: Map<string, ComputePipeline>;
     pending: number;
@@ -1514,33 +1519,15 @@ function createRenderFeatureGpuWorkSession(input: {
         ),
       );
     }
-    let bindGroupLayout: BindGroupLayout | undefined = preparing?.bindGroupLayout;
+    let reflected = preparing?.reflected;
+    let bindGroupLayout = preparing?.bindGroupLayout;
     let pipelineLayout: 'auto' | PipelineLayout = 'auto';
     const prepareProgramExplicitBindingLayout = () => {
-      if (preparing === undefined && descriptor.bindings !== undefined) {
-        if (descriptor.bindings.length !== 1) {
-          return err(
-            failure(
-              input.featureIdentity,
-              'prepare-gpu-program',
-              'pipeline',
-              name,
-              'one-bind-group-required',
-            ),
-          );
-        }
-        const reflected = descriptor.bindings[0];
-        if (reflected === undefined) {
-          return err(
-            failure(
-              input.featureIdentity,
-              'prepare-gpu-program',
-              'pipeline',
-              name,
-              'one-bind-group-required',
-            ),
-          );
-        }
+      if (preparing !== undefined) return undefined;
+      const selectedLayout = preparedComputeLayout(descriptor);
+      if (!selectedLayout.ok) return err(preparationFailure(selectedLayout.error));
+      reflected = selectedLayout.value;
+      if (reflected !== undefined) {
         const storageCount = reflected.entries.filter(
           (entry) =>
             (entry.visibility & 4) !== 0 &&
@@ -1607,6 +1594,7 @@ function createRenderFeatureGpuWorkSession(input: {
       if (preparing === undefined && createAsync !== undefined) {
         const state: PreparingProgram = {
           module: module.value,
+          reflected,
           ...(bindGroupLayout === undefined ? {} : { bindGroupLayout }),
           pipelines: pipelineMap,
           pending: descriptor.entryPoints.length,
@@ -1686,7 +1674,7 @@ function createRenderFeatureGpuWorkSession(input: {
         number,
         'sampled' | 'storage-write' | 'storage-read' | 'storage-read-write'
       >();
-      for (const entry of descriptor.bindings?.[0]?.entries ?? []) {
+      for (const entry of reflected?.entries ?? []) {
         if (entry.texture !== undefined) {
           textureBindings.set(entry.binding, 'sampled');
         } else if (entry.storageTexture !== undefined) {
@@ -1712,7 +1700,7 @@ function createRenderFeatureGpuWorkSession(input: {
         module: module.value,
         pipelines: pipelineMap,
         bindingLayouts: new Map(
-          (descriptor.bindings?.[0]?.entries ?? []).flatMap((entry) =>
+          (reflected?.entries ?? []).flatMap((entry) =>
             entry.buffer === undefined
               ? []
               : [
@@ -3222,6 +3210,46 @@ export function createRenderFeatureGpuWorkOwner(input: {
     },
   };
   return owner;
+}
+
+/**
+ * Project a cooked program onto its dispatch ABI. The prepared feature API
+ * shares a bind group across compatible entries. A different ABI is prepared
+ * as a separate program recipe against the same shader module.
+ */
+function preparedComputeLayout(
+  descriptor: RenderFeatureGpuProgramDescriptor,
+): Result<BindGroupLayoutDescriptor | undefined, string> {
+  const abi = descriptor.bindings?.[0];
+  if (descriptor.bindings !== undefined && descriptor.bindings.length !== 1)
+    return err('one-bind-group-required');
+  const metadata = descriptor.entryPointReads;
+  if (metadata === undefined) return ok(abi);
+  if (abi === undefined) return err('entry-reads-require-explicit-bindings');
+  let slots: ReadonlySet<number> | undefined;
+  for (const compute of descriptor.entryPoints) {
+    const entry = metadata.find((item) => item.stage === 'compute' && item.name === compute);
+    if (entry === undefined) return err('entry-reads-unavailable');
+    const selected = new Set<number>();
+    for (const { group, binding } of entry.bindings) {
+      if (group !== 0) return err('entry-reads-unavailable');
+      selected.add(binding);
+    }
+    if (slots !== undefined && !sameComputeSlots(slots, selected))
+      return err('entry-points-require-separate-binding-layouts');
+    slots = selected;
+  }
+  const entries = abi.entries.flatMap((entry) =>
+    slots?.has(entry.binding) ? [{ ...entry, visibility: GPU_SHADER_STAGE_COMPUTE }] : [],
+  );
+  if (entries.length !== slots?.size) return err('entry-bindings-incomplete');
+  return ok({ ...abi, entries });
+}
+
+function sameComputeSlots(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
+  if (left.size !== right.size) return false;
+  for (const binding of left) if (!right.has(binding)) return false;
+  return true;
 }
 
 function programDescriptorKey(descriptor: RenderFeatureGpuProgramDescriptor): string {

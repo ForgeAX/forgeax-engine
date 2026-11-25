@@ -42,15 +42,52 @@ export interface InitPlan {
   readonly scriptChanges: readonly { readonly name: string; readonly to: string }[];
 }
 
+function appendInstalledEngineDependencies(
+  manifest: Record<string, unknown>,
+  packages: SdkManifest['packages'],
+  dependencyChanges: InitPlan['dependencyChanges'][number][],
+): void {
+  const existingEngineNames = new Set(
+    ['dependencies', 'devDependencies'].flatMap((section) => {
+      const value = manifest[section];
+      return value !== null && typeof value === 'object'
+        ? Object.keys(value).filter((name) => isEnginePackage(name))
+        : [];
+    }),
+  );
+  for (const entry of packages) {
+    if (entry.name === '@forgeax/engine-devkit' || existingEngineNames.has(entry.name)) continue;
+    dependencyChanges.push({
+      section: 'dependencies',
+      name: entry.name,
+      to: entry.version,
+    });
+  }
+  const devDependencies =
+    manifest.devDependencies !== null && typeof manifest.devDependencies === 'object'
+      ? (manifest.devDependencies as Record<string, unknown>)
+      : {};
+  for (const [name, version] of Object.entries(SDK_DEV_DEPENDENCIES)) {
+    if (devDependencies[name] === version) continue;
+    dependencyChanges.push({
+      section: 'devDependencies',
+      name,
+      ...(typeof devDependencies[name] === 'string' ? { from: devDependencies[name] } : {}),
+      to: version,
+    });
+  }
+}
+
 export function createInitPlan(
   facts: ProjectFacts,
   sdk?: Pick<SdkManifest, 'sdkVersion' | 'packages' | 'requirements'>,
+  embedded = false,
 ): CommandResult<InitPlan> {
   const manifest = structuredClone(facts.packageJson) as Record<string, unknown>;
   const packageVersions = new Map(sdk?.packages.map((entry) => [entry.name, entry.version]));
   const devkitVersion = packageVersions.get('@forgeax/engine-devkit') ?? devkitPackage.version;
   const dependencyChanges: InitPlan['dependencyChanges'][number][] = [];
-  if (sdk !== undefined) {
+  if (sdk !== undefined && !embedded) {
     for (const section of ['dependencies', 'devDependencies'] as const) {
       const dependencies = manifest[section];
       if (dependencies === null || typeof dependencies !== 'object') continue;
@@ -78,35 +115,7 @@ export function createInitPlan(
     }
   }
   if (sdk !== undefined) {
-    const existingEngineNames = new Set(
-      ['dependencies', 'devDependencies'].flatMap((section) => {
-        const value = manifest[section];
-        return value !== null && typeof value === 'object'
-          ? Object.keys(value).filter((name) => isEnginePackage(name))
-          : [];
-      }),
-    );
-    for (const entry of sdk.packages) {
-      if (entry.name === '@forgeax/engine-devkit' || existingEngineNames.has(entry.name)) continue;
-      dependencyChanges.push({
-        section: 'dependencies',
-        name: entry.name,
-        to: entry.version,
-      });
-    }
-    const devDependencies =
-      manifest.devDependencies !== null && typeof manifest.devDependencies === 'object'
-        ? (manifest.devDependencies as Record<string, unknown>)
-        : {};
-    for (const [name, version] of Object.entries(SDK_DEV_DEPENDENCIES)) {
-      if (devDependencies[name] === version) continue;
-      dependencyChanges.push({
-        section: 'devDependencies',
-        name,
-        ...(typeof devDependencies[name] === 'string' ? { from: devDependencies[name] } : {}),
-        to: version,
-      });
-    }
+    appendInstalledEngineDependencies(manifest, sdk.packages, dependencyChanges);
   }
   const scriptsValue = manifest.scripts;
   const scripts =

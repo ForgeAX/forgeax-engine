@@ -1,4 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, ok, type Result, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { RenderResidencyGroup } from '../gpu-driven/batch-residency';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
@@ -22,7 +23,6 @@ import {
 } from '../record/graph-adoption';
 import type { PipelinePreparationCompletion } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
-import { shadowViewPlanesByView } from '../record/shadow-culling';
 import { compileSourceViewGraph, ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import { FrameProjection } from '../scene/frame-list';
 import type { CompositionEntry, SceneComposition } from '../scene/scene-composition';
@@ -239,6 +239,15 @@ export interface SourceViewPreparation extends Generator<GpuDrivenViewCreationSt
   /** Stop this exact attempt and wait for original parents to confirm every partial retirement. */
   retire(): Promise<Result<void, RhiError>>;
 }
+/** Only an obsolete View can retry its native admission after an ordinary frame changes demand. */
+export function isObsoleteSourceViewFailure(view: SourceViewPreparation, cause: unknown): boolean {
+  return (
+    ((cause instanceof RhiError && cause.code === 'rhi-descriptor-invalid') ||
+      (cause instanceof RenderGraphError && cause.code === 'graph-preparation-invalid')) &&
+    view.isObsolete()
+  );
+}
+
 interface InitialSourceScope {
   ready: boolean;
   viewObsolete: boolean;
@@ -451,7 +460,6 @@ function* prepareInitialShadowViews(
     const staticLayers = owner.gpuDriven.sourceShadowPool().staticLayers;
     const requests = gpuShadowViewRequests(
       lights,
-      shadowViewPlanesByView(lights.shadowViews),
       topology.topology.shadowMapSize,
       owner.frameState.compiledFrameGraphGeneration,
       lights.cascades?.cascadeCount,
@@ -587,7 +595,6 @@ function* prepareInitialMainGraphs(
     graph.accept().unwrap();
     yield;
     yield* prepareSourceMainPipelines(owner, native, graph, current);
-    (yield* native.prepareWindows()).unwrap();
     const currentResources = () => current() && graph.isCurrent() && native.isCurrent();
     const resources = yield* graph.installed.graph.prepareResources(currentResources);
     // Frame recording can supersede this View graph while its native work is suspended.

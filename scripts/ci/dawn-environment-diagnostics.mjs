@@ -74,13 +74,13 @@ export function reportDawnEnvironment(root, phase, identity = false) {
       ]),
     );
     record.dawn = observed(() => {
-      // Match packages/dawn-node/src/index.mjs Linux provider resolution without importing/creating it.
+      // Match packages/dawn-node/src/index.mjs provider resolution without importing/creating it.
       const entry = join(root, 'packages/dawn-node/src/index.mjs');
       const require = createRequire(entry);
       const provider = require.resolve('upstream-webgpu');
       const manifest = require.resolve('upstream-webgpu/package.json');
       return {
-        route: 'packages/dawn-node/src/index.mjs -> upstream-webgpu (Linux)',
+        route: 'packages/dawn-node/src/index.mjs -> upstream-webgpu',
         entry: fileIdentity(entry),
         provider: fileIdentity(provider),
         package: {
@@ -88,7 +88,12 @@ export function reportDawnEnvironment(root, phase, identity = false) {
           version: JSON.parse(readFileSync(manifest, 'utf8')).version,
         },
         binary: fileIdentity(
-          join(dirname(provider), 'dist', `${process.platform}-${process.arch}.dawn.node`),
+          join(
+            dirname(provider),
+            'dist',
+            `${process.platform}-${process.platform === 'darwin' ? 'universal' : process.arch}`,
+            'dawn.node',
+          ),
         ),
       };
     });

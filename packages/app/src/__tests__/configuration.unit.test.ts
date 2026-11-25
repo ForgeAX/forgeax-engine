@@ -40,6 +40,14 @@ describe('engine startup configuration', () => {
     });
   });
 
+  it('carries the project contact-shadow switch to the runtime profile', () => {
+    const startup = resolveEngineStartup(
+      { settings: { rendering: { contactShadows: false } } },
+      ios,
+    ).unwrap();
+    expect(startup.rendering.profile.contactShadows).toBe(false);
+  });
+
   it('migrates a saved legacy profile without changing its selected AO method', () => {
     const { ambientOcclusion: _ambientOcclusion, ...profile } = DEFAULT_STANDARD_PROFILE;
     const legacy = { ...profile, ssao: true };

@@ -39,6 +39,10 @@ it('applies screen AO to indirect lighting and preserves direct radiance', () =>
   expect(code).toContain(
     'let sceneDiffuse = select(diffuse, vec3<f32>(0.0), diffuseToSubsurface);',
   );
-  expect(code).toContain('sceneDiffuse + environment.specular * specularAo + direct.radiance');
+  expect(code).toContain('let specular = environment.specular * specularAo;');
+  expect(code).toContain(
+    'let bakedSpecular = select(specular, vec3f(0.0), standardDeferredComposeReflection);',
+  );
+  expect(code).toContain('sceneDiffuse + bakedSpecular + direct.radiance');
   expect(code).toContain('diffuse + direct.diffuse, diffuseToSubsurface');
 });

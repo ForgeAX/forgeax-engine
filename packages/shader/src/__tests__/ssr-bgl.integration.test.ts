@@ -58,6 +58,7 @@ async function compile(name: keyof typeof SOURCES): Promise<CompileValue> {
         resolve(import.meta.dirname, '../depth-pyramid-sample.wgsl'),
         'utf8',
       ),
+      'forgeax_ssr::ray': readFileSync(resolve(import.meta.dirname, '../ssr-ray.wgsl'), 'utf8'),
     },
   });
   expect(result.ok, result.ok ? undefined : result.error?.message).toBe(true);
@@ -164,10 +165,10 @@ describe('SSR built-in shader binding contract', () => {
     expect(reflected[12]).toMatchObject({ binding: 12, buffer: { type: 'uniform' } });
   });
 
-  it('reflects depth pyramid reduction as an r32float sampled input plus storage output', async () => {
+  it('reflects depth pyramid reduction as a sampled input with three r32float storage outputs', async () => {
     const value = await compile('pyramidReduce');
     const reflected = entries(value);
-    expect(reflected).toHaveLength(2);
+    expect(reflected).toHaveLength(4);
     expect(reflected[0]).toMatchObject({
       binding: 0,
       texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
@@ -177,6 +178,30 @@ describe('SSR built-in shader binding contract', () => {
       format: 'r32float',
       viewDimension: '2d',
     });
+    for (const binding of [2, 3]) {
+      expect(reflected[binding]).toMatchObject({ binding });
+      expect(storageTexture(reflected[binding])).toMatchObject({
+        access: 'write-only',
+        format: 'r32float',
+        viewDimension: '2d',
+      });
+    }
+    const entryBindings = (name: string) =>
+      value.reflection.entryPoints?.find((entry) => entry.name === name)?.bindings;
+    expect(entryBindings('depth_pyramid_reduce')).toEqual([
+      { group: 0, binding: 0 },
+      { group: 0, binding: 1 },
+    ]);
+    expect(entryBindings('depth_pyramid_reduce_furthest')).toEqual([
+      { group: 0, binding: 0 },
+      { group: 0, binding: 1 },
+    ]);
+    expect(entryBindings('depth_pyramid_reduce_furthest_batch')).toEqual([
+      { group: 0, binding: 0 },
+      { group: 0, binding: 1 },
+      { group: 0, binding: 2 },
+      { group: 0, binding: 3 },
+    ]);
   });
 
   it('reflects temporal resolve with packed actual normal and confidence history', async () => {

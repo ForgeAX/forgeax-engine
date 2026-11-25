@@ -26,7 +26,7 @@
 #import forgeax_view::common::{meshes, instances}
 #endif
 #import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
-#import forgeax_scene_temporal::{packSceneTemporalV1, sceneViewZ}
+#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1, sceneTemporalUv, sceneViewZ}
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_shadow::surface::{projectShadowPosition}
 #if WATER_SHADOW_PASS == false
@@ -231,7 +231,7 @@ fn waterCoverage(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData)
 }
 
 struct WaterPrepassOutput {
-  @location(0) normalRoughness: vec4<u32>,
+  @location(0) normalRoughness: u32,
   @location(1) coverage: vec4<f32>,
   @location(2) temporal: vec4<f32>,
 };
@@ -258,7 +258,7 @@ fn waterShadingReactivity(input: SingleLayerWaterSurfaceInput, surface: SingleLa
   ssrCoverage = coverage;
 #endif
 #endif
-  return WaterPrepassOutput(vec4<u32>(encodeStandardNormalRoughness(normal, surface.roughness), 0u, 0u, 0u),
+  return WaterPrepassOutput(encodeStandardNormalRoughness(normal, surface.roughness),
     vec4<f32>(ssrCoverage, 0.0, 0.0, coverage),
     packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, reactivity));
 }
@@ -266,11 +266,33 @@ struct WaterVisibilityOutput {
   @location(0) coverage: vec4<f32>,
   @location(1) temporal: vec4<f32>,
 };
-@fragment fn fs_water_visibility(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterVisibilityOutput {
+fn waterVisibility(input: WaterVertexOutput, frontFacing: bool) -> vec4<f32> {
   let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
-  if (!waterCoverage(input, surface)) { discard; }
+  // A negative alpha signals rejection without changing depth or color.
   let coverage = clamp(surface.coverage * input.maskAndVertexFlow.x, 0.0, 1.0);
-  return WaterVisibilityOutput(vec4<f32>(0.0, 0.0, 0.0, coverage),
+  return vec4<f32>(0.0, 0.0, 0.0, select(-1.0, coverage, waterCoverage(input, surface)));
+}
+fn waterPackedVelocity(input: WaterVertexOutput) -> u32 {
+  return encodeSceneVelocity(sceneTemporalUv(input.currentClip) - sceneTemporalUv(input.previousClip));
+}
+@fragment fn fs_water_coverage(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
+  let coverage = waterVisibility(input, frontFacing);
+  if (coverage.a < 0.0) { discard; }
+  return coverage;
+}
+struct WaterDepthVelocityOutput {
+  @location(0) coverage: vec4<f32>,
+  @location(1) velocity: u32,
+};
+@fragment fn fs_water_depth_velocity(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterDepthVelocityOutput {
+  let coverage = waterVisibility(input, frontFacing);
+  if (coverage.a < 0.0) { discard; }
+  return WaterDepthVelocityOutput(coverage, waterPackedVelocity(input));
+}
+@fragment fn fs_water_visibility(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterVisibilityOutput {
+  let coverage = waterVisibility(input, frontFacing);
+  if (coverage.a < 0.0) { discard; }
+  return WaterVisibilityOutput(coverage,
     packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0));
 }
 @fragment fn fs_water_velocity(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
@@ -305,7 +327,6 @@ struct WaterSceneSample { color: vec3<f32>, depthM: f32, valid: bool };
 // Color and depth share one bilateral 2x2 footprint.
 fn waterSceneSample(uv: vec2<f32>, surfaceDepthM: f32, depthGradientM: f32) -> WaterSceneSample {
   let size = vec2<i32>(textureDimensions(surfaceRawDepthTexture));
-  let linearDepth = textureNumLevels(surfaceRawDepthTexture) > 1u;
   let sampleUv = uv + vec2<f32>(0.5 / 256.0) / vec2<f32>(size);
   let position = sampleUv * vec2<f32>(size) - vec2<f32>(0.5);
   let first = vec2<i32>(floor(position));
@@ -317,8 +338,7 @@ fn waterSceneSample(uv: vec2<f32>, surfaceDepthM: f32, depthGradientM: f32) -> W
     let raw = textureLoad(surfaceRawDepthTexture, pixel, 0).r;
     let tapUv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / vec2<f32>(size);
     var depthM = view.temporalProjection.y;
-    if (linearDepth) { depthM = min(raw, depthM); }
-    else if (raw > 0.0) { depthM = waterViewDepth(tapUv, raw); }
+    if (raw > 0.0) { depthM = waterViewDepth(tapUv, raw); }
     if (depthM + depthGradientM < surfaceDepthM) { continue; }
     let weight = select(1.0 - fraction.x, fraction.x, x == 1) * select(1.0 - fraction.y, fraction.y, y == 1);
     total += weight; depth += depthM * weight;
@@ -439,23 +459,43 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let coverage = clamp(surface.coverage * input.maskAndVertexFlow.x, 0.0, 1.0);
   return WaterColorOutput(vec4<f32>(max(basePassColor, vec3<f32>(0.0)), coverage), vec4<f32>(captureSky, coverage), vec4<f32>(reflectionWeight, roughness, 0.0, coverage));
 }
+fn waterColorVisible(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData) -> bool {
+  if (!waterCoverage(input, surface)) { return false; }
+  let nearest = textureLoad(surfaceNearestDepthTexture, vec2<i32>(input.clip.xy), 0).r;
+  return !(input.clip.z + 1e-7 < nearest);
+}
 @fragment fn fs_water_color(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterColorOutput {
-  let surfaceInput = waterSurfaceInput(input, frontFacing);
-  let surface = evaluate_surface(surfaceInput);
-  if (!waterCoverage(input, surface)) { discard; }
-  let pixel = vec2<i32>(input.clip.xy);
-  let nearest = textureLoad(surfaceNearestDepthTexture, pixel, 0).r;
-  if (input.clip.z + 1e-7 < nearest) { discard; }
+  let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
+  if (!waterColorVisible(input, surface)) { discard; }
   return waterColor(input, surface, frontFacing);
+}
+fn waterForwardColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, frontFacing: bool) -> vec4<f32> {
+  let lit = waterColor(input, surface, frontFacing);
+  return vec4<f32>(lit.color.rgb + lit.captureSky.rgb * lit.reflectionWeight.r, lit.color.a);
 }
 @fragment fn fs_water_forward_color(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
   let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
-  if (!waterCoverage(input, surface)) { discard; }
-  let pixel = vec2<i32>(input.clip.xy);
-  let nearest = textureLoad(surfaceNearestDepthTexture, pixel, 0).r;
-  if (input.clip.z + 1e-7 < nearest) { discard; }
-  let lit = waterColor(input, surface, frontFacing);
-  return vec4<f32>(lit.color.rgb + lit.captureSky.rgb * lit.reflectionWeight.r, lit.color.a);
+  if (!waterColorVisible(input, surface)) { discard; }
+  return waterForwardColor(input, surface, frontFacing);
+}
+struct WaterForwardTemporalOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) temporal: vec4<f32>,
+};
+@fragment fn fs_water_forward_color_temporal(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterForwardTemporalOutput {
+  let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
+  if (!waterColorVisible(input, surface)) { discard; }
+  return WaterForwardTemporalOutput(waterForwardColor(input, surface, frontFacing),
+    packSceneTemporalV1(input.currentClip, input.previousClip, view.temporalProjection, 0.0));
+}
+struct WaterForwardVelocityOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) velocity: u32,
+};
+@fragment fn fs_water_forward_color_velocity(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterForwardVelocityOutput {
+  let surface = evaluate_surface(waterSurfaceInput(input, frontFacing));
+  if (!waterColorVisible(input, surface)) { discard; }
+  return WaterForwardVelocityOutput(waterForwardColor(input, surface, frontFacing), waterPackedVelocity(input));
 }
 @fragment fn fs_main(input: WaterVertexOutput, @builtin(front_facing) frontFacing: bool) -> WaterColorOutput {
   let surfaceInput = waterSurfaceInput(input, frontFacing);

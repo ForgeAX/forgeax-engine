@@ -79,14 +79,16 @@
 <a id="get-started"></a>
 ## 开始使用
 
-安装包含创作资源的 Engine 版本。需要 Node.js 和 pnpm。
+准备好 Node.js 和 pnpm 后，从开发通道安装 Engine，即可创建项目并打开 View。
 
 ```bash
-npm install -g @forgeax/engine
+npm install -g @forgeax/engine@next
 forgeax project new my-game --template game-3d
 cd my-game
 forgeax dev start
 ```
+
+要复现特定版本的环境，请安装发布说明里给出的准确版本。
 
 `game-3d` 是第三人称参考工程，`empty` 是最小起点。先读生成的 README 与技能，再看 [Engine](packages/engine/README.md) 与 [CLI 使用指南](skills/forgeax-engine-cli/SKILL.zh-CN.md)。
 

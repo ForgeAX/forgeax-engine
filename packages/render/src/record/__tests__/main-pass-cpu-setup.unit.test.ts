@@ -6,12 +6,13 @@ import * as environment from '../../environment/bindings';
 import { IndirectPassBindings } from '../../gpu-driven/production-raster-encode';
 import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import type { DispatchEntry } from '../../render-system-extract';
+import { CapturedSceneTransform } from '../../scene/captured-transform';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { FirstEntryMap } from '../first-entry-map';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import type { RenderBundleCounters } from '../geometry-recording';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { flushMeshDrawUploads, MESH_PER_ENTITY_STRIDE, prepareMeshDraw } from '../mesh-ssbo';
-import type { RenderBundleCounters } from '../render-bundle-cache';
 import { ShadowDirectCommands } from '../shadow-direct-commands';
 import {
   CPU_SETUP_SHADER,
@@ -382,7 +383,10 @@ it('looks up texture-backed instance slots by the source entity', async () => {
     gpuDrivenScene: {},
     gpuDrivenSceneSlotForEntity: lookup,
   });
-  Object.assign(f.c.pipelineState, { sceneDirectPipelineLayout: {} });
+  Object.assign(f.c.pipelineState, {
+    sceneDirectPipelineLayout: {},
+    sceneDirectInstancesBindGroupLayout: {},
+  });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
     f.record(pass);
@@ -899,14 +903,26 @@ it('binds the current view per admitted pipeline selection across changing draws
   }));
   Object.assign(f.c.runtime, { shaderRegistry: { findMaterialArtifact: inspect } });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const parity = vi.spyOn(CapturedSceneTransform, 'reflected');
+  const pipelines = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
   try {
     for (let frame = 0; frame < 4; frame++) {
       const moved = other.source.transform.world;
       moved[12] = frame;
+      moved[0] = frame % 2 === 0 ? 1 : -1;
+      parity.mockClear();
+      pipelines.mockClear();
       inspect.mockClear();
       f.receipts.length = 0;
       f.record(pass);
       expect(f.receipts).toHaveLength(128);
+      expect(parity.mock.results.map((r) => r.value)).toEqual([false, moved[0] < 0]);
+      expect(
+        pipelines.mock.calls.map(([shader, , state]) => [shader, state?.frontFace ?? 'ccw']),
+      ).toEqual([
+        ['forgeax::default-unlit', 'ccw'],
+        ['test::alternate-view', moved[0] < 0 ? 'cw' : 'ccw'],
+      ]);
       expect(inspect.mock.calls.map(([id]) => id)).toEqual([
         'forgeax::default-unlit',
         'test::alternate-view',
@@ -918,6 +934,8 @@ it('binds the current view per admitted pipeline selection across changing draws
     expect(() => f.record(pass)).toThrow(/scene-depth snapshot/);
     expect(f.receipts).toHaveLength(64);
   } finally {
+    pipelines.mockRestore();
+    parity.mockRestore();
     pass.end();
     f.dispose();
   }
@@ -1065,7 +1083,7 @@ it('requests later material pipelines without binding an earlier pending pipelin
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
   for (const entity of [1, 2]) {
-    const entry = f.add({ entity, submeshes: 1 });
+    const entry = f.add({ entity, instances: 2, submeshes: 1 });
     entry.source.material.adopt({
       ...entry.source.material.snapshot,
       materialShaderId: `test::pending-${entity}`,
@@ -1078,6 +1096,19 @@ it('requests later material pipelines without binding an earlier pending pipelin
     throw new Error('pending material must not bind');
   });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const vertices = vi.spyOn(pass, 'setVertexBuffer');
+  const indices = vi.spyOn(pass, 'setIndexBuffer');
+  const lookup = vi.fn((entity: number) => ({ slot: entity }));
+  const lastInstance = vi.fn(() => 6);
+  const takeUpload = vi.fn(() => ({ ranges: [], bytes: 0 }));
+  Object.assign(f.c, {
+    gpuDrivenScene: { instanceIndexForSlot: lastInstance, takeInstanceUpload: takeUpload },
+    gpuDrivenSceneSlotForEntity: lookup,
+  });
+  Object.assign(f.c.pipelineState, {
+    sceneDirectPipelineLayout: {},
+    sceneDirectInstancesBindGroupLayout: {},
+  });
   const record = (resolveBinding: Parameters<typeof recordGeometryDraws>[7]) =>
     recordGeometryDraws(
       f.c,
@@ -1096,6 +1127,10 @@ it('requests later material pipelines without binding an earlier pending pipelin
       'test::pending-1',
       'test::pending-2',
     ]);
+    expect(lastInstance).toHaveBeenCalledTimes(2);
+    expect(takeUpload).not.toHaveBeenCalled();
+    expect(vertices).not.toHaveBeenCalled();
+    expect(indices).not.toHaveBeenCalled();
     expect(binding).not.toHaveBeenCalled();
     expect(f.receipts).toEqual([]);
     expect(f.c.frameState.pipelinePreparationPendingReason).toMatchObject({
@@ -1109,6 +1144,7 @@ it('requests later material pipelines without binding an earlier pending pipelin
     const readyBinding = vi.fn(fixtureMaterialBinding(f.materialGroup));
     record(readyBinding);
     expect(readyBinding).toHaveBeenCalledTimes(2);
+    expect(takeUpload).not.toHaveBeenCalled();
     expect(f.receipts).toEqual([
       { entity: 1, submesh: 0 },
       { entity: 2, submesh: 0 },
@@ -1183,6 +1219,37 @@ it('consumes alternating physical material addresses in direct and shadow encode
     expect(shadow.count).toBe(offsets.length);
     expect(inputs.size).toBe(1);
     expect([...inputs][0]?.length).toBe(1);
+    addresses.length = 0;
+    inputs.clear();
+    const skin = [256, 512, 768];
+    const submit = () =>
+      shadow.draw(
+        f.pipeline,
+        entry.mesh,
+        f.materialGroup,
+        undefined,
+        { group: f.meshGroup, offsets: skin },
+        f.viewGroup,
+        { first: 0, count: 3, baseVertex: 0 },
+        1,
+        0,
+      );
+    submit();
+    submit();
+    skin[2] = 1024;
+    submit();
+    skin.length = 2;
+    submit();
+    skin[1] = 1280;
+    submit();
+    expect(addresses.filter(({ slot }) => slot === 2).map(({ value }) => value)).toEqual([
+      [256, 512, 768],
+      [256, 512, 1024],
+      [256, 512],
+      [256, 1280],
+    ]);
+    expect(inputs.size).toBe(1);
+    expect([...inputs][0]?.length).toBe(3);
   } finally {
     projected.mockRestore();
     pass.end();

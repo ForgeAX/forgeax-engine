@@ -104,9 +104,9 @@ describe('ReflectionProbeRecordOwner characterization', () => {
 
   it('keeps fallback capability and recovery facts on the same owner', () => {
     expect(ownerSource).toContain('private fallbackFormatAvailable: boolean;');
-    expect(ownerSource).toContain('this.refreshFallbackCapabilities(frameId);');
+    expect(ownerSource).toContain('this.refreshFallbackCapabilities();');
     expect(ownerSource).toContain('reflection-fallback-format-unavailable');
-    expect(ownerSource).toContain('retireFallbackState(frameId);');
+    expect(ownerSource).toContain('retireFallbackState();');
     expect(ownerSource).toContain('reflectionFallbackInspection');
     expect(ownerSource).toContain('this.clearFallbackFailure();');
   });

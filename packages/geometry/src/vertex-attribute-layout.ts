@@ -450,6 +450,20 @@ function staticStreamLayout(source: VertexLayoutProjection): VertexLayoutProject
   return layout;
 }
 
+/** Fixed stream strides determine byte intervals directly from the live vertex count. */
+export function staticMeshLayoutForCount(sourceLayout: VertexLayoutProjection, count: number) {
+  if (
+    sourceLayout.streams !== undefined ||
+    sourceLayout.attributes[0]?.key !== 'position' ||
+    sourceLayout.attributes.some(({ key }) => key === 'skinIndex' || key === 'skinWeight')
+  )
+    return undefined;
+  if (!Number.isSafeInteger(count) || count <= 0) return undefined;
+  const layout = staticStreamLayout(sourceLayout);
+  const streams = layout.streams;
+  return streams !== undefined && streams.length >= 2 ? layout : undefined;
+}
+
 /** Position, tangent basis, UV and color ranges share the same word count as canonical rows. */
 export function projectStaticMeshVertexStreams(
   sourceLayout: VertexLayoutProjection,
@@ -460,16 +474,9 @@ export function projectStaticMeshVertexStreams(
       readonly ranges: readonly MeshVertexStreamRange[];
     }
   | undefined {
-  if (
-    sourceLayout.streams !== undefined ||
-    sourceLayout.attributes[0]?.key !== 'position' ||
-    sourceLayout.attributes.some(({ key }) => key === 'skinIndex' || key === 'skinWeight')
-  )
-    return undefined;
-  if (!Number.isSafeInteger(count) || count <= 0) return undefined;
-  const layout = staticStreamLayout(sourceLayout);
-  const streams = layout.streams;
-  if (streams === undefined || streams.length < 2) return undefined;
+  const layout = staticMeshLayoutForCount(sourceLayout, count);
+  const streams = layout?.streams;
+  if (layout === undefined || streams === undefined) return undefined;
   let offset = 0;
   const ranges = streams.map(({ arrayStride }) => {
     const size = arrayStride * count;
@@ -480,39 +487,93 @@ export function projectStaticMeshVertexStreams(
   return { layout, ranges: Object.freeze(ranges) };
 }
 
+/** Visit corresponding word spans in split storage and canonical rows. */
+export function visitStaticMeshWordSpans(
+  layout: VertexLayoutProjection,
+  count: number,
+  visit: (from: number, to: number, width: number, streamStride: number, slot: number) => boolean,
+): boolean {
+  const streams = staticMeshLayoutForCount(layout, count)?.streams;
+  if (streams === undefined) return false;
+  let offset = 0;
+  for (let slot = 0; slot < streams.length; slot++) {
+    const stream = streams[slot] as VertexStreamProjection;
+    for (const attribute of stream.attributes) {
+      const row = layout.attributes.find(({ key }) => key === attribute.key);
+      if (
+        row === undefined ||
+        !visit(
+          (offset + attribute.offset) / 4,
+          row.offset / 4,
+          attribute.byteLength / 4,
+          stream.arrayStride / 4,
+          slot,
+        )
+      )
+        return false;
+    }
+    offset += stream.arrayStride * count;
+  }
+  return true;
+}
+
+/** Compare the two physical orders in place, preserving packed integer and float bits. */
+export function staticMeshVertexStreamsMatchRows(
+  split: Float32Array,
+  rows: Float32Array,
+  layout: VertexLayoutProjection,
+): boolean {
+  if (split.length !== rows.length) return false;
+  const source = new Uint32Array(split.buffer, split.byteOffset, split.length);
+  const target = new Uint32Array(rows.buffer, rows.byteOffset, rows.length);
+  const stride = layout.arrayStride / 4;
+  return visitStaticMeshWordSpans(layout, rows.length / stride, (from, to, width, step) => {
+    for (; to < target.length; from += step, to += stride)
+      for (let lane = 0; lane < width; lane++)
+        if (source[from + lane] !== target[to + lane]) return false;
+    return true;
+  });
+}
+
 /** Rebuild canonical rows explicitly for consumers that need that physical order. */
 export function interleaveStaticMeshVertexStreams(
   vertices: Float32Array,
   sourceLayout: VertexLayoutProjection,
+  output?: Float32Array,
 ): Float32Array {
-  const count = deriveVertexCount(vertices, sourceLayout);
-  const physical =
-    count === undefined ? undefined : projectStaticMeshVertexStreams(sourceLayout, count);
-  const streams = physical?.layout.streams;
-  if (count === undefined || streams === undefined || physical === undefined)
-    throw new TypeError('Invalid static mesh stream layout');
+  if (
+    output !== undefined &&
+    (output.length !== vertices.length || output.buffer === vertices.buffer)
+  )
+    throw new RangeError(
+      'Static stream row output must be independent and match its source length',
+    );
+  const rows = output ?? new Float32Array(vertices.length);
   const source = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
-  const words = new Uint32Array(vertices.length);
-  for (const [slot, stream] of streams.entries()) {
-    const range = physical.ranges[slot];
-    if (range === undefined) throw new Error('Missing static mesh stream range');
-    for (const attribute of stream.attributes) {
-      const target = sourceLayout.attributes.find(({ key }) => key === attribute.key);
-      if (target === undefined) throw new Error('Missing canonical mesh attribute');
-      let from = (range.offset + attribute.offset) / 4;
-      let to = target.offset / 4;
-      const width = attribute.byteLength / 4;
-      for (let vertex = 0; vertex < count; vertex++) {
-        for (let lane = 0; lane < width; lane++) {
-          // biome-ignore lint/style/noNonNullAssertion: the projected count and format bound this read
-          words[to + lane] = source[from + lane]!;
+  const words = new Uint32Array(rows.buffer, rows.byteOffset, rows.length);
+  const stride = sourceLayout.arrayStride / 4;
+  const valid = visitStaticMeshWordSpans(
+    sourceLayout,
+    vertices.length / stride,
+    (from, to, width, step) => {
+      // Each logical attribute has fixed width for the complete stream.
+      // Keep the common vec2/3/4 copies in a single loop over the vertices.
+      if (width >= 2 && width <= 4) {
+        for (; to < words.length; from += step, to += stride) {
+          words[to] = source[from] as number;
+          words[to + 1] = source[from + 1] as number;
+          if (width >= 3) words[to + 2] = source[from + 2] as number;
+          if (width === 4) words[to + 3] = source[from + 3] as number;
         }
-        from += stream.arrayStride / 4;
-        to += sourceLayout.arrayStride / 4;
+      } else {
+        for (; to < words.length; from += step, to += stride)
+          for (let lane = 0; lane < width; lane++) words[to + lane] = source[from + lane] as number;
       }
-    }
-  }
-  return new Float32Array(words.buffer);
+      return true;
+    },
+  );
+  if (!valid) throw new TypeError('Invalid static mesh stream layout');
+  return rows;
 }
 
 /** Project and pack canonical rigid rows, with deferred allocation for residency reuse. */
@@ -733,6 +794,15 @@ export function packInterleavedVertexAttributes(
   map: VertexAttributeMap,
   vertexCount: number,
 ): Result<PackedVertexAttributes, VertexAttributePackError> {
+  return packVertexAttributes(map, vertexCount, 'interleaved');
+}
+
+/** Pack projected channels into their final mesh storage; single-stream layouts retain rows. */
+export function packVertexAttributes(
+  map: VertexAttributeMap,
+  vertexCount: number,
+  storage: 'interleaved' | 'static-streams',
+): Result<PackedVertexAttributes, VertexAttributePackError> {
   const invalid = (detail: VertexAttributePackDetail): Result<never, VertexAttributePackError> =>
     err(new VertexAttributePackError(detail));
   if (map.tangentFrame !== undefined && (map.normal !== undefined || map.tangent !== undefined))
@@ -751,63 +821,72 @@ export function packInterleavedVertexAttributes(
   const output = new ArrayBuffer(projection.arrayStride * vertexCount);
   const outputFloats = new Float32Array(output);
 
-  for (const entry of projection.attributes) {
-    const sourceValue = map[entry.key];
-    if (sourceValue === undefined) continue;
-    const ArrayType = vertexAttributeArrayType(entry.format);
-    const bytesPerComponent = ArrayType.BYTES_PER_ELEMENT;
-    const components = entry.byteLength / bytesPerComponent;
-    if (sourceValue instanceof ArrayBuffer && sourceValue.byteLength % bytesPerComponent !== 0) {
-      return invalid({
-        field: entry.key,
-        reason: 'attribute-cardinality-mismatch',
-        vertexCount,
-        componentsPerVertex: components,
-        expectedLength: vertexCount * components,
-        actualLength: sourceValue.byteLength / bytesPerComponent,
-      });
-    }
-    const source = elementView(sourceValue, entry.format);
-    if (
-      source === undefined ||
-      !(source instanceof ArrayType) ||
-      (entry.format === 'uint32' && !(sourceValue instanceof Uint32Array))
-    ) {
-      return invalid({
-        field: entry.key,
-        reason: 'attribute-storage-invalid',
-        expectedStorage: sourceStorage(entry.format),
-        actualStorage: storageOf(sourceValue),
-      });
-    }
-    const expectedLength = vertexCount * components;
-    if (source.length !== expectedLength) {
-      return invalid({
-        field: entry.key,
-        reason: 'attribute-cardinality-mismatch',
-        vertexCount,
-        componentsPerVertex: components,
-        expectedLength,
-        actualLength: source.length,
-      });
-    }
-    if (entry.key === 'color') {
-      const colorFailure = nonFiniteColor(source);
-      if (colorFailure !== undefined) return invalid(colorFailure);
-    }
-    const target = ArrayType === Float32Array ? outputFloats : new ArrayType(output);
-    const targetStride = projection.arrayStride / bytesPerComponent;
-    let sourceIndex = 0;
-    for (
-      let base = entry.offset / bytesPerComponent;
-      sourceIndex < expectedLength;
-      base += targetStride
-    ) {
-      for (let component = 0; component < components; component += 1)
-        target[base + component] = Number(source[sourceIndex++] ?? 0);
+  const physical =
+    storage === 'static-streams'
+      ? projectStaticMeshVertexStreams(projection, vertexCount)
+      : undefined;
+  const streams = physical?.layout.streams ?? [projection];
+  for (const [slot, stream] of streams.entries()) {
+    const origin = physical?.ranges[slot]?.offset ?? 0;
+    for (const entry of stream.attributes) {
+      const sourceValue = map[entry.key];
+      if (sourceValue === undefined) continue;
+      const ArrayType = vertexAttributeArrayType(entry.format);
+      const bytesPerComponent = ArrayType.BYTES_PER_ELEMENT;
+      const components = entry.byteLength / bytesPerComponent;
+      if (sourceValue instanceof ArrayBuffer && sourceValue.byteLength % bytesPerComponent !== 0) {
+        return invalid({
+          field: entry.key,
+          reason: 'attribute-cardinality-mismatch',
+          vertexCount,
+          componentsPerVertex: components,
+          expectedLength: vertexCount * components,
+          actualLength: sourceValue.byteLength / bytesPerComponent,
+        });
+      }
+      const source = elementView(sourceValue, entry.format);
+      if (
+        source === undefined ||
+        !(source instanceof ArrayType) ||
+        (entry.format === 'uint32' && !(sourceValue instanceof Uint32Array))
+      ) {
+        return invalid({
+          field: entry.key,
+          reason: 'attribute-storage-invalid',
+          expectedStorage: sourceStorage(entry.format),
+          actualStorage: storageOf(sourceValue),
+        });
+      }
+      const expectedLength = vertexCount * components;
+      if (source.length !== expectedLength) {
+        return invalid({
+          field: entry.key,
+          reason: 'attribute-cardinality-mismatch',
+          vertexCount,
+          componentsPerVertex: components,
+          expectedLength,
+          actualLength: source.length,
+        });
+      }
+      if (entry.key === 'color') {
+        const colorFailure = nonFiniteColor(source);
+        if (colorFailure !== undefined) return invalid(colorFailure);
+      }
+      const target = ArrayType === Float32Array ? outputFloats : new ArrayType(output);
+      const targetStride = stream.arrayStride / bytesPerComponent;
+      const first = (origin + entry.offset) / bytesPerComponent;
+      if (targetStride === components) {
+        target.set(source, first);
+        continue;
+      }
+      let sourceIndex = 0;
+      for (let base = first; sourceIndex < expectedLength; base += targetStride) {
+        for (let component = 0; component < components; component += 1)
+          target[base + component] = Number(source[sourceIndex++] ?? 0);
+      }
     }
   }
-  return ok(Object.freeze({ projection, vertices: outputFloats }));
+  return ok(Object.freeze({ projection: physical?.layout ?? projection, vertices: outputFloats }));
 }
 
 const nativeLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;

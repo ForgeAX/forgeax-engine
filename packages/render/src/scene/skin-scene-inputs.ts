@@ -294,10 +294,10 @@ export class SkinSceneInputs {
       throw cause;
     }
   }
-  hasJoint(entity: number): boolean {
+  readonly hasJoint = (entity: number): boolean => {
     this.healthy();
     return this.sourceValue?.joints.has(entity) ?? false;
-  }
+  };
   /** Borrowed first-reference work, sampled once after the known Binding edits.
    * Each successful joint admission drains only its own pending identity.
    */
@@ -305,7 +305,7 @@ export class SkinSceneInputs {
     this.healthy();
     return this.sourceValue?.first;
   }
-  joint(entity: number, matrix: Float32Array | undefined, offset?: number): void {
+  readonly joint = (entity: number, matrix: Float32Array | undefined, offset?: number): void => {
     this.healthy();
     const source = this.sourceValue;
     if (source === undefined || !source.joints.has(entity)) return;
@@ -317,7 +317,7 @@ export class SkinSceneInputs {
       this.failed = true;
       throw cause;
     }
-  }
+  };
   capture() {
     this.healthy();
     return this.inputs.capture();

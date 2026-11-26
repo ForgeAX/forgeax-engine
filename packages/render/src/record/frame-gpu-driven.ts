@@ -479,6 +479,7 @@ const DIRECT_SHADOWS = {};
 
 /** Shadow rows of one retained phase; `derived` reports material-derived geometry. */
 export interface DirectShadowRows {
+  readonly meshDomain: object | null;
   readonly materialRows?: MaterialRelationFrame | undefined;
   readonly rows: DrawRows;
   readonly derived: boolean;
@@ -496,7 +497,9 @@ export interface DirectShadowInputs {
   readonly viewDraws: FrameList<RenderableSnapshot> | undefined;
   readonly prepareGeometry: PrepareShadowGeometry;
   readonly geometry: readonly unknown[];
+  /** Native CPU LOD selects ranges or instance windows within each issued physical mesh. */
   readonly lodRows: LodRows;
+  readonly retainMeshDomain: boolean;
 }
 
 function shadowRows(
@@ -526,6 +529,7 @@ function shadowRows(
   const rows = inputs.lodRows(output.rows);
   return {
     rows,
+    meshDomain: inputs.retainMeshDomain && !phase.derivesGeometry ? phase.issuedMeshDomain() : null,
     materialRows: rows === output.rows ? output.materialRows : undefined,
     derived: phase.derivesGeometry,
   };

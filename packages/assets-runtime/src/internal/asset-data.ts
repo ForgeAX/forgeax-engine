@@ -3,6 +3,29 @@ export function copyAssetData<T>(input: T): T {
   return captureAssetData(input, undefined) as T;
 }
 
+/** A bounded copy charges logical key, scalar and binary storage as it takes ownership. */
+export class AssetCopyBudget {
+  bytes = 0;
+  constructor(
+    private readonly limit: number,
+    /** Root fields already read by the owner selecting a patch route. */
+    readonly rootFields?: PropertyDescriptorMap,
+  ) {}
+
+  copy<T>(input: T): T {
+    return captureAssetData(input, undefined, undefined, this) as T;
+  }
+
+  get exceeded(): boolean {
+    return this.bytes > this.limit || !Number.isSafeInteger(this.bytes);
+  }
+
+  charge(bytes: number): void {
+    this.bytes += bytes;
+    if (this.exceeded) throw new RangeError('asset copy exceeds available candidate bytes');
+  }
+}
+
 /**
  * Capture content whose binary storage the caller gives up. Containers are
  * still copied; a view that spans its whole fixed private buffer keeps that
@@ -108,6 +131,7 @@ function captureAssetData(
   input: unknown,
   taken: Set<ArrayBuffer> | undefined,
   allocation?: CaptureAllocation,
+  budget?: AssetCopyBudget,
 ): unknown {
   const active = new Set<object>();
   const takes = (buffer: ArrayBuffer): boolean => {
@@ -122,12 +146,18 @@ function captureAssetData(
   };
   const copy = (value: unknown): unknown => {
     if (value === null || value === undefined || typeof value !== 'object') {
-      if (typeof value === 'function' || typeof value === 'symbol')
+      if (budget !== undefined) budget.charge(scalarDataBytes(value));
+      else if (typeof value === 'function' || typeof value === 'symbol')
         throw new TypeError('asset content must be data');
       return value;
     }
     if (active.has(value)) throw new TypeError('asset content contains a cycle');
     if (value instanceof ArrayBuffer) {
+      if (budget !== undefined) {
+        const bytes = new Uint8Array(value);
+        budget.charge(bytes.byteLength);
+        return bytes.slice().buffer;
+      }
       if (takes(value)) return value;
       const result = value.slice(0);
       if (allocation !== undefined) {
@@ -136,9 +166,15 @@ function captureAssetData(
       }
       return result;
     }
-    if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes, allocation);
+    if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes, allocation, budget);
     active.add(value);
-    const result = copyPlainNode(value, copy, allocation);
+    const result = copyPlainNode(
+      value,
+      copy,
+      allocation,
+      budget,
+      value === input ? budget?.rootFields : undefined,
+    );
     active.delete(value);
     return result;
   };
@@ -149,19 +185,24 @@ function copyBinaryView(
   value: ArrayBufferView,
   takes: (buffer: ArrayBuffer) => boolean,
   allocation?: CaptureAllocation,
+  budget?: AssetCopyBudget,
 ): ArrayBufferView {
-  if (!(value.buffer instanceof ArrayBuffer))
+  const buffer = value.buffer;
+  if (!(buffer instanceof ArrayBuffer))
     throw new TypeError('asset content requires private binary storage');
   const Constructor = ARRAY_TYPES.find(
     (candidate) => Object.getPrototypeOf(value) === candidate.prototype,
   ) as (new (buffer: ArrayBuffer) => ArrayBufferView) | undefined;
   if (Constructor === undefined) throw new TypeError('unsupported asset binary view');
-  const whole = value.byteOffset === 0 && value.byteLength === value.buffer.byteLength;
-  if (whole && takes(value.buffer)) return new Constructor(value.buffer);
-  const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+  const { byteLength, byteOffset } = value;
+  const bytesToCopy = new Uint8Array(buffer, byteOffset, byteLength);
+  budget?.charge(bytesToCopy.byteLength);
+  if (byteOffset === 0 && bytesToCopy.byteLength === buffer.byteLength && takes(buffer))
+    return new Constructor(buffer);
+  const bytes = bytesToCopy.slice();
   if (allocation !== undefined) {
-    allocation.bytes += value.byteLength;
-    allocation.nodes.set(bytes.buffer, value.byteLength);
+    allocation.bytes += bytes.byteLength;
+    allocation.nodes.set(bytes.buffer, bytes.byteLength);
   }
   return new Constructor(bytes.buffer);
 }
@@ -170,14 +211,17 @@ function copyPlainNode(
   value: object,
   copy: (value: unknown) => unknown,
   allocation: CaptureAllocation | undefined,
+  budget?: AssetCopyBudget,
+  rootFields?: PropertyDescriptorMap,
 ): object {
   const array = Array.isArray(value);
   const prototype = Object.getPrototypeOf(value);
   if (!array && prototype !== null && prototype !== Object.prototype)
     throw new TypeError('asset content requires plain data objects');
+  budget?.charge(16);
   // Snapshot descriptors before descending. A child proxy can mutate later
   // siblings, and copying must never call an accessor on the input or target.
-  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const descriptors = rootFields ?? Object.getOwnPropertyDescriptors(value);
   const result = array ? [] : {};
   let bytes = 16;
   for (const key of Reflect.ownKeys(descriptors)) {
@@ -186,6 +230,7 @@ function copyPlainNode(
     const descriptor = descriptors[key];
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
       throw new TypeError('asset content requires enumerable data properties');
+    budget?.charge(assetFieldBytes(key, 0));
     const field = copy(descriptor.value);
     descriptor.value = field;
     descriptor.configurable = true;
@@ -299,4 +344,38 @@ function scalarDataBytes(value: unknown): number {
 
 export function assetFieldBytes(key: string, valueBytes: number): number {
   return key.length * 2 + 8 + valueBytes;
+}
+
+/** Copy validated byte rows between packed or strided views. Their first bytes are the origins. */
+export function copyAssetRows(
+  source: Uint8Array,
+  sourceStride: number,
+  target: Uint8Array,
+  targetStride: number,
+  rowBytes: number,
+  rows: number,
+): void {
+  if (rows === 1 || (rowBytes === sourceStride && rowBytes === targetStride)) {
+    const size = rows * rowBytes;
+    target.set(size === source.length ? source : source.subarray(0, size));
+    return;
+  }
+  const aligned =
+    ((source.byteOffset | target.byteOffset | rowBytes | sourceStride | targetStride) & 3) === 0;
+  if (rowBytes > (aligned ? 128 : 32) || source.buffer === target.buffer) {
+    for (let row = 0, from = 0, to = 0; row < rows; row++, from += sourceStride, to += targetStride)
+      target.set(source.subarray(from, from + rowBytes), to);
+    return;
+  }
+  const input = aligned
+    ? new Uint32Array(source.buffer, source.byteOffset, Math.floor(source.length / 4))
+    : source;
+  const output = aligned
+    ? new Uint32Array(target.buffer, target.byteOffset, Math.floor(target.length / 4))
+    : target;
+  const width = rowBytes / input.BYTES_PER_ELEMENT;
+  const readStride = sourceStride / input.BYTES_PER_ELEMENT;
+  const writeStride = targetStride / input.BYTES_PER_ELEMENT;
+  for (let row = 0, from = 0, to = 0; row < rows; row++, from += readStride, to += writeStride)
+    for (let lane = 0; lane < width; lane++) output[to + lane] = input[from + lane] as number;
 }

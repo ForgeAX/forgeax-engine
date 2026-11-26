@@ -2,6 +2,7 @@ import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   assertMaterialStaticSelection,
   findMaterialPassProgram,
+  type MaterialRenderProjection,
   selectMaterialPassProgram,
 } from '@forgeax/engine-assets-runtime';
 import {
@@ -82,17 +83,36 @@ export function materialSurfaceProgramsForMaterial(
   context: MaterialCookRasterContext | undefined,
   effective: Parameters<typeof rayMaterialNeedsCoverage>[0],
 ): MaterialSnapshot['materialSurfacePrograms'] {
-  if (
-    context === undefined ||
-    context.backend === 'webgl2' ||
-    context.capability === 'uniform-fallback' ||
-    context.geometry !== 'mesh' ||
-    context.instrumentation !== 'none'
-  )
-    return undefined;
-  const projection = materialProjectionForSelection(material, assets);
+  if (!supportsSurfacePrograms(context)) return undefined;
+  return materialSurfaceProgramsForProjection(
+    material,
+    materialProjectionForSelection(material, assets),
+    context,
+    effective,
+  );
+}
+
+function supportsSurfacePrograms(
+  context: MaterialCookRasterContext | undefined,
+): context is MaterialCookRasterContext & { backend: 'webgpu' | 'wgpu-native' } {
+  return (
+    context !== undefined &&
+    context.backend !== 'webgl2' &&
+    context.capability !== 'uniform-fallback' &&
+    context.geometry === 'mesh' &&
+    context.instrumentation === 'none'
+  );
+}
+
+export function materialSurfaceProgramsForProjection(
+  material: MaterialAsset,
+  projection: MaterialRenderProjection | undefined,
+  context: MaterialCookRasterContext | undefined,
+  effective: Parameters<typeof rayMaterialNeedsCoverage>[0],
+): MaterialSnapshot['materialSurfacePrograms'] {
+  if (projection === undefined || !supportsSurfacePrograms(context)) return undefined;
   const pass = material.passes?.find((entry) => entry.name.toLowerCase() === 'forward');
-  if (projection === undefined || pass === undefined) return undefined;
+  if (pass === undefined) return undefined;
   const programs: NonNullable<MaterialSnapshot['materialSurfacePrograms']> = {};
   for (const surfaceContext of ['ray-hit', 'card-capture'] as const) {
     try {
@@ -156,7 +176,18 @@ export function materialProgramSelectionsForMaterial(
   vertexColorAvailable = false,
 ): readonly MaterialProgramSelection[] | undefined {
   const projection = materialProjectionForSelection(material, assets);
-  if (projection === undefined) return undefined;
+  return projection === undefined
+    ? undefined
+    : selectRasterPrograms(material, projection, context, address, vertexColorAvailable);
+}
+
+function selectRasterPrograms(
+  material: MaterialAsset,
+  projection: MaterialRenderProjection,
+  context: MaterialCookRasterContext | undefined,
+  address: 'direct' | 'scene-index',
+  vertexColorAvailable: boolean,
+): readonly (MaterialProgramSelection & { readonly artifactHash: string })[] {
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');
   return (material.passes ?? []).map((pass) => {
@@ -173,6 +204,7 @@ export function materialProgramSelectionsForMaterial(
     );
     return {
       pass: pass.name,
+      artifactHash: selected.artifactHash,
       context: selectedContext,
       specializationKey: selected.specializationKey,
       ...(selected.abi === undefined ? {} : { abi: selected.abi }),
@@ -180,40 +212,58 @@ export function materialProgramSelectionsForMaterial(
   });
 }
 
-/** Freeze lineage from the accepted payload and its already selected programs. */
-export function materialPublicationForMaterial(
+/** Required raster programs and their exact lineage for one accepted payload. The
+ * optional consumers read this same projection, including when the material is authored. */
+export interface MaterialRasterPrograms {
+  readonly projection?: MaterialRenderProjection;
+  readonly selections?: readonly MaterialProgramSelection[];
+  readonly keys?: NonNullable<MaterialSnapshot['materialProgramKeys']>;
+  readonly publication?: NonNullable<MaterialSnapshot['materialPublication']>;
+}
+
+const authoredRasterPrograms: MaterialRasterPrograms = Object.freeze({});
+
+export function captureMaterialRasterPrograms(
   material: MaterialAsset,
   assets: AssetRegistry,
-  selected: readonly MaterialProgramSelection[] | undefined,
-  vertexColorAvailable = false,
-): MaterialSnapshot['materialPublication'] {
+  context: MaterialCookRasterContext | undefined,
+  vertexColorAvailable: boolean,
+): MaterialRasterPrograms {
   const projection = materialProjectionForSelection(material, assets);
-  if (projection === undefined || selected === undefined) return undefined;
-  return Object.freeze({
-    identity: Object.freeze({
-      materialGuid: projection.materialGuid,
-      publicationGeneration: projection.publicationGeneration,
-      specializationKey: projection.specializationKey,
-      artifactHash: projection.artifactHash,
+  if (projection === undefined) return authoredRasterPrograms;
+  const selections = selectRasterPrograms(
+    material,
+    projection,
+    context,
+    'direct',
+    vertexColorAvailable,
+  );
+  const keys = Object.fromEntries(
+    selections.map(({ pass, specializationKey }) => [pass, specializationKey]),
+  );
+  const programs = selections.map(({ pass, context, specializationKey, artifactHash }) =>
+    Object.freeze({
+      pass,
+      context: Object.freeze({ ...context }),
+      address: 'direct' as const,
+      specializationKey,
+      artifactHash,
     }),
-    programs: Object.freeze(
-      selected.map((program) =>
-        Object.freeze({
-          pass: program.pass,
-          context: Object.freeze({ ...program.context }),
-          address: 'direct' as const,
-          specializationKey: program.specializationKey,
-          artifactHash: selectMaterialPassProgram(
-            projection,
-            program.pass,
-            program.context,
-            'direct',
-            vertexColorAvailable,
-          ).artifactHash,
-        }),
-      ),
-    ),
-  });
+  );
+  return {
+    projection,
+    selections,
+    keys: Object.freeze(keys),
+    publication: Object.freeze({
+      identity: Object.freeze({
+        materialGuid: projection.materialGuid,
+        publicationGeneration: projection.publicationGeneration,
+        specializationKey: projection.specializationKey,
+        artifactHash: projection.artifactHash,
+      }),
+      programs: Object.freeze(programs),
+    }),
+  };
 }
 
 /** Resolve the producer's scene-index program key for each cooked Pass. */
@@ -223,7 +273,20 @@ export function materialSceneIndexProgramKeysForMaterial(
   context: MaterialCookRasterContext | undefined,
   vertexColorAvailable = false,
 ): Readonly<Record<string, MaterialSceneIndexProgramKey>> | undefined {
-  const projection = materialProjectionForSelection(material, assets);
+  return materialSceneIndexProgramsForProjection(
+    material,
+    materialProjectionForSelection(material, assets),
+    context,
+    vertexColorAvailable,
+  );
+}
+
+export function materialSceneIndexProgramsForProjection(
+  material: MaterialAsset,
+  projection: MaterialRenderProjection | undefined,
+  context: MaterialCookRasterContext | undefined,
+  vertexColorAvailable: boolean,
+): Readonly<Record<string, MaterialSceneIndexProgramKey>> | undefined {
   if (projection === undefined) return undefined;
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');

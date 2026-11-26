@@ -79,19 +79,19 @@ Games built on the engine, authored through the `forgeax` CLI and an AI-first wo
 <a id="get-started"></a>
 ## Get started
 
-Install Engine with Node.js and pnpm available. The installed `forgeax` CLI creates
-projects and opens View.
+With Node.js and pnpm available, install Engine from the development channel
+to create a project and open View.
 
 ```bash
-npm install -g @forgeax/engine
+npm install -g @forgeax/engine@next
 forgeax project new my-game --template game-3d
 cd my-game
 forgeax dev start
 ```
 
-Use an Engine version that includes the authoring resources. See the
-[Engine package guide](packages/engine/README.md#create-a-project) for the local
-package route.
+To reproduce a specific setup, install the exact version from its release notes.
+See the [Engine package guide](packages/engine/README.md#create-a-project) for
+local package testing.
 
 `game-3d` is a third-person reference; `empty` is a minimal start. Read the generated README and skills, then see [Engine](packages/engine/README.md) and the [CLI guide](skills/forgeax-engine-cli/SKILL.md).
 

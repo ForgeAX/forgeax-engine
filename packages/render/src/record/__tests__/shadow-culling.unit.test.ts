@@ -2,7 +2,6 @@ import { type box3, frustum, mat4 } from '@forgeax/engine-math';
 import { describe, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import * as derivedBounds from '../../instances-derived-bounds';
-import { InstanceBoundsCache } from '../../instances-derived-bounds';
 import type { RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import {
@@ -39,8 +38,7 @@ const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.c
 
 describe('shadow world bounds ownership', () => {
   it('shares one derivation with main culling while each light uses its own frustum', () => {
-    const cache = vi.spyOn(InstanceBoundsCache.prototype, 'get');
-    const derive = vi.spyOn(derivedBounds, 'deriveInstancesUnionBounds');
+    const derive = vi.spyOn(derivedBounds, 'writeInstancesUnionBounds');
     try {
       const scene = new RenderScene();
       const source = snapshot();
@@ -53,16 +51,27 @@ describe('shadow world bounds ownership', () => {
         expect(shadowViewContains(source, planes, resolver(scene))).toBe(true);
         expect(shadowViewContains(source, otherPlanes, resolver(scene))).toBe(false);
       }
-      expect(cache).toHaveBeenCalledTimes(1);
-      expect(derive).not.toHaveBeenCalled();
+      expect(derive).toHaveBeenCalledTimes(1);
       const offCamera = snapshot(5);
       publish(scene, offCamera);
       expect(shadowViewContains(offCamera, planes, resolver(scene))).toBe(false);
       expect(shadowViewContains(offCamera, otherPlanes, resolver(scene))).toBe(true);
     } finally {
-      cache.mockRestore();
       derive.mockRestore();
     }
+  });
+
+  it('culls the newly published instance collection even when its producer revision repeats', () => {
+    const scene = new RenderScene();
+    const before = snapshot();
+    publish(scene, before);
+    expect(shadowViewContains(before, planes, resolver(scene))).toBe(true);
+    const moved = snapshot(5);
+    moved.instances.revision = before.instances.revision;
+    publish(scene, moved);
+    expect(shadowViewContains(moved, planes, resolver(scene))).toBe(false);
+    publish(scene, before);
+    expect(shadowViewContains(before, planes, resolver(scene))).toBe(true);
   });
 
   it('invalidates entity transform, instance revision, mesh bounds, removal and slot reuse', () => {

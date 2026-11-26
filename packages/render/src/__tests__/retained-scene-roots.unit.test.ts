@@ -302,25 +302,22 @@ test('old and new bounds remain independent across updates, geometry versions an
   expect(scene.cullingWorldBoundsAt(current, meshes, materials)?.min[0]).toBe(9);
 });
 
-test('RenderBounds is a numeric slot column proven by row, geometry and material frame', () => {
+test('rigid bounds use the addressed pose without retaining per-slot world boxes', () => {
   const material = new MaterialResource(defaultMaterialSnapshot());
   const materials = new MaterialFrame(undefined).with(material);
   const scene = new RenderScene();
   update(scene, source(1, 0, material));
   const row = required(scene.slot(1));
   const meshes = new MeshFrame().with(1, createBoxGeometry(2, 2, 2).unwrap());
-  const pages = (scene.sceneRows as unknown as { bounds: Map<number, { radius: Float64Array }> })
-    .bounds;
-  expect(pages.size).toBe(0);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   const out = box3.create();
   expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
-  const columns = required(pages.get(0));
-  expect(columns.radius).toBeInstanceOf(Float64Array);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   expect([...out]).toEqual([-1, -1, -1, 1, 1, 1]);
   update(scene, source(1, 5, material));
   const moved = required(scene.slot(1));
   expect(scene.writeCullingWorldBoundsAt(moved, out, meshes, materials)).toBe(true);
-  expect(pages.get(0)).toBe(columns);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   expect(out[0]).toBe(4);
   // The previous record still derives its own bounds without disturbing the row.
   expect(scene.cullingWorldBoundsAt(row, meshes, materials)?.min[0]).toBe(-1);

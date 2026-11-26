@@ -57,6 +57,27 @@ export async function prewarmFullscreenFeatureModules(
 }
 
 /** Assemble a fullscreen native pipeline through the current generation's shader/layout owners. */
+function fullscreenDepthStencil(entry: PostProcessShaderEntry): GPUDepthStencilState | undefined {
+  if (entry.stencilMask === undefined) {
+    return entry.depthOutput === undefined
+      ? undefined
+      : { format: entry.depthOutput, depthWriteEnabled: true, depthCompare: 'always' };
+  }
+  const write = entry.stencilMask === 'write';
+  const face: GPUStencilFaceState = write
+    ? { compare: 'always', passOp: 'replace' }
+    : { compare: 'equal' };
+  return {
+    format: 'depth24plus-stencil8',
+    depthWriteEnabled: false,
+    depthCompare: 'always',
+    stencilFront: face,
+    stencilBack: face,
+    stencilReadMask: 1,
+    stencilWriteMask: write ? 1 : 0,
+  };
+}
+
 export function buildFullscreenFeaturePipeline(
   entry: PostProcessShaderEntry,
   bgl: BindGroupLayout,
@@ -149,14 +170,7 @@ export function buildFullscreenFeaturePipeline(
       })),
     },
     primitive: { topology: 'triangle-list', cullMode: 'none', frontFace: 'ccw' },
-    depthStencil:
-      entry.depthOutput === undefined
-        ? undefined
-        : {
-            format: entry.depthOutput,
-            depthWriteEnabled: true,
-            depthCompare: 'always',
-          },
+    depthStencil: fullscreenDepthStencil(entry),
     multisample: undefined,
   });
   if (!pipelineRes.ok) {

@@ -4,7 +4,7 @@ import {
   deriveVertexLayoutProjection,
   elementView,
   interleaveStaticMeshVertexStreams,
-  projectStaticMeshVertexStreams,
+  staticMeshLayoutForCount,
   type VertexAttributeArray,
   type VertexLayoutProjection,
   vertexAttributeArrayType,
@@ -53,16 +53,15 @@ export function staticMeshStreamsFiniteFailure(
   vertices: Float32Array,
   layout: VertexLayoutProjection,
 ): MeshAttributeKey | undefined {
-  const plan = projectStaticMeshVertexStreams(layout, vertices.byteLength / layout.arrayStride);
-  if (plan?.layout.streams === undefined) throw new TypeError('invalid static stream projection');
-  for (const [slot, stream] of plan.layout.streams.entries()) {
-    const range = plan.ranges[slot];
-    if (range === undefined) throw new Error('missing static stream interval');
-    const issue = interleavedMeshFiniteFailure(
-      vertices.subarray(range.offset / 4, (range.offset + range.size) / 4),
-      stream,
-    );
+  const count = vertices.byteLength / layout.arrayStride;
+  const streams = staticMeshLayoutForCount(layout, count)?.streams;
+  if (streams === undefined) throw new TypeError('invalid static stream projection');
+  let start = 0;
+  for (const stream of streams) {
+    const end = start + (stream.arrayStride * count) / 4;
+    const issue = interleavedMeshFiniteFailure(vertices.subarray(start, end), stream);
     if (issue !== undefined) return issue;
+    start = end;
   }
   return undefined;
 }
@@ -82,13 +81,30 @@ export interface MeshAttributeWindow extends ReadonlyMeshAttributeWindow {
   readonly data: VertexAttributeArray;
 }
 
+/** Return the first packed layout declaration that still owns data or has the wrong format. */
+export function invalidMeshAttributeDeclaration(
+  attributes: VertexAttributeMap,
+  layout: VertexLayoutProjection,
+): MeshAttributeKey | undefined {
+  for (const attribute of layout.attributes) {
+    const value = attributes[attribute.key];
+    const ArrayType = vertexAttributeArrayType(attribute.format);
+    if (!(value instanceof ArrayType) || value.length !== 0 || value.buffer.byteLength !== 0)
+      return attribute.key;
+  }
+  return undefined;
+}
+
 /** One empty backing per mesh: transferring a declaration cannot detach another
  * mesh's layout metadata, and empty subviews never pin vertex-sized storage. */
-export function meshAttributeLayout(attributes: VertexAttributeMap): VertexAttributeMap {
+export function meshAttributeLayout(
+  source: VertexAttributeMap | VertexLayoutProjection,
+): VertexAttributeMap {
+  const layout = 'arrayStride' in source ? source : deriveVertexLayoutProjection(source);
   const result: VertexAttributeMap = {};
   const storage = new ArrayBuffer(0);
   const floats = new Float32Array(storage);
-  for (const entry of deriveVertexLayoutProjection(attributes).attributes) {
+  for (const entry of layout.attributes) {
     const ArrayType = vertexAttributeArrayType(entry.format);
     Reflect.set(result, entry.key, ArrayType === Float32Array ? floats : new ArrayType(storage));
   }
@@ -138,18 +154,20 @@ export function meshAttributeWindow(
         );
   const count = mesh.vertices.byteLength / layout.arrayStride;
   if (mesh.attributeStorage === 'static-streams') {
-    const plan = projectStaticMeshVertexStreams(layout, count);
-    for (const [slot, stream] of plan?.layout.streams?.entries() ?? []) {
-      const range = plan?.ranges[slot];
+    const streams = staticMeshLayoutForCount(layout, count)?.streams;
+    if (streams === undefined) return undefined;
+    let offset = 0;
+    for (const stream of streams) {
       const physical = stream.attributes.find((attribute) => attribute.key === key);
-      if (physical !== undefined && range !== undefined)
+      if (physical !== undefined)
         return {
           data,
-          offset: (range.offset + physical.offset) / bytes,
+          offset: (offset + physical.offset) / bytes,
           stride: stream.arrayStride / bytes,
           components,
           count,
         };
+      offset += stream.arrayStride * count;
     }
     return undefined;
   }

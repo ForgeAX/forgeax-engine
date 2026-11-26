@@ -250,6 +250,7 @@ export interface CameraSnapshot {
   /** Optional detached Camera companion for fixed or adaptive scaling. */
   readonly dynamicResolution?: DynamicResolutionData;
   readonly bloom: BloomEnabled;
+  readonly bloomQuality?: import('./components/camera').BloomQuality;
   readonly bloomThreshold: number;
   readonly bloomIntensity: number;
   readonly bloomSmoothWidth: number;
@@ -280,6 +281,8 @@ export interface CameraSnapshot {
 
 /** Stable identity owned by the Standard feature host for output transform. */
 export const STANDARD_OUTPUT_TRANSFORM_FEATURE_ID = 'forgeax::standard::output-transform';
+export const STANDARD_OUTPUT_GLARE_FEATURE_ID = 'forgeax::standard::output-transform-glare';
+export const STANDARD_OUTPUT_SMAA_FEATURE_ID = 'forgeax::standard::output-transform-smaa';
 /** Source-only native Grade/Final declaration; its parameters belong to each graph. */
 export const STANDARD_OUTPUT_V2_FEATURE_ID = 'forgeax::standard::output-v2';
 

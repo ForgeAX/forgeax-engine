@@ -91,6 +91,8 @@ export function findVariantByKey(
   definesKey: string,
 ): MaterialShaderManifestVariant | undefined {
   if (templateManifestAxes(entry) !== undefined) return templateManifestVariant(entry, definesKey);
+  const publication = admittedVariants.get(entry);
+  if (publication !== undefined) return publication.byKey.get(definesKey);
   return entry.variants.find((v) => v.definesKey === definesKey);
 }
 
@@ -107,7 +109,18 @@ export function findVariantByDefines(
   );
 }
 
-const admittedVariantAxes = new WeakMap<MaterialShaderManifestEntry, readonly string[]>();
+const admittedVariants = new WeakMap<
+  MaterialShaderManifestEntry,
+  {
+    readonly axes: readonly string[];
+    readonly byKey: ReadonlyMap<string, MaterialShaderManifestVariant>;
+  }
+>();
+
+const emptyVariants = {
+  axes: Object.freeze([]),
+  byKey: new Map<string, MaterialShaderManifestVariant>(),
+};
 
 function collectVariantAxes(entry: MaterialShaderManifestEntry): readonly string[] {
   const axes = new Set<string>();
@@ -125,7 +138,14 @@ export function sealMaterialShaderVariants(entry: MaterialShaderManifestEntry): 
   }
   Object.freeze(entry.variants);
   Object.freeze(entry);
-  admittedVariantAxes.set(entry, Object.freeze(collectVariantAxes(entry)));
+  if (entry.variants.length === 0) {
+    admittedVariants.set(entry, emptyVariants);
+    return;
+  }
+  const byKey = new Map<string, MaterialShaderManifestVariant>();
+  for (const variant of entry.variants)
+    if (!byKey.has(variant.definesKey)) byKey.set(variant.definesKey, variant);
+  admittedVariants.set(entry, { axes: Object.freeze(collectVariantAxes(entry)), byKey });
 }
 
 /** A template declares its axes directly. Its legacy variants array enumerates the whole family. */
@@ -135,5 +155,7 @@ export function materialShaderHasVariants(entry: MaterialShaderManifestEntry): b
 
 /** Axes are source declarations; inspecting them never composes a program or expands permutations. */
 export function materialShaderAxes(entry: MaterialShaderManifestEntry): readonly string[] {
-  return templateManifestAxes(entry) ?? admittedVariantAxes.get(entry) ?? collectVariantAxes(entry);
+  return (
+    templateManifestAxes(entry) ?? admittedVariants.get(entry)?.axes ?? collectVariantAxes(entry)
+  );
 }

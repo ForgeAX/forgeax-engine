@@ -1116,9 +1116,17 @@ describe('Worker frame admission watchdog', () => {
         code: 'system-failed',
         expected: 'World update succeeds',
         hint: 'rebuild the poisoned World',
-        detail: {},
+        systemName: 'Update/voxel-wall/input-and-feedback',
+        detail: { code: 'fixture-replace-failed', message: 'replace the wall mesh' },
         partialWrite: true,
         retryable: false,
+      });
+      expect(app.lastError).toMatchObject({
+        code: 'app-system-update-failed',
+        detail: {
+          systemName: 'Update/voxel-wall/input-and-feedback',
+          cause: { code: 'fixture-replace-failed', message: 'replace the wall mesh' },
+        },
       });
       const rebuilding = app.execution.rebuild();
       emit({ kind: 'render-ready', epoch: 1 });

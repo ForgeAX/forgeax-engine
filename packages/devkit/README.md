@@ -1647,13 +1647,17 @@ native compiler is needed for this Browser capture route.
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
 for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
 and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
-Explicit `--headless true` bypasses Xvfb/X11 entirely. Local capture, play, and
-live sessions launched by Linux root use an unprivileged Chromium child. The
-launcher uses the invoking account from `sudo`, the Playwright image's
-`pwuser`, or the system `nobody` account, in that order, with `setpriv` and a
-temporary browser profile. With no display, an unspecified private browser
-mode defaults to headless. An existing borrowed page needs no local
-display or browser launch. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
+Explicit `--headless true` bypasses Xvfb/X11. DevKit starts Chrome with its sandbox
+for live sessions, playthroughs, captures, resource previews, and thumbnails. On
+Linux root, it prepares a regular browser identity and a writable profile when an
+executable path is available. When that preparation or Chromium itself reports a
+sandbox failure, DevKit logs the fallback and retries once with the same browser
+selection and sandboxing disabled. The retry uses the browser's own temporary
+profile and a reduced environment. If it succeeds, the command continues through
+its usual frame and input checks. For Linux root with no display, an unspecified
+live browser mode defaults to headless. An existing borrowed page needs no
+browser launch. See the Linux unattended setup
+for browser and display prerequisites. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.

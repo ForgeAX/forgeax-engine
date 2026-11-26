@@ -292,6 +292,68 @@ function worker(): CpuModuleWorker {
   return child;
 }
 
+function sendWorldFrame(worldIdentity: string, frameId: number): void {
+  const message: ExecutionFrameMessage = {
+    kind: 'frame',
+    worldIdentity,
+    frameId,
+    deltaSeconds: 1 / 60,
+    sampleTimeSeconds: frameId / 60,
+    canvasWidth: 32,
+    canvasHeight: 32,
+    inputSample: {
+      downKeys: new Set(),
+      upKeys: new Set(),
+      buttons: [false, false, false],
+      movementX: 0,
+      movementY: 0,
+      wheelDelta: 0,
+      focused: true,
+      pointerLocked: false,
+    },
+  };
+  receive?.({ data: message } as MessageEvent<HostToEngineMessage>);
+}
+
+it('forwards the game system and original error when a frame poisons the World', async () => {
+  await launch();
+  worker().openModuleGate();
+  await worker().loaded.promise;
+  state.rootGate?.resolve();
+  expect(await state.terminal?.promise).toMatchObject({ kind: 'ready' });
+  const world = state.world;
+  if (world === undefined || receive === null) throw new Error('Missing live Engine World');
+  const cause = new Error('wall mesh replacement failed');
+  world
+    .addSystem(
+      ecs.Update,
+      ecs.defineSystem({
+        name: 'voxel-wall/input-and-feedback',
+        queries: [],
+        fn: () => {
+          throw cause;
+        },
+      }),
+    )
+    .unwrap();
+
+  sendWorldFrame(world.identity, 1);
+  await vi.waitFor(() =>
+    expect(state.posts).toContainEqual(
+      expect.objectContaining({
+        kind: 'fault',
+        code: 'system-failed',
+        systemName: 'Update/voxel-wall/input-and-feedback',
+        detail: expect.objectContaining({ name: 'Error', message: cause.message }),
+        partialWrite: true,
+        retryable: false,
+      }),
+    ),
+  );
+  expect(world.execution.health).toBe('poisoned');
+  expect(worker().posts.some((message) => message.kind === 'draw')).toBe(false);
+}, 30_000);
+
 it('bounds World updates by sealed publications, including pictures not yet submitted', async () => {
   await launch(false, { renderPipelineCapacity: 2 });
   const child = worker();
@@ -308,28 +370,7 @@ it('bounds World updates by sealed publications, including pictures not yet subm
     fn: () => void updates++,
   });
   world.addSystem(ecs.Update, systemToken1).unwrap();
-  const send = (frameId: number): void => {
-    const message: ExecutionFrameMessage = {
-      kind: 'frame',
-      worldIdentity: world.identity,
-      frameId,
-      deltaSeconds: 1 / 60,
-      sampleTimeSeconds: frameId / 60,
-      canvasWidth: 32,
-      canvasHeight: 32,
-      inputSample: {
-        downKeys: new Set(),
-        upKeys: new Set(),
-        buttons: [false, false, false],
-        movementX: 0,
-        movementY: 0,
-        wheelDelta: 0,
-        focused: true,
-        pointerLocked: false,
-      },
-    };
-    receive?.({ data: message } as MessageEvent<HostToEngineMessage>);
-  };
+  const send = (frameId: number) => sendWorldFrame(world.identity, frameId);
   const completions = () => state.posts.filter((message) => message.kind === 'simulation-complete');
   const pictures = () =>
     child.posts.filter((message) => message.kind === 'draw').map((message) => message.frameId);

@@ -1,8 +1,11 @@
+import { readFile } from 'node:fs/promises';
+import { mat4 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule, createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { jitterCameraProjection } from '../camera-projection';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { RenderFeatureComputeGraphProjection } from '../features/render-graph-compute';
 import { createRenderFeatureTarget } from '../features/targets';
@@ -248,5 +251,104 @@ ${await (
   } finally {
     device.destroyTexture(output).unwrap();
     device.destroyBuffer(readback).unwrap();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('maps scaled post depth and corrects both jitter axes (orthographic=%s)', async (orthographic) => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const device = (await adapter.requestDevice()).unwrap();
+  const size = [7, 11] as const;
+  const jitter = [0.49 / size[0], -0.47 / size[1]] as const;
+  const outputUv = [
+    [0.5 / 13, 0.5 / 17],
+    [12.5 / 13, 16.5 / 17],
+    [7.5 / 13, 9.5 / 17],
+    [6.5 / 13, 8.5 / 17],
+  ] as const;
+  const projection = mat4.identity(mat4.create());
+  projection[11] = orthographic ? 0 : -1;
+  projection[15] = orthographic ? 1 : 0;
+  const worldToView = mat4.identity(mat4.create());
+  worldToView[0] = 0.8;
+  worldToView[2] = -0.6;
+  worldToView[8] = 0.6;
+  worldToView[10] = 0.8;
+  worldToView[12] = orthographic ? 0 : 30000;
+  worldToView[13] = orthographic ? 0 : -12000;
+  worldToView[14] = -1200;
+  const base = mat4.multiply(mat4.create(), projection, worldToView);
+  const raster = mat4.multiply(
+    mat4.create(),
+    jitterCameraProjection(mat4.create(), projection, jitter),
+    worldToView,
+  );
+  const shaderPath = new URL('../../../shader/src/scene-temporal.wgsl', import.meta.url);
+  const helper = (await readFile(shaderPath, 'utf8')).split('\n').slice(1).join('\n');
+  const code = `
+${helper}
+@group(0) @binding(0) var<storage, read_write> output: array<vec4f>;
+@compute @workgroup_size(1) fn selectDepth() {
+  let base = mat4x4<f32>(${Array.from(base).join(',')});
+  let raster = mat4x4<f32>(${Array.from(raster).join(',')});
+  let size = vec2u(${size.join(',')});
+  ${outputUv
+    .map(
+      (uv, i) => `
+  let uv${i} = sceneTemporalRasterUv(vec2f(${uv.join(',')}), raster, base);
+  output[${i}] = vec4f(uv${i}, vec2f(sceneTemporalDepthTexel(uv${i}, size))); `,
+    )
+    .join(' ')}}`;
+  const shader = createShaderModuleImmediate(device, { code }).unwrap();
+  const layout = device
+    .createBindGroupLayout({
+      entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
+    })
+    .unwrap();
+  const pipeline = device
+    .createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
+      compute: { module: shader, entryPoint: 'selectDepth' },
+    })
+    .unwrap();
+  const bytes = outputUv.length * 16;
+  const storage = device.createBuffer({ size: bytes, usage: 0x80 | 0x04 }).unwrap();
+  const readback = device
+    .createBuffer({ size: bytes, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+    .unwrap();
+  try {
+    const bindings = device
+      .createBindGroup({
+        layout,
+        entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: storage } } }],
+      })
+      .unwrap();
+    const encoder = device.createCommandEncoder().unwrap();
+    const compute = encoder.beginComputePass();
+    compute.setPipeline(pipeline);
+    compute.setBindGroup(0, bindings);
+    compute.dispatchWorkgroups(1);
+    compute.end();
+    encoder.copyBufferToBuffer(storage, 0, readback, 0, bytes);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const mapped = (await readback.mapAsync(1)).unwrap();
+    const values = new Float32Array(mapped.getMappedRange().unwrap()).slice();
+    mapped.unmap();
+    for (const [index, uv] of outputUv.entries()) {
+      const [x, y] = [uv[0] + jitter[0], uv[1] + jitter[1]];
+      expect(values[index * 4]).toBeCloseTo(x, 6);
+      expect(values[index * 4 + 1]).toBeCloseTo(y, 6);
+      expect(values[index * 4 + 2]).toBe(
+        Math.min(size[0] - 1, Math.max(0, Math.floor(x * size[0]))),
+      );
+      expect(values[index * 4 + 3]).toBe(
+        Math.min(size[1] - 1, Math.max(0, Math.floor(y * size[1]))),
+      );
+    }
+  } finally {
+    device.destroyBuffer(readback).unwrap();
+    device.destroyBuffer(storage).unwrap();
   }
 });

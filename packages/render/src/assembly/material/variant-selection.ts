@@ -31,35 +31,34 @@ function hasExplicitVariantAxis(options: MaterialShaderArtifactRequest, axis: st
   return options.variantSet === '' || options.variantSet?.includes(`${axis}=`) === true;
 }
 
-function requestAxes(
-  options: MaterialShaderArtifactRequest,
-): readonly (readonly [string, boolean | undefined])[] {
-  return [
-    ['VERTEX_COLOR_AVAILABLE', options.vertexColorAvailable],
-    [
-      'SKINNING_DISABLED',
-      options.deformation === undefined ? undefined : options.deformation !== 'skin',
-    ],
-    ['CLUSTER_FORWARD_AVAILABLE', options.clustered],
-    ['PROBE_BLEND_AVAILABLE', options.probeBlend],
-    ['REFLECTION_FALLBACK_AVAILABLE', options.reflectionFallback],
-    ['VISIBLE_SURFACE_AVAILABLE', options.visibleSurface ?? false],
-    [
-      'WATER_WAVES_AVAILABLE',
-      hasExplicitVariantAxis(options, 'WATER_WAVES_AVAILABLE') ? undefined : false,
-    ],
-    ['WATER_INFO_RGBA16', hasExplicitVariantAxis(options, 'WATER_INFO_RGBA16') ? undefined : false],
-    [
-      'ALPHA_MASK',
-      options.alphaMask ?? (hasExplicitVariantAxis(options, 'ALPHA_MASK') ? undefined : false),
-    ],
-    [
-      'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
-      options.address === undefined ? undefined : options.address === 'scene-index',
-    ],
-    ['GPU_DRIVEN_SCENE_INDEX_EXPLICIT', options.address === undefined ? undefined : false],
-    ['GPU_SCENE_DIRECT', hasExplicitVariantAxis(options, 'GPU_SCENE_DIRECT') ? undefined : false],
-  ];
+/** Project only axes declared by the program. Unrelated material features need no per-draw rows. */
+function requestedAxis(options: MaterialShaderArtifactRequest, axis: string): boolean | undefined {
+  switch (axis) {
+    case 'VERTEX_COLOR_AVAILABLE':
+      return options.vertexColorAvailable;
+    case 'SKINNING_DISABLED':
+      return options.deformation === undefined ? undefined : options.deformation !== 'skin';
+    case 'CLUSTER_FORWARD_AVAILABLE':
+      return options.clustered;
+    case 'PROBE_BLEND_AVAILABLE':
+      return options.probeBlend;
+    case 'REFLECTION_FALLBACK_AVAILABLE':
+      return options.reflectionFallback;
+    case 'VISIBLE_SURFACE_AVAILABLE':
+      return options.visibleSurface ?? false;
+    case 'WATER_WAVES_AVAILABLE':
+    case 'WATER_INFO_RGBA16':
+    case 'GPU_SCENE_DIRECT':
+      return hasExplicitVariantAxis(options, axis) ? undefined : false;
+    case 'ALPHA_MASK':
+      return options.alphaMask ?? (hasExplicitVariantAxis(options, axis) ? undefined : false);
+    case 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE':
+      return options.address === undefined ? undefined : options.address === 'scene-index';
+    case 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT':
+      return options.address === undefined ? undefined : false;
+    default:
+      return undefined;
+  }
 }
 
 function nativeMatch(
@@ -81,8 +80,9 @@ function selectNativeVariant(
   const axes = materialShaderAxes(entry);
   if (axes.length === 0) return undefined;
   const constraints: Record<string, boolean> = { ...explicit };
-  for (const [axis, value] of requestAxes(options)) {
-    if (value !== undefined && axes.includes(axis)) {
+  for (const axis of axes) {
+    const value = requestedAxis(options, axis);
+    if (value !== undefined) {
       if (Object.hasOwn(constraints, axis) && constraints[axis] !== value) return undefined;
       constraints[axis] = value;
     }
@@ -104,6 +104,19 @@ export function selectPublishedVariant(
   if (isShaderTemplateManifestRow(entry)) {
     if (options.variantSet === undefined) return selectNativeVariant(entry, options);
     const selected = findVariantByKey(entry, options.variantSet);
+    if (selected !== undefined && selected.definesKey === options.variantSet) {
+      // The canonical key already proves every explicit define. Only draw constraints remain.
+      for (const axis of materialShaderAxes(entry)) {
+        const expected = requestedAxis(options, axis);
+        if (expected !== undefined && selected.defines[axis] !== expected) return undefined;
+      }
+      const lean =
+        options.leanInputs ??
+        (hasExplicitVariantAxis(options, 'STANDARD_LEAN_INPUTS') ? undefined : false);
+      return lean === false && selected.defines.STANDARD_LEAN_INPUTS === true
+        ? undefined
+        : selected;
+    }
     if (selected !== undefined)
       return selectPublishedCandidates(
         [selected],
@@ -151,9 +164,11 @@ function selectPublishedCandidates(
   axes: readonly string[],
   options: MaterialShaderArtifactRequest,
 ): MaterialShaderManifestVariant | undefined {
-  const requested = requestAxes(options).filter(
-    ([axis, value]) => value !== undefined && axes.includes(axis),
-  );
+  const requested: [string, boolean][] = [];
+  for (const axis of axes) {
+    const expected = requestedAxis(options, axis);
+    if (expected !== undefined) requested.push([axis, expected]);
+  }
   const { variantSet } = options;
   const explicit = parsePublishedVariantAxes(variantSet);
   const lean = axes.includes('STANDARD_LEAN_INPUTS')

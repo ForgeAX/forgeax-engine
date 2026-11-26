@@ -27,7 +27,7 @@ export class PublishedAssetClosure {
         const patch =
           change === undefined || base === undefined
             ? undefined
-            : publishAssetPatch(records.borrow<Asset>(handle).unwrap(), change, base);
+            : publishAssetPatch(records.resolveStoredAsset<Asset>(handle).unwrap(), change, base);
         if (patch !== undefined) patches.set(handle, patch);
       },
       rows: (
@@ -38,7 +38,7 @@ export class PublishedAssetClosure {
           if (!transaction.has(handle) || patches.has(handle)) continue;
           const revision = transaction.version(handle) ?? 0;
           if (usePrepared?.(handle, revision)) continue;
-          rows.push([handle, records.borrow<Asset>(handle).unwrap(), revision]);
+          rows.push([handle, records.resolveStoredAsset<Asset>(handle).unwrap(), revision]);
         }
         return rows;
       },

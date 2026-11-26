@@ -2,13 +2,15 @@ import type { World } from '@forgeax/engine-ecs';
 import type { box3 } from '@forgeax/engine-math';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { type RenderResidencySelection, residencySelected } from '../gpu-driven/batch-residency';
-import type { InstanceBoundsCache } from '../instances-derived-bounds';
+import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { addressDrawRows, isOrdinarySceneDrawTable } from '../record/draw-row-pages';
 import type { DrawRows, ValidatedRenderable } from '../record/frame-snapshot';
 import { MeshDrawSlots } from '../record/mesh-draw-slots';
 import { type NativeDrawRoster, NativeDrawRosterOwner } from '../record/native-draw-roster';
+import type { CameraSnapshot } from '../render-contract';
+import { cameraAdmitsLayers } from '../render-layers';
 import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
 import {
   type FrameList,
@@ -21,6 +23,8 @@ import { GenerationalWeakMap } from './generational-weak-map';
 import { MaterialFrame } from './material-dispatch';
 import { slotContent, slotDrawMaterials, slotDrawSnapshot } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
+import type { SlotCameraVisibility } from './persistent-cull';
+import { attachProbeRecord, type ProbeAttachMemo } from './probe-attach';
 import {
   createTemporalSnapshot,
   type FrameCacheTally,
@@ -64,6 +68,7 @@ class SceneSurfaceRows {
     readonly source: SceneSlotFrame,
     readonly project: (record: RenderSceneSlot) => RenderableSnapshot,
     private readonly meshes: MeshFrame,
+    private readonly sourceLodCount: number,
     private readonly materials?: MaterialFrame,
     private readonly unavailable?: FrameSet,
     private readonly residencySelection?: RenderResidencySelection,
@@ -79,6 +84,40 @@ class SceneSurfaceRows {
 
   cullContent(content: RowContent): RowContent {
     return this.source.drawContent(content, this.meshes);
+  }
+
+  /** The Mesh owns these levels unless this exact projection uses the authored row. */
+  visitLodCandidates(visit?: (row: RenderableSnapshot) => void, members?: FrameSet): number {
+    if (this.permitsSlotCull(undefined)) {
+      if (this.sourceLodCount === 0) return 0;
+      if (visit === undefined && members === undefined) return this.sourceLodCount;
+      if (visit === undefined && this.sourceLodCount === this.source.length)
+        return members?.size ?? this.source.length;
+    }
+    let count = 0;
+    const read = (content: RowContent, _entity: number, slot: number): undefined => {
+      let levels = content.lods;
+      if (
+        content.terrain === undefined &&
+        content.materialOverrides !== undefined &&
+        !this.unavailable?.has(slot) &&
+        (this.residencySelection === undefined ||
+          residencySelected(this.residencySelection, content.residencyGroup))
+      ) {
+        const mesh = this.meshes.get(content.assetHandle);
+        if (mesh !== undefined) levels = mesh.lods;
+      }
+      if ((levels?.length ?? 0) !== 0) {
+        count++;
+        if (visit !== undefined) {
+          const record = this.source.slotAt(slot);
+          if (record !== undefined) visit(this.project(record));
+        }
+      }
+      return undefined;
+    };
+    this.source.findContent(read, members);
+    return count;
   }
 
   /** A cull judges accepted material dependencies without constructing current or previous poses. */
@@ -132,12 +171,7 @@ class SceneSurfaceRows {
         hasDisplacementSource(draw, this.materials);
       return read(entity, draw);
     };
-    if (members === undefined) return this.source.findContent(consume);
-    for (const slot of members.borrowKeys()) {
-      const result = this.source.readContentSlot(slot, consume);
-      if (result !== undefined) return result;
-    }
-    return undefined;
+    return this.source.findContent(consume, members);
   }
 
   private consume<T>(
@@ -737,6 +771,7 @@ export class RenderScene {
         current,
         project,
         meshes,
+        this.rows.lodCandidateCount,
         undefined,
         undefined,
         residencySelection,
@@ -819,21 +854,51 @@ export class RenderScene {
     materials: MaterialFrame,
     counters?: FrameCacheTally,
     meshes = this.meshes,
-  ): (slot: number) => RenderableSnapshot | undefined {
+    view?: {
+      readonly unavailable: Pick<FrameSet, 'has'>;
+      readonly probeAt: (slot: number) => RenderableSnapshot['probeBlendRecord'];
+      readonly probeMemo: ProbeAttachMemo['bySnapshot'];
+      readonly mayHaveWaterSources: boolean;
+    },
+  ) {
     const current = this.frame;
     const history = this.history;
     const temporal = this.temporalTracking;
     const memo = this.temporalBySlot;
     // Mesh and temporal owners already memoize immutable row versions. A
     // frame-local slot map would register every consumed row again each frame.
-    return (slot) => {
-      const record = current.slotAt(slot);
-      if (record === undefined) return undefined;
+    const project = (
+      record: RenderSceneSlot,
+      camera?: Pick<CameraSnapshot, 'cullMask'>,
+      visibility?: SlotCameraVisibility,
+    ) => {
+      if (view?.unavailable.has(record.slot)) return undefined;
+      if (camera !== undefined && visibility !== undefined) {
+        const content = slotContent(record);
+        if (
+          (camera.cullMask !== undefined && !cameraAdmitsLayers(camera, content)) ||
+          !visibility.admitsSlot(content, record)
+        )
+          return undefined;
+      }
       const source = slotDrawSnapshot(record, meshes);
-      return !temporal
-        ? source
-        : temporalDrawSnapshot(source, counters, record, history, materials, memo);
+      const draw = temporal
+        ? temporalDrawSnapshot(source, counters, record, history, materials, memo)
+        : source;
+      return view === undefined
+        ? draw
+        : attachProbeRecord(draw, view.probeAt(record.slot), view.probeMemo);
     };
+    const at = (slot: number) => {
+      const record = current.slotAt(slot);
+      return record === undefined ? undefined : project(record);
+    };
+    return Object.assign(at, {
+      locate: current.slotAt,
+      project,
+      projectCamera: project,
+      mayHaveWaterSources: view?.mayHaveWaterSources ?? true,
+    });
   }
 
   /**
@@ -891,6 +956,7 @@ export class RenderScene {
       current,
       project,
       meshes,
+      this.rows.lodCandidateCount,
       materials,
       unavailable,
       residencySelection,
@@ -1013,7 +1079,7 @@ export class RenderScene {
   get slotCapacity(): number {
     return this.frame.capacity;
   }
-  instanceBoundsStatistics(): ReturnType<InstanceBoundsCache['inspect']> {
+  instanceBoundsStatistics(): InstanceBoundsCacheInspection {
     return this.rows.instanceBoundsStatistics();
   }
 

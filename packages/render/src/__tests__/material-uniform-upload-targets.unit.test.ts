@@ -36,6 +36,32 @@ it('keeps physical upload proofs separate when a queue callback prepares another
   expect(write).toHaveBeenCalledTimes(2);
 });
 
+it('rechecks a physical row written by two recording callbacks before either returns', () => {
+  const resources = materialUniformResources([]);
+  const world = {} as RenderResourceScope;
+  const buffer = {} as Buffer;
+  const outer = defaultMaterialSnapshot(11);
+  const inner = defaultMaterialSnapshot(12);
+  const write = vi.fn((..._args: unknown[]) => ok(undefined));
+  const deps = () =>
+    ({
+      runtime: { device: { queue: { writeBuffer: write } } },
+      frameState: {},
+      pipelineState: { materialUniformBuffer: { buffer } },
+    }) as unknown as PerSubmeshMaterialBgDeps;
+  const a = deps();
+  const b = deps();
+  write.mockImplementationOnce(() => {
+    prepareMaterialUniform(b, inner, world, resources);
+    return ok(undefined);
+  });
+  prepareMaterialUniform(a, outer, world, resources);
+  prepareMaterialUniform(a, outer, world, resources);
+  expect(write).toHaveBeenCalledTimes(3);
+  prepareMaterialUniform(a, outer, world, resources);
+  expect(write).toHaveBeenCalledTimes(3);
+});
+
 it('remembers the written buffer when reentry grows the same runtime arena', () => {
   const resources = materialUniformResources([]);
   const world = {} as RenderResourceScope;

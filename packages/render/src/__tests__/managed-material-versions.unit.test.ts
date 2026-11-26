@@ -40,6 +40,37 @@ it('keeps entity tables stable while distinct material versions are held by old 
   }
 });
 
+it('rejects a stale material version after the new snapshot claims its descriptor', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const available = GpuScene.create(device, 4).unwrap();
+  if (available.status !== 'available') throw Error('Missing scene');
+  const gpu = available.scene;
+  const scene = new RenderScene();
+  const source = receiptRow().source;
+  try {
+    gpu
+      .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
+      .unwrap();
+    const old = gpu.captureResources().unwrap();
+    const descriptor = old.indexForResource(source.material);
+    expect(descriptor).toBeDefined();
+    const pins = old.pins?.();
+    if (!pins) throw Error('Missing pins');
+    old.release();
+    source.material.adopt({ ...source.material.snapshot, roughness: 0.37 });
+    gpu.sync({ ...scene.apply([]), materialUpdates: [source.material] }).unwrap();
+    const frame = gpu.captureResources().unwrap();
+    try {
+      expect(frame.indexForResource(source.material)).toBe(descriptor);
+      expect(frame.adoptPins?.(pins)).toBe(false);
+    } finally {
+      frame.release();
+    }
+  } finally {
+    gpu.dispose();
+  }
+});
+
 it('balances repeated and reordered material bindings while a frame retains an old version', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const available = GpuScene.create(device, 32).unwrap();
@@ -195,8 +226,10 @@ it('holds replaced buffers until every prepared frame releases them and rejects 
     .unwrap();
   const frames = Array.from({ length: 128 }, () => gpu.captureResources().unwrap());
   expect(gpu.captureResources().ok).toBe(false);
+  const first = frames[0] as GpuSceneResourceFrame;
+  const firstRoot = gpu.tableBindingIdentity;
   const retained = gpu.materialBuffer;
-  frames[0]?.indexForResource(source.material, source.material.snapshot);
+  first.indexForResource(source.material, source.material.snapshot);
   source.material.adopt({
     ...source.material.snapshot,
     materialShaderId: 'test::large',
@@ -207,12 +240,17 @@ it('holds replaced buffers until every prepared frame releases them and rejects 
   });
   gpu.sync({ ...scene.apply([]), materialUpdates: [source.material] }).unwrap();
   expect(gpu.materialBuffer).not.toBe(retained);
+  const reads = first.inputReads();
+  expect(gpu.readHoldsTableRoot(reads, firstRoot)).toBe(true);
+  expect(gpu.readHoldsTableRoot(reads, gpu.tableBindingIdentity)).toBe(true);
   await device.queue.onSubmittedWorkDone();
   expect(destroy).not.toHaveBeenCalledWith(retained);
   for (const frame of frames.slice(1)) frame.release();
   await device.queue.onSubmittedWorkDone();
   expect(destroy).not.toHaveBeenCalledWith(retained);
-  frames[0]?.release();
+  first.release();
+  expect(gpu.readHoldsTableRoot(reads, firstRoot)).toBe(false);
+  expect(gpu.readHoldsTableRoot(reads, gpu.tableBindingIdentity)).toBe(false);
   await device.queue.onSubmittedWorkDone();
   expect(destroy).toHaveBeenCalledWith(retained);
   const retry = gpu.captureResources().unwrap();

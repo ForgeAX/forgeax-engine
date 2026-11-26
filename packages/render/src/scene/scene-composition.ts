@@ -1980,8 +1980,7 @@ export class SceneComposition {
           this.skinAdoption.apply(entry, sceneSnapshotDelta(entry.projection.slotsSnapshot()));
           break;
         case 'joints':
-          for (let index = 0; index < op.entities.length; index++)
-            this.skinAdoption.joint(entry, op.entities[index] as number);
+          this.skinAdoption.joints(entry, op.entities);
           break;
         case 'initialize':
           this.skinAdoption.initializeJoints(entry);

@@ -1,24 +1,19 @@
 #!/usr/bin/env node
 
 // Real Dawn regression for the HDR D0 coverage rule.  This deliberately uses
-// the cooked production shader and a native WebGPU device; the CPU calculation
+// the production downsample and prefilter shaders on a native device. The CPU calculation
 // below is only an independent oracle for the readback, never a replacement
 // for the GPU pass.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { halfFloat } from '@forgeax/engine/math';
+import { BLOOM_PREFILTER_WGSL, POST_SCENE_COLOR_HALF_WGSL } from '@forgeax/engine-shader';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
-import { readBuiltinShaderEntries, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
-const [entry] = await readBuiltinShaderEntries(
-  readShaderManifestText(resolve(appRoot, 'dist/shaders/manifest.json')),
-  ['bloomHorizontal'],
-);
-if (entry === undefined) throw new Error('cooked bloom-horizontal shader is missing from the manifest');
-
 const { create, globals } = await import('@forgeax/engine-dawn-node');
 Object.assign(globalThis, globals);
 let gpu = create([]);
@@ -102,25 +97,19 @@ function extractBloom(color, threshold, smoothWidth) {
   return c.map((channel) => channel * t * t * (3 - 2 * t));
 }
 
-function sampleSource(values, width, height, u, v) {
-  const x = u * width - 0.5, y = v * height - 0.5;
-  const ix = Math.floor(x), iy = Math.floor(y);
-  const tx = x - ix, ty = y - iy;
-  const at = (x, y, c) => values[Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))][c];
-  return [0, 1, 2].map(c => (at(ix, iy, c) * (1 - tx) + at(ix + 1, iy, c) * tx) * (1 - ty) + (at(ix, iy + 1, c) * (1 - tx) + at(ix + 1, iy + 1, c) * tx) * ty);
-}
-
-// Unreal DownsampleCommon (HIGH): four bilinear taps at +-1 source texel, each uv
-// clamped to the bilinear-safe viewport (independent oracle of bloom-horizontal.wgsl).
-function downsample4x4(values, width, height, u, v) {
-  const tx = 1 / width, ty = 1 / height;
-  const clampU = (value) => Math.max(0.5 * tx, Math.min(1 - 0.5 * tx, value));
-  const clampV = (value) => Math.max(0.5 * ty, Math.min(1 - 0.5 * ty, value));
-  const sum = [0, 0, 0];
-  for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-    sampleSource(values, width, height, clampU(u + dx * tx), clampV(v + dy * ty)).forEach((value, channel) => { sum[channel] += value; });
-  }
-  return sum.map((value) => Math.max(value * 0.25, 0));
+// Independent ceil-half box filter followed by the FP16 storage boundary.
+function downsample2x2(values, width, height, x, y) {
+  const x0 = x * 2;
+  const y0 = y * 2;
+  const x1 = Math.min(x0 + 1, width - 1);
+  const y1 = Math.min(y0 + 1, height - 1);
+  return [0, 1, 2].map((channel) => {
+    const average = (
+      values[y0 * width + x0][channel] + values[y0 * width + x1][channel] +
+      values[y1 * width + x0][channel] + values[y1 * width + x1][channel]
+    ) * 0.25;
+    return halfFloat.f16ToF32(halfFloat.f32ToF16(average));
+  });
 }
 
 async function readTarget(texture, width, height) {
@@ -155,15 +144,34 @@ async function readTarget(texture, width, height) {
   });
 }
 
-const shaderModule = device.createShaderModule({ code: entry.wgsl, label: 'bloom-horizontal-odd-regression' });
-const pipeline = device.createRenderPipeline({
-  layout: 'auto',
-  vertex: { module: shaderModule, entryPoint: 'vs_main' },
-  fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
-  primitive: { topology: 'triangle-list' },
-});
-const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
-const params = device.createBuffer({ size: 256, usage: 0x40 | copyDst });
+function createPipeline(label, code) {
+  const module = device.createShaderModule({ code, label });
+  return device.createRenderPipeline({
+    label,
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vs_main' },
+    fragment: { module, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
+    primitive: { topology: 'triangle-list' },
+  });
+}
+
+const reduce = createPipeline('post-scene-color-half', POST_SCENE_COLOR_HALF_WGSL);
+const prefilter = createPipeline('bloom-prefilter', BLOOM_PREFILTER_WGSL);
+const params = device.createBuffer({ size: 16, usage: 0x40 | copyDst });
+
+function draw(encoder, pipeline, input, target, parameters = []) {
+  const group = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(1),
+    entries: [{ binding: 0, resource: input.createView() }, ...parameters],
+  });
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(1, group);
+  pass.draw(3);
+  pass.end();
+}
 
 async function runCase(testCase) {
   const source = device.createTexture({
@@ -176,6 +184,11 @@ async function runCase(testCase) {
     format: 'rgba16float',
     usage: targetUsage,
   });
+  const reduced = device.createTexture({
+    size: { width: testCase.targetWidth, height: testCase.targetHeight, depthOrArrayLayers: 1 },
+    format: 'rgba16float',
+    usage: 0x10 | 0x04,
+  });
   const sourceUpload = sourceBytes(testCase.values, testCase.sourceWidth, testCase.sourceHeight);
   device.queue.writeTexture(
     { texture: source },
@@ -183,49 +196,25 @@ async function runCase(testCase) {
     { bytesPerRow: sourceUpload.bytesPerRow, rowsPerImage: testCase.sourceHeight },
     { width: testCase.sourceWidth, height: testCase.sourceHeight, depthOrArrayLayers: 1 },
   );
-  device.queue.writeBuffer(params, 0, new Float32Array([
-    testCase.threshold ?? 0,
-    testCase.smoothWidth ?? 0,
-    testCase.targetWidth,
-    testCase.targetHeight,
-    0,
-    0,
-    0,
-    0,
-  ]));
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: source.createView() },
-      { binding: 1, resource: sampler },
-      { binding: 2, resource: { buffer: params, size: 32 } },
-    ],
-  });
-  const encoder = device.createCommandEncoder({ label: `${testCase.label}-encode` });
-  const pass = encoder.beginRenderPass({
-    colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-  });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  pass.draw(3);
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-  const actual = await readTarget(target, testCase.targetWidth, testCase.targetHeight);
   const threshold = testCase.threshold ?? 0;
   const smoothWidth = testCase.smoothWidth ?? 0;
+  device.queue.writeBuffer(params, 0, new Float32Array([threshold, smoothWidth, 0, 0]));
+  const encoder = device.createCommandEncoder({ label: `${testCase.label}-encode` });
+  draw(encoder, reduce, source, reduced);
+  draw(encoder, prefilter, reduced, target, [{ binding: 2, resource: { buffer: params } }]);
+  device.queue.submit([encoder.finish()]);
+  const actual = await readTarget(target, testCase.targetWidth, testCase.targetHeight);
   const decoded = testCase.values.map(value => asColor(value).map(channel => halfToFloat(floatToHalf(channel ?? 0))));
   const expected = actual.map((_, index) => {
     const x = index % testCase.targetWidth, y = Math.floor(index / testCase.targetWidth);
-    const color = [0, 0, 0];
-    for (let offset = -5; offset <= 5; offset++) {
-      const u = (x + 0.5 + offset) / testCase.targetWidth;
-      const sample = extractBloom(downsample4x4(decoded, testCase.sourceWidth, testCase.sourceHeight, u, (y + 0.5) / testCase.targetHeight), threshold, smoothWidth);
-      const weight = 0.39894 / 2 * Math.exp(-0.5 * (offset / 2) ** 2);
-      sample.forEach((value, channel) => { color[channel] += value * weight; });
-    }
-    return color;
+    return extractBloom(
+      downsample2x2(decoded, testCase.sourceWidth, testCase.sourceHeight, x, y),
+      threshold,
+      smoothWidth,
+    );
   });
   source.destroy();
+  reduced.destroy();
   target.destroy();
   const errors = actual.flatMap((pixel, index) => {
     const expectedColor = expected[index] ?? [0, 0, 0];
@@ -329,7 +318,7 @@ const cases = [...oddCases, ...extractionCases];
 const results = [];
 for (const testCase of cases) results.push(await runCase(testCase));
 
-// Exercise the continuous threshold transition with the same real cooked
+// Exercise the continuous threshold transition with the same real prefilter
 // shader. Positive smooth width is continuous; width zero explicitly selects
 // a hard threshold. Both remain monotonic and match their independent oracle.
 const continuityCases = [

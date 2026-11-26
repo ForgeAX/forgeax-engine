@@ -8,7 +8,7 @@ import { createWhiteBalanceMatrixWriter } from './auto-exposure/oracle';
 
 type OutputCamera = Pick<
   CameraSnapshot,
-  'exposure' | 'whitePoint' | 'tonemap' | 'lensEffects' | 'bloomIntensity' | 'bloomRadius'
+  'exposure' | 'whitePoint' | 'tonemap' | 'lensEffects' | 'bloomIntensity'
 > & {
   readonly output?: Pick<NonNullable<CameraSnapshot['output']>, 'temperature' | 'tint'> | undefined;
   readonly temporal?:
@@ -17,11 +17,12 @@ type OutputCamera = Pick<
 };
 
 export interface GradeParameters {
-  readonly bloom: boolean;
+  readonly bloomIntensity: 0 | 1 | 'camera';
   readonly sharpen: number;
   readonly finishInGrade: boolean;
+  /** Apply dither at the first UNORM write, before encoded AA. */
+  readonly ditherAtEncoding?: boolean | undefined;
   readonly linearGrade?: boolean | undefined;
-  readonly chromaticAberration?: boolean | undefined;
 }
 
 function writeLensParameters(floats: Float32Array, lens: LensEffectsSnapshot | undefined): void {
@@ -52,8 +53,7 @@ export function createStandardOutputV2ParameterWriter(policy: GradeParameters) {
     const mode = tonemapToU32(camera.tonemap);
     const temperature = camera.output?.temperature ?? 6504;
     const tint = camera.output?.tint ?? 0;
-    const fringe =
-      policy.chromaticAberration === false ? 0 : (camera.lensEffects?.chromaticAberration ?? 0);
+    const fringe = camera.lensEffects?.chromaticAberration ?? 0;
     const start = camera.lensEffects?.chromaticAberrationStartOffset ?? 0;
     floats[0] = 1; // The same buffer can supply the neutral candidate when AE is off.
     floats[1] = camera.exposure;
@@ -63,8 +63,7 @@ export function createStandardOutputV2ParameterWriter(policy: GradeParameters) {
     writeChromaticAberrationScales(floats, 16, fringe, start);
     floats[18] = start;
     floats[19] = lutStrength;
-    floats[20] = policy.bloom ? camera.bloomIntensity : 0;
-    floats[21] = policy.bloom ? camera.bloomRadius : 0;
+    floats[20] = policy.bloomIntensity === 'camera' ? camera.bloomIntensity : policy.bloomIntensity;
     floats[22] = 0;
     floats[23] = 0;
     writeLensParameters(floats, camera.lensEffects);
@@ -72,7 +71,7 @@ export function createStandardOutputV2ParameterWriter(policy: GradeParameters) {
     floats[35] = camera.temporal?.sampleTimeSeconds ?? 0;
     words[36] = outputGamut;
     words[37] = policy.linearGrade === true ? 1 : 0;
-    words[38] = dither ? 1 : 0;
+    words[38] = dither ? (policy.ditherAtEncoding === true ? 2 : 1) : 0;
     words[39] = policy.finishInGrade ? 1 : 0;
     return bytes;
   };

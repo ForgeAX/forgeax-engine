@@ -1,8 +1,8 @@
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
+  DirectLightSlotWriter,
   type DirectLightSnapshot,
-  packDirectLightSlot,
   type ReflectedDirectLightSlotLayout,
 } from '../light-buffer-layout';
 
@@ -34,7 +34,7 @@ export class LightTable {
   private readonly written: Uint8Array;
   /** CPU image of the written slots, compared bit-exactly before a write. */
   private readonly words: Uint32Array;
-  private readonly floats: Float32Array;
+  private readonly writer: DirectLightSlotWriter;
   private packedSlots = 0;
   /** Bytes the last `write` uploaded; zero on a steady frame. */
   uploadedBytes = 0;
@@ -48,7 +48,7 @@ export class LightTable {
     this.channelMappings = new Uint32Array(layout.capacity);
     this.projectedShadows = new Uint8Array(layout.capacity);
     this.words = new Uint32Array(layout.capacity * layout.floatCount);
-    this.floats = new Float32Array(this.words.buffer);
+    this.writer = new DirectLightSlotWriter(layout);
   }
 
   write(
@@ -59,19 +59,37 @@ export class LightTable {
   ): Result<void, LightTableWriteFailure> {
     this.uploadedBytes = 0;
     this.packedSlots = 0;
+    if (local.length > this.layout.capacity)
+      return err({
+        code: 'limit-exceeded',
+        expected: 'local lights fit the reflected storage table',
+        hint: 'admit lights within the reflected direct light capacity',
+        detail: { count: local.length, capacity: this.layout.capacity },
+      });
+    if (this.sources.length > local.length) this.sources.length = local.length;
     let first = -1;
     for (let slot = 0; slot < local.length; slot += 1) {
       const source = local[slot]?.source;
       const selected = projectorSlot === undefined ? undefined : projectorSlot === slot;
       const projectedChannel = projectedShadows?.[slot] ?? 0;
-      const dirty =
-        source !== undefined &&
-        (this.sources[slot] !== source ||
-          this.projector[slot] !== selected ||
-          this.channelMappings[slot] !== channelMapping ||
-          this.projectedShadows[slot] !== projectedChannel) &&
-        this.pack(slot, source, selected, channelMapping, projectedChannel);
-      if (dirty) {
+      if (source === undefined) {
+        this.sources[slot] = undefined;
+      } else if (
+        this.sources[slot] !== source ||
+        this.projector[slot] !== selected ||
+        this.channelMappings[slot] !== channelMapping ||
+        this.projectedShadows[slot] !== projectedChannel
+      ) {
+        this.writer.write(source, selected, channelMapping, projectedChannel);
+        this.packedSlots++;
+        if (this.writer.copyChanged(this.words, slot * this.layout.floatCount))
+          this.written[slot] = 0;
+        this.sources[slot] = source;
+        this.projector[slot] = selected;
+        this.channelMappings[slot] = channelMapping;
+        this.projectedShadows[slot] = projectedChannel;
+      }
+      if (source !== undefined && this.written[slot] !== 1) {
         if (first < 0) first = slot;
         continue;
       }
@@ -88,39 +106,13 @@ export class LightTable {
     return Object.freeze({ packedSlots: this.packedSlots, uploadedBytes: this.uploadedBytes });
   }
 
-  /** Pack one slot into the CPU image; false when its bytes are already on the GPU. */
-  private pack(
-    slot: number,
-    source: DirectLightSnapshot,
-    selected: boolean | undefined,
-    channelMapping: number,
-    projectedChannel: number,
-  ): boolean {
-    this.packedSlots += 1;
-    this.sources[slot] = source;
-    this.projector[slot] = selected;
-    this.channelMappings[slot] = channelMapping;
-    this.projectedShadows[slot] = projectedChannel;
-    const packed = new Uint32Array(
-      packDirectLightSlot(source, this.layout, selected, channelMapping).buffer,
-    );
-    packed[this.layout.lightingChannelsByteOffset / 4 + 3] = projectedChannel;
-    const floatCount = this.layout.floatCount;
-    const offset = slot * floatCount;
-    let changed = this.written[slot] !== 1;
-    for (let index = 0; index < floatCount; index += 1) {
-      if (this.words[offset + index] === packed[index]) continue;
-      this.words[offset + index] = packed[index] as number;
-      changed = true;
-    }
-    return changed;
-  }
-
   private upload(first: number, end: number): Result<void, LightTableWriteFailure> {
     const written = this.device.queue.writeBuffer(
       this.buffer,
       first * this.layout.byteSize,
-      this.floats.subarray(first * this.layout.floatCount, end * this.layout.floatCount),
+      this.words,
+      first * this.layout.floatCount,
+      (end - first) * this.layout.floatCount,
     );
     if (!written.ok) {
       // The GPU slots are unknown: repack and rewrite them on the next write.

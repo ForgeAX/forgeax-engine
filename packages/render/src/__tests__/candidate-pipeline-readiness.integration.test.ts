@@ -1248,8 +1248,8 @@ it.each([
     expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
     expect(f.renderer.inspect().output).toMatchObject({
       displayEncoded: true,
-      intermediateFormat: 'rgba16float',
-      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+      intermediateFormat: 'rgba8unorm',
+      standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' },
     });
     expect(
       Array.from(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings),
@@ -2415,8 +2415,8 @@ it('invalidates prepared candidate raster credentials when the actual graph is r
     expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
     expect(f.renderer.inspect().output).toMatchObject({
       displayEncoded: true,
-      intermediateFormat: 'rgba16float',
-      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+      intermediateFormat: 'rgba8unorm',
+      standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' },
     });
     expect(prepared.isCurrent()).toBe(false);
     await prepared.release();

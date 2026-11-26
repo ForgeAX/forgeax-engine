@@ -203,6 +203,42 @@ describe('LightTable', () => {
     expect(writes).toHaveBeenCalledTimes(3);
   });
 
+  it('retries staged rows after an interrupted upload or source read', async () => {
+    const { owner, writes } = await table();
+    const source = point(15);
+    const local = [{ source }];
+    owner.write([{ source: point(2) }], undefined).unwrap();
+    writes.mockClear();
+    writes.mockImplementationOnce(() => {
+      throw new Error('queue interrupted');
+    });
+    expect(() => owner.write(local, undefined)).toThrow('queue interrupted');
+    owner.write(local, undefined).unwrap();
+    expect(writes).toHaveBeenCalledTimes(2);
+
+    writes.mockClear();
+    const next = { source: point(21) };
+    const interrupted = {
+      get source(): DirectLightSnapshot {
+        throw new Error('read interrupted');
+      },
+    };
+    expect(() => owner.write([next, interrupted], undefined)).toThrow('read interrupted');
+    owner.write([next], undefined).unwrap();
+    expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('detaches departed snapshots and reconciles reappearing rows against GPU bytes', async () => {
+    const { owner, writes } = await table();
+    const local = [{ source: point(1) }, { source: point(2) }];
+    owner.write(local, undefined).unwrap();
+    writes.mockClear();
+    owner.write([{}], undefined).unwrap();
+    owner.write(local, undefined).unwrap();
+    expect(owner.inspect()).toEqual({ packedSlots: 2, uploadedBytes: 0 });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   it('coalesces neighbouring changed slots into one range', async () => {
     const { owner, writes } = await table();
     const lights = Array.from({ length: 8 }, (_, index) => ({ source: point(index) }));

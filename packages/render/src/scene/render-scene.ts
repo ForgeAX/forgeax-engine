@@ -34,6 +34,7 @@ import {
   ReflectionProbeProjection,
   type ReflectionProbeSelectionResult,
 } from '../reflection/projection';
+import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchList,
   ExtractedFrame,
@@ -60,7 +61,7 @@ import { type FrameList, FrameProjection, sparseRowsOf } from './frame-list';
 import { FrameIntersection } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshFrame } from './mesh-frame';
-import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
+import { attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import type { ProbeBlendBufferProjection } from './probe-blend';
 import { type FrameCacheTally, writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
@@ -215,6 +216,15 @@ export interface PersistentGpuDrivenState {
   readonly drawSnapshotAt?: ((slot: number) => RenderableSnapshot | undefined) & {
     /** Membership of the captured source root this reader actually projects. */
     readonly mayHaveWaterSources?: boolean;
+    /** A located row can be projected directly only with its paired fixed-frame locator. */
+    readonly locate?: (slot: number) => RenderSceneSlot | undefined;
+    readonly project?: (row: RenderSceneSlot) => RenderableSnapshot | undefined;
+    /** Apply this exact camera's physical slot selection before issuing a draw. */
+    readonly projectCamera?: (
+      row: RenderSceneSlot,
+      camera: Pick<CameraSnapshot, 'cullMask'>,
+      visibility: import('./persistent-cull').SlotCameraVisibility,
+    ) => RenderableSnapshot | undefined;
   };
   /** Roots `drawSnapshotAt` reads; retained consumers link two states through their diff. */
   readonly draws?: DrawEvidence;
@@ -1015,17 +1025,12 @@ export class PersistentRenderScene {
     mayHaveWaterSources = true,
   ) {
     const entry = view.shared;
-    const unavailable = entry.unavailableSlots;
-    const drawAt = projection.drawFrame(materials, this.temporalCounters, projection.meshFrame());
-    const probeAt = entry.probeProjection.captureRecordLookup();
-    const probeMemo = this.probeAttachMemo.bySnapshot;
-    const read = (slot: number) => {
-      if (unavailable.has(slot)) return undefined;
-      const source = drawAt(slot);
-      return source === undefined ? undefined : attachProbeRecord(source, probeAt(slot), probeMemo);
-    };
-    read.mayHaveWaterSources = mayHaveWaterSources;
-    return read;
+    return projection.drawFrame(materials, this.temporalCounters, projection.meshFrame(), {
+      unavailable: entry.unavailableSlots,
+      probeAt: entry.probeProjection.captureRecordLookup(),
+      probeMemo: this.probeAttachMemo.bySnapshot,
+      mayHaveWaterSources,
+    });
   }
 
   /** This view staged a temporal capture for the frame being submitted. */

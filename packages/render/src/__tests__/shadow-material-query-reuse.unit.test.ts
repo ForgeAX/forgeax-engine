@@ -247,7 +247,7 @@ it('resolves shared shadow material bindings once per invocation while recording
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([60, 61, 60]);
+    ]).toEqual([60, 60, 60]);
   } finally {
     f.dispose();
   }
@@ -665,7 +665,7 @@ it('retains every raw material-owner query for adjacent batches', async () => {
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([64, 65, 64]);
+    ]).toEqual([64, 64, 64]);
   } finally {
     f.dispose();
   }

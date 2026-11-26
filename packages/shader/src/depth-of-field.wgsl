@@ -2,11 +2,13 @@
 
 #import forgeax_view::common::FullscreenOutput
 #import forgeax_view::common::fullscreen_triangle
-#import forgeax_scene_temporal::{unpackSceneTemporalV1}
+#import forgeax_view::depth_of_field_tiles::dofTileSides
+#import forgeax_view::depth_of_field_tiles::dofTileRadius
+#import forgeax_view::depth_of_field_tiles::dofTileHasInfluence
 
 // Four vec4 rows keep the runtime UBO fixed at 64 bytes. Row 0 is the
 // thin-lens camera, row 1 is image/quality policy, row 2 carries the active
-// projection range plus the TAA-depth switch, and reserved.x carries the
+// projection range and output width, and reserved.x carries the
 // frame CoC coefficient in output pixels.
 struct DepthOfFieldParams {
   optics : vec4<f32>,
@@ -19,13 +21,12 @@ struct DepthOfFieldParams {
 @group(1) @binding(1) var linearSampler : sampler;
 @group(1) @binding(2) var<uniform> params : DepthOfFieldParams;
 @group(1) @binding(3) var sceneDepth : texture_depth_2d;
-@group(1) @binding(4) var depthSampler : sampler;
 @group(1) @binding(5) var extra0 : texture_2d<f32>;
 @group(1) @binding(6) var extra1 : texture_2d<f32>;
 @group(1) @binding(7) var extra2 : texture_2d<f32>;
 @group(1) @binding(8) var extra3 : texture_2d<f32>;
 @group(1) @binding(9) var extra4 : texture_2d<f32>;
-@group(1) @binding(10) var extra5 : texture_2d<f32>;
+@group(1) @binding(10) var tileInfluence : texture_2d<f32>;
 
 fn validNumber(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
@@ -60,17 +61,9 @@ struct DepthSample {
 };
 
 fn depthAndCoverageAt(uv : vec2<f32>) -> DepthSample {
-  if (params.camera.z > 0.5) {
-    let temporal = unpackSceneTemporalV1(textureSampleLevel(extra0, linearSampler, uv, 0.0));
-    // Temporal-v1 validity is authoritative when requested: an invalid
-    // sample is the temporal clear (no geometry), never jittered raw depth.
-    // Like a raw reverse-Z clear it is background at the far plane.
-    let valid = temporal.validDepth && validNumber(temporal.viewDepth) &&
-      temporal.viewDepth > 0.0;
-    let depth = select(linearDepth(0.0), temporal.viewDepth, valid);
-    return DepthSample(depth, select(0.0, 1.0, depth > 0.0));
-  }
-  let depth = linearDepth(textureSampleLevel(sceneDepth, depthSampler, uv, 0));
+  let size = vec2<i32>(textureDimensions(sceneDepth));
+  let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
+  let depth = linearDepth(textureLoad(sceneDepth, pixel, 0));
   let valid = depth > 0.0 && validNumber(depth);
   // Single-sample depth has one valid sample when the linearized value is
   // usable. This coverage travels with the CoC for silhouette-aware passes.
@@ -79,16 +72,6 @@ fn depthAndCoverageAt(uv : vec2<f32>) -> DepthSample {
 
 fn depthAt(uv : vec2<f32>) -> f32 {
   return depthAndCoverageAt(uv).depth;
-}
-
-fn selectedCoc(coc : f32) -> bool {
-  if (params.image.z < 0.5) {
-    return abs(coc) > 0.001;
-  }
-  if (params.image.z < 1.5) {
-    return coc < -0.001;
-  }
-  return coc > 0.001;
 }
 
 fn selectedCocForSide(coc : f32, nearSide : bool) -> bool {
@@ -126,7 +109,7 @@ fn signedCoc(depth : f32) -> f32 {
   // Keep this layout byte-for-byte aligned with packDepthOfFieldParams:
   // row0 = focus, f-stop, sensor height, focal length;
   // row1 = output height, max radius, side, quality;
-  // row2 = near, far, temporal-depth flag, reserved;
+  // row2 = near, far, output width, reserved;
   // row3.x = precomputed output-pixel CoC coefficient.
   let focus = params.optics.x;
   let outputHeight = params.image.x;
@@ -151,31 +134,23 @@ fn signedCoc(depth : f32) -> f32 {
   return clamp(radius, -params.image.y, params.image.y);
 }
 
-fn cocAt(uv : vec2<f32>) -> f32 {
-  let encoded = textureSampleLevel(extra0, linearSampler, uv, 0.0);
-  return select(0.0, encoded.r, validNumber(encoded.r));
+struct CocSample {
+  radius : f32,
+  coverage : f32,
+};
+
+fn sampleCoc(uv : vec2<f32>) -> CocSample {
+  let encoded = textureSampleLevel(extra0, linearSampler, uv, 0.0).rg;
+  return CocSample(
+    select(0.0, encoded.r, validNumber(encoded.r)),
+    select(0.0, clamp(encoded.g, 0.0, 1.0), validNumber(encoded.g)),
+  );
 }
 
-fn cocAtExtra1(uv : vec2<f32>) -> f32 {
-  let encoded = textureSampleLevel(extra1, linearSampler, uv, 0.0);
-  return select(0.0, encoded.r, validNumber(encoded.r));
-}
-
-fn cocCoverageAt(uv : vec2<f32>) -> f32 {
-  let encoded = textureSampleLevel(extra0, linearSampler, uv, 0.0);
-  return select(0.0, clamp(encoded.a, 0.0, 1.0), validNumber(encoded.a));
-}
-
-fn cocCoverageAtExtra1(uv : vec2<f32>) -> f32 {
-  let encoded = textureSampleLevel(extra1, linearSampler, uv, 0.0);
-  return select(0.0, clamp(encoded.a, 0.0, 1.0), validNumber(encoded.a));
-}
-
-// CoC radius is expressed in final output pixels while the graph may sample
-// an internal RenderExtent. Keep UV offsets and source-circle distances on the
-// internal lattice without changing the authored optical radius.
-fn internalToOutputScale() -> f32 {
-  return f32(textureDimensions(extra1).y) / max(params.image.x, 1.0);
+// CoC uses output pixels. Convert each UV axis using the output extent so
+// aligned internal dimensions do not stretch the authored blur disk.
+fn outputExtent() -> vec2<f32> {
+  return max(vec2<f32>(params.camera.z, params.image.x), vec2<f32>(1.0));
 }
 
 fn circleKernelMean(sourceRadius : f32, domainRadius : f32) -> f32 {
@@ -213,98 +188,77 @@ fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> FullscreenOutput {
 fn fs_coc(in : FullscreenOutput) -> @location(0) vec4<f32> {
   let depthSample = depthAndCoverageAt(in.uv);
   let coc = signedCoc(depthSample.depth);
-  // CoC alpha carries source depth validity/coverage for every downstream
-  // half-resolution pass; the blue channel remains the validity mirror.
-  return vec4<f32>(coc, abs(coc), depthSample.coverage, depthSample.coverage);
+  // The same two channels are used when the attachment needs an RGBA fallback.
+  return vec4<f32>(coc, depthSample.coverage, 0.0, 0.0);
 }
 
-fn prefilter(in : FullscreenOutput, nearSide : bool) -> vec4<f32> {
-  let sourceSize = vec2<f32>(textureDimensions(currentColor));
-  let texel = 1.0 / sourceSize;
+@fragment
+fn fs_tile_radius(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let radius = dofTileRadius(currentColor, vec2<i32>(in.position.xy), params.image.z);
+  return vec4<f32>(radius, 0.0, 0.0);
+}
+
+@fragment
+fn fs_tile_influence(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let hasInfluence = dofTileHasInfluence(
+    currentColor, vec2<i32>(in.position.xy), outputExtent(), params.image.y,
+  );
+  return vec4<f32>(select(vec2<f32>(0.0), vec2<f32>(1.0), hasInfluence), 0.0, 0.0);
+}
+
+struct PrefilterOutput {
+  @location(0) color : vec4<f32>,
+  @location(1) metadata : vec4<f32>,
+};
+
+fn prefilter(in : FullscreenOutput, nearSide : bool) -> PrefilterOutput {
+  let texel = 1.0 / vec2<f32>(textureDimensions(currentColor));
   var color = vec3<f32>(0.0);
   var weight = 0.0;
-  var coverage = 0.0;
+  var maxRadius = 0.0;
+  var minDepth = 3.402823e+38;
+  var maxDepth = 0.0;
+  var depthCoverage = 0.0;
+  // Reduce color and conservative metadata over the same side-local footprint.
   for (var index = 0u; index < 4u; index += 1u) {
     let offset = vec2<f32>(f32(index & 1u), f32(index >> 1u)) - vec2<f32>(0.5);
     let uv = clamp(in.uv + offset * texel, vec2<f32>(0.0), vec2<f32>(1.0));
-    let coc = cocAt(uv);
-    let cocCoverage = cocCoverageAt(uv);
-    let valid = selectedCocForSide(coc, nearSide) && cocCoverage > 0.0;
-    let sampleWeight = select(0.0, cocCoverage, valid);
-    color += textureSampleLevel(currentColor, linearSampler, uv, 0.0).rgb * sampleWeight;
-    weight += sampleWeight;
-    coverage += select(0.0, 0.25 * cocCoverage, valid);
+    let coc = sampleCoc(uv);
+    if (!selectedCocForSide(coc.radius, nearSide) || coc.coverage <= 0.0) { continue; }
+
+    color += textureSampleLevel(currentColor, linearSampler, uv, 0.0).rgb * coc.coverage;
+    weight += coc.coverage;
+    maxRadius = max(maxRadius, abs(coc.radius));
+    let depthSample = depthAndCoverageAt(uv);
+    if (depthSample.depth > 0.0 && depthSample.coverage > 0.0) {
+      minDepth = min(minDepth, depthSample.depth);
+      maxDepth = max(maxDepth, depthSample.depth);
+      depthCoverage += 0.25 * coc.coverage * depthSample.coverage;
+    }
   }
-  let positiveWeight = max(weight, 1e-5);
-  // Keep color energy normalized by the accepted source area; coverage is
-  // carried separately for later resolve confidence. A side with no selected
-  // samples must retain the scene color so small-source coverage cannot mix a
-  // black half-resolution fallback into a constant-color surface.
-  let fallbackColor = textureSampleLevel(currentColor, linearSampler, in.uv, 0.0).rgb;
-  let resolvedColor = select(fallbackColor, color / positiveWeight, weight > 0.0);
-  return vec4<f32>(resolvedColor, coverage);
-}
-
-
-@fragment
-fn fs_prefilter(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  return prefilter(in, params.image.z < 1.5);
+  // Retain scene color when the side has no selected source samples.
+  var resolvedColor = color / max(weight, 1e-5);
+  if (weight <= 0.0) {
+    resolvedColor = textureSampleLevel(currentColor, linearSampler, in.uv, 0.0).rgb;
+  }
+  return PrefilterOutput(
+    vec4<f32>(resolvedColor, 0.25 * weight),
+    vec4<f32>(maxRadius, select(0.0, minDepth, depthCoverage > 0.0), maxDepth, depthCoverage),
+  );
 }
 
 @fragment
-fn fs_prefilter_near(in : FullscreenOutput) -> @location(0) vec4<f32> {
+fn fs_prefilter_near(in : FullscreenOutput) -> PrefilterOutput {
+  if (!dofTileSides(extra1, in.uv, textureDimensions(extra0)).x) { discard; }
   return prefilter(in, true);
 }
 
 @fragment
-fn fs_prefilter_far(in : FullscreenOutput) -> @location(0) vec4<f32> {
+fn fs_prefilter_far(in : FullscreenOutput) -> PrefilterOutput {
+  if (!dofTileSides(extra1, in.uv, textureDimensions(extra0)).y) { discard; }
   return prefilter(in, false);
 }
-// Keep the range lost by the half-resolution color reduction. The metadata
-// is deliberately side-local: opposite signed CoC values must never average
-// into a false focus value, and gather needs source depth/radius facts rather
-// than the destination pixel's CoC.
-fn prefilterMetadata(in : FullscreenOutput, nearSide : bool) -> vec4<f32> {
-  let sourceSize = vec2<f32>(textureDimensions(currentColor));
-  let texel = 1.0 / sourceSize;
-  var maxRadius = 0.0;
-  var minDepth = 3.402823e+38;
-  var maxDepth = 0.0;
-  var coverage = 0.0;
-  for (var index = 0u; index < 4u; index += 1u) {
-    let offset = vec2<f32>(f32(index & 1u), f32(index >> 1u)) - vec2<f32>(0.5);
-    let uv = clamp(in.uv + offset * texel, vec2<f32>(0.0), vec2<f32>(1.0));
-    let coc = cocAtExtra1(uv);
-    let cocCoverage = cocCoverageAtExtra1(uv);
-    if (selectedCocForSide(coc, nearSide) && cocCoverage > 0.0) {
-      let depthSample = depthAndCoverageAt(uv);
-      maxRadius = max(maxRadius, abs(coc));
-      if (depthSample.depth > 0.0 && depthSample.coverage > 0.0) {
-        minDepth = min(minDepth, depthSample.depth);
-        maxDepth = max(maxDepth, depthSample.depth);
-        coverage += 0.25 * cocCoverage * depthSample.coverage;
-      }
-    }
-  }
-  let safeMinDepth = select(0.0, minDepth, coverage > 0.0);
-  return vec4<f32>(maxRadius, safeMinDepth, maxDepth, coverage);
-}
 
-
-@fragment
-fn fs_prefilter_metadata(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  return prefilterMetadata(in, params.image.z < 1.5);
-}
-
-@fragment
-fn fs_prefilter_metadata_near(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  return prefilterMetadata(in, true);
-}
-
-@fragment
-fn fs_prefilter_metadata_far(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  return prefilterMetadata(in, false);
-}
 fn farDepthAccept(center : f32, sample : f32, distancePixels : f32, centerRadius : f32) -> bool {
   if (center <= 0.0 || sample <= 0.0) { return false; }
   // A nearer far-field circle spreads over the farther background behind it.
@@ -393,17 +347,16 @@ fn resolveGather(accumulator : GatherAccumulator, capacity : f32, fallback : vec
 }
 
 fn gather(in : FullscreenOutput, useNear : bool, useFar : bool) -> GatherOutput {
-  let sourceSize = vec2<f32>(textureDimensions(extra1));
-  let internalToOutput = internalToOutputScale();
-  let centerDepth = depthAt(in.uv);
-  let centerRadius = abs(cocAtExtra1(in.uv));
   var nearFallback = vec3<f32>(0.0);
   var farFallback = vec3<f32>(0.0);
   if (useNear) { nearFallback = textureSampleLevel(currentColor, linearSampler, in.uv, 0.0).rgb; }
-  if (useFar) { farFallback = textureSampleLevel(extra4, linearSampler, in.uv, 0.0).rgb; }
+  if (useFar) { farFallback = textureSampleLevel(extra3, linearSampler, in.uv, 0.0).rgb; }
+  let centerDepth = depthAt(in.uv);
   if (centerDepth <= 0.0) {
     return GatherOutput(vec4<f32>(nearFallback, 0.0), vec4<f32>(farFallback, 0.0), vec4<f32>(0.0));
   }
+  let extent = outputExtent();
+  let centerRadius = abs(sampleCoc(in.uv).radius);
   var near = GatherAccumulator(vec3<f32>(0.0), 0.0, 0.0);
   var far = GatherAccumulator(vec3<f32>(0.0), 0.0, 0.0);
   var backgroundColor = vec3<f32>(0.0);
@@ -414,25 +367,26 @@ fn gather(in : FullscreenOutput, useNear : bool, useFar : bool) -> GatherOutput 
     if (f32(index) >= tapLimit()) { break; }
     // All three source-driven kernels visit the same disk. Share only their
     // source facts; color, depth acceptance and coverage remain side-local.
-    let offset = sourceDiskOffset(index, tapLimit()) * internalToOutput / sourceSize;
+    let offset = sourceDiskOffset(index, tapLimit()) / extent;
     let uv = clamp(in.uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
-    let coc = cocAtExtra1(uv);
-    let cocCoverage = cocCoverageAtExtra1(uv);
+    let cocSample = sampleCoc(uv);
+    let coc = cocSample.radius;
+    let cocCoverage = cocSample.coverage;
     // Even rejected candidates contribute to nominal source area.
     coverageCapacity += cocCoverage;
     if (cocCoverage <= 0.0) { continue; }
-    let distancePixels = length((uv - in.uv) * sourceSize) / max(internalToOutput, 1e-5);
+    let distancePixels = length((uv - in.uv) * extent);
     var sampleDepth = -1.0;
     // Background reconstruction always needs depth. Far-only gather keeps
     // its depth lookup after support rejection inside gatherSource.
     if (useNear) { sampleDepth = depthAt(uv); }
     if (useNear && selectedCocForSide(coc, true)) {
       gatherSource(uv, coc, cocCoverage, distancePixels, centerDepth, centerRadius,
-        sampleDepth, true, currentColor, extra2, &near);
+        sampleDepth, true, currentColor, extra1, &near);
     }
     if (useFar && selectedCocForSide(coc, false)) {
       gatherSource(uv, coc, cocCoverage, distancePixels, centerDepth, centerRadius,
-        sampleDepth, false, extra4, extra3, &far);
+        sampleDepth, false, extra3, extra2, &far);
     }
     if (useNear) {
       let sourceRadius = abs(coc);
@@ -465,7 +419,7 @@ fn gather(in : FullscreenOutput, useNear : bool, useFar : bool) -> GatherOutput 
       let behindCenter = sampleDepth > centerDepth + depthTolerance;
       let backgroundCandidate = coc >= -0.001 || behindCenter;
       if (!backgroundCandidate) { continue; }
-      let sample = textureSampleLevel(extra5, linearSampler, uv, 0.0);
+      let sample = textureSampleLevel(extra4, linearSampler, uv, 0.0);
       let w = cocCoverage * sample.a;
       backgroundColor += sample.rgb * w;
       backgroundWeight += w;
@@ -483,17 +437,23 @@ fn gather(in : FullscreenOutput, useNear : bool, useFar : bool) -> GatherOutput 
 
 @fragment
 fn fs_gather_both(in : FullscreenOutput) -> GatherOutput {
-  return gather(in, true, true);
+  let sides = dofTileSides(tileInfluence, in.uv, textureDimensions(extra0));
+  if (!any(sides)) { discard; }
+  return gather(in, sides.x, sides.y);
 }
 
 @fragment
 fn fs_gather_near(in : FullscreenOutput) -> NearGatherOutput {
+  let sides = dofTileSides(tileInfluence, in.uv, textureDimensions(extra0));
+  if (!any(sides)) { discard; }
   let result = gather(in, true, false);
   return NearGatherOutput(result.near, result.background);
 }
 
 @fragment
 fn fs_gather_far(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let sides = dofTileSides(tileInfluence, in.uv, textureDimensions(extra0));
+  if (!any(sides)) { discard; }
   return gather(in, false, true).far;
 }
 
@@ -504,24 +464,24 @@ fn smallTapLimit() -> f32 {
 }
 
 fn smallBlur(uv : vec2<f32>, nearSide : bool, radiusPixels : f32) -> vec4<f32> {
-  let sourceSize = vec2<f32>(textureDimensions(extra1));
-  let internalToOutput = internalToOutputScale();
+  let extent = outputExtent();
   let count = smallTapLimit();
   let centerDepth = depthAt(uv);
   var color = textureSampleLevel(currentColor, linearSampler, uv, 0.0).rgb;
   var weight = 1.0;
   for (var index = 0u; index < 24u; index += 1u) {
     if (f32(index) >= count) { break; }
-    let sampleUv = clamp(uv + diskOffset(index, count) * radiusPixels * internalToOutput / sourceSize,
+    let sampleUv = clamp(uv + diskOffset(index, count) * radiusPixels / extent,
       vec2<f32>(0.0), vec2<f32>(1.0));
-    let sourceCoc = cocAtExtra1(sampleUv);
-    let sourceCoverage = cocCoverageAtExtra1(sampleUv);
+    let cocSample = sampleCoc(sampleUv);
+    let sourceCoc = cocSample.radius;
+    let sourceCoverage = cocSample.coverage;
     // Only the source-driven small kernel may contribute before the
     // half-resolution 2-3px handoff. Large source circles remain owned by
     // the gather result, even when the destination is focal.
     let smallSourceFactor = 1.0 - smoothstep(2.0, 3.0, abs(sourceCoc));
     let signedMatch = select(sourceCoc > 0.001, sourceCoc < -0.001, nearSide);
-    let distancePixels = length((sampleUv - uv) * sourceSize) / max(internalToOutput, 1e-5);
+    let distancePixels = length((sampleUv - uv) * extent);
     let supports = distancePixels <= abs(sourceCoc) + 0.5;
     let sampleDepth = depthAt(sampleUv);
     var depthMatch = false;
@@ -542,10 +502,13 @@ fn smallBlur(uv : vec2<f32>, nearSide : bool, radiusPixels : f32) -> vec4<f32> {
 @fragment
 fn fs_composite(in : FullscreenOutput) -> @location(0) vec4<f32> {
   let original = textureSampleLevel(currentColor, linearSampler, in.uv, 0.0);
-  let coc = cocAtExtra1(in.uv);
-  let nearBlur = textureSampleLevel(extra2, linearSampler, in.uv, 0.0);
-  let farBlur = textureSampleLevel(extra3, linearSampler, in.uv, 0.0);
-  let background = textureSampleLevel(extra4, linearSampler, in.uv, 0.0);
+  let coc = sampleCoc(in.uv).radius;
+  if (abs(coc) <= 0.5 && !any(dofTileSides(extra4, in.uv, textureDimensions(extra0)))) {
+    return original;
+  }
+  let nearBlur = textureSampleLevel(extra1, linearSampler, in.uv, 0.0);
+  let farBlur = textureSampleLevel(extra2, linearSampler, in.uv, 0.0);
+  let background = textureSampleLevel(extra3, linearSampler, in.uv, 0.0);
   let absoluteCoc = abs(coc);
   // Half-resolution passes own the large-radius portion only. Small radii
   // stay in the full-resolution path and a 2-3px region cross-fades both.

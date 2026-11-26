@@ -9,7 +9,11 @@ import {
   manifestShaderSourcePrepared,
   materialShaderSource,
 } from '../manifest-publication.js';
-import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from '../types.js';
+import {
+  type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
+  sealMaterialShaderVariants,
+} from '../types.js';
 
 /** References to already cooked programs, never another source or compiler recipe. */
 export interface MaterialShaderVariantReference {
@@ -127,8 +131,17 @@ export function materialTemplateVariantFamily(
       return primary.composedWgsl;
     },
   });
+  sealMaterialShaderVariants(family);
   runtimeVariantFamilies.add(family);
   return family;
+}
+
+const packedSource = Symbol('packed material variant source');
+
+export function packedVariantIdentifier(row: MaterialShaderManifestVariant): string | undefined {
+  return (row as MaterialShaderManifestVariant & { readonly [packedSource]?: string })[
+    packedSource
+  ];
 }
 
 /** Project immutable program owners into the existing manifest selection contract. */
@@ -152,6 +165,7 @@ export function materialVariantFamily(
       ...(program.forwardFog === undefined ? {} : { forwardFog: program.forwardFog }),
       definesKey,
       defines: reference.defines,
+      [packedSource]: reference.identifier,
       get composedWgsl() {
         return program.read().read();
       },
@@ -177,5 +191,6 @@ export function materialVariantFamily(
     () => materialShaderSource(primary),
     () => manifestShaderSourcePrepared(primary),
   );
-  return Object.freeze(entry);
+  sealMaterialShaderVariants(entry);
+  return entry;
 }

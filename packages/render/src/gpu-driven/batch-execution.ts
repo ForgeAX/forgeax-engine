@@ -6,6 +6,7 @@ import {
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
   err,
+  isDeepFrozenJson,
   isTriangleTopology,
   type MaterialRenderState,
   ok,
@@ -26,6 +27,7 @@ import {
   type GpuDrivenDrawRange,
   type GpuDrivenGeometryReceipt,
   hasGpuDrivenVertexSemantic,
+  hasMaterialResources,
   hasRequiredVertexInputs,
   ownGpuDrivenVertexInputs,
   type PreparedGpuDrivenDraw,
@@ -138,6 +140,24 @@ export type BatchExecution<Artifact extends BatchArtifactFacts = MaterialShaderA
       readonly prepared: PreparedGpuDrivenDraw;
     };
 
+/** Physical draw proven for one captured geometry and one immutable shader ABI. */
+export interface BatchGeometryAdmission {
+  readonly geometry: BatchGeometry;
+  readonly receipt: NonNullable<BatchArtifactFacts['receipt']>;
+  readonly uvSetCount: number | undefined;
+  readonly prepared: PreparedGpuDrivenDraw;
+}
+
+export function captureBatchGeometryAdmission(
+  geometry: BatchGeometry,
+  execution: BatchExecution,
+): BatchGeometryAdmission | undefined {
+  if (execution.route !== 'gpu' || !capturedGeometry.has(geometry)) return undefined;
+  const { receipt, uvSetCount } = execution.artifact;
+  if (receipt === undefined || !isDeepFrozenJson(receipt)) return undefined;
+  return { geometry, receipt, uvSetCount, prepared: execution.prepared };
+}
+
 /** Builtin and specialized programs prepare before graph recording can encode their draws. */
 export function gpuLanePreparesAsynchronously(artifact: MaterialShaderArtifact): boolean {
   return (
@@ -188,6 +208,7 @@ export function prepareBatchExecution<Artifact extends BatchArtifactFacts>(
   material: MaterialSnapshot,
   pass: BatchPass | undefined,
   resolve: BatchArtifactResolver<Artifact>,
+  admission?: BatchGeometryAdmission,
 ): Result<BatchExecution<Artifact>, GpuDrivenPreparationError> {
   if (pass === undefined) return ok({ route: 'none' });
   if (pass.kind === 'shadow' && !isTriangleTopology(geometry.draw.topology))
@@ -228,6 +249,19 @@ export function prepareBatchExecution<Artifact extends BatchArtifactFacts>(
   // recorder. A scene-index vertex entry alone does not admit that resource ABI.
   if (receipt.systemInputs?.water === 'water-frame/3') return direct();
   const selected = projectBatchArtifact(artifact, pass);
+  // The new material still resolves its own pass, variant, resources and published artifact.
+  if (
+    admission !== undefined &&
+    admission.geometry === geometry &&
+    admission.receipt === receipt &&
+    receipt === selected.receipt &&
+    admission.uvSetCount === selected.uvSetCount &&
+    admission.prepared.identity.material === selected.material &&
+    receipt.reflection.layoutIdentity === selected.layoutIdentity &&
+    hasMaterialResources(material, receipt)
+  )
+    return ok({ route: 'gpu', material, pass, artifact: selected, prepared: admission.prepared });
+
   const sourceInputs = geometry.receipt.vertexInputs;
   // Geometry owns physical stream offsets. Admission needs only the required shader
   // inputs those bytes supply; pipeline creation materializes the GPU descriptors.

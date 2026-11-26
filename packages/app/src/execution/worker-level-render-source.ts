@@ -5,10 +5,10 @@ import {
 } from '@forgeax/engine-assets-runtime/internal';
 import {
   type ClosedLevelAssetPayload,
+  collectPublicationDependencies,
   LocalMeshSource,
   type PreparedMeshSource,
   type prepareExtractContext,
-  publicationDependencies,
   type SourceViewPreparation,
   StagedMeshSourceError,
   type StagedMeshSourceStatus,
@@ -207,7 +207,7 @@ function* fixedAssets(
 ): Generator<void, Set<number>> {
   const handles = new Set<number>();
   for (const row of input.renderables) {
-    for (const handle of publicationDependencies(row)) handles.add(handle);
+    collectPublicationDependencies(row, handles);
     for (const lod of row.lods ?? []) if (typeof lod.mesh === 'number') handles.add(lod.mesh);
     for (const material of [...row.materials, ...(row.materialOverrides ?? [])])
       for (const asset of material?.snapshot.sourceAssets?.assets ?? []) handles.add(asset.handle);

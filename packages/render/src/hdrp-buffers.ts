@@ -358,11 +358,7 @@ function createHdrpTextureBuffers(
     texture: texture.value,
     view: view.value,
     layout,
-    table: new ClusterTextureTable(
-      layout.width,
-      layout.height,
-      reflectedAbi.directLightSlot.capacity,
-    ),
+    table: new ClusterTextureTable(layout.width, layout.height, reflectedAbi.directLightSlot),
     clusterUniformBuffer: uniform.value,
     clusterUniformBytes,
     directLightSlotBytes: reflectedAbi.directLightSlot.byteSize,

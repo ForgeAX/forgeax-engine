@@ -57,8 +57,8 @@ const feature: RenderFeature<undefined> = {
             kind: 'graphics-bindings',
             name: 'depth-input',
             program: 'depth',
-            values: { group: 1, fullscreen: true, shader: SHADER, depth: 'depth' },
-            logicalTargets: { depth: 'depth' },
+            values: { group: 1, fullscreen: true, shader: SHADER, depth: 'output-depth' },
+            logicalTargets: { depth: 'output-depth' },
           },
         ],
         passes: [
@@ -67,7 +67,7 @@ const feature: RenderFeature<undefined> = {
             name: 'depth-silhouette',
             sceneDepth: 'before-pass',
             colorAttachments: [{ target: 'color', loadOp: 'load', storeOp: 'store' }],
-            sampledTargets: ['depth'],
+            sampledTargets: ['output-depth'],
             draws: [
               {
                 program: 'depth',

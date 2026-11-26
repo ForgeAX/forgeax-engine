@@ -78,7 +78,8 @@ function projectLogicalTarget(
 ): RenderFeatureLogicalTarget {
   return {
     name: target.name ?? (target.kind === 'scene-depth' ? 'depth' : 'color'),
-    kind: target.kind === 'scene-depth' ? ('depth' as const) : ('color' as const),
+    kind:
+      target.kind === 'scene-depth' ? 'depth' : target.name === 'swapchain' ? 'swapchain' : 'color',
     format: target.format,
     sampleCount: target.sampleCount,
   };
@@ -164,6 +165,45 @@ export function resolveStandardRenderFeatureTargets(input: {
     return linearSurfaceTargets(sampleCount, opaqueSampleCount, cloudHistory);
   }
   return standardTargets(sampleCount, cloudHistory, colorFormat, opaqueSampleCount);
+}
+
+/** Standard draws the output lattice only for consumers that sample this port. */
+export const POST_PROCESS_OUTPUT_DEPTH = 'output-depth';
+
+const presentationTargetProjections = new WeakMap<
+  readonly RenderFeatureTargetHandle[],
+  readonly RenderFeatureLogicalTarget[]
+>();
+const presentationTargets = new WeakMap<
+  readonly RenderFeatureTargetHandle[],
+  Map<TextureFormat, readonly RenderFeatureTargetHandle[]>
+>();
+
+/** The Standard after-tonemap overlay can choose the actual encoded attachment format. */
+export function withStandardPresentationTarget(
+  targets: readonly RenderFeatureTargetHandle[],
+  format: TextureFormat,
+): readonly RenderFeatureTargetHandle[] {
+  let formats = presentationTargets.get(targets);
+  if (formats === undefined) {
+    formats = new Map();
+    presentationTargets.set(targets, formats);
+  }
+  const existing = formats.get(format);
+  if (existing !== undefined) return existing;
+  const result = Object.freeze([
+    ...targets,
+    createRenderFeatureTarget({ name: 'swapchain', kind: 'scene-color', format, sampleCount: 1 }),
+    createRenderFeatureTarget({
+      name: POST_PROCESS_OUTPUT_DEPTH,
+      kind: 'scene-depth',
+      format: 'depth32float-stencil8',
+      sampleCount: 1,
+    }),
+  ]);
+  formats.set(format, result);
+  presentationTargetProjections.set(result, projectLogicalTargets(result));
+  return result;
 }
 
 function mode0Targets(opaqueSampleCount: 1 | 4, format: CloudTransportFormat | undefined) {
@@ -402,7 +442,7 @@ export function logicalRenderFeatureTargets(
     case WATER_MSAA_CLOUD_TARGETS:
       return LOGICAL_WATER_MSAA_CLOUD_TARGETS;
     default:
-      return projectLogicalTargets(targets);
+      return presentationTargetProjections.get(targets) ?? projectLogicalTargets(targets);
   }
 }
 

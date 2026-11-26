@@ -3,7 +3,9 @@ import {
   createBoxGeometry,
   deriveVertexLayoutProjection,
   meshAttributeChannels,
+  meshAttributeLayout,
   packMeshBin,
+  packVertexAttributes,
   prepareMeshData,
 } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -448,6 +450,147 @@ it('adopts mesh ranges at the same boundary as other prepared assets', () => {
     expect(copyMeshAttribute(assets.read(second).unwrap(), 'position')?.[0]).toBe(6);
   } finally {
     observer.dispose();
+    assets.dispose();
+  }
+});
+
+it('edits split vertex storage in place while reporting the canonical ranges', () => {
+  const assets = new AssetRegistry();
+  const mesh = createBoxGeometry(2, 2, 2).unwrap();
+  const position = mesh.attributes.position as Float32Array;
+  const storage = packVertexAttributes(
+    mesh.attributes,
+    position.length / 3,
+    'static-streams',
+  ).unwrap();
+  const handle = assets
+    .create({
+      ...mesh,
+      attributeStorage: 'static-streams',
+      attributes: meshAttributeLayout(mesh.attributes),
+      vertices: storage.vertices,
+    })
+    .unwrap();
+  const records = runtimeAssets(assets);
+  const original = records.borrowMeshForPresentation(handle).unwrap();
+  const observer = assets.observe().unwrap();
+  const stride = deriveVertexLayoutProjection(mesh.attributes).arrayStride;
+  const rows = mesh.vertices.slice(0, stride / 4);
+  rows[0] = 31;
+  const positions = Float32Array.of(41, 42, 43, 44, 45, 46);
+  try {
+    for (const first of [position.length, 1]) {
+      const result = adoptWithMeshRanges(
+        assets,
+        () => assets.revision(handle),
+        () => [
+          {
+            handle,
+            input: [
+              { first: 0, vertices: rows },
+              { attribute: 'position', first, values: positions },
+            ],
+          },
+        ],
+      );
+      expect(result.ok).toBe(first === 1);
+      const live = records.borrowMeshForPresentation(handle).unwrap();
+      expect(live.vertices).toBe(original.vertices);
+      expect(live.attributeStorage).toBe('static-streams');
+      if (!result.ok) expect(copyMeshAttribute(live, 'position')).toEqual(position);
+    }
+    const changes = observer.read().unwrap().changes;
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.ranges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['vertices'],
+          byteOffset: stride,
+          byteStride: stride,
+          rowBytes: 12,
+        }),
+      ]),
+    );
+    const canonical = mesh.vertices.slice();
+    canonical.set(rows);
+    canonical.set(positions.subarray(0, 3), stride / 4);
+    canonical.set(positions.subarray(3), stride / 2);
+    assets.writeRange(handle, { first: 3, vertices: rows }).unwrap();
+    canonical.set(rows, (3 * stride) / 4);
+    expect(records.borrowMeshForPresentation(handle).unwrap().vertices).toBe(original.vertices);
+    expect(assets.read(handle).unwrap().vertices).toEqual(canonical);
+  } finally {
+    observer.dispose();
+    assets.dispose();
+  }
+});
+
+it('keeps the presentation streams owned across canonical reads, copies and fixed captures', () => {
+  const assets = new AssetRegistry();
+  const records = runtimeAssets(assets);
+  const mesh = createBoxGeometry(2, 2, 2).unwrap();
+  const storage = packVertexAttributes(
+    mesh.attributes,
+    (mesh.attributes.position as Float32Array).length / 3,
+    'static-streams',
+  ).unwrap();
+  const handle = assets
+    .create({
+      ...mesh,
+      attributes: meshAttributeLayout(mesh.attributes),
+      attributeStorage: 'static-streams',
+      vertices: storage.vertices,
+    })
+    .unwrap();
+  const live = records.borrowMeshForPresentation(handle).unwrap();
+  const checkOwner = () => expect(records.borrowMeshForPresentation(handle).unwrap()).toBe(live);
+  try {
+    const read = assets.read(handle).unwrap();
+    expect(read.attributeStorage).toBe('interleaved');
+    expect(read.vertices).toEqual(mesh.vertices);
+    read.vertices.fill(9);
+    read.indices?.fill(0);
+    checkOwner();
+
+    const copied = assets.copy(handle).unwrap();
+    checkOwner();
+    const copy = records.borrowMeshForPresentation(copied).unwrap();
+    expect(copy.attributeStorage).toBe('static-streams');
+    expect(copy.vertices.buffer).not.toBe(live.vertices.buffer);
+
+    const snapshot = assets.snapshot(handle).unwrap();
+    const pinned = records.pin<MeshAsset>(handle).unwrap();
+    const capture = records.beginContentCapture(handle).unwrap();
+    checkOwner();
+    const reserved = capture.inspect().reservedBytes;
+    const lease = capture.step(1).unwrap();
+    expect(lease).toBeDefined();
+    expect(capture.inspect().copiedBytes).toBe(reserved);
+    checkOwner();
+
+    assets
+      .writeRange(handle, { attribute: 'position', first: 1, values: Float32Array.of(20, 30, 40) })
+      .unwrap();
+    expect(records.borrowMeshForPresentation(handle).unwrap().vertices).toBe(live.vertices);
+    expect(copyMeshAttribute(live, 'position')?.slice(3, 6)).toEqual(Float32Array.of(20, 30, 40));
+    for (const held of [
+      snapshot.read<MeshAsset>(handle).unwrap(),
+      lease?.read<MeshAsset>(handle).unwrap(),
+      assets.read(copied).unwrap(),
+    ]) {
+      expect(held?.attributeStorage).toBe('interleaved');
+      expect(held?.vertices).toEqual(mesh.vertices);
+      expect(held?.indices).toEqual(mesh.indices);
+    }
+    expect(pinned.value.attributeStorage).toBe('static-streams');
+    expect(pinned.value.vertices.buffer).not.toBe(live.vertices.buffer);
+    expect(pinned.value.vertices).toEqual(storage.vertices);
+    expect(copyMeshAttribute(pinned.value, 'position')).toEqual(mesh.attributes.position);
+    snapshot.dispose();
+    pinned.dispose();
+    capture.retire().unwrap().step(4).unwrap();
+    expect(records.inspect().snapshotBytes).toBe(0);
+  } finally {
     assets.dispose();
   }
 });

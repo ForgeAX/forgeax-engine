@@ -83,7 +83,7 @@ function runtimeError(message: ExecutionFaultMessage): AppErrorType {
       expected: APP_EXPECTED['app-execution-kernel-failed'],
       hint: APP_ERROR_HINTS['app-execution-kernel-failed'],
       detail: {
-        kernelName: (message.detail as { kernelName?: string })?.kernelName ?? 'unknown',
+        kernelName: message.kernelName ?? 'unknown',
         worldIdentity: message.worldIdentity,
         cause: message.detail,
       },
@@ -93,7 +93,7 @@ function runtimeError(message: ExecutionFaultMessage): AppErrorType {
     code: 'app-system-update-failed',
     expected: APP_EXPECTED['app-system-update-failed'],
     hint: APP_ERROR_HINTS['app-system-update-failed'],
-    detail: { cause: message.detail },
+    detail: { cause: message.detail, systemName: message.systemName },
   });
 }
 
@@ -534,6 +534,8 @@ export async function createWorkerExecutionApp(
         expected: message.expected,
         hint: message.hint,
         detail: message.detail,
+        ...(message.systemName === undefined ? {} : { systemName: message.systemName }),
+        ...(message.kernelName === undefined ? {} : { kernelName: message.kernelName }),
         partialWrite: message.partialWrite,
         retryable: message.retryable,
       },

@@ -233,8 +233,6 @@ export class SceneChanges {
   poseTopology = new Set<Object3D>();
   private readonly translations = new Set<Object3D>();
   private sparePose = new SourcePoseEdits();
-  /** Source edits to Three's mirrored caches that the ECS publisher must repair. */
-  readonly matrixRepairs = new Set<Object3D>();
   /** World-pose edits with remaining compatibility-side consumers. */
   projectedPose = new Set<Object3D>();
   readonly unobservedNativePoses = new Set<Object3D>();
@@ -647,10 +645,17 @@ export class SceneChanges {
           if (!this.pose.has(node)) this.translations.add(node);
           enqueuePose();
         };
-    const repairMatrix = () => {
-      queuePose();
-      if (this.ecsPoses) this.matrixRepairs.add(node);
-      else this.projectedPose.add(node);
+    const repairMatrix = (matrix: 'local' | 'world') => {
+      if (this.ecsPoses) {
+        const repairs = this.pose.matrixRepairs;
+        if (matrix === 'local') {
+          enqueuePose();
+          repairs.set(node, matrix);
+        } else if (!repairs.has(node)) repairs.set(node, matrix);
+      } else {
+        queuePose();
+        this.projectedPose.add(node);
+      }
     };
     const revoke = () => {
       synchronous?.release();
@@ -668,7 +673,7 @@ export class SceneChanges {
       node.matrix,
       () => {
         synchronous?.transform.invalidateLocal();
-        repairMatrix();
+        repairMatrix('local');
       },
       branch,
     );
@@ -676,7 +681,7 @@ export class SceneChanges {
       node.matrixWorld,
       () => {
         synchronous?.transform.replaceWorld();
-        repairMatrix();
+        repairMatrix('world');
       },
       branch,
     );
@@ -863,7 +868,6 @@ export class SceneChanges {
     this.dynamicMatrices.delete(node);
     this.unobservedNodeState.delete(node);
     this.resolvedLocal.delete(node);
-    this.matrixRepairs.delete(node);
     this.projectedPose.delete(node);
     this.pose.delete(node);
     this.poseTopology.delete(node);

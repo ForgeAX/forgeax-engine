@@ -82,6 +82,7 @@ import {
   materialTemplateVariantFamily,
   materialVariantFamily,
   ownMaterialVariantReferences,
+  packedVariantIdentifier,
 } from './material/variant-family.js';
 import {
   type AdmittedShaderProgramTemplate,
@@ -2064,8 +2065,24 @@ export class ShaderRegistry {
    */
   findMaterialArtifact(
     identifier: string,
-  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> {
+    purpose: 'optional',
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> | undefined;
+  findMaterialArtifact(
+    identifier: string,
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError>;
+  findMaterialArtifact(
+    identifier: string,
+    purpose?: 'optional',
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> | undefined {
     const entry = this.#materialShaders.get(identifier);
+    if (
+      purpose === 'optional' &&
+      (entry === undefined ||
+        (entry.kind === 'bytes' &&
+          entry.owner.prepare !== undefined &&
+          entry.owner.bytes === undefined))
+    )
+      return undefined;
     if (entry === undefined) {
       return err(
         materialShaderNotFound({
@@ -2130,8 +2147,12 @@ export class ShaderRegistry {
     if (references === undefined) return identifier;
     const family = this.materialShaderManifestEntry(identifier);
     const selected = family === undefined ? undefined : findVariantByKey(family, variantKey);
+    if (selected === undefined) return identifier;
+    // Pack rows carry the source relation through byte admission and ready publication.
     return (
-      references.find(({ defines }) => defines === selected?.defines)?.identifier ?? identifier
+      packedVariantIdentifier(selected) ??
+      references.find(({ defines }) => defines === selected.defines)?.identifier ??
+      identifier
     );
   }
 

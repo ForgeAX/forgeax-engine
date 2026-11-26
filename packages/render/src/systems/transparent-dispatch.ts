@@ -4,6 +4,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type { DispatchEntry, DispatchList, MaterialSnapshot } from '../render-system-extract';
 import { CapturedSceneTransform, type ScenePoseStorage } from '../scene/captured-transform';
+import { culledMaterialPassRanges, orderMaterialDraws } from '../scene/material-dispatch';
 import { SortedPhase, type SortedPhaseWork } from './sorted-phase';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
@@ -138,7 +139,7 @@ export class TransparentSortCache {
   private yzAlpha = Number.NaN;
   private readonly eye = new Float64Array([Number.NaN, Number.NaN, Number.NaN]);
   private source: DispatchList | undefined;
-  private value: DispatchEntry[] | undefined;
+  private value: DispatchList | undefined;
   private survivors = 0;
   private changed = 0;
   private violation = false;
@@ -169,11 +170,32 @@ export class TransparentSortCache {
       this.retireUnusedRows(0);
       return dispatch;
     }
-    // Native arrays index directly; a retained FrameList is read once.
-    const entries: readonly DispatchEntry[] = Array.isArray(dispatch)
-      ? (dispatch as readonly DispatchEntry[])
-      : dispatch.slice();
-    const n = this.select(entries, options.sortAll === true);
+    const ranges = culledMaterialPassRanges(dispatch);
+    const sortAll = options.sortAll === true;
+    let entries: DispatchList;
+    let n: number;
+    if (ranges === undefined) {
+      const flat: DispatchEntry[] = Array.isArray(dispatch) ? dispatch : dispatch.slice();
+      entries = flat;
+      n = this.select(flat, sortAll);
+    } else {
+      entries = dispatch;
+      n = 0;
+      let start = 0;
+      for (const { pass, end } of ranges) {
+        if (
+          sortAll ||
+          pass.queue === RenderQueue.Transparent ||
+          pass.renderState?.blend !== undefined
+        ) {
+          const count = end - start;
+          if (n + count > this.slotPositions.length)
+            this.slotPositions = growInt32(this.slotPositions, n + count);
+          for (let i = start; i < end; i++) this.slotPositions[n++] = i;
+        }
+        start = end;
+      }
+    }
     this.retireUnusedRows(n);
     if (n <= 1) return dispatch;
     const valuesDirty = this.configure(mode, cfg.yzAlpha, camera);
@@ -260,7 +282,7 @@ export class TransparentSortCache {
    * retained identity cannot address this frame (one fresh sort follows).
    */
   private scan(
-    dispatch: readonly DispatchEntry[],
+    dispatch: DispatchList,
     n: number,
     renderables: TransparentSortRows,
     camera: CameraSnapshot | undefined,
@@ -294,7 +316,7 @@ export class TransparentSortCache {
     let newcomers: Set<number> | undefined;
     this.visited += n;
     for (let k = 0; k < n; k++) {
-      const entry = dispatch[slotPositions[k] as number] as DispatchEntry;
+      const entry = drawAt(dispatch, slotPositions[k] as number);
       const source = renderables.at(entry.renderableIndex);
       // Identity only selects which retained item a slot reuses; the order is
       // derived from this frame's facts and scan order alone.
@@ -357,7 +379,7 @@ export class TransparentSortCache {
   }
 
   /** Dequeue left slots, then enqueue entered and changed ones; true when membership changed. */
-  private applyDiffs(dispatch: readonly DispatchEntry[], n: number): boolean {
+  private applyDiffs(dispatch: DispatchList, n: number): boolean {
     const phase = this.phase;
     const { slotPositions, slotIds, slotKeys, slotValues, slotTies, changedSlots } = this;
     const epoch = this.epoch;
@@ -385,7 +407,7 @@ export class TransparentSortCache {
     const count = violation ? n : this.changed;
     for (let c = 0; c < count; c++) {
       const k = violation ? c : (changedSlots[c] as number);
-      const entry = dispatch[slotPositions[k] as number] as DispatchEntry;
+      const entry = drawAt(dispatch, slotPositions[k] as number);
       let id = slotIds[k] as number;
       if (id >= 0) {
         phase.update(
@@ -426,17 +448,14 @@ export class TransparentSortCache {
   }
 
   /** Slots in phase order at the dispatch's slot positions; other entries keep their place. */
-  private emit(dispatch: readonly DispatchEntry[], n: number): DispatchEntry[] {
-    const { phase, slotPositions } = this;
-    const slotOf = this.prevPosition;
-    const value = dispatch.slice();
-    for (let position = 0; position < n; position++) {
-      const slot = slotOf[phase.at(position)] as number;
-      value[slotPositions[position] as number] = dispatch[
-        slotPositions[slot] as number
-      ] as DispatchEntry;
-    }
-    return value;
+  private emit(dispatch: DispatchList, n: number): DispatchList {
+    const { phase, slotPositions, prevPosition } = this;
+    return orderMaterialDraws(
+      dispatch,
+      slotPositions,
+      n,
+      (position) => slotPositions[prevPosition[phase.at(position)] as number] as number,
+    );
   }
 
   /**
@@ -474,7 +493,7 @@ export class TransparentSortCache {
 
   /** Rows the retained identity cannot address: one engine sort, then a fresh phase. */
   private fallback(
-    dispatch: readonly DispatchEntry[],
+    dispatch: DispatchList,
     n: number,
     renderables: TransparentSortRows,
     read: number,
@@ -490,7 +509,7 @@ export class TransparentSortCache {
       // Slots after the abandoned scan position are read here for the first time.
       if (k >= read) {
         const source = renderables.at(
-          (dispatch[this.slotPositions[k] as number] as DispatchEntry).renderableIndex,
+          drawAt(dispatch, this.slotPositions[k] as number).renderableIndex,
         );
         pose = source === undefined ? undefined : CapturedSceneTransform.storage(source.transform);
         pivot = readsPivot ? source?.material : undefined;
@@ -543,13 +562,17 @@ export class TransparentSortCache {
  * The engine's stable sort of the slots in dispatch order: the order a NaN
  * value or an unaddressable row receives, exactly as without a retained phase.
  */
+function drawAt(dispatch: DispatchList, index: number): DispatchEntry {
+  return Array.isArray(dispatch) ? dispatch[index] : (dispatch.at(index) as DispatchEntry);
+}
+
 function freshOrder(
-  dispatch: readonly DispatchEntry[],
+  dispatch: DispatchList,
   slotPositions: Int32Array,
   n: number,
   values: Float64Array,
   mode: number,
-): DispatchEntry[] {
+): DispatchList {
   const keys = new Float64Array(dispatch.length);
   const slots: number[] = [];
   for (let k = 0; k < n; k++) {
@@ -559,8 +582,8 @@ function freshOrder(
   }
   const compare = (a: number, b: number): number => {
     if (mode !== TRANSPARENT_SORT_MODE_DISTANCE) {
-      const da = dispatch[a] as DispatchEntry;
-      const db = dispatch[b] as DispatchEntry;
+      const da = drawAt(dispatch, a);
+      const db = drawAt(dispatch, b);
       if (da.layer !== db.layer) return da.layer - db.layer;
       const va = keys[a] as number;
       const vb = keys[b] as number;
@@ -575,9 +598,5 @@ function freshOrder(
     return 0;
   };
   const order = slots.slice().sort(compare);
-  const result = dispatch.slice();
-  for (let k = 0; k < slots.length; k++) {
-    result[slots[k] as number] = dispatch[order[k] as number] as DispatchEntry;
-  }
-  return result;
+  return orderMaterialDraws(dispatch, slots, n, (k) => order[k] as number);
 }

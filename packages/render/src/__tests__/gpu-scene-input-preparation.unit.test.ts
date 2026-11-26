@@ -351,7 +351,7 @@ it('consumes private numeric addresses and logical mappings together without fir
       changed.buffer().unwrap();
       changed.seal().unwrap();
       changed.release();
-      expect(f.observed.writes.mock.calls.map((call) => call[4])).toEqual([24]);
+      expect(f.observed.writes.mock.calls.map((call) => call[4])).toEqual([4]);
     } finally {
       after.release();
     }
@@ -861,7 +861,7 @@ it('publishes the prepared native target without RHI work and preserves the same
   const changed = f.inputs.capture();
   changed.buffer().unwrap();
   changed.seal().unwrap();
-  expect(f.observed.writes.mock.calls.map((call) => call[4])).toEqual([16]);
+  expect(f.observed.writes.mock.calls.map((call) => call[4])).toEqual([4]);
   expect(task.inspect().uploadBytes).toBe(preparedBytes);
   changed.release();
   after.release();

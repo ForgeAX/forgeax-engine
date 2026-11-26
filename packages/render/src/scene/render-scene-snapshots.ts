@@ -47,10 +47,24 @@ export function cullingDisplacementRadius(
   materials: MaterialFrame | undefined,
   requirePositionProof = false,
 ): number {
-  const effective =
-    geometry === undefined
-      ? snapshot
-      : effectiveMeshMaterials(snapshot, geometry, meshMaterialGeometry(snapshot));
+  return boundDisplacementRadius(
+    cullingMaterialBinding(snapshot, geometry),
+    materials,
+    requirePositionProof,
+  );
+}
+
+export function cullingMaterialBinding(snapshot: RowContent, geometry: MeshGeometry | undefined) {
+  return geometry === undefined || snapshot.materialOverrides === undefined
+    ? snapshot
+    : effectiveMeshMaterials(snapshot, geometry, meshMaterialGeometry(snapshot));
+}
+
+export function boundDisplacementRadius(
+  effective: Pick<RowContent, 'materials' | 'material'>,
+  materials: MaterialFrame | undefined,
+  requirePositionProof = false,
+): number {
   let radius = 0;
   for (let index = 0; index < Math.max(1, effective.materials.length); index++) {
     const resource = effective.materials[index] ?? effective.material;

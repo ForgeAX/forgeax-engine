@@ -546,6 +546,7 @@ async function mapReflectionFallbackReadback(
     const bytes = new Uint8Array(range.value.slice(0));
     mapped.value.unmap();
     const validation = validateGraphTargetCaptureReadback({
+      format: 'rgba16float',
       bytes,
       expectedByteLength: request.bytesPerRow * request.height,
       allowZero,
@@ -926,12 +927,10 @@ function prepareGpuDrivenRecordingShadows(
   attempt: FrameRecordingAttempt,
   profile: RecordProfileRunner | undefined,
   lights: ViewLights,
-  reads: ShadowMeshInput | undefined,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
 ): boolean {
-  if (hasShadowViewDemand(lights)) retainGpuShadowMeshReads(input, reads);
   const request = input.request;
   if (internals.viewEntity === undefined && request !== undefined) {
     const prepared = runRecordProfilePhase(profile, 'record/gpu-driven-prepare', () =>
@@ -953,17 +952,6 @@ function prepareGpuDrivenRecordingShadows(
     graphGeneration,
     directionalLimit,
   );
-}
-
-/** Shadow leases retain exactly the resident bindings admitted during Queue. */
-function retainGpuShadowMeshReads(
-  input: import('./frame-gpu-driven-input').FrameGpuDrivenInput,
-  reads: ShadowMeshInput | undefined,
-): void {
-  if (reads === undefined || input.artifacts === undefined) return;
-  input.artifacts.batchExecutions.forEach((execution, binding) => {
-    if (execution.shadow.route !== 'none') reads.reads.add(input.meshes.get(binding)?.changeToken);
-  });
 }
 
 function observePreparedResourceGeneration(
@@ -999,22 +987,6 @@ function emitSubmittedDrawReceipts(
       return slot !== undefined && residual.has(slot);
     });
   });
-}
-
-function fixedShadowMeshLease(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  sourceScope: RenderResourceScope,
-  projection: PersistentShadowCasterProjection | undefined,
-  fixedShadowDomain: boolean,
-): ShadowMeshInput | undefined {
-  if (!fixedShadowDomain || projection === undefined) return undefined;
-  return shadowMeshReadsForQuery(
-    frameState.directionalShadowCache,
-    sourceScope,
-    projection,
-    internals.gpuStore.meshChanges,
-  );
 }
 
 /** The lease still has to collect mesh reads unless the accepted cache already holds them. */
@@ -2002,14 +1974,12 @@ export function prepareFrameGraphInputs(
     lights,
     effectiveShadowMapSize,
   );
-  attempt.shadowMeshLease = fixedShadowMeshLease(
-    internals,
-    frameState,
-    sourceScope,
-    shadowCasterProjection,
-    fixedShadowDomain,
-  );
-  const shadowMeshReads = collectsShadowMeshReads(frameState, attempt.shadowMeshLease);
+  // Keep the original physical read boundary across preparation, even though the
+  // complete set of direct casters is known only after draw phase emission.
+  const meshChanges = fixedShadowDomain ? internals.gpuStore.meshChanges : undefined;
+  const meshEpoch = meshChanges?.epoch;
+  const meshGeneration = meshChanges?.generation;
+  let directMeshDomain: object | null = null;
   // CPU material-derived selection has no fixed source witness yet.
   let shadowGeometryFixed = fixedShadowDomain;
   const directGeometry = directGeometryTokens(internals, sourceScope);
@@ -2029,6 +1999,7 @@ export function prepareFrameGraphInputs(
     prepareGeometry,
     geometry: directGeometry,
     lodRows: shadowLodRows,
+    retainMeshDomain: fixedShadowDomain && !gpuInput.shadowViews,
   });
   // `render-subsurface-admission` admitted this view's diffusion lane in RenderQueue.
   const subsurface = consumeViewSubsurface(internals, cubeCapture, captureOnly, () =>
@@ -2066,7 +2037,6 @@ export function prepareFrameGraphInputs(
         attempt,
         profilePhase,
         lights,
-        shadowMeshReads,
         graphShadowMapSize,
         frameState.graphGeneration,
         directionalPreparationLimit,
@@ -2108,25 +2078,48 @@ export function prepareFrameGraphInputs(
     else {
       const shadows = validateDirectShadowRows(directShadowInputs(nativeScene));
       if (shadows.derived) shadowGeometryFixed = false;
+      directMeshDomain = shadows.meshDomain;
       directShadowValidated = shadows.rows;
       directShadowMaterials = shadows.materialRows;
     }
   }
   // Only a fixed mesh lease can carry a directional atlas into another frame.
   // Dynamic caster rows still render; they have no atlas material reads to retain.
-  const shadowAtlasMaterials =
-    shadowGeometryFixed && attempt.shadowMeshLease !== undefined
-      ? directionalAtlasMaterialReads(
-          internals,
-          sourceScope,
-          directShadowValidated,
-          fixedMaterials,
-          gpuInput,
-          shadowCasterProjection,
-          shadowMeshReads,
-          directShadowMaterials !== undefined,
-        )
-      : undefined;
+  let shadowAtlasMaterials: ReturnType<typeof directionalAtlasMaterialReads> | undefined;
+  if (
+    shadowGeometryFixed &&
+    shadowCasterProjection !== undefined &&
+    meshChanges !== undefined &&
+    meshChanges.epoch === meshEpoch &&
+    meshChanges.generation === meshGeneration
+  ) {
+    attempt.shadowMeshLease = shadowMeshReadsForQuery(
+      frameState.directionalShadowCache,
+      sourceScope,
+      shadowCasterProjection,
+      meshChanges,
+      gpuInput.shadowViews ? undefined : directMeshDomain,
+    );
+    const shadowMeshReads = collectsShadowMeshReads(frameState, attempt.shadowMeshLease);
+    // GPU shadow views consume queued physical bindings. Direct passes contribute
+    // their resolved mesh rows below, including offscreen and capture casters.
+    if (shadowMeshReads !== undefined && gpuInput.shadowViews) {
+      gpuInput.artifacts?.batchExecutions.forEach((execution, binding) => {
+        if (execution.shadow.route !== 'none')
+          shadowMeshReads.reads.add(gpuInput.meshes.get(binding)?.changeToken);
+      });
+    }
+    shadowAtlasMaterials = directionalAtlasMaterialReads(
+      internals,
+      sourceScope,
+      directShadowValidated,
+      fixedMaterials,
+      gpuInput,
+      shadowCasterProjection,
+      shadowMeshReads,
+      directShadowMaterials !== undefined,
+    );
+  }
 
   // Compile the single frame graph only after GPU preparation has projected
   // the current frame. This keeps the graph topology and its execution
@@ -2683,6 +2676,8 @@ export function sealFrameGraph(
         {
           width: captureOnly ? targetW : (renderExtent?.internalWidth ?? targetW),
           height: captureOnly ? targetH : (renderExtent?.internalHeight ?? targetH),
+          outputWidth: targetW,
+          outputHeight: targetH,
         },
         internals.standardProfile?.quality?.ssr,
         captureOnly ? 0 : standard.prepared.deferredChannelProjection,
@@ -2873,7 +2868,6 @@ export function sealFrameGraph(
     foldDispatchPlan: dispatchPlan.foldDispatchPlan,
     materialSlotIndices,
     materialSlots,
-    acceptedMaterialSlots: dispatchPlan.acceptedMaterialSlots,
     materialBindings: dispatchPlan.materialBindings,
     materialBindingSlots: dispatchPlan.materialBindingSlots,
     materialSlotCount,

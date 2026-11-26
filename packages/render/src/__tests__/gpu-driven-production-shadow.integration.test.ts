@@ -680,6 +680,12 @@ describe('GPU-driven production shadow projection', () => {
         shadowAtlasFallbackTextureView: {},
         shadowParamsBuffer: buffer,
         shadowCasterCascadeBuffer: buffer,
+        identityInstanceBuffer: buffer,
+        instancesBindGroupLayout: device
+          .createBindGroupLayout({
+            entries: [{ binding: 0, visibility: 1, buffer: { type: 'uniform' } }],
+          })
+          .unwrap(),
         viewBindGroupLayout: layout,
         materialBindGroupLayout: layout,
         materialUniformBuffer: { buffer },

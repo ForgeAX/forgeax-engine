@@ -34,6 +34,26 @@ fn sceneTemporalUv(clip : vec4<f32>) -> vec2<f32> {
   return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
+// Jitter adds a constant NDC offset by translating X/Y by clip W.
+// Use the basis rows for perspective so camera translation cannot hide the offset.
+fn sceneTemporalRasterUv(uv: vec2f, raster: mat4x4<f32>, unjittered: mat4x4<f32>) -> vec2f {
+  let basisW = vec3f(raster[0].w, raster[1].w, raster[2].w);
+  let wSquared = dot(basisW, basisW);
+  let uvScale = vec2f(0.5, -0.5);
+  if (wSquared == 0.0) {
+    return uv + (raster[3].xy - unjittered[3].xy) * uvScale;
+  }
+  let d0 = raster[0].xy - unjittered[0].xy;
+  let d1 = raster[1].xy - unjittered[1].xy;
+  let d2 = raster[2].xy - unjittered[2].xy;
+  let offset = (d0 * basisW.x + d1 * basisW.y + d2 * basisW.z) / wSquared;
+  return uv + offset * uvScale;
+}
+
+fn sceneTemporalDepthTexel(rasterUv: vec2f, size: vec2u) -> vec2i {
+  return clamp(vec2i(rasterUv * vec2f(size)), vec2i(0), vec2i(size) - vec2i(1));
+}
+
 // Signed view-space Z shared by temporal reconstruction and Standard Cluster
 // lookup. Both CPU and WGSL binners consume the negative camera-space depth:
 // perspective uses -clip.w, while orthographic depth is reconstructed from

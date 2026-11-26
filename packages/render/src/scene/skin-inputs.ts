@@ -254,24 +254,18 @@ function retirePage(inputs: GpuInputArena, state: State, page: Page | undefined)
 class JointStore {
   readonly cells = new Map<number, number>();
   matrices = new Float32Array(64 * 16);
-  /** Change epoch per cell; 0 is absent. Doubles stay exact past u32 epochs. */
-  stamps = new Float64Array(64);
   readonly free: number[] = [];
   size = 0;
   newCell(entity: number): number {
     let cell = this.free.pop();
     if (cell === undefined) {
       cell = this.size++;
-      if (cell === this.stamps.length) {
-        const stamps = new Float64Array(cell * 2);
-        stamps.set(this.stamps);
-        this.stamps = stamps;
+      if (cell * 16 === this.matrices.length) {
         const matrices = new Float32Array(cell * 32);
         matrices.set(this.matrices);
         this.matrices = matrices;
       }
     }
-    this.stamps[cell] = 0;
     this.cells.set(entity, cell);
     return cell;
   }
@@ -293,6 +287,9 @@ interface PoseBinding {
   row?: Row | undefined;
   unlinked?: Set<number> | undefined;
   readonly joints: PoseJoint[];
+  /** Count unique absent dependencies, even when the palette repeats a joint. */
+  missing: number;
+  changed: number;
   previous?: PoseBinding | undefined;
   next?: PoseBinding | undefined;
   ticket: number;
@@ -300,10 +297,16 @@ interface PoseBinding {
   published: number;
 }
 
-function addPoseReader(joint: PoseJoint, pose: PoseBinding): void {
+function addPoseReader(joint: PoseJoint, pose: PoseBinding): boolean {
   const readers = joint.readers;
-  if (readers instanceof Set) readers.add(pose);
-  else if (readers !== pose) joint.readers = new Set([readers, pose]);
+  if (readers instanceof Set) {
+    if (readers.has(pose)) return false;
+    readers.add(pose);
+  } else {
+    if (readers === pose) return false;
+    joint.readers = new Set([readers, pose]);
+  }
+  return true;
 }
 
 function removePoseReader(joint: PoseJoint, pose: PoseBinding): boolean {
@@ -328,12 +331,19 @@ class PoseBindings {
   private first: PoseBinding | undefined;
   private last: PoseBinding | undefined;
   sequence = 0;
-  private readonly enqueueReader = (pose: PoseBinding): void => this.enqueue(pose);
-
-  private update(joint: PoseJoint, cell: number): void {
+  private update(joint: PoseJoint, cell: number, epoch: number): void {
+    const availability = Number(cell < 0) - Number(joint.cell < 0);
     joint.cell = cell;
-    if (joint.readers instanceof Set) joint.readers.forEach(this.enqueueReader);
-    else this.enqueue(joint.readers);
+    const readers = joint.readers;
+    if (readers instanceof Set) {
+      for (const pose of readers) this.changed(pose, availability, epoch);
+    } else this.changed(readers, availability, epoch);
+  }
+
+  private changed(pose: PoseBinding, availability: number, epoch: number): void {
+    pose.missing += availability;
+    pose.changed = epoch;
+    this.enqueue(pose);
   }
 
   enqueue(pose: PoseBinding): void {
@@ -363,16 +373,16 @@ class PoseBindings {
     return pose;
   }
 
-  joint(source: Slot, entity: number, cell: number): void {
+  joint(source: Slot, entity: number, cell: number, epoch: number): void {
     const joint = this.joints.get(source)?.get(entity);
     if (joint === undefined) return;
-    this.update(joint, cell);
+    this.update(joint, cell, epoch);
   }
 
-  removeSource(source: Slot): void {
+  removeSource(source: Slot, epoch: number): void {
     const joints = this.joints.get(source);
     if (joints === undefined) return;
-    for (const joint of joints.values()) this.update(joint, -1);
+    for (const joint of joints.values()) this.update(joint, -1, epoch);
   }
 
   private create(
@@ -391,6 +401,8 @@ class PoseBindings {
       source,
       hash,
       joints: [],
+      missing: 0,
+      changed: 0,
       slots: new Set(),
       ticket: 0,
       published: -1,
@@ -401,7 +413,8 @@ class PoseBindings {
       if (joint === undefined) {
         joint = { entity, cell: store?.cells.get(entity) ?? -1, readers: pose };
         sourceJoints.set(entity, joint);
-      } else addPoseReader(joint, pose);
+        if (joint.cell < 0) pose.missing++;
+      } else if (addPoseReader(joint, pose) && joint.cell < 0) pose.missing++;
       pose.joints.push(joint);
     }
     const bucket = this.buckets.get(hash);
@@ -618,7 +631,7 @@ export class SkinInputs {
     let store = this.stores.get(slot);
     const known = store?.cells.get(entity);
     const base = known === undefined ? -1 : known * 16;
-    let equal = known !== undefined && store?.stamps[known] !== 0;
+    let equal = known !== undefined;
     for (let lane = 0; lane < 16; lane++) {
       const value = world[first + lane];
       if (value === undefined || !Number.isFinite(value))
@@ -638,8 +651,7 @@ export class SkinInputs {
     const matrices = store.matrices;
     for (let lane = 0; lane < 16; lane++)
       matrices[cell * 16 + lane] = world[first + lane] as number;
-    store.stamps[cell] = ++this.epoch;
-    this.poses.joint(slot, entity, cell);
+    this.poses.joint(slot, entity, cell, ++this.epoch);
   }
 
   removeJoint(source: SkinInputSlot, entity: number): void {
@@ -650,9 +662,8 @@ export class SkinInputs {
     const cell = store?.cells.get(entity);
     if (store === undefined || cell === undefined) return;
     store.cells.delete(entity);
-    store.stamps[cell] = 0;
     store.free.push(cell);
-    this.poses.joint(slot, entity, -1);
+    this.poses.joint(slot, entity, -1, ++this.epoch);
   }
 
   /** Publish each Binding whose joints changed as one immutable pose row:
@@ -673,17 +684,7 @@ export class SkinInputs {
   private flushPose(pose: PoseBinding, through: number): void {
     const store = this.stores.get(pose.source);
     const count = pose.joints.length;
-    let complete = true;
-    let changed = pose.published < 0;
-    if (store !== undefined)
-      for (const joint of pose.joints) {
-        if (joint.cell < 0) {
-          complete = false;
-          break;
-        }
-        if ((store.stamps[joint.cell] as number) > pose.published) changed = true;
-      }
-    if (!complete || store === undefined) {
+    if (pose.missing !== 0 || store === undefined) {
       for (const slot of pose.slots)
         if (find(this.current, POSES, slot) !== undefined) this.replace(POSES, slot, undefined);
       pose.row = undefined;
@@ -691,7 +692,7 @@ export class SkinInputs {
       pose.published = -1;
       return;
     }
-    if (!changed) {
+    if (pose.changed <= pose.published) {
       const pending = pose.unlinked;
       if (pending === undefined) return;
       if (pose.row !== undefined && pose.row.holders > 0) {
@@ -931,7 +932,7 @@ export class SkinInputs {
     if (slot.kind === 'source') {
       // Its Bindings stay admitted but can never complete a pose again.
       this.stores.delete(slot);
-      this.poses.removeSource(slot);
+      this.poses.removeSource(slot, ++this.epoch);
     } else if (find(this.current, SKELETONS, slot.id) !== undefined)
       this.replace(SKELETONS, slot.id, undefined);
     slot.retire();

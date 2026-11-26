@@ -22,6 +22,7 @@ import {
   projectDisplayRenderables,
   projectFramePresentation,
 } from '../render-system-presentation';
+import { sparseRowsOf } from '../scene/frame-list';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { RenderScene } from '../scene/render-scene-view';
 import { SceneSlotFrame, SceneSlotPage } from '../scene/scene-slots';
@@ -604,5 +605,56 @@ it('reads changing display evidence in occupied row order without requesting pos
     });
   } finally {
     views.mockRestore();
+  }
+});
+
+it('intersects feature membership with the captured display ranks across pose and content changes', () => {
+  const scene = new RenderScene();
+  const material = MaterialResource.from(defaultMaterialSnapshot());
+  const world = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  const rows = Array.from(
+    { length: 90 },
+    (_, entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: entityKey,
+      transform: { world },
+      material,
+      materials: [material],
+      capsuleShadowRequested: [1, 32, 65, 80].includes(entityKey),
+    }),
+  );
+  scene.apply(
+    rows.map((snapshot) => ({ kind: 'update', entityKey: snapshot.entityKey, snapshot })),
+  );
+  const pass = (index: number, mode = 'Forward') =>
+    ({ renderableIndex: index, tags: { LightMode: mode } }) as DispatchEntry;
+  const visible = [1, 3, 4, 7, 13, 31, 32, 50, 80].map((index) => pass(index));
+  const view = projectDisplayRenderables(scene.materialize(), visible);
+  const original = rows[32];
+  if (original === undefined) throw new Error('Missing capsule fixture');
+  const changed = { ...original, capsuleShadowRequested: false };
+  scene.apply([{ kind: 'update', entityKey: 32, snapshot: changed }]);
+  const current = projectDisplayRenderables(scene.materialize(), visible);
+  const sections = vi.spyOn(SceneSlotPage.prototype, 'read');
+  try {
+    expect([...sparseRowsOf(view, 'terrain')]).toEqual([]);
+    expect(sections).not.toHaveBeenCalled();
+    expect([...sparseRowsOf(view, 'capsule')].map((row) => row.entityKey)).toEqual([1, 32, 80]);
+    expect(sections).toHaveBeenCalledTimes(3);
+    expect([...sparseRowsOf(current, 'capsule')].map((row) => row.entityKey)).toEqual([1, 80]);
+    const dispatch = [pass(8), pass(6), pass(0, 'ShadowCaster'), pass(6)];
+    expect(
+      [...projectDisplayRenderables(view, dispatch, undefined, 'capsule')].map(
+        (row) => row.entityKey,
+      ),
+    ).toEqual([32, 80]);
+    Object.defineProperty(view, Symbol.iterator, {
+      value: function* () {
+        yield changed;
+      },
+    });
+    expect([...sparseRowsOf(view, 'capsule')]).toEqual([changed]);
+  } finally {
+    sections.mockRestore();
   }
 });

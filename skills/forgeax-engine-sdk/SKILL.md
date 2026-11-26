@@ -11,8 +11,10 @@ description: >-
 
 For an existing archive, start with the [original archive guide](SDK-README.md).
 For current npm packages, use the [Engine authoring guide](../forgeax-engine-authoring/SKILL.md).
+To publish a current development build, use the
+[single-package release procedure](../../packages/engine/RELEASING.md).
 
-## SDK production and publication
+## Historical Candidate recovery
 
 For PR preflight, inspect the selected archive profile and the exact consumer
 receipts before diagnosing missing work. Compact ZIP proof requires 60
@@ -87,37 +89,8 @@ its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
 3D SIMD glue and declarations. Follow [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission);
 repair missing exported files without bypassing source, inventory or digest checks.
 
-For an explicitly requested Engine/SDK change, SDK archive verification or SDK
-publication, read SDK production. Its exact-ZIP
-subject is the SDK distribution. Game ZIP packaging belongs to the game's release
-route; ordinary game creation does not enter Candidate, Promotion or SDK consumers.
-For channel/source and publication ordering, read the
-release contract: `main` publishes `next`,
-the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
-and npm publish independently after source qualification of mirrored channels;
-the source mirror retains its formal GitHub Release identity check and advances
-public `main` (development) or `stable` (stable). Stable Promotion then copies the
-original verified Release assets to the public repository through `sdk-release-public.yml`;
-use that workflow with an existing stable version to backfill or retry. Delivery
-requires the public Release and every other enabled stage.
-
-On Linux x64, the complete development Candidate and Promotion can run on the
-local machine with `node scripts/forgeax/local-sdk-release.mjs --stage all`
-(`pnpm sdk:release:local -- --stage all` is the installed-workspace alias). It
-pins the selected version and source SHA in
-`artifacts/sdk-local/<version>/local-release-state.json` and resumes that exact
-Candidate after interruption. RC and stable continue to use the GitHub Actions
-release route. See the repository's
-[local release procedure](../../packages/engine/RELEASING.md).
-
-After Candidate gates pass, `--stage preflight --version <locked-version>` checks npm access and
-source-mirror prerequisites without publishing; `--stage promote` resumes that same locked
-Candidate and performs publication.
-
-> [!IMPORTANT]
-> Every SDK publication starts with
-> Select the release flow first:
-> name the flow (development, rc cut/fix, rc promotion or stable hotfix), version,
-> source SHA and npm tag before pushing a release branch or dispatching a workflow.
-> If the user's request leaves any of them open, ask the user to choose the
-> channel and version.
+Recover an earlier release with its original version, source SHA, sealed assets,
+and npm tag. The historical production guide
+describes the ZIP and consumer receipts for those releases. Use
+`sdk-release-public.yml` to retry copying an existing verified stable Release
+to the public repository.

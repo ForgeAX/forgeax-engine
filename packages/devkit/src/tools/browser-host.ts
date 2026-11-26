@@ -26,11 +26,7 @@ import {
   observeBrowserErrors,
   resolveBrowserExecutable,
 } from '../browser-capture.js';
-import {
-  chromiumEnvironment,
-  launchSandboxedBrowserServer,
-  needsChromiumPrivilegeDrop,
-} from '../chromium-sandbox.js';
+import { chromiumEnvironment, launchChromiumBrowserServer } from '../chromium-sandbox.js';
 import { observeBrowserStartup, readStartupObservation } from '../host/startup-ui.js';
 import { createViteConfig } from '../host.js';
 import { materializeViteDevPort } from '../loopback.js';
@@ -485,7 +481,7 @@ export async function runBrowserPreviewHost(
   const requestedBackend = options.backend ?? 'auto';
   const launchBackend: CaptureBackend = requestedBackend === 'software' ? 'software' : 'hardware';
   const headless = options.headless ?? recipe.presentation === 'hidden';
-  const channel = needsChromiumPrivilegeDrop() ? undefined : process.env.FORGEAX_CHROME_CHANNEL;
+  const channel = process.env.FORGEAX_CHROME_CHANNEL;
   let executablePath: string | undefined;
   const launchBrowser = async (
     headlessMode: boolean,
@@ -493,7 +489,7 @@ export async function runBrowserPreviewHost(
   ): Promise<Browser> => {
     // Keep the native process owner independently of the protocol connection.
     // A crashed/disconnected client may close without terminating Chromium.
-    const owner = await launchSandboxedBrowserServer({
+    const owner = await launchChromiumBrowserServer({
       ...(channel === undefined ? {} : { channel }),
       ...(executablePath === undefined ? {} : { executablePath }),
       headless: headlessMode,

@@ -70,6 +70,7 @@ export interface AutoExposureGraphResources {
 
 export interface AutoExposureGraphProjection {
   readonly source: RenderPipelineTarget;
+  readonly halfResolution?: boolean;
   readonly resources: AutoExposureGraphResources;
   readonly width: number;
   readonly height: number;
@@ -362,7 +363,10 @@ interface AutoExposureMeterState {
   readonly adaptPipeline: ComputePipeline;
 }
 
-function createAutoExposureMeterState(frame: RenderPipelineFrame): AutoExposureMeterState {
+function createAutoExposureMeterState(
+  frame: RenderPipelineFrame,
+  halfResolution: boolean,
+): AutoExposureMeterState {
   const factory = resolveAutoExposureShaderModuleFactory(frame.runtime);
   if (factory === undefined) throw new Error('auto-exposure meter shader factory unavailable');
   const module = factory.createShaderModule({
@@ -398,10 +402,11 @@ function createAutoExposureMeterState(frame: RenderPipelineFrame): AutoExposureM
     if (!pipeline.ok) throw pipeline.error;
     return pipeline.value;
   };
+  const histogram = halfResolution ? 'auto_exposure_histogram_half' : 'auto_exposure_histogram';
   return {
     layout: layout.value,
     clearPipeline: createPipeline('auto_exposure_clear', 'auto_exposure_clear'),
-    histogramPipeline: createPipeline('auto_exposure_histogram', 'auto_exposure_histogram'),
+    histogramPipeline: createPipeline(histogram, histogram),
     adaptPipeline: createPipeline('auto_exposure_adapt', 'auto_exposure_adapt'),
   };
 }
@@ -433,7 +438,7 @@ export function addAutoExposureGraphPasses(
       { resource: projection.resources.parameters, usage: 'storage-read' },
     ],
     encodeDirect: (pass, frame, resources) => {
-      meterState ??= createAutoExposureMeterState(frame);
+      meterState ??= createAutoExposureMeterState(frame, projection.halfResolution === true);
       const source = resources.textureView(projection.source.view);
       const histogramBuffer = resources.buffer(projection.resources.histogram);
       const state = resources.buffer(projection.resources.state);
@@ -492,6 +497,7 @@ interface AutoExposureWhiteBalance {
 export function createAutoExposureApplyWgsl(
   hasCandidate = true,
   execution: 'compute' | 'fragment' = 'compute',
+  hasGlare = false,
 ): string {
   const candidateBinding = hasCandidate
     ? execution === 'fragment'
@@ -505,12 +511,18 @@ export function createAutoExposureApplyWgsl(
     : '1.0';
   return /* wgsl */ `
 ${candidateBinding}
+${hasGlare ? '@group(0) @binding(3) var glare: texture_2d<f32>;' : ''}
 
 @group(0) @binding(2) var<uniform> whiteBalance: array<vec4<f32>, 3>;
 
 @fragment fn color_stage_fs(input: VertexOutput) -> @location(0) vec4<f32> {
   let color = textureSampleLevel(source, sourceSampler, input.uv, 0.0);
-  let exposed = color.rgb * ${candidateValue};
+  let radiance = ${
+    hasGlare
+      ? 'min(color.rgb + textureSampleLevel(glare, sourceSampler, input.uv, 0.0).rgb, vec3<f32>(65504.0))'
+      : 'color.rgb'
+  };
+  let exposed = radiance * ${candidateValue};
   return vec4<f32>(vec3<f32>(dot(whiteBalance[0].xyz, exposed), dot(whiteBalance[1].xyz, exposed), dot(whiteBalance[2].xyz, exposed)), color.a);
 }`;
 }
@@ -522,6 +534,7 @@ export function addAutoExposureExposurePass(
   output: RenderPipelineTarget,
   resources: AutoExposureGraphResources | undefined,
   whiteBalance: AutoExposureWhiteBalance = { temperature: 6504, tint: 0 },
+  glare?: RenderPipelineTarget,
 ): Result<void, RenderGraphError> {
   const writeMatrix = createWhiteBalanceMatrixWriter();
   let candidateLayout: BindGroupLayout | undefined;
@@ -530,7 +543,7 @@ export function addAutoExposureExposurePass(
     'standard-exposure-white-balance',
     input,
     output,
-    createAutoExposureApplyWgsl(resources !== undefined, resources?.execution),
+    createAutoExposureApplyWgsl(resources !== undefined, resources?.execution, glare !== undefined),
     12,
     (values, frame) => {
       const output = frame.camera?.output ?? whiteBalance;
@@ -574,5 +587,6 @@ export function addAutoExposureExposurePass(
             return { layout: candidateLayout, bindGroup: bindGroup.value };
           },
         },
+    glare,
   );
 }

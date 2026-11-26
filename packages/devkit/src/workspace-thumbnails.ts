@@ -10,8 +10,9 @@ import { previewThumbnailInput, THUMBNAIL_PREVIEW } from '@forgeax/engine-previe
 import { defineTool, toolJsonSchema } from '@forgeax/engine-tool-runtime';
 import type { CatalogEntry } from '@forgeax/engine-types';
 import { sha256 } from '@forgeax/engine-types';
-import { type Browser, chromium, type Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
 import { browserLaunchArgs, resolveBrowserExecutable } from './browser-capture.js';
+import { launchChromiumBrowser } from './chromium-sandbox.js';
 import { decodeArtifactDataUri, PNG_DATA_URI } from './tools/evidence-image.js';
 import { rejectCommand } from './types.js';
 import { runningWorkspaceTarget } from './workspace-preparation.js';
@@ -459,7 +460,7 @@ export function createWorkspacePreviewBatch(url: string) {
   async function open(): Promise<Page> {
     const channel = process.env.FORGEAX_CHROME_CHANNEL;
     const executablePath = channel ? undefined : await resolveBrowserExecutable(undefined);
-    browser = await chromium.launch({
+    browser = await launchChromiumBrowser({
       headless: true,
       ...(channel ? { channel } : {}),
       ...(executablePath ? { executablePath } : {}),
@@ -468,7 +469,6 @@ export function createWorkspacePreviewBatch(url: string) {
         'development',
         false,
       ),
-      chromiumSandbox: true,
     });
     if (closed) {
       await browser.close();

@@ -42,7 +42,7 @@ describe('Standard output chain contract', () => {
       output: 'display-encoded',
     });
     expect(plan.incrementalResources).toEqual(['standard-grade-output']);
-    expect(plan.incrementalBindings).toBe(7);
+    expect(plan.incrementalBindings).toBe(3);
   });
 
   it('does not describe an empty final texture for V2 pointwise output', () => {

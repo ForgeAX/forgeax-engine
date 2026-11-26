@@ -3,6 +3,7 @@
 // parameters projected from that view at record time.
 
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
+import { standardBloomAdmitted } from '../bloom-admission';
 import { isTemporalAntialias } from '../components/camera';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import {
@@ -326,13 +327,13 @@ function setDepthOfFieldParams(
   params: Map<string, Uint8Array>,
   camera: CameraSnapshot,
   depthOfField: NonNullable<CameraSnapshot['depthOfField']>,
-  targetH: number,
+  outputExtent: { readonly width: number; readonly height: number },
 ): void {
   const dofParams = packDepthOfFieldParams(depthOfField, {
-    outputHeight: targetH,
+    outputWidth: outputExtent.width,
+    outputHeight: outputExtent.height,
     near: camera.near,
     far: camera.far,
-    useTemporalDepth: isTemporalAntialias(camera.antialias),
   });
   for (const id of [...DEPTH_OF_FIELD_POST_PROCESS_IDS, ...DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS]) {
     params.set(id, dofParams);
@@ -377,8 +378,12 @@ export function buildFramePostProcessParams(
       packMotionBlurFrameParams(camera.motionBlur, deltaSeconds, temporalView.historyValid),
     );
   }
-  if (camera.depthOfField !== undefined)
-    setDepthOfFieldParams(params, camera, camera.depthOfField, targetH);
+  if (camera.depthOfField !== undefined) {
+    setDepthOfFieldParams(params, camera, camera.depthOfField, {
+      width: temporalView.input.width,
+      height: targetH,
+    });
+  }
   if (
     camera.lensEffects !== undefined ||
     internals.getPostProcessParamsBuffer?.(LENS_EFFECTS_POST_PROCESS_ID) !== undefined
@@ -393,8 +398,13 @@ export function buildFramePostProcessParams(
     );
   }
   if (camera.lensFlare !== undefined) {
-    const lensFlareParams = packLensFlareParams(camera.lensFlare);
-    for (const program of LENS_FLARE_PROGRAMS) params.set(program.name, lensFlareParams);
+    const lensFlareParams = packLensFlareParams(
+      camera.lensFlare,
+      standardBloomAdmitted(camera) ? camera.bloomIntensity : 0,
+    );
+    for (const program of LENS_FLARE_PROGRAMS) {
+      if (program.params !== undefined) params.set(program.name, lensFlareParams);
+    }
   }
   if (barrelMapping !== undefined && barrelMapping.strength > 0) {
     params.set(BARREL_DISTORTION_POST_PROCESS_ID, packBarrelDistortionParams(barrelMapping));

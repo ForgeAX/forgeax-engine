@@ -647,6 +647,87 @@ describe('Standard Cluster upload ownership', () => {
     expect(pipelineState.spotModifierUploadState?.cookieMatrix.has(1)).toBe(false);
   });
 
+  it('publishes the current modifier sources and shadow slots in each prepared view', () => {
+    const internals = {
+      device: {
+        caps: { storageBuffer: true, compute: false },
+        limits: { maxTextureDimension2D: 4096 },
+      },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+      errorRegistry: {
+        fire: (error: unknown) => {
+          throw error;
+        },
+      },
+    } as unknown as RenderSystemInternals;
+    const state = {
+      pointShadowSnapshots: [],
+      spotShadowSnapshots: [],
+    } as unknown as RenderFrameState;
+    const point = {
+      kind: 'point' as const,
+      color: vec3.create(1, 1, 1),
+      position: vec3.create(0, 0, -2),
+      intensity: 1,
+      invRangeSquared: 1,
+      shadowAtlasLayer: 0,
+      iesProfileSlice: 0,
+      iesProfileData: new Uint8Array(2),
+    };
+    const plain = { ...point, shadowAtlasLayer: -1, iesProfileSlice: undefined };
+    const prepare = (points: readonly (typeof plain | typeof point)[]) =>
+      prepareFrameLighting(
+        internals,
+        state,
+        {
+          point: points,
+          spot: [],
+          rect: [],
+          pointShadow: [],
+          shadowViews: [],
+        } as unknown as ViewLights,
+        camera(),
+      ).unwrap().standard.prepared.slotWork;
+    const first = prepare([point, plain]);
+    const next = prepare([plain, point]);
+    expect(first?.shadowSlots).toEqual([0]);
+    expect(next?.shadowSlots).toEqual([1]);
+    expect(next?.point).toEqual([point]);
+    expect(next?.complete).toBe(true);
+    const removed = prepare([plain]);
+    expect(removed?.point).toHaveLength(0);
+    expect(removed?.shadowSlots).toHaveLength(0);
+    expect(first?.point[0]).toBe(point);
+  });
+
+  it('publishes both projector poses when their 32-bit byte digests collide', () => {
+    const matrix = mat4.identity(mat4.create());
+    const translations: number[] = [];
+    const internals = {
+      device: {
+        queue: {
+          writeBuffer(_buffer: unknown, _offset: number, data: Float32Array) {
+            translations.push(data[12] as number);
+            return rhiOk(undefined);
+          },
+        },
+      },
+    } as unknown as RenderSystemInternals;
+    const pipeline = { cookieMatrixBuffer: {} } as PipelineState;
+    const spot = { kind: 'spot', projectorSlice: 0, projectorMatrix: matrix } as never;
+    const lights = { point: [], spot: [spot], rect: [] };
+    for (const [x, y] of [
+      [181.421875, 350.98046875],
+      [380.3046875, 321.70703125],
+    ] as const) {
+      matrix[12] = x;
+      matrix[13] = y;
+      writeLightModifierTextures(internals, pipeline, lights);
+      writeLightModifierTextures(internals, pipeline, lights);
+    }
+    expect(translations).toEqual([181.421875, 380.3046875]);
+  });
+
   it('reports an unavailable GPU resample once and leaves the slice white', () => {
     const textureWrites: { destination: unknown; data: Uint8Array }[] = [];
     const fired: unknown[] = [];

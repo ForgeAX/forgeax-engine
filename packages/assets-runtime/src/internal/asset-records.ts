@@ -2,6 +2,7 @@ import {
   describeMeshDraw,
   interleavedMesh,
   type MeshDrawDescription,
+  meshAttributeLayout,
 } from '@forgeax/engine-geometry';
 import {
   ASSET_ERROR_HINTS,
@@ -16,13 +17,16 @@ import {
   type Result,
 } from '@forgeax/engine-types';
 import {
+  AssetCopyBudget,
   assetDataBytes,
   assetFieldBytes,
   captureAssetDataAllocated,
   copyAssetData,
+  copyAssetRows,
   takeAssetData,
 } from './asset-data';
 import type { MeshArtifactFailure, MeshArtifactStorage } from './asset-source';
+import { copyStaticMeshRange } from './mesh-vertex-range';
 
 export interface PreparedAssetContent<T = unknown> {
   readonly value: T;
@@ -261,6 +265,13 @@ interface CapturedRevisionGuard extends AssetRevisionGuard {
   matchesCurrent(preserveChangeEvidence?: boolean): boolean;
 }
 
+interface FixedAssetValue {
+  readonly value: unknown;
+  readonly revision: number;
+  /** Only a detached CPU read needs a row projection of this stored mesh. */
+  readonly splitVertices?: true;
+}
+
 interface PinnedVersion {
   readonly snapshot: CapturedSnapshot;
   readonly value: unknown;
@@ -327,6 +338,72 @@ interface RecordEntry {
   bytes: number;
 }
 
+/** Canonical rows are a CPU reader's output. A read never changes the presenter's layout. */
+function splitMesh(record: RecordEntry): MeshAsset | undefined {
+  const mesh = record.value as MeshAsset;
+  return record.target === 'mesh' && mesh?.attributeStorage === 'static-streams' ? mesh : undefined;
+}
+
+function copyCpuMesh(mesh: MeshAsset): MeshAsset {
+  const { vertices, ...metadata } = mesh;
+  // interleavedMesh owns the transposed vertices. Copy only the other source fields.
+  return interleavedMesh({ ...copyAssetData(metadata), vertices });
+}
+
+/** Measure canonical metadata without allocating vertex rows before budget admission. */
+function cpuCaptureBytes(record: RecordEntry): number {
+  const mesh = splitMesh(record);
+  return mesh === undefined
+    ? record.bytes
+    : assetDataBytes({
+        ...mesh,
+        attributeStorage: 'interleaved',
+        attributes: meshAttributeLayout(mesh.attributes),
+      }) +
+        8 * record.dependencies.length;
+}
+
+interface Replacement {
+  readonly previous: RecordEntry;
+  readonly candidate: RecordEntry;
+}
+
+/** Validate all edited roots against the same candidate graph. Shared descendants
+ * complete once, including those reached from a later edited root. */
+function validateAssetGraph(
+  roots: Iterable<number>,
+  read: (handle: number) => Result<RecordEntry, AssetError>,
+  expected: string,
+  newRoots?: ReadonlySet<number>,
+): Result<void, AssetError> {
+  const complete = new Map<number, boolean>();
+  const pending: number[] = [];
+  for (const root of roots) {
+    // An unpublished new identity can only have earlier dependencies.
+    if (newRoots?.has(root)) continue;
+    pending.push(root);
+    while (pending.length > 0) {
+      const handle = pending.pop() as number;
+      // Engine handles are positive. A negative handle closes the current DFS branch.
+      if (handle < 0) {
+        complete.set(-handle, true);
+        continue;
+      }
+      const done = complete.get(handle);
+      if (done === true) continue;
+      if (done === false) return err(failure('asset-reference-invalid', expected));
+      const record = read(handle);
+      if (!record.ok) return record;
+      const children = record.value.dependencies;
+      complete.set(handle, children.length === 0);
+      if (children.length === 0) continue;
+      pending.push(-handle);
+      for (const dependency of children) pending.push(dependency);
+    }
+  }
+  return ok(undefined);
+}
+
 interface ChangeNode {
   readonly handle: number;
   revision: number;
@@ -375,6 +452,8 @@ interface NestedFieldWrite {
 }
 
 interface ByteRangeOperation {
+  /** Logical vertex addresses stay canonical in the change journal. */
+  readonly splitMesh?: MeshAsset;
   readonly target: Uint8Array;
   readonly write: AssetByteWrite;
   readonly rowBytes: number;
@@ -502,22 +581,36 @@ function prepareByteWrites(
     const target = ownedBinaryView(ownedPathValue(value, path), byteOffset, layout.span);
     if (target === undefined)
       return err(failure('asset-invalid-value', 'an in-bounds owned binary range'));
-    operations.push({ target, write, ...layout });
+    if (
+      value.kind === 'mesh' &&
+      value.attributeStorage === 'static-streams' &&
+      path.length === 1 &&
+      path[0] === 'vertices'
+    ) {
+      operations.push({ target, write, ...layout, splitMesh: value as unknown as MeshAsset });
+    } else operations.push({ target, write, ...layout });
   }
   return ok(operations);
 }
 
-function copyRangeBytes({ target, write, rowBytes, byteStride }: ByteRangeOperation): void {
-  if (rowBytes === byteStride) {
-    target.set(write.bytes);
+function copyRangeBytes({
+  target,
+  write,
+  rowBytes,
+  byteStride,
+  span,
+  splitMesh,
+}: ByteRangeOperation): void {
+  if (splitMesh !== undefined) {
+    copyStaticMeshRange(
+      splitMesh,
+      { byteOffset: write.byteOffset, byteLength: span, rowBytes, byteStride },
+      write.bytes,
+      'scatter',
+    );
     return;
   }
-  for (
-    let source = 0, destination = 0;
-    source < write.bytes.byteLength;
-    source += rowBytes, destination += byteStride
-  )
-    target.set(write.bytes.subarray(source, source + rowBytes), destination);
+  copyAssetRows(write.bytes, rowBytes, target, byteStride, rowBytes, write.bytes.length / rowBytes);
 }
 
 function defineOwnedField(target: Record<string, unknown>, field: string, value: unknown): void {
@@ -607,12 +700,16 @@ function failure(code: AssetErrorCode, expected: string): AssetError {
   return new AssetError({ code, expected, hint: ASSET_ERROR_HINTS[code] });
 }
 
-function meshCpuUnavailable(handle: number, revision: number): AssetError {
+function meshCpuUnavailable(
+  handle: number,
+  revision: number,
+  fields?: readonly string[],
+): AssetError {
   return new AssetError({
     code: 'asset-cpu-data-unavailable',
     expected: 'CPU geometry for this Mesh revision',
     hint: ASSET_ERROR_HINTS['asset-cpu-data-unavailable'],
-    detail: { handle, revision },
+    detail: fields === undefined ? { handle, revision } : { handle, revision, fields },
   });
 }
 
@@ -624,6 +721,10 @@ export class AssetRecords implements AssetReferenceOwner {
     MeshPresenter,
     { readonly confirmsTransfer?: boolean; readonly isReady?: () => boolean }
   >();
+
+  get maxRangesPerAsset(): number {
+    return this.limits.maxRanges;
+  }
 
   get canTransferMesh(): boolean {
     const presenter = this.meshPresenter;
@@ -709,13 +810,13 @@ export class AssetRecords implements AssetReferenceOwner {
   private staged: Set<number> | undefined;
   private preparingAdoption = false;
   private acceptingAdoption = false;
-  private replacements: Map<number, RecordEntry> | undefined;
+  private replacements: Map<number, Replacement> | undefined;
   private candidateBytes = 0;
   private scope: object | undefined;
 
   constructor(
     limits: AssetLimits = {},
-    private readonly copySnapshotContent: typeof copyAssetData = copyAssetData,
+    private readonly onContentCopy?: (source: object, copy: object) => void,
   ) {
     this.limits = {
       maxAssets: 65_536,
@@ -849,8 +950,8 @@ export class AssetRecords implements AssetReferenceOwner {
       holders: 1,
       bytes,
     };
-    if (replacing !== undefined) {
-      this.replacements?.set(handle, record);
+    if (previous !== undefined) {
+      this.replacements?.set(handle, { previous, candidate: record });
       this.candidateBytes += bytes;
       return ok(handle);
     }
@@ -873,32 +974,46 @@ export class AssetRecords implements AssetReferenceOwner {
     const staged = new Set<number>();
     const revision = this.revision;
     this.staged = staged;
-    const replacements = new Map<number, RecordEntry>();
+    const replacements = new Map<number, Replacement>();
     this.replacements = replacements;
     let committed = false;
     try {
       const result = adopt();
       if (!result.ok) return result;
-      for (const [handle, record] of replacements) {
-        const valid = this.validateDependencies(handle, record.dependencies);
-        if (!valid.ok) return valid;
+      let changedEdges: number[] | undefined;
+      for (const [handle, { previous, candidate }] of replacements) {
+        if (this.records.get(handle) !== previous)
+          return err(
+            failure('asset-write-conflict', 'a live original for each staged replacement'),
+          );
+        // Value edits inherit the exact edge list and its existing holds. A cycle in
+        // the merged graph must contain at least one newly published edge.
+        if (candidate.dependencies !== previous.dependencies) {
+          changedEdges ??= [];
+          changedEdges.push(handle);
+        }
+      }
+      if (changedEdges !== undefined) {
+        const graph = validateAssetGraph(
+          changedEdges,
+          (handle) => this.entry(handle),
+          'an acyclic runtime dependency closure',
+        );
+        if (!graph.ok) return graph;
       }
       // Range inputs target existing content and participate only at the commit
       // boundary after the complete candidate has passed validation.
       const rangeCommits =
         ranges === undefined ? undefined : this.prepareClosureRanges(ranges, staged, replacements);
       if (rangeCommits?.ok === false) return rangeCommits;
-      const retired: RecordEntry[] = [];
       if (replacements.size > 0 || rangeCommits?.value.updates.length) this.revision++;
-      for (const [handle, record] of replacements) {
-        const previous = this.records.get(handle) as RecordEntry;
+      for (const [handle, { previous, candidate: record }] of replacements) {
         record.holders = previous.holders;
         record.meshCpuRetention =
           previous.meshCpuRetention?.kind === 'required' ? previous.meshCpuRetention : undefined;
         record.revision = this.revision;
         this.records.set(handle, record);
         this.bytes += record.bytes - previous.bytes;
-        retired.push(previous);
         this.changed(
           handle,
           record.patchedField === undefined
@@ -919,9 +1034,10 @@ export class AssetRecords implements AssetReferenceOwner {
       }
       this.replacements = undefined;
       this.candidateBytes = 0;
-      for (const previous of retired) {
+      for (const { previous, candidate } of replacements.values()) {
         previous.meshPresentation?.release();
-        for (const dependency of previous.dependencies) this.release(dependency).unwrap();
+        if (candidate.dependencies !== previous.dependencies)
+          for (const dependency of previous.dependencies) this.release(dependency).unwrap();
       }
       committed = true;
       return result;
@@ -929,8 +1045,9 @@ export class AssetRecords implements AssetReferenceOwner {
       if (!committed) {
         this.replacements = undefined;
         this.candidateBytes = 0;
-        for (const record of replacements.values())
-          for (const dependency of record.dependencies) this.release(dependency).unwrap();
+        for (const { previous, candidate } of replacements.values())
+          if (candidate.dependencies !== previous.dependencies)
+            for (const dependency of candidate.dependencies) this.release(dependency).unwrap();
         for (const handle of [...staged].reverse()) this.release(handle).unwrap();
         this.revision = revision; // No content or evidence escaped the private candidate.
       }
@@ -942,7 +1059,7 @@ export class AssetRecords implements AssetReferenceOwner {
   private prepareClosureRanges<Input>(
     ranges: ClosureRanges<Input>,
     staged: ReadonlySet<number>,
-    replacements: ReadonlyMap<number, RecordEntry>,
+    replacements: ReadonlyMap<number, Replacement>,
   ) {
     this.preparingAdoption = true;
     try {
@@ -960,7 +1077,7 @@ export class AssetRecords implements AssetReferenceOwner {
       for (const { handle, input } of captured.value) {
         if (staged.has(handle) || replacements.has(handle))
           return err(failure('asset-write-conflict', 'one content edit per asset adoption'));
-        const found = this.cpuEntry(handle);
+        const found = this.storedEntry(handle);
         if (!found.ok) return found;
         const ready = ranges.prepare(found.value.value, input);
         if (!ready.ok) return ready;
@@ -1364,31 +1481,13 @@ export class AssetRecords implements AssetReferenceOwner {
 
   /** Final graph validation also guards nodes that were never payload preparation inputs. */
   private validateAdoptionGraph(state: AdoptionState): Result<void, AssetError> {
-    const checked = new Set<number>();
-    const visiting = new Set<number>();
-    for (const root of state.values.keys()) {
-      // An unpublished new identity can only have earlier dependencies.
-      // A synchronous closure can only introduce a cycle through a replacement.
-      if (state.synchronous && state.newIdentities.has(root)) continue;
-      const pending = [root];
-      while (pending.length > 0) {
-        const handle = pending.pop() as number;
-        if (handle < 0) {
-          visiting.delete(-handle);
-          checked.add(-handle);
-          continue;
-        }
-        if (checked.has(handle)) continue;
-        if (visiting.has(handle))
-          return err(failure('asset-reference-invalid', 'an acyclic merged ingestion graph'));
-        const record = this.trackAdoptionEntry(state, handle);
-        if (!record.ok) return record;
-        visiting.add(handle);
-        // Real identities are positive; the negative marker closes this DFS branch.
-        pending.push(-handle);
-        for (const dependency of record.value.dependencies) pending.push(dependency);
-      }
-    }
+    const graph = validateAssetGraph(
+      state.values.keys(),
+      (handle) => this.trackAdoptionEntry(state, handle),
+      'an acyclic merged ingestion graph',
+      state.synchronous ? state.newIdentities : undefined,
+    );
+    if (!graph.ok) return graph;
     return this.checkAdoption(state);
   }
 
@@ -1540,12 +1639,69 @@ export class AssetRecords implements AssetReferenceOwner {
 
   /** A public read is an independently owned value, including every binary view. */
   read<T>(handle: number): Result<T, AssetError> {
-    const found = this.cpuEntry(handle);
-    return found.ok ? this.capture(found.value.value as T, 'detached') : found;
+    const found = this.storedEntry(handle);
+    if (!found.ok) return found;
+    const mesh = splitMesh(found.value);
+    return mesh === undefined
+      ? this.capture(found.value.value as T, 'detached')
+      : ok(copyCpuMesh(mesh) as T);
+  }
+
+  readFields<T, F extends Extract<keyof T, string>>(
+    handle: number,
+    fields: readonly F[],
+  ): Result<Pick<T, F>, AssetError> {
+    const found = this.entry(handle);
+    if (!found.ok) return found;
+    const record = found.value;
+    const selected: readonly string[] = [...new Set(fields)];
+    let contents = objectFields(record.value);
+    if (record.meshPresentation !== undefined) {
+      const result = this.meshDraw(handle);
+      if (!result.ok) return result;
+      const draw = result.value;
+      const unavailable = selected.filter(
+        (field) => field === 'vertices' || (field === 'indices' && draw.indexFormat !== 'none'),
+      );
+      if (unavailable.length > 0)
+        return err(meshCpuUnavailable(handle, record.revision, unavailable));
+      const { aabb, lodHysteresis, lods, materialSlots, submeshes } = draw;
+      contents = {
+        kind: 'mesh',
+        attributeStorage: 'interleaved',
+        aabb,
+        lodHysteresis,
+        lods,
+        materialSlots,
+        submeshes,
+        ...(selected.includes('attributes')
+          ? { attributes: meshAttributeLayout(draw.layout) }
+          : {}),
+      };
+    }
+    const result = Object.fromEntries(
+      selected.map((field) => [
+        field,
+        Object.hasOwn(contents, field) ? contents[field] : undefined,
+      ]),
+    );
+    const split = splitMesh(record);
+    if (split === undefined) return this.capture(result as Pick<T, F>, 'detached');
+
+    // A field read exposes the same logical layout as a complete CPU read.
+    const readVertices = Object.hasOwn(result, 'vertices');
+    if (readVertices) result.vertices = undefined;
+    if (Object.hasOwn(result, 'attributeStorage')) result.attributeStorage = 'interleaved';
+    if (Object.hasOwn(result, 'attributes'))
+      result.attributes = meshAttributeLayout(split.attributes);
+    const detached = this.capture(result, 'detached');
+    if (!detached.ok) return detached;
+    if (readVertices) detached.value.vertices = interleavedMesh(split).vertices;
+    return ok(detached.value as Pick<T, F>);
   }
 
   copy<K extends string, P>(handle: AssetHandle<K, P>): Result<AssetHandle<K, P>, AssetError> {
-    const found = this.cpuEntry(handle);
+    const found = this.storedEntry(handle);
     if (!found.ok) return found;
     return this.create(found.value.target, found.value.value, found.value.dependencies) as Result<
       AssetHandle<K, P>,
@@ -1765,6 +1921,13 @@ export class AssetRecords implements AssetReferenceOwner {
       : this.borrowVersion<T>(handle, revision);
   }
 
+  /** Synchronous layout-aware consumers borrow the admitted body without a CPU row conversion. */
+  resolveStoredAsset<T = Asset>(handle: number, revision?: number): Result<T, AssetError> {
+    if (revision !== undefined) return this.borrowVersion<T>(handle, revision);
+    const record = this.storedEntry(handle);
+    return record.ok ? ok(record.value.value as T) : record;
+  }
+
   /** Internal lease-accounting evidence for atomic domain admission and rollback. */
   refcount(handle: number): number {
     if (this.participatingAdoption?.newIdentities.has(handle))
@@ -1797,6 +1960,8 @@ export class AssetRecords implements AssetReferenceOwner {
     handle: number,
     input: Readonly<Record<string, unknown>>,
     options: {
+      /** Use the same own data fields that the domain observed while selecting this update. */
+      readonly observedFields?: PropertyDescriptorMap;
       readonly prepare?: (
         current: Readonly<Record<string, unknown>>,
         owned: Record<string, unknown>,
@@ -1822,19 +1987,18 @@ export class AssetRecords implements AssetReferenceOwner {
         failure('asset-write-conflict', 'one replacement or object field patch per asset adoption'),
       );
     let { dependencies } = options;
-    const found = this.cpuEntry(handle);
+    const found = options.replace ? this.storedEntry(handle) : this.cpuEntry(handle);
     if (!found.ok) return found;
     const expectedRevision = found.value.revision;
     if (this.revision >= Number.MAX_SAFE_INTEGER - this.limits.maxAssets)
       return err(failure('asset-budget-exceeded', 'available content revisions'));
-    const measured = this.measureInput(input);
-    if (!measured.ok) return measured;
-    if (!this.fits(measured.value))
-      return err(failure('asset-budget-exceeded', 'available candidate capture bytes'));
     if (!isObjectFields(input) || !isObjectFields(found.value.value))
       return err(failure('asset-invalid-value', 'object content and an object field patch'));
-    const captured = this.capture(input);
+    const budget = new AssetCopyBudget(this.availableBytes(), options.observedFields);
+    const captured = this.capture(input, 'copy', budget);
     if (!captured.ok) return captured;
+    if (!this.fits(budget.bytes))
+      return err(failure('asset-budget-exceeded', 'available candidate capture bytes'));
     const record = found.value;
     const root = found.value.value;
     const current = objectField === undefined ? root : root[objectField];
@@ -1891,11 +2055,12 @@ export class AssetRecords implements AssetReferenceOwner {
       const bytes = record.bytes + delta;
       if (!this.fits(bytes))
         return err(failure('asset-budget-exceeded', 'available prepared content bytes'));
-      for (const dependency of nextDependencies) this.retain(dependency).unwrap();
+      if (nextDependencies !== record.dependencies)
+        for (const dependency of nextDependencies) this.retain(dependency).unwrap();
       const stagedFields = sizes ?? new Map(record.fieldBytes);
       if (objectField !== undefined)
         stagedFields.set(objectField, (record.fieldBytes.get(objectField) ?? 0) + contentDelta);
-      this.replacements.set(handle, {
+      const candidate: RecordEntry = {
         target: record.target,
         meshCpuRetention: record.meshCpuRetention,
         value:
@@ -1906,7 +2071,8 @@ export class AssetRecords implements AssetReferenceOwner {
         revision: record.revision,
         holders: 1,
         bytes,
-      });
+      };
+      this.replacements.set(handle, { previous: record, candidate });
       this.candidateBytes += bytes;
       return ok(undefined);
     }
@@ -1954,7 +2120,7 @@ export class AssetRecords implements AssetReferenceOwner {
     if (conflict !== undefined) return err(conflict);
     if (this.staged !== undefined)
       return err(failure('asset-write-conflict', 'range writes outside a closure replacement'));
-    const found = this.cpuEntry(handle);
+    const found = this.storedEntry(handle);
     if (!found.ok) return found;
     const revision = this.revision;
     if (revision >= Number.MAX_SAFE_INTEGER - this.limits.maxAssets)
@@ -1993,7 +2159,7 @@ export class AssetRecords implements AssetReferenceOwner {
       if (adopted.has(update.handle))
         return err(failure('asset-invalid-value', 'one range update per asset'));
       adopted.add(update.handle);
-      const entry = this.cpuEntry(update.handle);
+      const entry = this.storedEntry(update.handle);
       if (!entry.ok) return entry;
       const value = entry.value.value;
       if (!isObjectFields(value))
@@ -2283,12 +2449,13 @@ export class AssetRecords implements AssetReferenceOwner {
     const shared = this.currentContentSnapshot(handle);
     let bytes = 0;
     for (const [reference, record] of selected.value) {
-      const cpu = this.cpuRecord(reference, record);
-      if (!cpu.ok) return cpu;
+      if (record.meshPresentation !== undefined)
+        return err(meshCpuUnavailable(reference, record.revision));
       if (record.holders >= Number.MAX_SAFE_INTEGER)
         return err(failure('asset-budget-exceeded', 'available reference holds'));
-      expected.set(reference, { revision: record.revision, bytes: cpu.value.bytes });
-      if (shared === undefined) bytes += cpu.value.bytes;
+      const size = cpuCaptureBytes(record);
+      expected.set(reference, { revision: record.revision, bytes: size });
+      if (shared === undefined) bytes += size;
     }
     if (this.snapshots >= this.limits.maxSnapshots || !this.fits(bytes))
       return err(failure('asset-budget-exceeded', 'available fixed snapshot capacity'));
@@ -2327,8 +2494,9 @@ export class AssetRecords implements AssetReferenceOwner {
       const record = this.records.get(reference);
       if (record === undefined || record.revision !== expected.revision)
         return this.invalidateContentCapture(capture);
+      const mesh = splitMesh(record);
       capture.values.set(reference, {
-        value: copyAssetData(record.value),
+        value: mesh === undefined ? copyAssetData(record.value) : copyCpuMesh(mesh),
         revision: expected.revision,
       });
       capture.copiedAssets++;
@@ -2525,7 +2693,9 @@ export class AssetRecords implements AssetReferenceOwner {
     const found: number[] = [];
     for (const [key, record] of this.records) {
       const candidate =
-        this.participatingAdoption?.values.get(key) ?? this.replacements?.get(key) ?? record;
+        this.participatingAdoption?.values.get(key) ??
+        this.replacements?.get(key)?.candidate ??
+        record;
       if (candidate.dependencies.includes(handle)) found.push(key);
     }
     if (this.participatingAdoption !== undefined)
@@ -2723,34 +2893,26 @@ export class AssetRecords implements AssetReferenceOwner {
     };
   }
 
-  private captureSnapshot(
-    handle: number,
-    selectedRecords?: ReadonlyMap<number, RecordEntry>,
-  ): Result<FixedSnapshotData, AssetError> {
+  private captureSnapshot(handle: number): Result<FixedSnapshotData, AssetError> {
     const conflict = this.mutationError();
     if (conflict !== undefined) return err(conflict);
-    const closure =
-      selectedRecords === undefined ? this.collectRecords([handle]) : ok(selectedRecords);
+    const closure = this.collectRecords([handle]);
     if (!closure.ok) return closure;
     const selected = closure.value;
-    let canonical: Map<number, RecordEntry> | undefined;
     let bytes = 0;
     for (const [reference, record] of selected) {
-      const cpu = this.cpuRecord(reference, record);
-      if (!cpu.ok) return cpu;
-      if (cpu.value !== record) {
-        canonical ??= new Map();
-        canonical.set(reference, cpu.value);
-      }
-      bytes += cpu.value.bytes;
+      if (record.meshPresentation !== undefined)
+        return err(meshCpuUnavailable(reference, record.revision));
+      bytes += record.bytes;
     }
     if (this.snapshots >= this.limits.maxSnapshots || !this.fits(bytes))
       return err(failure('asset-budget-exceeded', 'available fixed snapshot capacity'));
-    const values = new Map<number, { value: unknown; revision: number }>();
+    const values = new Map<number, FixedAssetValue>();
     for (const [reference, record] of selected)
       values.set(reference, {
-        value: this.copySnapshotContent((canonical?.get(reference) ?? record).value),
+        value: this.copySnapshotContent(record.value),
         revision: record.revision,
+        ...(splitMesh(record) === undefined ? {} : { splitVertices: true }),
       });
     this.snapshots++;
     this.snapshotBytes += bytes;
@@ -2760,7 +2922,7 @@ export class AssetRecords implements AssetReferenceOwner {
   /** Accept already owned copies and their existing snapshot accounting; never copies again. */
   private fixedSnapshot(
     handle: number,
-    values: Map<number, { readonly value: unknown; readonly revision: number }>,
+    values: Map<number, FixedAssetValue>,
     bytes: number,
   ): FixedSnapshotData {
     let active = true;
@@ -2770,9 +2932,11 @@ export class AssetRecords implements AssetReferenceOwner {
       ...guard,
       read: <T>(reference: number): Result<T, AssetError> => {
         const retained = values.get(reference);
-        return active && retained !== undefined
-          ? this.capture(retained.value as T)
-          : err(failure('asset-reference-invalid', 'a live fixed snapshot reference'));
+        if (!active || retained === undefined)
+          return err(failure('asset-reference-invalid', 'a live fixed snapshot reference'));
+        return retained.splitVertices
+          ? ok(copyCpuMesh(retained.value as MeshAsset) as T)
+          : this.capture(retained.value as T);
       },
       dispose: () => {
         if (!active) return;
@@ -2967,18 +3131,37 @@ export class AssetRecords implements AssetReferenceOwner {
     }
   }
 
+  private copySnapshotContent<T>(input: T, budget?: AssetCopyBudget): T {
+    const copy = budget === undefined ? copyAssetData(input) : budget.copy(input);
+    if (input !== null && typeof input === 'object' && copy !== null && typeof copy === 'object')
+      this.onContentCopy?.(input, copy);
+    return copy;
+  }
+
   private capture<T>(
     input: T,
     storage: 'copy' | 'take' | 'detached' = 'copy',
+    budget?: AssetCopyBudget,
   ): Result<T, AssetError> {
     try {
-      const copy = storage === 'detached' ? copyAssetData : this.copySnapshotContent;
-      return ok(storage === 'take' ? takeAssetData(input) : copy(input));
+      if (storage === 'take') return ok(takeAssetData(input));
+      return ok(
+        storage === 'detached' ? copyAssetData(input) : this.copySnapshotContent(input, budget),
+      );
     } catch (cause) {
+      if (budget?.exceeded)
+        return err(failure('asset-budget-exceeded', 'available candidate capture bytes'));
       return err(
         failure('asset-invalid-value', cause instanceof Error ? cause.message : String(cause)),
       );
     }
+  }
+
+  private storedEntry(handle: number): Result<RecordEntry, AssetError> {
+    const record = this.entry(handle);
+    return record.ok && record.value.meshPresentation !== undefined
+      ? err(meshCpuUnavailable(handle, record.value.revision))
+      : record;
   }
 
   private cpuEntry(handle: number): Result<RecordEntry, AssetError> {
@@ -3012,7 +3195,7 @@ export class AssetRecords implements AssetReferenceOwner {
   private visibleRecord(handle: number): RecordEntry | undefined {
     return (
       this.participatingAdoption?.values.get(handle) ??
-      this.replacements?.get(handle) ??
+      this.replacements?.get(handle)?.candidate ??
       this.records.get(handle)
     );
   }
@@ -3025,16 +3208,19 @@ export class AssetRecords implements AssetReferenceOwner {
       : ok(record);
   }
 
-  private fits(additional: number): boolean {
+  private availableBytes(): number {
     return (
-      this.bytes +
+      this.limits.maxBytes -
+      (this.bytes +
         this.snapshotBytes +
         this.captureReservedBytes +
         this.candidateBytes +
-        this.adoptionBytes +
-        additional <=
-      this.limits.maxBytes
+        this.adoptionBytes)
     );
+  }
+
+  private fits(additional: number): boolean {
+    return additional <= this.availableBytes();
   }
 
   private changed(handle: number, fields: readonly string[], range?: AssetRange): void {

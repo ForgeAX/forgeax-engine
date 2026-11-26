@@ -434,6 +434,36 @@ it('loads a prepared Mesh without CPU data and restores the exact revision for o
     expect(runtimeSourceReader(f.assets, f.source)?.entry(guid)).toBeUndefined();
     expect(records.meshDraw(visual).unwrap().submeshes).toEqual(f.mesh.submeshes);
     expect(records.meshDraw(visual).unwrap().materialSlots[0]?.defaultMaterial).toBe(material);
+    const residency = f.assets.meshCpuResidency(visual).unwrap();
+    const fields = [
+      'kind',
+      'materialSlots',
+      'submeshes',
+      'aabb',
+      'attributes',
+      'attributeStorage',
+      'lods',
+    ] as const;
+    const fetches = f.fetcher.mock.calls.length;
+    const selected = f.assets.read(visual, fields).unwrap();
+    expect(Object.keys(selected)).toEqual(fields);
+    expect(selected.materialSlots[0]?.defaultMaterial).toBe(material);
+    expect(selected.submeshes).toEqual(f.mesh.submeshes);
+    expect(selected.aabb).toEqual(f.mesh.aabb);
+    expect(selected.lods).toBeUndefined();
+    const bounds = f.assets.read(visual, ['aabb']).unwrap().aabb;
+    if (!bounds) throw new Error('expected fixture bounds');
+    bounds.fill(999);
+    expect(f.assets.read(visual, ['aabb']).unwrap().aabb).toEqual(f.mesh.aabb);
+    expect(f.assets.read(visual, ['materialSlots', 'vertices', 'indices'])).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-cpu-data-unavailable',
+        detail: { handle: visual, revision, fields: ['vertices', 'indices'] },
+      },
+    });
+    expect(f.assets.meshCpuResidency(visual).unwrap()).toEqual(residency);
+    expect(f.fetcher.mock.calls).toHaveLength(fetches);
     expect(f.assets.read(visual)).toMatchObject({
       ok: false,
       error: { code: 'asset-cpu-data-unavailable', detail: { handle: visual, revision } },
@@ -463,6 +493,7 @@ it('loads a prepared Mesh without CPU data and restores the exact revision for o
       recoveryArtifactBytes: 0,
     });
     expect(f.assets.read(visual).unwrap().vertices).toEqual(delivered?.vertices);
+    expect(f.assets.read(visual, fields).unwrap()).toEqual(selected);
     expect(f.assets.read(visual).unwrap().materialSlots[0]?.defaultMaterial).toBe(material);
     expect(releases).toBe(1);
     expect(f.fetcher).not.toHaveBeenCalled();

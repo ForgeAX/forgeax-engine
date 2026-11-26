@@ -7,6 +7,83 @@ import { AssetRecords, type MeshPresentation } from '../internal/asset-records';
 const material = (roughness = 1): MaterialAsset => ({ kind: 'material', values: { roughness } });
 
 describe('owned runtime asset content', () => {
+  test('captures changed fields once and refuses oversized binary storage before copying it', () => {
+    const records = new AssetRecords({ maxBytes: 512 });
+    const handle = records.create('material', material()).unwrap();
+    const observer = records.observe().unwrap();
+    const rgb = [0, 1, 0];
+    let reads = 0;
+    const input = new Proxy(
+      { rgb },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key === 'rgb' && descriptor) descriptor.value = ++reads === 1 ? rgb : [1, 0, 0];
+          return descriptor;
+        },
+      },
+    );
+    records.update(handle, input, { field: 'values' }).unwrap();
+    rgb.fill(9);
+    expect(reads).toBe(1);
+    const accepted = { kind: 'material', values: { roughness: 1, rgb: [0, 1, 0] } };
+    expect(records.read(handle).unwrap()).toEqual(accepted);
+    expect(records.inspect().bytes).toBe(assetDataBytes(accepted));
+    observer.read().unwrap().accept();
+    const before = records.inspect();
+    const buffer = new ArrayBuffer(512);
+    const copy = vi.spyOn(buffer, 'slice');
+    expect(records.update(handle, { blob: buffer }, { field: 'values' })).toMatchObject({
+      ok: false,
+      error: { code: 'asset-budget-exceeded' },
+    });
+    expect(copy).not.toHaveBeenCalled();
+    expect(records.inspect()).toEqual(before);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    observer.dispose();
+    records.dispose();
+  });
+
+  test('value edits transfer the existing graph holds through commit and discard', () => {
+    const records = new AssetRecords();
+    const shared = records.create('texture', {}).unwrap();
+    const owners = Array.from({ length: 24 }, () =>
+      records.create('material', material(), [shared]).unwrap(),
+    );
+    const first = owners[0];
+    if (first === undefined) throw new Error('fixture requires a material');
+    records.release(shared).unwrap();
+    const edit = () => {
+      for (const owner of owners)
+        records.update(owner, { roughness: 0.25 }, { field: 'values' }).unwrap();
+      expect(records.refcount(shared)).toBe(owners.length);
+    };
+    const observer = records.observe().unwrap();
+    const before = records.inspect();
+    const aborted = records.adoptClosure(() => {
+      edit();
+      // This rewired texture would create a cycle through a value-only material.
+      return records.adopt('texture', {}, [first], undefined, shared);
+    });
+    expect(aborted).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+    expect(records.inspect()).toEqual(before);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    expect(records.read(first).unwrap()).toEqual(material());
+    records
+      .adoptClosure(() => {
+        edit();
+        return ok(undefined);
+      })
+      .unwrap();
+    expect(observer.read().unwrap().changes).toHaveLength(owners.length);
+    for (const owner of owners) {
+      expect(records.read(owner).unwrap()).toEqual(material(0.25));
+      records.release(owner).unwrap();
+    }
+    expect(records.inspect().assets).toBe(0);
+    observer.dispose();
+  });
+
   test('shares the draw description until the same Mesh identity adopts another revision', () => {
     const records = new AssetRecords();
     const first = createBoxGeometry(2, 1, 1).unwrap();

@@ -11,7 +11,7 @@ import type { GpuScene } from '../gpu-scene';
 import type { GpuSceneCapacityPreparation, GpuSceneCapacityStatus } from '../gpu-scene-capacity';
 import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
 import type { GpuSceneSourceMeshInput, GpuSceneSourceRow } from '../gpu-scene-source-rows';
-import { publicationDependencies } from '../publication/dependencies';
+import { collectPublicationDependencies } from '../publication/dependencies';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -222,9 +222,10 @@ export class MeshSourceResources {
     const needed = new Set<number>();
     const input = this.assertCurrent();
     for (const row of input.renderables) {
-      for (const handle of publicationDependencies(row)) if (handle !== 0) needed.add(handle);
+      collectPublicationDependencies(row, needed);
       yield;
     }
+    needed.delete(0);
     this.phase = 'preparing';
     for (const value of needed) {
       const input = this.assertCurrent();

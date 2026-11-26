@@ -827,11 +827,12 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
       return value;
     };
     const levels = [0, 1, 2, 3, 4] as const;
+    const scene = target('hdrColor');
     addTypedBloomPasses(graph, {
-      scene: target('hdrColor'),
+      scene,
       horizontal: levels.map((level) => target(`bloomHorizontal${level}`)),
       vertical: levels.map((level) => target(`bloomVertical${level}`)),
-      levelDimensions: levels.map((level) => ({ width: 400 >> level, height: 300 >> level })),
+      sources: levels.map(() => scene),
       composited: target('hdrComposited'),
     }).unwrap();
     const textureView = (input: GraphTextureView) => {
@@ -850,16 +851,16 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
     expect(ctx.encoder.copyTextureToTexture).not.toHaveBeenCalled();
     expect(bindGroupCreates).toHaveLength(13);
     expect(bindGroupCreates.map((create) => create.label)).toEqual([
-      'bloom-horizontal-0-bg',
-      'bloom-vertical-0-bg',
-      'bloom-horizontal-1-bg',
-      'bloom-vertical-1-bg',
-      'bloom-horizontal-2-bg',
-      'bloom-vertical-2-bg',
-      'bloom-horizontal-3-bg',
-      'bloom-vertical-3-bg',
       'bloom-horizontal-4-bg',
       'bloom-vertical-4-bg',
+      'bloom-horizontal-3-bg',
+      'bloom-vertical-3-bg',
+      'bloom-horizontal-2-bg',
+      'bloom-vertical-2-bg',
+      'bloom-horizontal-1-bg',
+      'bloom-vertical-1-bg',
+      'bloom-horizontal-0-bg',
+      'bloom-vertical-0-bg',
       'bloom-composite-bg',
       'fxaa-bg',
       'skybox-bg',
@@ -877,15 +878,16 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
     expect(initialReceipts).toEqual({ uploadCount: 11, bindGroupCount: 11, encodeCount: 11 });
     const writes = vi.mocked(ctx.runtime.device.queue.writeBuffer);
     const initialUniform = writes.mock.calls[0]?.[2];
-    expect(Array.from(initialUniform as Float32Array)).toEqual(
-      [1, 0.01, 400, 300, 0, 0, 0, 0].map(Math.fround),
-    );
+    expect(Array.from(initialUniform as Float32Array)).toEqual([4, 0, 0, 0]);
+    const coarsestUniform = writes.mock.calls[1]?.[2] as Float32Array;
+    expect(coarsestUniform[1]).toBeCloseTo(0.2 / 3);
     ctx.frameState.bloomFrameReceipts = undefined;
-    Object.assign(ctx.camera, { bloomThreshold: 2, bloomIntensity: 0.75 });
+    Object.assign(ctx.camera, { bloomRadius: 1, bloomIntensity: 0.75 });
     writes.mockClear();
     recordAll();
     expect(writes.mock.calls[0]?.[2]).toBe(initialUniform);
-    expect((initialUniform as Float32Array)[0]).toBe(2);
+    expect(writes.mock.calls[1]?.[2]).toBe(coarsestUniform);
+    expect(coarsestUniform[1]).toBeCloseTo(1 / 3);
     expect((writes.mock.calls[10]?.[2] as Float32Array)[0]).toBe(0.75);
     expect(initialReceipts).toEqual({ uploadCount: 11, bindGroupCount: 11, encodeCount: 11 });
     expect(ctx.frameState.bloomFrameReceipts).not.toBe(initialReceipts);
@@ -908,8 +910,8 @@ describe('post-process bindgroup identity cache (issue #670)', () => {
 
     expect(bindGroupCreates).toHaveLength(26);
     expect(bindGroupCreates[13]?.entries[0]?.resource.value).toBe(views.hdrColor);
-    expect(bindGroupCreates[17]?.entries[0]?.resource.value).toBe(views.bloomVertical1);
-    expect(bindGroupCreates[14]?.entries[0]?.resource.value).toBe(views.bloomHorizontal0);
+    expect(bindGroupCreates[22]?.entries[1]?.resource.value).toBe(views.bloomVertical1);
+    expect(bindGroupCreates[22]?.entries[0]?.resource.value).toBe(views.bloomHorizontal0);
     expect(bindGroupCreates[23]?.entries.map((entry) => entry.resource.value)).toContain(
       views.bloomVertical0,
     );

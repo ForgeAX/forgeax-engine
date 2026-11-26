@@ -88,6 +88,7 @@ const KNOWN_TEXTURE_BYTE_FORMATS = new Set<GPUTextureFormat>([
   'rg16sint',
   'rg16snorm',
   'rg16unorm',
+  'rg11b10ufloat',
   'rgba16float',
   'rgba16uint',
   'rgba16sint',

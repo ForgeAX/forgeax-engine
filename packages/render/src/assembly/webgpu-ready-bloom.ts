@@ -11,6 +11,7 @@ import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { type BloomInspection, emptyBloomInspection } from '../inspection-types';
 import type { DeviceScope, RhiErrorListenerRegistry } from '../lifecycle';
+import { bloomFilterFormat } from '../pipeline/bloom-filter-format';
 import { inspectStandardBloomGraph } from '../pipeline/standard-post';
 import type { PipelineCache, PipelineDeviceProvider } from '../pipeline-spec';
 import type { BloomFrameReceipts } from '../record/frame-snapshot';
@@ -109,7 +110,7 @@ function createBloomPass(
     fullscreenPipelineSpec(
       `forgeax::post::${name}`,
       'post-process',
-      HDR_COLOR_ATTACHMENT_FORMAT,
+      name === 'bloom-composite' ? HDR_COLOR_ATTACHMENT_FORMAT : bloomFilterFormat(device.caps),
       1,
     ),
     provider,
@@ -193,7 +194,7 @@ function buildBloomBundle(
           scope,
           'bloom-vertical',
           bloomVertical,
-          1,
+          2,
           BLOOM_VERTICAL_PARAMS_BYTES,
         );
   const composite =
@@ -206,7 +207,7 @@ function buildBloomBundle(
           scope,
           'bloom-composite',
           bloomComposite,
-          6,
+          2,
           BLOOM_COMPOSITE_PARAMS_BYTES,
         );
   return {

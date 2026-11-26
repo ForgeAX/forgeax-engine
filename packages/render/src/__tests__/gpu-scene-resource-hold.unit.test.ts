@@ -117,6 +117,42 @@ it('does not retire an in-flight frame when the independent resident hold releas
   expect(old.references).toBe(0);
 });
 
+it('reuses direct row addresses in queue order while keeping the sealed physical domain alive', async () => {
+  const f = await fixture();
+  const frame = f.capture();
+  const old = f.version();
+  const reads = frame.inputReads();
+  const table = f.gpuScene.tableBindingIdentity;
+  frame.seal().unwrap();
+  let finish!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  frame.submit(completed, 'queue-order');
+  frame.release();
+  expect(old.references).toBe(1);
+  expect(f.gpuScene.readHoldsTableRoot(reads, table)).toBe(true);
+  f.material.adopt({ ...f.material.snapshot, roughness: 0.25 });
+  f.gpuScene.sync({ ...f.projection.apply([]), materialUpdates: [f.material] }).unwrap();
+  expect(f.version().descriptor).toBe(old.descriptor);
+  expect(f.version().start).toBe(old.start);
+  // A sibling still recording must keep the exact old version across an edit.
+  const sibling = f.capture();
+  const direct = f.capture();
+  const shared = f.version();
+  direct.seal().unwrap();
+  direct.submit(completed, 'queue-order');
+  f.material.adopt({ ...f.material.snapshot, roughness: 0.75 });
+  f.gpuScene.sync({ ...f.projection.apply([]), materialUpdates: [f.material] }).unwrap();
+  expect(f.version().descriptor).not.toBe(shared.descriptor);
+  expect(shared.references).toBe(1);
+  sibling.release();
+  finish();
+  await completed;
+  expect(f.gpuScene.readHoldsTableRoot(reads, table)).toBe(false);
+  expect(shared.references).toBe(0);
+});
+
 it('retires a submitted frame after a rejected completion without treating its reason as cleanup', async () => {
   const f = await fixture();
   const frame = f.capture();

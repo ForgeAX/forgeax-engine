@@ -131,6 +131,7 @@ export function addTsrPasses(
   opaqueGuide: RenderPipelineTarget,
   capacity: { readonly width: number; readonly height: number },
   compute = true,
+  writeHalf?: RenderPipelineTarget,
 ): Result<void, RenderGraphError> {
   const guideRead = analysisTarget(
     graph,
@@ -207,7 +208,12 @@ export function addTsrPasses(
       name: 'tsr-reconstruct',
       analyze: false,
       reads: reconstructionReads,
-      writes: [targets.writeColor, targets.writeTemporal, targets.writeStability],
+      writes: [
+        targets.writeColor,
+        targets.writeTemporal,
+        targets.writeStability,
+        ...(compute && writeHalf !== undefined ? [writeHalf] : []),
+      ],
     },
   ];
   for (const stage of stages) {
@@ -300,7 +306,12 @@ export function addTsrPasses(
       ? graph.addComputePass(stage.name, {
           accesses,
           encodeDirect(pass, frame, resources) {
-            native ??= createTsrProgram(frame, stage.analyze, sceneVelocity !== undefined);
+            native ??= createTsrProgram(
+              frame,
+              stage.analyze,
+              sceneVelocity !== undefined,
+              !stage.analyze && writeHalf !== undefined,
+            );
             const ready = prepare(frame, resources, native);
             pass.setPipeline(native.pipeline);
             pass.setBindGroup(0, ready.group);

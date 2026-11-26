@@ -54,8 +54,10 @@ const SMOKE_MIN_FRAMES = 60;
 const FALSIFY_BLOOM = process.env.FORGEAX_BLOOM_FALSIFY === '1';
 const CAPTURE_GPU_TIMINGS = process.env.FORGEAX_BLOOM_CAPTURE_TIMINGS === '1';
 const EXPECTED_BLOOM_TIMING_PASSES = Object.freeze([
-  ...Array.from({ length: 5 }, (_, level) => [
-    `bloom-horizontal-${level}`, `bloom-vertical-${level}`,
+  'bloom-prefilter',
+  'bloom-downsample',
+  ...Array.from({ length: 5 }, (_, index) => [
+    `bloom-horizontal-${4 - index}`, `bloom-vertical-${4 - index}`,
   ]).flat(),
 ]);
 
@@ -133,7 +135,7 @@ function descriptorExtent(size) {
 function descriptorByteLength(kind, descriptor) {
   if (kind === 'texture') {
     const extent = descriptorExtent(descriptor?.size);
-    const texelBytes = descriptor?.format === 'rgba16float' ? 8 : 0;
+    const texelBytes = { rgba16float: 8, rg11b10ufloat: 4 }[descriptor?.format] ?? 0;
     return texelBytes * extent.width * extent.height * extent.depth * (descriptor?.sampleCount ?? 1);
   }
   if (kind === 'buffer') return descriptor?.size ?? 0;
@@ -1020,8 +1022,8 @@ if (onStage?.readback === undefined || offStage?.readback === undefined) {
     '(g) Bloom contribution oracle: on/off numeric RGB readback is identical; scene contribution did not reach the Bloom graph',
   );
 }
-if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 10 || !onStage?.outputPasses?.includes('standard-grade')) {
-  failures.push(`(h) Bloom inspection did not report a valid ten-filter graph with native Grade composition: ${JSON.stringify(onStage?.bloom)}`);
+if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 12 || !onStage?.outputPasses?.includes('standard-grade')) {
+  failures.push(`(h) Bloom inspection did not report a valid progressive Bloom graph with native Grade composition: ${JSON.stringify(onStage?.bloom)}`);
 }
 if (onStage?.bloom?.residentChildBytes !== onStage?.bloom?.targetBytes || onStage?.bloom?.residentChildBytes <= 0) {
   failures.push(`(h0) Bloom inspection did not report descriptor-derived resident bytes: ${JSON.stringify(onStage?.bloom)}`);

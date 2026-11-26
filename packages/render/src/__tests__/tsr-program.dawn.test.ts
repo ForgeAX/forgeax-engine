@@ -1,14 +1,15 @@
-import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
+import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { describe, expect, it } from 'vitest';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { createTsrProgram } from '../tsr/program';
+import { nativeDeviceFixture } from './native-device-fixture';
 
 describe('production TSR compute programs', () => {
   it('creates both production pipelines within the portable 16 KiB workgroup budget', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (
-      await adapter.requestDevice({ requiredLimits: { maxComputeWorkgroupStorageSize: 16384 } })
-    ).unwrap();
+    const { device, native } = await nativeDeviceFixture({
+      requiredLimits: { maxComputeWorkgroupStorageSize: 16384 },
+    });
+    native.pushErrorScope('validation');
     expect(device.limits.maxComputeWorkgroupStorageSize).toBe(16384);
     const frame = {
       runtime: {
@@ -25,5 +26,6 @@ describe('production TSR compute programs', () => {
     expect(reconstruction.pipeline).toBeDefined();
     expect(analysis.layout).not.toBe(reconstruction.layout);
     await device.queue.onSubmittedWorkDone();
+    expect(await native.popErrorScope()).toBeNull();
   });
 });

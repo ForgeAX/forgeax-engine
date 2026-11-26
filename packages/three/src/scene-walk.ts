@@ -135,6 +135,15 @@ export class SceneWalkRows<T extends Object3D = Object3D> extends OrderedSourceR
 export class SourcePoseEdits extends OrderedSourceRows<Object3D> {
   private readonly addresses = new WeakMap<Object3D, number>();
 
+  /** A local repair also restores the derived world matrix. A world-only edit
+   * does not stage the author's local TRS. Both belong to the captured batch. */
+  readonly matrixRepairs = new Map<Object3D, 'local' | 'world'>();
+
+  override release(): void {
+    this.matrixRepairs.clear();
+    super.release();
+  }
+
   has(node: Object3D): boolean {
     const address = this.addresses.get(node);
     return address !== undefined && this.rows[address] === node;
@@ -151,6 +160,7 @@ export class SourcePoseEdits extends OrderedSourceRows<Object3D> {
   }
 
   delete(node: Object3D): boolean {
+    this.matrixRepairs.delete(node);
     const address = this.addresses.get(node);
     if (address === undefined || this.rows[address] !== node) return false;
     this.addresses.delete(node);

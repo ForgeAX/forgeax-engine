@@ -3,7 +3,7 @@ import { applyStandardWhiteBalance } from '../pipeline/standard-output/color-tra
 import { createStandardOutputV2ParameterWriter } from '../pipeline/standard-output/native-params';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 
-const policy = { bloom: false, sharpen: 0.3, finishInGrade: false };
+const policy = { bloomIntensity: 0, sharpen: 0.3, finishInGrade: false };
 
 function input() {
   const camera = makeZeroCameraFallbackSnapshot();
@@ -116,7 +116,7 @@ it('observes continuous lens controls on a reused snapshot and restores neutral 
   expect(values[24]).toBeCloseTo(0.4);
 });
 
-it('selects a linear Grade seam and suppresses already-applied fringe without removing lens finish', () => {
+it('applies fringe and lens finish with a preweighted glare contribution in linear Grade', () => {
   const base = input(),
     lens = {
       vignetteIntensity: 0.3,
@@ -131,13 +131,14 @@ it('selects a linear Grade seam and suppresses already-applied fringe without re
   const write = createStandardOutputV2ParameterWriter({
     ...policy,
     linearGrade: true,
-    chromaticAberration: false,
+    bloomIntensity: 1,
   });
   const bytes = write({ ...base, lensEffects: lens }, 1, 0.8, true);
   const values = new Float32Array(bytes.buffer);
   expect(new Uint32Array(bytes.buffer)[37]).toBe(1);
-  expect(values[16]).toBe(0);
-  expect(values[17]).toBe(0);
+  expect(values[16]).toBeGreaterThan(0);
+  expect(values[17]).toBeGreaterThan(0);
+  expect(values[20]).toBe(1);
   expect(values[24]).toBeCloseTo(0.3);
   expect(values[32]).toBeCloseTo(0.02);
 });

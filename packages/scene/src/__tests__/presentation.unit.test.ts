@@ -19,7 +19,11 @@ import {
   Transform,
   TransformInterpolation,
 } from '../index';
-import { createPresentationMatrixReader } from '../presentation';
+import {
+  collectPresentationTransformSpans,
+  createPresentationMatrixReader,
+  type PresentationSpan,
+} from '../presentation';
 import { PropagateTransforms, PropagateTransformsFixed } from '../systems/propagate-transforms';
 
 function x(world: World, entity: EntityHandle): number {
@@ -282,4 +286,40 @@ it('shares one sampler lease and releases it with the propagation owner', () => 
   second();
   expect(systems()).toHaveLength(0);
   expect(x(world, entity)).toBe(0);
+});
+
+it('addresses changed presentation matrices in query order across unavailable poses', async () => {
+  const world = new World();
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  try {
+    const mesh = world.spawn({ component: Transform, data: { pos: [3, 0, 0] } }).unwrap();
+    const unavailable = world
+      .spawn(
+        { component: GlobalTransform, data: {} },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    const joint = world
+      .spawn(
+        { component: Transform, data: { pos: [5, 0, 0] } },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    const query = world.query({ read: [GlobalTransform] }).unwrap();
+    const spans: PresentationSpan[] = [];
+    const addresses = new Map<number, number | undefined>();
+    collectPresentationTransformSpans(world, query, spans, (entities, first) => {
+      for (let i = 0; i < entities.length; i++)
+        addresses.set(entities[i] as number, first === undefined ? undefined : first + i);
+    });
+    expect([...addresses.keys()]).toEqual(Array.from(query, (row) => row.entity));
+    expect(addresses.has(unavailable)).toBe(true);
+    expect(addresses.get(unavailable)).toBeUndefined();
+    const published = spans.flatMap((span) => Array.from(span.entities));
+    expect(published).toHaveLength(2);
+    for (const entity of [mesh, joint])
+      expect(published[addresses.get(entity) as number]).toBe(entity);
+  } finally {
+    await ctx.fiber.dispose();
+  }
 });

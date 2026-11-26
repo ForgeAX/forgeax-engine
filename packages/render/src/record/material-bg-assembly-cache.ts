@@ -65,13 +65,67 @@ function sameBindingRanges(shape: BindingRanges, entries: readonly BindGroupEntr
   return index === shape.length;
 }
 
-type VariantEntries = Map<GraphBindingViews | undefined, MaterialBgAssemblyCacheEntry>;
-type LayoutEntries = Map<number, VariantEntries>;
-type ProbeEntries = Map<number | undefined, LayoutEntries>;
-type ShaderEntries = Map<string, ProbeEntries>;
+class BindingSelector {
+  ordinary: MaterialBgAssemblyCacheEntry | undefined;
+  graphs?: Map<GraphBindingViews, MaterialBgAssemblyCacheEntry>;
+
+  constructor(
+    readonly shader: string,
+    readonly probe: number | undefined,
+    readonly layout: number,
+  ) {}
+
+  get(key: GraphBindingViews | undefined): MaterialBgAssemblyCacheEntry | undefined {
+    return key === undefined ? this.ordinary : this.graphs?.get(key);
+  }
+
+  set(key: GraphBindingViews | undefined, entry: MaterialBgAssemblyCacheEntry): void {
+    if (key === undefined) this.ordinary = entry;
+    else {
+      this.graphs ??= new Map();
+      this.graphs.set(key, entry);
+    }
+  }
+}
+
+// Match Map's numeric key equality, including optional and NaN probe indices.
+function compareIndex(a: number | undefined, b: number | undefined): number {
+  if (a === b || (Number.isNaN(a) && Number.isNaN(b))) return 0;
+  if (a === undefined || Number.isNaN(b)) return -1;
+  if (b === undefined || Number.isNaN(a)) return 1;
+  return a < b ? -1 : 1;
+}
+
+// One small ordered roster per material. A missing selector returns its
+// complemented insertion index. Probe-heavy materials retain logarithmic lookup.
+function selectorIndex(
+  selectors: BindingSelector[],
+  shader: string,
+  probe: number | undefined,
+  layout: number,
+): number {
+  let lo = 0;
+  let hi = selectors.length;
+  while (lo < hi) {
+    const mid = lo + ((hi - lo) >>> 1);
+    const row = selectors[mid];
+    if (row === undefined) throw new Error('Missing installed material selector');
+    if (row.shader === shader && row.probe === probe && row.layout === layout) return mid;
+    const order =
+      row.shader !== shader
+        ? row.shader < shader
+          ? -1
+          : 1
+        : compareIndex(row.probe, probe) || compareIndex(row.layout, layout);
+    if (order === 0) return mid;
+    if (order < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return ~lo;
+}
 type DiscardBinding = (
   entry: MaterialBgAssemblyCacheEntry,
-  variants: VariantEntries,
+  selector: BindingSelector,
   key: GraphBindingViews | undefined,
 ) => boolean;
 
@@ -174,7 +228,7 @@ export class MaterialBgAssemblyCache {
 
   private preparation: MaterialTableBindingPreparation | undefined;
   private sourceIdentity: string | undefined;
-  private readonly materials = new Map<number, ShaderEntries>();
+  private readonly materials = new Map<number, BindingSelector[]>();
   private frame?: MaterialFrame | undefined;
 
   /** Release rows at the same transition that retires a material or its pass roster. */
@@ -194,12 +248,12 @@ export class MaterialBgAssemblyCache {
           before.passes === after.passes)
       )
         return;
-      const shaders = this.materials.get(handle);
-      if (shaders !== undefined)
+      const selectors = this.materials.get(handle);
+      if (selectors !== undefined)
         if (
           this.pruneMaterial(
             handle,
-            shaders,
+            selectors,
             (entry) =>
               entry.material === before.snapshot ||
               materialResource(entry.material) === before.resource,
@@ -223,15 +277,15 @@ export class MaterialBgAssemblyCache {
       materialHandle === undefined
     )
       return undefined;
-    const variants = this.materials
-      .get(materialHandle)
-      ?.get(shaderId ?? '')
-      ?.get(probeIndex)
-      ?.get(standardMaterialLayoutIndex);
-    if (graphViews === undefined) return variants?.get(undefined);
-    if (variants !== undefined)
-      for (const entry of variants.values())
-        if (sameGraphBindingViews(entry.graphViews, graphViews)) return entry;
+    const selectors = this.materials.get(materialHandle);
+    if (selectors === undefined) return undefined;
+    const index = selectorIndex(selectors, shaderId ?? '', probeIndex, standardMaterialLayoutIndex);
+    const selector = index < 0 ? undefined : selectors[index];
+    if (selector === undefined) return undefined;
+    if (graphViews === undefined) return selector.ordinary;
+    if (selector.graphs !== undefined)
+      for (const [key, entry] of selector.graphs)
+        if (sameGraphBindingViews(key, graphViews)) return entry;
     return undefined;
   }
 
@@ -252,53 +306,39 @@ export class MaterialBgAssemblyCache {
       this.materials.clear();
       this.sourceIdentity = sourceIdentity;
     }
-    const materials = this.materials;
-    let shaders = materials.get(materialHandle);
-    if (shaders === undefined) {
-      shaders = new Map();
-      materials.set(materialHandle, shaders);
+    let selectors = this.materials.get(materialHandle);
+    if (selectors === undefined) {
+      selectors = [];
+      this.materials.set(materialHandle, selectors);
     }
     const shader = shaderId ?? '';
-    let probes = shaders.get(shader);
-    if (probes === undefined) {
-      probes = new Map();
-      shaders.set(shader, probes);
+    const index = selectorIndex(selectors, shader, probeIndex, standardMaterialLayoutIndex);
+    let selector = index < 0 ? undefined : selectors[index];
+    if (selector === undefined) {
+      selector = new BindingSelector(shader, probeIndex, standardMaterialLayoutIndex);
+      selectors.splice(~index, 0, selector);
     }
-    let layouts = probes.get(probeIndex);
-    if (layouts === undefined) {
-      layouts = new Map();
-      probes.set(probeIndex, layouts);
+    let key = entry.graphViews;
+    if (key !== undefined && selector.graphs !== undefined)
+      for (const installed of selector.graphs.keys())
+        if (sameGraphBindingViews(installed, key)) {
+          key = installed;
+          break;
+        }
+    if (this.preparation) {
+      const prior = selector.get(key);
+      if (prior !== undefined && prior.canvas === undefined) this.preparation.release();
     }
-    let variants = layouts.get(standardMaterialLayoutIndex);
-    if (variants === undefined) {
-      variants = new Map();
-      layouts.set(standardMaterialLayoutIndex, variants);
-    }
-    if (entry.graphViews === undefined) {
-      if (
-        this.preparation &&
-        variants.get(undefined)?.canvas === undefined &&
-        variants.has(undefined)
-      )
-        this.preparation.release();
-      variants.set(undefined, entry);
-      return entry;
-    }
-    for (const key of variants.keys())
-      if (sameGraphBindingViews(key, entry.graphViews)) {
-        if (this.preparation && variants.get(key)?.canvas === undefined) this.preparation.release();
-        variants.set(key, entry);
-        return entry;
-      }
-    variants.set(entry.graphViews, entry);
+    selector.set(key, entry);
     return entry;
   }
 
   *values(): IterableIterator<MaterialBgAssemblyCacheEntry> {
-    for (const shaders of this.materials.values())
-      for (const probes of shaders.values())
-        for (const layouts of probes.values())
-          for (const variants of layouts.values()) yield* variants.values();
+    for (const selectors of this.materials.values())
+      for (const selector of selectors) {
+        if (selector.ordinary !== undefined) yield selector.ordinary;
+        if (selector.graphs !== undefined) yield* selector.graphs.values();
+      }
   }
 
   /** An installed logical binding owns its readiness even when draws share a physical group. */
@@ -333,7 +373,7 @@ export class MaterialBgAssemblyCache {
       | undefined = { owner: this, runtime, target, current };
     const identity = this.sourceIdentity;
     const rows: {
-      leaf: VariantEntries;
+      leaf: BindingSelector;
       key: GraphBindingViews | undefined;
       entry: MaterialBgAssemblyCacheEntry;
       next?: MaterialBgAssemblyCacheEntry;
@@ -448,37 +488,53 @@ export class MaterialBgAssemblyCache {
 
   /** Retire a changed physical source even when its successor uses a fallback or fails. */
   releaseBinding(handle: number, issued: MaterialBgAssemblyCacheEntry): void {
-    const shaders = this.materials.get(handle);
-    if (shaders !== undefined && this.pruneMaterial(handle, shaders, (entry) => entry === issued))
+    const selectors = this.materials.get(handle);
+    if (
+      selectors !== undefined &&
+      this.pruneMaterial(handle, selectors, (entry) => entry === issued)
+    )
       this.preparation?.release();
   }
 
   private removeEntries(discard: DiscardBinding): void {
-    for (const [material, shaders] of this.materials)
-      this.pruneMaterial(material, shaders, discard);
+    for (const [material, selectors] of this.materials)
+      this.pruneMaterial(material, selectors, discard);
   }
 
   private pruneMaterial(
     material: number,
-    shaders: ShaderEntries,
+    selectors: BindingSelector[],
     discard: DiscardBinding,
   ): boolean {
     let removedStatic = false;
-    for (const [shader, probes] of shaders) {
-      for (const [probe, layouts] of probes) {
-        for (const [kind, variants] of layouts) {
-          for (const [key, entry] of variants)
-            if (discard(entry, variants, key) && variants.get(key) === entry) {
-              variants.delete(key);
-              if (entry.canvas === undefined) removedStatic = true;
-            }
-          if (variants.size === 0) layouts.delete(kind);
-        }
-        if (layouts.size === 0) probes.delete(probe);
+    for (let index = selectors.length - 1; index >= 0; index--) {
+      const row = selectors[index];
+      if (row === undefined) continue;
+      const ordinary = row.ordinary;
+      if (
+        ordinary !== undefined &&
+        discard(ordinary, row, undefined) &&
+        row.ordinary === ordinary
+      ) {
+        row.ordinary = undefined;
+        if (ordinary.canvas === undefined) removedStatic = true;
       }
-      if (probes.size === 0) shaders.delete(shader);
+      if (row.graphs !== undefined) {
+        for (const [key, entry] of row.graphs)
+          if (discard(entry, row, key) && row.graphs?.get(key) === entry) {
+            row.graphs.delete(key);
+            if (entry.canvas === undefined) removedStatic = true;
+          }
+        if (row.graphs?.size === 0) delete row.graphs;
+      }
+      // A readiness callback can retire this selector or one preceding it.
+      if (selectors[index] !== row)
+        index = selectorIndex(selectors, row.shader, row.probe, row.layout);
+      if (index < 0) index = ~index;
+      else if (selectors[index] === row && row.ordinary === undefined && row.graphs === undefined)
+        selectors.splice(index, 1);
     }
-    if (shaders.size === 0 && this.materials.get(material) === shaders)
+    if (selectors.length === 0 && this.materials.get(material) === selectors)
       this.materials.delete(material);
     return removedStatic;
   }

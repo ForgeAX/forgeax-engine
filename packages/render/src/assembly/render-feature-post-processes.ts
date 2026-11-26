@@ -9,6 +9,8 @@ import { LENS_FLARE_PROGRAMS } from '../features/lens-flare';
 import { OUTLINE_PROGRAMS } from '../features/outline/shaders';
 import { SMAA_PROGRAMS } from '../features/smaa/shaders';
 import type { RenderFeature } from '../features/types';
+import { BLOOM_PREFILTER_PROGRAM } from '../pipeline/bloom-prefilter';
+import { POST_SCENE_COLOR_HALF_PROGRAM } from '../pipeline/post-scene-color';
 import {
   SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID,
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID,
@@ -23,6 +25,8 @@ import {
 import { WATER_SLW_POST_PROCESS_PROGRAMS } from '../water/slw-graph';
 
 const STANDARD_POST_PROCESS_PROGRAMS = [
+  POST_SCENE_COLOR_HALF_PROGRAM,
+  BLOOM_PREFILTER_PROGRAM,
   CHROMATIC_ABERRATION_PROGRAM,
   LENS_EFFECTS_PROGRAM,
   ...LENS_FLARE_PROGRAMS,

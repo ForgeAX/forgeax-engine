@@ -1,11 +1,15 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { box3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
-import { MaterialResource } from '../../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../../record/frame-snapshot';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
+import { defaultMaterialSnapshot } from '../../render-system-extract';
+import * as displacement from '../../standard-displacement-bounds';
 import { MaterialFrame } from '../material-dispatch';
 import { SceneDrawSlot } from '../mesh-draw';
+import { MeshFrame } from '../mesh-frame';
 import { cullPersistentFrame, type ViewCullStorage } from '../persistent-cull';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { RenderScene } from '../render-scene-view';
@@ -226,4 +230,138 @@ it('selects active subsurface profiles through material edits with fixed and cha
   expect(read().source).toBe(0);
   edit(far, 2);
   expect(read().admitted).toBe('invalid-values');
+});
+
+it('keeps the radius of a moving row across roughness publications and rebinds displacement', () => {
+  const scene = new RenderScene();
+  const base = captureMaterialSnapshot(defaultMaterialSnapshot(41));
+  const meshes = new MeshFrame().with(9, createBoxGeometry(2, 2, 2).unwrap());
+  const material = new MaterialResource(base);
+  const other = new MaterialResource(captureMaterialSnapshot(defaultMaterialSnapshot(42)));
+  let frame = new MaterialFrame(undefined).with(material).with(other);
+  const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  const snapshot = {
+    ...receiptRow().source,
+    entityKey: 1,
+    material,
+    materials: [material],
+    localAabb: Float32Array.of(-1, -1, -1, 1, 1, 1),
+    transform: { world: pose },
+  };
+  scene.apply([{ kind: 'update', entityKey: 1, snapshot }]);
+  const first = scene.slot(1);
+  if (!first) throw Error('missing moving row');
+  const start = frame;
+  expect(scene.cullingWorldBoundsAt(first, meshes, frame)?.max[0]).toBe(1);
+  const read = vi.spyOn(displacement, 'materialDisplacementRadius');
+  let radiusReads = 0;
+  try {
+    for (let tick = 1; tick <= 30; tick++) {
+      material.adopt(captureMaterialSnapshot({ ...base, roughness: tick / 31 }));
+      const next = frame.with(material);
+      next.publishChangesSince(frame);
+      frame = next;
+      pose[12] = tick;
+      scene.apply([{ kind: 'update', entityKey: 1, world: pose }]);
+      const row = scene.slot(1);
+      if (!row) throw Error('missing moved row');
+      read.mockClear();
+      expect(scene.cullingWorldBoundsAt(row, meshes, frame)?.max[0]).toBe(tick + 1);
+      radiusReads += read.mock.calls.length;
+    }
+    expect(radiusReads).toBe(0);
+    const finalRow = scene.slot(1);
+    if (!finalRow) throw Error('missing final row');
+    material.adopt(
+      captureMaterialSnapshot({
+        ...base,
+        materialParamSchema: [{ name: 'displacementTexture', type: 'texture2d' }],
+        standardTextureMask: undefined,
+        paramSnapshot: { displacementScale: 2 },
+      }),
+    );
+    const expanded = frame.with(material);
+    expanded.publishChangesSince(frame);
+    expect(scene.cullingWorldBoundsAt(finalRow, meshes, expanded)?.max[0]).toBe(33);
+    expect(scene.cullingWorldBoundsAt(finalRow, meshes, frame)?.max[0]).toBe(31);
+    expect(scene.cullingWorldBoundsAt(first, meshes, start)?.max[0]).toBe(1);
+    scene.apply([
+      {
+        kind: 'update',
+        entityKey: 1,
+        snapshot: { ...snapshot, material: other, materials: [other] },
+      },
+    ]);
+    const rebound = scene.slot(1);
+    if (!rebound) throw Error('missing rebound row');
+    expect(scene.cullingWorldBoundsAt(rebound, meshes, expanded)?.max[0]).toBe(31);
+    expect(scene.cullingWorldBoundsAt(finalRow, meshes, expanded)?.max[0]).toBe(33);
+    const removed = expanded.without(material);
+    removed.publishChangesSince(expanded);
+    expect(() => scene.cullingWorldBoundsAt(finalRow, meshes, removed)).toThrow(
+      'fixed material version',
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+it('publishes changing camera membership and dense dispatch ranks across physical slot holes', () => {
+  const source = receiptRow().source;
+  const scene = new RenderScene();
+  const material = new MaterialFrame(undefined).with(source.material);
+  const memo: ViewCullStorage = { value: undefined };
+  const keys = Array.from({ length: 1040 }, (_, key) => key);
+  scene.apply(
+    keys.map((entityKey) => ({ kind: 'update', entityKey, snapshot: { ...source, entityKey } })),
+  );
+  const remove = (key: number) => key % 13 === 2 || (key >= 128 && key < 512);
+  scene.apply(keys.filter(remove).map((entityKey) => ({ kind: 'remove', entityKey })));
+  const live = keys.filter((key) => !remove(key));
+  const dispatch = live.map((entityIndex, renderableIndex) => ({
+    entityIndex,
+    renderableIndex,
+    tags: { LightMode: 'Forward' },
+  }));
+  const sequence = scene.materializeTemporal({ hits: 0, misses: 0 }, material);
+  const frame = {
+    cameras: [makeZeroCameraFallbackSnapshot()],
+    renderables: sequence,
+    dispatch,
+  } as unknown as ExtractedFrame;
+  let first: ExtractedFrame | undefined;
+  let firstKeys: number[] = [];
+  for (let tick = 0; tick < 6; tick++) {
+    const inside = (key: number) => (key + tick) % 7 < 3;
+    const expected = live.filter(inside);
+    const result = cullPersistentFrame(
+      frame,
+      material,
+      undefined,
+      memo,
+      undefined,
+      undefined,
+      scene,
+      0,
+      undefined,
+      (row, out) => {
+        const x = inside(row.entityKey) ? 0 : 100;
+        out.set([x, -0.1, -8, x + 0.1, 0.1, -7]);
+        return true;
+      },
+    ).frame;
+    expect(result.renderables.map((row) => row.entityKey)).toEqual(expected);
+    expect(
+      Array.from(result.dispatch, (entry) => [entry.entityIndex, entry.renderableIndex]),
+    ).toEqual(expected.map((key, rank) => [key, rank]));
+    expect(Array.from(result.cameraAdmission?.hidden ?? [])).toEqual(
+      live.filter((key) => !inside(key)),
+    );
+    if (!first) {
+      first = result;
+      firstKeys = expected;
+    }
+  }
+  expect(first?.renderables.map((row) => row.entityKey)).toEqual(firstKeys);
+  expect(first?.cameraAdmission?.hidden.has(31)).toBe(true);
 });

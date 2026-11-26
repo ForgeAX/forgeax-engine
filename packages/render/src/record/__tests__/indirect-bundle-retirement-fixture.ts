@@ -3,7 +3,10 @@ import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
-import { RenderBundleCache } from '../render-bundle-cache';
+import {
+  PreparedRasterBundleCache,
+  PreparedRasterPass,
+} from '../../gpu-driven/prepared-raster-bundle';
 
 export async function indirectBundleRetirementFrames() {
   const { device, native } = await nativeDeviceFixture();
@@ -23,10 +26,14 @@ override GAIN: f32 = 1.0;
   ).unwrap();
   const layout = device
     .createBindGroupLayout({
-      entries: [{ binding: 0, visibility: 3, buffer: { type: 'uniform' } }],
+      entries: [{ binding: 0, visibility: 3, buffer: { type: 'uniform', hasDynamicOffset: true } }],
     })
     .unwrap();
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap();
+  const emptyLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
+  const empty = device.createBindGroup({ layout: emptyLayout, entries: [] }).unwrap();
+  const pipelineLayout = device
+    .createPipelineLayout({ bindGroupLayouts: [layout, emptyLayout, emptyLayout, emptyLayout] })
+    .unwrap();
   const pipeline = (gain: number) =>
     device
       .createRenderPipeline({
@@ -63,9 +70,15 @@ override GAIN: f32 = 1.0;
         ],
       })
       .unwrap();
-    const indices = device.createBuffer({ size: 12, usage: 16 | 8 }).unwrap();
+    const indices = device.createBuffer({ size: 12, usage: 32 | 16 | 8 }).unwrap();
     device.queue.writeBuffer(indices, 0, Uint32Array.of(0, 1, 2)).unwrap();
-    return { uniform, group, indices, offset: index * 20 };
+    return {
+      uniform,
+      group,
+      indices,
+      offset: index * 20,
+      bundles: new PreparedRasterBundleCache(),
+    };
   });
   const indirect = device.createBuffer({ size: 60, usage: 256 | 8 }).unwrap();
   device.queue
@@ -76,7 +89,7 @@ override GAIN: f32 = 1.0;
     .unwrap();
   const view = device.createTextureView(target, {}).unwrap();
   const readback = device.createBuffer({ size: 256 * 16, usage: 1 | 8 }).unwrap();
-  const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
+  const bundlePass = new PreparedRasterPass({ colorFormats: ['rgba8unorm'] });
   let retired = false;
   let invalidUniformRetired = false;
   let beforePipelineChange: Uint8Array | undefined;
@@ -85,18 +98,22 @@ override GAIN: f32 = 1.0;
       if (frame === 8) {
         const first = batches[0];
         if (first === undefined) throw Error('Missing first batch');
+        first.bundles.retire(bundlePass, { hits: 0, builds: 0, evictions: 0, commands: 0 });
         device.destroyBuffer(first.uniform).unwrap();
         device.destroyBuffer(first.indices).unwrap();
         retired = true;
       }
       const current = retired ? batches.slice(1) : batches;
-      const counters = { hits: 0, misses: 0 };
+      const counters = { hits: 0, builds: 0, commands: 0, evictions: 0 };
       const record = (pass: RhiRenderPassEncoder) => {
         for (const batch of current) {
           const selected = pipelines[frame >= 24 && batch === batches[1] ? 1 : 0];
           if (selected === undefined) throw Error('Missing pipeline');
           pass.setPipeline(selected);
-          pass.setBindGroup(0, batch.group);
+          pass.setBindGroup(0, batch.group, [0]);
+          pass.setBindGroup(1, empty);
+          pass.setBindGroup(2, empty);
+          pass.setBindGroup(3, empty);
           pass.setIndexBuffer(batch.indices, 'uint32');
           pass.drawIndexedIndirect(indirect, batch.offset);
         }
@@ -106,8 +123,34 @@ override GAIN: f32 = 1.0;
         const pass = encoder.beginRenderPass({
           colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
         });
-        if (cached) cache.encode(device, pass, record, counters);
-        else record(pass);
+        if (cached) {
+          const bundles = current.map((batch) => {
+            const selected = pipelines[frame >= 24 && batch === batches[1] ? 1 : 0];
+            if (!selected) throw Error('Missing pipeline');
+            return batch.bundles.resolveOne(
+              bundlePass,
+              device,
+              {
+                pipeline: selected,
+                view: batch.group,
+                viewOffset: 0,
+                material: empty,
+                materialOffset: undefined,
+                mesh: empty,
+                meshOffsets: [],
+                vertex: batch.indices,
+                index: batch.indices,
+                indexFormat: 'uint32',
+                indirect,
+                indirectOffset: batch.offset,
+                indexed: true,
+                windows: [empty],
+              },
+              counters,
+            );
+          });
+          pass.executeBundles(bundles).unwrap();
+        } else record(pass);
         pass.end();
         encoder.copyTextureToBuffer(
           { texture: target },
@@ -127,10 +170,10 @@ override GAIN: f32 = 1.0;
       const direct = await render(false);
       expect(equalBytes(await render(true), direct)).toBe(true);
       expect(direct.some((value, index) => index % 4 !== 3 && value > 200)).toBe(true);
-      if (frame === 8) expect(counters).toEqual({ hits: 2, misses: 0 });
+      if (frame === 8) expect(counters).toMatchObject({ hits: 2, builds: 0 });
       if (frame === 23) beforePipelineChange = direct;
       if (frame === 24) {
-        expect(counters).toEqual({ hits: 1, misses: 1 });
+        expect(counters).toMatchObject({ hits: 1, builds: 1 });
         expect(beforePipelineChange).toBeDefined();
         expect(equalBytes(direct, beforePipelineChange)).toBe(false);
       }
@@ -141,7 +184,6 @@ override GAIN: f32 = 1.0;
     const selected = pipelines[0];
     if (invalid === undefined || valid === undefined || selected === undefined)
       throw Error('Missing validation fixture');
-    const validationCache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
     // Identical raw commands can have different provenance: after an explicit
     // bundle boundary, a formerly inherited setter is an authored command.
     // Even when it is overwritten before drawing, backend validation must see it.
@@ -155,21 +197,25 @@ override GAIN: f32 = 1.0;
       const pass = encoder.beginRenderPass({
         colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
       });
-      validationCache.encode(device, pass, (commands) => {
-        commands.setPipeline(selected);
-        commands.setBindGroup(0, phase === 2 ? valid.group : invalid.group);
-        commands.setIndexBuffer(invalid.indices, 'uint32');
-        commands.drawIndexedIndirect(indirect, invalid.offset);
-        if (phase === 2) {
-          commands.executeBundles([]).unwrap();
-          commands.setBindGroup(0, invalid.group);
-          commands.setIndexBuffer(invalid.indices, 'uint32');
-        }
-        commands.setPipeline(selected);
-        commands.setBindGroup(0, valid.group);
-        commands.setIndexBuffer(valid.indices, 'uint32');
-        commands.drawIndexedIndirect(indirect, valid.offset);
-      });
+      pass.setPipeline(selected);
+      pass.setBindGroup(1, empty);
+      pass.setBindGroup(2, empty);
+      pass.setBindGroup(3, empty);
+      pass.setBindGroup(0, phase === 2 ? valid.group : invalid.group, [0]);
+      pass.setIndexBuffer(invalid.indices, 'uint32');
+      pass.drawIndexedIndirect(indirect, invalid.offset);
+      if (phase === 2) {
+        pass.executeBundles([]).unwrap();
+        pass.setBindGroup(0, invalid.group, [0]);
+        pass.setIndexBuffer(invalid.indices, 'uint32');
+      }
+      pass.setPipeline(selected);
+      pass.setBindGroup(1, empty);
+      pass.setBindGroup(2, empty);
+      pass.setBindGroup(3, empty);
+      pass.setBindGroup(0, valid.group, [0]);
+      pass.setIndexBuffer(valid.indices, 'uint32');
+      pass.drawIndexedIndirect(indirect, valid.offset);
       pass.end();
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       await device.queue.onSubmittedWorkDone();

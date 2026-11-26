@@ -14,6 +14,7 @@ import {
 import common from '../../../shader/src/common.wgsl?raw';
 import fxaa from '../../../shader/src/fxaa.wgsl?raw';
 import outputEncoding from '../../../shader/src/output-encoding.wgsl?raw';
+import smaaBlend from '../../../shader/src/smaa-blend.wgsl?raw';
 import toneMapping from '../../../shader/src/tone-mapping.wgsl?raw';
 import tonemap from '../../../shader/src/tonemap.wgsl?raw';
 import { createPostProcessParamsOwner } from '../assembly/post-process-params';
@@ -41,6 +42,7 @@ async function shader(device: RhiDevice, source: string): Promise<ShaderModule> 
     {
       'forgeax_view::common': common,
       'forgeax_view::output_encoding': outputEncoding,
+      'forgeax_view::smaa_blend': smaaBlend,
       'forgeax_view::tone_mapping': toneMapping,
     },
     {

@@ -61,6 +61,7 @@ import { derive, type ParamSchemaEntry, STANDARD_DISPLACEMENT_MODES } from '@for
 import { materialUsesDirectDfgLut } from './device/direct-dfg-lut';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from './gpu-stage';
 import type { PipelineSpec } from './pipeline-spec-types';
+import { PLANAR_REFLECTION_UNIFORM_SIZE } from './record/view-ubo';
 
 // Boot layouts use the canonical Standard identity so material resource-budget
 // omissions match the record path. Other BGL kinds depend only on caps.
@@ -746,7 +747,7 @@ export function appendSingleLayerMediumInjection(
     {
       binding: start + 7,
       visibility: GPU_SHADER_STAGE_FRAGMENT,
-      buffer: { type: 'uniform', minBindingSize: 96 },
+      buffer: { type: 'uniform', minBindingSize: PLANAR_REFLECTION_UNIFORM_SIZE },
     },
   ];
 }
@@ -1518,10 +1519,18 @@ export function pbrSkinMeshDynamicOffsets(
   meshOffset: number,
   task: SkinTaskBinding,
   storageBuffer: boolean,
+  output: number[] = [],
 ): readonly number[] {
-  return storageBuffer
-    ? [meshOffset, task.auxiliaryOffset]
-    : [meshOffset, task.dataOffset, task.auxiliaryOffset];
+  output[0] = meshOffset;
+  if (storageBuffer) {
+    output[1] = task.auxiliaryOffset;
+    output.length = 2;
+  } else {
+    output[1] = task.dataOffset;
+    output[2] = task.auxiliaryOffset;
+    output.length = 3;
+  }
+  return output;
 }
 
 // ─── Unlit material BGL factory ─────────────────────────────────────────────

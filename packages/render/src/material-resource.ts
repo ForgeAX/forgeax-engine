@@ -30,6 +30,7 @@ type SnapshotEntry =
       resource: MaterialResource | undefined;
       readonly valuesOwned: boolean;
       temporalDisplacement?: boolean;
+      displacementRadius?: number;
       readonly programDataCaptured?: true;
       readonly rasterFlags?: number;
       programs?: ProgramObservations;
@@ -45,6 +46,16 @@ function rasterFlags(snapshot: MaterialSnapshot): number {
     (snapshot.transparent === true ? 2 : 0) |
     (standardTransmissionValue(snapshot) !== undefined ? 4 : 0)
   );
+}
+
+/** The numeric displacement interval belongs to the admitted value snapshot. */
+export function ownedMaterialBounds(
+  snapshot: MaterialSnapshot,
+): { displacementRadius?: number } | undefined {
+  const entry = resources.get(snapshot);
+  return entry !== undefined && !(entry instanceof MaterialResource) && entry.valuesOwned
+    ? entry
+    : undefined;
 }
 
 /** Only the producer of detached pass data and owned parameter values issues these flags. */

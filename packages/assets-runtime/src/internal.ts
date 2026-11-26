@@ -1,5 +1,5 @@
 export { AssetClosure } from './internal/asset-closure';
-export { assetDataBytes, copyAssetData } from './internal/asset-data';
+export { assetDataBytes, copyAssetData, copyAssetRows } from './internal/asset-data';
 export type {
   AssetAdoption,
   AssetAdoptionReader,
@@ -18,6 +18,7 @@ export type {
   AssetVersionDelta,
   MeshPresentationInput,
 } from './internal/asset-records.js';
+export { copyStaticMeshRange, visitStaticMeshRange } from './internal/mesh-vertex-range';
 export {
   type AssetReader,
   readMaterialContent,

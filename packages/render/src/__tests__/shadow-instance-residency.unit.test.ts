@@ -6,13 +6,17 @@ import { expect, it, vi } from 'vitest';
 import { shadowStagesIgnoreMaterial } from '../assembly/material-pipeline-requests';
 import { GpuBuffer } from '../gpu-resource';
 import { disposeInstanceBuffers } from '../instance-buffer-cache';
-import { MaterialResource } from '../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import { waterMaterialRecordContext } from '../record/main-pass';
 import { resolveGeometryInstanceBuffer } from '../record/main-pass-geometry';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
-import { createShadowPipelineSelectionOwner, recordShadowCasterDraws } from '../record/shadow-pass';
+import {
+  createShadowPipelineSelectionOwner,
+  prepareShadowMaterialPipelines,
+  recordShadowCasterDraws,
+} from '../record/shadow-pass';
 import { MaterialDispatch } from '../scene/material-dispatch';
 
 const matrix = (x: number) => Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1);
@@ -239,6 +243,7 @@ it.each([
       0xffffffff,
       reuse,
     );
+  const instanceBindings = vi.spyOn(c.frameState.instancesBgShared, 'get');
   try {
     for (let frame = 1; frame <= 60; frame++) {
       instances.revision = frame;
@@ -261,6 +266,9 @@ it.each([
     );
     expect(writes.mock.calls.filter(([buffer]) => buffer !== identity)).toHaveLength(60);
     expect(pass.draw).toHaveBeenCalledTimes(180);
+    // Three shadow views and one forward resolution may each address the binding once.
+    expect(instanceBindings.mock.calls.length).toBeLessThanOrEqual(60 * 4);
+    instanceBindings.mockRestore();
 
     // The physical pass group is sufficient only for the exact layout certified by the PSO.
     const passGroup = {} as BindGroup;
@@ -293,11 +301,13 @@ it.each([
     // Surface parameters vary independently of the ShadowCaster PSO. The texture mask
     // does select a pipeline. All three casters still submit their own geometry.
     const dull = new MaterialResource({ ...material.snapshot, materialHandle: 3, roughness: 1 });
-    const masked = new MaterialResource({
-      ...dull.snapshot,
-      materialHandle: 4,
-      standardTextureMask: 1,
-    });
+    const masked = new MaterialResource(
+      captureMaterialSnapshot({
+        ...dull.snapshot,
+        materialHandle: 4,
+        standardTextureMask: 1,
+      }),
+    );
     const variants = [material, dull, masked];
     const casterContext = {
       ...c,
@@ -323,6 +333,22 @@ it.each([
     record(casterContext as unknown as _InternalRenderPipelineContext);
     expect(drawShadow).toHaveBeenCalledTimes(3);
     expect(pipelineLookup.mock.calls.map((args) => args[21])).toEqual([undefined, { '64000': 1 }]);
+
+    // A mixed publication must prepare the exact stock requests that actually drew,
+    // including specialization constants, shader entry points and the physical layout.
+    const drawn = pipelineLookup.mock.calls.slice();
+    const prepare = vi.fn((...args: Parameters<typeof pipelineLookup>) => pipelineLookup(...args));
+    expect(casterContext.materialFrame.hasBorrowedValues).toBe(true);
+    expect(casterContext.materialFrame.get(masked)?.programs?.stockShadow).toBeDefined();
+    prepareShadowMaterialPipelines(
+      {
+        ...casterContext,
+        runtime: { ...casterContext.runtime, prepareMaterialShaderPipelineEntry: prepare },
+        shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+      } as unknown as _InternalRenderPipelineContext,
+      true,
+    );
+    expect(prepare.mock.calls).toEqual(drawn);
 
     const waterEntry = {
       ...entry,

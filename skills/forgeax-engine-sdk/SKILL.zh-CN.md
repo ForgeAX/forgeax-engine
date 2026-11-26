@@ -6,8 +6,9 @@
 # 早期 ForgeAX SDK 发行版
 
 已有归档参见[原归档指引](SDK-README.md)。当前 npm 包参见 [Engine 创作指南](../forgeax-engine-authoring/SKILL.zh-CN.md)。
+发布新版开发包时，使用[单包发布流程](../../packages/engine/RELEASING.md)。
 
-## SDK 生产与发布
+## 恢复早期发布候选
 
 PR source cancellation：分别检查 shader admission、两个 cold profile 时长、browser journey、上传。专用 manifest producer 在预留 V8 heap/native memory 后准入 Worker budget，profile packager 保留子进程请求并行度。保留 source job 40 分钟、seed/peer consumer 30 分钟、两个 cold profile publications、全部 browser assertions；下一完整运行重新 qualify。
 
@@ -25,13 +26,4 @@ source-consumer job 取消先比较完整阶段时长。PR archive consumer 显�
 
 预编译 Rapier 的 source consumer 意外要求 Rust：把 `SDK_SOURCE_WASM` 闭包与完整 producer receipt 对比，包括 3D SIMD glue/declarations。遵循 [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission)，补导出文件，不绕过 source/inventory/digest 检查。
 
-明确请求 Engine/SDK 变更、归档验证、SDK 发布时读 SDK production。其 exact-ZIP 对象为 SDK 分发；游戏 ZIP 属于游戏 release route，普通游戏创建不进入 Candidate、Promotion、SDK consumers。
-
-channel/source 和发布顺序见发布契约：`main` 发布 `next`，每周 `rc` 测试线发布 `rc`，`stable` 发布 `latest`。镜像 channel 经 source qualification 后 GitHub/npm 独立发布；source mirror 保留正式 GitHub Release identity 检查，推进 public `main`（开发）或 `stable`（稳定）。Stable Promotion 再经 `sdk-release-public.yml` 把原始已验证 Release assets 复制到公开仓库；已有稳定版本可用该 workflow 补齐或重试。交付要求 public Release 和所有其他已启用阶段完成。
-
-Linux x64 可本地执行完整 development Candidate/Promotion：`node scripts/forgeax/local-sdk-release.mjs --stage all`，安装 workspace 别名为 `pnpm sdk:release:local -- --stage all`。在 `artifacts/sdk-local/<version>/local-release-state.json` 固定 version/source SHA，中断后恢复精确同一 Candidate。RC/stable 仍走 GitHub Actions。见仓库[本地发布流程](../../packages/engine/RELEASING.md)。
-
-Candidate gates 通过后，`--stage preflight --version <locked-version>` 只检查 npm access/source-mirror 前提，不发布；`--stage promote` 恢复相同 locked Candidate 并发布。
-
-> [!IMPORTANT]
-> 每次 SDK 发布先执行选择发布流程：推 release branch 或 dispatch workflow 前明确 flow（development、rc cut/fix、rc promotion、stable hotfix）、version、source SHA、npm tag。用户未明确时请其选择 channel/version。
+恢复早期发布时，沿用原版本、源码 SHA、已封存产物和 npm 标签。早期发布指南说明这些版本的 ZIP 与消费端验收记录。已有稳定版通过验证后，可用 `sdk-release-public.yml` 重试复制 Release 到公开仓库。

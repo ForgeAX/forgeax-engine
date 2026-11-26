@@ -6,9 +6,11 @@ import {
   deriveVertexCount,
   deriveVertexLayoutProjection,
   deriveVertexLayoutProjectionFromMask,
+  interleaveStaticMeshVertexStreams,
   packInterleavedVertexAttributes,
   prepareStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
+  staticMeshVertexStreamsMatchRows,
   vertexLayoutHasColor,
   visitVertexUvAliases,
 } from '@forgeax/engine-geometry';
@@ -114,6 +116,29 @@ describe('vertex attribute layout owner', () => {
     if (packed === undefined) throw new Error('Missing static streams');
     const bytes = packed.pack();
     expect(bytes.byteLength).toBe(source.vertices.byteLength);
+    const split = new Float32Array(bytes.buffer);
+    const body = new Float32Array(vertices.length + 2).fill(77);
+    const rows = body.subarray(1, -1);
+    expect(interleaveStaticMeshVertexStreams(split, source.projection, rows)).toBe(rows);
+    expect(staticMeshVertexStreamsMatchRows(split, rows, source.projection)).toBe(true);
+    // Two NaN encodings in float storage represent distinct packed tangent words.
+    const tangentWord = bytes[6] as number;
+    bytes[6] = tangentWord ^ 1;
+    expect(staticMeshVertexStreamsMatchRows(split, rows, source.projection)).toBe(false);
+    bytes[6] = tangentWord;
+    expect(staticMeshVertexStreamsMatchRows(split, rows.subarray(1), source.projection)).toBe(
+      false,
+    );
+    expect(new Uint8Array(rows.buffer, rows.byteOffset, rows.byteLength)).toEqual(
+      carrier.subarray(4, -4),
+    );
+    expect([body[0], body.at(-1)]).toEqual([77, 77]);
+    expect(() => interleaveStaticMeshVertexStreams(split, source.projection, split)).toThrow(
+      RangeError,
+    );
+    expect(() => interleaveStaticMeshVertexStreams(split, source.projection, body)).toThrow(
+      RangeError,
+    );
     expect(packed.ranges).toEqual([
       { offset: 0, size: 24 },
       { offset: 24, size: 8 },

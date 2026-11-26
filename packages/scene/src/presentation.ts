@@ -238,8 +238,17 @@ function presentationSource(
   state: Presentation | undefined,
   interpolates?: boolean,
 ): 'world' | 'presentation' | Mat4 | undefined {
+  if (state !== undefined) refresh(world, state);
+  return selectedPresentationSource(world, entity, state, interpolates);
+}
+
+function selectedPresentationSource(
+  world: World,
+  entity: EntityHandle,
+  state: Presentation | undefined,
+  interpolates?: boolean,
+): 'world' | 'presentation' | Mat4 | undefined {
   if (state === undefined) return 'world';
-  refresh(world, state);
   if (state.prepared === state.version) return state.active.has(entity) ? 'presentation' : 'world';
   if (
     state.history.size === 0 &&
@@ -274,28 +283,47 @@ export function createPresentationMatrixReader(world: World) {
       [0, 'presentation'],
     ],
   );
-  const reader: { values: Float32Array; offset: number; locate(entity: EntityHandle): boolean } = {
-    values: new Float32Array(0),
+  function locate(entity: EntityHandle, state: Presentation | undefined): boolean {
+    if (!lookup.get(entity)) return false;
+    const source = selectedPresentationSource(
+      world,
+      entity,
+      state,
+      lookup.columns.added[1] !== undefined,
+    );
+    if (source === undefined) return false;
+    if (typeof source !== 'string') {
+      reader.values = source;
+      reader.offset = 0;
+    } else {
+      const column = lookup.columns.fields[source === 'world' ? 0 : 1];
+      if (column === undefined) return false;
+      reader.values = column.view as Float32Array;
+      reader.offset = lookup.row * 16;
+    }
+    return true;
+  }
+  const reader = {
+    values: new Float32Array(0) as Float32Array,
     offset: 0,
     locate(entity: EntityHandle): boolean {
-      if (!lookup.get(entity)) return false;
-      const source = presentationSource(
-        world,
-        entity,
-        presentations.get(world),
-        lookup.columns.added[1] !== undefined,
-      );
-      if (source === undefined) return false;
-      if (typeof source !== 'string') {
-        reader.values = source;
-        reader.offset = 0;
-      } else {
-        const column = lookup.columns.fields[source === 'world' ? 0 : 1];
-        if (column === undefined) return false;
-        reader.values = column.view as Float32Array;
-        reader.offset = lookup.row * 16;
+      const state = presentations.get(world);
+      if (state !== undefined) refresh(world, state);
+      return locate(entity, state);
+    },
+    /** Synchronous numeric projection. The consumers must leave the source World untouched. */
+    visit(
+      entities: Iterable<number>,
+      accepts: (entity: number) => boolean,
+      write: (entity: number, values: Float32Array | undefined, offset: number) => void,
+    ): void {
+      const state = presentations.get(world);
+      if (state !== undefined) refresh(world, state);
+      for (const entity of entities) {
+        if (!accepts(entity)) continue;
+        if (locate(entity as EntityHandle, state)) write(entity, reader.values, reader.offset);
+        else write(entity, undefined, 0);
       }
-      return true;
     },
   };
   return reader;
@@ -306,39 +334,29 @@ export interface PresentationSpan {
   readonly worlds: Readonly<Float32Array>;
 }
 
-/** Keep adjacent entities on the same presentation column in one borrowed range. */
-function appendMatrixRange(
-  spans: PresentationSpan[],
-  entities: Readonly<Uint32Array>,
-  worlds: Float32Array,
-  start: number,
-  end: number,
-): void {
-  if (start === 0 && end === entities.length) spans.push({ entities, worlds });
-  else
-    spans.push({
-      entities: entities.subarray(start, end),
-      worlds: worlds.subarray(start * 16, end * 16),
-    });
-}
-
-/** Read the same display pose as scalar extraction. Whole column runs stay borrowed. */
+/** Append borrowed runs in query order. The observer sees every changed identity,
+ * with its matrix row relative to this append, or undefined for unavailable poses. */
 export function collectPresentationTransformSpans(
   world: World,
   query: Query<readonly [typeof GlobalTransform]>,
   out: PresentationSpan[],
-  changedEntities?: (entities: Readonly<Uint32Array>) => void,
+  changedEntities?: (entities: Readonly<Uint32Array>, firstMatrix: number | undefined) => void,
 ): void {
   const state = presentations.get(world);
   if (state !== undefined) refresh(world, state);
+  let nextMatrix = 0;
+  const append = (entities: Readonly<Uint32Array>, worlds: Readonly<Float32Array>) => {
+    out.push({ entities, worlds });
+    changedEntities?.(entities, nextMatrix);
+    nextMatrix += entities.length;
+  };
   let tableId = -1;
   let tableInterpolates = false;
   for (const span of query.spans().unwrap()) {
     const entities = span.entities;
-    changedEntities?.(entities);
     const columns = span.get(GlobalTransform);
     if (state === undefined || (state.prepared === state.version && state.active.size === 0)) {
-      out.push({ entities, worlds: columns.world });
+      append(entities, columns.world);
       continue;
     }
     if (state.prepared !== state.version) {
@@ -352,39 +370,28 @@ export function collectPresentationTransformSpans(
           );
         }
         if (!tableInterpolates) {
-          out.push({ entities, worlds: columns.world });
+          append(entities, columns.world);
           continue;
         }
       }
       for (let index = 0; index < entities.length; index++) {
         const matrix = sample(world, entities[index] as EntityHandle, state);
-        if (matrix !== undefined)
-          out.push({ entities: entities.subarray(index, index + 1), worlds: matrix });
+        if (matrix !== undefined) append(entities.subarray(index, index + 1), matrix);
+        else changedEntities?.(entities.subarray(index, index + 1), undefined);
       }
       continue;
     }
     let start = 0;
     let selected = state.active.has(entities[0] as EntityHandle);
-    for (let index = 1; index < entities.length; index++) {
-      const active = state.active.has(entities[index] as EntityHandle);
-      if (active === selected) continue;
-      appendMatrixRange(
-        out,
-        entities,
-        selected ? columns.presentation : columns.world,
-        start,
-        index,
-      );
-      start = index;
-      selected = active;
+    for (let end = 1; end <= entities.length; end++) {
+      const next = end < entities.length && state.active.has(entities[end] as EntityHandle);
+      if (next === selected && end < entities.length) continue;
+      const worlds = selected ? columns.presentation : columns.world;
+      if (start === 0 && end === entities.length) append(entities, worlds);
+      else append(entities.subarray(start, end), worlds.subarray(start * 16, end * 16));
+      start = end;
+      selected = next;
     }
-    appendMatrixRange(
-      out,
-      entities,
-      selected ? columns.presentation : columns.world,
-      start,
-      entities.length,
-    );
   }
 }
 

@@ -43,23 +43,26 @@ export class BatchExecutionTable implements ReadonlyMap<Binding, BatchExecutions
   }
 
   reconcile(
-    resolve: (prior: BatchExecutions, binding: Binding) => BatchExecutions,
+    resolve: (prior: BatchExecutions, binding: Binding, index: number) => BatchExecutions,
+    rows?: Uint32Array,
+    count = rows?.length ?? this.size,
   ): BatchExecutionTable {
     let pages: BatchExecutions[][] | undefined;
-    for (let pageIndex = 0; pageIndex < this.pages.length; pageIndex++) {
+    for (let i = 0; i < count; i++) {
+      const index = rows === undefined ? i : (rows[i] as number);
+      const pageIndex = Math.floor(index / ROWS_PER_PAGE);
+      const offset = index % ROWS_PER_PAGE;
       const previous = this.pages[pageIndex] as BatchExecutions[];
-      let page = previous;
-      for (let offset = 0; offset < previous.length; offset++) {
-        const prior = previous[offset] as BatchExecutions;
-        const next = resolve(prior, this.bindings[pageIndex * ROWS_PER_PAGE + offset] as Binding);
-        if (next === prior) continue;
-        if (page === previous) {
-          pages ??= this.pages.slice();
-          page = previous.slice();
-          pages[pageIndex] = page;
-        }
-        page[offset] = next;
+      const prior = previous[offset] as BatchExecutions;
+      const next = resolve(prior, this.bindings[index] as Binding, index);
+      if (prior === next) continue;
+      pages ??= this.pages.slice();
+      let page = pages[pageIndex] as BatchExecutions[];
+      if (page === previous) {
+        page = previous.slice();
+        pages[pageIndex] = page;
       }
+      page[offset] = next;
     }
     return pages === undefined ? this : new BatchExecutionTable(this.bindings, this.indices, pages);
   }

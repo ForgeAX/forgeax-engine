@@ -274,6 +274,7 @@ function freeze(value: unknown): void {
 
 function variantRow(
   program: string,
+  definesKey: string,
   defines: Readonly<Record<string, boolean>>,
   resolve: Resolve,
   prepare: Prepare | undefined,
@@ -287,7 +288,7 @@ function variantRow(
     return compiled;
   };
   const row = Object.freeze({
-    definesKey: keyOf(defines),
+    definesKey,
     defines: Object.freeze({ ...defines }),
     get hash() {
       return read().manifestEntry.hash;
@@ -394,7 +395,7 @@ export function materializeShaderTemplateManifest(
         const key = keyOf(defines);
         let selected = choices.get(key);
         if (selected === undefined) {
-          selected = variantRow(declaration.program, defines, resolve, prepare);
+          selected = variantRow(declaration.program, key, defines, resolve, prepare);
           choices.set(key, selected);
         }
         return selected;
@@ -461,6 +462,9 @@ export function materializeShaderTemplateManifest(
           return first === undefined ? undefined : variant(first);
         },
         select(key) {
+          // Every published row was admitted by the program or its legal domain.
+          const published = choices.get(key);
+          if (published !== undefined) return published;
           const defines: Record<string, boolean> = {};
           if (key === '')
             axes.forEach((axis) => {

@@ -10,7 +10,7 @@ import { addTypedFullscreenPass } from '../../typed-render-graph-primitives';
 import { smaaLookupData } from './lookup-data';
 
 /** All targets and retirement belong to the compiled graph, including lookup textures. */
-export function addSmaaPasses(
+export function addSmaaWeights(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderGraphError> {
@@ -61,18 +61,19 @@ export function addSmaaPasses(
     size: 'surface',
   });
   if (!weights.ok) return weights;
-  const output = createRenderPipelineTarget(graph, 'smaa-color', {
-    format: 'rgba16float',
+  const stencil = createRenderPipelineTarget(graph, 'smaa-stencil', {
+    format: 'depth24plus-stencil8',
     size: 'surface',
-    domain: 'linear-ldr',
+    lifetime: 'pass-local',
   });
-  if (!output.ok) return output;
+  if (!stencil.ok) return stencil;
   const detected = addTypedFullscreenPass(graph, {
     name: 'smaa-edges',
     shader: 'forgeax.smaa.edges',
     clearColor: [0, 0, 0, 0],
     input,
     outputs: [edges.value],
+    stencil: { target: stencil.value, mode: 'write' },
   });
   if (!detected.ok) return detected;
   const calculated = addTypedFullscreenPass(graph, {
@@ -81,18 +82,32 @@ export function addSmaaPasses(
     clearColor: [0, 0, 0, 0],
     input: edges.value,
     outputs: [weights.value],
+    stencil: { target: stencil.value, mode: 'test' },
     additionalReads: [
       { key: 'smaa-area', target: area.value },
       { key: 'smaa-search', target: search.value },
     ],
   });
-  if (!calculated.ok) return calculated;
+  return calculated.ok ? ok(weights.value) : calculated;
+}
+
+export function addSmaaBlend(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  input: RenderPipelineTarget,
+  weights: RenderPipelineTarget,
+): Result<RenderPipelineTarget, RenderGraphError> {
+  const output = createRenderPipelineTarget(graph, 'smaa-color', {
+    format: 'rgba16float',
+    size: 'surface',
+    domain: 'linear-ldr',
+  });
+  if (!output.ok) return output;
   const blended = addTypedFullscreenPass(graph, {
     name: 'smaa-blend',
     shader: 'forgeax.smaa.blend',
     input,
     outputs: [output.value],
-    additionalReads: [{ key: 'smaa-weights', target: weights.value }],
+    additionalReads: [{ key: 'smaa-weights', target: weights }],
   });
   return blended.ok ? ok(output.value) : blended;
 }

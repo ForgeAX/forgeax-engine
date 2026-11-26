@@ -226,7 +226,7 @@ describe('material slot identity and scope', () => {
 });
 
 describe('independent geometry and material capacity', () => {
-  it('seals split CPU and appended GPU slots with their accepted versions after capacity selection', () => {
+  it('holds the accepted values of split CPU and appended GPU slots across later adoption and capacity selection', () => {
     const a = material();
     const b = material();
     const c = material();
@@ -241,13 +241,14 @@ describe('independent geometry and material capacity', () => {
       sourceScope,
       bindings: [{ material: c, resourceClass: 'gpu' }],
     });
-    expect(plan.acceptedMaterialSlots?.slots).toEqual([
-      frame.get(a),
-      frame.get(a),
-      frame.get(b),
-      frame.get(c),
+    const original = plan.materialSlots.slice();
+    expect(original).toEqual([
+      frame.get(a)?.snapshot,
+      frame.get(a)?.snapshot,
+      frame.get(b)?.snapshot,
+      frame.get(c)?.snapshot,
     ]);
-    expect(plan.acceptedMaterialSlots?.bindings).toBe(plan.materialBindingSlots);
+    a.adopt(captureMaterialSnapshot({ ...a.snapshot, metallic: 0.45 }));
     expect(plan.materialBindingSlots.get(a)?.get('probe:2')).toBe(1);
     expect(plan.materialBindingSlots.get(c)?.get('gpu')).toBe(3);
     const clipped = buildDispatchPlan(ceiling(2, 6), rows, [], [], [], classes, false, {
@@ -255,9 +256,9 @@ describe('independent geometry and material capacity', () => {
       sourceScope,
       bindings: [],
     });
-    expect(clipped.acceptedMaterialSlots?.slots).toEqual([frame.get(a), frame.get(a)]);
-    expect(clipped.acceptedMaterialSlots?.bindings?.has(b)).toBe(false);
-    expect(plan.acceptedMaterialSlots?.slots.length).toBe(4);
+    expect(clipped.materialSlots).toEqual(original.slice(0, 2));
+    expect(clipped.materialBindingSlots.has(b)).toBe(false);
+    expect(plan.materialSlots).toEqual(original);
   });
 
   it('truncates only at complete material prefixes', () => {

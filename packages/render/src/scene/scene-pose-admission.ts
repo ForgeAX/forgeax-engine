@@ -16,21 +16,26 @@ export function createInlineScenePoseChunk(): Float64Array {
  * implement the delta lookup for arbitrary entity order without a second per-row index. */
 export class PreviousPoseRows implements ReadonlyMap<RenderSceneSlot, RenderSceneSlot> {
   private readonly firstVersion: number;
+  private readonly start: number;
 
   constructor(
     private readonly after: readonly RenderSceneSlot[],
     private readonly before: readonly RenderSceneSlot[],
+    private readonly structural?: ReadonlyMap<RenderSceneSlot, RenderSceneSlot>,
   ) {
-    this.firstVersion = after[0]?.version ?? 0;
+    this.start = after.length - before.length;
+    this.firstVersion = after[this.start]?.version ?? 0;
   }
 
   get size(): number {
-    return this.after.length;
+    return (this.structural?.size ?? 0) + this.before.length;
   }
 
   get(row: RenderSceneSlot): RenderSceneSlot | undefined {
     const index = row.version - this.firstVersion;
-    return this.after[index] === row ? this.before[index] : undefined;
+    return index >= 0 && this.after[this.start + index] === row
+      ? this.before[index]
+      : this.structural?.get(row);
   }
 
   has(row: RenderSceneSlot): boolean {
@@ -38,16 +43,24 @@ export class PreviousPoseRows implements ReadonlyMap<RenderSceneSlot, RenderScen
   }
 
   values(): MapIterator<RenderSceneSlot> {
-    return this.before.values();
+    return this.structural === undefined ? this.before.values() : this.orderedRows(false);
   }
 
   keys(): MapIterator<RenderSceneSlot> {
-    return this.after.values();
+    return this.structural === undefined ? this.after.values() : this.orderedRows(true);
+  }
+
+  private *orderedRows(keys: boolean): MapIterator<RenderSceneSlot> {
+    if (this.structural !== undefined)
+      yield* keys ? this.structural.keys() : this.structural.values();
+    const rows = keys ? this.after : this.before;
+    for (let i = keys ? this.start : 0; i < rows.length; i++) yield rows[i] as RenderSceneSlot;
   }
 
   *entries(): MapIterator<[RenderSceneSlot, RenderSceneSlot]> {
-    for (let i = 0; i < this.size; i++)
-      yield [this.after[i] as RenderSceneSlot, this.before[i] as RenderSceneSlot];
+    if (this.structural !== undefined) yield* this.structural;
+    for (let i = 0; i < this.before.length; i++)
+      yield [this.after[this.start + i] as RenderSceneSlot, this.before[i] as RenderSceneSlot];
   }
 
   [Symbol.iterator](): MapIterator<[RenderSceneSlot, RenderSceneSlot]> {
@@ -62,11 +75,14 @@ export class PreviousPoseRows implements ReadonlyMap<RenderSceneSlot, RenderScen
     ) => void,
     thisArg?: unknown,
   ): void {
-    for (let i = 0; i < this.size; i++)
+    this.structural?.forEach((before, after) => {
+      visit.call(thisArg, before, after, this);
+    });
+    for (let i = 0; i < this.before.length; i++)
       visit.call(
         thisArg,
         this.before[i] as RenderSceneSlot,
-        this.after[i] as RenderSceneSlot,
+        this.after[this.start + i] as RenderSceneSlot,
         this,
       );
   }
@@ -76,6 +92,7 @@ export class PreviousPoseRows implements ReadonlyMap<RenderSceneSlot, RenderScen
 export interface StagedScenePoses {
   readonly initial: RenderSceneSlot[];
   readonly chunks: Float64Array[];
+  readonly columns: readonly Readonly<Float32Array>[];
   readonly ignored: number;
 }
 
@@ -90,15 +107,23 @@ function changedPose(
   return false;
 }
 
-/** Only the receiver's validated, getter-free, synchronously owned spans enter here. */
-export function stageScenePoses(
+/** Changed pose rows use numeric coordinates. A structural operation already staged for
+ * the same identity owns its merged pose, including newly created or removed rows. */
+export function stageScenePoses<T extends object>(
   slots: SceneSlots,
   spans: readonly WorldTransformSpan[],
   storage: FrameArena | Float64Array,
-  indices: (number | object | undefined)[],
+  indices: (number | T | undefined)[],
+  merge?: (
+    entity: number,
+    edit: T | undefined,
+    span: WorldTransformSpan,
+    offset: number,
+  ) => boolean,
 ): Result<StagedScenePoses, MemoryError> {
   const initial: RenderSceneSlot[] = [];
   const chunks: Float64Array[] = [];
+  const columns: Readonly<Float32Array>[] = [];
   let ignored = 0;
   try {
     for (let source = 0; source < spans.length; source++) {
@@ -109,24 +134,26 @@ export function stageScenePoses(
         const entity = span.entities[row];
         if (entity === undefined) continue;
         const slot = slots.slotOf(entity);
-        if (slot === undefined) {
-          ignored++;
+        const admitted = slot === undefined ? undefined : indices[slot];
+        const offset = row * 16;
+        if (slot === undefined || typeof admitted === 'object') {
+          if (typeof admitted === 'object' && merge === undefined)
+            throw new Error('Scene commit staging is already active');
+          if (!merge?.(entity, typeof admitted === 'object' ? admitted : undefined, span, offset))
+            ignored++;
           continue;
         }
-        const admitted = indices[slot];
-        if (typeof admitted === 'object') throw new Error('Scene commit staging is already active');
+        const worlds = span.worlds;
         let index = admitted;
-        const offset = row * 16;
         let parity: boolean;
         if (index === undefined) {
-          const change = slots.comparePose(slot, span.worlds, offset);
+          const change = slots.comparePose(slot, worlds, offset);
           if (change === 'unchanged') continue;
           parity = change === 'parity';
           index = initial.length;
           if (index % SCENE_POSE_CHUNK_ROWS === 0) {
             if (storage instanceof Float64Array) {
-              if (index !== 0) throw new RangeError('Scene pose span exceeded its inline capacity');
-              chunks.push(storage);
+              chunks.push(index === 0 ? storage : createInlineScenePoseChunk());
             } else {
               const allocated = storage.alloc(Float64Array, SCENE_POSE_CHUNK_ROWS * FIELDS);
               if (!allocated.ok) return allocated;
@@ -138,21 +165,23 @@ export function stageScenePoses(
         } else {
           const chunk = chunks[Math.floor(index / SCENE_POSE_CHUNK_ROWS)] as Float64Array;
           const base = (index % SCENE_POSE_CHUNK_ROWS) * FIELDS;
-          const previous = spans[chunk[base] as number] as WorldTransformSpan;
+          const previous = columns[chunk[base] as number] as Readonly<Float32Array>;
           const previousOffset = chunk[base + 1] as number;
-          if (!changedPose(previous.worlds, previousOffset, span.worlds, offset)) continue;
+          if (!changedPose(previous, previousOffset, worlds, offset)) continue;
           parity =
             chunk[base + 2] === 1 ||
-            reflectedPose(previous.worlds, previousOffset) !== reflectedPose(span.worlds, offset);
+            reflectedPose(previous, previousOffset) !== reflectedPose(worlds, offset);
         }
         const chunk = chunks[Math.floor(index / SCENE_POSE_CHUNK_ROWS)] as Float64Array;
         const base = (index % SCENE_POSE_CHUNK_ROWS) * FIELDS;
-        chunk[base] = source;
+        // Keep the column actually observed. A borrowed span getter may replace it on the next read.
+        if (columns[columns.length - 1] !== worlds) columns.push(worlds);
+        chunk[base] = columns.length - 1;
         chunk[base + 1] = offset;
         chunk[base + 2] = parity ? 1 : 0;
       }
     }
-    return ok({ initial, chunks, ignored });
+    return ok({ initial, chunks, columns, ignored });
   } finally {
     for (const row of initial) indices[row.slot] = undefined;
   }

@@ -1,4 +1,8 @@
-import type { AssetChange } from '@forgeax/engine-assets-runtime/internal';
+import {
+  type AssetChange,
+  copyStaticMeshRange,
+  visitStaticMeshRange,
+} from '@forgeax/engine-assets-runtime/internal';
 import type { Asset, AssetHandle, GpuTextureAsset, TaskExecutor } from '@forgeax/engine-types';
 import { compareBufferBytes } from '../buffer-bytes';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
@@ -94,6 +98,7 @@ import {
   type ImageError,
   type ImageErrorDetailFor,
   imageError,
+  isDeepFrozenJson,
   isGpuTextureAsset,
   type PrimitiveTopology,
   type SampledTextureAsset,
@@ -102,6 +107,7 @@ import {
   type TextureShape,
   type MeshAsset as TypesMeshAsset,
   textureFormatBlock,
+  validateTextureShape,
 } from '@forgeax/engine-types';
 import { GpuBuffer, GpuTexture } from '../gpu-resource';
 import {
@@ -278,6 +284,8 @@ export function writePackedTextureLevels(
 // GpuTexture, which the wrapper owns. destroyAll() walks the GpuResource
 // fields and forwards .destroy() to the RHI shim.
 export interface TextureResidencyReceipt {
+  /** Present when shape, format and mip policy are the exact immutable admitted source layout. */
+  readonly fixedSourceMips?: SampledTextureAsset['mips'];
   readonly shape: TextureShape;
   readonly format: GPUTextureFormat;
   readonly mipLevelCount: number;
@@ -434,6 +442,49 @@ function writeAlignedMeshRange(
   const bytes = available.byteLength === end - first ? available : new Uint8Array(end - first);
   if (bytes !== available) bytes.set(available);
   return device.queue.writeBuffer(buffer.handle, first, bytes);
+}
+
+/** Apply a canonical edit to a resident mesh whose CPU bytes use physical streams. */
+function writeSplitSourceRange(
+  device: RhiDevice,
+  entry: MeshGpuHandles,
+  mesh: TypesMeshAsset,
+  range: AssetChange['ranges'][number],
+): Result<void, RhiError> {
+  if (entry.vertexStreams === undefined) {
+    // Single-stream backends need the covering aligned bytes, including any unedited neighbors.
+    const first = Math.floor(range.byteOffset / 4) * 4;
+    const end = Math.ceil((range.byteOffset + range.byteLength) / 4) * 4;
+    const bytes = new Uint8Array(end - first);
+    copyStaticMeshRange(mesh, { byteOffset: first, byteLength: bytes.length }, bytes, 'gather');
+    return device.queue.writeBuffer(entry.vertexBuffer.handle, first, bytes);
+  }
+  let result: Result<void, RhiError> = ok(undefined);
+  let active = -1,
+    first = 0,
+    end = 0;
+  const flush = () => {
+    if (active >= 0 && result.ok)
+      result = writeAlignedMeshRange(device, entry.vertexBuffer, mesh.vertices, {
+        path: ['vertices'],
+        byteOffset: first,
+        byteLength: end - first,
+      });
+  };
+  visitStaticMeshRange(mesh, range, (slot, offset, stride, _packed, _step, width, rows) => {
+    const limit = offset + (rows - 1) * stride + width;
+    if (active !== slot) {
+      flush();
+      active = slot;
+      first = offset;
+      end = limit;
+    } else {
+      first = Math.min(first, offset);
+      end = Math.max(end, limit);
+    }
+  });
+  flush();
+  return result;
 }
 
 /** Patch only touched vertices, remapping their canonical CPU rows to GPU stream ranges. */
@@ -2225,9 +2276,11 @@ export class GpuResidencyCache {
       for (const { range, buffer, source } of writes) {
         this.unshareMeshBuffer(buffer);
         const written =
-          range.path[0] === 'vertices' && entry.vertexStreams !== undefined
-            ? writeStaticVertexRows(device, entry, mesh.vertices, range)
-            : writeAlignedMeshRange(device, buffer, source, range);
+          range.path[0] === 'vertices' && mesh.attributeStorage === 'static-streams'
+            ? writeSplitSourceRange(device, entry, mesh, range)
+            : range.path[0] === 'vertices' && entry.vertexStreams !== undefined
+              ? writeStaticVertexRows(device, entry, mesh.vertices, range)
+              : writeAlignedMeshRange(device, buffer, source, range);
         if (!written.ok) {
           this.retireMeshEntry(key, entry, namespace);
           return written;
@@ -3166,9 +3219,25 @@ export class GpuResidencyCache {
     renderData: TextureRenderData,
     sourceRevision?: number,
   ): TextureResidencyReceipt {
+    const { shape, mips, format } = pod;
+    const fixed =
+      shape === renderData.shape &&
+      format === renderData.format &&
+      isDeepFrozenJson(shape) &&
+      isDeepFrozenJson(mips) &&
+      Object.hasOwn(shape, 'viewDimension') &&
+      Object.hasOwn(shape, 'extent') &&
+      Object.hasOwn(shape.extent, 'width') &&
+      Object.hasOwn(shape.extent, 'height') &&
+      (shape.viewDimension === '2d' ||
+        Object.hasOwn(shape.extent, shape.viewDimension === '3d' ? 'depth' : 'layers')) &&
+      Object.hasOwn(mips, 'kind') &&
+      (!('levelCount' in mips) || Object.hasOwn(mips, 'levelCount')) &&
+      validateTextureShape(shape, mips, format).ok;
     return {
       ...(sourceRevision === undefined ? {} : { sourceRevision }),
-      shape: structuredClone(pod.shape),
+      shape: fixed ? shape : structuredClone(shape),
+      ...(fixed ? { fixedSourceMips: mips } : {}),
       format: renderData.format,
       mipLevelCount: renderData.mipLevelCount,
       extent: {
@@ -3735,6 +3804,7 @@ export class GpuResidencyCache {
   private prepareMeshIndexUpload(
     indices: TypesMeshAsset['indices'],
     usage: MeshRenderData['indexUsage'],
+    geometryOwnsBytes: boolean,
     profilePhase: RecordProfileRunner | undefined,
   ) {
     if (indices === undefined)
@@ -3747,7 +3817,7 @@ export class GpuResidencyCache {
         if (
           indices.byteLength === indexBytes &&
           indices.byteOffset % 4 === 0 &&
-          publishedMeshBufferVersion(indices.buffer) !== undefined
+          (geometryOwnsBytes || publishedMeshBufferVersion(indices.buffer) !== undefined)
         )
           return new Uint32Array(indices.buffer, indices.byteOffset, indexBytes / 4);
         const words = new Uint32Array(indexBytes / 4);
@@ -3839,6 +3909,7 @@ export class GpuResidencyCache {
     const { indexBytes, indexWords, indexKey, sharedIndex } = this.prepareMeshIndexUpload(
       indices,
       renderData.indexUsage,
+      lodRanges !== undefined,
       profilePhase,
     );
     const vboResult =
@@ -3923,9 +3994,9 @@ export class GpuResidencyCache {
           profilePhase,
           'record/validation/residency/ownership-copy',
           () =>
-            publishedMeshBufferVersion(vertexWords.buffer) === undefined
-              ? new Uint32Array(vertexWords)
-              : vertexWords,
+            lodRanges !== undefined || publishedMeshBufferVersion(vertexWords.buffer) !== undefined
+              ? vertexWords
+              : new Uint32Array(vertexWords),
         ),
         owners: 0,
         key: vertexKey,

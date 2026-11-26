@@ -1,5 +1,7 @@
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { MaterialFrame } from './material-dispatch';
+import { boundDisplacementRadius } from './render-scene-snapshots';
 
 /**
  * The drawable facts of one row without its identity and pose. Rows whose
@@ -41,6 +43,9 @@ interface ContentBinding {
   readonly key: string;
   readonly value: RowContent;
   readonly fieldCount: number;
+  boundsRevision: number;
+  boundsBinding: number;
+  displacement: number;
   readonly arrays: readonly ArrayBinding[];
   holders: number;
 }
@@ -132,7 +137,16 @@ export class RowContents {
     let entry = this.contents.get(key);
     if (entry === undefined) {
       const value = Object.freeze(facts) as unknown as RowContent;
-      entry = { value, key, fieldCount: fields.length, arrays, holders: 0 };
+      entry = {
+        value,
+        key,
+        fieldCount: fields.length,
+        arrays,
+        holders: 0,
+        boundsRevision: 0,
+        boundsBinding: 0,
+        displacement: 0,
+      };
       for (const array of arrays) {
         if (array.holders++ === 0) {
           this.arrays.set(array.key, array);
@@ -145,6 +159,25 @@ export class RowContents {
     materials.content = entry;
     entry.holders++;
     return entry;
+  }
+
+  /** Pose-independent radius of a live content and its effective fixed material slots. */
+  displacementRadius(
+    content: RowContent,
+    effective: Pick<RowContent, 'materials' | 'material'>,
+    materials: MaterialFrame | undefined,
+  ): number {
+    const revision = MaterialFrame.cullingRevision(materials);
+    const entry = revision === 0 ? undefined : this.byContent.get(content);
+    if (entry === undefined) return boundDisplacementRadius(effective, materials);
+    const binding = effective === content ? 0 : getOpaqueResourceIdentity(effective);
+    if (entry.boundsRevision !== revision || entry.boundsBinding !== binding) {
+      const radius = boundDisplacementRadius(effective, materials);
+      entry.boundsRevision = revision;
+      entry.boundsBinding = binding;
+      entry.displacement = radius;
+    }
+    return entry.displacement;
   }
 
   release(content: RowContent): void {

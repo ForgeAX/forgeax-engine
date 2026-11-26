@@ -14,8 +14,9 @@ fn accumulateSample(
   block: vec2<u32>,
   dimensions: vec2<u32>,
   scale: u32,
+  halfResolution: bool,
 ) {
-  let classified = classifyExposureBlock(source, parameters, block, dimensions, scale);
+  let classified = classifyExposureBlock(source, parameters, block, dimensions, scale, halfResolution);
   for (var lane = 0u; lane < 4u; lane++) {
     let value = exposureBinWeights(classified[lane], scale);
     if (value.y > 0u) { atomicAdd(&localHistogram[value.x], value.y); }
@@ -34,8 +35,22 @@ fn auto_exposure_histogram(
   @builtin(workgroup_id) workgroupId: vec3<u32>,
   @builtin(num_workgroups) numWorkgroups: vec3<u32>,
 ) {
+  meterHistogram(localIndex, workgroupId, numWorkgroups, false);
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn auto_exposure_histogram_half(
+  @builtin(local_invocation_index) localIndex: u32,
+  @builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(num_workgroups) numWorkgroups: vec3<u32>,
+) {
+  meterHistogram(localIndex, workgroupId, numWorkgroups, true);
+}
+
+fn meterHistogram(localIndex: u32, workgroupId: vec3<u32>, numWorkgroups: vec3<u32>, halfResolution: bool) {
   let dimensions = textureDimensions(source);
-  let sampleGrid = (dimensions.xy + vec2<u32>(3u)) / vec2<u32>(4u);
+  let stride = select(4u, 2u, halfResolution);
+  let sampleGrid = (dimensions.xy + vec2<u32>(stride - 1u)) / vec2<u32>(stride);
   let scale = exposureSampleScale(sampleGrid);
 
   // Map the 256 lanes to a 16x16 logical tile. The fixed 4x8 dispatch grid
@@ -52,6 +67,7 @@ fn auto_exposure_histogram(
         vec2<u32>(blockX, blockY),
         dimensions,
         scale,
+        halfResolution,
       );
     }
   }

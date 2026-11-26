@@ -212,6 +212,7 @@ export async function runPortableExposure(
         readonly ue?: boolean;
       }
   )[] = [],
+  halfResolution = false,
 ) {
   const gpu = createAutoExposureGpuResources(device, 7, execution).unwrap();
   const source = device
@@ -253,8 +254,9 @@ export async function runPortableExposure(
     {
       source: { texture: imported, view, format: 'rgba32float', sampleCount: 1 },
       resources,
-      width,
-      height,
+      halfResolution,
+      width: halfResolution ? width * 2 : width,
+      height: halfResolution ? height * 2 : height,
     },
   ).unwrap();
   const readbackSize = 1024 + 16 * deltas.length;
@@ -353,6 +355,35 @@ export async function runUeExposureMeterFixture(
     [1 / 60],
     [{ ue: true }],
   );
+  const halfWidth = Math.ceil(width / 2);
+  const halfHeight = Math.ceil(height / 2);
+  const half = new Float32Array(halfWidth * halfHeight * 4);
+  for (let y = 0; y < halfHeight; y++) {
+    for (let x = 0; x < halfWidth; x++) {
+      for (let c = 0; c < 4; c++) {
+        let color = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const sx = Math.min(width - 1, x * 2 + dx);
+            const sy = Math.min(height - 1, y * 2 + dy);
+            color += pixels[(sy * width + sx) * 4 + c] ?? 0;
+          }
+        }
+        half[(y * halfWidth + x) * 4 + c] = color * 0.25;
+      }
+    }
+  }
+  const shared = await runPortableExposure(
+    device,
+    factory,
+    execution,
+    halfWidth,
+    halfHeight,
+    half,
+    [1 / 60],
+    [{ ue: true }],
+    true,
+  );
   const expectedBins = new Array<number>(256).fill(0);
   const scale = 2 ** 19;
   for (const position of positions) {
@@ -374,9 +405,15 @@ export async function runUeExposureMeterFixture(
   }
   const expectedGain = 0.18 * 2 ** (-sum / (highRank - lowRank));
   const maxBucketError = Math.max(
-    ...actual.histogram.map((count, bin) => Math.abs(count - (expectedBins[bin] ?? 0))),
+    ...[actual, shared].flatMap(({ histogram }) =>
+      histogram.map((count, bin) => Math.abs(count - (expectedBins[bin] ?? 0))),
+    ),
   );
   // Fixed-point bin quantization and backend f32 math can differ below one micro-EV.
-  const gainErrorEv = Math.abs(Math.log2((actual.timeline[0] ?? NaN) / expectedGain));
+  const gainErrorEv = Math.max(
+    ...[actual, shared].map(({ timeline }) =>
+      Math.abs(Math.log2((timeline[0] ?? NaN) / expectedGain)),
+    ),
+  );
   return { maxBucketError, gainErrorEv };
 }

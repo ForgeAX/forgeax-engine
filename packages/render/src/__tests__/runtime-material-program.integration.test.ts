@@ -11,7 +11,7 @@ import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   MATERIAL_CONTEXT,
   materialRecordFixture,
@@ -80,7 +80,10 @@ it('keeps cooked Forward and ShadowCaster programs when owned values change or a
       undefined,
       MATERIAL_CONTEXT,
     );
+  const projectionReads = vi.spyOn(assets, 'getMaterialProjectionForPayload');
   const before = read();
+  expect(projectionReads).toHaveBeenCalledTimes(1);
+  projectionReads.mockRestore();
   expect(frameRead()?.materialPublication).toEqual(before.materialPublication);
   expect(before.materialPublication?.identity).toMatchObject({
     materialGuid: record.guid,

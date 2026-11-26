@@ -129,6 +129,8 @@ describe('direct medium geometry pipeline layout', () => {
         passKind === 'temporal' ? 'fs_temporal' : undefined,
         false,
         undefined,
+        projection,
+        false,
       ),
     ).toBe(true);
     const call = lookup.mock.calls[0];
@@ -207,6 +209,55 @@ describe('main-pass material pipeline cache', () => {
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(getter).not.toHaveBeenCalled();
     }
+  });
+
+  it('keeps immediate and prepared temporal requests with their issuing factory', () => {
+    const visible = {} as MaterialShaderPipelineEntry;
+    const staged = {} as MaterialShaderPipelineEntry;
+    const get = vi.fn().mockReturnValue(visible);
+    const prepare = vi.fn().mockReturnValueOnce(null).mockReturnValue(staged);
+    const requests = createGeometryPipelineRequests(
+      {
+        runtime: {
+          getMaterialShaderPipelineEntry: get,
+          prepareMaterialShaderPipelineEntry: prepare,
+        },
+      } as unknown as GeometryPipelineRequestContext,
+      {
+        passKind: 'temporal',
+        sampleCount: 1,
+        colorFormats: ['rgba8unorm'],
+        coverageOnly: false,
+        tonemapActive: false,
+        msaaActive: false,
+        viewBindGroupDynamicOffset: 0,
+        transparentDepthWrite: false,
+        oit: undefined,
+      },
+    );
+    const layout = deriveVertexLayoutProjection({ position: new Float32Array(9) });
+    const resolve = (preparation: boolean) =>
+      requests.resolveMaterialPipeline(
+        'test::temporal',
+        undefined,
+        'triangle-list',
+        'uint16',
+        undefined,
+        undefined,
+        layout,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        preparation,
+      );
+    expect(resolve(false)).toBe(visible);
+    expect(resolve(true)).toBeNull();
+    expect(resolve(true)).toBe(staged);
+    expect(resolve(false)).toBe(visible);
+    expect(resolve(true)).toBe(staged);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(2);
   });
 
   it('keeps transient pending pipelines retryable across a tight frame loop', () => {

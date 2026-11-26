@@ -113,7 +113,7 @@ it('copies in bounded writes and commits without repeating the prepared upload',
   expect(f.writes).not.toHaveBeenCalled();
   f.arena.writeDescriptorWord(address, 4, 0, 23);
   f.candidate.flush(f.gpu.queue, f.b, false).unwrap();
-  expect(f.writes.mock.calls.map((call) => [call[1], call[4]])).toEqual([[address * 4, 16]]);
+  expect(f.writes.mock.calls.map((call) => [call[1], call[4]])).toEqual([[address * 4, 4]]);
   f.active.activate();
   f.writes.mockClear();
   f.active.flush(f.gpu.queue, f.a, false).unwrap();

@@ -69,6 +69,8 @@ export {
   createMeshBuilder,
   type MeshBuilder,
   type MeshBuilderOptions,
+  type MeshBuilderSection,
+  type MeshBuilderSectionsOptions,
   type MeshBuilderSubmesh,
 } from './mesh-builder';
 export {
@@ -105,6 +107,7 @@ export {
   copyMeshAttribute,
   interleavedMesh,
   interleavedMeshFiniteFailure,
+  invalidMeshAttributeDeclaration,
   type MeshAttributeKey,
   type MeshAttributeWindow,
   meshAttributeChannels,
@@ -152,15 +155,18 @@ export {
   type MeshVertexStreamRange,
   type PackedVertexAttributes,
   packInterleavedVertexAttributes,
+  packVertexAttributes,
   prepareStaticMeshVertexStreams,
   projectStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
+  staticMeshVertexStreamsMatchRows,
   unpackInterleavedVertexAttributes,
   VertexAttributePackError,
   type VertexLayoutProjection,
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
   vertexLayoutHasColor,
+  visitStaticMeshWordSpans,
   visitVertexUvAliases,
 } from './vertex-attribute-layout';
 export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';

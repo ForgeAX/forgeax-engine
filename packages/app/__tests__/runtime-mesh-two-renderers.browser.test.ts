@@ -288,6 +288,17 @@ it('draws the same pinned Runtime Pack Mesh in two WebGPU Renderers after its so
       MESH_BIN_HEADER_BYTES + initialMesh.vertices.byteLength,
     );
     expect(primary.meshTransfers.get(`${handle}:${revision}`)).toEqual(cookedVertices);
+    const residency = assets.meshCpuResidency(handle).unwrap();
+    expect(assets.read(handle, ['materialSlots', 'submeshes', 'aabb']).unwrap()).toEqual({
+      materialSlots: initialMesh.materialSlots,
+      submeshes: initialMesh.submeshes,
+      aabb: initialMesh.aabb,
+    });
+    expect(assets.read(handle, ['vertices'])).toMatchObject({
+      ok: false,
+      error: { code: 'asset-cpu-data-unavailable', detail: { fields: ['vertices'] } },
+    });
+    expect(assets.meshCpuResidency(handle).unwrap()).toEqual(residency);
     expect(assets.read(handle)).toMatchObject({
       ok: false,
       error: { code: 'asset-cpu-data-unavailable' },

@@ -5,49 +5,85 @@ import type {
 } from '../render-system-extract';
 
 /** Asset handles bound by one material, independent of its renderable's geometry. */
-export function materialSnapshotDependencies(material: MaterialSnapshot): number[] {
-  const handles = new Set<number>();
-  for (const handle of [
-    material.materialHandle,
-    material.baseColorTexture,
-    material.metallicRoughnessTexture,
-    material.normalTexture,
-    material.emissiveTexture,
-    material.occlusionTexture,
-  ])
-    if (handle) handles.add(handle);
-  for (const handle of material.textureHandles?.values() ?? []) handles.add(handle);
-  for (const handle of material.samplerHandles?.values() ?? []) handles.add(handle);
-  return [...handles];
+export function collectMaterialDependencies(material: MaterialSnapshot, into: Set<number>): void {
+  if (material.materialHandle) into.add(material.materialHandle);
+  if (material.baseColorTexture) into.add(material.baseColorTexture);
+  if (material.metallicRoughnessTexture) into.add(material.metallicRoughnessTexture);
+  if (material.normalTexture) into.add(material.normalTexture);
+  if (material.emissiveTexture) into.add(material.emissiveTexture);
+  if (material.occlusionTexture) into.add(material.occlusionTexture);
+  if (material.textureHandles)
+    for (const handle of material.textureHandles.values()) into.add(handle);
+  if (material.samplerHandles)
+    for (const handle of material.samplerHandles.values()) into.add(handle);
 }
 
-/** One asset closure for source publication and receiver admission. */
+function collectRowMaterials(
+  materials: RenderableSnapshot['materialOverrides'],
+  handles: Set<number>,
+  exactVersionAvailable?: (handle: number, revision: number) => boolean,
+): void {
+  if (materials === undefined) return;
+  for (const material of materials) {
+    if (material === undefined) continue;
+    const snapshot = material.snapshot;
+    const source = exactVersionAvailable === undefined ? undefined : snapshot.sourceAssets;
+    if (source === undefined || exactVersionAvailable === undefined) {
+      collectMaterialDependencies(snapshot, handles);
+      continue;
+    }
+    const needed = new Set<number>();
+    collectMaterialDependencies(snapshot, needed);
+    for (const asset of source.assets) {
+      const handle = asset.handle;
+      if (needed.has(handle) && exactVersionAvailable(handle, asset.revision))
+        needed.delete(handle);
+      if (needed.size === 0) break;
+    }
+    for (const handle of needed) handles.add(handle);
+  }
+}
+
+type DependencyRow = Pick<
+  RenderableSnapshot,
+  | 'assetHandle'
+  | 'materials'
+  | 'materialOverrides'
+  | 'terrain'
+  | 'glyph'
+  | 'tilemap'
+  | 'skinBinding'
+>;
+
+/** Append to the receiver's or stream's own set across all contributing rows. */
+export function collectPublicationDependencies(
+  row: DependencyRow,
+  handles: Set<number>,
+  exactVersionAvailable?: (handle: number, revision: number) => boolean,
+): void {
+  const special =
+    row.glyph !== undefined
+      ? row.glyph.font
+      : row.tilemap !== undefined
+        ? row.tilemap.tileset
+        : row.terrain?.handle;
+  if (special !== undefined) {
+    handles.add(special);
+    return;
+  }
+  if (row.assetHandle !== undefined) handles.add(row.assetHandle);
+  if (row.skinBinding !== undefined) handles.add(row.skinBinding.skeleton);
+  collectRowMaterials(row.materials, handles, exactVersionAvailable);
+  collectRowMaterials(row.materialOverrides, handles, exactVersionAvailable);
+}
+
+/** Detached roots for one row at the admission boundary. */
 export function publicationDependencies(
-  row: Pick<
-    RenderableSnapshot,
-    | 'assetHandle'
-    | 'materials'
-    | 'materialOverrides'
-    | 'terrain'
-    | 'glyph'
-    | 'tilemap'
-    | 'skinBinding'
-  >,
+  row: DependencyRow,
   exactVersionAvailable?: (handle: number, revision: number) => boolean,
 ): number[] {
-  if (row.glyph !== undefined) return [row.glyph.font];
-  if (row.tilemap !== undefined) return [row.tilemap.tileset];
-  if (row.terrain !== undefined) return [row.terrain.handle];
-  const handles = new Set<number>(row.assetHandle === undefined ? [] : [row.assetHandle]);
-  if (row.skinBinding !== undefined) handles.add(row.skinBinding.skeleton);
-  for (const material of [...row.materials, ...(row.materialOverrides ?? [])]) {
-    if (material === undefined) continue;
-    for (const handle of materialSnapshotDependencies(material.snapshot)) {
-      const fixed = material.snapshot.sourceAssets?.assets.find((asset) => asset.handle === handle);
-      if (fixed === undefined || exactVersionAvailable?.(handle, fixed.revision) !== true)
-        handles.add(handle);
-    }
-  }
+  const handles = new Set<number>();
+  collectPublicationDependencies(row, handles, exactVersionAvailable);
   return [...handles];
 }
 

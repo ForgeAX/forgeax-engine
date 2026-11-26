@@ -68,8 +68,8 @@ export const UNFOGGED_VIEW_UNIFORM_OFFSET =
   VIEW_UNIFORM_SLOT_STRIDE * (TRANSLUCENT_VIEW_SLOT_BASE + TRANSLUCENT_FOG_COMPOSITIONS.length);
 export const PLANAR_REFLECTION_UNIFORM_OFFSET =
   UNFOGGED_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
-/** viewProjection, plane and enabled lanes of the planar reflection projection. */
-export const PLANAR_REFLECTION_UNIFORM_SIZE = 96;
+/** Mirrored projection, plane, capture state, and receiver fade coefficients. */
+export const PLANAR_REFLECTION_UNIFORM_SIZE = 112;
 /** A never-written, therefore disabled, projection inside the same slot. */
 export const PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET = PLANAR_REFLECTION_UNIFORM_OFFSET + 256;
 export const POST_PROCESS_VIEW_UNIFORM_OFFSET =
@@ -382,7 +382,12 @@ export function writeViewUbo(
   sceneCapture = false,
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
-  viewport?: { readonly width: number; readonly height: number },
+  viewport?: {
+    readonly width: number;
+    readonly height: number;
+    readonly outputWidth?: number;
+    readonly outputHeight?: number;
+  },
   ssrQuality?: import('../quality').RenderQualityBudgets['ssr'],
   deferredChannelProjection = 0,
   subsurfaceProfiles?: readonly number[],
@@ -465,22 +470,29 @@ export function writeViewUbo(
     if (byteOffset !== 0) return;
     uploadFogViews(queue, viewUniformBuffer, viewPayload, scratch.family);
     uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.family);
-    if (resolvedTemporal !== undefined) {
-      const postProcessPayload = scratch.auxiliary;
-      postProcessPayload.set(viewPayload);
-      postProcessPayload.set(viewPayload.subarray(196, 212), 0);
-      mat4.invert(scratch.inverse, mat4.view(postProcessPayload));
-      postProcessPayload.set(scratch.inverse, 44);
-      const uploaded = queue.writeBuffer(
-        viewUniformBuffer,
-        POST_PROCESS_VIEW_UNIFORM_OFFSET,
-        postProcessPayload,
-      );
-      if (!uploaded.ok) throw uploaded.error;
-    }
+    if (resolvedTemporal !== undefined)
+      uploadPostProcessView(queue, viewUniformBuffer, scratch, viewport);
   } finally {
     writingViewUbo = previousWriting;
   }
+}
+
+/** Exact after-tonemap coverage uses the output viewport and unjittered projection. */
+function uploadPostProcessView(
+  queue: RhiQueue,
+  buffer: Buffer,
+  scratch: ReturnType<typeof createViewUboScratch>,
+  viewport: { readonly outputWidth?: number; readonly outputHeight?: number } | undefined,
+): void {
+  const { payload, auxiliary, inverse } = scratch;
+  auxiliary.set(payload);
+  auxiliary.set(payload.subarray(196, 212), 0);
+  if (viewport?.outputWidth !== undefined) auxiliary[23] = viewport.outputWidth;
+  if (viewport?.outputHeight !== undefined) auxiliary[27] = viewport.outputHeight;
+  mat4.invert(inverse, mat4.view(auxiliary));
+  auxiliary.set(inverse, 44);
+  const uploaded = queue.writeBuffer(buffer, POST_PROCESS_VIEW_UNIFORM_OFFSET, auxiliary);
+  if (!uploaded.ok) throw uploaded.error;
 }
 
 function writeForwardHeightFogLanes(

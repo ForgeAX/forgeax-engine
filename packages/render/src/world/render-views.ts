@@ -318,7 +318,7 @@ export class RenderViewFrameSource implements RenderViewSource {
     this.captures = captures;
     this.primary = maxRenderShortSide === 0 && !cameras.some((camera) => camera.view !== undefined);
     this.primaryCamera = this.primary
-      ? primaryDisplayCamera(publication, world, opts.cameraEntityKey, cameraSource)
+      ? (cameras[0] ?? primaryDisplayCamera(publication, world, opts.cameraEntityKey, cameraSource))
       : undefined;
     this.world = world;
     this.opts = opts;

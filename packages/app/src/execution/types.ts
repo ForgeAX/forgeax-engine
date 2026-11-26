@@ -70,6 +70,8 @@ export interface ExecutionFault {
   readonly expected: string;
   readonly hint: string;
   readonly detail: unknown;
+  readonly systemName?: string;
+  readonly kernelName?: string;
   readonly partialWrite: boolean;
   readonly retryable: boolean;
 }

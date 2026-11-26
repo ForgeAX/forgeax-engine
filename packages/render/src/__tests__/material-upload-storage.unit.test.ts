@@ -144,6 +144,41 @@ describe('draw-owned shared material storage', () => {
     expect(deps.frameState.materialUboCounters?.packMisses).toBe(2);
   });
 
+  it('packs the same snapshot for each installed schema, including while the old slot is held', () => {
+    const a = fixture();
+    const b = fixture();
+    const { materialParamSchema: _schema, ...base } = material().snapshot;
+    const snapshot = {
+      ...base,
+      materialShaderId: 'test::uniform',
+      paramSnapshot: { strength: 0.75 },
+    };
+    const compact = [{ name: 'strength', type: 'f32' }];
+    const extended = [{ name: 'pad', type: 'vec4' }, ...compact];
+    let selected = compact;
+    Object.assign(a.deps.runtime, { getParamSchema: () => selected });
+    Object.assign(b.deps.runtime, { getParamSchema: () => extended });
+    const tuple = materialUniformResources([]);
+    const bind = (scope: typeof a) =>
+      prepareMaterialUniform(scope.deps, snapshot, scope.world, tuple);
+    const floats = (scope: typeof a) =>
+      new Float32Array((scope.writeBuffer.mock.lastCall?.[2] as Uint8Array).buffer);
+    const held = new MaterialUniformRecording();
+    const original = held.run(() => bind(a));
+    expect(floats(a)[0]).toBe(0.75);
+    bind(b);
+    expect(floats(b)[4]).toBe(0.75);
+    selected = extended;
+    expect(bind(a)).not.toBe(original);
+    expect(floats(a)[4]).toBe(0.75);
+    selected = compact;
+    expect(held.run(() => bind(a))).toBe(original);
+    compact.unshift({ name: 'prefix', type: 'vec4' });
+    expect(bind(a)).not.toBe(original);
+    expect(floats(a)[4]).toBe(0.75);
+    held.complete();
+  });
+
   it('keeps simultaneous texture tuples addressable until each recording completes', () => {
     const { deps, world } = fixture();
     const snapshot = material().snapshot;

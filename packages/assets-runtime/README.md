@@ -60,6 +60,7 @@ assets.release(material).unwrap();
 | `create(content)` | Capture and validate independent runtime content; return a caller-owned handle |
 | `load(guid, kind, { signal }?)` | Read the verified source closure, or retain the already loaded runtime identity |
 | `read(handle)` | Return detached content, including copied arrays and buffers |
+| `read(handle, fields)` | Return only the named top-level fields as detached content from the current revision |
 | `update(handle, patch)` | Commit a validated patch; material `values` merge named parameters |
 | `replace(handle, content)` | Replace complete same-kind content under the existing handle |
 | `writeRange(handle, range)` | Commit a mesh attribute, texture pixel or Terrain height range |
@@ -100,8 +101,23 @@ Mesh content until its leases and release grace have ended. The storage field
 distinguishes a lease on the original publication from an independent copy.
 Producer caches and GPU allocations have separate owners.
 
-Use ordinary `load(guid, 'mesh')` before reading, copying, editing or building a
-collider. It restores complete CPU content for the same handle and revision.
+Select fields when gameplay only needs retained asset data.
+
+```ts
+const { materialSlots } = assets.read(meshHandle, ['materialSlots']).unwrap();
+const { shape, format } = assets.read(textureHandle, ['shape', 'format']).unwrap();
+```
+
+The handle's payload type determines the accepted keys and result type. Field
+reads work for built-in and custom assets, including GPU texture descriptors.
+They copy only the selected values and perform no I/O, readback or residency
+changes. A missing optional field returns `undefined`. A render-resident Mesh
+can return its material slots, bounds, submeshes and layout declarations. A
+selection that includes transferred geometry fails with
+`asset-cpu-data-unavailable` and lists the unavailable fields in `detail.fields`.
+
+Use ordinary `load(guid, 'mesh')` before reading complete content, copying,
+editing or building a collider. It restores complete CPU content for the same handle and revision.
 Concurrent loads share the restore. If every waiting load is cancelled before
 adoption, the Mesh keeps its visual residency.
 Until then, synchronous geometry operations return `asset-cpu-data-unavailable`
@@ -414,9 +430,11 @@ Performance evidence and remaining acceptance belong to the
 
 ## Runtime content
 
-Mesh content has one retained vertex representation: interleaved rows. Full
-authoring channels are validated before admission and then discarded from the
-owned runtime value. The native binary decoder validates rows directly without
+A mesh owns one vertex buffer in its admitted layout. Rigid meshes can keep
+split streams for presentation. Fixed versions retain that layout for engine consumers. Detached public reads
+from live assets or fixed snapshots receive interleaved rows. Both preserve the live stream storage,
+and copying an asset preserves the original layout in the independent copy.
+Full authoring channels are validated on admission and then discarded. The native binary decoder validates rows directly without
 allocating duplicate channels. Read CPU lanes through geometry's
 `meshAttributeWindow`; request explicit contiguous output with `copyMeshAttribute`
 when needed. Attribute range edits write the corresponding strided row lanes;

@@ -1,5 +1,10 @@
 import type { RenderableSnapshot } from '../render-system-extract';
-import { FrameListBase, ProjectionIterator } from './frame-list';
+import {
+  EMPTY_FRAME_ROWS,
+  FrameListBase,
+  ProjectionIterator,
+  type SparseRowKind,
+} from './frame-list';
 import type { FrameSet } from './frame-set';
 import type { SurfaceColumnReader, sceneDrawContentOf } from './render-scene-view';
 import type { RowContent } from './row-contents';
@@ -14,6 +19,7 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
   constructor(
     private readonly columns: DisplayColumns,
     private readonly members: FrameSet,
+    readonly dispatchDomain: symbol = Symbol(),
   ) {
     super();
   }
@@ -39,6 +45,34 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
     return this.columns.source;
   }
 
+  visitLodCandidates(visit?: (row: RenderableSnapshot) => void): number {
+    return this.columns.visitLodCandidates(visit, this.members);
+  }
+
+  lookupMember(entity: number) {
+    const slot = this.source.identitySlot(entity);
+    return slot !== undefined && this.members.has(slot) ? this.source.slotAt(slot) : undefined;
+  }
+
+  /** OIT skin membership in a verified view interval, without observing rigid poses. */
+  countSkins(draws: { rankAt(index: number): number }, start: number, end: number): number {
+    const skins = this.columns.permitsSlotCull(undefined)
+      ? this.source.indexedSlots('skin')
+      : undefined;
+    if (skins?.size === 0) return 0;
+    let count = 0;
+    for (let i = start; i < end; i++) {
+      const rank = draws.rankAt(i);
+      if (skins === undefined) {
+        if (this.at(rank)?.skinBinding !== undefined) count++;
+      } else {
+        const slot = this.members.at(rank);
+        if (slot !== undefined && skins.has(slot)) count++;
+      }
+    }
+    return count;
+  }
+
   surfaceWalk(visit: SurfaceColumnReader<void>) {
     return this.columns.surfaceWalk(visit, this.members);
   }
@@ -46,14 +80,34 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
   /** Further display filters keep the fixed slot addresses and source rank order. */
   selectDisplay(
     admits: (row: RowContent, rank: number) => boolean,
+    indexed?: FrameSet,
   ): SelectedSceneDrawRows | readonly [] {
-    let rank = 0;
-    const select = (row: RowContent): boolean => admits(row, rank++);
-    const selected = this.members.filter(
-      (slot) => this.columns.source.readContentSlot(slot, select) === true,
-    );
+    const selected = this.source.selectContent(admits, this.members, indexed);
     if (selected.size === this.members.size) return this;
     return selected.size === 0 ? [] : new SelectedSceneDrawRows(this.columns, selected);
+  }
+
+  /** Both sets address the same captured slots. Walk the smaller one in source
+   * order and project only actual members of the view carrying this fact. */
+  override sparseRows(kind: SparseRowKind): Iterable<RenderableSnapshot> {
+    if (
+      Object.getPrototypeOf(this) !== SelectedSceneDrawRows.prototype ||
+      Object.hasOwn(this, Symbol.iterator) ||
+      Object.getOwnPropertyDescriptor(SelectedSceneDrawRows.prototype, Symbol.iterator)?.value !==
+        selectedIterator
+    )
+      return this;
+    const indexed = this.source.indexedSlots(kind);
+    if (indexed === undefined) return this;
+    if (indexed.size === 0 || this.members.size === 0) return EMPTY_FRAME_ROWS;
+    const smaller = indexed.size < this.members.size ? indexed : this.members;
+    const other = smaller === indexed ? this.members : indexed;
+    const project = this.project;
+    return {
+      *[Symbol.iterator]() {
+        for (const slot of smaller.borrowKeys()) if (other.has(slot)) yield project(slot);
+      },
+    };
   }
 
   get length(): number {
@@ -89,3 +143,5 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
 }
 
 const selectedAt = SelectedSceneDrawRows.prototype.at;
+
+const selectedIterator = SelectedSceneDrawRows.prototype[Symbol.iterator];

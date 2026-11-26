@@ -158,7 +158,7 @@ export function prepareRuntimeMeshRange(
   const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
   return ok({
     writes: [
-      ...(mesh.attributeStorage === 'interleaved'
+      ...(mesh.attributeStorage !== undefined
         ? []
         : [
             {
@@ -261,7 +261,7 @@ function prepareInterleavedRows(
     const lanes = attribute.byteLength / 4;
     const lane = attribute.offset / 4;
     const packed =
-      mesh.attributeStorage === 'interleaved'
+      mesh.attributeStorage !== undefined
         ? undefined
         : attribute.format === 'uint32'
           ? new Uint32Array(rows * lanes)

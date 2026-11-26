@@ -86,7 +86,6 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
       world: scope,
       assets,
       material: wet,
-      programSelections: undefined,
       materialContext,
     });
     expect(snapshot.deferredPass).toBe(true);
@@ -106,7 +105,6 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
           world: scope,
           assets,
           material: wet,
-          programSelections: undefined,
           materialContext,
         }),
         scope,
@@ -137,7 +135,6 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
         world: scope,
         assets,
         material: Materials.standard({ baseColor: [1, 1, 1, 1] }) as MaterialAsset,
-        programSelections: undefined,
         materialContext,
       }),
       scope,

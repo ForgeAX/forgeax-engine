@@ -1233,7 +1233,7 @@ export class GpuDrivenProduction {
         sceneMaterialBuffer: scene.scene.materialBuffer,
       },
       ...(shadowViews === undefined ? {} : { shadowViewPool: shadowViews }),
-      _trackSubmittedWork: (completed) => materials.submit(completed),
+      _trackSubmittedWork: (completed) => materials.submit(completed, 'queue-order'),
       _sealResourceReads: () => this.sealResourceReads(materials),
       _commitResourceReplacement: () => {
         if (!this.finishMaterials(materials)) return;
@@ -2493,7 +2493,7 @@ export class GpuDrivenProduction {
       bundlePass,
       viewOffset,
     );
-    if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [viewOffset]);
+    if (!target.rendererRecording) bindings.bindInitialView();
     const colorFormats = frameResources.colorFormats ?? target.colorFormats;
     const sampleCount = rasterSampleCount(
       frameResources.sampleCount ??

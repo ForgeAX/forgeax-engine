@@ -264,6 +264,17 @@ test('Three mixed native shadows start in a fresh browser and drain neighboring 
   assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
 });
 
+test('Standard WebGL2 cluster lighting runs in a fresh browser without neighboring GPU groups', () => {
+  const file = 'packages/runtime/src/__tests__/standard-cluster-webgl2.browser.test.ts';
+  for (const size of [1, 8, 24]) {
+    assert.deepEqual(
+      dryRunGroups(size).filter((group) => group.includes(file)),
+      [[file]],
+    );
+  }
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+});
+
 test('both complete shadow alpha material journeys keep independent exclusive processes', () => {
   const files = ['shadow-alpha', 'shadow-alpha-standard'].map(
     (name) => `packages/three/src/__tests__/${name}.browser.test.ts`,

@@ -1,7 +1,7 @@
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
-import { hasCapturedTaskMembership } from '../gpu-driven/fixed-task-plan';
+import { materialBindingLayout } from '../gpu-driven/fixed-task-plan';
 import { type RenderResourceScope, renderAsset } from '../publication/resource-scope';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSystemInternals } from './render-context';
@@ -13,46 +13,68 @@ type Resident = MeshGpuHandles | undefined;
 
 /** Material batches may share a mesh. Only the first binding of each mesh supplies its LODs. */
 interface MeshRoster {
-  readonly bindings: readonly Binding[];
+  readonly borrowedOrder: readonly Binding[] | undefined;
   readonly sources: readonly Binding[];
   readonly handles: readonly number[];
-  readonly sourceIndices: readonly number[];
+  readonly indices: ReadonlyMap<Binding, number>;
 }
 
-function meshRoster(batches: MeshScene['plan']['batches'], previous?: MeshRoster): MeshRoster {
-  // Compare binding order even for a borrowed list or a new pose-only execution root.
-  // The first difference starts a new roster; enumeration of the frame tree never restarts.
-  let bindings: Binding[] | undefined;
+/** A borrowed batch list can edit its binding handle in place. Inspect its actual order once. */
+function borrowedBindings(
+  batches: MeshScene['plan']['batches'],
+  previous: MeshRoster | undefined,
+): readonly Binding[] {
+  const prior = previous?.borrowedOrder;
+  let order: Binding[] | undefined = prior === undefined ? [] : undefined;
   let count = 0;
   for (const batch of batches) {
     const binding = batch.binding;
     if (binding === undefined) continue;
     if (
-      bindings === undefined &&
-      (previous?.bindings[count] !== binding ||
-        previous.handles[previous.sourceIndices[count] as number] !== binding.assetHandle)
+      order === undefined &&
+      prior !== undefined &&
+      (prior[count] !== binding ||
+        previous?.handles[previous.indices.get(binding) as number] !== binding.assetHandle)
     )
-      bindings = previous?.bindings.slice(0, count) ?? [];
-    bindings?.push(binding);
+      order = prior.slice(0, count);
+    order?.push(binding);
     count++;
   }
-  if (bindings === undefined && previous?.bindings.length === count) return previous;
-  bindings ??= previous?.bindings.slice(0, count) ?? [];
-  const indices = new Map<number, number>();
+  return order ?? (count === prior?.length ? prior : (prior?.slice(0, count) ?? []));
+}
+
+function meshRoster(
+  batches: MeshScene['plan']['batches'],
+  layout: symbol | undefined,
+  previous?: MeshRoster,
+): MeshRoster {
+  const order = layout === undefined ? borrowedBindings(batches, previous) : undefined;
+  if (order !== undefined && order === previous?.borrowedOrder) return previous;
+  const byHandle = new Map<number, number>();
   const sources: Binding[] = [];
   const handles: number[] = [];
-  const sourceIndices: number[] = [];
-  for (const binding of bindings) {
-    let index = indices.get(binding.assetHandle);
+  const indices = new Map<Binding, number>();
+  function append(binding: Binding) {
+    const handle = binding.assetHandle;
+    let index = byHandle.get(handle);
     if (index === undefined) {
       index = sources.length;
-      indices.set(binding.assetHandle, index);
+      byHandle.set(handle, index);
       sources.push(binding);
-      handles.push(binding.assetHandle);
+      if (order !== undefined) handles.push(handle);
     }
-    sourceIndices.push(index);
+    indices.set(binding, index);
   }
-  return { bindings, sources, handles, sourceIndices };
+  if (order !== undefined) {
+    for (const binding of order) append(binding);
+  } else {
+    for (const batch of batches) {
+      const binding = batch.binding;
+      if (binding === undefined) continue;
+      append(binding);
+    }
+  }
+  return { borrowedOrder: order, sources, handles, indices };
 }
 
 function resolveMesh(
@@ -84,8 +106,64 @@ function resolveMesh(
   return resident.ok ? resident.value : gpu;
 }
 
+/** The binding address belongs to the roster. Only the physical mesh columns vary by issuance. */
+class IssuedMeshes implements ReadonlyMap<Binding, MeshGpuHandles> {
+  constructor(
+    private readonly indices: ReadonlyMap<Binding, number>,
+    private readonly residents: readonly MeshGpuHandles[],
+  ) {}
+
+  static issue(
+    roster: MeshRoster,
+    residents: readonly Resident[],
+    present: number,
+  ): ReadonlyMap<Binding, MeshGpuHandles> {
+    if (present === 0) return emptyTable;
+    if (present === residents.length)
+      return new IssuedMeshes(roster.indices, residents as readonly MeshGpuHandles[]);
+    // An old frame may retain only the bindings whose physical meshes it actually received.
+    const ready = new Map<Binding, MeshGpuHandles>();
+    for (const [binding, index] of roster.indices) {
+      const mesh = residents[index];
+      if (mesh !== undefined) ready.set(binding, mesh);
+    }
+    return ready;
+  }
+  get size(): number {
+    return this.indices.size;
+  }
+  get(binding: Binding): Resident {
+    const index = this.indices.get(binding);
+    return index === undefined ? undefined : this.residents[index];
+  }
+  has(binding: Binding): boolean {
+    return this.indices.has(binding);
+  }
+  *entries(): MapIterator<[Binding, MeshGpuHandles]> {
+    for (const [binding, index] of this.indices)
+      yield [binding, this.residents[index] as MeshGpuHandles];
+  }
+  keys(): MapIterator<Binding> {
+    return this.indices.keys();
+  }
+  *values(): MapIterator<MeshGpuHandles> {
+    for (const index of this.indices.values()) yield this.residents[index] as MeshGpuHandles;
+  }
+  [Symbol.iterator](): MapIterator<[Binding, MeshGpuHandles]> {
+    return this.entries();
+  }
+  forEach(
+    visit: (value: MeshGpuHandles, key: Binding, map: ReadonlyMap<Binding, MeshGpuHandles>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const [binding, index] of this.indices) {
+      visit.call(thisArg, this.residents[index] as MeshGpuHandles, binding, this);
+    }
+  }
+}
+
 interface ResidentFrame {
-  plan: WeakRef<MeshScene['plan']> | undefined;
+  layout: symbol | undefined;
   readonly roster: MeshRoster;
   readonly residents: readonly Resident[];
   readonly table: ReadonlyMap<Binding, MeshGpuHandles>;
@@ -94,8 +172,7 @@ interface ResidentFrame {
 const residentFrames = new WeakMap<RenderSystemInternals, ResidentFrame>();
 const emptyTable: ReadonlyMap<Binding, MeshGpuHandles> = new Map();
 
-/** Read every distinct mesh from the current resource scope. Publish an independent binding
- * snapshot on physical change without rebuilding a per-frame asset-handle lookup. */
+/** Read each distinct physical mesh in the current scope, including on pose-only frames. */
 export function gpuDrivenMeshesForFrame(
   internals: RenderSystemInternals,
   sourceScope: RenderResourceScope,
@@ -106,11 +183,16 @@ export function gpuDrivenMeshesForFrame(
     residentFrames.delete(internals);
     return emptyTable;
   }
+  const batches = scene.plan.batches;
   const previous = residentFrames.get(internals);
-  const captured = previous?.plan?.deref() === scene.plan;
-  const roster = captured ? previous.roster : meshRoster(scene.plan.batches, previous?.roster);
+  const layout = materialBindingLayout(batches);
+  const roster =
+    layout !== undefined && previous?.layout === layout
+      ? previous.roster
+      : meshRoster(batches, layout, previous?.roster);
   const prior = previous?.roster === roster ? previous.residents : undefined;
   let updated: Resident[] | undefined = prior === undefined ? [] : undefined;
+  let present = 0;
   for (let i = 0; i < roster.sources.length; i++) {
     const resident = resolveMesh(
       internals.gpuStore,
@@ -118,36 +200,18 @@ export function gpuDrivenMeshesForFrame(
       roster.sources[i] as Binding,
       policy,
     );
+    if (resident !== undefined) present++;
     if (updated === undefined && resident !== prior?.[i]) updated = prior?.slice(0, i);
     updated?.push(resident);
   }
-  const plan = captured
-    ? previous.plan
-    : hasCapturedTaskMembership(scene.plan)
-      ? new WeakRef(scene.plan)
-      : undefined;
   if (updated === undefined && previous !== undefined) {
-    previous.plan = plan;
+    previous.layout = layout;
     return previous.table;
   }
   const residents = updated ?? [];
-  const table = new Map<Binding, MeshGpuHandles>();
-  let equivalent = previous !== undefined;
-  for (let i = 0; i < roster.bindings.length; i++) {
-    const binding = roster.bindings[i] as Binding;
-    const resident = residents[roster.sourceIndices[i] as number];
-    if (resident === undefined) continue;
-    table.set(binding, resident);
-    if (equivalent && previous?.table.get(binding) !== resident) equivalent = false;
-  }
-  const published =
-    table.size === 0
-      ? emptyTable
-      : equivalent && previous?.table.size === table.size
-        ? previous.table
-        : table;
-  residentFrames.set(internals, { plan, roster, residents, table: published });
-  return published;
+  const table = IssuedMeshes.issue(roster, residents, present);
+  residentFrames.set(internals, { layout, roster, residents, table });
+  return table;
 }
 
 /** Called by a recording that will consume real geometry queries/commands. */

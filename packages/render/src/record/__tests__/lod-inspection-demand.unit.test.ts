@@ -1,12 +1,18 @@
 import { assert, expect, it, vi } from 'vitest';
 import type { GpuDrivenLodSelectionInspection } from '../../gpu-driven/view-gpu';
+import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
+import { type DispatchEntry, defaultMaterialSnapshot } from '../../render-system-extract';
+import { projectDisplayRenderables } from '../../render-system-presentation';
 import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
 import { FrameProjection, RetainedFrameProjection } from '../../scene/frame-list';
+import { FrameSet } from '../../scene/frame-set';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import type { PersistentRenderScene } from '../../scene/render-scene';
 import type { RenderSceneSlot } from '../../scene/render-scene-types';
-import { SceneSlots } from '../../scene/scene-slots';
+import { RenderScene } from '../../scene/render-scene-view';
+import { SceneSlotPage, SceneSlots } from '../../scene/scene-slots';
 import type { SurfaceSubmissionObservationOwner } from '../../surface/submission-observation';
 import * as cpuLod from '../cpu-lod';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
@@ -209,5 +215,71 @@ it('does not reuse an old filtered borrowed population with the same candidate c
     expect(f.owner.cell?.value().lodHistogram).toEqual([{ level: 2, count: 1 }]);
   } finally {
     level.mockRestore();
+  }
+});
+
+it.each([
+  true,
+  false,
+])('observes the captured subset and opens poses only for CPU-selected LOD rows (GPU %s)', (gpu) => {
+  const f = fixture(8, gpu);
+  const scene = new RenderScene();
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const world = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  const rows = Array.from(
+    { length: 96 },
+    (_, entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: entityKey,
+      transform: { world },
+      material,
+      materials: [material],
+      ...(entityKey % 16 === 0 ? { lods: [{} as never] } : {}),
+    }),
+  );
+  scene.apply(
+    rows.map((snapshot) => ({ kind: 'update', entityKey: snapshot.entityKey, snapshot })),
+  );
+  const passes = rows
+    .filter((row) => row.entityKey % 3 === 0)
+    .map(
+      (row) =>
+        ({
+          renderableIndex: row.entityKey,
+          tags: { LightMode: 'Forward' },
+        }) as DispatchEntry,
+    );
+  const renderables = projectDisplayRenderables(scene.materialize(), passes);
+  const reads = vi.spyOn(SceneSlotPage.prototype, 'read');
+  const select = vi.spyOn(cpuLod, 'cpuLodLevel').mockReturnValue(2);
+  try {
+    const inspect = (r: ExtractedFrame['renderables'], id: number) =>
+      f.owner.inspectFrame(
+        f.camera,
+        { ...f.frame, renderables: r },
+        { projection: { renderables: r } },
+        f.sourceScope,
+        id,
+      );
+    expect(inspect(renderables, 1)).toBe(2);
+    expect(reads).toHaveBeenCalledTimes(gpu ? 0 : 2);
+    expect(f.scene.compositionSlot).not.toHaveBeenCalled();
+    const old = f.owner.cell;
+    assert(old);
+    scene.apply([{ kind: 'remove', entityKey: 48 }]);
+    const pending = scene.materializeTemporal(
+      { hits: 0, misses: 0 },
+      new MaterialFrame(undefined).with(material),
+      FrameSet.from([0]),
+    );
+    reads.mockClear();
+    expect(inspect(pending, 2)).toBe(5);
+    expect(reads).toHaveBeenCalledTimes(gpu ? 0 : 5);
+    expect(f.owner.cell?.value().lodHistogram).toEqual([{ level: gpu ? 0 : 2, count: 5 }]);
+    expect(old.value().samples.map((s) => s.primitiveSlot)).toEqual([0, 48]);
+    expect(old.value().lodHistogram).toEqual([{ level: gpu ? 0 : 2, count: 2 }]);
+  } finally {
+    reads.mockRestore();
+    select.mockRestore();
   }
 });

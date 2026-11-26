@@ -1309,14 +1309,20 @@ function addDeferredTranslucency(
     readonly targets: DeferredSceneTargets;
   },
 ): Result<
-  { readonly sampledDepth: GraphTextureView; readonly foamSimulation?: GraphTextureView },
+  {
+    readonly depth: RenderPipelineTarget;
+    readonly sampledDepth: GraphTextureView;
+    readonly foamSimulation?: GraphTextureView;
+  },
   RenderPipelineBuildError
 > {
   const translucent = (scene: DeferredForwardScene) =>
     addDeferredMaterialTranslucency(context, topology, scene, route, mediumTargets, targetCaptures);
   if (topology.water !== true) {
     const transparent = translucent(forward);
-    return transparent.ok ? ok({ sampledDepth: water.targets.depthSample }) : transparent;
+    return transparent.ok
+      ? ok({ depth: forward.depth, sampledDepth: water.targets.depthSample })
+      : transparent;
   }
   const view = water.depthViews.sceneView();
   if (!view.ok) return view;
@@ -1364,7 +1370,11 @@ function addDeferredTranslucency(
     const transparent = translucent({ ...forward, depth: slw.value.depth });
     if (!transparent.ok) return transparent;
   }
-  return ok({ sampledDepth: slw.value.sampledDepth, foamSimulation: slw.value.foamSimulation });
+  return ok({
+    depth: slw.value.depth,
+    sampledDepth: slw.value.sampledDepth,
+    foamSimulation: slw.value.foamSimulation,
+  });
 }
 
 /**
@@ -1651,6 +1661,7 @@ function addDeferredForwardStages(
 ): Result<
   {
     readonly color: RenderPipelineTarget;
+    readonly depth: RenderPipelineTarget;
     readonly sampledDepth: GraphTextureView;
     readonly waterFoamSimulation: GraphTextureView | undefined;
   },
@@ -1722,6 +1733,7 @@ function addDeferredForwardStages(
   if (!observed.ok) return observed;
   return ok({
     color: sceneOutput.value,
+    depth: translucent.value.depth,
     sampledDepth: translucent.value.sampledDepth,
     waterFoamSimulation: translucent.value.foamSimulation,
   });
@@ -2089,6 +2101,7 @@ export function buildStandardDeferredLane(
     if (!velocityView.ok) return velocityView;
     return addStandardPost(context, topology, sceneOutput.value.color, depth, surface.value, {
       sceneTemporal: postVelocity ?? mediumTemporal.targets?.temporal,
+      sceneColorDepth: sceneOutput.value.depth,
       secondaryReactivity: temporalInputs.value.secondaryReactivity,
       coverage: context.targetCoverage?.coverage,
       coverageDepth: context.targetCoverage?.depth,

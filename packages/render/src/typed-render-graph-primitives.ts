@@ -2,6 +2,7 @@ import {
   type GraphAccess,
   type GraphResourceResolver,
   type GraphTextureView,
+  type RasterDepthStencilAttachment,
   type RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
@@ -77,7 +78,11 @@ import { encodeSkyboxPass } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { prepareTypedScenePipelineDemand } from './record/typed-scene-pipeline-demand';
 import { POST_PROCESS_VIEW_UNIFORM_OFFSET, VIEW_UNIFORM_BYTES } from './record/view-ubo';
-import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
+import {
+  STANDARD_OUTPUT_GLARE_FEATURE_ID,
+  STANDARD_OUTPUT_SMAA_FEATURE_ID,
+  STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
+} from './render-contract';
 import {
   encodeFullscreenPass,
   type FullscreenPassInputs,
@@ -1056,11 +1061,11 @@ export function addReflectionFallbackObservationPass(
 
 export interface TypedBloomTargets {
   readonly scene: RenderPipelineTarget;
-  /** Omit when native Grade consumes the five filter outputs directly. */
+  readonly sources: readonly RenderPipelineTarget[];
+  /** Omit when native Grade consumes the accumulated image. */
   readonly composited?: RenderPipelineTarget;
   readonly horizontal: readonly RenderPipelineTarget[];
   readonly vertical: readonly RenderPipelineTarget[];
-  readonly levelDimensions: readonly { readonly width: number; readonly height: number }[];
 }
 
 /** The semantic Bloom pass owner; graph inspection consumes these same identities. */
@@ -1077,7 +1082,7 @@ export function typedBloomLevelPassName(kind: 'horizontal' | 'vertical', level: 
 export function addTypedBloomPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   targets: TypedBloomTargets,
-): Result<void, RenderGraphError> {
+): Result<RenderPipelineTarget, RenderGraphError> {
   function add(
     name: string,
     stage: BloomStage,
@@ -1085,15 +1090,14 @@ export function addTypedBloomPasses(
     write: RenderPipelineTarget,
     level = 0,
   ): Result<void, RenderGraphError> {
-    const dimensions = targets.levelDimensions[level];
     const inputs = reads.map((target) => target.view);
     const draw = new BloomDraw(
       name,
       stage,
       inputs,
       level,
-      dimensions?.width ?? 1,
-      dimensions?.height ?? 1,
+      targets.sources.length,
+      write.format === 'rg11b10ufloat',
     );
     return graph.addRasterPass(
       name,
@@ -1117,23 +1121,28 @@ export function addTypedBloomPasses(
     );
   }
 
-  for (const [level, horizontal] of targets.horizontal.entries()) {
-    const source = level === 0 ? targets.scene : targets.vertical[level - 1];
+  const invalidLevels = () =>
+    err(
+      new RenderGraphError({
+        code: 'resource-resolution-failed',
+        expected: 'a source, horizontal target and accumulated target for each Bloom level',
+        hint: 'derive the targets from the same downsample chain',
+        detail: { resourceLabel: 'bloom-downsample-chain' },
+      }),
+    );
+  const finest = targets.vertical[0];
+  if (
+    finest === undefined ||
+    targets.sources.length !== targets.horizontal.length ||
+    targets.sources.length !== targets.vertical.length
+  )
+    return invalidLevels();
+  for (let level = targets.sources.length - 1; level >= 0; level--) {
+    const source = targets.sources[level];
+    const horizontal = targets.horizontal[level];
     const vertical = targets.vertical[level];
-    if (
-      source === undefined ||
-      vertical === undefined ||
-      targets.levelDimensions[level] === undefined
-    ) {
-      return err(
-        new RenderGraphError({
-          code: 'resource-resolution-failed',
-          expected: 'five adjacent Gaussian Bloom levels with their physical extents',
-          hint: 'derive horizontal and vertical targets from the same level list',
-          detail: { resourceLabel: `bloom-level-${level}` },
-        }),
-      );
-    }
+    const coarser = targets.vertical[level + 1];
+    if (!source || !horizontal || !vertical) return invalidLevels();
     const h = add(
       typedBloomLevelPassName('horizontal', level),
       'horizontal',
@@ -1142,23 +1151,20 @@ export function addTypedBloomPasses(
       level,
     );
     if (!h.ok) return h;
-    const v = add(
-      typedBloomLevelPassName('vertical', level),
-      'vertical',
-      [horizontal],
-      vertical,
-      level,
-    );
+    const reads = coarser === undefined ? [horizontal] : [horizontal, coarser];
+    const v = add(typedBloomLevelPassName('vertical', level), 'vertical', reads, vertical, level);
     if (!v.ok) return v;
   }
-  return targets.composited === undefined
-    ? ok(undefined)
-    : add(
-        TYPED_BLOOM_PASS_NAMES.composite,
-        'composite',
-        [targets.scene, ...targets.vertical],
-        targets.composited,
-      );
+  if (targets.composited !== undefined) {
+    const composed = add(
+      TYPED_BLOOM_PASS_NAMES.composite,
+      'composite',
+      [targets.scene, finest],
+      targets.composited,
+    );
+    if (!composed.ok) return composed;
+  }
+  return ok(finest);
 }
 
 export interface TypedSsaoTargets {
@@ -1342,6 +1348,10 @@ interface TypedFullscreenPassInputs {
   readonly fragmentEntryPoint?: string | undefined;
   readonly input: RenderPipelineTarget;
   readonly outputOnly?: boolean | undefined;
+  readonly stencil?: {
+    readonly target: RenderPipelineTarget;
+    readonly mode: NonNullable<PostProcessShaderEntry['stencilMask']>;
+  };
   readonly depth?: RenderPipelineTarget | undefined;
   readonly additionalReads?: readonly {
     readonly key: string;
@@ -1820,6 +1830,24 @@ export function addTypedTemporalResolvePass(
   return added;
 }
 
+function fullscreenDepthAttachment(
+  options: TypedFullscreenPassOptions,
+): RasterDepthStencilAttachment<RenderPipelineFrame> | undefined {
+  const target = options.stencil?.target ?? options.depthOutput;
+  if (target === undefined) return undefined;
+  if (options.stencil?.mode === 'test')
+    return { view: target.view, depthReadOnly: true, stencilReadOnly: true };
+  return {
+    view: target.view,
+    depthLoadOp: 'clear',
+    depthStoreOp: 'store',
+    depthClearValue: 0,
+    ...(target.format === 'depth24plus-stencil8' || target.format === 'depth32float-stencil8'
+      ? { stencilLoadOp: 'clear', stencilStoreOp: 'store', stencilClearValue: 0 }
+      : {}),
+  };
+}
+
 export function addTypedFullscreenPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   options: TypedFullscreenPassOptions,
@@ -1848,6 +1876,7 @@ export function addTypedFullscreenPass(
     fragmentEntryPoint: options.fragmentEntryPoint,
     msaaDepth: options.depth === undefined ? undefined : options.depth.sampleCount === 4,
   };
+  const depthStencilAttachment = fullscreenDepthAttachment(options);
   return graph.addRasterPass(options.name, {
     accesses: [
       { resource: options.input.view, usage: 'sampled-read' },
@@ -1855,9 +1884,17 @@ export function addTypedFullscreenPass(
         resource: target.view,
         usage: 'color-attachment' as const,
       })),
-      ...(options.depthOutput === undefined
+      ...(depthStencilAttachment === undefined
         ? []
-        : [{ resource: options.depthOutput.view, usage: 'depth-stencil-write' as const }]),
+        : [
+            {
+              resource: depthStencilAttachment.view,
+              usage:
+                depthStencilAttachment.depthReadOnly === true
+                  ? ('depth-stencil-read' as const)
+                  : ('depth-stencil-write' as const),
+            },
+          ]),
       ...(depth === undefined ? [] : [{ resource: depth.value, usage: 'sampled-read' as const }]),
       ...(options.additionalReads?.map((read) => ({
         resource: read.target.view,
@@ -1875,24 +1912,7 @@ export function addTypedFullscreenPass(
         a: options.clearColor?.[3] ?? 1,
       },
     })),
-    ...(options.depthOutput === undefined
-      ? {}
-      : {
-          depthStencilAttachment: {
-            view: options.depthOutput.view,
-            depthLoadOp: 'clear' as const,
-            depthStoreOp: 'store' as const,
-            depthClearValue: 0,
-            ...(options.depthOutput.format === 'depth24plus-stencil8' ||
-            options.depthOutput.format === 'depth32float-stencil8'
-              ? {
-                  stencilLoadOp: 'clear' as const,
-                  stencilStoreOp: 'store' as const,
-                  stencilClearValue: 0,
-                }
-              : {}),
-          },
-        }),
+    depthStencilAttachment,
     encodeDirect: (pass, frame, resources) => {
       if (options.outputOnly && frame.runtime.lookupPostProcess?.(options.shader) === undefined) {
         return;
@@ -1914,54 +1934,22 @@ export function addTypedCompositePostEffects(
   input: RenderPipelineTarget,
   output: RenderPipelineTarget,
   depth: RenderPipelineTarget,
-  size: { readonly width: number; readonly height: number },
 ): Result<void, RenderGraphError> {
   let currentInput = input;
-  for (let index = 0; index < effects.length; index += 1) {
-    const shader = effects[index];
-    if (shader === undefined) continue;
-    const effectInput = currentInput;
-    // The scratch is a texture copy of the effect input, so it takes the input
-    // format; a raw-only surface feeds an rgba16float input into an 8-bit output.
-    const scratch = createRenderPipelineTarget(graph, `post-effect-scratch-${index}`, {
-      format: effectInput.format as GPUTextureFormat,
-      size: 'surface',
-    });
-    if (!scratch.ok) return scratch;
+  for (const [index, shader] of effects.entries()) {
     const effectOutput =
       index === effects.length - 1
         ? ok(output)
         : createRenderPipelineTarget(graph, `post-effect-output-${index}`, {
             format: output.format as GPUTextureFormat,
             size: 'surface',
+            domain: 'display-encoded',
           });
     if (!effectOutput.ok) return effectOutput;
-    const copied = graph.addCopyPass(
-      `post-effect-copy-${index}`,
-      {
-        accesses: [
-          { resource: effectInput.view, usage: 'copy-src' },
-          { resource: scratch.value.view, usage: 'copy-dst' },
-        ],
-        encodeDirect: (encoder, _graphframe, resources) => {
-          const source = resources.texture(effectInput.texture);
-          if (!source.ok) throw source.error;
-          const destination = resources.texture(scratch.value.texture);
-          if (!destination.ok) throw destination.error;
-          encoder.copyTextureToTexture(
-            { texture: source.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-            { texture: destination.value, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-            { width: size.width, height: size.height, depthOrArrayLayers: 1 },
-          );
-        },
-      },
-      'transfer',
-    );
-    if (!copied.ok) return copied;
     const effect = addTypedFullscreenPass(graph, {
       name: `post-effect-${index}`,
       shader,
-      input: scratch.value,
+      input: currentInput,
       outputs: [effectOutput.value],
       depth,
     });
@@ -1978,6 +1966,8 @@ export function addTypedOutputTransformPass(
   options: {
     readonly outputOnly?: boolean;
     readonly dither?: OutputDither;
+    readonly glare?: RenderPipelineTarget | undefined;
+    readonly smaaWeights?: RenderPipelineTarget | undefined;
     readonly name?: string | undefined;
     readonly fragmentEntryPoint?: string | undefined;
     /**
@@ -1996,15 +1986,36 @@ export function addTypedOutputTransformPass(
     const ldrCapture = addObservationCapturePass(graph, input, 'linear-ldr');
     if (!ldrCapture.ok) return ldrCapture;
   }
+  const { glare, smaaWeights } = options;
+  const fragmentEntryPoint =
+    smaaWeights !== undefined
+      ? 'fs_smaa_encode'
+      : glare === undefined
+        ? options.fragmentEntryPoint
+        : options.fragmentEntryPoint === 'fs_tone_only'
+          ? 'fs_tone_glare'
+          : 'fs_glare';
   const uniform = new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize);
   const values = new DataView(uniform.buffer);
   const transformed = addTypedFullscreenPass(graph, {
     name: options.name ?? (outputOnly ? 'present' : 'output-transform'),
-    shader: STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
+    shader:
+      smaaWeights !== undefined
+        ? STANDARD_OUTPUT_SMAA_FEATURE_ID
+        : glare === undefined
+          ? STANDARD_OUTPUT_TRANSFORM_FEATURE_ID
+          : STANDARD_OUTPUT_GLARE_FEATURE_ID,
+    additionalReads:
+      smaaWeights !== undefined
+        ? [{ key: 'smaa-weights', target: smaaWeights }]
+        : glare === undefined
+          ? []
+          : [{ key: 'glare', target: glare }],
     input,
     outputs: [output],
     outputOnly,
-    paramsTransform: (params, frame, resources): Uint8Array | undefined => {
+    paramsTransform: (selected, frame, resources): Uint8Array | undefined => {
+      const params = selected ?? frame.postProcessParams.get(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
       if (params === undefined || params.byteLength !== TONEMAP_PARAMS_LAYOUT.byteSize) {
         return params;
       }
@@ -2022,9 +2033,7 @@ export function addTypedOutputTransformPass(
       }
       return uniform;
     },
-    ...(options.fragmentEntryPoint === undefined
-      ? {}
-      : { fragmentEntryPoint: options.fragmentEntryPoint }),
+    fragmentEntryPoint,
   });
   if (!transformed.ok) return transformed;
   if (options.fragmentEntryPoint !== 'fs_tone_only' && requested.includes('final-display')) {

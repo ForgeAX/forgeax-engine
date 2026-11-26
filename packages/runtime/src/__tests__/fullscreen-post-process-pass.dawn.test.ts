@@ -135,16 +135,6 @@ function pixelDiffSummary(none: Uint8Array, fxaa: Uint8Array): string {
   });
 }
 
-function decodeFloat16(lo: number, hi: number): number {
-  const bits = lo | (hi << 8);
-  const sign = (bits & 0x8000) === 0 ? 1 : -1;
-  const exponent = (bits >>> 10) & 0x1f;
-  const fraction = bits & 0x03ff;
-  if (exponent === 0) return sign * 2 ** -14 * (fraction / 1024);
-  if (exponent === 0x1f) return fraction === 0 ? sign * Infinity : Number.NaN;
-  return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
-}
-
 function prepareOutputTransformCapture(host: DebugDrawHost):
   | {
       readonly buffer: Buffer;
@@ -153,7 +143,7 @@ function prepareOutputTransformCapture(host: DebugDrawHost):
       readonly height: number;
     }
   | undefined {
-  const bytesPerRow = Math.ceil((WIDTH * 8) / 256) * 256;
+  const bytesPerRow = Math.ceil((WIDTH * 4) / 256) * 256;
   const buffer = host.device.createBuffer({
     size: bytesPerRow * HEIGHT,
     usage: BUFFER_USAGE_MAP_READ_RHI | BUFFER_USAGE_COPY_DST_RHI,
@@ -169,7 +159,7 @@ function prepareOutputTransformCapture(host: DebugDrawHost):
     width: WIDTH,
     height: HEIGHT,
     expected: {
-      format: 'rgba16float',
+      format: 'rgba8unorm',
       width: WIDTH,
       height: HEIGHT,
       usage: TEXTURE_USAGE_COPY_SRC,
@@ -228,12 +218,13 @@ async function readOutputTransformCapture(
   const { width, height } = capture;
   const { bytesPerRow } = capture;
   const validation = validateGraphTargetCaptureReadback({
+    format: 'rgba8unorm',
     bytes,
     expectedByteLength: bytesPerRow * height,
     sentinel: new Uint8Array(16).fill(0xa5),
   });
   if (!validation.ok) throw new Error(`graph-target-capture:${validation.code}`);
-  const centerOffset = (height >> 1) * bytesPerRow + (width >> 1) * 8;
+  const centerOffset = (height >> 1) * bytesPerRow + (width >> 1) * 4;
   return {
     graphFrameId: target.recordFrameNumber,
     graphGeneration: target.graphGeneration,
@@ -243,10 +234,7 @@ async function readOutputTransformCapture(
     format: target.descriptor.format,
     size: { width, height },
     usage: target.descriptor.usage,
-    center: [0, 1, 2, 3].map((channel) => {
-      const offset = centerOffset + channel * 2;
-      return decodeFloat16(bytes[offset] ?? 0, bytes[offset + 1] ?? 0);
-    }),
+    center: Array.from(bytes.subarray(centerOffset, centerOffset + 4), (byte) => byte / 255),
     captureWritten: bytes.some((byte, index) => index < 16 && byte !== 0xa5),
   };
 }
@@ -538,7 +526,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
         graphGeneration: expect.any(Number),
         textureIdentity: expect.any(Number),
         receiptFrameId: drawnFxaa.frameId,
-        format: 'rgba16float',
+        format: 'rgba8unorm',
         size: { width: WIDTH, height: HEIGHT },
       }),
     );
@@ -694,7 +682,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     expect(srgbGammaOutput).toBeGreaterThan(nonSrgbOutput);
   });
 
-  it('records the GPU half-cell/raw-unorm divergence without software quantization', async () => {
+  it('records both GPU storage boundaries around a binary16 half-cell', async () => {
     const { renderer, device, renderTarget, debugDrawHost } = await setupRenderer();
     const linearInputs = [0.49989, 0.49992] as const;
     const directPixels: Uint8Array[] = [];
@@ -754,7 +742,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     for (const output of fxaaCaptures) {
       expect(output).toMatchObject({
         targetName: 'standard-grade-output',
-        format: 'rgba16float',
+        format: 'rgba8unorm',
         size: { width: WIDTH, height: HEIGHT },
         captureWritten: true,
       });

@@ -65,6 +65,30 @@ describe('Mobility', () => {
     expect(readInheritedMobility(world, beyond)).toBe('movable');
   });
 
+  it('sees the first declaration, its removal and a later declaration on another ancestor immediately', () => {
+    const world = new World();
+    const root = world.spawn().unwrap();
+    const branch = world.spawn({ component: ChildOf, data: { parent: root } }).unwrap();
+    const leaf = world.spawn({ component: ChildOf, data: { parent: branch } }).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('movable');
+    world
+      .addComponent(root, { component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('static');
+    world.removeComponent(root, Mobility).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('movable');
+    world
+      .addComponent(branch, { component: Mobility, data: { kind: MobilityKindValue.stationary } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('stationary');
+    world
+      .addComponent(root, { component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('stationary');
+    world.removeComponent(branch, Mobility).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('static');
+  });
+
   it('accepts initial placement of a static entity without a diagnostic', async () => {
     const world = await sceneWorld();
     world

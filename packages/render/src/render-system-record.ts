@@ -36,7 +36,12 @@ import {
 } from './record/render-context';
 import { cloudShadowProjectionFor } from './record/view-topology';
 import type { CameraSnapshot, RenderPhase, RenderPhaseSkipReason } from './render-contract';
-import type { DispatchList, ExtractedFrame, GpuOwnedFrame } from './render-system-extract';
+import type {
+  DispatchEntry,
+  DispatchList,
+  ExtractedFrame,
+  GpuOwnedFrame,
+} from './render-system-extract';
 import {
   createPresentationDraws,
   initialFramePresentation,
@@ -50,7 +55,7 @@ import {
   recordFailureError,
 } from './render-system-record-attempt';
 import { FrameProjection } from './scene/frame-list';
-import { someCapturedMaterialPass } from './scene/material-dispatch';
+import { culledViewDemand, someCapturedMaterialPass } from './scene/material-dispatch';
 import type { PersistentGpuDrivenState } from './scene/render-scene';
 import { recordsViewWork, type ViewCaptureFrame, viewCaptureWorkOf } from './world/capture-systems';
 import { consumeViewEnvironment } from './world/environment-systems';
@@ -572,21 +577,24 @@ export function stageRecordQueue(
   return { gpuDriven, records, sorted };
 }
 
-/** Each occupied material pass selects one shader, regardless of its member count. */
+/** Scene depth belongs to the selected shader, even if several occupied materials use it. */
 function dispatchUsesSceneDepth(
   dispatch: DispatchList,
   registry: NonNullable<RenderSystemInternals['shaderRegistry']>,
 ): boolean {
-  const shared = someCapturedMaterialPass(dispatch, (pass) =>
-    materialUsesLitSceneInputs(registry, pass.materialShaderId),
-  );
-  if (shared !== undefined) return shared;
+  const demand = culledViewDemand(dispatch);
+  if (demand !== undefined) {
+    for (const program of demand.programs)
+      if (materialUsesLitSceneInputs(registry, program)) return true;
+    return false;
+  }
   const checked = new Set<string>();
-  return dispatch.some(({ materialShaderId }) => {
+  const usesDepth = ({ materialShaderId }: Pick<DispatchEntry, 'materialShaderId'>): boolean => {
     if (materialShaderId === undefined || checked.has(materialShaderId)) return false;
     checked.add(materialShaderId);
     return materialUsesLitSceneInputs(registry, materialShaderId);
-  });
+  };
+  return someCapturedMaterialPass(dispatch, usesDepth) ?? dispatch.some(usesDepth);
 }
 
 /**
@@ -819,17 +827,17 @@ export function presentedRenderableRecorder(
         deviceGeneration !== undefined &&
         graphGeneration !== undefined
       )
-        viewReceipt?.stageMaterialDraw(observationFrameId(owner), {
+        viewReceipt?.materials.record(
+          observationFrameId(owner),
           worldIdentity,
-          entityKey: entry.source.entityKey,
+          entityKey,
           submeshIndex,
           materialSlot,
-          materialHandle: material.materialHandle,
+          material.materialHandle,
           sourceRevision,
-          frameId: observationFrameId(owner),
           deviceGeneration,
           graphGeneration,
-        });
+        );
     }
     drawObservation.record(entry, submeshIndex, receipt, sourceWorld);
     consumeDynamicGeometry?.(entry, receipt?.lane ?? 'cpu');

@@ -105,6 +105,7 @@ import { installCarriedGpuStub } from './gpu-stub';
 import { createLocalHdrFrameObserver } from './hdr-frame-observation';
 import type {
   EngineToHostMessage,
+  ExecutionFaultMessage,
   ExecutionFrameCompletion,
   ExecutionFrameMessage,
   ExecutionInitMessage,
@@ -501,6 +502,7 @@ function postFault(
   hint: string,
   cause: unknown,
   partialWrite = false,
+  owner?: Pick<ExecutionFaultMessage, 'systemName' | 'kernelName'>,
 ): void {
   scope.postMessage({
     kind: 'fault',
@@ -510,6 +512,7 @@ function postFault(
     expected,
     hint,
     detail: serializableDetail(cause),
+    ...owner,
     partialWrite,
     retryable: false,
   });
@@ -1364,26 +1367,32 @@ function endProfileFrame(
 function postWorldPoisoned(world: World): boolean {
   if (world.execution.health !== 'poisoned') return false;
   const fault = world.execution.fault;
+  const owner =
+    fault?.code === 'system-failed'
+      ? { systemName: `${fault.schedule}/${fault.systemName}` }
+      : fault?.code === 'shared-kernel-failed'
+        ? { kernelName: fault.kernelName }
+        : undefined;
   postFault(
     'world',
     fault?.code ?? 'world-poisoned',
     'World remains healthy through update',
     'rebuild the poisoned World explicitly',
-    fault,
+    fault?.cause,
     fault?.partialWrite ?? true,
+    owner,
   );
   return true;
 }
 
 function postFrameFault(world: World, cause: unknown): void {
-  const fault = world.execution.fault;
+  if (postWorldPoisoned(world)) return;
   postFault(
-    fault === null ? 'runtime' : 'world',
-    fault?.code ?? 'app-system-update-failed',
+    'runtime',
+    'app-system-update-failed',
     'World update completes before Renderer draw',
-    fault === null ? 'inspect the runtime cause' : 'rebuild the poisoned World explicitly',
+    'inspect the runtime cause',
     cause,
-    fault?.partialWrite ?? false,
   );
 }
 

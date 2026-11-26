@@ -281,3 +281,56 @@ it('routes a mixed pose span only to live or newly admitted draws', () => {
     locate.mockRestore();
   }
 });
+
+it('publishes mixed structural edits and dense pose changes in first-admission order', () => {
+  const { rows, worlds, entities } = fixture(140);
+  const held = rows.capture();
+  const original = rows.lookup(2)?.snapshot;
+  assert(original);
+  for (const entity of entities) worlds[entity * 16 + 12] = entity + 1;
+  const replacement = { ...original, layer: 4 };
+  const flipped = worlds.slice(48, 64);
+  flipped[0] = -1;
+  const delta = rows.apply(
+    [
+      { kind: 'remove', entityKey: 5 },
+      { kind: 'remove', entityKey: 2 },
+      { kind: 'update', entityKey: 2, snapshot: replacement },
+      { kind: 'update', entityKey: 7, snapshot: { ...original, entityKey: 7 } },
+      { kind: 'update', entityKey: 200, snapshot: { ...original, entityKey: 200 } },
+    ],
+    [
+      { entities: Uint32Array.of(3), worlds: flipped },
+      { entities, worlds },
+      { entities: Uint32Array.of(200, 500), worlds: worlds.subarray(0, 32) },
+    ],
+  );
+  expect(delta).toMatchObject({
+    created: 1,
+    recreated: 1,
+    removed: 1,
+    updated: 138,
+    ignoredLateUpdates: 2,
+  });
+  expect(delta.recreatedSlots[0]?.snapshot.transform.world[12]).toBe(3);
+  expect(delta.createdSlots[0]?.snapshot.transform.world[12]).toBe(1);
+  expect(delta.contentUpdatedSlots.map((row) => row.entityKey)).toEqual([7, 3]);
+  const expected = [2, 7, 3, ...Array.from(entities).filter((e) => ![2, 3, 5, 7].includes(e))];
+  const history = delta.previous;
+  expect(history).toBeInstanceOf(PreviousPoseRows);
+  expect(history.size).toBe(expected.length);
+  expect([...history.keys()].map((row) => row.entityKey)).toEqual(expected);
+  expect([...history.values()].map((row) => row.entityKey)).toEqual(expected);
+  const pairs = [...history];
+  let index = 0;
+  history.forEach((before, after, owner) => {
+    expect(owner).toBe(history);
+    expect(after.entityKey).toBe(expected[index]);
+    expect(pairs[index]?.[0]).toBe(after);
+    expect(pairs[index++]?.[1]).toBe(before);
+    expect(before).toBe(held.slotAt(before.slot));
+    expect(history.get(after)).toBe(before);
+    expect(history.has({ ...after })).toBe(false);
+  });
+  expect(index).toBe(expected.length);
+});

@@ -144,8 +144,12 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
   if (adapter.features.has('timestamp-query')) {
     requiredFeatures.push('timestamp-query');
   }
-  // Transmission and cloud reconstruction can consume float32 HDR after construction.
-  for (const feature of ['float32-filterable', 'float32-blendable'] as const) {
+  // HDR effects can activate after construction, including packed Bloom.
+  for (const feature of [
+    'float32-filterable',
+    'float32-blendable',
+    'rg11b10ufloat-renderable',
+  ] as const) {
     if (adapter.features.has(feature)) requiredFeatures.push(feature);
   }
   // Native wgpu exposes hardware Ray Query as an extension feature; admitting it

@@ -16,11 +16,17 @@ export interface FrameList<T> extends Iterable<T> {
   flatMap<U>(project: (value: T, index: number) => U | readonly U[]): U[];
 }
 
+export const EMPTY_FRAME_ROWS: readonly never[] = Object.freeze([]);
+
 /** Shared operations enumerate requested execution work, never maintain a dense copy. */
 export abstract class FrameListBase<T> implements FrameList<T> {
   abstract readonly length: number;
   abstract at(index: number): T | undefined;
   abstract [Symbol.iterator](): Iterator<T>;
+  /** A view without a captured membership index keeps its ordinary traversal. */
+  sparseRows(_kind: SparseRowKind): Iterable<T> {
+    return this;
+  }
 
   slice(start = 0, end = this.length): T[] {
     const result: T[] = [];
@@ -187,8 +193,8 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
     return list.#rowReader;
   }
   /** User-provided iterators, sources or mapping functions keep their ordinary read order. */
-  static iterationReaderOf(list: Iterable<unknown>): object | undefined {
-    if (!(#rowReader in list)) return undefined;
+  static hasNativeIteration(list: Iterable<unknown>): list is FrameProjection<unknown, unknown> {
+    if (!(#rowReader in list)) return false;
     const prototype = Object.getPrototypeOf(list);
     if (
       (prototype !== FrameProjection.prototype &&
@@ -201,8 +207,11 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
       Object.getOwnPropertyDescriptor(list, 'source')?.value !== list.#source ||
       Object.getOwnPropertyDescriptor(list, 'project')?.value !== list.#project
     )
-      return undefined;
-    return list.#rowReader;
+      return false;
+    return true;
+  }
+  static iterationReaderOf(list: Iterable<unknown>): object | undefined {
+    return FrameProjection.hasNativeIteration(list) ? list.#rowReader : undefined;
   }
   get length(): number {
     return this.source.length;
@@ -291,6 +300,13 @@ export class RetainedFrameProjection<T, U> extends FrameProjection<T, U> {
   ) {
     super(source, project, rowReader);
   }
+
+  override sparseRows(kind: SparseRowKind): Iterable<U> {
+    const facts = this.facts;
+    if (facts === undefined || !FrameProjection.hasNativeIteration(this)) return this;
+    if (kind === 'terrain' && facts.terrainRowCount === 0) return EMPTY_FRAME_ROWS;
+    return { [Symbol.iterator]: () => facts.sparseRows(kind) };
+  }
 }
 
 /** Only an admitted retained projection owns its LOD count; custom mappings remain live. */
@@ -304,11 +320,10 @@ export function lodCandidateCountOf(
 
 /**
  * The rows that can carry a sparse source fact: the owner's index when the list is
- * the retained scene root itself, otherwise every row (the caller filters by the fact).
+ * a retained scene root or an indexed subset, otherwise the ordinary row traversal.
  */
 export function sparseRowsOf<U>(list: FrameList<U>, kind: SparseRowKind): Iterable<U> {
-  const facts = list instanceof RetainedFrameProjection ? list.facts : undefined;
-  return facts === undefined ? list : { [Symbol.iterator]: () => facts.sparseRows(kind) };
+  return list instanceof FrameListBase ? list.sparseRows(kind) : list;
 }
 
 /** Raster membership belongs to the captured root; borrowed/custom rows stay live. */

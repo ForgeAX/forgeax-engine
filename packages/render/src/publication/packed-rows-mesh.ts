@@ -82,9 +82,6 @@ export function packedRowsMeshError(mesh: MeshAsset): string | undefined {
   return valid.ok ? undefined : valid.error.actual;
 }
 
-/** Explicit temporary channels for a cold CPU consumer, without a retained cache. */
-export const unpackPackedRows = meshAttributeChannels;
-
 function hasRasterAttributes(mesh: MeshAsset, keys: readonly string[]): boolean {
   for (const key of keys) {
     const value = (mesh.attributes as Record<string, unknown>)[key];

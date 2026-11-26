@@ -4,6 +4,62 @@ import { createMeshBuilder } from '../mesh-builder.js';
 const trianglePositions = new Float32Array([-1, -2, -3, 4, 5, 6, 0, 2, 1]);
 
 describe('createMeshBuilder', () => {
+  it('assembles material sections whose indices each start at zero', () => {
+    const second = Float32Array.of(8, 0, 0, 9, 0, 0, 8, 1, 0);
+    const builder = createMeshBuilder({
+      materialSlots: [{ slotName: 'wall' }, { slotName: 'unused' }, { slotName: 'trim' }],
+      sections: [
+        { materialSlot: 0, attributes: { position: trianglePositions }, indices: [0, 1, 2] },
+        { materialSlot: 1 },
+        { materialSlot: 2, attributes: { position: second }, indices: Uint16Array.of(0, 1, 2) },
+      ],
+    });
+    second[0] = 99;
+    const mesh = builder.build().unwrap();
+    expect(mesh.indices).toEqual(Uint16Array.of(0, 1, 2, 3, 4, 5));
+    expect(
+      mesh.submeshes.map(({ indexOffset, indexCount, materialSlot }) => [
+        indexOffset,
+        indexCount,
+        materialSlot,
+      ]),
+    ).toEqual([
+      [0, 3, 0],
+      [3, 0, 1],
+      [3, 3, 2],
+    ]);
+    expect(mesh.aabb).toEqual(Float32Array.of(-1, -2, -3, 9, 5, 6));
+    mesh.indices?.fill(0);
+    expect(builder.build().unwrap().indices).toEqual(Uint16Array.of(0, 1, 2, 3, 4, 5));
+  });
+
+  it('rejects indices which are globally valid but outside their section', () => {
+    const attributes = { position: trianglePositions };
+    const built = createMeshBuilder({
+      sections: [
+        { materialSlot: 0, attributes, indices: [0, 1, 2] },
+        { materialSlot: 0, attributes, indices: [0, 1, 3] },
+      ],
+    }).build();
+    expect(built.ok).toBe(false);
+    if (!built.ok) expect(built.error.detail).toMatchObject({ field: 'sections[1].indices[2]' });
+  });
+
+  it('widens rebased indices when a local Uint16 section crosses the limit', () => {
+    const attributes = { position: trianglePositions };
+    const first = {
+      materialSlot: 0,
+      attributes: { position: new Float32Array(65_534 * 3) },
+      indices: [0, 1, 2],
+    };
+    const mesh = createMeshBuilder({
+      sections: [first, { materialSlot: 0, attributes, indices: Uint16Array.of(0, 1, 2) }],
+    })
+      .build()
+      .unwrap();
+    expect(mesh.indices).toEqual(Uint32Array.of(0, 1, 2, 65_534, 65_535, 65_536));
+  });
+
   it('derives position-only layout, AABB, index width, and default submesh', () => {
     const result = createMeshBuilder({
       attributes: { position: trianglePositions },

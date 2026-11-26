@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BLOOM_PREFILTER_WGSL, POST_SCENE_COLOR_HALF_WGSL } from '@forgeax/engine-shader';
 import { PNG } from 'pngjs';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
 import { readBuiltinShaderEntries, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
@@ -62,7 +63,15 @@ Object.assign(globalThis, globals);
 let gpu = create([]);
 const adapter = await gpu.requestAdapter();
 if (adapter === null) throw new Error('Dawn adapter is unavailable');
-const device = await adapter.requestDevice();
+const packedFeature = 'rg11b10ufloat-renderable';
+const requestedFormat = process.env.FORGEAX_BLOOM_FILTER_FORMAT;
+if (requestedFormat !== undefined && requestedFormat !== 'rgba16float' && requestedFormat !== 'rg11b10ufloat') {
+  throw new Error('FORGEAX_BLOOM_FILTER_FORMAT must be rgba16float or rg11b10ufloat');
+}
+const packed = requestedFormat === 'rg11b10ufloat' ||
+  (requestedFormat === undefined && adapter.features.has(packedFeature));
+const filterFormat = packed ? 'rg11b10ufloat' : 'rgba16float';
+const device = await adapter.requestDevice({ requiredFeatures: packed ? [packedFeature] : [] });
 
 function align(value, alignment) {
   return Math.ceil(value / alignment) * alignment;
@@ -150,12 +159,12 @@ function textureBytes(width, height) {
 function targetBudget(width, height) {
   const levels = deriveLevels(width, height);
   const levelBytes = levels.reduce((sum, level) => sum + textureBytes(level.width, level.height), 0);
-  const upsampleBytes = levels.reduce((sum, level) => sum + textureBytes(level.width, level.height), 0);
+  const filterBytes = levelBytes / (packed ? 2 : 1);
   return {
     levels,
-    bytes: textureBytes(width, height) + levelBytes + upsampleBytes,
-    targetCount: 1 + 2 * levels.length,
-    passCount: 2 * levels.length + 1,
+    bytes: textureBytes(width, height) + levelBytes + 2 * filterBytes + textureBytes(levels[0].width, levels[0].height),
+    targetCount: 2 + 3 * levels.length,
+    passCount: 3 * levels.length + 2,
   };
 }
 
@@ -169,8 +178,10 @@ function makePipeline(code, fragmentFormat = 'rgba16float') {
   });
 }
 
-const downPipeline = makePipeline(downEntry.wgsl);
-const upPipeline = makePipeline(upEntry.wgsl);
+const reducePipeline = makePipeline(POST_SCENE_COLOR_HALF_WGSL);
+const thresholdPipeline = makePipeline(BLOOM_PREFILTER_WGSL);
+const downPipeline = makePipeline(downEntry.wgsl, filterFormat);
+const upPipeline = makePipeline(upEntry.wgsl, filterFormat);
 const compositePipeline = makePipeline(compositeEntry.wgsl);
 const sampler = device.createSampler({
   minFilter: 'linear',
@@ -210,16 +221,16 @@ async function readTexture(texture, width, height) {
   });
 }
 
-function createTexture(width, height, label) {
+function createTexture(width, height, label, format = 'rgba16float') {
   return device.createTexture({
     label,
     size: { width, height, depthOrArrayLayers: 1 },
-    format: 'rgba16float',
+    format,
     usage: COPY_SRC | COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT,
   });
 }
 
-function pass(encoder, target, pipeline, bindGroup, label) {
+function pass(encoder, target, pipeline, bindGroup, label, group = 0) {
   const render = encoder.beginRenderPass({
     label,
     colorAttachments: [{
@@ -230,7 +241,7 @@ function pass(encoder, target, pipeline, bindGroup, label) {
     }],
   });
   render.setPipeline(pipeline);
-  render.setBindGroup(0, bindGroup);
+  render.setBindGroup(group, bindGroup);
   render.draw(3);
   render.end();
 }
@@ -239,25 +250,8 @@ function bind(pipeline, entries) {
   return device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
 }
 
-function writeDownParams(buffer, offset, width, height, level, threshold, smoothWidth) {
-  device.queue.writeBuffer(buffer, offset, new Float32Array([
-    threshold,
-    smoothWidth,
-    width,
-    height,
-    level,
-    0,
-    0,
-    0,
-  ]));
-}
-
-function writeUpsampleParams(buffer, offset, level) {
-  device.queue.writeBuffer(buffer, offset, new Float32Array([level, 0, 0, 0]));
-}
-
-function writeCompositeParams(buffer, intensity, radius) {
-  device.queue.writeBuffer(buffer, 0, new Float32Array([intensity, radius, 0, 0]));
+function writeParams(buffer, values, offset = 0) {
+  device.queue.writeBuffer(buffer, offset, new Float32Array(values));
 }
 
 function displayChannel(value) {
@@ -454,15 +448,18 @@ function check(name, passValue, detail, checks) {
 async function createRunner(width, height) {
   const source = createTexture(width, height, `bloom-quality-source-${width}x${height}`);
   const budget = targetBudget(width, height);
-  const levels = budget.levels.map((size, level) => ({ ...size, texture: createTexture(size.width, size.height, `bloom-quality-d${level}`) }));
+  const levels = budget.levels.map((size, level) => ({ ...size, texture: createTexture(size.width, size.height, `bloom-quality-d${level}`, filterFormat) }));
+  const reduced = levels.map(({ width, height }, index) => createTexture(width, height, `bloom-quality-seed-${index}`));
+  const thresholded = createTexture(levels[0].width, levels[0].height, 'bloom-quality-prefilter');
+  const thresholdParams = device.createBuffer({ size: 16, usage: 0x40 | BUFFER_COPY_DST });
   const upsample = levels.map((size, level) => ({
     width: size.width,
     height: size.height,
-    texture: createTexture(size.width, size.height, `bloom-quality-u${level}`),
+    texture: createTexture(size.width, size.height, `bloom-quality-u${level}`, filterFormat),
   }));
   const composite = createTexture(width, height, 'bloom-quality-composited');
   const zero = createTexture(width, height, 'bloom-quality-zero');
-  // Extra diagnostic output isolates the five-level contribution at D0 size.
+  // Extra diagnostic output isolates the accumulated contribution at D0 size.
   // Production has one composite; this measurement draw is excluded from cost.
   const measured = createTexture(levels[0].width, levels[0].height, 'bloom-quality-contribution');
   const measureParams = device.createBuffer({ size: COMPOSITE_PARAMS_BYTES, usage: 0x40 | BUFFER_COPY_DST });
@@ -482,37 +479,65 @@ async function createRunner(width, height) {
       { bytesPerRow: upload.bytesPerRow, rowsPerImage: height },
       { width, height, depthOrArrayLayers: 1 },
     );
-    for (const [level, destination] of levels.entries()) {
-      writeDownParams(downParams, level * DOWN_PARAMS_STRIDE, destination.width, destination.height, level, threshold, smoothWidth);
-    }
-    for (let level = 0; level < upsample.length; level += 1) writeUpsampleParams(upParams, level * UPSAMPLE_PARAMS_STRIDE, level);
-    writeCompositeParams(compositeParams, intensity, radius);
-    writeCompositeParams(measureParams, 1, radius);
-
+    const levelCount = options.reconstruction === 'single-scale' ? 1 : (options.quality ?? levels.length);
+    const weights = Array.from({ length: levelCount }, (_, level) => {
+      const base = 1 - level * 0.2;
+      return base * (1 - radius) + (1.2 - base) * radius;
+    });
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    writeParams(thresholdParams, [threshold, smoothWidth, 0, 0]);
+    writeParams(compositeParams, [intensity, 0, 0, 0]);
+    writeParams(measureParams, [1, 0, 0, 0]);
     const encoder = device.createCommandEncoder({ label: 'bloom-quality-frame' });
+    const sources = [];
     let input = source;
-    for (const [level, destination] of levels.entries()) {
+    for (let level = 0; level < levelCount; level++) {
+      const sampled = device.createBindGroup({
+        layout: reducePipeline.getBindGroupLayout(1),
+        entries: [{ binding: 0, resource: input.createView() }],
+      });
+      pass(encoder, reduced[level], reducePipeline, sampled, `bloom-downsample-${level}`, 1);
+      input = reduced[level];
+      if (level === 0 && threshold >= 0) {
+        const thresholdBinding = device.createBindGroup({
+          layout: thresholdPipeline.getBindGroupLayout(1),
+          entries: [
+            { binding: 0, resource: input.createView() },
+            { binding: 2, resource: { buffer: thresholdParams } },
+          ],
+        });
+        pass(encoder, thresholded, thresholdPipeline, thresholdBinding, 'bloom-prefilter', 1);
+        input = thresholded;
+      }
+      sources.push(input);
+    }
+    for (let level = levelCount - 1; level >= 0; level--) {
+      const coarser = level + 1 < levelCount;
+      writeParams(downParams, [level, 0, 0, Number(packed)], level * DOWN_PARAMS_STRIDE);
+      const normalization = packed ? weights.slice(level).reduce((sum, weight) => sum + weight, 0) : totalWeight;
+      const weight = weights[level] / normalization;
+      const coarserWeight = coarser ? (packed ? 1 - weight : 1) : 0;
+      writeParams(upParams, [level, weight, coarserWeight, Number(packed)], level * UPSAMPLE_PARAMS_STRIDE);
       const group = bind(downPipeline, [
-        { binding: 0, resource: input.createView() },
+        { binding: 0, resource: sources[level].createView() },
         { binding: 1, resource: sampler },
-        { binding: 2, resource: { buffer: downParams, offset: level * DOWN_PARAMS_STRIDE, size: 32 } },
+        { binding: 2, resource: { buffer: downParams, offset: level * DOWN_PARAMS_STRIDE, size: 16 } },
       ]);
-      pass(encoder, destination.texture, downPipeline, group, `bloom-horizontal-${level}`);
+      const horizontal = levels[level].texture;
+      pass(encoder, horizontal, downPipeline, group, `bloom-horizontal-${level}`);
       const verticalGroup = bind(upPipeline, [
-        { binding: 0, resource: destination.texture.createView() },
-        { binding: 1, resource: sampler },
-        { binding: 2, resource: { buffer: upParams, offset: level * UPSAMPLE_PARAMS_STRIDE, size: 16 } },
+        { binding: 0, resource: horizontal.createView() },
+        { binding: 1, resource: (coarser ? upsample[level + 1].texture : horizontal).createView() },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: { buffer: upParams, offset: level * UPSAMPLE_PARAMS_STRIDE, size: 16 } },
       ]);
       pass(encoder, upsample[level].texture, upPipeline, verticalGroup, `bloom-vertical-${level}`);
-      input = upsample[level].texture;
     }
-    const contributions = options.reconstruction === 'single-scale'
-      ? [upsample[0].texture, zero, zero, zero, zero]
-      : upsample.map((level) => level.texture);
     const compositeBindings = (scene, params) => bind(compositePipeline, [
-      ...[scene, ...contributions].map((texture, binding) => ({ binding, resource: texture.createView() })),
-      { binding: 6, resource: sampler },
-      { binding: 7, resource: { buffer: params, size: 16 } },
+      { binding: 0, resource: scene.createView() },
+      { binding: 1, resource: upsample[0].texture.createView() },
+      { binding: 2, resource: sampler },
+      { binding: 3, resource: { buffer: params, size: 16 } },
     ]);
     pass(encoder, composite, compositePipeline, compositeBindings(source, compositeParams), 'bloom-composite');
     pass(encoder, measured, compositePipeline, compositeBindings(zero, measureParams), 'bloom-diagnostic-contribution');
@@ -539,6 +564,9 @@ async function createRunner(width, height) {
     run,
     destroy() {
       source.destroy();
+      reduced.forEach((texture) => texture.destroy());
+      thresholded.destroy();
+      thresholdParams.destroy();
       levels.forEach((level) => level.texture.destroy());
       upsample.forEach((level) => level.texture.destroy());
       composite.destroy();
@@ -566,7 +594,7 @@ const evidence = {
   },
   backend: 'dawn-node',
   format: {
-    intermediate: 'rgba16float',
+    intermediate: filterFormat,
     decoded: 'IEEE-754 binary16',
     halfSubnormalStep: HALF_SUBNORMAL_STEP,
     nearZeroRelativeFloor: HALF_RELATIVE_FLOOR,
@@ -662,18 +690,30 @@ try {
   runners.push(dcRunner);
   const dcInput = constantValues(dcRunner.width, dcRunner.height, [2, 1, 0.5]);
   const dcResult = await dcRunner.run(dcInput, { threshold: 0, smoothWidth: 0, radius: 0.7 });
-  let dcGain = 0, throughput = 1;
-  for (const [level, kernelRadius] of [6, 10, 14, 18, 22].entries()) {
-    const sigma = kernelRadius / 3;
-    const weights = Array.from({ length: kernelRadius }, (_, i) => 0.39894 / sigma * Math.exp(-0.5 * (i / sigma) ** 2));
-    throughput *= (2 * weights.reduce((a, b) => a + b) - weights[0]) ** 2;
-    const factor = 1 - 0.2 * level;
-    dcGain += (factor * 0.3 + (1.2 - factor) * 0.7) * throughput;
-  }
-  dcGain /= 3; // the composite normalises the five level weights, which sum to 3
-  const dcExpected = dcResult.bloom.map(() => ({ r: 2 * dcGain, g: dcGain, b: 0.5 * dcGain, a: 1 }));
+  const dcExpected = dcResult.bloom.map(() => ({ r: 2, g: 1, b: 0.5, a: 1 }));
   const dcError = maxRelative(dcResult.bloom, dcExpected);
-  check('constant-field-dc', dcError <= 0.01, { maxRelativeError: dcError, expected: [2 * dcGain, dcGain, 0.5 * dcGain] }, checks);
+  check('constant-field-dc', dcError <= 0.01, { maxRelativeError: dcError, expected: [2, 1, 0.5] }, checks);
+  const peakInput = constantValues(dcRunner.width, dcRunner.height, [65504, 65504, 65504], 0.37);
+  const peak = await dcRunner.run(peakInput, { threshold: -1, radius: 0.7 });
+  const peakChannels = peak.bloom.map(({ r, g, b }) => [r, g, b]);
+  const ceiling = packed ? [65024, 65024, 64512] : [65504, 65504, 65504];
+  check('finite-hdr-attachment-ceiling', peakChannels.every((pixel) =>
+    pixel.every((channel, index) => Number.isFinite(channel) && channel >= 0.97 * ceiling[index] && channel <= ceiling[index])),
+  { ceiling, sample: peakChannels[0] }, checks);
+  const quality = [];
+  for (const levels of [3, 4, 5]) {
+    const impulse = await radialRunner.run(radialInputs, { quality: levels, radius: 0.7 });
+    const dc = await dcRunner.run(dcInput, { quality: levels, threshold: 0, radius: 0.7 });
+    const metric = radialMetric(impulse.bloom, radialD0.width, radialD0.height, radialCenter.x, radialCenter.y, 1, radialMetricOptions);
+    const path = resolve(evidenceDir, `quality-levels-${levels}.png`);
+    writeDisplayPng(path, impulse.composited, impulse.width, impulse.height);
+    evidence.visual.files.push(path);
+    quality.push({ levels, r90: metric.r90, dcError: maxRelative(dc.bloom, dcExpected) });
+  }
+  check('quality-levels-preserve-dc-and-grow-radius', quality.every((value, index) =>
+    value.dcError <= 0.01 && (index === 0 || value.r90 > quality[index - 1].r90),
+  ), { quality }, checks);
+  evidence.qualityLevels = quality;
   evidence.dc = { maxRelativeError: dcError, width: dcRunner.width, height: dcRunner.height };
 
   const intensityRunner = await createRunner(65, 49);
@@ -823,16 +863,17 @@ try {
 
   const cost = {
     descriptorCases: descriptorExtents,
-    parameterBytes: DOWN_PARAMS_BYTES + UPSAMPLE_PARAMS_BYTES + COMPOSITE_PARAMS_BYTES,
+    parameterBytes: DOWN_PARAMS_BYTES + UPSAMPLE_PARAMS_BYTES + COMPOSITE_PARAMS_BYTES + 16,
     parameterBreakdown: {
-      downsample: DOWN_PARAMS_BYTES,
+      horizontal: DOWN_PARAMS_BYTES,
+      threshold: 16,
       upsample: UPSAMPLE_PARAMS_BYTES,
       composite: COMPOSITE_PARAMS_BYTES,
     },
     fixedRunnerResourcePolicy: 'one source + one target set + one parameter-buffer set per runner; run() only uploads and submits',
   };
   evidence.cost = cost;
-  check('rounded-texture-budget', descriptorExtents.every((entry) => entry.passCount === 11 && entry.bytes > 0), cost, checks);
+  check('rounded-texture-budget', descriptorExtents.every((entry) => entry.passCount === 17 && entry.bytes > 0), cost, checks);
 
   evidence.verdict = checks.every((entry) => entry.pass) ? 'pass' : 'fail';
 } catch (error) {

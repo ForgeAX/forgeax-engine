@@ -113,12 +113,18 @@ export interface PendingPipelineOwner {
  * in-flight prepared compilation is remembered as pending, so identical
  * requests skip the build until that owner settles a flight.
  */
-export function requestMaterialPipeline<T extends object>(
+export function requestMaterialPipeline<
+  T extends object,
+  Args extends unknown[],
+  Owner extends object,
+>(
   requests: MaterialPipelineRequestCache<T | PendingMaterialPipelineRequest>,
   facts: readonly Fact[],
   lookupOnly: boolean,
-  build: () => T | null,
-  preparedOwner: () => PendingPipelineOwner | undefined,
+  build: (...args: Args) => T | null,
+  args: Args,
+  owners: WeakMap<Owner, PendingPipelineOwner>,
+  state: Owner,
   observePending = false,
 ): T | null {
   const cached = requests.get(facts);
@@ -129,13 +135,13 @@ export function requestMaterialPipeline<T extends object>(
   else if (lookupOnly) return null;
   // A build may request another pipeline through the reused lookup storage.
   const stored = facts.slice();
-  const answered = preparedOwner()?.pendingAnswers ?? 0;
-  const pipeline = build();
+  const answered = owners.get(state)?.pendingAnswers ?? 0;
+  const pipeline = build(...args);
   if (pipeline !== null) {
     requests.set(stored, pipeline);
     return pipeline;
   }
-  const owner = preparedOwner();
+  const owner = owners.get(state);
   if (owner !== undefined && owner.pendingAnswers !== answered)
     requests.set(stored, new PendingMaterialPipelineRequest(owner));
   return null;
@@ -144,25 +150,6 @@ export function requestMaterialPipeline<T extends object>(
 type RequestArgs<T extends unknown[]> = {
   [K in keyof T]: K extends '15' ? LayoutKind | undefined : T[K];
 };
-
-const formatKeys = new WeakMap<
-  readonly string[],
-  { readonly copy: readonly string[]; readonly key: string }
->();
-
-/** Attachment format lists are pass-owned arrays; join each once while unchanged. */
-function formatsKey(formats: readonly string[]): string {
-  const cached = formatKeys.get(formats);
-  if (cached !== undefined && cached.copy.length === formats.length) {
-    let same = true;
-    for (let index = 0; index < formats.length && same; index++)
-      same = cached.copy[index] === formats[index];
-    if (same) return cached.key;
-  }
-  const key = formats.join(',');
-  formatKeys.set(formats, { copy: formats.slice(), key });
-  return key;
-}
 
 /** Immutable layout/state owners and scalar specialization values determine one request. */
 export function materialPipelineRequestFacts(
@@ -173,7 +160,7 @@ export function materialPipelineRequestFacts(
   /** Reused lookup storage; a stored request must keep its own copy. */
   facts: Fact[] = [],
 ): Fact[] {
-  facts.length = 24;
+  let end = 24;
   for (let index = 0; index < 24; index++) facts[index] = args[index];
   facts[2] = renderStateHash(args[2]);
   facts[4] = pipelineStripIndexFormat(args[3], args[4]);
@@ -181,10 +168,30 @@ export function materialPipelineRequestFacts(
     args[13]?.digest ??
     deriveVertexLayoutProjection(args[7] ?? DEFAULT_VERTEX_ATTRIBUTE_MAP).digest;
   facts[13] = args[13]?.digest;
-  facts[17] = args[17] === undefined ? undefined : formatsKey(args[17]);
+  // Frame-owned attachment sequences contribute their current values to this request.
+  // The count splits the ordered formats from the constant pairs and owner fields.
+  const formats = args[17];
+  const formatCount = formats?.length ?? 0;
+  facts[17] = formats === undefined ? undefined : formatCount;
+  if (formats !== undefined)
+    for (let index = 0; index < formatCount; index++) facts[end++] = formats[index];
   // Constants can be fresh objects or mutated records; compare their current values.
   facts[21] = undefined;
-  if (args[21] !== undefined)
-    for (const key of Object.keys(args[21]).sort()) facts.push(key, args[21][key]);
+  const constants = args[21];
+  if (constants !== undefined) {
+    const keys = Object.keys(constants);
+    // Built-in overrides have equal-width numeric IDs, already in canonical order.
+    for (let i = 1; i < keys.length; i++) {
+      if ((keys[i - 1] as string) > (keys[i] as string)) {
+        keys.sort();
+        break;
+      }
+    }
+    for (const key of keys) {
+      facts[end++] = key;
+      facts[end++] = constants[key];
+    }
+  }
+  facts.length = end;
   return facts;
 }

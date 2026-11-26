@@ -10,6 +10,7 @@
 #import forgeax_view::common::{FullscreenOutput, ditherUnorm8, fullscreen_triangle, linearToSrgbOetf}
 #import forgeax_view::output_encoding::{encodeOutput}
 #import forgeax_view::tone_mapping::{mapTone}
+#import forgeax_view::smaa_blend::{smaaBlend}
 
 // 32-byte layout mirrored by TONEMAP_PARAMS_LAYOUT in tonemap.ts.
 struct TonemapParams {
@@ -28,6 +29,7 @@ struct TonemapParams {
 @group(1) @binding(0) var hdr  : texture_2d<f32>;
 @group(1) @binding(1) var samp : sampler;
 @group(1) @binding(2) var<uniform> params : TonemapParams;
+@group(1) @binding(3) var secondaryImage : texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index : u32) -> FullscreenOutput {
@@ -63,6 +65,24 @@ fn fs_main(in : FullscreenOutput) -> @location(0) vec4<f32> {
   return encodeFinal(mapTonemap(source.rgb), source.a, in.position);
 }
 
+fn sampleSourceWithGlare(position: vec2<f32>) -> vec4<f32> {
+  let scene = sampleOutputSource(position);
+  let glow = textureSampleLevel(secondaryImage, samp, position / params.outputSize, 0.0).rgb;
+  return vec4<f32>(min(scene.rgb + glow, vec3<f32>(65504.0)), scene.a);
+}
+
+@fragment
+fn fs_glare(in: FullscreenOutput) -> @location(0) vec4<f32> {
+  let source = sampleSourceWithGlare(in.position.xy);
+  return encodeFinal(mapTonemap(source.rgb), source.a, in.position);
+}
+
+@fragment
+fn fs_tone_glare(in: FullscreenOutput) -> @location(0) vec4<f32> {
+  let source = sampleSourceWithGlare(in.position.xy);
+  return vec4<f32>(mapTonemap(source.rgb), source.a);
+}
+
 // Premultiplied linear HDR -> premultiplied display output (Three r187).
 // Keep the straight-alpha/native entries and their hot paths independent.
 @fragment
@@ -88,6 +108,12 @@ fn fs_encode_only(in : FullscreenOutput) -> @location(0) vec4<f32> {
   // The final writer consumes linear LDR after LUT and optional FXAA.
   let source = sampleOutputSource(in.position.xy);
   return encodeFinal(source.rgb, source.a, in.position);
+}
+
+@fragment
+fn fs_smaa_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let color = smaaBlend(hdr, secondaryImage, vec2<i32>(in.position.xy));
+  return encodeFinal(color.rgb, color.a, in.position);
 }
 
 @fragment
@@ -118,11 +144,19 @@ fn sampleOutputLut(linearColor : vec3<f32>) -> vec3<f32> {
   return srgbToLinearEotf(textureSampleLevel(outputLut, outputLutSampler, uvw, 0.0).rgb);
 }
 
-@fragment
-fn fs_tone_lut_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  let source = sampleOutputSource(in.position.xy);
+fn toneLutEncode(source: vec4<f32>, position: vec4<f32>) -> vec4<f32> {
   let toned = quantizeToF16(vec4<f32>(mapTonemap(source.rgb), source.a));
   let mapped = sampleOutputLut(toned.rgb);
   let graded = quantizeToF16(vec4<f32>(mix(toned.rgb, mapped, params.lutStrength), toned.a));
-  return encodeFinal(graded.rgb, graded.a, in.position);
+  return encodeFinal(graded.rgb, graded.a, position);
+}
+
+@fragment
+fn fs_tone_lut_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  return toneLutEncode(sampleOutputSource(in.position.xy), in.position);
+}
+
+@fragment
+fn fs_tone_lut_glare_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  return toneLutEncode(sampleSourceWithGlare(in.position.xy), in.position);
 }

@@ -7,6 +7,7 @@ import {
   ANTIALIAS_MSAA,
   ANTIALIAS_TAA,
   Camera,
+  DepthOfField,
   DirectionalLight,
   type FrameReceipt,
   Materials,
@@ -17,12 +18,20 @@ import {
   Skylight,
 } from '@forgeax/engine-render';
 import {
+  attachRecorder,
+  buildFrameModel,
+  decodeTape,
+  summarizePasses,
+} from '@forgeax/engine-rhi-debug';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
+import {
   propagateTransforms,
   scenePlugin,
   Transform,
   WaterBodyInstance,
   WaterZoneInstance,
 } from '@forgeax/engine-scene';
+import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -153,6 +162,20 @@ function visibilityScenario(label: string, lane: 'forward' | 'deferred') {
   };
 }
 
+function countWaterColorChanges(visible: Uint8Array, absent: Uint8Array): number {
+  let changedPixels = 0;
+  for (let offset = 0; offset < visible.length; offset += 4) {
+    if (
+      [0, 1, 2].some(
+        (channel) =>
+          Math.abs((visible[offset + channel] ?? 0) - (absent[offset + channel] ?? 0)) > 8,
+      )
+    )
+      changedPixels++;
+  }
+  return changedPixels;
+}
+
 it.each([
   { mode: 'cpu', lane: 'forward', label: 'cpu' },
   { mode: 'gpu', lane: 'forward', label: 'gpu' },
@@ -177,12 +200,29 @@ it.each([
   let host: RendererHostAssembly | undefined;
   let context: Awaited<ReturnType<typeof createWorldContext>> | undefined;
   let unsubscribe: (() => void) | undefined;
+  const recorder = taa ? value(attachRecorder(webgpu)) : undefined;
+  const options = waterVisibilitySetup(ssr);
   try {
     host = value(
-      await constructRuntimeRendererHost(canvas, waterVisibilitySetup(ssr), {
-        ...forgeaxBundlerAdapter(),
-        importTransport: createRuntimeAssetImportTransport(runtimeBinding),
-      }),
+      await constructRuntimeRendererHost(
+        canvas,
+        {
+          ...options,
+          ...(recorder === undefined
+            ? {}
+            : {
+                rhi: recorder.backend.rhi,
+                rhiInstrumentation: {
+                  resolveSurfaceDevice: (device) =>
+                    ok(value(recorder.backend.unwrapDeviceForSurface(device))),
+                },
+              }),
+        },
+        {
+          ...forgeaxBundlerAdapter(),
+          importTransport: createRuntimeAssetImportTransport(runtimeBinding),
+        },
+      ),
     );
     const { renderer, assets } = host;
     assets.configureRuntimeBinding(runtimeBinding);
@@ -345,19 +385,35 @@ it.each([
     });
     expectWaterTopology(inspection, { lane, compact, ssr, forwardSsr, msaa, motion });
     const state = waterSceneSnapshot(world, water);
+    if (recorder !== undefined) {
+      world.addComponent(camera, { component: DepthOfField, data: { focusDistance: 4 } }).unwrap();
+      await draw();
+      const pending = recorder.captureFrame();
+      value(await recorder.frameBoundary());
+      await draw();
+      value(await recorder.frameBoundary());
+      const frame = buildFrameModel(value(decodeTape(value(await pending).bytes)));
+      const passes = summarizePasses(frame);
+      const dof = passes.find((pass) => pass.label === 'dof-coc');
+      const waterDepth = passes.find((pass) => pass.label === 'water-depth-prepass')?.depthTarget;
+      const binding =
+        dof?.workRange === null || dof === undefined
+          ? undefined
+          : frame.works[dof.workRange[0]]?.bindings.find(
+              (read) => read.groupIndex === 1 && read.binding === 3,
+            );
+      const view = frame.resources.find((resource) => resource.resourceId === binding?.resourceId);
+      expect(waterDepth?.label).toBe('water-prepass-depth');
+      expect(view?.descriptor).toMatchObject({
+        kind: 'createTextureView',
+        sourceHandleId: waterDepth?.textureId,
+      });
+      world.removeComponent(camera, DepthOfField).unwrap();
+    }
     world.despawn(water).unwrap();
     await draw();
     const absent = await readPixels('without-water');
-    let changedPixels = 0;
-    for (let offset = 0; offset < visible.length; offset += 4) {
-      if (
-        [0, 1, 2].some(
-          (channel) =>
-            Math.abs((visible[offset + channel] ?? 0) - (absent[offset + channel] ?? 0)) > 8,
-        )
-      )
-        changedPixels++;
-    }
+    const changedPixels = countWaterColorChanges(visible, absent);
     await commands.writeFile(
       `artifacts/water-mesh-visibility/${label}.json`,
       JSON.stringify(

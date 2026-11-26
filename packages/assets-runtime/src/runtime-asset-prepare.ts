@@ -25,7 +25,6 @@ import { prepareAssetPayload } from './prepare-payload';
 export function prepareRuntimeAsset(
   input: Asset,
   source: (guid: string) => Asset | undefined,
-  meshStorage?: 'render-transfer',
 ): Result<Asset, AssetError | MaterialError> {
   const prepared = prepareAssetPayload(input);
   if (prepared.ok && prepared.value.kind === 'mesh') {
@@ -39,7 +38,7 @@ export function prepareRuntimeAsset(
         }),
       );
     return ok(
-      meshStorage === 'render-transfer' && prepared.value.attributeStorage === 'static-streams'
+      prepared.value.attributeStorage === 'static-streams'
         ? prepared.value
         : interleavedMesh(prepared.value),
     );

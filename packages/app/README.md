@@ -1,5 +1,10 @@
 # @forgeax/engine-app
 
+When an Engine Worker stops on a gameplay system error, the Host exposes
+`app-system-update-failed` with the qualified system name and original cause.
+The World remains poisoned after a possible partial write and must be rebuilt
+before execution resumes. Shared kernel failures retain their kernel name.
+
 ## Engine configuration
 
 Build configuration plugins provide `devkitAppOptions.configuration` through the

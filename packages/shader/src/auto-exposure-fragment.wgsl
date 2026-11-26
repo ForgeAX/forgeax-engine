@@ -14,7 +14,13 @@
   let dimensions = textureDimensions(source, 0);
   let sampleGrid = (dimensions + vec2<u32>(3u)) / vec2<u32>(4u);
   let block = vec2<u32>(position.xy);
-  return classifyExposureBlock(source, parameters, block, dimensions, exposureSampleScale(sampleGrid));
+  return classifyExposureBlock(source, parameters, block, dimensions, exposureSampleScale(sampleGrid), false);
+}
+
+@fragment fn auto_exposure_classify_half(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
+  let dimensions = textureDimensions(source, 0);
+  let sampleGrid = (dimensions + vec2<u32>(1u)) / vec2<u32>(2u);
+  return classifyExposureBlock(source, parameters, vec2<u32>(position.xy), dimensions, exposureSampleScale(sampleGrid), true);
 }
 
 @fragment fn auto_exposure_tile_histogram(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {

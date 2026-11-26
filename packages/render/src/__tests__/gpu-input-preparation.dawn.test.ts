@@ -72,7 +72,7 @@ it('prepares bounded native bytes while the active buffer continues receiving in
     arena.writeDescriptorWord(address, 4, 0, 999);
     candidate.flush(f.device.queue, b, false).unwrap();
     expect(new Uint32Array((await readBuffer(f.device, b, address * 4, 4)).buffer)[0]).toBe(999);
-    expect(writes.mock.calls.map((call) => call[4])).toEqual([16]);
+    expect(writes.mock.calls.map((call) => call[4])).toEqual([4]);
     expect(await f.native.popErrorScope()).toBeNull();
   } finally {
     task.release();

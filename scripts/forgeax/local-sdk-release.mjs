@@ -23,7 +23,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { developmentVersion, releasePolicy } from './release-policy.mjs';
+import { assertReleaseSource, developmentVersion, releasePolicy } from './release-policy.mjs';
 import { SDK_NPM_PACKAGE_NAMES } from './sdk-lib.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -403,13 +403,17 @@ async function resumeCurrentRelease(base, requestedVersion, requestedSha) {
   const state = JSON.parse(await readFile(statePath, 'utf8'));
   if (requestedSha && requestedSha !== state.sourceCommit)
     throw new Error('local-sdk-pinned-source-cannot-change');
-  return { base, version: state.version, sourceCommit: state.sourceCommit, state };
+  return {
+    base,
+    version: state.version,
+    sourceCommit: state.sourceCommit,
+    state,
+  };
 }
 
 async function resumeSelectedVersion(base, version, sourceCommit) {
   if (version === undefined) return undefined;
-  if (releasePolicy(version).channel !== 'next')
-    throw new Error('local-sdk-only-development-channel');
+  assertLocalReleaseChannel(version);
   const statePath = resolve(base, version, 'local-release-state.json');
   if (!(await exists(statePath))) return undefined;
   const state = JSON.parse(await readFile(statePath, 'utf8'));
@@ -421,7 +425,13 @@ async function resumeSelectedVersion(base, version, sourceCommit) {
 async function resolveMainSource(version, requestedSource) {
   await execCapture(
     'git',
-    ['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
+    [
+      'fetch',
+      '--no-tags',
+      '--no-recurse-submodules',
+      'origin',
+      '+refs/heads/main:refs/remotes/origin/main',
+    ],
     { cwd: root, env: releaseEnvironment() },
   );
   const branchTip = git(root, 'rev-parse', 'origin/main');
@@ -451,8 +461,46 @@ async function nextDevelopmentVersion(sourceCommit) {
   return developmentVersion(engineTags.latest, engineTags.next, sourceCommit);
 }
 
+function assertLocalReleaseChannel(version) {
+  const { channel } = releasePolicy(version);
+  if (channel !== 'next' && (channel !== 'rc' || has('legacy-sdk')))
+    throw new Error('local-engine-release-channel-unsupported');
+  return channel;
+}
+
+async function resolveRcSource(version, sourceCommit) {
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit ?? ''))
+    throw new Error('local-engine-rc-full-source-sha-required');
+  await execCapture(
+    'git',
+    [
+      'fetch',
+      '--no-tags',
+      '--no-recurse-submodules',
+      'origin',
+      '+refs/heads/rc:refs/remotes/origin/rc',
+      '+refs/heads/stable:refs/remotes/origin/stable',
+    ],
+    { cwd: root, env: releaseEnvironment() },
+  );
+  const tips = {
+    rc: git(root, 'rev-parse', 'origin/rc'),
+    stable: git(root, 'rev-parse', 'origin/stable'),
+  };
+  assertReleaseSource(
+    version,
+    sourceCommit,
+    tips,
+    (ancestor, descendant) =>
+      spawnSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
+        cwd: root,
+      }).status === 0,
+  );
+  git(root, 'cat-file', '-e', `${sourceCommit}:scripts/forgeax/engine-authoring-package.mjs`);
+  return { sourceCommit, branchTip: tips.rc };
+}
+
 function assertVersionSource(version, sourceCommit) {
-  releasePolicy(version);
   if (!version.endsWith(`.${sourceCommit.slice(0, 12)}`)) {
     throw new Error('local-sdk-version-source-mismatch');
   }
@@ -466,9 +514,18 @@ async function selectRelease() {
   const requestedVersion = option('version');
   const requestedSha = option('source-sha');
   const current = await resumeCurrentRelease(base, requestedVersion, requestedSha);
-  if (current) return current;
-  const existing = await resumeSelectedVersion(base, requestedVersion, requestedSha);
-  if (existing) return existing;
+  const previous = current ?? (await resumeSelectedVersion(base, requestedVersion, requestedSha));
+  const selectedVersion = previous?.version ?? requestedVersion;
+  if (selectedVersion && assertLocalReleaseChannel(selectedVersion) === 'rc') {
+    const source = await resolveRcSource(selectedVersion, previous?.sourceCommit ?? requestedSha);
+    return {
+      base,
+      version: selectedVersion,
+      ...source,
+      state: previous?.state,
+    };
+  }
+  if (previous) return previous;
 
   const { sourceCommit, branchTip } = await resolveMainSource(requestedVersion, requestedSha);
   const version = requestedVersion || (await nextDevelopmentVersion(sourceCommit));
@@ -484,12 +541,13 @@ async function createRun(selection) {
     if (entries.length > 0) throw new Error(`local-sdk-run-directory-unlocked: ${runRoot}`);
   }
   await mkdir(runRoot, { recursive: true });
+  const policy = releasePolicy(selection.version);
   const state = selection.state ?? {
     schemaVersion: 1,
     localRunId: randomUUID(),
     version: selection.version,
-    channel: 'next',
-    sourceBranch: 'main',
+    channel: policy.channel,
+    sourceBranch: policy.branch,
     sourceCommit: selection.sourceCommit,
     sourceBranchTipAtSelection: selection.branchTip ?? selection.sourceCommit,
     witnessCommit: option('witness-sha') ?? selection.sourceCommit,
@@ -507,7 +565,8 @@ async function createRun(selection) {
   if (
     state.version !== selection.version ||
     state.sourceCommit !== selection.sourceCommit ||
-    state.channel !== 'next'
+    state.channel !== policy.channel ||
+    state.sourceBranch !== policy.branch
   )
     throw new Error('local-sdk-run-lock-mismatch');
   state.worktreesRoot ??= resolve(
@@ -558,14 +617,14 @@ async function materializePinnedSource(run, worktree, relativePath, repository) 
     `pin-${label}-fetch`,
     'git',
     ['-C', path, 'fetch', '--quiet', '--depth=1', 'origin', commit],
-    { cwd: worktree, env: releaseEnvironment() },
+    { cwd: worktree, env: releaseEnvironment(), githubAuth: true },
   );
   await runCommand(
     run,
     `pin-${label}-checkout`,
     'git',
     ['-C', path, 'checkout', '--quiet', '--detach', 'FETCH_HEAD'],
-    { cwd: worktree },
+    { cwd: worktree, env: releaseEnvironment(), githubAuth: true },
   );
   if (git(path, 'rev-parse', 'HEAD') !== commit)
     throw new Error(`local-sdk-pinned-source-mismatch: ${relativePath}`);
@@ -600,6 +659,9 @@ async function ensureLaneWorktree(run, name, path) {
 }
 
 async function prepareWorktreeSubmodules(run, name, path, stateKey) {
+  // The Engine tarball uses the audited template resources and canonical kit.
+  // Only the historical SDK build lane needs the contributor asset repository.
+  if (name === 'build' && !has('legacy-sdk')) return;
   if (!(await exists(resolve(path, '.gitmodules')))) return;
   const submodulePaths = name === 'mirror' ? undefined : (SUBMODULES_BY_LANE[name] ?? []);
   if (submodulePaths !== undefined && submodulePaths.length === 0) return;
@@ -608,6 +670,7 @@ async function prepareWorktreeSubmodules(run, name, path, stateKey) {
   await runCommand(run, `${stateKey}.submodules`, 'git', submoduleArgs, {
     cwd: path,
     env: releaseEnvironment(),
+    githubAuth: true,
   });
 }
 
@@ -620,6 +683,7 @@ async function prepareWorktreeLfs(run, name, path, stateKey) {
   await runCommand(run, `${stateKey}.lfs`, 'git', ['lfs', 'pull'], {
     cwd: path,
     env: releaseEnvironment(),
+    githubAuth: true,
   });
 }
 
@@ -633,6 +697,7 @@ async function prepareMirrorSubmoduleLfs(run, name, path, stateKey) {
     {
       cwd: path,
       env: releaseEnvironment(),
+      githubAuth: true,
     },
   );
 }
@@ -827,7 +892,7 @@ async function prepareNativeInputs(run) {
           `rapier-${dimension}-hydrate`,
           process.execPath,
           ['scripts/ci/rapier-release-payload.mjs', '--hydrate', dimension],
-          { cwd: native, env },
+          { cwd: native, env, githubAuth: true },
         );
         await runCommand(run, `rapier-${dimension}-verify-hydrated`, process.execPath, verifyArgs, {
           cwd: native,
@@ -869,7 +934,7 @@ async function prepareNativeInputs(run) {
           'ui-blitz-ensure',
           process.execPath,
           ['packages/ui-blitz/scripts/ensure-wasm.mjs'],
-          { cwd: native, env },
+          { cwd: native, env, githubAuth: true },
         );
       } catch {}
       try {
@@ -904,7 +969,7 @@ async function prepareNativeInputs(run) {
       'wgpu-wasm-fetch',
       'pnpm',
       ['-F', '@forgeax/engine-wgpu-wasm', 'fetch-wasm'],
-      { cwd: native, env },
+      { cwd: native, env, githubAuth: true },
     );
   } catch {}
   try {
@@ -937,7 +1002,7 @@ async function prepareNativeInputs(run) {
       `${owner}-wasm-ensure`,
       process.execPath,
       [`packages/${owner}/scripts/ensure-wasm.mjs`],
-      { cwd: native, env },
+      { cwd: native, env, githubAuth: true },
     );
   }
   const availableInputs = [];
@@ -995,7 +1060,7 @@ async function mountSharedSubmodule(run, sourceLaneName, targetLaneName, relativ
       `shared-${targetLaneName}-${relativePath.replaceAll('/', '-')}`,
       'git',
       ['-C', source, 'worktree', 'add', '--detach', target, expectedCommit],
-      { cwd: source, env: releaseEnvironment() },
+      { cwd: source, env: releaseEnvironment(), githubAuth: true },
     );
   }
   if (git(target, 'rev-parse', 'HEAD') !== expectedCommit) {
@@ -1912,6 +1977,7 @@ async function runPromotion(run, { preflightOnly = false } = {}) {
 }
 
 async function runEngineRelease(run, stage) {
+  const policy = releasePolicy(run.version);
   const script = resolve(root, 'scripts/forgeax/engine-package-release.mjs');
   const candidateArgs = [run.candidateRoot, run.version, run.sourceCommit];
   const candidateFile = resolve(run.candidateRoot, 'engine-candidate.json');
@@ -1973,7 +2039,7 @@ async function runEngineRelease(run, stage) {
     await saveState(run);
     await mkdir(proofDir, { recursive: true });
     const githubToken = await ensureGitHubAuth();
-    const mirrorEnabled = await sourceMirrorEnabled();
+    const mirrorEnabled = policy.mirror !== null && (await sourceMirrorEnabled());
     const preflight = resolve(proofDir, 'public-source-preflight.json');
     const projection = resolve(run.root, 'public-source');
     if (mirrorEnabled) {
@@ -2067,7 +2133,7 @@ async function runEngineRelease(run, stage) {
       },
       () => exists(releaseProof),
     );
-    await registryStep('engine-npm-next', resolve(proofDir, 'npm-promotion.json'), [
+    await registryStep(`engine-npm-${policy.tag}`, resolve(proofDir, 'npm-promotion.json'), [
       'promote',
       ...candidateArgs,
       npmProof,
@@ -2135,7 +2201,7 @@ async function main() {
   if (nodeBootstrap === 'reexecuted') return;
   if (has('help')) {
     process.stdout.write(
-      'Usage: pnpm sdk:release:local -- [--version <dev-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>] [--worktrees <path>]\n',
+      'Usage: pnpm sdk:release:local -- [--version <dev-or-rc-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>] [--worktrees <path>]\n',
     );
     return;
   }

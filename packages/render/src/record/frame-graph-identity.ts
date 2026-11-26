@@ -9,15 +9,13 @@ function nativeGradeCamera(camera: RenderPipelineTopology['camera'], observeLine
   const {
     bloomIntensity: _intensity,
     tonemap,
-    chromaticAberration,
+    chromaticAberration: _fringe,
     lensEffects: _lens,
     ...stages
   } = camera;
   return {
     ...stages,
     tonemap: tonemap === 'none' ? 'none' : 'linear',
-    chromaticAberration:
-      camera.lensFlare === true && camera.postProcessing !== false && chromaticAberration === true,
     lensEffects: nativeGradeOverlaysLinearImage(camera, observeLinear),
   };
 }
@@ -93,6 +91,7 @@ export function frameGraphTopologyIdentity(
         ? undefined
         : {
             autoExposure: topology.output.autoExposure,
+            autoExposureHalfRes: topology.output.autoExposureHalfRes === true,
             whiteBalance: nativeGrade ? undefined : topology.output.whiteBalance,
             colorLut: topology.output.colorLut,
             lutSize: topology.output.lutSize,

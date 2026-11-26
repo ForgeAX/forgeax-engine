@@ -1,13 +1,23 @@
 import { vec3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
-import { MaterialResource } from '../../material-resource';
-import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
+import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
+import type { RenderResourceScope } from '../../publication/resource-scope';
+import { makeZeroCameraFallbackSnapshot } from '../../record/frame-snapshot';
+import type {
+  ExtractedFrame,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../../render-system-extract';
 import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
+import * as drawEntries from '../../scene/dispatch-entry';
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialDispatch } from '../../scene/material-dispatch';
 import { SceneDrawSlot } from '../../scene/mesh-draw';
+import { cullPersistentFrame, type ViewCullStorage } from '../../scene/persistent-cull';
 import { RenderScene } from '../../scene/render-scene-view';
 import { SceneSlots } from '../../scene/scene-slots';
+import { TransparentSortCache } from '../../systems/transparent-dispatch';
 import { resolveTransparencyView } from '../view';
 
 function material(handle: number, transparent: boolean): MaterialSnapshot {
@@ -245,4 +255,92 @@ it('revisits only changed Pass work of a sorted view across frames of unique mat
   edited.adopt({ ...edited.snapshot, transparent: true });
   owner.adopt(edited);
   expect(resolve()).toEqual({ sortedDrawCount: 2, reads: 1 });
+});
+
+it('sorts only culled transparent members and counts their accepted pass across pose changes', () => {
+  const projection = new RenderScene();
+  const owner = new MaterialDispatch();
+  const solid = new MaterialResource(captureMaterialSnapshot(material(1, false)));
+  const glass = new MaterialResource(captureMaterialSnapshot(material(2, true)));
+  const base = receiptRow().source;
+  const sorter = new TransparentSortCache();
+  const scope = { transparentSort: { mode: 0, yzAlpha: 1 } } as RenderResourceScope;
+  for (let id = 0; id < 128; id++) {
+    const resource = id % 5 === 0 ? glass : solid;
+    const world = base.transform.world.slice();
+    world[14] = -(id % 23);
+    const snapshot = {
+      ...base,
+      entityKey: id,
+      material: resource,
+      materials: [resource],
+      transform: { world },
+      ...(id % 11 === 0 ? { skinBinding: { skeleton: 1, joints: [1] } } : {}),
+    };
+    projection.apply([{ kind: 'update', entityKey: id, snapshot }]);
+    const row = projection.slot(id);
+    if (!row) throw Error('missing row');
+    owner.bind(row.slot, snapshot);
+  }
+  const materialFrame = owner.materials();
+  const memo: ViewCullStorage = { value: undefined };
+  const issue = vi.spyOn(drawEntries, 'dispatchEntry');
+  try {
+    for (let tick = 0; tick < 3; tick++) {
+      const frame = {
+        cameras: [makeZeroCameraFallbackSnapshot()],
+        renderables: projection.materializeTemporal({ hits: 0, misses: 0 }, materialFrame),
+        dispatch: owner.query(projection.slotsSnapshot()),
+      } as ExtractedFrame;
+      const selected = cullPersistentFrame(
+        frame,
+        materialFrame,
+        undefined,
+        memo,
+        undefined,
+        undefined,
+        projection,
+        tick,
+        undefined,
+        (row, out) => {
+          const x = (row.entityKey + tick) % 3 === 0 ? 150 : 0;
+          out.set([x, 0, -9, x + 1, 1, -8]);
+          return true;
+        },
+      ).frame;
+      issue.mockClear();
+      const ordered = sorter.sort(selected.dispatch, scope, frame.cameras, selected.renderables);
+      expect(ordered).not.toBe(selected.dispatch);
+      const callsAfterSort = issue.mock.calls.length;
+      expect(callsAfterSort).toBeLessThan(26);
+      const views = (['sorted', 'weighted-blended'] as const).map((requested) => {
+        const input = {
+          renderables: selected.renderables,
+          materialFrame,
+          requested,
+          dispatch: ordered,
+          rgba16floatRenderable: true,
+        };
+        return { input, result: resolveTransparencyView(input) };
+      });
+      expect(issue).toHaveBeenCalledTimes(callsAfterSort);
+      const flat = new TransparentSortCache().sort(
+        selected.dispatch.slice(),
+        scope,
+        frame.cameras,
+        selected.renderables,
+      );
+      expect(ordered.slice()).toEqual(flat);
+      expect([...ordered]).toEqual(flat);
+      expect(ordered.at(-1)).toBe(flat.at(-1));
+      for (const { input, result } of views) {
+        expect(result).toEqual(resolveTransparencyView({ ...input, dispatch: flat }));
+        expect(
+          resolveTransparencyView({ ...input, renderables: [] }).inspection.sortedDrawCount,
+        ).toBe(0);
+      }
+    }
+  } finally {
+    issue.mockRestore();
+  }
 });

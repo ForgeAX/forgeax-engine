@@ -1268,6 +1268,24 @@ describe('GpuScene', () => {
     expect(residentTransforms(queue, created.scene).current(1)).toBe(3);
     created.scene.commitFrame().unwrap();
     expect(residentTransforms(queue, created.scene).previous(1)).toBe(3);
+    created.scene
+      .sync(
+        projection.apply([{ kind: 'update', entityKey: 0, world: snapshot(0, 4).transform.world }]),
+      )
+      .unwrap();
+    // A second publication before submit changes an earlier matrix lane. It keeps the
+    // first submitted pose and uploads only the already-stamped current row.
+    const next = snapshot(0, 5).transform.world.slice();
+    next[0] = -1;
+    const repeated = projection.apply([{ kind: 'update', entityKey: 0, world: next }]);
+    expect(created.scene.sync(repeated).unwrap().bytes).toBe(GPU_SCENE_LAYOUTS.transform.stride);
+    const poses = residentTransforms(queue, created.scene);
+    expect([
+      poses.previous(1, 0),
+      poses.previous(1),
+      poses.current(1, 0),
+      poses.current(1),
+    ]).toEqual([1, 3, -1, 5]);
   });
 
   it('keeps static shadow changes empty while flushing committed temporal flags', () => {
@@ -2277,7 +2295,8 @@ it('uploads one shared geometry descriptor for 2048 mesh users without rewriting
     const reads = scene.inputs.capture();
     const inputBuffer = reads.buffer().unwrap().buffer;
     reads.release();
-    expect(scene.inputs.uploadBytes - beforeUpload).toBe(32);
+    // Only the six bounds words changed across the 2048 users of this descriptor.
+    expect(scene.inputs.uploadBytes - beforeUpload).toBe(6 * Float32Array.BYTES_PER_ELEMENT);
     expect(queue.writes).toHaveLength(1);
     const descriptor = scene.geometryIndexForResource(9);
     if (descriptor === undefined) throw new Error('missing shared geometry');
@@ -2385,6 +2404,37 @@ it('re-pins a resolved geometry version only while it remains current', () => {
   }
 });
 
+it('rejects old pins after reading a replacement that reuses the same physical mesh address', () => {
+  const available = GpuScene.create(createDevice(new RecordingQueue()), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const before = new MeshFrame().with(9, BUILTIN_CUBE);
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes: before }).unwrap();
+    const first = scene.captureResources().unwrap();
+    const descriptor = first.indexForGeometry(9, before.get(9));
+    expect(descriptor).toBeDefined();
+    const pins = first.pins?.();
+    if (!pins) throw new Error('missing pins');
+    first.release();
+    const after = before.with(9, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-8, -1, -1, 1, 1, 1]),
+    });
+    scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
+    const current = scene.captureResources().unwrap();
+    try {
+      expect(current.indexForGeometry(9, after.get(9))).toBe(descriptor);
+      expect(current.adoptPins?.(pins)).toBe(false);
+    } finally {
+      current.release();
+    }
+  } finally {
+    scene.dispose();
+  }
+});
+
 it('keeps published pin rosters fixed when their source or a borrowing frame reads another mesh', () => {
   const available = GpuScene.create(createDevice(new RecordingQueue()), 32).unwrap();
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
@@ -2472,6 +2522,45 @@ it('keeps entity tables stable while old frames hold distinct shared mesh versio
     for (const frame of held) frame.release();
     scene.dispose();
   }
+});
+
+it('releases replaced table generations independently while multiple readers share physical storage', () => {
+  const device = createDevice(new RecordingQueue());
+  const made = GpuScene.create(device, 4).unwrap();
+  assert(made.status === 'available');
+  const scene = made.scene;
+  const projection = new RenderScene();
+  scene.sync(projection.apply([updateSnapshot(snapshot(0))])).unwrap();
+  const destroyed = vi.spyOn(device, 'destroyBuffer');
+  const first = scene.captureResources().unwrap();
+  first.inputReads();
+  const original = scene.primitiveBuffer;
+  const shared = scene.materialBuffer;
+  const across = scene.captureResources().unwrap();
+  const reads = across.inputReads();
+  const firstIdentity = scene.tableBindingIdentity;
+  scene
+    .sync(projection.apply(Array.from({ length: 32 }, (_, i) => updateSnapshot(snapshot(i + 1)))))
+    .unwrap();
+  const secondIdentity = scene.tableBindingIdentity;
+  expect(secondIdentity).not.toBe(firstIdentity);
+  expect(scene.materialBuffer).toBe(shared);
+  expect(across.inputReads()).toBe(reads);
+  expect(scene.readHoldsTableRoot(reads, firstIdentity)).toBe(true);
+  expect(scene.readHoldsTableRoot(reads, secondIdentity)).toBe(true);
+  const newer = scene.captureResources().unwrap();
+  newer.inputReads();
+  const grown = scene.primitiveBuffer;
+  scene.dispose();
+  across.release();
+  expect(destroyed).not.toHaveBeenCalledWith(original);
+  expect(destroyed).not.toHaveBeenCalledWith(grown);
+  newer.release();
+  expect(destroyed).toHaveBeenCalledWith(grown);
+  expect(destroyed).not.toHaveBeenCalledWith(shared);
+  first.release();
+  expect(destroyed.mock.calls.filter(([buffer]) => buffer === shared)).toHaveLength(1);
+  expect(destroyed.mock.calls.filter(([buffer]) => buffer === original)).toHaveLength(1);
 });
 
 it('retires unheld tables with a disposed scene and held tables at frame release', () => {

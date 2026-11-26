@@ -9,6 +9,7 @@ import {
 } from '@forgeax/engine-ecs';
 import { observeStateChanges } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
+import { interleavedMesh } from '@forgeax/engine-geometry';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
   BLOOM_ENABLED,
@@ -112,7 +113,10 @@ import {
   pointContentEdit,
   projectGeometry,
   readPointContent,
+  recordGeometryRanges,
   repackPointContent,
+  restoreRigidVertexEdits,
+  rigidVertexEdits,
 } from './geometry';
 import { InstanceTints, instanceGeometryValues, tintInstanceGeometry } from './instance-geometry';
 import {
@@ -225,6 +229,7 @@ import {
   trackableViewDraw,
   useTextures,
   uvTextures,
+  watchDrawMaterials,
 } from './scene-mesh-planning';
 import {
   createScenePreparation,
@@ -250,6 +255,7 @@ import {
   type MutableWalkMembers,
   SceneMeshPlans,
   SceneWalkRows,
+  SourcePoseEdits,
   type WalkMembers,
 } from './scene-walk';
 import { type ShadowLight, ShadowUpdates, shadowCasterChannels } from './shadow';
@@ -279,6 +285,7 @@ import { ownSourceValue } from './source-fields';
 import {
   reflectSourceWorldPose,
   resolveSourceLocalPose,
+  sourceWorldMatrixRow,
   sourceWorldRevision,
 } from './source-world-pose';
 import { SpritePoseReader, spriteMatrix } from './sprite';
@@ -292,7 +299,6 @@ import {
 } from './texture';
 import { TextureStorage } from './texture-storage';
 import { MeshUvs, type UvProjection } from './uv-projection';
-import { worldMatrixRow } from './world-matrix-storage';
 
 export interface ThreeSourceIdentity {
   readonly uuid: string;
@@ -721,6 +727,8 @@ export class SceneProjection {
       ).unwrap();
       for (const store of this.resourceStores) store.commit(!buffers.deferResourceSweep);
       commitScene();
+      if (frame.geometryRangeReceipts)
+        for (const consume of frame.geometryRangeReceipts.values()) consume();
       this.publishViewDrawOrder(frame);
       if (
         tracked &&
@@ -965,6 +973,7 @@ export class SceneProjection {
     page: SourcePosePage,
   ): void {
     const values = page.values;
+    const repairs = nodes instanceof SourcePoseEdits ? nodes.matrixRepairs : undefined;
     let offset = 0;
     for (const object of nodes) {
       if (offset >= page.used) throw new Error('Source pose did not pass validation');
@@ -981,7 +990,7 @@ export class SceneProjection {
       }
       if (
         object.matrixAutoUpdate &&
-        (changed || !frame.changes || frame.changes.matrixRepairs.has(object))
+        (changed || repairs === undefined || repairs.get(object) === 'local')
       )
         this.writeSourceLocalMatrix(object, values, offset);
       offset += POSE_LANES;
@@ -1031,19 +1040,19 @@ export class SceneProjection {
   }
 
   private reflectWorldPoses(frame: ScenePreparation, nodes: WalkMembers): boolean {
-    const { camera, changes } = frame;
+    const { camera } = frame;
     const cursor = this.ecsPoseChanges;
     if (cursor === undefined) return false;
-    if (changes === undefined) {
+    if (!(nodes instanceof SourcePoseEdits)) {
       for (const object of nodes) this.reflectWorldPose(this.nodes.get(object), camera);
       cursor.resetBaseline();
       return true;
     }
     // Stock automatic updates overwrite external edits to the cached matrices.
     // A cache-only edit still needs repair if Scene's derived pose was unchanged.
-    const edits = changes.matrixRepairs;
+    const edits = nodes.matrixRepairs;
     let changed = edits.size !== 0;
-    for (const object of edits) this.reflectWorldPose(this.nodes.get(object), camera);
+    for (const object of edits.keys()) this.reflectWorldPose(this.nodes.get(object), camera);
     if (!cursor.isCurrent()) {
       const batch = cursor.read();
       for (const slot of batch.indices) {
@@ -1054,7 +1063,6 @@ export class SceneProjection {
       }
       batch.accept();
     }
-    if (edits.size) edits.clear();
     return changed;
   }
 
@@ -1062,19 +1070,14 @@ export class SceneProjection {
     if (record === undefined) return;
     const object = record.object;
     const elements = object.matrixWorld.elements;
-    const target = sourceCollectionStorage(elements);
-    if (target.length < 16) target.length = 16;
-    const row = worldMatrixRow(target);
+    const row = sourceWorldMatrixRow(object, elements);
+    const target = row?.view ?? sourceCollectionStorage(elements);
+    if ((row?.dense ?? target).length < 16) target.length = 16;
     const entity = record.sourcePose?.entity ?? record.entity;
     if (!this.presentationReader.locate(entity)) return;
     const { values, offset } = this.presentationReader;
-    // Resolve the destination after the ECS read. Authored setters may reenter this reader.
-    const lanes = row?.lanes;
-    if (lanes !== undefined) {
-      for (let i = 0; i < 16; i++) lanes[i] = values[offset + i] as number;
-    } else {
-      for (let i = 0; i < 16; i++) target[i] = values[offset + i] as number;
-    }
+    if (row !== undefined) row.writePresentation(values, offset);
+    else for (let i = 0; i < 16; i++) target[i] = values[offset + i] as number;
     object.matrixWorldNeedsUpdate = false;
     if (object !== camera && object instanceof Camera) this.reflectCameraView(object);
     reflectSourceWorldPose(object);
@@ -2395,15 +2398,49 @@ export class SceneProjection {
     )
       return undefined;
     const values = observeGeometry(frame, geometry.source, structure.grouped);
-    const asset = this.readMeshGeometry(frame, geometry, values, () => ({
-      payload: projectGeometry(
-        geometry.source,
-        structure.grouped,
-        structure.selection,
-        structure.topology,
-        uv.attributes,
-      ).unwrap(),
-    }));
+    const asset = this.readMeshGeometry(frame, geometry, values, () => {
+      const retained = this.geometry.previous(sourceGeometry, geometry.variant);
+      if (retained)
+        frame.geometryRangeReceipts = recordGeometryRanges(
+          sourceGeometry,
+          retained.values,
+          values,
+          frame.geometryRangeReceipts,
+        );
+      if (retained && !structure.generatedUvChannels.length) {
+        const records = runtimeAssets(this.assets);
+        const payload = records.resolveStoredAsset<MeshAsset>(retained.handle).unwrap();
+        const ranges = rigidVertexEdits(
+          sourceGeometry,
+          retained.values,
+          values,
+          structure.selection,
+          payload,
+          records.maxRangesPerAsset,
+        );
+        if (ranges !== undefined)
+          return {
+            payload,
+            edit: {
+              ranges,
+              base: retained.values,
+              recover: (base) => restoreRigidVertexEdits(base, ranges),
+            },
+          };
+      }
+      return {
+        payload: projectGeometry(
+          sourceGeometry,
+          structure.grouped,
+          structure.selection,
+          structure.topology,
+          uv.attributes,
+          false,
+          undefined,
+          'static-streams',
+        ).unwrap(),
+      };
+    });
     if (asset.payload === undefined || asset.payload.morphTargets !== undefined) return undefined;
     for (const use of materials) this.admitMaterialUse(frame, object, use);
     return {
@@ -2473,7 +2510,7 @@ export class SceneProjection {
       acceptedValues: published?.values,
       payload: projection?.payload,
       sourceData: projection?.sourceData,
-      pointEdit: projection?.pointEdit,
+      edit: projection?.edit,
       handle: undefined,
     };
     if (projection !== undefined && geometry.structure.shared) {
@@ -2519,10 +2556,15 @@ export class SceneProjection {
           (payload.attributes.color !== undefined) !== (content.color !== undefined)
         )
           return;
+        const edit = pointContentEdit(content, channels);
         return {
           payload,
           sourceData: POINT_CONTENT,
-          pointEdit: { ...pointContentEdit(content, channels), base: accepted.values },
+          edit: {
+            ranges: edit.ranges,
+            base: accepted.values,
+            recover: (base) => repackPointContent(edit.content, base, geometry.source, channels),
+          },
         };
       },
     );
@@ -2594,7 +2636,11 @@ export class SceneProjection {
         object,
         geometry.source,
         shape,
-        shape.instanceTint === undefined,
+        shape.instanceTint !== undefined
+          ? false
+          : shape.flatMatcap.size > 0
+            ? true
+            : 'static-streams',
       );
       if (base !== undefined && shape.instanceTint !== undefined)
         base = tintInstanceGeometry(base, shape.instanceTint);
@@ -3200,12 +3246,12 @@ export class SceneProjection {
     if (asset.handle !== undefined) return;
     if (asset.payload === undefined) throw new Error('admitted mesh has no geometry');
     const cache = this.geometry;
-    const pointEdit = asset.pointEdit;
+    const edit = asset.edit;
     const retained = cache.previous(geometry.source, geometry.variant);
-    if (pointEdit !== undefined && retained?.values === pointEdit.base) {
-      if (pointEdit.ranges.length !== 0) {
+    if (edit !== undefined && retained?.values === edit.base) {
+      if (edit.ranges.length !== 0) {
         frame.meshRanges ??= [];
-        frame.meshRanges.push({ handle: retained.handle, input: pointEdit.ranges });
+        frame.meshRanges.push({ handle: retained.handle, input: edit.ranges });
       }
       cache.editSignature(geometry.source, geometry.variant, asset.values);
       asset.handle = retained.handle;
@@ -3221,15 +3267,14 @@ export class SceneProjection {
       asset.handle = cached.handle;
       return;
     }
-    const payload =
-      pointEdit === undefined
-        ? asset.payload
-        : repackPointContent(pointEdit.content, asset.payload, geometry.source, pointEdit.channels);
-    if (payload === undefined) throw new Error('point content layout changed during publication');
+    const payload = edit === undefined ? asset.payload : edit.recover(asset.payload);
+    if (payload === undefined) throw new Error('mesh content layout changed during publication');
     const entry = cache.write(
       geometry.source,
       asset.values,
-      payload,
+      // CPU projection is complete. Publish its packed bytes once so asset
+      // admission never captures a second vertex-sized set of source channels.
+      payload.attributeStorage === 'static-streams' ? payload : interleavedMesh(payload),
       geometry.variant,
       asset.sourceData,
     );
@@ -4040,38 +4085,6 @@ export class SceneProjection {
       validateLight(object);
     }
   }
-}
-
-function watchDrawMaterials(
-  changes: SceneChanges,
-  node: Renderable,
-  plan: MeshPlan,
-  native: boolean,
-  nativeSkin: boolean,
-): boolean {
-  for (const use of plan.materials) {
-    const direct =
-      !native &&
-      (use.effective === use.source || hasSurfaceBinding(use.source)) &&
-      !use.skinProgram &&
-      ((Object.getPrototypeOf(node) === Mesh.prototype && !Array.isArray(node.material)) ||
-        (node instanceof Sprite && plan.uv?.values.length === 0) ||
-        (use.coordinates.size === 0 && useTextures(use).length === 0));
-    if (
-      !changes.watchUse(
-        node,
-        use.source,
-        use.variant,
-        use.shading,
-        !native,
-        direct,
-        direct || nativeSkin ? use.coordinates : undefined,
-        use.skinProgram,
-      )
-    )
-      return false;
-  }
-  return true;
 }
 
 function releaseMeshCache(record: NodeRecord): void {

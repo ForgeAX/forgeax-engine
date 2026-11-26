@@ -111,31 +111,35 @@ export function materialSourceScope(
 ): RenderResourceScope {
   if (source === undefined) return scope;
   let owners = scopes.get(source);
-  if (owners === undefined) {
-    owners = new WeakMap();
-    scopes.set(source, owners);
-  }
-  const previous = owners.get(scope);
+  const previous = owners?.get(scope);
   if (previous !== undefined) return previous;
-  const assets = new Map(
-    source.assets.map((asset) => {
-      if (asset.value !== undefined) return [asset.handle, asset] as const;
+  type SourceAsset = MaterialSourceSnapshot['assets'][number];
+  let single: SourceAsset | undefined;
+  const assets = source.assets.length > 1 ? new Map<number, SourceAsset>() : undefined;
+  let guids: Map<string, number> | undefined;
+  let complete = true;
+  for (const entry of source.assets) {
+    let asset = entry;
+    if (asset.value === undefined) {
       const resolved = resolveVersion?.(asset.handle, asset.revision);
       const fallback =
         resolved === undefined ? scope.resolveAsset(asset.handle, asset.revision) : undefined;
       const value = resolved ?? (fallback?.ok === true ? fallback.value : undefined);
-      return [asset.handle, value === undefined ? asset : { ...asset, value }] as const;
-    }),
-  );
-  const guids = new Map(
-    source.assets.flatMap((asset) =>
-      asset.source === undefined ? [] : [[asset.source.guid.toLowerCase(), asset.handle] as const],
-    ),
-  );
+      if (value === undefined) complete = false;
+      else asset = { ...asset, value };
+    }
+    if (assets === undefined) single = asset;
+    else assets.set(asset.handle, asset);
+    if (asset.source !== undefined) {
+      guids ??= new Map();
+      guids.set(asset.source.guid.toLowerCase(), asset.handle);
+    }
+  }
+  const rowFor = (handle: number) => (single?.handle === handle ? single : assets?.get(handle));
   const fixed: RenderResourceScope = {
     ...scope,
     resolveAsset: <T extends Asset>(handle: number, revision?: number): Result<T, AssetError> => {
-      const asset = assets.get(handle);
+      const asset = rowFor(handle);
       if (asset === undefined) return scope.resolveAsset<T>(handle, revision);
       if (revision !== undefined && revision !== asset.revision)
         return err(
@@ -156,19 +160,27 @@ export function materialSourceScope(
       }
       return ok(asset.value as T);
     },
-    assetRevision: (handle) => assets.get(handle)?.revision ?? scope.assetRevision(handle),
-    handleForGuid: (guid) => guids.get(guid.toLowerCase()) ?? scope.handleForGuid(guid),
-    sourceForAsset: (handle) => assets.get(handle)?.source ?? scope.sourceForAsset(handle),
+    assetRevision: (handle) => rowFor(handle)?.revision ?? scope.assetRevision(handle),
+    handleForGuid: (guid) => guids?.get(guid.toLowerCase()) ?? scope.handleForGuid(guid),
+    sourceForAsset: (handle) => rowFor(handle)?.source ?? scope.sourceForAsset(handle),
     lookupAsset: <T extends Asset>(guid: string): T | undefined => {
-      const handle = guids.get(guid.toLowerCase());
+      const handle = guids?.get(guid.toLowerCase());
       if (handle === undefined) return scope.lookupAsset<T>(guid);
-      const row = assets.get(handle);
+      const row = rowFor(handle);
       if (row === undefined) return undefined;
       if (row.value !== undefined) return row.value as T;
       return undefined;
     },
   };
-  if ([...assets.values()].every((asset) => asset.value !== undefined)) owners.set(scope, fixed);
+  if (complete) {
+    // Source lookup can reenter; publish into the current owner table.
+    owners = scopes.get(source);
+    if (owners === undefined) {
+      owners = new WeakMap();
+      scopes.set(source, owners);
+    }
+    owners.set(scope, fixed);
+  }
   return fixed;
 }
 

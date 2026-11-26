@@ -9,6 +9,7 @@ import { prepareRuntimeMaterialTemplates } from '../../../assets-runtime/src/__t
 import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program';
 import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, SpotLight } from '../components';
+import { ShadowMeshReads } from '../device/mesh-changes';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { BatchRowAssembly } from '../gpu-driven/production-raster-rows';
@@ -190,7 +191,17 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     directSurface.mockClear();
     indirectRows.mockClear();
     consume.mockClear();
+    const meshRead = vi.spyOn(ShadowMeshReads.prototype, 'add');
+    captureAtlas.mockClear();
     expect(draw('direct').ok, JSON.stringify(errors)).toBe(true);
+    // The first direct atlas holds its issued meshes. GPU preparation has no
+    // physical shadow views in this lane and must not also retain each batch.
+    const directRows = captureAtlas.mock.calls.at(-1)?.[2];
+    assert(directRows !== undefined && directRows.length > 0);
+    expect(meshRead.mock.calls.map(([token]) => token)).toEqual(
+      Array.from(directRows, (row) => row.mesh.changeToken),
+    );
+    meshRead.mockRestore();
     expect(viewUpdate).not.toHaveBeenCalled();
     expect(indirectRows).not.toHaveBeenCalled();
     expect(

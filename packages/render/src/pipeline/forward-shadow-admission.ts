@@ -1,11 +1,16 @@
 import { isMultisampleAntialias } from '../components/camera';
 import { materialShadersSamplePointShadows } from '../point-shadow-inspection';
+import { forwardShadowPassCoverage } from '../predepth-coverage';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { DispatchEntry } from '../render-system-extract';
-import { type MaterialDispatchPass, someCapturedMaterialPass } from '../scene/material-dispatch';
+import {
+  culledViewDemand,
+  type MaterialDispatchPass,
+  someCapturedMaterialPass,
+} from '../scene/material-dispatch';
 import { ssaoUsesLighting } from '../ssao-config';
 import type { ViewPassPlan } from '../world/pass-plan-systems';
 import type { ViewLights } from '../world/render-lights';
@@ -15,6 +20,7 @@ import {
   forwardPunctualShadowPlan,
 } from './forward-punctual-shadow-plan';
 import { renderInternalCopySize } from './render-extent';
+import { lightSlotWorkOf } from './standard-lighting/slot-work';
 import type { StandardTopologyInputValue } from './standard-lighting/topology';
 
 export const FORWARD_SHADOW_COLOR_ENTRY = 'fs_forward_sun_shadow';
@@ -98,29 +104,14 @@ export function hasForwardShadowCoverage(
   dispatch: Iterable<DispatchEntry>,
   retainEmpty = false,
 ): boolean {
+  const demand = culledViewDemand(dispatch);
+  if (demand !== undefined)
+    return demand.shadow === 'covered' || (demand.shadow === 'empty' && retainEmpty);
   let opaque = retainEmpty;
   const incompatible = (draw: MaterialDispatchPass | DispatchEntry): boolean => {
-    if (
-      draw.tags.LightMode !== 'Forward' ||
-      draw.queue >= 3000 ||
-      draw.renderState?.blend !== undefined
-    )
-      return false;
-    const state = draw.renderState;
-    const depthCompare = state?.depthCompare ?? 'less';
-    if (
-      draw.materialShaderId !== 'forgeax::default-standard-pbr' ||
-      (draw.vertexEntry !== undefined && draw.vertexEntry !== 'vs_main') ||
-      (draw.fragmentEntry !== undefined && draw.fragmentEntry !== 'fs_main') ||
-      state?.depthWriteEnabled === false ||
-      (depthCompare !== 'less' && depthCompare !== 'less-equal') ||
-      state?.stencil !== undefined ||
-      state?.alphaToCoverageEnabled === true ||
-      state?.outputs?.some((output) => output.blend !== undefined) === true
-    )
-      return true;
-    opaque = true;
-    return false;
+    const coverage = forwardShadowPassCoverage(draw);
+    if (coverage === 'covered') opaque = true;
+    return coverage === 'incompatible';
   };
   const rejected = someCapturedMaterialPass(dispatch, incompatible);
   if (rejected !== undefined) return !rejected && opaque;
@@ -251,7 +242,7 @@ function projectEmptyShadowTopology(
     size.viewFade &&
     lighting?.kind === 'clustered' &&
     lighting.transport.kind !== 'cpu-texture' &&
-    lighting.prepared.local.some((light) => light.shadowed)
+    lightSlotWorkOf(lighting.prepared).shadowSlots.length > 0
   )
     return { mode: 'screen', format: 'rgba8unorm', directional: false, ...size };
   return { mode: 'raw', reason: 'no-shadow-lights' };

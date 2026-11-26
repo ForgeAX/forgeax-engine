@@ -81,7 +81,7 @@ describe('Standard clustered post color-domain order', () => {
 
   it('routes clustered direct-light recording through the Spot modifier uploader', () => {
     expect(frameLightingSource).toMatch(
-      /writeLightModifierTextures\(\s*internals,\s*pipelineState,\s*\{[\s\S]*?\},\s*frameState,?\s*\)/,
+      /writeLightModifierTextures\(\s*internals,\s*pipelineState,\s*work,\s*frameState,?\s*\)/,
     );
     expect(recordSource).toContain(
       'pending.work.execute(encoder, recordContext(internals).framePassNames)',

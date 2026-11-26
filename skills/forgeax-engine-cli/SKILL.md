@@ -103,12 +103,13 @@ Native Codex View instances are client-owned: the last App/business MCP process 
 
 For Linux batch jobs without a monitor, follow the
 unattended validation setup.
-For captures and live runs under Linux root, Engine can start an unprivileged
-Chromium child with a writable private profile and sandboxing enabled. With no
-display, the default is headless. An available borrowed page needs no local
-browser or display. If `browser-sandbox-root` remains, read the attempted
-launch's reason and report the affected gameplay and visual checks as
-unverified. A build or asset check only covers its own stage.
+DevKit launches Chrome with sandboxing enabled. In Linux root sessions it
+prepares an unprivileged browser identity and profile when it has an executable
+path. Without a display, live sessions default to headless. If sandbox setup or
+Chromium itself reports a sandbox failure, DevKit logs one retry with the same
+browser and sandboxing disabled. The command still checks real frame rendering
+and input. If startup remains blocked, inspect the launch error and report the
+affected checks as unverified. Borrowed pages need no local launch.
 
 ## Persistent live control
 

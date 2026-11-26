@@ -68,6 +68,12 @@ import { prepareMaterialPrograms } from '../material-programs';
 import { SceneProjection } from '../scene';
 import { SharedAssets } from '../shared-assets';
 import { setThreeSceneTracking } from '../source-changes';
+import {
+  enableThreeSourceTracking,
+  ownedMatrixElements,
+  ownedWorldMatrixElements,
+  watchPublishedWorldMatrix,
+} from '../source-collections';
 import { MeshUvs } from '../uv-projection';
 import { featureCases, physicalSlotsForFeature } from './features.fixture';
 import { cookPhysicalFeature } from './node-inputs.commands';
@@ -1975,6 +1981,85 @@ describe('Three source to native World', () => {
     } finally {
       f.projection.dispose();
     }
+  });
+
+  it('writes ECS presentation values through the public Three receiver after a matrix row becomes authored', () => {
+    const f = fixture();
+    const done = enableThreeSourceTracking();
+    const elements = ownedWorldMatrixElements(f.mesh.matrixWorld.elements.slice());
+    done();
+    f.mesh.matrixWorld.elements = elements as typeof f.mesh.matrixWorld.elements;
+    let value = elements[12];
+    let receiver: unknown;
+    Object.defineProperty(elements, 12, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return value;
+      },
+      set(next: number) {
+        value = next;
+        receiver = this;
+      },
+    });
+    try {
+      f.mesh.position.x = 2.75;
+      f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), {
+        ecsPoses: true,
+        updateMatrices: true,
+        depth: true,
+        stencil: false,
+        sortObjects: true,
+        opaque: true,
+        transparent: true,
+      });
+      expect(value).toBe(2.75);
+      expect(receiver).toBe(elements);
+    } finally {
+      f.projection.dispose();
+    }
+  });
+
+  it('preserves edits made by a world-matrix reader after pose publication starts', () => {
+    const f = fixture();
+    setThreeSceneTracking(f.scene, true);
+    const done = enableThreeSourceTracking();
+    f.mesh.matrix.elements = ownedMatrixElements(f.mesh.matrix.elements) as Matrix4['elements'];
+    f.mesh.matrixWorld.elements = ownedWorldMatrixElements(
+      f.mesh.matrixWorld.elements,
+    ) as Matrix4['elements'];
+    done();
+    const mover = new Group();
+    f.scene.add(mover);
+    const run = () =>
+      f.projection.sync(f.scene, f.camera, cameraData(f.camera, NoToneMapping, 1), {
+        ecsPoses: true,
+        updateMatrices: true,
+        depth: true,
+        stencil: false,
+        sortObjects: true,
+        opaque: true,
+        transparent: true,
+      });
+    f.mesh.position.x = 2;
+    run();
+    run();
+    expect(f.projection.sourceWork()?.mode).toBe('tracked');
+    const stop = watchPublishedWorldMatrix(mover.matrixWorld.elements, () => {
+      f.mesh.matrix.elements[12] = 70;
+      f.mesh.matrixWorld.elements[12] = 80;
+    });
+    try {
+      mover.position.y++;
+      run();
+      expect(f.mesh.matrix.elements[12]).toBe(70);
+      expect(f.mesh.matrixWorld.elements[12]).toBe(80);
+    } finally {
+      stop();
+    }
+    run();
+    expect(f.mesh.matrix.elements[12]).toBe(2);
+    expect(f.mesh.matrixWorld.elements[12]).toBe(2);
   });
 
   it('reads independent double-precision source poses while native rows move through the same page', () => {

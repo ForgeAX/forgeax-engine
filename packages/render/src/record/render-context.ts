@@ -589,7 +589,7 @@ export interface PipelineState {
   spotModifierUploadState?: {
     readonly ies: Map<number, number>;
     readonly cookie: Map<number, number>;
-    readonly cookieMatrix: Map<number, number>;
+    readonly cookieMatrix: Map<number, Float32Array>;
   };
   readonly iesProfileTextureView?: TextureView;
   readonly cookieTextureView?: TextureView;
@@ -849,7 +849,6 @@ export interface _StandardForwardSceneView {
   readonly foldDispatchPlan: FoldDispatchPlan | null;
   readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly materialSlots: readonly MaterialSnapshot[];
-  readonly acceptedMaterialSlots?: import('./fold-buckets').SubmittedMaterialSlots | undefined;
   readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
   /** Absent for a direct helper caller that has not prepared a native table. */
   readonly materialBindingSlots?: import('./fold-buckets').MaterialBindingSlots;

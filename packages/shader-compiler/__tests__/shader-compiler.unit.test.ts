@@ -1222,6 +1222,7 @@ beforeAll(async () => {
     'forgeax_pbr::gbuffer': readSrc('standard-gbuffer.wgsl'),
     'forgeax_pbr::gbuffer_output': readSrc('standard-gbuffer-output.wgsl'),
     'forgeax_ssr::forward': readSrc('ssr-forward.wgsl'),
+    'forgeax_pbr::planar_reflection': readSrc('planar-reflection.wgsl'),
     'forgeax_depth_pyramid::sample': readSrc('depth-pyramid-sample.wgsl'),
     'forgeax_ssr::ray': readSrc('ssr-ray.wgsl'),
     'forgeax_pbr::lighting_spot_modifiers': readSrc('lighting-spot-modifiers.wgsl'),

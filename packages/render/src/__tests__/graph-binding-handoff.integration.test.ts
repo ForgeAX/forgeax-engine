@@ -226,6 +226,29 @@ it('rebinds current material assemblies even after a different material lifetime
   }
 });
 
+it('retires a graph variant without invalidating ordinary or other probe bindings at that material', async () => {
+  const f = await fixture();
+  const cache = new MaterialBgAssemblyCache();
+  const [entry] = f.f.manager.currentOwner.frameState.materialBgAssemblyCache.values();
+  assert(entry);
+  const a = f.graph();
+  const port = a.facts.views[0]?.[1];
+  assert(port);
+  const graphViews: GraphBindingViews = { graph: a.compiled, views: [['backdrop', port, a.view]] };
+  const graphEntry = { ...entry, graphViews };
+  cache.set('world', 12, 'surface', 0, graphEntry, 3);
+  cache.set('world', 12, 'surface', 0, entry, 3);
+  const probe = { ...entry };
+  cache.set('world', 12, 'surface', undefined, probe, 3);
+  cache.retireGraph(a.compiled);
+  expect(cache.get('world', 12, 'surface', 0, graphViews, 3)).toBeUndefined();
+  expect(cache.get('world', 12, 'surface', 0, undefined, 3)).toBe(entry);
+  cache.releaseBinding(12, entry);
+  expect([...cache.values()]).toEqual([probe]);
+  expect(cache.get('world', 12, 'surface', undefined, undefined, 3)).toBe(probe);
+  (await a.compiled.retire()).unwrap();
+});
+
 it('cannot reinsert a material graph variant after its original graph retires', async () => {
   const f = await fixture();
   const cache = f.f.manager.currentOwner.frameState.materialBgAssemblyCache;

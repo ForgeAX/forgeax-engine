@@ -61,6 +61,15 @@ export const SOURCE_ASSET_PRODUCERS = new Map([
     'Render tsup text loader owns Terrain WGSL inlining',
   ],
   ['packages/shader/src/auto-exposure-source.ts', 'Shader tsup text loader owns WGSL inlining'],
+  [
+    'packages/shader/src/bloom-source.ts',
+    'Shader tsup text loader owns HDR post-process WGSL inlining',
+  ],
+  [
+    'packages/shader/src/depth-of-field-tiles-source.ts',
+    'Shader tsup text loader owns depth-of-field tile compute WGSL inlining',
+  ],
+  ['packages/shader/src/smaa-blend-source.ts', 'Shader tsup text loader owns SMAA WGSL inlining'],
   ['packages/shader/src/sky-sh-source.ts', 'Shader tsup text loader owns Sky SH WGSL inlining'],
   [
     'packages/shader/src/scene-velocity-source.ts',

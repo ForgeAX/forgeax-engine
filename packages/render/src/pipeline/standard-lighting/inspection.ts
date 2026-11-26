@@ -2,6 +2,7 @@ import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import { type ClusterOccupancyReport, measureClusterOccupancy } from '../../cluster-binner';
 import { getSsaoParameters, resolveSsaoQuality, ssaoUsesLighting } from '../../ssao-config';
+import { lightSlotWorkOf } from './slot-work';
 import type { StandardTopologyInputValue } from './topology';
 import type { StandardClusterTransport } from './transport';
 
@@ -188,8 +189,7 @@ function captureClusterInspection(
   const detached = boundsColumn === undefined ? prepared.lightBounds : undefined;
   const near = prepared.camera?.near,
     far = prepared.camera?.far;
-  let shadowed = 0;
-  for (const light of prepared.local) if (light.shadowed === true) shadowed++;
+  const shadowed = lightSlotWorkOf(prepared).shadowSlots.length;
   let inspection: TransportInspection | undefined;
   return () => {
     if (inspection !== undefined) return inspection;

@@ -103,11 +103,20 @@ export function meshSsboBufferBinding(
   byteOffset: number,
   into?: { buffer: Buffer; byteOffset: number },
 ): { buffer: Buffer; byteOffset: number } {
-  const buffer = meshSsboBuffer(storage, byteOffset);
-  const offset = meshSsboByteOffset(storage, byteOffset);
-  if (into === undefined) return { buffer, byteOffset: offset };
+  const pages = storage.pages;
+  let buffer: Buffer | null | undefined;
+  if (pages === undefined) {
+    buffer = storage.buffer;
+    if (buffer === null) throw new Error('draw buffer is not allocated');
+  } else {
+    const page = Math.floor(byteOffset / pages.byteStride);
+    buffer = pages.buffers[page];
+    if (buffer === undefined) throw new Error('draw buffer address exceeds allocated pages');
+    byteOffset -= page * pages.byteStride;
+  }
+  if (into === undefined) return { buffer, byteOffset };
   into.buffer = buffer;
-  into.byteOffset = offset;
+  into.byteOffset = byteOffset;
   return into;
 }
 

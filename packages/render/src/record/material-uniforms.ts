@@ -1,5 +1,5 @@
 import { type BindGroupEntry, type Buffer, RhiError } from '@forgeax/engine-rhi';
-import type { AssetHandle } from '@forgeax/engine-types';
+import { type AssetHandle, derive } from '@forgeax/engine-types';
 import {
   meshSsboBuffer,
   meshSsboByteOffset,
@@ -13,8 +13,8 @@ import { MaterialFrame } from '../scene/material-dispatch';
 import { recordContext } from '../world/view-record-context';
 import {
   applyMaterialTextureUvScales,
-  applyParamSnapshotToUbo,
   type PerSubmeshMaterialBgDeps,
+  writeMaterialUniformValues,
   writePbrMaterialUboPayload,
 } from './main-pass-material';
 import { extractEntryResourceHandle } from './mesh-ssbo';
@@ -30,36 +30,46 @@ interface UniformSlot {
   readonly snapshot: MaterialSnapshot;
   readonly slot: number;
   resources: object;
-  recordingReferences: number;
+  payload?: Payload;
+  readers: MaterialUniformRecording | Set<MaterialUniformRecording> | undefined;
   provisional: boolean;
 }
 
 const unresolvedResources = {};
 const missingResources = {};
-let recordingSlots: Set<UniformSlot> | undefined;
+let activeRecording: MaterialUniformRecording | undefined;
 let preparingUniforms = false;
 
 /** One pending submission pins its numeric versions across preparation checkpoints. */
 export class MaterialUniformRecording {
-  private readonly used = new Set<UniformSlot>();
+  private readonly used: UniformSlot[] = [];
+
+  /** The ordinary recording is the slot's sole reader across every pass and draw. */
+  retain(entry: UniformSlot): void {
+    const readers = entry.readers;
+    if (readers === this) return;
+    if (readers === undefined) entry.readers = this;
+    else if (readers instanceof Set) {
+      if (readers.has(this)) return;
+      readers.add(this);
+    } else entry.readers = new Set([readers, this]);
+    this.used.push(entry);
+  }
 
   /** Retain the actual completed version for native commands prepared across ordinary frames. */
   hold(runtime: RenderSystemRuntime, material: MaterialSnapshot): number {
     const entry = allocation(runtime).entry(material);
-    if (!this.used.has(entry)) {
-      this.used.add(entry);
-      entry.recordingReferences++;
-    }
+    this.retain(entry);
     return entry.slot;
   }
 
   run<T>(record: () => T): T {
-    const previous = recordingSlots;
-    recordingSlots = this.used;
+    const previous = activeRecording;
+    activeRecording = this;
     try {
       return record();
     } finally {
-      recordingSlots = previous;
+      activeRecording = previous;
     }
   }
 
@@ -77,10 +87,16 @@ export class MaterialUniformRecording {
     // Later queue writes are ordered after an accepted submission. Only unsubmitted
     // commands need copy-on-write; physical buffer retirement keeps its usual fence.
     for (const entry of this.used) {
-      entry.recordingReferences--;
-      entry.owner.release(entry);
+      const readers = entry.readers;
+      if (readers instanceof Set) {
+        readers.delete(this);
+        if (readers.size === 1) entry.readers = readers.values().next().value;
+      } else {
+        entry.readers = undefined;
+        entry.owner.release(entry);
+      }
     }
-    this.used.clear();
+    this.used.length = 0;
   }
 }
 
@@ -101,6 +117,9 @@ class MaterialUniformSlots {
   private readonly roots = new Map<MaterialResource, UniformSlot>();
   private readonly simultaneous = new WeakMap<MaterialSnapshot, Map<object, UniformSlot>>();
   private readonly current = new WeakMap<MaterialSnapshot, UniformSlot>();
+  // A caller holding an older snapshot can draw it again after its address was recycled.
+  // Only retired rows enter this index. Both the snapshot and the binding tuple are weak keys.
+  private retiredPayloads?: WeakMap<object, WeakMap<MaterialSnapshot, Payload>>;
   private readonly free = new Set<number>();
   count = 0;
 
@@ -127,7 +146,7 @@ class MaterialUniformSlots {
   }
 
   release(entry: UniformSlot): void {
-    if (entry.recordingReferences !== 0) return;
+    if (entry.readers !== undefined) return;
     if (this.roots.get(entry.resource) === entry) {
       if (
         (!this.adopted && !entry.provisional) ||
@@ -147,6 +166,16 @@ class MaterialUniformSlots {
       )
         this.simultaneous.delete(entry.snapshot);
     }
+    if (entry.payload !== undefined) {
+      this.retiredPayloads ??= new WeakMap();
+      let versions = this.retiredPayloads.get(entry.resources);
+      if (versions === undefined) {
+        versions = new WeakMap();
+        this.retiredPayloads.set(entry.resources, versions);
+      }
+      versions.set(entry.snapshot, entry.payload);
+      delete entry.payload;
+    }
     this.free.add(entry.slot);
     while (this.free.delete(this.count - 1)) this.count--;
   }
@@ -160,12 +189,13 @@ class MaterialUniformSlots {
     // remains a separate address until the owning recording is submitted.
     if (
       current?.resources === unresolvedResources &&
-      current.recordingReferences === 0 &&
+      current.readers === undefined &&
       resources !== undefined &&
       !this.simultaneous.has(snapshot)
     ) {
       current.resources = resources;
       current.provisional = preparingUniforms;
+      this.restorePayload(current);
       return current;
     }
     const existing =
@@ -181,16 +211,18 @@ class MaterialUniformSlots {
     const available = this.free.values().next();
     const slot = available.done ? this.count++ : available.value;
     this.free.delete(slot);
-    const entry = {
+    const entry: UniformSlot = {
       owner: this,
       resource,
       snapshot,
       slot,
       resources: resources ?? unresolvedResources,
-      recordingReferences: 0,
+      readers: undefined,
       provisional: preparingUniforms,
     };
     this.roots.set(resource, entry);
+    // Reacquiring a previously packed version transfers its bytes to this live address.
+    if (resources !== undefined) this.restorePayload(entry);
     // Only overlapping recordings need an index beyond the current resource tuple.
     let versions = this.simultaneous.get(snapshot);
     const retained = this.current.get(snapshot);
@@ -203,13 +235,19 @@ class MaterialUniformSlots {
     return entry;
   }
 
-  slot(snapshot: MaterialSnapshot, resources?: object): number {
-    const entry = this.entry(snapshot, resources);
-    if (resources !== undefined && recordingSlots !== undefined && !recordingSlots.has(entry)) {
-      recordingSlots.add(entry);
-      entry.recordingReferences++;
+  private restorePayload(entry: UniformSlot): void {
+    const versions = this.retiredPayloads?.get(entry.resources);
+    const payload = versions?.get(entry.snapshot);
+    if (payload !== undefined) {
+      entry.payload = payload;
+      versions?.delete(entry.snapshot);
     }
-    return entry.slot;
+  }
+
+  recordingEntry(snapshot: MaterialSnapshot, resources: object): UniformSlot {
+    const entry = this.entry(snapshot, resources);
+    activeRecording?.retain(entry);
+    return entry;
   }
 }
 
@@ -240,7 +278,7 @@ export function materialUniformSlot(
   runtime: RenderSystemRuntime,
   material: MaterialSnapshot,
 ): number {
-  return allocation(runtime).slot(material);
+  return allocation(runtime).entry(material).slot;
 }
 
 /**
@@ -295,56 +333,44 @@ interface Payload {
   readonly version: symbol;
   readonly bytes: Uint8Array;
 }
-const payloads = new WeakMap<MaterialSnapshot, WeakMap<object, Payload>>();
 // Physical storage may outlive the material. Remember the writer identity without retaining its bytes.
-const writers = new WeakMap<Buffer, Map<number, symbol>>();
+interface PhysicalUniformRow {
+  version: symbol | undefined;
+  writes: number;
+}
+const writers = new WeakMap<Buffer, Map<number, PhysicalUniformRow>>();
 
-type UploadProofOperation = 'check' | 'forget' | 'remember';
-
-function uploadTargetProof(
-  buffer: Buffer,
-  offset: number,
-  payload: Payload,
-  operation: UploadProofOperation,
-): boolean {
+function physicalRow(buffer: Buffer, offset: number): PhysicalUniformRow {
   let offsets = writers.get(buffer);
-  if (operation === 'check') return offsets?.get(offset) === payload.version;
-  if (operation === 'forget') offsets?.delete(offset);
-  else {
-    if (offsets === undefined) {
-      offsets = new Map();
-      writers.set(buffer, offsets);
-    }
-    offsets.set(offset, payload.version);
+  if (offsets === undefined) {
+    offsets = new Map();
+    writers.set(buffer, offsets);
   }
-  return true;
+  let row = offsets.get(offset);
+  if (row === undefined) {
+    row = { writes: 0, version: undefined };
+    offsets.set(offset, row);
+  }
+  return row;
 }
 
-/** Walk physical targets directly: no per-draw arrays and no scratch spanning queue callbacks. */
-function uploadTargetsProof(
-  buffer: Buffer | null,
-  pages: PerSubmeshMaterialBgDeps['pipelineState']['materialUniformBuffer']['pages'],
-  byteOffset: number,
-  payload: Payload,
-  operation: UploadProofOperation,
-): boolean {
-  if (pages === undefined) {
-    if (buffer === null) throw new Error('Material upload requires an allocated buffer');
-    return uploadTargetProof(buffer, byteOffset, payload, operation);
-  }
-  const first = Math.max(0, Math.floor((byteOffset - pages.byteSize) / pages.byteStride) + 1);
-  const last = Math.min(
-    pages.buffers.length - 1,
-    Math.floor((byteOffset + payload.bytes.byteLength - 1) / pages.byteStride),
-  );
-  for (let index = first; index <= last; index++) {
-    const target = pages.buffers[index];
-    if (target === undefined)
-      throw new Error('Material upload requires an allocated physical page');
-    const offset = Math.max(0, byteOffset - index * pages.byteStride);
-    if (!uploadTargetProof(target, offset, payload, operation)) return false;
-  }
-  return first <= last;
+/** A callback can encode another write before the first call returns.
+ * Neither writer can attest the order of two overlapping native calls. */
+function beginWrite(row: PhysicalUniformRow, payload: Payload): void {
+  row.version = row.writes === 0 ? payload.version : undefined;
+  row.writes++;
+}
+
+type UniformStorage = PerSubmeshMaterialBgDeps['pipelineState']['materialUniformBuffer'];
+
+function pageRow(
+  pages: NonNullable<UniformStorage['pages']>,
+  page: number,
+  offset: number,
+): PhysicalUniformRow {
+  const buffer = pages.buffers[page];
+  if (buffer === undefined) throw new Error('Material upload requires an allocated physical page');
+  return physicalRow(buffer, Math.max(0, offset - page * pages.byteStride));
 }
 
 function counters(frameState: PerSubmeshMaterialBgDeps['frameState']) {
@@ -396,8 +422,19 @@ export function prepareMaterialUniform(
   const parameters = runtime.preparedMaterialParameters?.(material);
   if (parameters !== undefined) resources = extendedUniformResources(resources, parameters);
   if (missingBaseColor) resources = extendedUniformResources(resources, missingResources);
+  const values = parameters ?? material.paramSnapshot;
+  const fallbackSchema =
+    values !== undefined &&
+    material.materialParamSchema === undefined &&
+    material.materialShaderId !== undefined
+      ? runtime.getParamSchema?.(material.materialShaderId)
+      : undefined;
+  const fallbackLayout =
+    fallbackSchema === undefined ? undefined : derive(fallbackSchema).uboLayout;
+  if (fallbackLayout !== undefined) resources = extendedUniformResources(resources, fallbackLayout);
   const slots = allocation(runtime);
-  const slot = slots.slot(material, resources);
+  const entry = slots.recordingEntry(material, resources);
+  const slot = entry.slot;
   const capacity =
     (recordContext(runtime).meshSsboState?.materialSlotCount ?? 0) < slots.count
       ? recordContext(runtime).growMeshSsbo?.(0, slots.count)
@@ -408,24 +445,14 @@ export function prepareMaterialUniform(
       expected: 'capacity for the material versions used by this submission',
       hint: 'release unused resources or reduce simultaneous material versions',
     });
-  let versions = payloads.get(material);
-  if (versions === undefined) {
-    versions = new WeakMap();
-    payloads.set(material, versions);
-  }
-  let payload = versions.get(resources);
+  let payload = entry.payload;
   if (payload === undefined) {
     const bytes = new Uint8Array(MATERIAL_PER_ENTITY_STRIDE);
     const f32 = new Float32Array(bytes.buffer, 0, MATERIAL_UNIFORM_BYTES / 4);
     const view = new DataView(bytes.buffer, 0, MATERIAL_UNIFORM_BYTES);
     writePbrMaterialUboPayload(f32, material, view, parameters);
-    if (material.materialParamSchema === undefined) {
-      const schema =
-        material.materialShaderId === undefined
-          ? undefined
-          : runtime.getParamSchema?.(material.materialShaderId);
-      applyParamSnapshotToUbo(f32, schema, parameters ?? material.paramSnapshot, view);
-    }
+    if (fallbackLayout !== undefined && values !== undefined)
+      writeMaterialUniformValues(view, fallbackLayout, values);
     applyMaterialTextureUvScales(f32, material, world);
     if (missingBaseColor) {
       f32[0] = 1;
@@ -448,7 +475,7 @@ export function prepareMaterialUniform(
       );
     }
     payload = { bytes, version: Symbol() };
-    versions.set(resources, payload);
+    entry.payload = payload;
     inspection.packMisses++;
   } else inspection.packHits++;
 
@@ -474,13 +501,52 @@ function uploadMaterialPayload(
   // The growth owner replaces a complete page roster. A nested write can publish a
   // newer roster while the outer queue call still owns these handles and offsets.
   const { buffer, pages } = storage;
-  if (uploadTargetsProof(buffer, pages, byteOffset, payload, 'check')) {
+  const first =
+    pages === undefined
+      ? 0
+      : Math.max(0, Math.floor((byteOffset - pages.byteSize) / pages.byteStride) + 1);
+  const last =
+    pages === undefined
+      ? 0
+      : Math.min(
+          pages.buffers.length - 1,
+          Math.floor((byteOffset + payload.bytes.byteLength - 1) / pages.byteStride),
+        );
+  if (last < first || (pages === undefined && buffer === null))
+    throw new Error('Material upload requires an allocated physical row');
+  const row =
+    pages === undefined
+      ? physicalRow(buffer as Buffer, byteOffset)
+      : pageRow(pages, first, byteOffset);
+  let current = row.version === payload.version && row.writes === 0;
+  // Check every intersecting page before changing any proof. Most rows have a single target.
+  if (pages !== undefined)
+    for (let page = first + 1; page <= last; page++) {
+      const other = pageRow(pages, page, byteOffset);
+      if (other.version !== payload.version || other.writes !== 0) current = false;
+    }
+  if (current) {
     inspection.skippedUploads++;
     return;
   }
-  uploadTargetsProof(buffer, pages, byteOffset, payload, 'forget');
-  writeMeshSsboBuffer(runtime.device.queue, storage, byteOffset, payload.bytes);
-  uploadTargetsProof(buffer, pages, byteOffset, payload, 'remember');
+  beginWrite(row, payload);
+  if (pages !== undefined)
+    for (let page = first + 1; page <= last; page++)
+      beginWrite(pageRow(pages, page, byteOffset), payload);
+  let completed = false;
+  try {
+    writeMeshSsboBuffer(runtime.device.queue, storage, byteOffset, payload.bytes);
+    completed = true;
+  } finally {
+    row.writes--;
+    if (!completed) row.version = undefined;
+    if (pages !== undefined)
+      for (let page = first + 1; page <= last; page++) {
+        const other = pageRow(pages, page, byteOffset);
+        other.writes--;
+        if (!completed) other.version = undefined;
+      }
+  }
   inspection.uploadRanges++;
   inspection.uploadedLogicalBytes += payload.bytes.byteLength;
 }

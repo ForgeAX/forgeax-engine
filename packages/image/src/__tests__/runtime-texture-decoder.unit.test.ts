@@ -33,6 +33,10 @@ it.each<TextureShape>([
   };
   const accepted = (await textureContribution.decoder.decode(input)).unwrap();
   expect(accepted.shape).toEqual(shape);
+  expect(accepted.shape).not.toBe(shape);
+  expect(Object.isFrozen(accepted.shape.extent)).toBe(true);
+  expect(Object.isFrozen(accepted.mips)).toBe(true);
+  expect(Object.isFrozen(shape.extent)).toBe(false);
   expect(accepted.data).toEqual(pixels);
   expect(
     await textureContribution.decoder.decode({

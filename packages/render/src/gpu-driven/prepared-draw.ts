@@ -234,7 +234,7 @@ export function hasRequiredVertexInputs(
   return matches;
 }
 
-function hasMaterialResources(material: MaterialSnapshot, receipt: MaterialProgramAbi) {
+export function hasMaterialResources(material: MaterialSnapshot, receipt: MaterialProgramAbi) {
   // Video frames and renderer-local target sources have no stable
   // scene-index binding in this feature. Extract keeps those draws on the
   // explicit CPU semantic lane; direct contract callers must fail closed too.

@@ -58,7 +58,11 @@ fn classifyUeExposureQuad(source: texture_2d<f32>, origin: vec2<u32>, scale: u32
     textureLoad(source, pixel + vec2<i32>(0, 1), 0).rgb +
     textureLoad(source, pixel + vec2<i32>(1, 1), 0).rgb
   ) * 0.25;
-  let luminance = dot(filtered, vec3<f32>(1.0 / 3.0));
+  return classifyUeExposureColor(filtered, scale);
+}
+
+fn classifyUeExposureColor(color: vec3<f32>, scale: u32) -> u32 {
+  let luminance = dot(color, vec3<f32>(1.0 / 3.0));
   if (!finite(luminance) || luminance <= exp2(UE_HISTOGRAM_MIN_LOG)) { return 0u; }
   let range = UE_HISTOGRAM_MAX_LOG - UE_HISTOGRAM_MIN_LOG;
   let position = clamp((log2(luminance) - UE_HISTOGRAM_MIN_LOG) / range, 0.0, 1.0) * f32(UE_HISTOGRAM_SIZE - 1u);
@@ -73,7 +77,18 @@ fn classifyExposureBlock(
   block: vec2<u32>,
   dimensions: vec2<u32>,
   scale: u32,
+  halfResolution: bool,
 ) -> vec4<u32> {
+  if (halfResolution) {
+    if (any(block >= dimensions / vec2<u32>(2u))) { return vec4<u32>(0u); }
+    let p = vec2<i32>(block * 2u);
+    return vec4<u32>(
+      classifyUeExposureColor(textureLoad(source, p, 0).rgb, scale),
+      classifyUeExposureColor(textureLoad(source, p + vec2<i32>(1, 0), 0).rgb, scale),
+      classifyUeExposureColor(textureLoad(source, p + vec2<i32>(0, 1), 0).rgb, scale),
+      classifyUeExposureColor(textureLoad(source, p + 1, 0).rgb, scale),
+    );
+  }
   if (parameters.adaptation.x == 1.0) {
     // UE's histogram reads complete 2x2 groups of the half-resolution scene color.
     if (any(block >= dimensions / vec2<u32>(4u))) { return vec4<u32>(0u); }

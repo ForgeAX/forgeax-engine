@@ -149,7 +149,6 @@ import {
 } from './material/pipeline-preparation-readiness';
 import type {
   MaterialPipelineRequestCache,
-  materialPipelineRequestFacts,
   PendingMaterialPipelineRequest,
 } from './material/pipeline-request-cache';
 import {
@@ -232,6 +231,8 @@ import type {
   VolumetricFogShaderSources,
 } from '../render-contract';
 import {
+  STANDARD_OUTPUT_GLARE_FEATURE_ID,
+  STANDARD_OUTPUT_SMAA_FEATURE_ID,
   STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
   STANDARD_OUTPUT_V2_FEATURE_ID,
 } from '../render-contract';
@@ -1056,13 +1057,24 @@ async function makeWebGPURenderer(
       (source: string, nativeSource?: () => string) => {
         ensureBuildAlive();
         if (buildState !== undefined || tonemapRegistered) return;
+        const params = {
+          byteSize: TONEMAP_PARAMS_LAYOUT.byteSize,
+          defaultValue: new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize),
+        };
         renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, {
           source,
-          params: {
-            byteSize: TONEMAP_PARAMS_LAYOUT.byteSize,
-            defaultValue: new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize),
-          },
+          params,
           reads: ['hdrColor'],
+        });
+        renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_GLARE_FEATURE_ID, {
+          source,
+          params,
+          reads: ['hdrColor', 'glare'],
+        });
+        renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_SMAA_FEATURE_ID, {
+          source,
+          params,
+          reads: ['hdrColor', 'smaa-weights'],
         });
         if (nativeSource !== undefined)
           renderSystem.registerBuiltinPostProcess(
@@ -1469,6 +1481,7 @@ async function makeWebGPURenderer(
         {
           ...ctx,
           stockStandardVertexProgram,
+          projectSurfaceResources,
         },
       );
     };
@@ -1731,7 +1744,9 @@ async function makeWebGPURenderer(
     RendererPipelineCacheState,
     MaterialPipelineRequestCache<RenderPipeline | PendingMaterialPipelineRequest>
   >();
-  const pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1] = [];
+  const pipelineRequestScratch: Parameters<typeof runGetMaterialShaderPipelineFor>[6] = {
+    idle: [],
+  };
   // Array form: per-draw callers pass their argument list without re-spreading.
   const getMaterialShaderPipelineFor = (
     args: Parameters<typeof buildMaterialShaderPipeline>,

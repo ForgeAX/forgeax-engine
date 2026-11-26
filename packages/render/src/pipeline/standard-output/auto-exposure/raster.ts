@@ -148,7 +148,7 @@ export function addAutoExposureFragmentPasses(
   };
   const classification = add(
     'auto-exposure-classify',
-    'auto_exposure_classify',
+    projection.halfResolution === true ? 'auto_exposure_classify_half' : 'auto_exposure_classify',
     projection.source.view,
     0,
     classified.value.view,

@@ -9,6 +9,8 @@ import type {
   ShaderEntryPointReads,
 } from '@forgeax/engine-types';
 
+import type { DispatchEntry } from './render-system-extract';
+
 export { PREDEPTH_FRAGMENT_ENTRY } from '@forgeax/engine-shader';
 
 type DepthProgram = {
@@ -39,4 +41,35 @@ export function predepthCoversMaterial(
     return false;
   if (predepthFragmentEntry(artifact) !== PREDEPTH_FRAGMENT_ENTRY) return false;
   return materialDepthCoversEntry(artifact.program, artifact.fragmentEntry ?? 'fs_main');
+}
+
+/** Geometry coverage supplied by one authored forward pass. */
+export type ForwardShadowCoverage = 'empty' | 'covered' | 'incompatible';
+
+export function forwardShadowPassCoverage(
+  draw: Pick<
+    DispatchEntry,
+    'tags' | 'queue' | 'renderState' | 'materialShaderId' | 'vertexEntry' | 'fragmentEntry'
+  >,
+): ForwardShadowCoverage {
+  if (
+    draw.tags.LightMode !== 'Forward' ||
+    draw.queue >= 3000 ||
+    draw.renderState?.blend !== undefined
+  )
+    return 'empty';
+  const state = draw.renderState;
+  const depthCompare = state?.depthCompare ?? 'less';
+  if (
+    draw.materialShaderId !== 'forgeax::default-standard-pbr' ||
+    (draw.vertexEntry !== undefined && draw.vertexEntry !== 'vs_main') ||
+    (draw.fragmentEntry !== undefined && draw.fragmentEntry !== 'fs_main') ||
+    state?.depthWriteEnabled === false ||
+    (depthCompare !== 'less' && depthCompare !== 'less-equal') ||
+    state?.stencil !== undefined ||
+    state?.alphaToCoverageEnabled === true ||
+    state?.outputs?.some((output) => output.blend !== undefined) === true
+  )
+    return 'incompatible';
+  return 'covered';
 }

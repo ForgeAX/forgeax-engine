@@ -68,6 +68,7 @@ import {
   inspectSharedFeatureGraphs,
   sharedFeatureGraphInspection,
 } from './world/feature-graph-systems';
+import type { MaterialSlotDrawReceiptFact } from './world/material-draw-receipt';
 import { viewPhaseInspection } from './world/queue-systems';
 import { viewRecordHistory } from './world/record-history';
 import { resolveViewSsrDependencies } from './world/reflection-systems';
@@ -75,10 +76,7 @@ import { viewLightsOf } from './world/render-lights';
 import { ViewSubmission } from './world/render-views';
 import { renderWorldFor } from './world/render-world';
 import { viewTransmissionInspection } from './world/transmission-systems';
-import type {
-  MaterialSlotDrawReceiptFact,
-  WaterBakedDrawReceiptFact,
-} from './world/view-draw-receipt';
+import type { WaterBakedDrawReceiptFact } from './world/view-draw-receipt';
 import { viewDrawReceipt } from './world/view-draw-receipt';
 import { viewFrameOf, viewFrameScopes } from './world/view-frame-systems';
 import { viewPointsLines } from './world/view-points-lines';
@@ -531,7 +529,7 @@ export function viewMeshMaterialBindings(
           submeshIndices =
             sceneSubmeshIndices.length > 0
               ? sceneSubmeshIndices
-              : (drawReceipt?.materialDraws
+              : (drawReceipt?.materials.draws
                   .filter(
                     (draw) =>
                       draw.entityKey === renderable.entityKey && draw.materialSlot === slotIndex,
@@ -539,7 +537,7 @@ export function viewMeshMaterialBindings(
                   .map((draw) => draw.submeshIndex) ?? []),
           materialDraw =
             receiptMatchesAcceptedFrame && drawReceipt !== undefined
-              ? findMaterialSlotDrawReceipt(drawReceipt.materialDraws, {
+              ? findMaterialSlotDrawReceipt(drawReceipt.materials.draws, {
                   worldIdentity: materialWorld?.identity,
                   entityKey: renderable.entityKey,
                   materialSlot: slotIndex,

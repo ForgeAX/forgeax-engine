@@ -229,50 +229,9 @@ fn materialTextureFilteringWitness() {
 // Screen-surface data and Cluster table inputs belong to the View.
 
 #ifdef PLANAR_REFLECTION_AVAILABLE
-struct StandardPlanarReflection {
-  viewProjection : mat4x4<f32>,
-  plane : vec4<f32>,
-  enabledAndPadding : vec4<f32>,
-};
-// The display camera's PlanarReflection capture and its mirrored projection.
-// Wherever no capture is current, captures included, the projection is disabled.
+#import forgeax_pbr::planar_reflection::{PlanarReflectionUniform, samplePlanarReflection}
 @group(0) @binding(36) var standardPlanarReflectionTexture : texture_2d<f32>;
-@group(0) @binding(37) var<uniform> standardPlanarReflection : StandardPlanarReflection;
-
-// A fragment on the reflection plane, facing along its normal, sees its mirror
-// image instead of the environment radiance; the split-sum response keeps the
-// material Fresnel. With a mip chain (levels in z > 1) roughness blurs the
-// mirror trilinearly at lod = roughness * (levels - 1); a single level fades
-// the sharp image into the prefiltered environment by roughness 0.5. Only
-// capture holes (alpha < 1) show the environment. Normal distortion follows
-// Unreal ComputePlanarReflections (PlanarReflectionShared.ush:27-50): reflect
-// the view ray off the shading normal, intersect it with a virtual sphere of
-// radius distortion (y, world units) around the pixel and project that point
-// with the capture's view-projection. Unreal works in the mirrored world with
-// the main view; mirroring the point back into this world gives
-// position + reflect(-v, shadingNormal) * radius under the mirror camera.
-// A flat normal lands on the undistorted mirror at any radius.
-fn standardPlanarSpecular(position : vec3<f32>, normal : vec3<f32>, shadingNormal : vec3<f32>, v : vec3<f32>,
-  roughness : f32, environment : vec3<f32>, response : vec3<f32>) -> vec3<f32> {
-  let planar = standardPlanarReflection;
-  let levels = planar.enabledAndPadding.z;
-  let mipped = levels > 1.0;
-  let weight = select(clamp(1.0 - 2.0 * roughness, 0.0, 1.0), 1.0, mipped);
-  let lod = select(0.0, clamp(roughness, 0.0, 1.0) * (levels - 1.0), mipped);
-  if (planar.enabledAndPadding.x == 0.0 || weight == 0.0 ||
-      abs(dot(planar.plane, vec4<f32>(position, 1.0))) > 0.001 ||
-      dot(normal, planar.plane.xyz) < 0.999) { return environment; }
-  let clip = planar.viewProjection * vec4<f32>(position, 1.0);
-  if (clip.w <= 0.0) { return environment; }
-  let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { return environment; }
-  let probe = planar.viewProjection *
-    vec4<f32>(position + reflect(-v, shadingNormal) * planar.enabledAndPadding.y, 1.0);
-  let lookup = select(uv, probe.xy / probe.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5), probe.w > 0.0);
-  let reflected = textureSampleLevel(standardPlanarReflectionTexture, viewLinearSampler, clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0)), lod);
-  let mirrored = reflected.rgb * response + environment * (1.0 - clamp(reflected.a, 0.0, 1.0));
-  return mix(environment, mirrored, weight);
-}
+@group(0) @binding(37) var<uniform> standardPlanarReflection : PlanarReflectionUniform;
 #endif
 
 struct VsIn  {
@@ -1582,8 +1541,9 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool, prepared : Standard
 #endif
   );
 #ifdef PLANAR_REFLECTION_AVAILABLE
-  environment.specular = standardPlanarSpecular(standardPositionWS, geometricNormal, physicalNormal, v, iblRoughness,
-    environment.specular, environment.response.rgb);
+  let planar = samplePlanarReflection(standardPlanarReflection, standardPlanarReflectionTexture,
+    viewLinearSampler, standardPositionWS, physicalNormal, v, iblRoughness);
+  environment.specular = planar.rgb * environment.response.rgb + environment.specular * (1.0 - planar.a);
 #endif
   let ao = surface.occlusion;
   let specularAo = standardSpecularOcclusion(max(dot(physicalNormal, v), 0.0), ao * screenAo, iblRoughness);

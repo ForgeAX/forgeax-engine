@@ -16,8 +16,13 @@ import type {
   RenderableSnapshot,
 } from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
-import { type FrameList, FrameListBase, RetainedFrameProjection } from './scene/frame-list';
-import { FrameSet } from './scene/frame-set';
+import {
+  EMPTY_FRAME_ROWS,
+  type FrameList,
+  FrameListBase,
+  RetainedFrameProjection,
+  type SparseRowKind,
+} from './scene/frame-list';
 import { visitCapturedPassRanks } from './scene/material-dispatch';
 import { hasRasterDemand } from './scene/raster-demand';
 import { sceneDrawContentOf } from './scene/render-scene-view';
@@ -106,11 +111,13 @@ function displayColumns(rows: FrameList<RenderableSnapshot>) {
   return SelectedSceneDrawRows.native(rows) ? rows : sceneDrawContentOf(rows);
 }
 
-/** Select current display rows in source order, including rows with multiple passes. */
+/** Select display rows in source order. A sparse hint narrows indexed scene rows;
+ * the consumer still checks its actual inputs when a borrowed list has no index. */
 export function projectDisplayRenderables(
   renderables: FrameList<RenderableSnapshot>,
   dispatch: DispatchList,
   camera?: Pick<CameraSnapshot, 'cullMask'>,
+  kind?: SparseRowKind,
 ): FrameList<RenderableSnapshot> {
   const count = renderables.length;
   let prefix = 0;
@@ -148,6 +155,7 @@ export function projectDisplayRenderables(
     }
   }
   if (
+    kind === undefined &&
     prefix === count &&
     renderables instanceof RetainedFrameProjection &&
     renderables.facts?.rasterRowCount === count &&
@@ -160,25 +168,19 @@ export function projectDisplayRenderables(
     (i < prefix || (later !== undefined && ((later[i >>> 5] ?? 0) & (1 << (i & 31))) !== 0)) &&
     hasRasterDemand(row) &&
     (camera === undefined || cameraAdmitsLayers(camera, row));
-  if (
-    SelectedSceneDrawRows.native(renderables) &&
-    renderables.filter === FrameListBase.prototype.filter
-  )
-    return renderables.selectDisplay(selected);
-  const columns = sceneDrawContentOf(renderables);
-  if (
-    columns === undefined ||
-    !columns.permitsSlotCull(undefined) ||
-    renderables.filter !== FrameListBase.prototype.filter
-  )
+  const subset = SelectedSceneDrawRows.native(renderables) ? renderables : undefined;
+  const columns = subset === undefined ? sceneDrawContentOf(renderables) : undefined;
+  if (renderables.filter !== FrameListBase.prototype.filter) return renderables.filter(selected);
+  if (subset !== undefined)
+    return subset.selectDisplay(
+      selected,
+      kind === undefined ? undefined : subset.source.indexedSlots(kind),
+    );
+  if (columns === undefined || !columns.permitsSlotCull(undefined))
     return renderables.filter(selected);
-  let rank = 0;
-  const members = FrameSet.collect((add) => {
-    columns.source.findContent((content, _entity, slot) => {
-      if (selected(content, rank++)) add(slot);
-      return undefined;
-    });
-  });
+  const indexed = kind === undefined ? undefined : columns.source.indexedSlots(kind);
+  if (indexed?.size === 0) return EMPTY_FRAME_ROWS;
+  const members = columns.source.selectContent(selected, undefined, indexed);
   if (members.size === count) return renderables;
   return members.size === 0 ? [] : new SelectedSceneDrawRows(columns, members);
 }

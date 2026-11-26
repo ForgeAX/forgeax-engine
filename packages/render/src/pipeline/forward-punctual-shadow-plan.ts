@@ -2,6 +2,7 @@ import { mat4 } from '@forgeax/engine-math';
 import { prepareForwardShadowVisibility } from './forward-shadow-projection-bounds';
 import type { StandardLocalLightInput } from './standard-lighting/light-frame';
 import type { PreparedStandardLighting } from './standard-lighting/prepare';
+import { lightSlotWorkOf } from './standard-lighting/slot-work';
 
 export interface ForwardProjectedLight {
   readonly slot: number;
@@ -21,6 +22,15 @@ type PunctualShadowPlan =
       readonly spot: boolean;
     }
   | { readonly kind: 'raw'; readonly reason: 'channel-overflow' | 'shadow-family' };
+
+const emptyPlan = {
+  kind: 'projected' as const,
+  lights: Object.freeze([]),
+  channels: new Uint8Array(0),
+  channelCount: 0,
+  point: false,
+  spot: false,
+};
 
 interface ScopedLight {
   readonly slot: number;
@@ -103,14 +113,17 @@ function planPunctualShadows(
   view: ForwardProjectionView,
 ): PunctualShadowPlan {
   const { camera, local } = prepared;
+  const { shadowSlots } = lightSlotWorkOf(prepared);
+  if (shadowSlots.length === 0) return emptyPlan;
   const visible =
     camera === undefined
       ? undefined
       : prepareForwardShadowVisibility(camera.view, camera.projection);
   const fadeFor =
     view.viewFade && camera !== undefined ? prepareShadowViewFade(camera, view) : undefined;
-  const candidates = collectVisibleShadows(local, visible, view, fadeFor);
+  const candidates = collectVisibleShadows(local, shadowSlots, visible, view, fadeFor);
   if (!Array.isArray(candidates)) return candidates;
+  if (candidates.length === 0) return emptyPlan;
   candidates.sort(
     (a, b) =>
       Number(a.source.entity ?? a.slot) - Number(b.source.entity ?? b.slot) || a.slot - b.slot,
@@ -118,7 +131,7 @@ function planPunctualShadows(
   // The primary directional shadow owns R. Active AO reserves A.
   const channelCount = 4 - Number(directional) - Number(view.ambientOcclusion === true);
   const buckets: ScopedLight[][] = Array.from({ length: channelCount }, () => []);
-  const channels = new Uint8Array(candidates.length === 0 ? 0 : local.length);
+  const channels = new Uint8Array(local.length);
   const lights: ForwardProjectedLight[] = [];
   for (const candidate of candidates) {
     const index = buckets.findIndex((bucket) =>
@@ -149,13 +162,14 @@ function planPunctualShadows(
 
 function collectVisibleShadows(
   local: readonly StandardLocalLightInput[],
+  shadowSlots: readonly number[],
   visible: ReturnType<typeof prepareForwardShadowVisibility> | undefined,
   view: ForwardProjectionView,
   fadeFor: ReturnType<typeof prepareShadowViewFade> | undefined,
 ): ScopedLight[] | Extract<PunctualShadowPlan, { kind: 'raw' }> {
   const candidates: ScopedLight[] = [];
-  for (const [slot, row] of local.entries()) {
-    if (!row.shadowed) continue;
+  for (const slot of shadowSlots) {
+    const row = local[slot] as StandardLocalLightInput;
     const source = row.source;
     if (source?.kind !== 'point' && source?.kind !== 'spot')
       return { kind: 'raw', reason: 'shadow-family' };

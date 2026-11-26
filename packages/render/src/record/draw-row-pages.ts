@@ -130,7 +130,27 @@ class DrawRowPages extends FrameListBase<ValidatedRenderable> {
 /** Walk issued leaves directly. Other row providers own their iteration protocol. */
 export function visitDrawRows(rows: DrawRows, consume: (row: ValidatedRenderable) => void): void {
   if (rows instanceof DrawRowPages) rows.forEach(consume);
-  else for (const row of rows) consume(row);
+  else if (rows instanceof JoinedDrawRows) {
+    for (const range of rows.ranges) visitDrawRows(range.rows, consume);
+  } else for (const row of rows) consume(row);
+}
+
+/** Sequential recording keeps the original material and fold address of every draw.
+ * Borrowed providers retain indexed reads. Issued phase pages expose whole leaves. */
+export function visitSubmittedDrawRows(
+  rows: DrawRows,
+  consume: (row: ValidatedRenderable, index: number) => void,
+): void {
+  if (rows instanceof DrawRowPages) rows.forEach(consume);
+  else if (rows instanceof JoinedDrawRows) {
+    for (const { rows: phase, start } of rows.ranges)
+      visitSubmittedDrawRows(phase, (row, index) => consume(row, start + index));
+  } else {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows.at(index);
+      if (row !== undefined) consume(row, index);
+    }
+  }
 }
 
 /** Every row in this issued table belongs to an ordinary Scene slot. Terrain and

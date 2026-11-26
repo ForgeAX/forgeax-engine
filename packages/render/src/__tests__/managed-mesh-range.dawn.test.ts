@@ -11,3 +11,9 @@ it.each([
   'indices',
 ] as const)('keeps split static residency exact during leased and in-place %s edits', (channel) =>
   verifyManagedMeshRange(channel, true));
+
+it.each([
+  'vertices',
+  'indices',
+] as const)('preserves the authored split streams and fixed pixels across %s edits', (channel) =>
+  verifyManagedMeshRange(channel, true, true));

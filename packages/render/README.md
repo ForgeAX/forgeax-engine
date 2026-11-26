@@ -479,14 +479,27 @@ New Standard renderers select `standard-output-v2`: one native Grade draw, plus
 encoded-space Final/FXAA when spatial finishing is enabled. Each view owns its 160-byte parameter buffer across graph replacement;
 its output graphs import that buffer. View disposal releases it and device loss
 drops the lost handle before recreation. Grade reads the same-frame GPU exposure candidate
-and five Bloom filters directly; disabled Bloom has no filter targets. Manual or
+and the accumulated Bloom result directly. Disabled Bloom has no filter targets. Manual or
 disabled metering never reads a retained auto-exposure candidate.
 
 | Selected work | Physical output boundary |
 |:--|:--|
-| Ordinary core | Grade directly encodes; Final/FXAA reads display-encoded RGBA16F |
-| Outline, editor helpers, barrel, SMAA or linear-LDR observation | Grade writes R16F linear LDR; selected extensions run there; native Encode precedes encoded Final |
+| Ordinary SDR | Grade directly encodes. With FXAA, Final reads display-encoded `rgba8unorm`. |
+| Float consumer or lens grain | With FXAA, Final reads display-encoded `rgba16float` to retain sub-code precision. |
+| Outline, editor helpers, barrel, SMAA or linear-LDR observation | Grade writes linear `rgba16float`. SMAA can blend and encode directly into the encoded destination. Other linear consumers retain a separate Encode pass. |
 | Lens flare | Retains its HDR neighborhood after explicit Bloom composition; Grade does not apply Bloom/fringe twice |
+
+With compact FXAA input, Grade or Encode dithers RGB at the first UNORM8
+write. FXAA keeps the existing encoded-space filter and alpha behavior. An
+ordinary portable Output Transform uses the same 8-bit boundary when FXAA
+samples encoded color. Portable FXAA that consumes linear LDR keeps float
+precision.
+
+FXAA stays in a fullscreen raster draw on WebGPU and WebGL2. The ordinary
+direct view writes the display attachment in that draw. On Apple M4 Pro,
+shared-memory Compute trials took longer on the compact SDR path when measured
+from the color producer through the display write, including a Present draw or
+a storage-capable Canvas write where applicable.
 
 Shader preparation remains deferred until selection. The pipeline JSON decoder
 normalizes saved assets without `outputContract` to `standard-output-v1`; explicit
@@ -828,8 +841,9 @@ A Skin input frame captures a semantic input revision alongside its physical
 root. Memos that outlive the frame compare both: exclusive page reuse after
 release does not prove unchanged poses. Held frames and GPU palette history
 retain their existing leases. Borrowed displacement values are observed again,
-including edits within one MaterialFrame; owned material frames keep numeric
-RenderBounds reuse.
+including edits within one MaterialFrame. Live draw content holds the displacement
+radius of its effective fixed material binding across pose edits. Rigid bounds
+write directly to the consumer. Only instance sets retain world-union columns.
 
 Scene Pass preparation captures its admitted material frame and pass ranges in a
 separate factory scope. Its finish callback has no reference to the prior memo or
@@ -1096,6 +1110,9 @@ use their own encoding.
 > values and participates in pipeline cache identity. Standard material assembly
 > removes fragment-only Surface discard and shadow-reception gates from that vertex projection,
 > including the fixed GPU Scene path, while retaining the complete fragment map.
+> A stock Standard Surface compiled without vertex displacement resources also
+> omits the texture-mask override from the vertex descriptor when its vertex
+> bits are zero. The fragment descriptor retains the original value.
 
 The material PSO owner also omits Engine ABI constants that the selected shader
 program does not declare, before deriving its cache key. A custom ShadowCaster
@@ -2729,19 +2746,22 @@ FXAA, MSAA and TAA; `DynamicResolution` accepts TAA or TSR.
 
 | Stage | Input and output | Work |
 |:--|:--|:--|
-| `smaa-edges` | Linear LDR to RG8 edges | Threshold 0.1 and local contrast adaptation |
-| `smaa-weights` | Edges and lookup tables to RGBA8 weights | Orthogonal searches, crossing-edge classification and area lookup |
-| `smaa-blend` | Linear LDR and weights to RGBA16F | Blend the strongest adjacent edge, including alpha |
+| `smaa-edges` | Pre-Tonemap scene color to RG8 edges and stencil | Threshold 0.1, local contrast adaptation and stencil reference 1 on surviving edges |
+| `smaa-weights` | Edges and lookup tables to RGBA8 weights | Stencil equality limits orthogonal searches and area lookups to marked pixels |
+| `smaa-blend` | Post-Tonemap linear color and weights to the display-encoded destination | Blend the strongest adjacent edge, including alpha, then run the existing output transform |
 
-Standard runs SMAA at the output extent, after tone/LUT/Outline/BarrelDistortion
-and before its single output encoding/dither. Forward and deferred share this
-placement, including `tonemap: none`. Disabling SMAA removes all SMAA passes
+Standard runs SMAA at the output extent in Forward and Deferred, including
+`tonemap: none`. The blend follows tone mapping, LUT and outlines. It precedes
+barrel distortion so the edge mask and blend share the same pixel coordinates.
+A downstream linear effect or a linear-LDR observation retains a linear
+blend result and the separate encode pass. Display-only rendering blends
+and encodes in one draw. Disabling SMAA removes all SMAA passes
 and targets. The graph owns resize, replacement and fence-delayed retirement;
 lookup uploads occur once per graph texture, with no external asset request.
 Medium does not include the diagonal/corner detection of High/Ultra or T2x.
 
 Inspect `renderer.inspect().perFramePassNames`, then capture with RHI Debug.
-The permanent Browser/Dawn fixture under `packages/runtime/src/__tests__/smaa.*`
+The browser fixture under `packages/runtime/src/__tests__/smaa.*`
 compares against a 4x-per-axis coverage reference, exercises 60 completed frames,
 odd extents and disable/restore, reads every captured stage, compares live and
 fresh-device replay, and removes the weight draw as a negative control.
@@ -5913,8 +5933,8 @@ formats, pixel hash, validation errors and mutation falsifiers.
 The report gates are explicit: unique-color ratio $r_U \ge 0.75$, level ratio
 $\ge 0.70$, mean absolute channel delta $\le 2/255$, parity $\ge 0.95$, and
 non-black pixels with zero validation errors. The three local-only falsifiers
-(`eight-bit-intermediate`, `missing-oetf`, `duplicate-oetf`) must each fail their
-expected gate. Missing Browser, Dawn or WebGL2 evidence remains
+(coarse 16-code quantization, missing OETF, and duplicate OETF) each exercise
+their original pixel-quality gate. Missing Browser, Dawn or WebGL2 evidence remains
 `insufficient-evidence`; a screenshot, RhiNull topology result or M3 surface
 contract is not a pixel proof.
 
@@ -6209,6 +6229,13 @@ analysis, reconstruction and successful-submit history contract. TAA remains ava
 TAAU. TSR shares temporal view, jitter, scene data and successful-submit history
 ownership, and adds opaque Guide, input-domain shading/flicker analysis and
 output-domain reconstruction. It never silently falls back to TAA.
+
+TSR writes `rgba16float` history color. The current write also supplies the
+resolved HDR image to downstream post passes. Reprojection samples its RGB
+and this frame's output carries scene alpha. Two four-byte RGB histories plus
+one eight-byte resolved RGBA image would still use 16 bytes per pixel and add
+a full-resolution write with separate storage-texture support.
+
 See the TSR guide
 for the API, selected formats, memory formula, support boundaries and validation.
 
@@ -6342,7 +6369,7 @@ if (!result.ok) throw result.error;
 | Parameters | `shutterAngle ∈ [0, 360]`, `maxRadiusPixels ∈ [0, 64]`, integer `sampleCount ∈ [4, 16]`, integer `targetFps ∈ [0, 240]`; zero shutter/radius is zero work. |
 | Temporal source | One renderer-owned `scene-data-temporal` sampled target. Motion validity and color reactivity are separate fields. |
 | Post order | TAA resolve → Motion Blur → auto exposure/Bloom/tone output. Motion Blur never writes TAA history. |
-| WebGPU/native lane | One 16×16 tile summary dispatch plus one fused reconstruction dispatch. Long vectors use an even-pixel half-resolution source lattice with depth guidance. |
+| WebGPU/native lane | One 16×16 tile-summary dispatch plus one reconstruction dispatch. Each reconstruction workgroup classifies motion from the local and overlapping summaries. Stationary regions copy current color, short motion uses the depth-aware full-resolution gather, and complex motion uses the depth-guided half-resolution cache for long vectors. |
 | Bounded work | Effective color tiers are exactly `0|4|8|16`; metadata probes are fixed and color work is linear in the tier. There is no radius-squared neighborhood, per-pixel scatter, or atomic accumulation. |
 | WebGL2 fallback | One directional raster gather, explicitly reported as `raster-limited`; it does not claim compute quality or timing parity. |
 
@@ -6421,25 +6448,19 @@ and source-level falsifier paths.
 Bloom is a Camera-owned Standard post feature. `bloom` selects the enabled
 path, while `bloomIntensity` is bounded to `[0, 8]`, `bloomThreshold` to
 `[-1, 65504]`, `bloomSmoothWidth` to `[0, 1]`, and `bloomRadius` to `[0, 1]`.
-The defaults follow Unreal: threshold `-1` (no threshold, so every pixel
-scatters in proportion to its energy), intensity `0.5`, smooth width `0.01`,
-and radius `0`. Set a positive threshold (scene-linear luminance) to bloom only
-highlights; Three r184 WebGPU BloomNode defaults to threshold `0` and intensity
-`1`; pass those values explicitly to reproduce it. Bloom is
-off by default; the disabled value and intensity `0` are exact zero-work cases.
-Enabling Bloom creates the HDR chain even with `TONEMAP_NONE`.
-`bloomIntensity` is the fraction of above-threshold light scattered back as
-glow: the five level weights are normalised to sum to one, so `bloomRadius`
-only reshapes the halo and never changes its energy. Three's UnrealBloomPass
-adds the unnormalised weights (about three times as much); its strength `s`
-corresponds to `bloomIntensity = 3 × s` only when its input is clamped
-emissive, so with full-HDR emissive start from a much smaller value.
-The prefilter bounds each input tap at `64 × max(bloomThreshold, 1)` luminance
-(hue kept), so one extreme pixel such as a sun disc or a specular spike blooms
-like a bright highlight instead of washing out the frame. Content below that
-bound blooms exactly like Three r184 BloomNode. Scenes authored in physical
-units (for example 100,000-lux sun with a tiny exposure) raise `bloomThreshold`
-to their own white level, which raises the bound with it.
+The defaults are threshold `-1`, intensity `0.5`, smooth width `0.01` and
+radius `0`. Bloom is off by default. Disabled Bloom and zero intensity omit
+the graph work. Enabling Bloom creates the HDR chain even with `TONEMAP_NONE`.
+`bloomIntensity` is the fraction of filtered light added back in HDR.
+`bloomRadius` shifts weight from fine levels to coarse levels. The level
+weights and the truncated Gaussian taps are normalized, so a uniform input
+above the threshold has the same gain across quality and radius settings.
+
+| Camera `bloomQuality` | Levels |
+|:--|--:|
+| `BLOOM_QUALITY_LOW` | 3 |
+| `BLOOM_QUALITY_MEDIUM` | 4 |
+| `BLOOM_QUALITY_HIGH` (default) | 5 |
 
 A negative `bloomThreshold` disables the luminance threshold entirely (the whole
 frame blooms, weighted only by `bloomIntensity`), exactly like Unreal's
@@ -6463,27 +6484,49 @@ import {
 The physical `@forgeax/engine-render` package remains the repository ownership
 unit; it is not the recommended consumer import path.
 
-An enabled frame stays in linear HDR and uses five progressively ceil-halved
-levels, each with horizontal then vertical Gaussian filtering. The radii are
-6/10/14/18/22, with sigma equal to radius/3, matching Three's truncated kernel.
-Every downsample uses Unreal's PostProcessDownsample.usf HIGH filter: four
-bilinear taps at +-1 source texel, i.e. a 4x4 filter, so a sub-pixel highlight
-(a wet-ground GGX glint that TAA lets through) is spread across its whole
-destination footprint before anything non-linear runs. The first horizontal pass
-fuses that filtered half-resolution input with the luminance highpass
-`smoothstep(threshold, threshold + smoothWidth, luminance)` (skipped when
-`bloomThreshold < 0`); like Unreal the threshold sees the filtered colour, not
-the raw full-resolution pixels. Unreal's linear `saturate((L - T) * 0.5)` ramp
-and its six Bloom1..6 size/tint stages are not exposed; the Three-style
-progressive five-level chain is kept. The composite
-adds all five levels with weights 1/0.8/0.6/0.4/0.2; radius blends each weight
-toward `1.2 - weight`. All five levels remain present even at tiny extents.
-The chain has 11 passes and 11 targets, adds RGB bloom and preserves scene alpha.
+An enabled frame stays in linear HDR. The first level starts from a shared
+half-resolution scene color made by a 2×2 box filter. Odd extents round up and
+repeat the edge texel. The UE
+histogram exposure mode reads this same color when both effects start from
+the same stage. Native compute TSR can write the half-resolution image
+directly when its resolved output feeds the consumers without a scene writer
+or Motion Blur between them. Other routes use one raster downsample per
+eligible scene color. The shared texture is accounted for in the frame graph.
+
+Thresholding applies `smoothstep(threshold, threshold + smoothWidth, luminance)`
+once at half resolution, before the rest of the 2×2 source pyramid. A zero
+smooth width selects a hard cutoff. The graph omits this prefilter when the
+threshold is negative.
+
+The Gaussian filters run from coarse to fine, with radii 6/10/14/18/22 from
+fine to coarse and sigma equal to radius/3. Bilinear sampling pairs neighboring
+Gaussian taps. Each vertical pass weights its own filtered color and samples
+the accumulated coarser level once when present. Grade samples the finest
+result once. With Lens Flare, the half-resolution image holds the combined
+contribution for Grade or the portable exposure/tone stage. The portable
+Bloom-only path uses its explicit HDR composite. Scene alpha comes from the
+scene-color input.
+For `N` levels the shared seed feeds `N - 1` reductions and `2N` filter draws.
+Native WebGPU dispatches the reductions together using aligned tiles. WebGL2
+runs one raster pass per reduction. An active threshold and an explicit HDR
+composite each add one pass and target. Measured prefilter fusion on Apple M4 Pro
+improved some 1080p cases and regressed at odd 4K. The separate seed and threshold
+stages retain their RGBA16F precision boundary.
+
+| Bloom resource | Format and access |
+|:--|:--|
+| Shared half-resolution SceneColor, prefilter and reductions | `rgba16float`. The shared image carries scene alpha and signed RGB. Native reductions use storage writes. |
+| Horizontal and vertical filters | `rg11b10ufloat` on devices that admit it for raster attachment and sampling. Other devices use `rgba16float`. |
+| Portable full-resolution composite | `rgba16float` with alpha from SceneColor. |
+
+Packed vertical levels store a normalized weighted average of their own and
+coarser levels. Level zero evaluates the original whole-pyramid weighted sum.
+The shaders round to the nearest packed value and clamp to the finite per-channel
+limit before storing.
 
 The maintained comparison at `apps/parity/color-lighting/render-defaults.html`
-checks production WGSL against pinned Three r184 WebGPU on the same HDR input,
-including uniform gain, threshold ramps and radius 0/0.5/1. Gaussian truncation
-means the uniform default gain is approximately 2.936, not exactly 3.
+checks the progressive filter against an independent integer-tap reference
+and records its spatial differences from pinned Three r184 WebGPU.
 
 `renderer.inspect().bloom` is detached POD evidence from the compiled graph.
 Its level dimensions, `targetBytes`, pass topology, and
@@ -6519,28 +6562,35 @@ world.addComponent(camera, { component: LensFlare, data: {} }).unwrap();
 world.set(camera, LensFlare, { tint: [1, 0.6, 0.3], threshold: 20 }).unwrap();
 ```
 
-The Standard order places `lens-flare` directly after Bloom and before
-exposure, white balance and tone mapping. Three passes run per frame:
-`standard-lens-flare-prefilter` thresholds and box-filters the scene into a
-guard-band target covering 1.25 times the view at 1/8 density,
-`standard-lens-flare-bokeh` gathers a 64-tap Vogel disc, and
-`standard-lens-flare` adds the ghosts (border-masked by `DiscMask(P) *
-DiscMask(0.8P)`) to the full-resolution HDR color. The gather replaces Unreal's
-splat, so the guard band shrinks from 2 to 1.25 and the two low-resolution
-passes touch about 2.4% of the output pixels. Alpha is preserved.
-The composite interpolates four clamped bokeh texels in f32: small HDR sources
-can amplify hardware filter-weight precision into visible ghost-energy errors.
+Lens Flare and Bloom share the half-resolution linear scene color. Each effect
+applies its own luminance threshold. Changing Bloom intensity or its threshold
+does not change the bokeh input. The camera keeps independent enable and
+intensity controls for the two effects. Unreal's composition also targets the
+Bloom resolution, with flare admission and intensity coupled to Bloom.
 
-The component requires the HDR chain (tone mapping or TAA) and `rgba16floatRenderable`. Absent components,
-zero intensity, zero tint, or no live ghost declare no pass or target. Invalid
-fields fail before graph admission with `lens-flare-invalid-parameter` and a
-structured field/value/bounds detail. The shared `lens-flare.fixture.ts`
-Browser/Dawn regression checks mirrored placement against a perpendicular
-control, replays the composite on a fresh device against a CPU oracle, and
-rejects a tape with the bokeh draw removed. Evidence is saved under
-`artifacts/lens-flare/{browser,dawn}/`.
-The replayed scene and bokeh inputs are retained as Float32 pixel arrays beside
-the work descriptions, so oracle failures can be traced to the actual inputs.
+| Pass | Input and output |
+|:--|:--|
+| `standard-lens-flare-prefilter` | Four bilinear taps of the shared half-resolution image. The thresholded result covers 1.25 times the view at 1/8 density. |
+| `standard-lens-flare-bokeh` | A 64-tap Vogel disc over the guard band. |
+| `standard-lens-flare` | The border-masked ghosts plus the independently weighted Bloom image when active. The output holds RGB contribution at ceil-half resolution. |
+| `standard-grade` | Samples scene color and the combined optical contribution. Chromatic aberration affects the scene sample. Alpha comes from the scene. |
+| Portable exposure or tone | Samples the combined image in the first existing HDR-to-output stage and keeps the established output transfer. |
+
+The gather uses a guard band of 1.25. Its two guard-band passes each touch
+about 2.4% of the output pixels. The ghost shader interpolates four clamped
+bokeh texels in f32 to preserve the energy of small HDR sources. The combined
+route needs no full-resolution HDR composite for Bloom or Lens Flare.
+
+The component requires the HDR chain and `rgba16floatRenderable`. Absent
+components, zero intensity, zero tint, or no live ghost declare no Flare work.
+Invalid fields fail before graph admission with `lens-flare-invalid-parameter`
+and structured field/value/bounds detail. The shared Lens Flare Browser/Dawn
+regression captures the actual Grade binding and checks ghost placement and
+HDR contribution against a scalar reference on fresh-device replay. Removing
+the bokeh draw must remove the ghosts while retaining Bloom. The paired
+intensity cases compare the bokeh image byte-for-byte. PNGs, the bokeh and
+Bloom Float32 inputs, tape, and work descriptions are saved under
+`artifacts/lens-flare/`.
 
 > [!IMPORTANT]
 > Render consumes the effective MaterialAsset snapshot produced by extract. Each texture slot carries its own coordinate set and transform into the built-in PBR binding layout; render records do not reinterpret authoring fields or manufacture shader artifacts. The effective `passes` are already validated.
@@ -7206,6 +7256,38 @@ selects Forward or Deferred graph topology. The derivation chain is
 and light-index budget SSOT.
 
 Transport capability is explicit: compute/storage, CPU/storage, or CPU/integer-texture.
+Standard custom display-space effects sample encoded color. With active
+effects, Grade, FXAA, or the portable Output Transform writes a sampleable
+`standard-post-effects-input` attachment. Each fullscreen effect samples
+the previous output directly. The last effect writes the final display
+target or the target requested by an observation or an after-tonemap
+consumer. The encoded chain uses the final target format throughout, including
+on raw-only SDR surfaces. A float current-color consumer retains a float chain.
+With no custom display-space effects, this chain declares no attachments.
+
+An `after-tonemap` feature that only overlays the encoded output can load
+and store its view's `swapchain` attachment using the format advertised
+in the plan's target roster. It may still sample scene depth. Standard
+runs those endpoint overlays after any work writing the sampleable `color`
+target, and before final-display capture. Endpoint overlays may sample
+`color`; their output attachment is `swapchain`. A feature that samples or
+requires the float `color` target, such as the cooked underwater material,
+keeps the encoded float intermediate. With attachment-only compatible
+work, the last color writer and the overlays share the endpoint and
+there is no current-output present pass. For composited views, the
+endpoint is the owned per-view output that feeds the compositor.
+
+After-tonemap depth has two named input ports.
+
+| Port | Signal and use |
+|:--|:--|
+| `depth` | The scene's current depth attachment, paired with the raster View. Use `sceneTemporalRasterUv` to add raster jitter to the normalized output coordinate and `sceneTemporalDepthTexel` to address the sampled depth extent. The built-in underwater material uses this port. |
+| `output-depth` | Single-sample coverage at output size with an unjittered View. The graph reuses already aligned single-sample depth or draws opaque, Water and single-layer medium coverage on demand. Sample this port explicitly when the effect requires an exact silhouette. |
+
+`sceneDepth: 'before-pass'` specifies the read/write ordering of a pass.
+Use `output-depth` if an existing after-tonemap pass relies on exact
+output-pixel coverage. Ordinary reads of `depth` add no geometry draw.
+
 Raw-only surfaces retain receipt-bound `final-display` observations in a graph-owned
 encoded texture and present those same pixels without a second color transform;
 unobserved frames write directly to the surface.
@@ -9855,17 +9937,22 @@ world.addComponent(camera, {
 
 The near, far and both presets share one signed thin-lens CoC. `quality` changes
 sampling density only, so it does not change the optical radius. The graph uses
-the Standard `RenderExtent`: full-resolution CoC/composite targets follow the
-current internal or output domain, and half-resolution targets use
-`max(1, ceil(axis / 2))`. Current temporal-v1 depth validity and the resolved
-multisampled depth binding remain the source of truth.
+the internal Standard `RenderExtent` before temporal antialiasing.
+Half-resolution targets use `max(1, ceil(axis / 2))`. The current visible depth
+and multisample coverage determine CoC and its coverage; the optical radius
+stays in output pixels.
 
-Near gather, far gather and background reconstruction share one source-disk
-traversal, preserving their separate color, depth acceptance and coverage.
-The both-side graph uses seven passes with three gather outputs; near-only
-uses five passes with two outputs, and far-only uses five with one. Disabled
-sides allocate no intermediate targets. Sampling density and optical radius
-remain unchanged by this sharing.
+CoC stores signed radius and coverage in RG16F on devices with verified
+support, with the same two channels in RGBA16F elsewhere. Each enabled side
+writes its filtered color and conservative radius, depth range and coverage in
+one raster pass. A 16×16 CoC reduction and bounded expansion mark where near
+and far blur can contribute, including foreground circles crossing into a
+focused tile and the neighboring filter footprints. Prefilter and Gather
+skip the inactive sides. Compute-capable devices run the two tile dispatches
+in one pass. The raster lane uses two small passes with the same bounds. Near
+and far retain independent raster MRT prefilters. A joint prefilter saved some
+CoC reads in GPU trials. The complete filter and composite interval varied
+with blur coverage and extent.
 
 Uncovered background (reverse-Z depth 0) is depth at the far plane, so a
 defocused far silhouette spreads over the sky. Far acceptance is asymmetric: a
@@ -10695,8 +10782,20 @@ forward-only. The Surface drives the wet look per pixel: `normalWS` ripples
 from `SurfaceInput.frameTime` distort the lookup by `PlanarReflection.distortion`
 (Unreal's virtual-sphere normal distortion), and `roughness` fades the mirror
 into the prefiltered environment (or, with `generateMipmaps`, blurs it), so dry
-patches stay matte while puddles reflect. Plane membership still uses the geometric normal,
-and the distorted lookup is clamped to the capture.
+patches stay matte while puddles reflect. Standard and Single Layer Medium share
+the same capture sample and coverage blend. Receiver controls apply to eligible
+materials in the display view.
+
+| PlanarReflection fields | Effect |
+| --- | --- |
+| `distanceFadeStartM`, `distanceFadeEndM` | Fade by absolute world-space distance to the plane. Defaults are 0.6 and 1 metre. |
+| `angleFadeStartDegrees`, `angleFadeEndDegrees` | Fade by shading-normal angle from the plane normal. Defaults are 20 and 30 degrees. |
+| `clipBias`, `captureCullMask` | Offset the mirror's oblique clip plane in metres and further restrict its visible layers. |
+| `captureExtraFovDegrees` | Add this vertical half-angle to a perspective capture before oblique clipping. |
+
+A single-level capture fades between roughness 0.2 and 0.3. A mipped capture
+uses roughness to choose its blur level. The capture and its projection are
+published together.
 
 ```wgsl
 #define_import_path game::wet_ground
@@ -10980,75 +11079,18 @@ expired frame, live-vs-replay pixels), `external-texture.dawn.test.ts` (GPUTextu
 into `texture_external` with caps absent) and `external-texture-perf.browser.test.ts`.
 The tests write evidence to the ignored `artifacts/pr-evidence/external-texture-video/`.
 
-## Stable scene submissions
+## Scene command recording
 
-Each CameraView retains one `RenderBundleCache` per typed scene pass name and compatible attachment contract. The cache splits the pass
-into segments at each `setPipeline` after a draw, after 128 draws under a shared pipeline,
-at a recovered full-sized indirect boundary after a mismatch, and at every command
-a bundle cannot hold. Each segment carries the
-pipeline, bind-group and vertex/index state it inherits, so it stays self-contained under
-the state reset that `executeBundles` performs. The first occurrence of a segment records
-directly; a second matching occurrence creates a native bundle; further matches call
-`executeBundles` without native per-draw recording, with consecutive bundles sharing one
-call. The per-frame material/upload/extraction work remains active. This targets CPU
-command submission cost, not GPU shading cost or every part of the frame.
+The main geometry pass sends CPU draws directly to the active render pass. Camera and shadow
+passes read the current Scene rows and material bindings. With recording profiling enabled,
+inspection reports direct draw counts by view and pass.
 
-A differing command invalidates only its own segment: that segment records directly this
-frame and is re-admitted after one further matching frame, while the other segments keep
-their bundles. The draw limit bounds invalidation when many meshes share one pipeline.
-A pass whose drawing segments never repeat backs off to direct recording
-for a bounded, growing window (4, 8, ... up to 64 frames) and then probes again, so churn
-stops paying proxy comparison without disabling reuse for the rest of the view lifetime.
-Dynamic-offset snapshots read only the selected slice and reuse equal snapshots; their
-cost does not depend on the unused backing arena. Invalid slice arguments reach the
-original backend overload unchanged, preserving native validation instead of silently
-clamping them into valid bindings.
-
-After a segment changes position, the actual indirect buffer and byte offset
-locate its previous bundle; a direct-draw segment is located instead by its
-pipeline run and its ordinal within that run. A pipeline run is one bin of the
-view's retained direct phase (`record/direct-draw-phase.ts`), so a bin that gains
-or loses whole segments leaves every other bin on the replay path. The complete
-commands still decide reuse. Only
-synthesized inherited setters overwritten before the first draw are omitted
-from that comparison and from native bundle recording. Explicit setters remain
-observable, and deleted batches can destroy their buffers without leaving dead
-references in another batch's bundle. The ordinal comparison remains the steady
-frame path; the indirect index is built only after a miss. That same index restores
-the previous 128-draw segments' starting boundaries when earlier batches are inserted
-or retired. Boundaries recover in their previous order, at most once each; ambiguous
-buffer/offset starts cannot identify a boundary. Short segments remain eligible for
-complete command matching but cannot introduce recovery boundaries, so repeated front
-insertions do not accumulate one segment per new draw. Sparse offsets, interleaved
-buffers and indexed/non-indexed indirect methods do not define additional partitions.
-
-| Invalidation input | Behavior |
-|:--|:--|
-| Command kind/order/count, resource handle or dynamic offset changes inside one batch | Re-record that segment directly; re-admit it as a bundle after one more matching frame |
-| No segment of the pass repeats for four drawing frames | Record the pass directly for a bounded backoff window, then probe again |
-| Data updates through retained uniform, vertex or indirect buffers | Keep the bundle and consume current contents |
-| GPU-driven batch bind groups (mesh/skin table plus lighting at group 2) | Cached device-scoped by their physical inputs, so an unchanged batch replays the same handle and keeps its bundle |
-| Native Skin runs | Replay only while current task buffers, ranges and dynamic offsets match, together with the existing physical, material and pipeline owners; updated palette contents remain live |
-| Unrelated feature graph replacement | Keep the view-owned scene cache and compare current physical commands |
-| Scene attachment format/sample/read-only changes | Replace only the incompatible pass cache |
-| Device replacement | Clear the segments, bundles and backoff state, then evaluate the new device from a cold frame |
-| Record/finish/execute failure | Clear the segments, bundles and backoff state so the next frame can recover |
-| Mid-draw viewport/scissor/blend/stencil changes, query regions or explicit bundle execution | Close the open segment, flush pending bundles and preserve original command order; occlusion-query draws stay direct |
-| Pass removal | Drop its cache after the next rendered view frame confirms absence |
-| Device recovery and renderer disposal | Clear the view-owned caches |
-
-The cache compares physical command inputs instead of introducing asset/World revision
-counters. It retains one segment list per pass. RHI Debug expands each executed bundle into
-ordinary draw events with explicit state-reset boundaries, including bundles created
-before capture. Browser/Dawn tests compare direct, cached and fresh-replay pixels and
-falsify stale reuse with empty draw commands.
-
-Regression coverage includes 1,000 changing frames over eight Null passes, real World
-membership/culling/resize transitions, creation/finish/execution failure recovery, and
-per-frame Browser/Dawn pixel comparisons with tapes from the same cached frame. RHI Debug
-replays the captured frame after resource replacement on a fresh device. These checks
-retain ordering, live-data reuse and validation behavior without per-scene admission
-thresholds or a history of past sequences.
+For GPU-driven draws, each live raster batch owns its prepared native bundles. Reuse depends
+on the pass attachment layout, device, pipeline, bind groups, dynamic offsets, vertex and
+index ranges, and indirect buffer address. Updating bytes in a bound buffer preserves the
+command and exposes the new data on execution. Changing a physical binding requires a new
+recording. Shadow views resolve their indirect bundles through the same batch owner.
+RHI Debug records bundle execution and its state-reset boundaries for capture and replay.
 
 ## Multi-camera viewports and composition
 

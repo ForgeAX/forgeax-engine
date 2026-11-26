@@ -21,11 +21,13 @@ import {
   copyMeshAttributeStorage,
   interleavedMesh,
   interleavedMeshFiniteFailure,
+  invalidMeshAttributeDeclaration,
   staticMeshStreamsFiniteFailure,
 } from './mesh-storage';
 import {
   deriveVertexLayoutProjection,
   elementView,
+  interleaveStaticMeshVertexStreams,
   prepareStaticMeshVertexStreams,
   projectStaticMeshVertexStreams,
   type VertexLayoutProjection,
@@ -347,12 +349,9 @@ function validatePackedStorage(
   projection: VertexLayoutProjection,
   staticStreams: boolean,
 ): void {
-  for (const attribute of projection.attributes) {
-    const value = attributes[attribute.key];
-    const ArrayType = vertexAttributeArrayType(attribute.format);
-    if (!(value instanceof ArrayType) || value.length !== 0 || value.buffer.byteLength !== 0)
-      throw new TypeError(`packed ${attribute.key} requires an empty canonical layout declaration`);
-  }
+  const invalid = invalidMeshAttributeDeclaration(attributes, projection);
+  if (invalid !== undefined)
+    throw new TypeError(`packed ${invalid} requires an empty canonical layout declaration`);
   // Integer skin lanes can contain float NaN bit patterns.
   const nonfinite = staticStreams
     ? staticMeshStreamsFiniteFailure(vertices, projection)
@@ -597,6 +596,15 @@ function writePhysicalMeshVertices(
 ): void {
   const alreadySplit = payload.attributeStorage === 'static-streams';
   if (!split) {
+    if (alreadySplit && nativeLittleEndian) {
+      const rows = new Float32Array(target.buffer, target.byteOffset, target.byteLength / 4);
+      interleaveStaticMeshVertexStreams(
+        payload.vertices as Float32Array,
+        prepared.projection,
+        rows,
+      );
+      return;
+    }
     const canonical = alreadySplit ? interleavedMesh(payload as MeshAsset) : payload;
     writeMeshVertexBody(canonical, prepared, target);
     return;

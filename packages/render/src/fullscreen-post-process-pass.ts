@@ -99,6 +99,8 @@ export interface PostProcessShaderEntry {
   readonly fragmentEntryPoint?: string | undefined;
   /** Explicit hardware-depth producer; ordinary image effects omit it. */
   readonly depthOutput?: GPUTextureFormat | undefined;
+  /** @internal Fixed reference 1 for the two fullscreen stencil-mask stages. */
+  readonly stencilMask?: 'write' | 'test';
   /**
    * Params UBO schema. When undefined, the generic shader has no uniform buffer
    * and the BGL degrades to 2 entries (texture@0 + sampler@1). When present, the
@@ -170,6 +172,7 @@ interface PostProcessSignatureCapture {
   readonly stage: PostProcessShaderEntry['stage'];
   readonly fragmentEntryPoint: string | undefined;
   readonly depthOutput: GPUTextureFormat | undefined;
+  readonly stencilMask: PostProcessShaderEntry['stencilMask'];
   readonly params: PostProcessParamsSchema | undefined;
   readonly byteSize: number | undefined;
   readonly defaultValue: Uint8Array | undefined;
@@ -209,6 +212,7 @@ function sameSignatureInputs(
     entry.stage === captured.stage &&
     entry.fragmentEntryPoint === captured.fragmentEntryPoint &&
     entry.depthOutput === captured.depthOutput &&
+    entry.stencilMask === captured.stencilMask &&
     entry.usesView === captured.usesView &&
     entry.params === captured.params &&
     entry.reads === captured.reads &&
@@ -291,6 +295,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
     depthOutput: entry.depthOutput,
+    stencilMask: entry.stencilMask,
     params:
       entry.params === undefined
         ? undefined
@@ -311,6 +316,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
     depthOutput: entry.depthOutput,
+    stencilMask: entry.stencilMask,
     params: entry.params,
     byteSize: entry.params?.byteSize,
     defaultValue: entry.params === undefined ? undefined : entry.params.defaultValue.slice(),
@@ -672,6 +678,7 @@ function createFullscreenPostProcessPass(
     draw(encoder, pipeline) {
       encoder.setPipeline(pipeline);
       if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
+      if (entry.stencilMask !== undefined) encoder.setStencilReference(1);
       encoder.draw(3, 1, 0, 0);
     },
   };

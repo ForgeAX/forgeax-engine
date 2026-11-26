@@ -1031,7 +1031,15 @@ export function applyParamSnapshotToUbo(
   if (paramSchema === undefined) return;
   if (paramSnapshot === undefined) return;
   const dataView = view ?? materialNumericView(payload);
-  const { uboLayout } = derive(paramSchema);
+  writeMaterialUniformValues(dataView, derive(paramSchema).uboLayout, paramSnapshot);
+}
+
+/** Write precisely the layout whose identity was reserved for these parameters. */
+export function writeMaterialUniformValues(
+  dataView: DataView,
+  uboLayout: ReturnType<typeof derive>['uboLayout'],
+  paramSnapshot: Readonly<Record<string, number | readonly number[] | string | undefined>>,
+): void {
   for (const entry of uboLayout.entries) {
     const value = paramSnapshot[entry.name];
     if (value === undefined) continue;

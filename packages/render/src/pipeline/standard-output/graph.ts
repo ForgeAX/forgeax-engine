@@ -27,10 +27,10 @@ function requestedLinearStages(
   if (input.lut) stages.push('lut');
   if (encodedAa && input.lensEffects) stages.push('vignette');
   if (input.outline === true) stages.push('outline');
+  if (input.smaa === true) stages.push('smaa');
   if (input.barrelDistortion === true) stages.push('barrel-distortion');
   if (!encodedAa && input.fxaa) stages.push('fxaa');
   if (!encodedAa && input.lensEffects === true) stages.push('lens-effects');
-  if (input.smaa === true) stages.push('smaa');
   return stages;
 }
 
@@ -101,9 +101,9 @@ function incrementalOutputResources(input: StandardOutputRequest, encodedAa: boo
 
 function incrementalOutputBindings(input: StandardOutputRequest, encodedAa: boolean): number {
   return (
-    (encodedAa && input.bloom ? 5 : 0) +
+    (encodedAa && (input.bloom || input.lensFlare === true) ? 1 : 0) +
     (!encodedAa && input.chromaticAberration === true ? 3 : 0) +
-    (input.lensFlare === true ? 10 : 0) +
+    (input.lensFlare === true ? 9 + Number(input.bloom) + (encodedAa ? 0 : 1) : 0) +
     (input.lut ? 2 : 0) +
     (input.barrelDistortion === true ? 3 : 0) +
     (!encodedAa && input.lensEffects === true ? 3 : 0)

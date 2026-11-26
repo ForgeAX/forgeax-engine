@@ -1,19 +1,15 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type {
   Buffer,
+  RenderBundle,
   RhiCommandEncoder,
-  RhiRenderPassEncoder,
+  RhiRenderCommands,
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
-import {
-  type RenderBundleCounters,
-  type SceneRenderBundleState,
-  sceneRenderBundleCache,
-} from '../render-bundle-cache';
 
 const width = 16;
 const height = 16;
@@ -29,12 +25,11 @@ const code = `
 it.each([
   1, 4,
 ])('retains native output across graph replacement and resource retirement with %i changing batches', async (changingBatches) => {
-  const state: SceneRenderBundleState = { frameNumber: 0 };
-  const counters: RenderBundleCounters = { hits: 0, misses: 0 };
+  let stableRecordings = 0;
+  let stableExecutions = 0;
   let changedOutputs = 0;
-  let bypassedFrames = 0;
   let previous: Uint8Array | undefined;
-  // Keep the same scene cache owner across a device change; native identities must reset it.
+  // A new device must record even when the attachment format and draw stay the same.
   for (let generation = 0; generation < 2; generation++) {
     const { device, native } = await nativeDeviceFixture();
     native.pushErrorScope('validation');
@@ -79,9 +74,9 @@ it.each([
       const stable = binding([0, 0, 1, 1]);
       let dynamic = binding([1, 0, 0, 1]);
       const readback = device.createBuffer({ size: 256 * height, usage: 1 | 8 }).unwrap();
+      let stableDraw: { format: TextureFormat; bundle: RenderBundle } | undefined;
       try {
         for (let frame = 0; frame < 60; frame++) {
-          state.frameNumber++;
           const format: TextureFormat = frame < 30 ? 'rgba8unorm' : 'bgra8unorm';
           const replaced = frame === 18 ? dynamic : undefined;
           if (replaced !== undefined) dynamic = binding([0, 1, 0, 1]);
@@ -89,12 +84,14 @@ it.each([
           device.queue
             .writeBuffer(dynamic.buffer, 0, Float32Array.of(frame % 2, (frame + 1) % 2, 0, 1))
             .unwrap();
-          const record = (pass: RhiRenderPassEncoder) => {
+          const recordMoving = (pass: RhiRenderCommands) => {
             for (let batch = 0; batch < changingBatches; batch++) {
               pass.setPipeline(pipeline(format));
               pass.setBindGroup(0, dynamic.group);
               pass.draw(3, 1, 0, frame % 2 === 0 ? 1 : 2);
             }
+          };
+          const recordStable = (pass: RhiRenderCommands) => {
             pass.setPipeline(pipeline(format));
             pass.setBindGroup(0, stable.group);
             pass.draw(3, 1, 0, 0);
@@ -119,17 +116,19 @@ it.each([
                 ],
                 accesses: [{ resource: view, usage: 'color-attachment' }],
                 encode: ({ pass }) => {
-                  if (cached)
-                    sceneRenderBundleCache(state, 'main', { colorFormats: [format] }).encode(
-                      device,
-                      pass,
-                      (encoded) => {
-                        if (encoded === pass) bypassedFrames++;
-                        record(encoded);
-                      },
-                      counters,
-                    );
-                  else record(pass);
+                  recordMoving(pass);
+                  if (cached) {
+                    if (stableDraw?.format !== format) {
+                      const encoder = device
+                        .createRenderBundleEncoder({ colorFormats: [format] })
+                        .unwrap();
+                      recordStable(encoder);
+                      stableDraw = { format, bundle: encoder.finish().unwrap() };
+                      stableRecordings++;
+                    }
+                    pass.executeBundles([stableDraw.bundle]).unwrap();
+                    stableExecutions++;
+                  } else recordStable(pass);
                 },
               })
               .unwrap();
@@ -183,9 +182,7 @@ it.each([
       native.destroy();
     }
   }
-  expect(counters.hits).toBeGreaterThan(changingBatches === 1 ? 60 : 0);
-  expect(counters.misses).toBeGreaterThan(0);
+  expect(stableRecordings).toBe(4);
+  expect(stableExecutions).toBe(120);
   expect(changedOutputs).toBeGreaterThan(30);
-  if (changingBatches === 1) expect(bypassedFrames).toBe(0);
-  else expect(bypassedFrames).toBeGreaterThan(0);
 });

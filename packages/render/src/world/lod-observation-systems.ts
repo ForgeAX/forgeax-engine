@@ -18,6 +18,7 @@ import {
   viewAccepted,
 } from './render-views';
 import { RenderCommit, renderSubmission } from './render-world';
+import { ViewFrame, viewFrameOf } from './view-frame-systems';
 import { type ViewRecorderState, viewComposition } from './view-output-systems';
 import { recordContext } from './view-record-context';
 import type { ViewSettlementOwner } from './view-settlement';
@@ -149,11 +150,19 @@ function observedViews(
   }
   // The primary system owns the display when no composed view is declared.
   if (!viewAccepted(world, views.primary)) return [];
+  // The recorded camera belongs to this submission even if the source World has advanced.
+  const staged = viewFrameOf(world, views.primary);
   let cameras: readonly CameraSnapshot[] = [];
-  if (source.publication !== undefined) cameras = source.publication.frame.cameras;
+  if (staged?.mode === true && staged.result?.ok) cameras = staged.result.value.cameras;
+  else if (source.publication !== undefined) cameras = source.publication.frame.cameras;
   else if (source.world !== undefined) {
     try {
-      cameras = selectCameraRoles(source.world, source.opts.cameraEntityKey).display;
+      cameras = selectCameraRoles(
+        source.world,
+        source.opts.cameraEntityKey,
+        undefined,
+        source.cameraSource,
+      ).display;
     } catch {
       return 'camera-roster-unavailable';
     }
@@ -183,7 +192,7 @@ export function registerLodObservationSystem(
       defineSystem({
         commands: 'none',
         name: RENDER_LOD_OBSERVATION_SYSTEM,
-        queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
+        queries: [{ read: [RenderView, ViewRecorder, ViewSubmission], optional: [ViewFrame] }],
         fn: (world) => {
           const { accepted, frame } = renderSubmission(world);
           if (!accepted || !world.hasResource(RenderViewInput)) return;
@@ -202,7 +211,7 @@ export function registerLodObservationSystem(
           state.capture = Object.freeze({
             frameId: host.internals.observationFrameId ?? 0,
             deviceGeneration: recordContext(host.internals).deviceScope.generation,
-            views: Object.freeze([...observed]),
+            views: Object.freeze(observed),
             source: captureSource(source),
           });
         },

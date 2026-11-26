@@ -19,6 +19,7 @@ import {
   deriveStandardTopologyInput,
   standardLightingTopologySignature,
 } from '../pipeline/standard-lighting/topology';
+import { importAutoExposureGraphResources } from '../pipeline/standard-output/auto-exposure/gpu';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from '../record/__tests__/main-pass-cpu-setup-fixture';
@@ -591,48 +592,138 @@ describe('typed built-in pipeline topology', () => {
       ]),
     );
   });
-  it('snapshots no-TAA HDR after actual DoF and before Motion Blur and Bloom in the Standard caller', () => {
+  it.each([
+    { execution: 'compute', antialias: 'taa' },
+    { execution: 'fragment', antialias: 'none' },
+    { execution: 'manual', antialias: 'none' },
+  ] as const)('meters post-motion HDR for $execution with AA=$antialias and keeps SSR pre-motion', ({
+    execution,
+    antialias,
+  }) => {
+    const autoExposure = execution !== 'manual';
+    const compute = execution !== 'fragment';
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
         camera: {
-          antialias: 'none',
+          antialias,
           depthOfField: { blurSide: 'both', useNear: true, useFar: true },
         },
-        temporal: { taa: false, motionBlur: true },
+        temporal: { taa: antialias === 'taa', motionBlur: true },
+        lane: { compute, storageBuffer: compute, multisample: true, maxColorAttachments: 8 },
+        output: { autoExposure, colorLut: false, colorLutStrength: 0 },
       }),
       undefined,
       (graph) => ({
         camera: { depthOfField: DEFAULT_DEPTH_OF_FIELD_PARAMS },
-        ssrSceneColorOutput: createRenderPipelineTarget(graph, 'ssr-color-output', {
-          format: 'rgba16float',
-          size: 'surface',
-          domain: 'linear-hdr',
-        }).unwrap(),
+        ...(execution === 'manual'
+          ? {}
+          : {
+              standardOutput: {
+                autoExposure: importAutoExposureGraphResources(graph, execution).unwrap(),
+              },
+            }),
+        ...(antialias === 'taa'
+          ? {}
+          : {
+              ssrSceneColorOutput: createRenderPipelineTarget(graph, 'ssr-color-output', {
+                format: 'rgba16float',
+                size: 'surface',
+                domain: 'linear-hdr',
+              }).unwrap(),
+            }),
       }),
     );
-    expect(compiled.ok).toBe(true);
-    if (!compiled.ok) return;
-    const info = compiled.value.inspect();
+    const info = compiled.unwrap().inspect();
     const names = info.passes.map((pass) => pass.name);
     const focus = names.indexOf('dof-composite');
-    const snapshot = names.indexOf('ssr-scene-color-history');
     const motion = names.indexOf('motion-blur');
     const bloom = names.findIndex((name) => name.startsWith('bloom-'));
     expect(focus).toBeGreaterThan(-1);
-    expect(snapshot).toBeGreaterThan(focus);
-    expect(motion).toBeGreaterThan(snapshot);
+    const preMotion = antialias === 'taa' ? 'taa-history-current-color' : 'dof-composite';
+    const snapshot = names.indexOf('ssr-scene-color-history');
+    if (antialias === 'taa') {
+      const resolved = names.indexOf('taa-resolve');
+      expect(resolved).toBeGreaterThan(focus);
+      expect(motion).toBeGreaterThan(resolved);
+      expect(snapshot).toBe(-1);
+    } else {
+      expect(snapshot).toBeGreaterThan(focus);
+      expect(motion).toBeGreaterThan(snapshot);
+      expect(info.passes[snapshot]?.accesses).toEqual([
+        { resource: preMotion, usage: 'sampled-read' },
+        { resource: 'ssr-color-output', usage: 'color-attachment' },
+      ]);
+    }
     expect(bloom).toBeGreaterThan(motion);
-    const saved = info.passes[snapshot];
-    expect(saved?.accesses).toContainEqual({ resource: 'dof-composite', usage: 'sampled-read' });
-    expect(saved?.accesses).toContainEqual({
-      resource: 'ssr-color-output',
-      usage: 'color-attachment',
-    });
     expect(info.passes[motion]?.accesses).toContainEqual({
-      resource: 'dof-composite',
+      resource: preMotion,
       usage: 'sampled-read',
     });
+    if (execution === 'manual') {
+      expect(names.some((name) => name.startsWith('auto-exposure-'))).toBe(false);
+    } else {
+      const meter = names.indexOf(
+        execution === 'compute' ? 'auto-exposure-meter' : 'auto-exposure-classify',
+      );
+      expect(info.passes[meter]?.accesses).toContainEqual({
+        resource: 'motion-blurred-color',
+        usage: 'sampled-read',
+      });
+      expect(meter).toBeGreaterThan(motion);
+      expect(bloom).toBeGreaterThan(meter);
+    }
+  });
+  it.each([
+    'compute',
+    'fragment',
+  ] as const)('shares one half-resolution scene color between UE exposure and Bloom on %s', (execution) => {
+    const compute = execution === 'compute';
+    const info = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        camera: { antialias: 'none' },
+        lane: { compute, storageBuffer: compute, multisample: true, maxColorAttachments: 8 },
+        surface: {
+          width: 801,
+          height: 601,
+          storageFormat: 'bgra8unorm',
+          viewFormat: 'bgra8unorm-srgb',
+        },
+        output: {
+          autoExposure: true,
+          autoExposureHalfRes: true,
+          colorLut: false,
+          colorLutStrength: 0,
+        },
+      }),
+      undefined,
+      (graph) => ({
+        standardOutput: {
+          autoExposure: importAutoExposureGraphResources(graph, execution).unwrap(),
+        },
+      }),
+    )
+      .unwrap()
+      .inspect();
+    const half = 'post-scene-color-half';
+    expect(info.resources.find(({ label }) => label === half)?.descriptor).toMatchObject({
+      width: 401,
+      height: 301,
+      format: 'rgba16float',
+    });
+    expect(
+      info.passes.filter(({ accesses }) =>
+        accesses.some(({ resource, usage }) => resource === half && usage === 'color-attachment'),
+      ),
+    ).toHaveLength(1);
+    const meter = execution === 'compute' ? 'auto-exposure-meter' : 'auto-exposure-classify';
+    for (const name of [meter, 'bloom-horizontal-0']) {
+      expect(info.passes.find((pass) => pass.name === name)?.accesses).toContainEqual({
+        resource: half,
+        usage: 'sampled-read',
+      });
+    }
   });
   it('routes generic post writers to the current DoF result consumed by Bloom', () => {
     const compiled = compile(
@@ -1074,7 +1165,7 @@ describe('typed built-in pipeline topology', () => {
     const tone = source.indexOf("name: 'standard-tone'");
     const lut = source.indexOf("'standard-color-lut'");
     const fxaa = source.indexOf("name: 'fxaa'");
-    const encoding = source.indexOf("name: 'standard-output-encoding'");
+    const encoding = source.indexOf("'standard-output-encoding'");
     expect(tone).toBeGreaterThanOrEqual(0);
     expect(lut).toBeGreaterThan(tone);
     expect(fxaa).toBeGreaterThan(lut);
@@ -1082,7 +1173,9 @@ describe('typed built-in pipeline topology', () => {
     expect(source).toContain("fragmentEntryPoint: 'fs_tone_only'");
     expect(source).toContain("fragmentEntryPoint: 'fs_encode_only'");
     expect(source).toContain("domain: 'linear-ldr'");
-    expect(source).toMatch(/\{\s*dither: false,?\s*\}/);
+    const fxaaStage = source.slice(source.indexOf('function addFxaaStage'), fxaa);
+    expect(fxaaStage).toContain('dither: compact ? route.outputDither : false');
+    expect(source.slice(fxaa, encoding)).toContain('paramsTransform: () => FXAA_NO_DITHER_PARAMS');
   });
 
   it('declares stable JSON-safe output and observation inspection facts', () => {
@@ -1530,47 +1623,50 @@ describe('typed built-in pipeline topology', () => {
     expect(names.some((name) => name.startsWith('ssao-'))).toBe(false);
   });
 
-  it('keeps URP post effects after output and before debug overlay', () => {
+  it('chains encoded post effects directly between FXAA and the debug overlay', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        config: { postEffects: ['example::a', 'example::b'] },
+        config: { postEffects: ['example::a', 'example::b', 'example::c'] },
       }),
-    );
-    expect(compiled.ok).toBe(true);
-    if (!compiled.ok) return;
-    const info = compiled.value.inspect();
+    ).unwrap();
+    const info = compiled.inspect();
     const names = info.passes.map((pass) => pass.name);
-    expect(names.filter((name) => name.startsWith('shadowCascade'))).toHaveLength(4);
-    expect(names.indexOf('post-effect-0')).toBeGreaterThan(names.indexOf('fxaa'));
-    expect(names.indexOf('post-effect-1')).toBeGreaterThan(names.indexOf('post-effect-0'));
-    expect(names.indexOf('debug-overlay')).toBeGreaterThan(names.indexOf('post-effect-1'));
-    expect(info.resources.map((resource) => resource.label)).toEqual(
-      expect.arrayContaining([
-        'post-effect-scratch-0',
-        'post-effect-output-0',
-        'post-effect-scratch-1',
-      ]),
+    expect(names.some((name) => name.startsWith('post-effect-copy-'))).toBe(false);
+    expect(info.resources.some(({ label }) => label.startsWith('post-effect-scratch-'))).toBe(
+      false,
     );
-    const copy0 = info.passes.find((pass) => pass.name === 'post-effect-copy-0');
-    const effect0 = info.passes.find((pass) => pass.name === 'post-effect-0');
-    const copy1 = info.passes.find((pass) => pass.name === 'post-effect-copy-1');
-    const effect1 = info.passes.find((pass) => pass.name === 'post-effect-1');
-    expect(copy0?.accesses).toContainEqual({ resource: 'surface', usage: 'copy-src' });
-    expect(copy1?.accesses).toContainEqual({
-      resource: 'post-effect-output-0',
-      usage: 'copy-src',
-    });
-    expect(effect0?.accesses).toContainEqual({
-      resource: 'post-effect-output-0',
+    const targets = [
+      'standard-post-effects-input',
+      'post-effect-output-0',
+      'post-effect-output-1',
+      'surface',
+    ];
+    const stages = ['fxaa', 'post-effect-0', 'post-effect-1', 'post-effect-2', 'debug-overlay'];
+    for (let index = 1; index < stages.length; index++) {
+      expect(names.indexOf(stages[index] ?? '')).toBeGreaterThan(
+        names.indexOf(stages[index - 1] ?? ''),
+      );
+    }
+    expect(info.passes.find(({ name }) => name === 'fxaa')?.accesses).toContainEqual({
+      resource: targets[0],
       usage: 'color-attachment',
     });
-    expect(effect1?.accesses).toContainEqual({
-      resource: 'surface',
-      usage: 'color-attachment',
-    });
-    expect(copy1?.dependencies).toContain('post-effect-0');
-    expect(effect1?.dependencies).toContain('post-effect-copy-1');
+    for (let index = 0; index < targets.length - 1; index++) {
+      const pass = info.passes.find(({ name }) => name === `post-effect-${index}`);
+      expect(pass?.accesses).toContainEqual({ resource: targets[index], usage: 'sampled-read' });
+      expect(pass?.accesses).toContainEqual({
+        resource: targets[index + 1],
+        usage: 'color-attachment',
+      });
+      expect(pass?.dependencies).toContain(stages[index]);
+      expect(
+        info.resources.find(({ label }) => label === targets[index])?.descriptor,
+      ).toMatchObject({
+        format: 'bgra8unorm',
+        domain: 'display-encoded',
+      });
+    }
   });
 
   it('admits the fullscreen post-effect chain atomically', () => {
@@ -1675,18 +1771,16 @@ describe('typed built-in pipeline topology', () => {
   });
 
   it.each([
-    { antialias: 'taa' as const, afterTonemap: true, readsDepth: true },
-    { antialias: 'taa' as const, afterTonemap: true, readsDepth: false },
-    { antialias: 'taa' as const, afterTonemap: false, readsDepth: true },
-    { antialias: 'none' as const, afterTonemap: true, readsDepth: true },
-  ])('pairs after-tonemap scene inputs with the actual TAA output ($antialias/$afterTonemap)', ({
+    { antialias: 'taa' as const, afterTonemap: true, exact: true },
+    { antialias: 'taa' as const, afterTonemap: true, exact: false },
+    { antialias: 'taa' as const, afterTonemap: false, exact: true },
+    { antialias: 'none' as const, afterTonemap: true, exact: true },
+  ])('selects depth for after-tonemap effects ($antialias/$afterTonemap/$exact)', ({
     antialias,
     afterTonemap,
-    readsDepth,
+    exact,
   }) => {
-    let projection:
-      | Parameters<RenderPipelineBuildContext<RenderPipelineFrame>['contributeFeatures']>[0]
-      | undefined;
+    let samplesUnjitteredView = false;
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
@@ -1694,23 +1788,27 @@ describe('typed built-in pipeline topology', () => {
         extent: {
           outputWidth: 800,
           outputHeight: 600,
-          internalWidth: 536,
-          internalHeight: 402,
-          scale: 0.67,
+          internalWidth: antialias === 'taa' ? 536 : 800,
+          internalHeight: antialias === 'taa' ? 402 : 600,
+          scale: antialias === 'taa' ? 0.67 : 1,
           generation: 1,
         },
       }),
       undefined,
       (graph) => ({
-        hasFeatureWork: (_identity, placement, sceneInput) =>
-          placement === 'after-tonemap' && afterTonemap && (sceneInput === undefined || readsDepth),
+        afterTonemapOutput: afterTonemap
+          ? { endpointFeatures: [], needsIntermediate: false, needsOutputDepth: exact }
+          : null,
+        hasFeatureWork: (_identity, placement) => placement === 'after-tonemap' && afterTonemap,
         contributeFeatures: (input) => {
           if (input.placement !== 'after-tonemap') return ok(undefined);
-          projection = input;
           const color = input.targets.find((target) => target.kind === 'scene-color');
-          const depth = input.targets.find((target) => target.kind === 'scene-depth');
+          const depth = input.targets.find((target) =>
+            exact ? target.name === 'output-depth' : target.kind === 'scene-depth',
+          );
           if (color === undefined || depth === undefined)
             throw new Error('missing post-process input');
+          samplesUnjitteredView = depth.view === input.unjitteredDepth;
           return graph.addRasterPass('after-tonemap-depth-consumer', {
             accesses: [
               { resource: color.view, usage: 'color-attachment' },
@@ -1723,31 +1821,33 @@ describe('typed built-in pipeline topology', () => {
       }),
     ).unwrap();
     const info = compiled.inspect();
-    const matched = antialias === 'taa' && afterTonemap && readsDepth;
+    const matched = antialias === 'taa' && afterTonemap && exact;
     const producer = info.passes.find((pass) => pass.name === 'standard-post-process-coverage');
     expect(producer !== undefined).toBe(matched);
-    expect(projection?.postProcessView).toBe(matched ? 'unjittered' : undefined);
-    if (!matched) return;
-    expect(producer?.accesses).toEqual(
-      expect.arrayContaining([
-        { resource: 'standard-post-process-coverage', usage: 'color-attachment' },
-        { resource: 'standard-post-process-depth', usage: 'depth-stencil-write' },
-      ]),
-    );
-    expect(producer?.accesses).not.toContainEqual({
-      resource: 'taa-history-current-temporal',
-      usage: 'sampled-read',
-    });
-    expect(
-      info.resources.find((resource) => resource.label === 'standard-post-process-depth')
-        ?.descriptor,
-    ).toMatchObject({ format: 'depth32float-stencil8', width: 800, height: 600, sampleCount: 1 });
+    expect(samplesUnjitteredView).toBe(matched);
+    if (!afterTonemap) return;
     expect(
       info.passes.find((pass) => pass.name === 'after-tonemap-depth-consumer')?.accesses,
     ).toContainEqual({
-      resource: 'standard-post-process-depth',
+      resource: matched ? 'standard-post-process-depth' : 'scene-depth',
       usage: 'sampled-read',
     });
+    if (matched) {
+      expect(producer?.accesses).toEqual(
+        expect.arrayContaining([
+          { resource: 'standard-post-process-coverage', usage: 'color-attachment' },
+          { resource: 'standard-post-process-depth', usage: 'depth-stencil-write' },
+        ]),
+      );
+      expect(producer?.accesses).not.toContainEqual({
+        resource: 'taa-history-current-temporal',
+        usage: 'sampled-read',
+      });
+      expect(
+        info.resources.find((resource) => resource.label === 'standard-post-process-depth')
+          ?.descriptor,
+      ).toMatchObject({ format: 'depth32float-stencil8', width: 800, height: 600, sampleCount: 1 });
+    }
   });
 
   it.each([
@@ -1763,7 +1863,13 @@ describe('typed built-in pipeline topology', () => {
         waterView: { kind: 'available', underwater },
       }),
       undefined,
-      () => ({ hasFeatureWork: (_identity, placement) => placement === 'after-tonemap' }),
+      () => ({
+        afterTonemapOutput: {
+          endpointFeatures: [],
+          needsIntermediate: true,
+          needsOutputDepth: true,
+        },
+      }),
     ).unwrap();
     const info = compiled.inspect();
     expect(

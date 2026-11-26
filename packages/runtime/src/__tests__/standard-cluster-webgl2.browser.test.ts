@@ -159,7 +159,16 @@ it.each([
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
     const receipt = value(renderer.draw({ source: lease }));
-    value(await receipt.completed);
+    const completion = await receipt.completed;
+    if (!completion.ok) {
+      const detail = JSON.stringify({
+        frameId: receipt.frameId,
+        contextLost: canvas.getContext('webgl2')?.isContextLost(),
+        completion: completion.error,
+        rendererError: errors[0],
+      });
+      throw new Error(`WebGL2 ${surface} frame failed. ${detail}`, { cause: completion.error });
+    }
     if (errors.length > 0) throw errors[0];
     return receipt;
   };

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { checkEngineAuthoringPackageSize } from './engine-authoring-package.mjs';
 import { exportRepository, repositoryProducerDigest } from './export-repository.mjs';
-import { assertChannelAdvance, releasePolicy } from './release-policy.mjs';
+import { assertChannelAdvance, assertRcAboveStable, releasePolicy } from './release-policy.mjs';
 import {
   assertMirrorPreflight,
   assertMirrorTarget,
@@ -30,10 +30,11 @@ const sha = (algorithm, bytes, encoding = 'hex') =>
   createHash(algorithm).update(bytes).digest(encoding);
 
 async function packageArchive(directory, version, source) {
+  const { channel } = releasePolicy(version);
   if (
-    releasePolicy(version).channel !== 'next' ||
+    (channel !== 'next' && channel !== 'rc') ||
     !/^[0-9a-f]{40}$/.test(source) ||
-    !version.endsWith(`.${source.slice(0, 12)}`)
+    (channel === 'next' && !version.endsWith(`.${source.slice(0, 12)}`))
   )
     throw new Error('engine-release-source-version-mismatch');
   const files = (await readdir(directory)).filter((file) => file.endsWith('.tgz'));
@@ -113,7 +114,7 @@ async function startRegistry(item) {
         );
         return;
       }
-      if (decoded.startsWith(`${name}-`) || decoded.startsWith('/@forgeax/view')) {
+      if (decoded.startsWith(`/${name}-`) || decoded.startsWith('/@forgeax/view')) {
         res.writeHead(404).end();
         return;
       }
@@ -145,10 +146,11 @@ async function consumer(item, local) {
   const proxy = local ? await startRegistry(item) : undefined;
   const url = proxy?.url ?? registry;
   const config = resolve(work, 'npmrc');
+  const globalConfig = resolve(work, 'global-npmrc');
   const env = {
     ...process.env,
     NPM_CONFIG_USERCONFIG: config,
-    NPM_CONFIG_GLOBALCONFIG: config,
+    NPM_CONFIG_GLOBALCONFIG: globalConfig,
     NPM_CONFIG_CACHE: resolve(work, 'npm-cache'),
     NPM_CONFIG_REGISTRY: url,
     npm_config_registry: url,
@@ -164,6 +166,7 @@ async function consumer(item, local) {
   ])
     delete env[key];
   await writeFile(config, `registry=${url}\n@forgeax:registry=${url}\n`);
+  await writeFile(globalConfig, '');
   const prefix = resolve(work, 'global');
   const cli = resolve(prefix, 'bin/forgeax');
   const run = async (command, args, cwd = work, capture = false) => {
@@ -212,7 +215,10 @@ async function consumer(item, local) {
           const view = JSON.parse(await run(cli, ['project', 'view', '--json'], project, true));
           if (view.ok !== true)
             throw new Error(`engine-release-view-failed: ${JSON.stringify(view.error)}`);
-          const viewUrl = new URL(view.value.url);
+          const status = view.value.view;
+          if (status?.phase !== 'ready' || typeof status.url !== 'string')
+            throw new Error('engine-release-view-ready-url-required');
+          const viewUrl = new URL(status.url);
           if (
             !['localhost', '127.0.0.1', '[::1]'].includes(viewUrl.hostname) ||
             !(await fetch(viewUrl, { signal: AbortSignal.timeout(10_000) })).ok
@@ -245,6 +251,32 @@ const fetchRegistry = (path) =>
     headers: { 'cache-control': 'no-cache' },
     signal: AbortSignal.timeout(15_000),
   });
+async function readChannel(version) {
+  const { tag, channel } = releasePolicy(version);
+  const response = await fetchRegistry(`/-/package/${encodeURIComponent(name)}/dist-tags`);
+  if (!response.ok) throw new Error(`engine-release-dist-tags-http-${response.status}`);
+  const tags = await response.json();
+  if (typeof tags[tag] !== 'string' && (channel !== 'rc' || tags[tag] !== undefined))
+    throw new Error(`engine-release-${tag}-tag-invalid`);
+  if (channel === 'rc') {
+    if (typeof tags.latest !== 'string') throw new Error('engine-release-latest-tag-required');
+    assertRcAboveStable(version, tags.latest);
+  }
+  assertChannelAdvance(version, tags[tag]);
+  return tags[tag];
+}
+
+async function versionExists(item) {
+  const current = await fetchRegistry(`${namePath}/${item.version}`);
+  if (current.ok) {
+    if ((await current.json()).dist?.integrity !== item.integrity)
+      throw new Error('engine-release-immutable-version-conflict');
+    return true;
+  }
+  if (current.status !== 404) throw new Error(`engine-release-registry-http-${current.status}`);
+  return false;
+}
+
 export async function readEngineCandidate(directory, version, source) {
   const item = await packageArchive(directory, version, source);
   const proof = JSON.parse(await readFile(resolve(directory, 'engine-candidate.json'), 'utf8'));
@@ -266,6 +298,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [stage, directory, version, source, ...extra] = process.argv.slice(2);
   if (stage === 'seal') {
     const item = await packageArchive(directory, version, source);
+    if (releasePolicy(version).channel === 'rc') {
+      await readChannel(version);
+      await versionExists(item);
+    }
     const verified = await consumer(item, true);
     const proof = {
       ok: true,
@@ -289,18 +325,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       await mirror(stage, directory, item, extra);
       process.exit(0);
     }
-    const tags = await fetchRegistry(`/-/package/${encodeURIComponent(name)}/dist-tags`);
-    if (!tags.ok) throw new Error(`engine-release-dist-tags-http-${tags.status}`);
-    const { next: channel } = await tags.json();
-    if (typeof channel !== 'string') throw new Error('engine-release-next-tag-required');
-    assertChannelAdvance(version, channel);
+    const { tag, channel } = releasePolicy(version);
+    const channelVersion = await readChannel(version);
     if (stage === 'publish') {
-      const current = await fetchRegistry(`${namePath}/${version}`);
-      if (current.ok && (await current.json()).dist?.integrity !== item.integrity)
-        throw new Error('engine-release-immutable-version-conflict');
-      if (!current.ok) {
-        if (current.status !== 404)
-          throw new Error(`engine-release-registry-http-${current.status}`);
+      if (!(await versionExists(item))) {
         try {
           await execFile(
             'npm',
@@ -310,7 +338,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
               '--access',
               'public',
               '--tag',
-              'candidate',
+              channel === 'rc' ? 'rc-candidate' : 'candidate',
               '--registry',
               registry,
             ],
@@ -344,9 +372,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         proof.consumer.registry !== 'public'
       )
         throw new Error('engine-release-public-consumer-proof-required');
-      const { tag } = releasePolicy(version);
       await wait(item);
-      if (channel !== version)
+      if (channelVersion !== version)
         await execFile('npm', [
           'dist-tag',
           'add',

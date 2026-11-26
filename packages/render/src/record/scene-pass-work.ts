@@ -48,7 +48,7 @@ import type {
   NativeMeshRowSpan,
   ViewDrawPhases,
 } from './direct-draw-phase';
-import { JoinedDrawRows } from './draw-row-pages';
+import { JoinedDrawRows, visitSubmittedDrawRows } from './draw-row-pages';
 import type { buildDispatchPlan } from './fold-buckets';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
@@ -371,9 +371,9 @@ function indexSubmittedPositions(
 ): void {
   let current = ranges[0];
   let cursor = 0;
-  for (let position = 0; position < submitted.length; position++) {
-    const index = (submitted.at(position) as ValidatedRenderable).renderableIndex;
-    if (!Number.isInteger(index) || index < 0 || index >= sourceLength) continue;
+  visitSubmittedDrawRows(submitted, (row, position) => {
+    const index = row.renderableIndex;
+    if (!Number.isInteger(index) || index < 0 || index >= sourceLength) return;
     if (current === undefined || index < current.start || index >= current.end) {
       const next = ranges[cursor + 1];
       cursor =
@@ -383,7 +383,7 @@ function indexSubmittedPositions(
       current = ranges[cursor];
     }
     current?.append(index, position);
-  }
+  });
 }
 
 /** Physical phase ranges are disjoint in preparation order, including empty ranges. */

@@ -96,13 +96,10 @@ fn linearToSrgbOetf(color : vec3<f32>) -> vec3<f32> {
   return select(high, low, safe <= vec3<f32>(0.0031308));
 }
 
-// Shared final-surface dither.  The output transform and FXAA are both
-// display-encoded fullscreen writers, so they must use one owner-level
-// algorithm rather than carrying subtly different copies in each pass.
-// The bounded shift is ±0.5/255 per channel, matching Three.js's optional
-// material dithering amplitude while the screen-space hash remains stable for
-// a still frame.  Callers decide whether this writer is the final 8-bit
-// boundary; intermediate float targets must leave it disabled.
+// Shared display-encoded dither. The bounded shift is ±0.5/255 per channel,
+// matching Three.js's optional material dithering amplitude. The screen-space
+// hash remains stable for a still frame. Apply dither once at the first
+// 8-bit color quantization while the sub-code values are still available.
 fn hash32(value : u32) -> u32 {
   var hash = value;
   hash = (hash ^ 61u) ^ (hash >> 16u);

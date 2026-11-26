@@ -53,7 +53,11 @@ async function fixture() {
     })
     .unwrap() as Texture;
   const writeTexture = vi.spyOn(device.queue, 'writeTexture');
-  const table = new ClusterTextureTable(layout.width, layout.height, 4);
+  const table = new ClusterTextureTable(
+    layout.width,
+    layout.height,
+    STANDARD_CLUSTER_TEST_ABI.directLightSlot,
+  );
   return { device, layout, table, texture, writeTexture };
 }
 
@@ -77,7 +81,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid: grid,
         lightIndices,
         lightIndexCount: lightIndices.length,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     expect(write().ok).toBe(true);
@@ -152,7 +155,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid: new Uint32Array([0, 1]),
         lightIndices: new Uint32Array([0]),
         lightIndexCount: 1,
-        slotLayout,
       });
     const highBitFirst = (1 << 15) | 31;
     const highBitSecond = (2 << 15) | (31 << 5);
@@ -189,7 +191,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid,
         lightIndices,
         lightIndexCount: lightIndices.length,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     writeTexture.mockReturnValueOnce(
@@ -228,7 +229,11 @@ describe('ClusterTextureTable', () => {
         usage: GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
       })
       .unwrap() as Texture;
-    const table = new ClusterTextureTable(layout.width, layout.height, 0);
+    const table = new ClusterTextureTable(
+      layout.width,
+      layout.height,
+      STANDARD_CLUSTER_TEST_ABI.directLightSlot,
+    );
     const writeTexture = vi.spyOn(device.queue, 'writeTexture');
     const write = (clusterGrid: Uint32Array) =>
       table.write({
@@ -240,7 +245,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid,
         lightIndices: new Uint32Array(),
         lightIndexCount: 0,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     const initial = write(new Uint32Array([1, 0, 0, 0, 0, 0, 0, 0, 1]));

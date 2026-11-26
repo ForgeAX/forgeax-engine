@@ -26,6 +26,7 @@ import { FrameSet } from '../scene/frame-set';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { type MaterialFrame, usesAcceptedSpriteGeometry } from '../scene/material-dispatch';
 import { SceneDrawSlot } from '../scene/mesh-draw';
+import type { CameraVisibility } from '../scene/persistent-cull';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { type BinnedItem, BinnedPhase, type BinPlacement } from '../systems/binned-phase';
@@ -115,7 +116,7 @@ export interface DirectDrawInput {
       ) => MeshGpuHandles)
     | undefined;
   /** Camera admission; its fixed evidence names every row whose answer may differ. */
-  readonly visible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  readonly visible?: CameraVisibility | undefined;
   /** Camera geometry mask; absent for shadow consumers. */
   readonly cullMask?: number;
   readonly admission?: CameraAdmission | undefined;
@@ -423,6 +424,13 @@ function keyedDraw(row: ValidatedRenderable | undefined): boolean {
 /** A fixed residual already owns admission for its slots; the camera tests the remaining rows. */
 type AdmissionReads = 'changes' | 'all' | NonNullable<CameraAdmission['residual']>;
 
+function participates(
+  source: Pick<RenderableSnapshot, 'authorVisible' | 'shadowCaster'>,
+  shadow: boolean,
+): boolean {
+  return source.authorVisible !== false && (!shadow || source.shadowCaster !== false);
+}
+
 function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): boolean {
   return (
     (input.cullMask === undefined || cameraAdmitsLayers(input, source)) &&
@@ -505,6 +513,19 @@ export class DirectDrawPhase {
   private unaddressable = 0;
   /** Geometry publications whose placed work still occupies its emitted address. */
   private readonly movedRows = new ChangedDrawMembers('moveAddress');
+  // Requested by a retained shadow atlas after emit. This identity owns no row or mesh.
+  private meshDomain: object | undefined;
+
+  issuedMeshDomain(): object {
+    this.meshDomain ??= {};
+    return this.meshDomain;
+  }
+
+  private observeIssuedMesh(rows: DrawRows, index: number, row: ValidatedRenderable): void {
+    if (this.meshDomain !== undefined && rows.at(index)?.mesh.changeToken !== row.mesh.changeToken)
+      this.meshDomain = undefined;
+  }
+
   private emittedRevision = -1;
   private emittedSort = -1;
   private emittedOffset = 0;
@@ -1079,6 +1100,21 @@ export class DirectDrawPhase {
     // A borrowed all-row walk discovers its subset while reading the external source.
     const sampled = sample === 'all' ? ([] as Member[]) : undefined;
     const candidates = sample === 'changes' ? dirty : this.members;
+    const drawAt = input.scene.drawSnapshotAt;
+    const project = drawAt?.locate === input.scene.slotAt ? drawAt.project : undefined;
+    const slots = input.scene.draws?.slots;
+    const projectCamera = drawAt?.projectCamera;
+    const visibility = input.visible?.slots;
+    const camera =
+      visibility !== undefined &&
+      visibility.cameraVisible === input.visible &&
+      slots !== undefined &&
+      slots.slotAt === drawAt?.locate &&
+      visibility.addresses === slots.identities &&
+      project !== undefined &&
+      projectCamera === project
+        ? visibility
+        : undefined;
     candidates.forEach((member) => {
       if (!member.live) return;
       const changed = sample === 'changes' || dirty.has(member);
@@ -1100,22 +1136,37 @@ export class DirectDrawPhase {
         sample === 'all' && !changed && tracked && member.firstBatch !== undefined
           ? member.row
           : undefined;
-      const current =
-        retained !== undefined
-          ? retained.source
-          : member.slot === undefined
-            ? member.view
-            : (input.scene.drawSnapshotAt ?? invalid('the Scene-owned direct draw projection'))(
-                member.slot,
-              );
-      const admitted = current !== undefined && sourceVisible(input, current);
+      // Join the fixed production row once. A custom camera predicate observes the
+      // complete source; native participation without a predicate needs only authored fields.
+      const located =
+        retained === undefined && project !== undefined && member.slot !== undefined
+          ? input.scene.slotAt(member.slot)
+          : undefined;
+      let current: RenderableSnapshot | undefined;
+      let cameraTested = false;
+      if (retained !== undefined) current = retained.source;
+      else if (member.slot === undefined) current = member.view;
+      else if (project === undefined)
+        current = (drawAt ?? invalid('the Scene-owned direct draw projection'))(member.slot);
+      else if (located !== undefined && camera !== undefined && projectCamera !== undefined) {
+        current = projectCamera(located, input, camera);
+        cameraTested = true;
+      } else if (
+        located !== undefined &&
+        (!(located instanceof SceneDrawSlot) ||
+          input.visible !== undefined ||
+          input.cullMask !== undefined ||
+          participates(located.content, input.shadow))
+      )
+        current = project(located);
+      const admitted = current !== undefined && (cameraTested || sourceVisible(input, current));
       if (!changed) {
         // Borrowed producers can replace a projection independently of its Scene slot.
         const sourceChanged =
           !tracked &&
           member.slot !== undefined &&
           ((admitted && current !== member.row?.source) ||
-            input.scene.slotAt(member.slot) !== member.record);
+            (located ?? input.scene.slotAt(member.slot)) !== member.record);
         if (admitted === member.admitted && !sourceChanged) return;
         dirty.add(member);
       }
@@ -1123,7 +1174,7 @@ export class DirectDrawPhase {
       member.admitted = admitted;
       const previous = member.row;
       const before = member.record;
-      const source = this.candidate(member, input, admitted ? current : undefined);
+      const source = this.candidate(member, input, admitted ? current : undefined, located);
       const after = member.record;
       sampled?.push(member);
       // A native slot carries one shared content object across successive poses.
@@ -1382,9 +1433,10 @@ export class DirectDrawPhase {
     member: Member,
     input: DirectDrawInput,
     source: RenderableSnapshot | undefined,
+    located: RenderSceneSlot | undefined,
   ): RenderableSnapshot | undefined {
     if (member.slot !== undefined) {
-      const record = input.scene.slotAt(member.slot);
+      const record = located ?? input.scene.slotAt(member.slot);
       member.record = record;
       member.version = record?.version ?? 0;
       if (record === undefined) {
@@ -1409,9 +1461,7 @@ export class DirectDrawPhase {
       )
         return undefined;
     }
-    return source?.authorVisible === false || (input.shadow && source?.shadowCaster === false)
-      ? undefined
-      : source;
+    return source !== undefined && participates(source, input.shadow) ? source : undefined;
   }
 
   private batchedRow(
@@ -1932,6 +1982,7 @@ export class DirectDrawPhase {
           this.movedRows.forEach((member) => {
             const index = member.outputIndex;
             const row = this.publishRow(member, offset + index);
+            this.observeIssuedMesh(previous, index, row);
             write(index, row);
             if (this.retainBindings) this.materialRows.move(index, row);
           });
@@ -1982,7 +2033,10 @@ export class DirectDrawPhase {
     const rows = issueDrawRows(previous.rows.length, undefined, (write) => {
       for (const member of this.members.values()) {
         if (member.emitted !== this.epoch) continue;
-        write(member.outputIndex, this.publishRow(member, offset + member.outputIndex));
+        const index = member.outputIndex;
+        const row = this.publishRow(member, offset + index);
+        this.observeIssuedMesh(previous.rows, index, row);
+        write(index, row);
       }
     });
     let materialRows = previous.materialRows;
@@ -2046,11 +2100,14 @@ export class DirectDrawPhase {
     else this.materialRows.clear();
     let nativeStart = 0;
     let nativeEnd = 0;
+    const previousRows = this.output.rows;
+    if (previousRows.length !== members.length) this.meshDomain = undefined;
     const rows = issueDrawRows(members.length, undefined, (write) => {
       for (let index = 0; index < members.length; index++) {
         const member = members[index] as Member;
         member.outputIndex = index;
         const row = this.publishRow(member, offset + index);
+        this.observeIssuedMesh(previousRows, index, row);
         write(index, row);
         if (keyedDraw(row)) {
           if (nativeEnd === 0) nativeStart = index;

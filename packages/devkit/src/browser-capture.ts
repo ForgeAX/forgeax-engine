@@ -24,7 +24,7 @@ import { type CaptureRendererError, captureRenderFailure } from './capture-rende
 import { stopChildProcess } from './child-process.js';
 import {
   chromiumEnvironment,
-  launchSandboxedBrowser,
+  launchChromiumBrowser,
   needsChromiumPrivilegeDrop,
   unattendedRootBrowser,
 } from './chromium-sandbox.js';
@@ -1306,15 +1306,15 @@ function captureContextOptions(
   };
 }
 
-async function launchSandboxedChromium(launch: LaunchOptions): Promise<Browser> {
+async function launchCaptureChromium(launch: LaunchOptions): Promise<Browser> {
   try {
-    return await launchSandboxedBrowser(launch);
+    return await launchChromiumBrowser(launch);
   } catch (cause) {
     if (!needsChromiumPrivilegeDrop()) throw cause;
     fail(
       'browser-sandbox-root',
-      'a sandboxed Chromium child running with an unprivileged Linux identity',
-      'Engine could not start the browser after trying an unprivileged launch. Browser, gameplay, and visual checks are unverified.',
+      'a Chromium child that can open the debug page',
+      'Engine could not start Chromium on this Linux root host. Browser, gameplay, and visual checks are unverified.',
       { effectiveUserId: 0, browserStarted: false, reason: String(cause).slice(0, 2048) },
     );
   }
@@ -1339,7 +1339,7 @@ async function retainedBrowser(
   ]);
   const existing = await retained.get(key)?.catch(() => undefined);
   if (existing?.isConnected()) return existing;
-  const launching = launchSandboxedChromium(launch);
+  const launching = launchCaptureChromium(launch);
   retained.set(key, launching);
   launching.catch(() => {
     if (retained.get(key) === launching) retained.delete(key);
@@ -1364,7 +1364,7 @@ async function launchCapturePage(
     });
     return { browser, page, release: () => context.close() };
   }
-  const browser = await launchSandboxedChromium(launch);
+  const browser = await launchCaptureChromium(launch);
   try {
     const page = await browser.newPage(contextOptions);
     return { browser, page, release: () => browser.close() };

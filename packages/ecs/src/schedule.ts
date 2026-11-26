@@ -402,11 +402,17 @@ function findCyclePath(
   return nodes;
 }
 
-function poisonSystemFailure(world: World, systemName: string, cause: unknown): void {
+function poisonSystemFailure(
+  world: World,
+  systemName: string,
+  schedule: string,
+  cause: unknown,
+): void {
   const poison = world[worldInternal].poisonExecution;
   poison({
-    code: 'shared-kernel-failed',
-    kernelName: `system:${systemName}`,
+    code: 'system-failed',
+    systemName,
+    schedule,
     cause,
     partialWrite: true,
     retryable: false,
@@ -507,14 +513,14 @@ function invokeSystem(
       throw new MemoryError({ kind: 'scope', reason: 'asynchronous' });
   } catch (error) {
     abortOutstandingCommands(commandsBySystem);
-    poisonSystemFailure(world, name, error);
+    poisonSystemFailure(world, name, scheduleName, error);
     throw createSystemFailedError(name, scheduleName, error);
   }
   if (returnValue && typeof returnValue === 'object' && 'ok' in returnValue) {
     const result = returnValue as { ok: boolean; error?: unknown };
     if (result.ok === false && result.error !== undefined) {
       abortOutstandingCommands(commandsBySystem);
-      poisonSystemFailure(world, name, result.error);
+      poisonSystemFailure(world, name, scheduleName, result.error);
       throw createSystemFailedError(name, scheduleName, result.error);
     }
   }

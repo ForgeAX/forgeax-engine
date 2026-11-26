@@ -257,6 +257,14 @@ export function materialVertexConstants(
 export function pipelineVertexConstants(input: {
   readonly constants?: Readonly<Record<string, number>> | undefined;
   readonly vertexConstants?: Readonly<Record<string, number>> | undefined;
+  readonly projectSurfaceResources?: boolean | undefined;
 }): Readonly<Record<string, number>> | undefined {
-  return input.vertexConstants ?? input.constants;
+  const constants = input.vertexConstants ?? input.constants;
+  if (input.projectSurfaceResources !== true || constants === undefined) return constants;
+  const mask = constants[STANDARD_TEXTURE_MASK_OVERRIDE];
+  if (mask === undefined || standardVertexTextureMask(mask) !== 0) return constants;
+  // The projected stock Surface compiles out vertex displacement when its
+  // resource is absent. Older WebKit rejects overrides unused by the entry.
+  const { [STANDARD_TEXTURE_MASK_OVERRIDE]: _mask, ...remaining } = constants;
+  return Object.keys(remaining).length === 0 ? undefined : remaining;
 }

@@ -5,12 +5,14 @@ import { createStandardClusterLayout, type StandardClusterLayout } from './layou
 import type { StandardLightFrame } from './light-frame';
 import { deriveStandardMembership, type StandardClusterMembership } from './membership';
 import type { StandardClusterMembershipOwner } from './membership-owner';
+import type { projectLightSlotWork } from './slot-work';
 
 export type { StandardLightFrame } from './light-frame';
 
 export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly directional: StandardLightFrame['directional'];
   readonly local: StandardLightFrame['local'];
+  readonly slotWork?: ReturnType<typeof projectLightSlotWork>;
   readonly layout: StandardClusterLayout;
   readonly renderPath: NonNullable<StandardLightFrame['renderPath']>;
   readonly maxLights: number;
@@ -26,6 +28,7 @@ export function prepareStandardLighting(
   directLightSlotCapacity: number = frame.lightCount,
   scratch?: ClusterBinScratch,
   owner?: StandardClusterMembershipOwner,
+  slotWork?: ReturnType<typeof projectLightSlotWork>,
 ): Result<PreparedStandardLighting, RenderError> {
   const layout =
     owner === undefined
@@ -56,6 +59,7 @@ export function prepareStandardLighting(
     scratch: derived.scratch,
     directional: frame.directional,
     local: frame.local,
+    ...(slotWork === undefined ? {} : { slotWork }),
     layout,
     renderPath: frame.renderPath,
     maxLights: frame.lightCount,

@@ -154,7 +154,11 @@ export class ShadowMeshReads {
   private holders = 1;
   private valid = true;
 
-  constructor(readonly changes: MeshChanges) {
+  constructor(
+    readonly changes: MeshChanges,
+    /** Direct row generations, null for an unproven projection, absent for queued GPU bindings. */
+    readonly directMeshDomain?: object | null,
+  ) {
     this.generation = changes.generation;
   }
 

@@ -48,20 +48,48 @@ export class BloomDraw {
     private readonly name: string,
     private readonly stage: BloomStage,
     private readonly inputs: readonly GraphTextureView[],
-    level: number,
-    width: number,
-    height: number,
+    private readonly level: number,
+    private readonly levelCount: number,
+    private readonly packed: boolean,
   ) {
     this.ports = ports[stage];
     this.offset = level * BLOOM_UNIFORM_PARAMS_STRIDE_BYTES;
-    this.uniform = new Float32Array(stage === 'horizontal' ? 8 : 4);
-    if (stage === 'horizontal') {
-      this.uniform[2] = width;
-      this.uniform[3] = height;
-      this.uniform[4] = level;
-    } else if (stage === 'vertical') {
-      this.uniform[0] = level;
+    this.uniform = new Float32Array(4);
+    this.uniform[0] = level;
+    this.uniform[3] = Number(packed);
+  }
+
+  private writeWeights(radius: number): void {
+    const factor = 1 - 0.2 * this.level;
+    const scale = 1 - 2 * radius;
+    const first = this.packed ? this.level : 0;
+    const count = this.levelCount - first;
+    const sum = count * (1 - 0.2 * first - 0.1 * (count - 1));
+    const weight = (factor * scale + 1.2 * radius) / (sum * scale + 1.2 * count * radius);
+    this.uniform[1] = weight;
+    // Packed levels store a normalized average of the suffix. At level zero
+    // it is the same weighted sum, with less rounding of small partial sums.
+    this.uniform[2] = this.inputs.length === 2 ? (this.packed ? 1 - weight : 1) : 0;
+  }
+
+  private bindGroupEntries(buffer: Buffer, sampler: Sampler): BindGroupEntry[] {
+    const entries: BindGroupEntry[] = [];
+    for (const view of this.views)
+      entries.push({ binding: entries.length, resource: { kind: 'textureView', value: view } });
+    const filterInput = this.views[0];
+    if (this.stage === 'vertical' && this.views.length === 1 && filterInput !== undefined) {
+      // The coarsest level disables accumulation and binds its filter input to both slots.
+      entries.push({ binding: 1, resource: { kind: 'textureView', value: filterInput } });
     }
+    entries.push({ binding: entries.length, resource: { kind: 'sampler', value: sampler } });
+    entries.push({
+      binding: entries.length,
+      resource: {
+        kind: 'buffer',
+        value: { buffer, offset: this.offset, size: this.uniform.byteLength },
+      },
+    });
+    return entries;
   }
 
   encode(
@@ -93,12 +121,10 @@ export class BloomDraw {
       index++;
     }
 
-    if (this.stage === 'horizontal') {
-      this.uniform[0] = camera.bloomThreshold;
-      this.uniform[1] = camera.bloomSmoothWidth;
+    if (this.stage === 'vertical') {
+      this.writeWeights(camera.bloomRadius);
     } else if (this.stage === 'composite') {
       this.uniform[0] = camera.bloomIntensity;
-      this.uniform[1] = camera.bloomRadius;
     }
     const device = frame.runtime.device;
     const upload = device.queue.writeBuffer(buffer, this.offset, this.uniform);
@@ -117,17 +143,7 @@ export class BloomDraw {
       this.buffer !== buffer ||
       this.sampler !== sampler
     ) {
-      const entries: BindGroupEntry[] = [];
-      for (const view of this.views)
-        entries.push({ binding: entries.length, resource: { kind: 'textureView', value: view } });
-      entries.push({ binding: entries.length, resource: { kind: 'sampler', value: sampler } });
-      entries.push({
-        binding: entries.length,
-        resource: {
-          kind: 'buffer',
-          value: { buffer, offset: this.offset, size: this.uniform.byteLength },
-        },
-      });
+      const entries = this.bindGroupEntries(buffer, sampler);
       const created = device.createBindGroup({ label: `${this.name}-bg`, layout, entries });
       if (!created.ok) throw created.error;
       this.group = created.value;

@@ -83,6 +83,43 @@ function node<T>(
   return new kind(value, queue, key, weight, left, right);
 }
 
+// Keep writable construction fields on a separate node class. Ordinary persistent
+// trees initialize their links and subtree counts only in the constructor.
+const ORDERED_PAGE_KIND = treeKind();
+
+// Only new, unpublished nodes can be linked by the ordered builder.
+type BuildingNode<T> = { -readonly [K in keyof Node<T>]: Node<T>[K] };
+
+/** Linear construction for ascending page keys. The unfinished right spine
+ * links back to its parents until their actual right subtree is complete. */
+export class OrderedPageTree<T> {
+  private top: BuildingNode<T> | undefined;
+
+  append(key: number, value: T, weight: number): void {
+    const next: BuildingNode<T> = node(ORDERED_PAGE_KIND, value, 0, key, weight);
+    let left: Node<T> | undefined;
+    while (this.top !== undefined && this.top.priority > next.priority)
+      left = this.close(this.top, left);
+    next.left = left;
+    next.right = this.top;
+    this.top = next;
+  }
+
+  finish(): Node<T> | undefined {
+    let root: Node<T> | undefined;
+    while (this.top !== undefined) root = this.close(this.top, root);
+    return root;
+  }
+
+  private close(top: BuildingNode<T>, right: Node<T> | undefined): Node<T> {
+    this.top = top.right;
+    top.right = right;
+    top.count = top.weight + (top.left?.count ?? 0) + (right?.count ?? 0);
+    top.size = 1 + (top.left?.size ?? 0) + (right?.size ?? 0);
+    return top;
+  }
+}
+
 function rebuild<T>(root: Node<T>, left: Node<T> | undefined, right: Node<T> | undefined): Node<T> {
   return node(kindOf(root), root.value, root.queue, root.key, root.weight, left, right);
 }
@@ -182,6 +219,27 @@ class NodeIterator<T> implements IterableIterator<Node<T>> {
 export function nodes<T>(root: Node<T> | undefined): IterableIterator<Node<T>> {
   return new NodeIterator(root);
 }
+/** Membership has no sort order. Visiting the smaller branch recursively bounds
+ * the call stack by log2(size), including for a skewed tree, without a heap cursor. */
+export function visitUnorderedValues<T>(
+  root: Node<T> | undefined,
+  visit: (value: T) => void,
+): void {
+  while (root !== undefined) {
+    visit(root.value);
+    const { left, right } = root;
+    if (left === undefined) root = right;
+    else if (right === undefined) root = left;
+    else if (left.size < right.size) {
+      visitUnorderedValues(left, visit);
+      root = right;
+    } else {
+      visitUnorderedValues(right, visit);
+      root = left;
+    }
+  }
+}
+
 export function prefix<T>(
   root: Node<T> | undefined,
   queue: number,

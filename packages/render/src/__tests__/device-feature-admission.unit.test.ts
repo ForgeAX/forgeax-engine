@@ -106,6 +106,12 @@ describe('shared device feature admission', () => {
     expect(admitted.requiredLimits?.maxColorAttachmentBytesPerSample).toBe(requested);
     expect(admitted.requiredLimits ?? {}).not.toHaveProperty('maxColorAttachments');
   });
+  it('requests packed HDR rendering only on adapters that advertise it', () => {
+    const feature = 'rg11b10ufloat-renderable';
+    expect(deriveDeviceFeatureAdmission(adapter([feature])).requiredFeatures).toContain(feature);
+    expect(deriveDeviceFeatureAdmission(adapter([])).requiredFeatures).not.toContain(feature);
+  });
+
   it('admits supported timestamps for a late DRS component and omits unsupported features', () => {
     const supported = adapter(['timestamp-query', 'texture-compression-bc']);
     const available = deriveDeviceFeatureAdmission(supported);

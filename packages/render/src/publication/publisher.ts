@@ -498,8 +498,7 @@ export function createRenderPublisher(
 
     private collectSourceChanges(): void {
       const changes = this.sourceChanges.changes;
-      for (const entity of changes.retiredTransforms)
-        if (skinJoints.has(entity)) skinJoints.mark(entity);
+      for (const entity of changes.retiredTransforms) skinJoints.mark(entity);
       if (this.observation !== undefined)
         for (let index = 0; index < changes.meshFilterWrites; index++)
           this.observation.count('mesh-filter-write');
@@ -513,22 +512,22 @@ export function createRenderPublisher(
     }
 
     private collectTransformRows(): void {
-      collectPresentationTransformSpans(world, transforms, this.transformSpans, (entities) => {
-        for (let i = 0; i < entities.length; i++) {
-          const entity = entities[i] as number;
-          skinJoints.mark(entity);
-          if (members.has(entity) && !this.removed.has(entity)) pending.add(entity);
-        }
-      });
-      let start = 0;
-      for (const span of this.transformSpans) {
-        for (let i = 0; i < span.entities.length; i++) {
-          const entity = span.entities[i] as number;
-          if (members.has(entity) && !this.removed.has(entity))
-            this.matrixRows.set(entity, start + i);
-        }
-        start += span.entities.length;
-      }
+      collectPresentationTransformSpans(
+        world,
+        transforms,
+        this.transformSpans,
+        (entities, firstMatrix) => {
+          for (let i = 0; i < entities.length; i++) {
+            const entity = entities[i] as number;
+            const joint = skinJoints.mark(entity);
+            if (this.removed.has(entity)) continue;
+            const member = members.has(entity);
+            if (member) pending.add(entity);
+            if ((member || joint) && firstMatrix !== undefined)
+              this.matrixRows.set(entity, firstMatrix + i);
+          }
+        },
+      );
     }
 
     private readonly keyValue = (key: string, value: unknown): unknown =>
@@ -1395,7 +1394,7 @@ export function createRenderPublisher(
       const value =
         prior === undefined
           ? captured === undefined
-            ? records.borrow<Asset>(handle)
+            ? records.resolveStoredAsset<Asset>(handle)
             : ok(captured.value)
           : ok(prior.value);
       if (!value.ok) return value;
@@ -1463,6 +1462,13 @@ export function createRenderPublisher(
       const references =
         referenceEdits === undefined ? undefined : skinJoints.prepare(referenceEdits);
       this.references = references;
+      // A joint-only address came from the same ordered pose spans as mesh rows.
+      // A binding can retire in this very packet. Keep independent mesh/upsert ownership.
+      if (references !== undefined) {
+        for (const joint of references.retired)
+          if (!members.has(joint) && typeof this.matrixRows.get(joint) === 'number')
+            this.matrixRows.delete(joint);
+      }
       const jointChanges =
         skinJoints.changes.size > 0 || (references?.first.size ?? 0) > 0
           ? new Set(skinJoints.changes)

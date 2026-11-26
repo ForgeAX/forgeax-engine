@@ -75,11 +75,11 @@ atomic rebuild of the physical Engine packages behind those forwarding modules.
 
 ## Create a project
 
-With Node.js and pnpm available, install a version of Engine that includes the
-authoring resources.
+With Node.js and pnpm available, install Engine from the development channel,
+which includes the authoring resources.
 
 ```bash
-npm install -g @forgeax/engine
+npm install -g @forgeax/engine@next
 forgeax project new ~/Games/my-game --template game-3d
 cd ~/Games/my-game
 forgeax project build

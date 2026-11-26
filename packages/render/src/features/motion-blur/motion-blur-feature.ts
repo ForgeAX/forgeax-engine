@@ -186,6 +186,7 @@ var<workgroup> longVectorScratch : array<u32, 64>;
 // two source directions for all lanes and all designated half-resolution
 // owners. This keeps summary work O(P/T^2), rather than repeating a tile walk
 // per output pixel.
+var<workgroup> neighbourhoodMotionClass : u32;
 var<workgroup> neighbourhoodPrimaryMotion : vec2<f32>;
 var<workgroup> neighbourhoodPrimaryLength : f32;
 var<workgroup> neighbourhoodPrimaryAnchor : vec2<i32>;
@@ -194,13 +195,14 @@ var<workgroup> neighbourhoodSecondaryLength : f32;
 var<workgroup> neighbourhoodSecondaryAnchor : vec2<i32>;
 
 // maxRadiusPixels is authored at [0,64], so a 16-pixel tile support reaches
-// at most four tiles. The fixed 9x9 lattice is geometrically derived from its
-// index, then intersected with the circular/AABB support. It is a constant
-// bounded metadata walk: no loop scales with the requested radius and no
-// radius-squared per-pixel storage or write path is introduced.
+// at most four tiles. Clip the bounded 9x9 window to the authored reach and
+// image bounds before testing its workgroup-to-tile AABB distance.
+const STATIONARY_MOTION : u32 = 0u;
+const SHORT_MOTION : u32 = 1u;
+const COMPLEX_MOTION : u32 = 2u;
+const MIN_SUPPORT_PIXELS : f32 = 1e-5;
+const LONG_SUPPORT_PIXELS : f32 = 8.0;
 const MAX_TILE_REACH : i32 = 4;
-const TILE_NEIGHBORHOOD_SIDE : u32 = 9u;
-const TILE_NEIGHBORHOOD_COUNT : u32 = 81u;
 
 fn finite(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
@@ -265,40 +267,6 @@ fn symmetricOffset(index : u32, count : u32, motion : vec2<f32>) -> vec2<f32> {
   return motion * (2.0 * (f32(index) + 0.5) / denominator - 1.0);
 }
 
-fn tileNeighborhoodOffset(index : u32) -> vec2<i32> {
-  let x = i32(index % TILE_NEIGHBORHOOD_SIDE) - MAX_TILE_REACH;
-  let y = i32(index / TILE_NEIGHBORHOOD_SIDE) - MAX_TILE_REACH;
-  return vec2<i32>(x, y);
-}
-
-fn tileOffsetWithinSupport(offset : vec2<i32>, tileReach : i32) -> bool {
-  if (offset.x == 0 && offset.y == 0) { return false; }
-  let boundedReach = min(max(tileReach, 1), MAX_TILE_REACH);
-  // The bounded lattice is a square around the receiver tile. The precise
-  // AABB/circle intersection below decides whether a diagonal tile really
-  // intersects the support; a circular pre-filter here would drop the
-  // (±2,±2) and boundary cases before that exact test can run.
-  return abs(offset.x) <= boundedReach && abs(offset.y) <= boundedReach;
-}
-
-fn tileIntersectsSupport(
-  receiverPixel : vec2<i32>,
-  candidateTile : vec2<i32>,
-  dimensions : vec2<i32>,
-  supportRadius : f32,
-) -> bool {
-  // Use the receiver-to-tile-AABB lower bound. This includes every tile whose
-  // contents can intersect the support, including signs and diagonals, while
-  // rejecting an outside-support tile before loading its summary.
-  let tileMin = vec2<f32>(candidateTile * 16);
-  let tileMax = min(tileMin + vec2<f32>(16.0), vec2<f32>(dimensions));
-  let receiver = vec2<f32>(receiverPixel) + vec2<f32>(0.5);
-  let dx = max(max(tileMin.x - receiver.x, 0.0), receiver.x - tileMax.x);
-  let dy = max(max(tileMin.y - receiver.y, 0.0), receiver.y - tileMax.y);
-  let distance = vec2<f32>(dx, dy);
-  return dot(distance, distance) <= supportRadius * supportRadius + 1.0;
-}
-
 fn tileIntersectsWorkgroupSupport(
   workgroupBase : vec2<i32>,
   candidateTile : vec2<i32>,
@@ -341,56 +309,68 @@ fn scanTileNeighbourhood(
   );
   let supportRadius = min(max(params.maxRadiusPixels, 1.0), 64.0);
   let tileReach = min(MAX_TILE_REACH, max(1, i32(ceil(supportRadius / 16.0))));
-  for (var tileCandidateIndex = 0u; tileCandidateIndex < TILE_NEIGHBORHOOD_COUNT; tileCandidateIndex += 1u) {
-    let offset = tileNeighborhoodOffset(tileCandidateIndex);
-    if (!tileOffsetWithinSupport(offset, tileReach)) { continue; }
-    let candidateTile = tileCoordinate + offset;
-    if (
-      candidateTile.x < 0 ||
-      candidateTile.y < 0 ||
-      candidateTile.x >= i32(tiles.x) ||
-      candidateTile.y >= i32(tiles.y) ||
-      !tileIntersectsWorkgroupSupport(workgroupBase, candidateTile, dimensions, supportRadius)
-    ) { continue; }
-    let candidate = tileSummary[u32(candidateTile.y) * tiles.x + u32(candidateTile.x)];
-    let candidatePrimary = candidate.maxMotionAndLength.xy * vec2<f32>(dimensions) * params.exposureScale;
-    let candidatePrimaryLength = length(candidatePrimary);
-    let candidatePrimaryAnchor = vec2<i32>(
-      i32(candidate.maxMotionAndLength.z),
-      i32(candidate.maxMotionAndLength.w),
-    );
-    if (candidatePrimaryLength > primaryLength) {
-      let previousPrimary = primary;
-      let previousLength = primaryLength;
-      let previousAnchor = primaryAnchor;
-      primary = candidatePrimary;
-      primaryLength = candidatePrimaryLength;
-      primaryAnchor = candidatePrimaryAnchor;
-      if (previousLength > 1e-5 && distinctDirection(primary, previousPrimary) && previousLength > secondaryLength) {
-        secondary = previousPrimary;
-        secondaryLength = previousLength;
-        secondaryAnchor = previousAnchor;
+  let tileMin = max(tileCoordinate - vec2<i32>(tileReach), vec2<i32>(0));
+  let tileMax = min(tileCoordinate + vec2<i32>(tileReach), vec2<i32>(tiles) - 1);
+  for (var y = tileMin.y; y <= tileMax.y; y += 1) {
+    for (var x = tileMin.x; x <= tileMax.x; x += 1) {
+      let candidateTile = vec2<i32>(x, y);
+      if (
+        all(candidateTile == tileCoordinate) ||
+        !tileIntersectsWorkgroupSupport(workgroupBase, candidateTile, dimensions, supportRadius)
+      ) { continue; }
+      let candidate = tileSummary[u32(y) * tiles.x + u32(x)];
+      if (all(candidate.maxMotionAndLength.xy == vec2<f32>(0.0))) { continue; }
+      let candidatePrimary = candidate.maxMotionAndLength.xy * vec2<f32>(dimensions) * params.exposureScale;
+      let candidatePrimaryLength = length(candidatePrimary);
+      let candidatePrimaryAnchor = vec2<i32>(
+        i32(candidate.maxMotionAndLength.z),
+        i32(candidate.maxMotionAndLength.w),
+      );
+      if (candidatePrimaryLength > primaryLength) {
+        let previousPrimary = primary;
+        let previousLength = primaryLength;
+        let previousAnchor = primaryAnchor;
+        primary = candidatePrimary;
+        primaryLength = candidatePrimaryLength;
+        primaryAnchor = candidatePrimaryAnchor;
+        if (previousLength > 1e-5 && distinctDirection(primary, previousPrimary) && previousLength > secondaryLength) {
+          secondary = previousPrimary;
+          secondaryLength = previousLength;
+          secondaryAnchor = previousAnchor;
+        }
+      } else if (
+        candidatePrimaryLength > secondaryLength &&
+        distinctDirection(primary, candidatePrimary)
+      ) {
+        secondary = candidatePrimary;
+        secondaryLength = candidatePrimaryLength;
+        secondaryAnchor = candidatePrimaryAnchor;
       }
-    } else if (
-      candidatePrimaryLength > secondaryLength &&
-      distinctDirection(primary, candidatePrimary)
-    ) {
-      secondary = candidatePrimary;
-      secondaryLength = candidatePrimaryLength;
-      secondaryAnchor = candidatePrimaryAnchor;
-    }
-    let candidateSecondary = candidate.secondaryMotionAndDepth.xy * vec2<f32>(dimensions) * params.exposureScale;
-    let candidateSecondaryLength = length(candidateSecondary);
-    let candidateSecondaryAnchor = vec2<i32>(
-      i32(candidate.secondaryMotionAndDepth.z),
-      i32(candidate.secondaryMotionAndDepth.w),
-    );
-    if (candidateSecondaryLength > secondaryLength && distinctDirection(primary, candidateSecondary)) {
-      secondary = candidateSecondary;
-      secondaryLength = candidateSecondaryLength;
-      secondaryAnchor = candidateSecondaryAnchor;
+      let candidateSecondary = candidate.secondaryMotionAndDepth.xy * vec2<f32>(dimensions) * params.exposureScale;
+      let candidateSecondaryLength = length(candidateSecondary);
+      let candidateSecondaryAnchor = vec2<i32>(
+        i32(candidate.secondaryMotionAndDepth.z),
+        i32(candidate.secondaryMotionAndDepth.w),
+      );
+      if (candidateSecondaryLength > secondaryLength && distinctDirection(primary, candidateSecondary)) {
+        secondary = candidateSecondary;
+        secondaryLength = candidateSecondaryLength;
+        secondaryAnchor = candidateSecondaryAnchor;
+      }
     }
   }
+  // The local tile is included in this maximum. A static center alone
+  // cannot rule out support from a moving source in another tile.
+  let maxLength = max(primaryLength, secondaryLength);
+  // Allow for rounding between the unscaled tile maximum and each receiver's
+  // length after exposure scaling, at both filter boundaries.
+  let upperRadius = min(maxLength * clamp(params.shutterAngle / 360.0, 0.0, 1.0) * 0.5, params.maxRadiusPixels);
+  let safelyShort = params.maxRadiusPixels <= LONG_SUPPORT_PIXELS ||
+    upperRadius < LONG_SUPPORT_PIXELS * 0.9999;
+  let safelyStationary = upperRadius < MIN_SUPPORT_PIXELS * 0.9999;
+  neighbourhoodMotionClass = select(
+    select(COMPLEX_MOTION, SHORT_MOTION, safelyShort), STATIONARY_MOTION, safelyStationary,
+  );
   neighbourhoodPrimaryMotion = primary;
   neighbourhoodPrimaryLength = primaryLength;
   neighbourhoodPrimaryAnchor = primaryAnchor;
@@ -427,6 +407,8 @@ fn sourceRadius(motionPixels : vec2<f32>, shutter : f32) -> f32 {
 fn resolveMotionBlurSupport(
   pixel : vec2<i32>,
   dimensions : vec2<i32>,
+  center : TemporalSample,
+  inBounds : bool,
 ) -> MotionBlurSupport {
   var empty = MotionBlurSupport(
     vec2<f32>(0.0),
@@ -438,11 +420,7 @@ fn resolveMotionBlurSupport(
     false,
     false,
   );
-  if (!pixelInBounds(pixel, dimensions) || !validMotionParameters() || params.reset != 0u) {
-    return empty;
-  }
-  let center = temporalAt(pixel, dimensions);
-  if (!center.validDepth || !center.motionValid) { return empty; }
+  if (!inBounds || !center.validDepth || !center.motionValid) { return empty; }
   let shutter = clamp(params.shutterAngle / 360.0, 0.0, 1.0);
   let centerMotion = sourceMotionPixels(center, dimensions);
   let centerLength = length(centerMotion);
@@ -482,8 +460,8 @@ fn resolveMotionBlurSupport(
   empty.secondaryAnchor = secondaryAnchor;
   empty.primaryRadius = sourceRadius(primaryMotion, shutter);
   empty.secondaryRadius = sourceRadius(secondaryMotion, shutter);
-  empty.valid = empty.primaryRadius > 1e-5 || empty.secondaryRadius > 1e-5;
-  empty.longVector = max(empty.primaryRadius, empty.secondaryRadius) > 8.0;
+  empty.valid = empty.primaryRadius > MIN_SUPPORT_PIXELS || empty.secondaryRadius > MIN_SUPPORT_PIXELS;
+  empty.longVector = max(empty.primaryRadius, empty.secondaryRadius) > LONG_SUPPORT_PIXELS;
   return empty;
 }
 
@@ -508,6 +486,19 @@ fn sourceAnchorForReceiver(
   return clamp(candidate, vec2<i32>(0), dimensions - vec2<i32>(1));
 }
 
+fn supportTapPixel(
+  receiverPixel : vec2<i32>,
+  offset : vec2<f32>,
+  dimensions : vec2<i32>,
+) -> vec2<i32> {
+  let dimensionsF = vec2<f32>(dimensions);
+  let uv = (vec2<f32>(receiverPixel) + vec2<f32>(0.5) + offset) / dimensionsF;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
+    return vec2<i32>(-1);
+  }
+  return vec2<i32>(floor(uv * dimensionsF));
+}
+
 fn supportTap(
   receiverPixel : vec2<i32>,
   index : u32,
@@ -529,56 +520,24 @@ fn supportTap(
   }
   let direction = motion / max(length(motion), 1e-5);
   let offset = symmetricOffset(index, count, direction * radius);
-  let dimensionsF = vec2<f32>(dimensions);
-  let uv = (vec2<f32>(receiverPixel) + vec2<f32>(0.5) + offset) / dimensionsF;
-  if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
-    return MotionBlurTap(vec2<i32>(0), fallbackPixel, false, fallbackValid);
-  }
-  let candidate = vec2<i32>(floor(uv * dimensionsF));
+  let candidate = supportTapPixel(receiverPixel, offset, dimensions);
   return MotionBlurTap(candidate, fallbackPixel, pixelInBounds(candidate, dimensions), fallbackValid);
 }
 
-fn sourceAt(
+fn shortSourceCovers(
   receiverPixel : vec2<i32>,
   sourcePixel : vec2<i32>,
   centerDepth : f32,
   shutter : f32,
   dimensions : vec2<i32>,
-) -> MotionBlurSource {
-  let empty = MotionBlurSource(
-    vec2<i32>(0),
-    vec2<f32>(0.0),
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0u,
-    false,
-  );
-  if (!pixelInBounds(sourcePixel, dimensions)) { return empty; }
+) -> bool {
   let source = temporalAt(sourcePixel, dimensions);
   if (!source.validDepth || !source.motionValid || depthReject(centerDepth, source.depth)) {
-    return empty;
+    return false;
   }
   let motionPixels = sourceMotionPixels(source, dimensions);
   let radius = sourceRadius(motionPixels, shutter);
-  if (!sourceVelocitySegmentCovers(receiverPixel, sourcePixel, motionPixels, radius)) {
-    return empty;
-  }
-  return MotionBlurSource(
-    sourcePixel,
-    motionPixels,
-    source.depth,
-    radius,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    0u,
-    true,
-  );
+  return sourceVelocitySegmentCovers(receiverPixel, sourcePixel, motionPixels, radius);
 }
 
 // A half-resolution owner represents a complete 2x2 receiving footprint. The
@@ -1113,6 +1072,9 @@ fn tile_summary(
   @builtin(local_invocation_index) localIndex : u32,
   @builtin(workgroup_id) workgroupId : vec3<u32>,
 ) {
+  // Reconstruction copies the input on a temporal reset without reading
+  // the summaries, so a cut does not need to collect or initialize them.
+  if (params.reset != 0u) { return; }
   let dimensions = textureDimensions(sceneTemporal);
   let tiles = (dimensions + vec2<u32>(15)) / vec2<u32>(16);
   let tile = workgroupId.xy;
@@ -1216,50 +1178,35 @@ fn tile_summary(
   }
 }
 
-@compute @workgroup_size(8, 8)
-fn reconstruct(
-  @builtin(global_invocation_id) id : vec3<u32>,
-  @builtin(local_invocation_id) localId : vec3<u32>,
-  @builtin(workgroup_id) workgroupId : vec3<u32>,
+fn buildLongSupportCache(
+  localId : vec3<u32>,
+  localIndex : u32,
+  workgroupBase : vec2<i32>,
+  colorDimensions : vec2<i32>,
+  support : MotionBlurSupport,
+  centerDepth : f32,
 ) {
-  let dimensions = textureDimensions(currentColor);
-  let colorDimensions = vec2<i32>(dimensions);
-  let pixel = vec2<i32>(id.xy);
-  let inBounds = id.x < dimensions.x && id.y < dimensions.y;
-  let workgroupBase = vec2<i32>(workgroupId.xy * vec2<u32>(8));
-  let ownsHalfCell = (localId.x % 2u == 0u) && (localId.y % 2u == 0u);
-  let halfIndex = (localId.y / 2u) * 4u + (localId.x / 2u);
-  let localIndex = localId.y * 8u + localId.x;
+  longVectorScratch[localIndex] = select(0u, 1u, support.longVector);
+  workgroupBarrier();
+  // A single lane can stop at the first long receiver. The cache still has
+  // one uniform producer decision, even for edge workgroups with empty lanes.
   if (localIndex == 0u) {
-    scanTileNeighbourhood(workgroupBase, colorDimensions);
-  }
-  workgroupBarrier();
-  let support = resolveMotionBlurSupport(pixel, colorDimensions);
-  let longVector = support.valid && support.longVector;
-
-  longVectorScratch[localId.y * 8u + localId.x] = select(0u, 1u, longVector);
-  workgroupBarrier();
-  for (var longStride = 32u; longStride > 0u; longStride = longStride / 2u) {
-    let localIndex = localId.y * 8u + localId.x;
-    if (localIndex < longStride) {
-      longVectorScratch[localIndex] = max(
-        longVectorScratch[localIndex],
-        longVectorScratch[localIndex + longStride],
-      );
+    for (var index = 1u; index < 64u && longVectorScratch[0] == 0u; index += 1u) {
+      longVectorScratch[0] = longVectorScratch[index];
     }
-    workgroupBarrier();
   }
-  let anyLongVector = longVectorScratch[0] != 0u;
+  let anyLongVector = workgroupUniformLoad(&longVectorScratch[0]) != 0u;
+  let ownsHalfCell = all(localId.xy % vec2<u32>(2u) == vec2<u32>(0u));
   if (anyLongVector && ownsHalfCell) {
     // Every designated owner evaluates the full support exactly once. The
     // cached result includes filtered color, nearest accepted depth, and
     // coverage; no 2x2 prefilter is substituted for the long gather.
     let sourcePixel = workgroupBase + vec2<i32>(localId.xy);
-    let sourceSupport = resolveMotionBlurSupport(sourcePixel, colorDimensions);
+    let halfIndex = (localId.y / 2u) * 4u + (localId.x / 2u);
     let filtered = longSupportFilter(
       sourcePixel,
-      sourceSupport,
-      temporalAt(sourcePixel, colorDimensions).depth,
+      support,
+      centerDepth,
       colorDimensions,
     );
     halfFilteredReceiver[halfIndex] = sourcePixel;
@@ -1284,9 +1231,39 @@ fn reconstruct(
     halfFilteredValid[cacheBase + 3u] = select(0u, 1u, (filtered.validMask & 8u) != 0u);
   }
   workgroupBarrier();
-  // No invocation can return before both uniform barriers above. This keeps
-  // odd extents and out-of-bounds lanes from allowing a long source to read a
-  // cache entry that another invocation has not published yet.
+}
+
+@compute @workgroup_size(8, 8)
+fn reconstruct(
+  @builtin(global_invocation_id) id : vec3<u32>,
+  @builtin(local_invocation_id) localId : vec3<u32>,
+  @builtin(workgroup_id) workgroupId : vec3<u32>,
+) {
+  let dimensions = textureDimensions(currentColor);
+  let colorDimensions = vec2<i32>(dimensions);
+  let pixel = vec2<i32>(id.xy);
+  let inBounds = id.x < dimensions.x && id.y < dimensions.y;
+  if (params.reset != 0u || !validMotionParameters()) {
+    if (inBounds) { textureStore(outputColor, pixel, colorAt(pixel, colorDimensions)); }
+    return;
+  }
+  let workgroupBase = vec2<i32>(workgroupId.xy * vec2<u32>(8));
+  let localIndex = localId.y * 8u + localId.x;
+  if (localIndex == 0u) {
+    scanTileNeighbourhood(workgroupBase, colorDimensions);
+  }
+  let motionClass = workgroupUniformLoad(&neighbourhoodMotionClass);
+  if (motionClass == STATIONARY_MOTION) {
+    if (inBounds) { textureStore(outputColor, pixel, colorAt(pixel, colorDimensions)); }
+    return;
+  }
+  let center = temporalAt(pixel, colorDimensions);
+  let support = resolveMotionBlurSupport(pixel, colorDimensions, center, inBounds);
+  if (motionClass == COMPLEX_MOTION) {
+    buildLongSupportCache(localId, localIndex, workgroupBase, colorDimensions, support, center.depth);
+  }
+  // All lanes of a complex workgroup publish the cache before the edge lanes
+  // return. Short-only workgroups go directly to the full-resolution gather.
   if (!inBounds) {
     return;
   }
@@ -1294,12 +1271,12 @@ fn reconstruct(
     textureStore(outputColor, pixel, colorAt(pixel, colorDimensions));
     return;
   }
-  if (longVector) {
+  if (support.longVector) {
     let cached = depthGuidedHalfResolutionColor(
       localId,
       pixel,
       support,
-      temporalAt(pixel, colorDimensions).depth,
+      center.depth,
     );
     if (cached.valid) {
       textureStore(outputColor, pixel, cached.color);
@@ -1308,15 +1285,19 @@ fn reconstruct(
     }
     return;
   }
-  let useSecondDirection = support.secondaryRadius > 1e-5 && distinctDirection(support.primaryMotion, support.secondaryMotion);
+  let useSecondDirection = support.secondaryRadius > MIN_SUPPORT_PIXELS;
+  let primaryOffset = support.primaryMotion / max(length(support.primaryMotion), 1e-5) * support.primaryRadius;
+  let secondaryOffset = support.secondaryMotion / max(length(support.secondaryMotion), 1e-5) * support.secondaryRadius;
   let count = min(params.sampleCount, 16u);
   let supportCount = max(count - 1u, 1u);
   let primaryCount = select(supportCount, max(supportCount / 2u, 1u), useSecondDirection);
   let secondaryCount = max(supportCount - primaryCount, 1u);
   let shutter = clamp(params.shutterAngle / 360.0, 0.0, 1.0);
-  let center = temporalAt(pixel, colorDimensions);
   let centerMotion = sourceMotionPixels(center, colorDimensions);
-  let centerMoving = center.validDepth && center.motionValid && sourceRadius(centerMotion, shutter) > 1e-5;
+  let centerRadius = sourceRadius(centerMotion, shutter);
+  let centerMoving = center.validDepth && center.motionValid && centerRadius > MIN_SUPPORT_PIXELS;
+  let centerSupportsSelf = centerMoving &&
+    sourceVelocitySegmentCovers(pixel, pixel, centerMotion, centerRadius);
   let centerColor = colorAt(pixel, colorDimensions);
   var accum = vec4<f32>(0.0);
   var weight = 0.0;
@@ -1325,21 +1306,20 @@ fn reconstruct(
     let secondDirection = useSecondDirection && index >= primaryCount;
     let localIndex = select(index, index - primaryCount, secondDirection);
     let localCount = select(primaryCount, secondaryCount, secondDirection);
-    let selectedMotion = select(support.primaryMotion, support.secondaryMotion, secondDirection);
-    let selectedRadius = select(support.primaryRadius, support.secondaryRadius, secondDirection);
-    let tap = supportTap(
-      pixel,
-      localIndex,
-      localCount,
-      selectedMotion,
-      selectedRadius,
-      select(support.primaryAnchor, support.secondaryAnchor, secondDirection),
-      colorDimensions,
-    );
-    if (!tap.valid) { continue; }
-    let source = sourceAt(pixel, tap.pixel, center.depth, shutter, colorDimensions);
-    if (!source.valid) { continue; }
-    let sampleColor = colorAt(source.pixel, colorDimensions);
+    let offset = symmetricOffset(localIndex, localCount, select(primaryOffset, secondaryOffset, secondDirection));
+    let tapPixel = supportTapPixel(pixel, offset, colorDimensions);
+    if (!pixelInBounds(tapPixel, colorDimensions)) { continue; }
+    // Several short taps can round back to the receiver. Reuse its
+    // metadata and color without changing the tap count or weighting.
+    if (all(tapPixel == pixel)) {
+      if (centerSupportsSelf) {
+        accum += centerColor;
+        weight += 1.0;
+      }
+      continue;
+    }
+    if (!shortSourceCovers(pixel, tapPixel, center.depth, shutter, colorDimensions)) { continue; }
+    let sampleColor = colorAt(tapPixel, colorDimensions);
     accum += sampleColor;
     weight += 1.0;
   }

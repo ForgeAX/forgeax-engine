@@ -4,6 +4,7 @@ import {
   createBoxGeometry,
   decodeMeshBinary,
   deriveVertexBufferLayoutFromProjection,
+  deriveVertexLayoutProjection,
   packInterleavedVertexAttributes,
   packMeshBin,
 } from '@forgeax/engine-geometry';
@@ -14,6 +15,7 @@ import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { toGpuVertexBufferLayouts } from '../assembly/webgpu-vertex-layouts';
 import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
 import { bindMeshVertexStreams } from '../device/mesh-vertex-streams';
+import { prepareAssetPatch } from '../publication/asset-patch';
 import { worldRenderResources } from '../publication/resource-scope';
 import { nativeDeviceFixture } from './native-device-fixture';
 
@@ -131,9 +133,12 @@ it.each([
     const splitResident = prepare(true);
     expect(splitResident.entry.vertexStreams).toHaveLength(4);
     const write = vi.spyOn(device.queue, 'writeBuffer');
-    const cookedResident = prepare(true, cooked);
+    const cookedHandle = assets.create(cooked).unwrap();
+    const admitted = scope.resolveAsset<MeshAsset>(cookedHandle).unwrap();
+    expect(admitted.attributeStorage).toBe('static-streams');
+    const cookedResident = store.prepareMeshResidency(cookedHandle, admitted, 1, scope).unwrap();
     expect(
-      write.mock.calls.some(([, offset, data]) => offset === 0 && data === cooked.vertices),
+      write.mock.calls.some(([, offset, data]) => offset === 0 && data === admitted.vertices),
     ).toBe(true);
     write.mockRestore();
     const portableResident = prepare(false, cooked);
@@ -148,6 +153,67 @@ it.each([
     expect(equalBytes(interleaved, split)).toBe(true);
     interleavedResident.lease.release();
     splitResident.lease.release();
+
+    // A canonical position patch may arrive after preloading physical streams.
+    for (const splitGpu of [false, true]) {
+      const local = new GpuResidencyCache();
+      local.configureGpuDevice(device, undefined, device.caps);
+      try {
+        const handle = assets.create(mesh).unwrap();
+        const published = structuredClone(cooked);
+        const resident = local
+          .prepareMeshResidency(
+            handle,
+            published,
+            1,
+            scope,
+            undefined,
+            undefined,
+            undefined,
+            splitGpu,
+          )
+          .unwrap();
+        expect(resident.commit()).toBe(true);
+        resident.lease.release();
+        const stride = deriveVertexLayoutProjection(mesh.attributes).arrayStride;
+        const count = mesh.vertices.byteLength / stride;
+        const positions = new Float32Array(count * 3).fill(4);
+        const patch = prepareAssetPatch(
+          published,
+          {
+            handle,
+            base: 1,
+            revision: 2,
+            fields: {},
+            removed: [],
+            ranges: [
+              {
+                path: ['vertices'],
+                byteOffset: 0,
+                byteLength: (count - 1) * stride + 12,
+                rowBytes: 12,
+                byteStride: stride,
+                bytes: new Uint8Array(positions.buffer),
+              },
+            ],
+          },
+          false,
+        );
+        patch.commit();
+        const writes = vi.spyOn(device.queue, 'writeBuffer');
+        try {
+          local.adoptMeshChange(patch.change, patch.value as MeshAsset, scope).unwrap();
+          expect(writes.mock.calls).toHaveLength(1);
+          if (splitGpu) expect(writes.mock.calls[0]?.[2].byteLength).toBe(positions.byteLength);
+        } finally {
+          writes.mockRestore();
+        }
+        const pixels = await render(resident.entry);
+        expect(pixels[8 * 256 + 8 * 4 + 1]).toBe(0);
+      } finally {
+        local.destroyAll();
+      }
+    }
 
     const lowerHandle = assets.create(mesh).unwrap();
     const rootAttributes = {
@@ -179,6 +245,19 @@ it.each([
     expect(equalBytes(await render(lod, lowerRange.count, lowerRange.first), interleaved)).toBe(
       true,
     );
+    const allRowsHandle = assets.create(root).unwrap();
+    const rowsRoot = store.prepareMeshResidency(allRowsHandle, root, 1, scope).unwrap();
+    expect(rowsRoot.commit()).toBe(true);
+    try {
+      const allRows = store.ensureResident(allRowsHandle, root, scope, [mesh]).unwrap();
+      expect(allRows.vertexStreams).toHaveLength(4);
+      expect(allRows.lodRanges).toEqual(lod.lodRanges);
+      expect(
+        equalBytes(await render(allRows, lowerRange.count, lowerRange.first), interleaved),
+      ).toBe(true);
+    } finally {
+      rowsRoot.lease.release();
+    }
     expect(await native.popErrorScope()).toBeNull();
   } finally {
     device.destroyBuffer(readback).unwrap();

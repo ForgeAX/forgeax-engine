@@ -101,16 +101,12 @@ it('drains Scene bounds, instance hierarchies and staging after repeated bulk di
     assert(last);
     expect(rows.cullingWorldBoundsAt(last)).toEqual({ min: [-1, -1, -1], max: [1024, 1, 1] });
     expect(cullingBoundsBytes(rows)).toBeGreaterThan(coldBounds);
-    const cache = Reflect.get(Reflect.get(rows, 'instanceBoundsCache'), 'entries') as Map<
-      string,
-      unknown
-    >;
-    expect(cache.size).toBe(1);
+    const beforeDispose = rows.instanceBoundsStatistics();
     // Hydrate the live-slot staging ledger before disposal too.
     rows.apply([{ kind: 'update', entityKey: 1023, world: pose }], [], true);
     rows.dispose();
     expect(cullingBoundsBytes(rows)).toBe(coldBounds);
-    expect(cache.size).toBe(0);
+    expect(rows.instanceBoundsStatistics().invalidations).toBe(beforeDispose.invalidations + 1);
     expect(Reflect.get(rows, 'pendingBySlot')).toHaveLength(0);
     expect(rows.capture().length).toBe(0);
     // Disposal clears lazy wrapper caches; held root values remain independent.
@@ -134,7 +130,7 @@ it('releases unoccupied culling pages while another Level and old frames stay re
     materialBindingSources: ['engine-default'],
     transform: { world },
     localAabb,
-    ...(entityKey === 1023
+    ...(entityKey % 64 === 0 || entityKey === 1023
       ? { instances: { transforms: world, instanceCount: 1, cacheKey: entityKey, archVersion: 0 } }
       : {}),
   });
@@ -160,15 +156,17 @@ it('releases unoccupied culling pages while another Level and old frames stay re
     for (const slot of small) expect(rows.cullingWorldBoundsAt(slot)).toEqual(box);
     expect(cullingBoundsBytes(rows) * 16).toBe(full);
     const retained = cullingBoundsBytes(rows);
-    const instances = Reflect.get(Reflect.get(rows, 'instanceBoundsCache'), 'entries') as Map<
-      number,
-      unknown
-    >;
-    expect(instances.size).toBe(0);
+    const derives = rows.instanceBoundsStatistics().derives;
     expect(rows.cullingWorldBoundsAt(last)).toEqual(box);
-    expect(instances.size).toBe(0);
+    const survivor = small.lookup(0);
+    assert(survivor);
+    expect(rows.cullingWorldBoundsAt(survivor)).toEqual(box);
+    expect(rows.instanceBoundsStatistics().derives).toBe(derives + 1);
     expect(cullingBoundsBytes(rows)).toBe(retained);
   }
+  const { instances: _instances, ...rigid } = snapshot(0);
+  rows.apply([{ kind: 'update', entityKey: 0, snapshot: rigid }], [], true);
+  expect(cullingBoundsBytes(rows)).toBe(0);
   rows.apply(
     [
       { kind: 'remove', entityKey: 0 },

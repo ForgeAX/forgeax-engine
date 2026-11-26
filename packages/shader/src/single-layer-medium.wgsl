@@ -115,26 +115,9 @@ struct SingleLayerMediumSceneMaterialRow {
 @group(1) @binding(12) var surfaceNearestLayerTexture: texture_2d<f32>;
 @group(1) @binding(13) var surfaceNearestDepthSampler: sampler;
 @group(1) @binding(14) var surfaceNearestDepthTexture: texture_2d<f32>;
-struct PlanarReflectionUniform {
-  viewProjection: mat4x4<f32>,
-  plane: vec4<f32>,
-  enabledAndPadding: vec4<f32>,
-};
+#import forgeax_pbr::planar_reflection::{PlanarReflectionUniform, samplePlanarReflection}
 @group(1) @binding(15) var planarReflectionTexture: texture_2d<f32>;
 @group(1) @binding(16) var<uniform> planarReflection: PlanarReflectionUniform;
-
-fn samplePlanarReflection(position: vec3<f32>, normal: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
-  if (planarReflection.enabledAndPadding.x == 0.0 ||
-      abs(dot(planarReflection.plane, vec4<f32>(position, 1.0))) > 0.001 ||
-      abs(dot(normal, planarReflection.plane.xyz)) < 0.999) { return fallback; }
-  let clip = planarReflection.viewProjection * vec4<f32>(position, 1.0);
-  if (clip.w <= 0.0) { return fallback; }
-  let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { return fallback; }
-  let reflected = textureSampleLevel(planarReflectionTexture, surfaceBackdropSampler, uv, 0.0);
-  return reflected.rgb + fallback * (1.0 - clamp(reflected.a, 0.0, 1.0));
-}
-
 
 // Direct draws and the GPU-driven lane consume the renderer's retained SH9
 // projection. The scene/visible/dynamic-input group keeps one ABI while the
@@ -775,7 +758,9 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
 #ifdef SURFACE_MEDIUM_V2
   fresnel*=clamp(surface.reflectionStrength,0.0,1.0);
 #endif
-  let reflection = samplePlanarReflection(input.positionWS, orientedPlaneNormal, sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS));
+  let planar = samplePlanarReflection(planarReflection, planarReflectionTexture,
+    surfaceBackdropSampler, input.positionWS, orientedNormal, viewDirection, roughness);
+  let reflection = planar.rgb + sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS) * (1.0 - planar.a);
 
   let foam = clamp(surface.foam, 0.0, 1.0);
   var foamTint=vec3<f32>(0.9,0.95,1.0);

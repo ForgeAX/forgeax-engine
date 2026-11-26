@@ -5,11 +5,13 @@ import type { RenderPipelineTopology } from '../render-pipeline';
 import type { DispatchEntry, DispatchList, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import {
+  culledPassMembership,
   type DispatchPassWork,
   dispatchPassWork,
-  type MaterialFrame,
+  MaterialFrame,
 } from '../scene/material-dispatch';
 import { sceneSkinSlotsOf, sceneSurfaceRowsOf } from '../scene/render-scene-view';
+import { SelectedSceneDrawRows } from '../scene/selected-draw-rows';
 import { FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { classifyOitDraw, type OitIneligibleReason } from './eligibility';
 
@@ -69,6 +71,46 @@ export function resolveTransparencyView(input: {
           sorted: sortedTransparentDraws(input.materialFrame, passWork),
         })
       : resolveTransparencyPassWork(input, passWork);
+  }
+  const rows = input.renderables;
+  if (
+    rows instanceof SelectedSceneDrawRows &&
+    rows.fixedMaterialReads &&
+    sceneSurfaceRowsOf(rows, rows.at) === rows
+  ) {
+    const view = culledPassMembership(input.dispatch, rows.dispatchDomain);
+    if (view !== undefined && MaterialFrame.fixedProgramRoot(input.materialFrame) !== undefined) {
+      const capabilityAbsent =
+        input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
+      const resolved = capabilityAbsent ? 'sorted' : input.requested;
+      const counts = emptyCounts();
+      let start = 0;
+      for (const { pass, resource, end } of view.ranges) {
+        const first = start;
+        start = end;
+        if (!matchPass(pass.tags, FORWARD_PASS_SELECTOR)) continue;
+        const material = input.materialFrame.get(resource)?.snapshot;
+        if (material === undefined)
+          throw new Error('Transparency requires its accepted material frame');
+        if (!isTransparentLaneMaterial(material)) continue;
+        const count = end - first;
+        if (resolved === 'sorted') counts.sorted += count;
+        else {
+          const rigid = classifyOitDraw({
+            materialShaderId: pass.materialShaderId,
+            renderState: pass.renderState,
+            fragmentEntry: pass.fragmentEntry,
+            skinned: false,
+          });
+          const skinned =
+            rigid.eligible || rigid.reason !== 'program-without-oit-output'
+              ? rows.countSkins(view, first, end)
+              : 0;
+          countPass(counts, rigid, count, skinned);
+        }
+      }
+      return transparencyResolution(input.requested, resolved, capabilityAbsent, counts);
+    }
   }
   return resolveTransparencyEntries(input);
 }
@@ -200,16 +242,25 @@ function resolveTransparencyPassWork(
       work.visitSlots((slot) => {
         if (skins.has(slot)) skinned++;
       });
-    counts.ineligible['program-without-oit-output'] += skinned;
-    counts.sorted += skinned;
-    const ordinary = count - skinned;
-    if (rigid.eligible) counts.accumulated += ordinary;
-    else {
-      counts.sorted += ordinary;
-      counts.ineligible[rigid.reason] += ordinary;
-    }
+    countPass(counts, rigid, count, skinned);
   }
   return transparencyResolution(input.requested, 'weighted-blended', false, counts);
+}
+
+function countPass(
+  counts: DrawCounts,
+  rigid: ReturnType<typeof classifyOitDraw>,
+  count: number,
+  skinned: number,
+): void {
+  counts.ineligible['program-without-oit-output'] += skinned;
+  counts.sorted += skinned;
+  const ordinary = count - skinned;
+  if (rigid.eligible) counts.accumulated += ordinary;
+  else {
+    counts.sorted += ordinary;
+    counts.ineligible[rigid.reason] += ordinary;
+  }
 }
 
 interface DrawCounts {

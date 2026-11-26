@@ -92,7 +92,10 @@ describe('stock frame graph identity', () => {
     const active = { lensEffects: true, chromaticAberration: true, tonemap: 'linear' as const };
     expect(key(active)).toBe(key({}, false, true, false));
     expect(key(active, true)).not.toBe(key({}, true));
-    expect(key({ ...active, lensFlare: true })).not.toBe(key({ lensFlare: true }));
+    expect(key({ ...active, lensFlare: true })).toBe(key({ lensFlare: true }));
+    expect(key({ ...active, lensFlare: true }, false, false)).not.toBe(
+      key({ lensFlare: true }, false, false),
+    );
     expect(key({ ...active, barrelDistortion: true })).toBe(key({ barrelDistortion: true }));
     expect(key({ ...active, outline: true })).not.toBe(key({ outline: true }));
     expect(key(active, false, false)).not.toBe(key({}, false, false));

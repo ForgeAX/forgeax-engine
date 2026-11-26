@@ -8,6 +8,7 @@ import {
   AmbientOcclusion,
   antialiasFromF32,
   BarrelDistortion,
+  bloomQualityFromF32,
   CAMERA_EXPOSURE_MODE_MANUAL,
   Camera,
   CameraView,
@@ -30,7 +31,11 @@ import { LensEffects, resolveLensEffects } from '../components/lens-effects';
 import { LensFlare, resolveLensFlare } from '../components/lens-flare';
 import { validateChannelMask } from '../components/lighting-channels';
 import { Outline, resolveOutline } from '../components/outline';
-import { PlanarReflection, PlanarReflectionInvalidError } from '../components/planar-reflection';
+import {
+  PlanarReflection,
+  type PlanarReflectionData,
+  PlanarReflectionInvalidError,
+} from '../components/planar-reflection';
 import { resolveStereoCamera, StereoCamera } from '../components/stereo-camera';
 import { renderAblation } from '../diagnostics/render-ablation';
 import { createEnvironmentQuery, readEnvironmentPose } from '../extract/environment-gate';
@@ -97,12 +102,16 @@ function planarCaptureSnapshot(
  * positive. A zero target asks the Renderer to own the capture target.
  */
 function validatePlanarReflection(
-  planar: {
-    readonly target: number;
-    readonly updateIntervalFrames: number;
-    readonly distortion: number;
-    readonly resolutionScale: number;
-  },
+  planar: Pick<
+    PlanarReflectionData,
+    | 'updateIntervalFrames'
+    | 'distortion'
+    | 'resolutionScale'
+    | 'distanceFadeStartM'
+    | 'distanceFadeEndM'
+    | 'angleFadeStartDegrees'
+    | 'angleFadeEndDegrees'
+  >,
   camTarget: number,
   cameraView: unknown,
 ): void {
@@ -113,6 +122,22 @@ function validatePlanarReflection(
     throw new PlanarReflectionInvalidError('updateIntervalFrames');
   if (!(Number.isFinite(planar.distortion) && planar.distortion >= 0))
     throw new PlanarReflectionInvalidError('distortion');
+  if (
+    !(
+      planar.distanceFadeStartM >= 0 &&
+      planar.distanceFadeStartM < planar.distanceFadeEndM &&
+      Number.isFinite(planar.distanceFadeEndM)
+    )
+  )
+    throw new PlanarReflectionInvalidError('distanceFade');
+  if (
+    !(
+      planar.angleFadeStartDegrees >= 0 &&
+      planar.angleFadeStartDegrees < planar.angleFadeEndDegrees &&
+      planar.angleFadeEndDegrees <= 90
+    )
+  )
+    throw new PlanarReflectionInvalidError('angleFade');
 }
 
 /** Only an explicit 0 is stored on the snapshot; the default stays implicit. */
@@ -245,6 +270,7 @@ function buildCameraSnapshots(world: World, selection: ActiveCamera | undefined)
     const cameraTransparencyColumn = batch.read(Camera, 'transparency');
     const cameraBloomColumn = batch.read(Camera, 'bloom');
     const cameraBloomThresholdColumn = batch.read(Camera, 'bloomThreshold');
+    const cameraBloomQualityColumn = batch.read(Camera, 'bloomQuality');
     const cameraBloomIntensityColumn = batch.read(Camera, 'bloomIntensity');
     const cameraBloomSmoothWidthColumn = batch.read(Camera, 'bloomSmoothWidth');
     const cameraBloomRadiusColumn = batch.read(Camera, 'bloomRadius');
@@ -409,6 +435,7 @@ function buildCameraSnapshots(world: World, selection: ActiveCamera | undefined)
                 cameraBloomRadiusColumn[physicalRow] as number,
               ),
             ),
+        bloomQuality: bloomQualityFromF32(cameraBloomQualityColumn[physicalRow] as number),
         bloomThreshold: cameraBloomThresholdColumn[physicalRow] as number,
         bloomIntensity: cameraBloomIntensityColumn[physicalRow] as number,
         bloomSmoothWidth: cameraBloomSmoothWidthColumn[physicalRow] as number,
@@ -579,6 +606,12 @@ function fillCameraCaptureInputs(
       distance: batch.read(PlanarReflection, 'distance'),
       clipBias: batch.read(PlanarReflection, 'clipBias'),
       distortion: batch.read(PlanarReflection, 'distortion'),
+      distanceFadeStartM: batch.read(PlanarReflection, 'distanceFadeStartM'),
+      distanceFadeEndM: batch.read(PlanarReflection, 'distanceFadeEndM'),
+      angleFadeStartDegrees: batch.read(PlanarReflection, 'angleFadeStartDegrees'),
+      angleFadeEndDegrees: batch.read(PlanarReflection, 'angleFadeEndDegrees'),
+      captureCullMask: batch.read(PlanarReflection, 'captureCullMask'),
+      captureExtraFovDegrees: batch.read(PlanarReflection, 'captureExtraFovDegrees'),
       resolutionScale: batch.read(PlanarReflection, 'resolutionScale'),
       generateMipmaps: batch.read(PlanarReflection, 'generateMipmaps'),
       updateIntervalFrames: batch.read(PlanarReflection, 'updateIntervalFrames'),
@@ -593,6 +626,12 @@ function fillCameraCaptureInputs(
       distance: numeric.distance?.[physicalRow] as number,
       clipBias: numeric.clipBias?.[physicalRow] as number,
       distortion: (numeric.distortion?.[physicalRow] as number | undefined) ?? 0,
+      distanceFadeStartM: numeric.distanceFadeStartM?.[physicalRow] as number,
+      distanceFadeEndM: numeric.distanceFadeEndM?.[physicalRow] as number,
+      angleFadeStartDegrees: numeric.angleFadeStartDegrees?.[physicalRow] as number,
+      angleFadeEndDegrees: numeric.angleFadeEndDegrees?.[physicalRow] as number,
+      captureCullMask: numeric.captureCullMask?.[physicalRow] as number,
+      captureExtraFovDegrees: numeric.captureExtraFovDegrees?.[physicalRow] as number,
       resolutionScale: (numeric.resolutionScale?.[physicalRow] as number | undefined) ?? 1,
       generateMipmaps: numeric.generateMipmaps?.[physicalRow] === 1,
       updateIntervalFrames: numeric.updateIntervalFrames?.[physicalRow] as number,

@@ -77,10 +77,11 @@ describe('GPU-driven baseline characterization', () => {
     );
   });
 
-  it('freezes CPU shadow caster enumeration as the pre-GPU baseline', () => {
-    expect(shadowPass).toContain('validatedOrdered');
-    expect(shadowPass).toMatch(/for \(let i = 0; i < validatedOrdered\.length; i\+\+\)/);
+  it('keeps CPU shadow caster enumeration on admitted drawing rows', () => {
+    expect(shadowPass).toContain('shadowValidatedOrdered ?? mainValidatedOrdered');
+    expect(shadowPass).toContain('visitSubmittedDrawRows(validatedOrdered, (entry, i)');
     expect(shadowPass).toContain('recordShadowCasterDraws');
+    expect(read('../record/draw-row-pages.ts')).toContain('consume(row, start + index)');
   });
 
   it('freezes current ownership and stable-frame inspection signals', () => {

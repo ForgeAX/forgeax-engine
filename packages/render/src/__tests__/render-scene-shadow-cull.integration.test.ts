@@ -8,6 +8,7 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { extractSource } from '../render-system-extract-tail';
+import { visitCapturedPassRanks } from '../scene/material-dispatch';
 import { PersistentRenderScene } from '../scene/render-scene';
 import * as shadowVisibility from '../scene/shadow-visibility';
 
@@ -95,6 +96,16 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
     expect(build).toHaveBeenCalledTimes(1);
     expect(offCamera.renderables).toHaveLength(1);
     expect(offCamera.dispatch.map((entry) => entry.tags.LightMode)).toEqual(['ShadowCaster']);
+    const displayRanks: number[] = [];
+    const shadowRanks: number[] = [];
+    expect(
+      visitCapturedPassRanks(offCamera.dispatch, 'display', (rank) => displayRanks.push(rank)),
+    ).toBe(true);
+    expect(
+      visitCapturedPassRanks(offCamera.dispatch, 'shadow', (rank) => shadowRanks.push(rank)),
+    ).toBe(true);
+    expect(displayRanks).toEqual([]);
+    expect(shadowRanks).toEqual([0]);
     // A moved light must be read for the next off-camera decision.
     lightMatrix[12] = -5;
     expect(draw().renderables).toHaveLength(0);

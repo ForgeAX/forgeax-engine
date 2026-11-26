@@ -2279,9 +2279,10 @@ describe('factory contract', () => {
     expect(renderer.inspect().perFramePassNames).toContain('standard-grade');
     expect(renderer.inspect().perFramePassNames).not.toContain('bloom-composite');
     expect(onInspection.graphStatus).toBe('valid');
-    expect(onInspection.targetCount).toBe(10);
-    expect(onInspection.targetBytes).toBe(21_824);
-    expect(onInspection.passCount).toBe(10);
+    expect(onInspection.targetCount).toBe(14);
+    // Both filter chains store 1,364 texels as four-byte RGB11F.
+    expect(onInspection.targetBytes).toBe(13_632);
+    expect(onInspection.passCount).toBe(11);
     expect(onInspection.uploadCount).toBe(10);
     expect(onInspection.bindGroupCount).toBe(10);
     expect(onInspection.encodeCount).toBe(10);
@@ -2305,7 +2306,7 @@ describe('factory contract', () => {
     const recoveredInspection = renderer.inspect().bloom;
     expect(recoveredInspection.state).toBe('active');
     expect(recoveredInspection.resourceCount).toBeGreaterThan(0);
-    expect(recoveredInspection.passCount).toBe(10);
+    expect(recoveredInspection.passCount).toBe(11);
     expect(recoveredInspection.uploadCount).toBe(10);
     expect(recoveredInspection.bindGroupCount).toBe(10);
     expect(recoveredInspection.encodeCount).toBe(10);
@@ -2372,7 +2373,7 @@ describe('factory contract', () => {
       expect(updated.targetCount).toBe(first.targetCount);
       expect(updated.targetBytes).toBe(first.targetBytes);
       expect(updated.uploadCount).toBe(11);
-      expect(updated.passCount).toBe(11);
+      expect(updated.passCount).toBe(13);
     } finally {
       await scenario.dispose();
     }
@@ -2421,7 +2422,7 @@ describe('factory contract', () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatchObject({
         code: 'pass-encode-failed',
-        detail: { passName: 'bloom-horizontal-0', cause: failure },
+        detail: { passName: 'bloom-horizontal-4', cause: failure },
       });
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
@@ -2525,8 +2526,8 @@ describe('factory contract', () => {
       expect(scenario.renderer.inspect().bloom).toMatchObject({
         state: 'active',
         graphStatus: 'valid',
-        targetCount: 11,
-        passCount: 11,
+        targetCount: 16,
+        passCount: 13,
         uploadCount: 11,
         bindGroupCount: 11,
         encodeCount: 11,
@@ -2618,7 +2619,7 @@ describe('factory contract', () => {
       expect(overlap.state).toBe('active');
       expect(overlap.graphStatus).toBe('valid');
       expect(overlap.enabled).toBe(true);
-      expect(overlap.passCount).toBe(11);
+      expect(overlap.passCount).toBe(13);
       expect(overlap.uploadCount).toBe(11);
       expect(overlap.bindGroupCount).toBe(11);
       expect(overlap.encodeCount).toBe(11);
@@ -2630,8 +2631,8 @@ describe('factory contract', () => {
       const settled = scenario.renderer.inspect().bloom;
       expect(settled.state).toBe('active');
       expect(settled.graphStatus).toBe('valid');
-      expect(settled.passCount).toBe(11);
-      expect(settled.targetCount).toBe(11);
+      expect(settled.passCount).toBe(13);
+      expect(settled.targetCount).toBe(16);
       expect(settled.targetBytes).toBe(54_592);
       expect(settled.resourceCount).toBeLessThan(overlap.resourceCount);
     } finally {

@@ -279,17 +279,17 @@ describe('Depth of Field parameter and shader contract', () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     const frame = validateDepthOfFieldFrameParams(resolved.value, {
+      outputWidth: 1920,
       outputHeight: 1080,
       near: wideCamera.near,
       far: wideCamera.far,
-      useTemporalDepth: false,
     });
     expect(frame.ok).toBe(true);
     const bytes = packDepthOfFieldParams(resolved.value, {
+      outputWidth: 1920,
       outputHeight: 1080,
       near: wideCamera.near,
       far: wideCamera.far,
-      useTemporalDepth: false,
     });
     expect(Array.from(new Float32Array(bytes.buffer)).every(Number.isFinite)).toBe(true);
     expect(signedDepthOfFieldCoC(resolved.value, 1e30, 1080)).toBeCloseTo(0, 5);
@@ -339,19 +339,19 @@ describe('Depth of Field parameter and shader contract', () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     const frame = validateDepthOfFieldFrameParams(resolved.value, {
+      outputWidth: 1920,
       outputHeight: 1080,
       near: 1e-38,
       far: 10,
-      useTemporalDepth: false,
     });
     expect(frame.ok).toBe(false);
     let thrown: unknown;
     try {
       packDepthOfFieldParams(resolved.value, {
+        outputWidth: 1920,
         outputHeight: 1080,
         near: 1e-38,
         far: 10,
-        useTemporalDepth: false,
       });
     } catch (error) {
       thrown = error;
@@ -367,10 +367,10 @@ describe('Depth of Field parameter and shader contract', () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     const frame = validateDepthOfFieldFrameParams(resolved.value, {
+      outputWidth: 1920,
       outputHeight: 1080,
       near: Math.fround(2 ** -149),
       far: Math.fround(3.402823e38),
-      useTemporalDepth: false,
     });
     expect(frame.ok).toBe(false);
     if (!frame.ok && 'field' in frame.error.detail) {
@@ -401,10 +401,10 @@ describe('Depth of Field parameter and shader contract', () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     const bytes = packDepthOfFieldParams(resolved.value, {
+      outputWidth: 1920,
       outputHeight: 1080,
       near: camera.near,
       far: camera.far,
-      useTemporalDepth: true,
     });
     expect(bytes.byteLength).toBe(DEPTH_OF_FIELD_PARAMS_BYTE_SIZE);
     const payload = Array.from(new Float32Array(bytes.buffer));
@@ -419,7 +419,7 @@ describe('Depth of Field parameter and shader contract', () => {
       2,
       0.1,
       100,
-      1,
+      1920,
       0,
       1.0963743,
       0,
@@ -520,9 +520,7 @@ describe('Depth of Field parameter and shader contract', () => {
     expect(feature).toContain(
       "fragmentEntryPoint: side === 'near' ? 'fs_prefilter_near' : 'fs_prefilter_far'",
     );
-    expect(feature).toContain(
-      "fragmentEntryPoint: side === 'near' ? 'fs_prefilter_metadata_near' : 'fs_prefilter_metadata_far'",
-    );
+    expect(feature).toContain('outputs: [prefilter.value, prefilterMetadata.value]');
     expect(feature).not.toContain('paramsTransform: sideParamsTransform');
     for (const path of [
       new URL('../../../../../shader/src/depth-of-field.wgsl', import.meta.url),
@@ -531,8 +529,7 @@ describe('Depth of Field parameter and shader contract', () => {
       const source = readFileSync(path, 'utf8');
       expect(source).toContain('fn fs_prefilter_near');
       expect(source).toContain('fn fs_prefilter_far');
-      expect(source).toContain('fn fs_prefilter_metadata_near');
-      expect(source).toContain('fn fs_prefilter_metadata_far');
+      expect(source).toContain('@location(1) metadata : vec4<f32>');
     }
   });
 
@@ -545,7 +542,7 @@ describe('Depth of Field parameter and shader contract', () => {
     for (const path of paths) {
       const source = readFileSync(path, 'utf8');
       expect(source).toContain('fn depthAndCoverageAt');
-      expect(source).toContain('fn cocCoverageAtExtra1');
+      expect(source).toContain('fn sampleCoc');
       expect(source).toContain('depthSample.coverage');
       expect(source).toContain('let largeSourceFactor = smoothstep(2.0, 3.0, sourceRadius);');
       expect(source).toContain('let nearSourceFactor = smoothstep(0.5, 2.0, sourceRadius);');
@@ -563,8 +560,8 @@ describe('Depth of Field parameter and shader contract', () => {
       expect(source).toContain('let sourceCoverageFactor = largeSourceFactor;');
       expect(source).toContain('normalizedSupport * sourceCoverageFactor * sampleAreaWeight');
       expect(source).toContain('coverage += coverageWeight;');
-      expect(source).toContain(
-        'let resolvedColor = select(fallbackColor, color / positiveWeight, weight > 0.0);',
+      expect(source).toMatch(
+        /if \(weight <= 0\.0\) \{\s*resolvedColor = textureSampleLevel\(currentColor, linearSampler, in\.uv, 0\.0\)\.rgb;/,
       );
       expect(source).toContain('return vec4<f32>(color, alpha);');
       expect(source).toContain('var coverageCapacity = 0.0;');
@@ -598,11 +595,8 @@ describe('Depth of Field parameter and shader contract', () => {
       expect(source).toContain(
         'let sampleWeight = select(0.0, sourceCoverage * smallSourceFactor, accepted);',
       );
-      expect(source).toContain(
-        'let fallbackColor = textureSampleLevel(currentColor, linearSampler, in.uv, 0.0).rgb;',
-      );
-      expect(source).toContain(
-        'let resolvedColor = select(fallbackColor, color / positiveWeight, weight > 0.0);',
+      expect(source).toMatch(
+        /if \(weight <= 0\.0\) \{\s*resolvedColor = textureSampleLevel\(currentColor, linearSampler, in\.uv, 0\.0\)\.rgb;/,
       );
       expect(source).toContain(
         'let confidence = clamp((weight - 1.0) / max(weight, 1.0), 0.0, 1.0);',

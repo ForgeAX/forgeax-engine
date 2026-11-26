@@ -7,7 +7,12 @@ import {
 import { mipDimension, textureFormatBlock } from '@forgeax/engine-types';
 import type { DepthOfFieldInspection } from '../../inspection-types';
 import type { InstalledFrameGraph } from '../../record/frame-snapshot';
-import { depthOfFieldPassNames, depthOfFieldTopology } from './depth-of-field-feature';
+import {
+  DEPTH_OF_FIELD_COMPUTE_TILE_PASS,
+  DEPTH_OF_FIELD_TILE_PASSES,
+  depthOfFieldPassNames,
+  depthOfFieldTopology,
+} from './depth-of-field-feature';
 import {
   DEFAULT_DEPTH_OF_FIELD_PARAMS,
   type DepthOfFieldParams,
@@ -18,7 +23,13 @@ function resourceBytes(resource: CompiledRenderGraphInfo['resources'][number]): 
   if (resource.byteSize !== undefined) return resource.byteSize;
   const descriptor = resource.descriptor;
   if (descriptor.kind !== 'texture') return 0;
-  if (descriptor.format !== 'rgba16float' && descriptor.format !== 'rgba8unorm') return 0;
+  if (
+    descriptor.format !== 'rg16float' &&
+    descriptor.format !== 'rgba16float' &&
+    descriptor.format !== 'rgba8unorm' &&
+    descriptor.format !== 'rg8unorm'
+  )
+    return 0;
   const texelBytes = textureFormatBlock(descriptor.format).bytesPerBlock;
   let bytes = 0;
   for (let level = 0; level < descriptor.mipLevelCount; level += 1) {
@@ -77,13 +88,15 @@ export function inspectDepthOfFieldGraph(
   graph: InstalledFrameGraph['graph'],
   topology: NonNullable<ReturnType<typeof depthOfFieldTopology>>,
 ): DepthOfFieldGraphInspection {
-  const expectedPasses = depthOfFieldPassNames(topology);
+  const computeTiles = compiledRenderGraphHasPass(graph, DEPTH_OF_FIELD_COMPUTE_TILE_PASS);
+  const expectedPasses = depthOfFieldPassNames(topology, computeTiles);
   const completePasses = expectedPasses.every((name) => compiledRenderGraphHasPass(graph, name));
   const dofResources = compiledRenderGraphResourceDeclarations(graph, 'dof-').filter(
     (resource) => resource.kind === 'texture',
   );
   const expectedResourceLabels = [
     'dof-coc',
+    ...DEPTH_OF_FIELD_TILE_PASSES,
     ...(topology.useNear
       ? ['dof-near', 'dof-prefilter-near', 'dof-prefilter-near-metadata', 'dof-background']
       : []),

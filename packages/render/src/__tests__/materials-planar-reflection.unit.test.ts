@@ -19,6 +19,7 @@ import { Materials } from '../materials.js';
 import {
   PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET,
   PLANAR_REFLECTION_UNIFORM_OFFSET,
+  PLANAR_REFLECTION_UNIFORM_SIZE,
   VIEW_UNIFORM_SLOT_STRIDE,
 } from '../record/view-ubo.js';
 
@@ -67,9 +68,9 @@ describe('Standard planar reflection capability', () => {
     ]);
     // The disabled projection shares the planar slot and is never written.
     expect(PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET % 256).toBe(0);
-    expect(PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET + 96).toBeLessThanOrEqual(
-      PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE,
-    );
+    expect(
+      PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET + PLANAR_REFLECTION_UNIFORM_SIZE,
+    ).toBeLessThanOrEqual(PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE);
     const buffer = {} as never;
     const capture = { label: 'capture' } as never;
     const fallback = { label: 'fallback' } as never;

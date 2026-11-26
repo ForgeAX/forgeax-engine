@@ -1,14 +1,13 @@
 import type { SynchronousTransform } from '@forgeax/engine-scene/internal';
 import type { Matrix4, Object3D } from 'three/src/Three.Core.js';
 import {
-  primitiveMatrixValues,
+  multiplyWorldMatrix,
   publishWorldMatrix,
   sourceCollectionStorage,
 } from './source-collections';
 
 import {
   copyWorldMatrixElements,
-  multiplyWorldMatrix,
   type WorldMatrixRow,
   worldMatrixRow,
 } from './world-matrix-storage';
@@ -20,7 +19,6 @@ type PoseKernels = {
   multiply: Matrix4['multiplyMatrices'];
   composeElements(target: Elements, ...inputs: Parameters<Matrix4['compose']>): void;
   copyElements(target: Elements, source: Elements): void;
-  multiplyWorldElements(left: Elements, right: Elements, row: WorldMatrixRow): void;
   multiplyElements(left: Elements, right: Elements, target: Elements): void;
 };
 let stock: PoseKernels | undefined;
@@ -31,7 +29,6 @@ export function installPoseKernels(
   composeElements: PoseKernels['composeElements'],
   copyElements: PoseKernels['copyElements'],
   multiplyElements: PoseKernels['multiplyElements'],
-  multiplyWorldElements: PoseKernels['multiplyWorldElements'],
 ): void {
   stock = {
     compose: methods.compose,
@@ -40,11 +37,11 @@ export function installPoseKernels(
     composeElements,
     copyElements,
     multiplyElements,
-    multiplyWorldElements,
   };
 }
 
 type WorldOutput = {
+  readonly elements: Elements;
   readonly storage: Elements;
   readonly row: WorldMatrixRow | undefined;
 };
@@ -118,6 +115,17 @@ export function resolveSourceLocalPose(node: Object3D): boolean {
   return true;
 }
 
+/** A stock pose already holds the physical row attached to its public elements.
+ * Check the actual reference on each publication so replaced arrays keep their own writes. */
+export function sourceWorldMatrixRow(
+  node: Object3D,
+  elements: Elements,
+): WorldMatrixRow | undefined {
+  const binding = poses.get(node);
+  if (binding?.elements === elements && binding.row !== undefined) return binding.row;
+  return worldMatrixRow(sourceCollectionStorage(elements));
+}
+
 export function reflectSourceWorldPose(node: Object3D): void {
   poses.get(node)?.transform.replaceWorld();
 }
@@ -145,7 +153,6 @@ export function bindSourceWorldPose(
     kernels?.copy === copy && kernels.multiply === multiply
       ? worldMatrixRow(worldStorage)
       : undefined;
-  row?.attach();
   const binding = new PoseBinding(
     State,
     elements,
@@ -165,22 +172,20 @@ export function bindSourceWorldPose(
     kernels?.copy === copy && kernels.multiply === multiply
       ? (parent) => {
           if (parent != null) {
-            const parentLanes = parent.row?.lanes;
-            if (
-              parentLanes !== undefined &&
-              row?.lanes !== undefined &&
-              primitiveMatrixValues(localElements, localStorage)
-            )
-              multiplyWorldMatrix(parentLanes, localStorage, row.lanes);
-            else if (row) kernels.multiplyWorldElements(parent.storage, localStorage, row);
+            if (row) multiplyWorldMatrix(parent.elements, localElements, row, parent.row);
             else kernels.multiplyElements(parent.storage, localStorage, worldStorage);
             return;
           }
           const foreign = parent === undefined ? node.parent?.matrixWorld : undefined;
           if (foreign) {
-            const input = sourceCollectionStorage(foreign.elements);
-            if (row) kernels.multiplyWorldElements(input, localStorage, row);
-            else kernels.multiplyElements(input, localStorage, worldStorage);
+            const elements = foreign.elements;
+            if (row) multiplyWorldMatrix(elements, localElements, row);
+            else
+              kernels.multiplyElements(
+                sourceCollectionStorage(elements),
+                localStorage,
+                worldStorage,
+              );
           } else if (!row || !copyWorldMatrixElements(worldStorage, localStorage, localElements))
             kernels.copyElements(worldStorage, localStorage);
         }
@@ -226,7 +231,6 @@ function attachPose(node: Object3D, binding: PoseBinding, publish?: () => void) 
       attached = false;
       if (listener) binding.listeners?.delete(listener);
       if (--binding.owners === 0) {
-        binding.row?.release();
         poses.set(node, undefined);
         boundPoses--;
       }

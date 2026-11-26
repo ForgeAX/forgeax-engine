@@ -9,6 +9,7 @@ import {
   type BindGroup,
   type BindGroupEntry,
   type BindGroupLayout,
+  type Buffer,
   type RhiDevice,
   RhiError,
   type Texture,
@@ -72,6 +73,7 @@ import {
   type PreparedStandardLighting,
   prepareStandardLighting,
 } from '../pipeline/standard-lighting/prepare';
+import { lightSlotWorkOf, projectLightSlotWork } from '../pipeline/standard-lighting/slot-work';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import {
   type StandardClusterTransport,
@@ -127,12 +129,7 @@ import {
   MESH_UBO_FULL_ARRAY_BYTES,
   rememberBindGroup,
 } from './mesh-ssbo';
-import type {
-  _InternalRenderPipelineContext,
-  PipelineState,
-  RecordProfileRunner,
-  RenderSystemInternals,
-} from './render-context';
+import type { PipelineState, RecordProfileRunner, RenderSystemInternals } from './render-context';
 import { standardLightingPipelineDemand } from './view-pipeline-demand';
 import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
 
@@ -983,9 +980,10 @@ function sameMembers(a: ReadonlySet<number>, b: ReadonlySet<number> | undefined)
 export function createStandardLocalLights(
   lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
 ): StandardLocalLightInput[] {
-  return [
-    ...lights.point.map((source) => ({
-      kind: 'point' as const,
+  const local: StandardLocalLightInput[] = [];
+  for (const source of lights.point)
+    local.push({
+      kind: 'point',
       shadowed: source.shadowAtlasLayer !== undefined && source.shadowAtlasLayer >= 0,
       position: source.position,
       range: binningRange(
@@ -996,38 +994,39 @@ export function createStandardLocalLights(
           : Number.POSITIVE_INFINITY,
       ),
       source,
-    })),
-    ...lights.spot.map((source) => {
-      const range =
-        Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
-          ? Math.sqrt(1 / source.invRangeSquared)
-          : Number.POSITIVE_INFINITY;
-      // Bin the spot's lit sector, not its whole range sphere.
-      const center = vec3.create(0, 0, 0);
-      const radius = spotBinningSphere(
-        source.position,
-        source.direction,
-        source.cosOuter,
+    });
+  for (const source of lights.spot) {
+    const range =
+      Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
+        ? Math.sqrt(1 / source.invRangeSquared)
+        : Number.POSITIVE_INFINITY;
+    // Bin the spot's lit sector, not its whole range sphere.
+    const center = vec3.create(0, 0, 0);
+    const radius = spotBinningSphere(
+      source.position,
+      source.direction,
+      source.cosOuter,
+      range,
+      center,
+    );
+    local.push({
+      kind: 'spot',
+      shadowed:
+        source.castShadow && source.shadowAtlasTile >= 0 && source.lightViewProj !== undefined,
+      position: center,
+      range: binningRange('spot', source, radius),
+      cone: {
+        apex: source.position,
+        direction: source.direction,
+        cosOuter: source.cosOuter,
         range,
-        center,
-      );
-      return {
-        kind: 'spot' as const,
-        shadowed:
-          source.castShadow && source.shadowAtlasTile >= 0 && source.lightViewProj !== undefined,
-        position: center,
-        range: binningRange('spot', source, radius),
-        cone: {
-          apex: source.position,
-          direction: source.direction,
-          cosOuter: source.cosOuter,
-          range,
-        },
-        source,
-      };
-    }),
-    ...lights.rect.map((source) => ({
-      kind: 'rect-area' as const,
+      },
+      source,
+    });
+  }
+  for (const source of lights.rect)
+    local.push({
+      kind: 'rect-area',
       shadowed: false,
       position: source.position,
       rectNormal: vec3.cross(vec3.create(), source.axisX, source.axisY),
@@ -1039,15 +1038,17 @@ export function createStandardLocalLights(
           : Number.POSITIVE_INFINITY,
       ),
       source,
-    })),
-    ...(lights.additionalDirectional ?? []).map((source) => ({
-      kind: 'directional' as const,
-      shadowed: false,
-      position: ORIGIN,
-      range: binningRange('directional', source, Number.POSITIVE_INFINITY),
-      source,
-    })),
-  ];
+    });
+  if (lights.additionalDirectional)
+    for (const source of lights.additionalDirectional)
+      local.push({
+        kind: 'directional',
+        shadowed: false,
+        position: ORIGIN,
+        range: binningRange('directional', source, Number.POSITIVE_INFINITY),
+        source,
+      });
+  return local;
 }
 
 function standardScreenTransportDemand(
@@ -1187,6 +1188,7 @@ function prepareStandardLightingTopology(
     reflectedAbi?.directLightSlot.capacity,
     frameState.hdrpClusterBinScratch,
     stockClusterMembership(frameState, clusterGrid),
+    projectLightSlotWork(local),
   );
   if (!prepared.ok) return prepared;
   if (camera !== undefined)
@@ -1232,10 +1234,14 @@ function modifierDigest(data: Uint8Array): number {
   return digest;
 }
 
-interface LightTextureUpload {
-  readonly slice: number | undefined;
-  readonly source: LightTextureSource | undefined;
-  readonly matrix: Float32Array | undefined;
+/** Compare the submitted float values, including the sign of zero. NaNs are rewritten. */
+function sameModifierMatrix(written: Float32Array | undefined, matrix: Float32Array): boolean {
+  if (written?.length !== matrix.length) return false;
+  for (let i = 0; i < matrix.length; i++) {
+    const value = matrix[i];
+    if (value !== written[i] || (value === 0 && !Object.is(value, written[i]))) return false;
+  }
+  return true;
 }
 
 const WHITE_LIGHT_TEXTURE_CHAIN = new Uint8Array(COOKIE_SLICE_MIP_CHAIN_BYTES).fill(255);
@@ -1273,20 +1279,22 @@ export function writeLightModifierTextures(
     const result = writeCookieSliceMipChain(internals.device, cookieTexture, slice, chain);
     if (!result.ok) throw result.error;
   };
-  const uploadLightTexture = (modifier: LightTextureUpload): void => {
-    const source = modifier.source;
-    if (modifier.slice !== undefined && source !== undefined && cookieTexture) {
+  const uploadLightTexture = (
+    slice: number | undefined,
+    source: LightTextureSource | undefined,
+    matrix?: Float32Array,
+  ): void => {
+    if (slice !== undefined && source !== undefined && cookieTexture) {
       const payload = source.kind === 'mip-chain' ? source.data : source.asset.data;
       const digest = modifierDigest(payload);
       const alreadyQueued =
-        frameState?.pendingLightTextureResamples?.some(
-          (pending) => pending.slice === modifier.slice,
-        ) === true;
-      if (uploadState.cookie.get(modifier.slice) !== digest && !alreadyQueued) {
+        frameState?.pendingLightTextureResamples?.some((pending) => pending.slice === slice) ===
+        true;
+      if (uploadState.cookie.get(slice) !== digest && !alreadyQueued) {
         if (source.kind === 'mip-chain') {
           if (source.data.byteLength === COOKIE_SLICE_MIP_CHAIN_BYTES) {
-            writeChain(modifier.slice, source.data);
-            uploadState.cookie.set(modifier.slice, digest);
+            writeChain(slice, source.data);
+            uploadState.cookie.set(slice, digest);
           }
         } else {
           const resamplePrograms = {
@@ -1304,13 +1312,13 @@ export function writeLightModifierTextures(
             factory: internals.immediateShaderModuleFactory ?? internals.shaderModuleFactory,
             programs: resamplePrograms,
             target: cookieTexture,
-            slice: modifier.slice,
+            slice: slice,
             asset: source.asset,
           });
           if (!resampled.ok) {
             internals.errorRegistry.fire(resampled.error);
-            writeChain(modifier.slice, WHITE_LIGHT_TEXTURE_CHAIN);
-            uploadState.cookie.set(modifier.slice, digest);
+            writeChain(slice, WHITE_LIGHT_TEXTURE_CHAIN);
+            uploadState.cookie.set(slice, digest);
           } else if (frameState === undefined) {
             resampled.value.discard();
             internals.errorRegistry.fire(
@@ -1320,45 +1328,42 @@ export function writeLightModifierTextures(
                 hint: 'queue the prepared result on the active RenderFrameState before recording',
               }),
             );
-            writeChain(modifier.slice, WHITE_LIGHT_TEXTURE_CHAIN);
-            uploadState.cookie.set(modifier.slice, digest);
+            writeChain(slice, WHITE_LIGHT_TEXTURE_CHAIN);
+            uploadState.cookie.set(slice, digest);
           } else {
             const pending = frameState.pendingLightTextureResamples ?? [];
             pending.push({
-              slice: modifier.slice,
+              slice: slice,
               work: resampled.value,
-              onSubmitted: () => uploadState.cookie.set(modifier.slice as number, digest),
+              onSubmitted: () => uploadState.cookie.set(slice as number, digest),
             });
             frameState.pendingLightTextureResamples = pending;
           }
         }
       }
     }
-    if (modifier.slice !== undefined && modifier.matrix !== undefined && cookieMatrixBuffer) {
-      const matrixBytes = new Uint8Array(
-        modifier.matrix.buffer,
-        modifier.matrix.byteOffset,
-        modifier.matrix.byteLength,
-      );
-      const digest = modifierDigest(matrixBytes);
-      if (uploadState.cookieMatrix.get(modifier.slice) !== digest) {
+    if (slice !== undefined && matrix !== undefined && cookieMatrixBuffer) {
+      const written = uploadState.cookieMatrix.get(slice);
+      if (!sameModifierMatrix(written, matrix)) {
         const result = internals.device.queue.writeBuffer(
           cookieMatrixBuffer,
-          modifier.slice * 16 * Float32Array.BYTES_PER_ELEMENT,
-          modifier.matrix,
+          slice * 16 * Float32Array.BYTES_PER_ELEMENT,
+          matrix,
         );
         if (!result.ok) throw result.error;
-        uploadState.cookieMatrix.set(modifier.slice, digest);
+        if (written?.length === matrix.length) written.set(matrix);
+        else uploadState.cookieMatrix.set(slice, matrix.slice());
       }
     }
   };
-  const uploadedIesSlices = new Set<number>();
+  let uploadedIesSlices: Set<number> | undefined;
   const uploadIes = (profile: IesProfileSnapshot): void => {
     if (
       profile.iesProfileSlice !== undefined &&
       profile.iesProfileData !== undefined &&
       iesTexture
     ) {
+      uploadedIesSlices ??= new Set();
       if (uploadedIesSlices.has(profile.iesProfileSlice)) return;
       uploadedIesSlices.add(profile.iesProfileSlice);
       if (profile.iesProfileData.byteLength === IES_SLICE_WIDTH * IES_SLICE_HEIGHT * 2) {
@@ -1386,20 +1391,12 @@ export function writeLightModifierTextures(
     // Cookie and projector keep distinct shader projections (cookieMatrices
     // vs View.spotLightViewProj); only the texture transport is shared, and
     // the direct-light metadata selects the one in use.
-    uploadLightTexture({
-      slice: spot.cookieSlice,
-      source: spot.cookieSource,
-      matrix: spot.cookieMatrix,
-    });
-    uploadLightTexture({
-      slice: spot.projectorSlice,
-      source: spot.projectorSource,
-      matrix: spot.projectorMatrix,
-    });
+    uploadLightTexture(spot.cookieSlice, spot.cookieSource, spot.cookieMatrix);
+    uploadLightTexture(spot.projectorSlice, spot.projectorSource, spot.projectorMatrix);
   }
   for (const rect of lights.rect) {
     uploadIes(rect);
-    uploadLightTexture({ slice: rect.cookieSlice, source: rect.cookieSource, matrix: undefined });
+    uploadLightTexture(rect.cookieSlice, rect.cookieSource);
   }
 }
 
@@ -1654,28 +1651,6 @@ function resolveClusterWriteResources(
   return ok({ hdrpBuffers, reflectedAbi, gpuMembership });
 }
 
-function projectPreparedLightModifierSources(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  pipelineState: PipelineState,
-  prepared: PreparedStandardLighting,
-): void {
-  const preparedPoints: ViewLights['point'][number][] = [];
-  const preparedSpots: ViewLights['spot'][number][] = [];
-  const preparedRects: ViewLights['rect'][number][] = [];
-  for (const local of prepared.local) {
-    if (local.source?.kind === 'point') preparedPoints.push(local.source);
-    else if (local.source?.kind === 'spot') preparedSpots.push(local.source);
-    else if (local.source?.kind === 'rect-area') preparedRects.push(local.source);
-  }
-  writeLightModifierTextures(
-    internals,
-    pipelineState,
-    { point: preparedPoints, spot: preparedSpots, rect: preparedRects },
-    frameState,
-  );
-}
-
 function buildClusterUniformPayload(
   frameState: RenderFrameState,
   camera: CameraSnapshot,
@@ -1755,13 +1730,13 @@ export function writeHdrpClusterAndSsaoBuffers(
   if (!resources.ok) return resources;
   const { hdrpBuffers, reflectedAbi, gpuMembership } = resources.value;
 
-  if (pipelineState !== undefined) {
-    projectPreparedLightModifierSources(internals, frameState, pipelineState, prepared);
-  }
+  const work = lightSlotWorkOf(prepared);
+  if (pipelineState !== undefined && (work.point.length || work.spot.length || work.rect.length))
+    writeLightModifierTextures(internals, pipelineState, work, frameState);
 
   const channelMapping = (prepared.deferredChannelProjection ?? 0) & DEFERRED_CHANNEL_MAPPING_MASK;
 
-  if (prepared.local.some((local) => local.source === undefined)) {
+  if (!work.complete) {
     return err(
       new StandardClusterTransportUnavailableError(
         prepared.local.length,
@@ -1799,7 +1774,6 @@ export function writeHdrpClusterAndSsaoBuffers(
           clusterGrid: membership.grid,
           lightIndices: membership.indices,
           lightIndexCount: membership.indices.length,
-          slotLayout: reflectedAbi.directLightSlot,
         });
         if (frameState.standardClusterWorkConformance?.enabled) {
           const tableInspection = hdrpBuffers.table.inspect();
@@ -1943,7 +1917,25 @@ export function meshSlotBindGroup(
   current?: () => boolean,
 ): BindGroup {
   requireViewBindingCurrent(current);
-  const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
+  return meshBufferBindGroup(
+    device,
+    frameState,
+    pipelineState,
+    bindGroupCounts,
+    meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset),
+    current,
+  );
+}
+
+/** Bind the physical buffer selected together with the draw's page-local offset. */
+export function meshBufferBindGroup(
+  device: RhiDevice,
+  frameState: RenderFrameState,
+  pipelineState: PipelineState,
+  bindGroupCounts: BindGroupCounts,
+  buffer: Buffer,
+  current?: () => boolean,
+): BindGroup {
   const bindings = bindGroupChainLeaf2(
     frameState.meshBindGroupCache,
     pipelineState.meshBindGroupLayout,
@@ -1971,16 +1963,4 @@ export function meshSlotBindGroup(
   if (!result.ok) throw result.error;
   requireViewBindingCurrent(current);
   return rememberBindGroup(bindings, 'mesh', result.value, bindGroupCounts);
-}
-
-/** Preserve the complete clustered lighting ABI while selecting a physical mesh page. */
-export function clusteredMeshSlotBindGroup(
-  c: Pick<
-    _InternalRenderPipelineContext,
-    'runtime' | 'frameState' | 'pipelineState' | 'bindGroupCounts'
-  >,
-  byteOffset: number,
-): BindGroup {
-  const { runtime, frameState, pipelineState, bindGroupCounts } = c;
-  return meshSlotBindGroup(runtime.device, frameState, pipelineState, bindGroupCounts, byteOffset);
 }

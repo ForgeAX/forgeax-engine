@@ -96,12 +96,43 @@ describe('World environment storage matching', () => {
     const changed = extract().lights.point[0];
     expect(changed).not.toBe(first);
     expect(changed?.intensity).toBe(7);
+    expect(changed?.position).toBe(first?.position);
     world
       .set(lamp, GlobalTransform, { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1] })
       .unwrap();
     const moved = extract().lights.point[0];
     expect(moved).not.toBe(changed);
     expect(moved?.position[0]).toBe(4);
+    expect(moved?.color).toBe(changed?.color);
+  });
+
+  it('publishes current point columns when another light triggers extraction', () => {
+    const world = new World();
+    const a = world.spawn({ component: PointLight, data: { intensity: 2 } }).unwrap();
+    const b = world.spawn({ component: PointLight, data: {} }).unwrap();
+    const { extract } = extractor(world);
+    const before = extract().lights.point;
+    world.set(a, PointLight, { color: [0.5, 1, 0], intensity: 8 }, false).unwrap();
+    world.set(b, PointLight, { intensity: 3 }).unwrap();
+    const after = extract().lights.point;
+    expect(Array.from(after[0]?.color ?? [])).toEqual([4, 8, 0]);
+    expect(Array.from(before[0]?.color ?? [])).toEqual([2, 2, 2]);
+    expect(after[1]?.intensity).toBe(3);
+  });
+
+  it('preserves surviving light rows after swap removal and retains older publications', () => {
+    const world = new World();
+    const ids = Array.from({ length: 4 }, (_, i) =>
+      world.spawn({ component: PointLight, data: { intensity: i + 1 } }).unwrap(),
+    );
+    const { extract } = extractor(world);
+    const before = extract().lights.point;
+    world.despawn(ids[0] as (typeof ids)[number]).unwrap();
+    const after = extract().lights.point;
+    expect(after).toHaveLength(3);
+    for (const light of after)
+      expect(light).toBe(before.find((row) => row.entity === light.entity));
+    expect(before.map((light) => light.intensity)).toEqual([1, 2, 3, 4]);
   });
 
   it('keeps retained light projections private to independent source readers', () => {
@@ -236,6 +267,40 @@ describe('World environment storage matching', () => {
     expect(lights.directional?.entity).toBe(first);
     expect(lights.ignoredDirectionalShadowCasters).toEqual([second]);
     expect(lights.additionalDirectional?.map((light) => light.entity)).toEqual([second]);
+  });
+
+  it('keeps an authored shadow matrix with its selected sun across row edits and owner changes', () => {
+    const world = new World();
+    const matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 2, 0, 0, 1];
+    const fill = world
+      .spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } })
+      .unwrap();
+    const sun = world
+      .spawn({
+        component: DirectionalLight,
+        data: {
+          direction: [0, -1, 0],
+          castShadow: true,
+          shadowProjection: 1,
+          shadowViewProjection: matrix,
+        },
+      })
+      .unwrap();
+    const { extract } = extractor(world);
+    const first = extract().lights;
+    expect(first.directional?.entity).toBe(sun);
+    expect(Array.from(first.directionalCsmConfig?.shadowViewProjection ?? [])).toEqual(matrix);
+    matrix[12] = 7;
+    world.set(sun, DirectionalLight, { shadowViewProjection: matrix }).unwrap();
+    const edited = extract().lights;
+    expect(edited.directionalCsmConfig?.shadowViewProjection?.[12]).toBe(7);
+    world.set(fill, DirectionalLight, { castShadow: true }).unwrap();
+    const replaced = extract().lights;
+    expect(replaced.directional?.entity).toBe(fill);
+    expect(replaced.directionalCsmConfig?.shadowViewProjection).toBeUndefined();
+    expect(replaced.ignoredDirectionalShadowCasters).toEqual([sun]);
+    expect(first.directionalCsmConfig?.shadowViewProjection?.[12]).toBe(2);
+    expect(edited.directionalCsmConfig?.shadowViewProjection?.[12]).toBe(7);
   });
 
   it('keeps the first light as the sun lane when no DirectionalLight casts a shadow', () => {

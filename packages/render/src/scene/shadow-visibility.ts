@@ -2,6 +2,7 @@ import type { frustum } from '@forgeax/engine-math';
 import {
   type CsmCameraData,
   computeDirectionalCsm,
+  csmShadowQuality,
   type LightRoster,
 } from '../render-system-extract';
 import { shadowPlanes } from '../shadow-frustum';
@@ -15,25 +16,37 @@ import { shadowPlanes } from '../shadow-frustum';
 export function buildShadowFrusta(
   lights: LightRoster,
   camera: CsmCameraData | undefined,
+  result: frustum.Frustum[] = [],
 ): frustum.Frustum[] {
-  const result: frustum.Frustum[] = [];
-  const add = (matrix: Float32Array, clampNear = false): void => {
-    result.push(shadowPlanes(matrix, clampNear));
+  let count = 0;
+  const add = (matrix: Float32Array, clampNear = false, offset = 0): void => {
+    result[count] = shadowPlanes(matrix, clampNear, result[count], offset);
+    count++;
   };
   const config = lights.directionalCsmConfig;
   const direction = lights.directionalCsmDirection;
-  const csm =
-    config === undefined || direction === undefined
-      ? null
-      : computeDirectionalCsm(direction, config, camera);
-  for (const matrix of csm?.lightViewProj.slice(0, csm.cascadeCount) ?? [])
-    add(matrix, config?.shadowViewProjection === undefined);
+  if (config !== undefined && direction !== undefined) {
+    if (config.shadowViewProjection !== undefined) {
+      // This one authored volume is already in world space, including for a cameraless source.
+      if (csmShadowQuality(config) !== undefined) add(config.shadowViewProjection);
+    } else {
+      const fitted = computeDirectionalCsm(direction, config, camera);
+      if (fitted !== null) {
+        for (
+          let cascade = 0;
+          cascade < fitted.cascadeCount && cascade < fitted.lightViewProj.length;
+          cascade++
+        )
+          add(fitted.lightViewProj[cascade] as Float32Array, true);
+      }
+    }
+  }
   for (const snapshot of lights.pointShadow) {
-    for (let face = 0; face < 6; face += 1)
-      add(snapshot.shadowMatrices.subarray(face * 16, (face + 1) * 16));
+    for (let face = 0; face < 6; face++) add(snapshot.shadowMatrices, false, face * 16);
   }
   for (const snapshot of lights.spot) {
     if (snapshot.castShadow && snapshot.lightViewProj !== undefined) add(snapshot.lightViewProj);
   }
+  result.length = count;
   return result;
 }

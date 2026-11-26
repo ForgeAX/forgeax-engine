@@ -30,7 +30,7 @@ const staticMeshFields = new Set([
 ]);
 
 /** A standalone geometry body preserves the complete supported static Mesh shape. */
-export function isStandaloneStaticMesh(mesh: MeshAsset): boolean {
+export function isStandaloneStaticMesh(mesh: Pick<MeshAsset, 'attributes' | 'submeshes'>): boolean {
   return (
     Object.keys(mesh).every((field) => staticMeshFields.has(field)) &&
     mesh.attributes.skinIndex === undefined &&

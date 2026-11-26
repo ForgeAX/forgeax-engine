@@ -33,6 +33,11 @@ pnpm --filter @forgeax/hello-bloom smoke:falsify # expected red Bloom contributi
 pnpm --filter @forgeax/hello-bloom smoke:all # complete Dawn + Browser carrier gate
 ```
 
+The quality carrier selects packed RGB11F/G11F/B10F filter targets when the
+Dawn adapter advertises render support. Set `FORGEAX_BLOOM_FILTER_FORMAT=rgba16float`
+or `FORGEAX_BLOOM_FILTER_FORMAT=rg11b10ufloat` to compare both paths using the
+same workloads and pixel gates.
+
 Ordinary Browser CI awaits sixty successfully completed ready receipts before its first picture; submitted preparation frames do not qualify. Ordinary CI retains every resize/recovery pixel check, but uses eight post-resize frames with `FORGEAX_DAWN_LIGHTWEIGHT=1` or `FORGEAX_BROWSER_CI_LIGHTWEIGHT=1`. GPU timing mode and full local runs retain sixty post-resize frames.
 
 The standalone extraction and quality Dawn carriers destroy their device, drain

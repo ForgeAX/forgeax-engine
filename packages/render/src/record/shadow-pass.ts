@@ -27,11 +27,7 @@ import {
   MaterialPipelineRequestCache,
   type MaterialPipelineRequestFacts,
 } from '../assembly/material/pipeline-request-cache';
-import {
-  meshSsboBuffer,
-  meshSsboBufferBinding,
-  meshSsboByteOffset,
-} from '../assembly/mesh-ssbo-grow';
+import { meshSsboBuffer, meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
 import {
   atmosphereBindings,
@@ -95,16 +91,18 @@ import {
 import { matchPass } from '../systems/pass-selector';
 import { waterGpuMeshDrawBuffers } from '../water/gpu-mesh-draw';
 import { cpuInstanceLodDraws } from './cpu-lod';
-import { visitDrawRows } from './draw-row-pages';
+import { visitDrawRows, visitSubmittedDrawRows } from './draw-row-pages';
 import { FirstEntryMap } from './first-entry-map';
-import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
+import { meshBufferBindGroup } from './frame-lighting';
 import type { MaterialBgAssemblyCacheEntry, ValidatedRenderable } from './frame-snapshot';
 import { rasterMaterialOffset } from './geometry-bind-offsets';
 import type { PipelineRequestRuntime } from './geometry-pipeline-requests';
+import { countDirectGeometry } from './geometry-recording';
 import {
+  type GeometryInstanceDraw,
   geometrySkinBindGroup,
+  PassGeometryInstances,
   resolveGeometryInstanceBuffer,
-  resolveGeometryInstancesBindGroup,
   waterGeometryGroup2,
 } from './main-pass-geometry';
 import {
@@ -122,7 +120,6 @@ import {
   meshDrawSlot,
   prepareMeshDraw,
 } from './mesh-ssbo';
-import { geometryRecordingObserver } from './render-bundle-cache';
 import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from './render-context';
 import { MATERIAL_UNIFORM_BYTES } from './render-context';
 import { directionalShadowCasterOffset, spotShadowCasterOffset } from './shadow-caster-uniforms';
@@ -383,27 +380,14 @@ function markStaticShadowRecorded(
   c.frameState.shadowRaster.recordStaticView(identity, submission.generation);
 }
 
-function submittedShadowMaterials(c: _InternalRenderPipelineContext) {
-  const submitted = c.acceptedMaterialSlots;
-  return submitted !== undefined && submitted.frame === c.materialFrame
-    ? submitted.slots
-    : undefined;
-}
-
 function shadowMaterial(
   c: Pick<_InternalRenderPipelineContext, 'materialFrame'>,
   source: RenderableSnapshot,
   slot: number,
   published?: import('../scene/material-dispatch').AcceptedMaterial,
-  submitted?: _InternalRenderPipelineContext['acceptedMaterialSlots'],
 ) {
   const resource = source.materials[slot] ?? source.material;
   if (published !== undefined && published.resource === resource) return published;
-  if (submitted !== undefined && submitted.frame === c.materialFrame) {
-    const address = submitted.bindings?.get(resource)?.get('');
-    const bound = address === undefined ? undefined : submitted.slots[address];
-    if (bound !== undefined && bound.resource === resource) return bound;
-  }
   const accepted = c.materialFrame?.get(resource);
   if (accepted === undefined)
     throw new RhiError({
@@ -2153,7 +2137,7 @@ class ShadowPipelineSelections extends MaterialPipelineRequestCache<MaterialShad
   readonly scratch: MaterialPipelineRequestFacts = [];
 }
 
-// The five low bits select one of 32 stock variants within a physical input family.
+// Preparation and recording use the same physical pipeline axes.
 enum ShadowPipelineAxis {
   Mirrored = 1,
   Skinned = 2,
@@ -2193,7 +2177,7 @@ function resolveShadowMaterialPipeline(
   },
   entry: ValidatedRenderable,
   topology: import('@forgeax/engine-types').PrimitiveTopology,
-  submeshMaterial: MaterialSnapshot,
+  accepted: AcceptedMaterial,
   shadowDispatch: MaterialDispatchPass,
   reflected: boolean,
   receiver: boolean,
@@ -2201,6 +2185,7 @@ function resolveShadowMaterialPipeline(
   selections?: ShadowPipelineSelections,
   materialWorld?: RenderResourceScope,
 ): MaterialShaderPipelineEntry | null {
+  const submeshMaterial = accepted.snapshot;
   const entryShadowShaderId = shadowShaderId(shadowDispatch);
   const stock = entryShadowShaderId === SHADOW_CASTER_SHADER_ID;
   const water = entry.source.waterOwner !== undefined;
@@ -2209,13 +2194,20 @@ function resolveShadowMaterialPipeline(
     : undefined;
   const storage = c.runtime.device.caps.storageBuffer;
   const clipping = shadowViewClipping(c.camera?.clipping);
-  const alpha = materialAlphaMask(submeshMaterial.paramSnapshot);
+  const programs = accepted.programs;
+  const published =
+    stock && programs?.snapshot === submeshMaterial && programs.prepareShadow[0] === shadowDispatch
+      ? programs.stockShadow
+      : undefined;
+  const alpha = published?.alphaMask ?? materialAlphaMask(submeshMaterial.paramSnapshot);
   const layout = entry.mesh.layoutProjection;
   const color = vertexLayoutHasColor(layout);
   const textureMask =
-    submeshMaterial.standardTextureMask === undefined
-      ? undefined
-      : submeshMaterial.standardTextureMask % STANDARD_ORM_REUSE_BIT;
+    published !== undefined
+      ? published.textureMask
+      : submeshMaterial.standardTextureMask === undefined
+        ? undefined
+        : submeshMaterial.standardTextureMask % STANDARD_ORM_REUSE_BIT;
   const factory = preparation
     ? (c.runtime.prepareMaterialShaderPipelineEntry ?? c.runtime.getMaterialShaderPipelineEntry)
     : c.runtime.getMaterialShaderPipelineEntry;
@@ -2240,15 +2232,22 @@ function resolveShadowMaterialPipeline(
     facts[3] = materialWorld;
     facts[4] = factory;
     facts[5] = axes;
-    const shared = stock && ownedMaterialValues(submeshMaterial);
+    const shared = published !== undefined || (stock && ownedMaterialValues(submeshMaterial));
     facts[6] = shared ? (layout.digest ?? layout) : layout;
-    facts[7] = entryShadowShaderId;
-    facts[8] = shared && renderState !== undefined ? renderStateHash(renderState) : renderState;
-    facts[9] = vertex;
-    facts[10] = fragment;
-    facts[11] = waterInfoFormat;
-    facts[12] = shared ? undefined : submeshMaterial;
-    facts[13] = shared ? undefined : shadowDispatch;
+    facts[7] = shared
+      ? (published?.state ?? (renderState === undefined ? null : renderStateHash(renderState)))
+      : renderState;
+    facts[8] = vertex;
+    facts[9] = fragment;
+    facts[10] = waterInfoFormat;
+    // A published stock class is completely specified by its physical inputs.
+    // Other shaders and live declarations keep their distinct identities.
+    if (shared) facts.length = 11;
+    else {
+      facts[11] = entryShadowShaderId;
+      facts[12] = submeshMaterial;
+      facts[13] = shadowDispatch;
+    }
     const found = selections.get(facts);
     if (found !== undefined) return found;
     // A custom factory may re-enter preparation using the same scratch.
@@ -2338,7 +2337,7 @@ export interface ShadowPipelineSelectionLease {
     c: _InternalRenderPipelineContext,
     entry: ValidatedRenderable,
     topology: import('@forgeax/engine-types').PrimitiveTopology,
-    submeshMaterial: MaterialSnapshot,
+    accepted: AcceptedMaterial,
     shadowDispatch: MaterialDispatchPass,
     reflected: boolean,
     receiver: boolean,
@@ -2391,15 +2390,7 @@ export function createShadowPipelineSelectionOwner(
       activeDepth++;
       let left = false;
       return {
-        resolve(
-          currentContext,
-          entry,
-          topology,
-          submeshMaterial,
-          shadowDispatch,
-          reflected,
-          receiver,
-        ) {
+        resolve(currentContext, entry, topology, accepted, shadowDispatch, reflected, receiver) {
           const materialWorld = entry.world ?? currentContext.world;
           if (
             !current(currentContext) ||
@@ -2409,7 +2400,7 @@ export function createShadowPipelineSelectionOwner(
               currentContext,
               entry,
               topology,
-              submeshMaterial,
+              accepted,
               shadowDispatch,
               reflected,
               receiver,
@@ -2418,7 +2409,7 @@ export function createShadowPipelineSelectionOwner(
             currentContext,
             entry,
             topology,
-            submeshMaterial,
+            accepted,
             shadowDispatch,
             reflected,
             receiver,
@@ -2661,7 +2652,6 @@ export function prepareHiddenShadowMaterialPipelines(
       const submeshIndex = nextSubmeshIndex++;
       if (preparedHiddenDraws?.get(entry)?.has(submeshIndex)) continue;
       const accepted = shadowMaterial(c, entry.source, sm.materialSlot);
-      const material = accepted.snapshot;
       for (const pass of accepted.programs?.shadow ?? accepted.passes) {
         if (accepted.programs === undefined && pass.tags.LightMode !== 'ShadowCaster') continue;
         for (const reflected of reflections.length === 0 ? [false] : reflections) {
@@ -2670,7 +2660,7 @@ export function prepareHiddenShadowMaterialPipelines(
               c,
               entry,
               sm.topology,
-              material,
+              accepted,
               pass,
               reflected,
               false,
@@ -2689,100 +2679,13 @@ export function prepareHiddenShadowMaterialPipelines(
   }
 }
 
-/** Prepare visible residual ShadowCaster pipelines before synchronous recording. */
-/** Each distinct stock input family can need both windings and both skin layouts. Only
- * successful requests set a bit. The family index belongs to this preparation walk. */
-class VisibleShadowPreparation {
-  private readonly families = new MaterialPipelineRequestCache<{ variants: number }>();
-  private readonly family: MaterialPipelineRequestFacts = [];
-  private general?: ShadowPipelineSelections;
-
-  prepare(
-    c: _InternalRenderPipelineContext,
-    entry: ValidatedRenderable,
-    topology: import('@forgeax/engine-types').PrimitiveTopology,
-    accepted: AcceptedMaterial,
-    pass: MaterialDispatchPass,
-    reflected: boolean,
-    fixed: boolean,
-  ): boolean {
-    const stock =
-      fixed && entry.source.waterOwner === undefined ? accepted.programs?.stockShadow : undefined;
-    const world = entry.world ?? c.world;
-    if (stock === undefined) {
-      this.general ??= new ShadowPipelineSelections();
-      return (
-        resolveShadowMaterialPipeline(
-          c,
-          entry,
-          topology,
-          accepted.snapshot,
-          pass,
-          reflected,
-          false,
-          true,
-          this.general,
-          world,
-        ) !== null
-      );
-    }
-    const runtime = c.runtime;
-    const factory =
-      runtime.prepareMaterialShaderPipelineEntry ?? runtime.getMaterialShaderPipelineEntry;
-    if (factory === undefined) return false;
-    const layout = entry.mesh.layoutProjection;
-    const color = vertexLayoutHasColor(layout);
-    const family = this.family;
-    family[0] = layout.digest ?? layout;
-    family[1] = topology;
-    const indexFormat = entry.mesh.indexFormat;
-    family[2] = indexFormat;
-    family[3] = stock.state;
-    family[4] = stock.textureMask;
-    family[5] = pass.vertexEntry;
-    family[6] = pass.fragmentEntry;
-    family[7] = world;
-    family[8] = factory;
-    family[9] = color;
-    const variant = shadowVariant(
-      entry.source,
-      reflected,
-      stock.alphaMask,
-      runtime.device.caps.storageBuffer,
-      shadowViewClipping(c.camera?.clipping),
-    );
-    const bit = 1 << variant;
-    const ready = this.families.get(family);
-    if (ready !== undefined && (ready.variants & bit) !== 0) return true;
-    const prepared = issueShadowPipeline(
-      factory,
-      SHADOW_CASTER_SHADER_ID,
-      pass,
-      topology,
-      indexFormat,
-      layout,
-      variant | (color ? ShadowPipelineAxis.Color : 0),
-      undefined,
-      stock.textureMask,
-      'validated',
-    );
-    if (prepared === null) return false;
-    if (ready === undefined) this.families.set(family.slice(), { variants: bit });
-    else ready.variants |= bit;
-    return true;
-  }
-}
-
 function prepareVisibleShadowMaterialPipelines(
   c: _InternalRenderPipelineContext,
   reflections: readonly boolean[],
   fixedMaterials: MaterialFrame | undefined,
 ): void {
   if (reflections.length === 0 || c.shadowDirectRequired === false) return;
-  const submitted = c.acceptedMaterialSlots;
-  const bindings =
-    fixedMaterials !== undefined && submitted?.frame === fixedMaterials ? submitted : undefined;
-  let demand: VisibleShadowPreparation | undefined;
+  let selections: ShadowPipelineSelections | undefined;
   let previous: AcceptedMaterial | undefined;
   visitDrawRows(c.shadowValidatedOrdered ?? c.validatedOrdered, (entry) => {
     if (entry.source.authorVisible === false || entry.source.shadowCaster === false) return;
@@ -2799,7 +2702,6 @@ function prepareVisibleShadowMaterialPipelines(
         entry.source,
         submesh.materialSlot,
         fixed ? previous : undefined,
-        bindings,
       );
       if (fixed) previous = accepted;
       for (const pass of accepted.programs?.prepareShadow ?? accepted.passes) {
@@ -2808,10 +2710,23 @@ function prepareVisibleShadowMaterialPipelines(
           !shadowDispatchRequiresPreparation(accepted.snapshot, pass)
         )
           continue;
-        demand ??= new VisibleShadowPreparation();
+        selections ??= new ShadowPipelineSelections();
         for (let winding = 0; winding < reflections.length; winding++) {
           const reflected = reflections[winding] as boolean;
-          if (!demand.prepare(c, entry, submesh.topology, accepted, pass, reflected, fixed))
+          if (
+            resolveShadowMaterialPipeline(
+              c,
+              entry,
+              submesh.topology,
+              accepted,
+              pass,
+              reflected,
+              false,
+              true,
+              selections,
+              entry.world ?? c.world,
+            ) === null
+          )
             markPipelinePreparationPending(c.frameState, {
               code: 'shadow-pipeline-preparation',
               entity: entry.source.entityKey,
@@ -2885,10 +2800,7 @@ export function recordShadowCasterDraws(
       passMaterialGroup,
     );
     if (c.profilePhase !== undefined)
-      geometryRecordingObserver(c.frameState.renderBundleCounters, 'shadow/direct')?.(
-        'direct',
-        commands.count,
-      );
+      countDirectGeometry(c.frameState.renderBundleCounters, 'shadow/direct', commands.count);
   } finally {
     lease?.leave();
   }
@@ -2917,11 +2829,9 @@ function recordShadowCasterDrawsBody(
   const materialRowBase = c.shadowMaterialRowBase ?? 0;
   let materialDeps: PerSubmeshMaterialBgDeps | undefined;
   const materialAddress: MaterialBindingAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
-  const identityInstanceDraws = [
-    { instanceBuffer: pipelineState.identityInstanceBuffer, instanceCount: 1 },
-  ];
+  const instanceBindings = new PassGeometryInstances(c);
   const rangeScratch = { first: 0, count: 0, baseVertex: 0 };
-  let rigidBinding: { group: BindGroup; offsets: number[] } | undefined;
+  let rigidBinding: ShadowMeshBinding | undefined;
   let localPipelines: ShadowPipelineSelections | undefined;
 
   const shadowMaterialDependencies = () => {
@@ -2944,27 +2854,17 @@ function recordShadowCasterDrawsBody(
     return materialDeps;
   };
 
-  const submittedBindings = submittedShadowMaterials(c);
-  for (let i = 0; i < validatedOrdered.length; i++) {
-    const entry = validatedOrdered.at(i);
-    if (entry === undefined) continue;
-    if (entry.source.shadowCaster === false || entry.source.authorVisible === false) continue;
-    if (((entry.source.shadowChannels ?? 0xffffffff) & casterChannels) === 0) continue;
+  visitSubmittedDrawRows(validatedOrdered, (entry, i) => {
+    if (entry.source.shadowCaster === false || entry.source.authorVisible === false) return;
+    if (((entry.source.shadowChannels ?? 0xffffffff) & casterChannels) === 0) return;
     if (skipCapsuleReady && c.runtime.demandCapsuleShadow?.(entry.source)?.status === 'ready')
-      continue;
+      return;
     if (!shadowViewContains(entry.source, viewPlanes, c.shadowCasterBounds, entry.sceneSlot))
-      continue;
+      return;
 
     const submeshes = entry.mesh.submeshes;
     const slot = entry.sceneSlot ?? c.shadowSlotForEntity?.(entry.source.entityKey);
-    let shadowInstanceDraws:
-      | readonly {
-          readonly instanceBuffer: Buffer;
-          readonly instanceCount: number;
-          readonly firstInstanceOrdinal?: number;
-          readonly firstInstance?: number;
-        }[]
-      | undefined;
+    let shadowInstanceDraws: readonly GeometryInstanceDraw[] | undefined;
     let materialSlots: readonly number[] | undefined;
     const indices = entry.submeshIndices;
     const count = indices?.length ?? submeshes.length;
@@ -2974,15 +2874,7 @@ function recordShadowCasterDrawsBody(
       const submesh = submeshes[submeshIndex];
       if (submesh === undefined) continue;
       if (!isTriangleTopology(submesh.topology)) continue;
-      if (submittedBindings !== undefined)
-        materialSlots ??= c.materialSlotIndices.at(materialRowBase + i);
-      const boundSlot = materialSlots?.[submesh.materialSlot] ?? materialSlots?.[0];
-      const accepted = shadowMaterial(
-        c,
-        entry.source,
-        submesh.materialSlot,
-        boundSlot === undefined ? undefined : submittedBindings?.[boundSlot],
-      );
+      const accepted = shadowMaterial(c, entry.source, submesh.materialSlot);
       if (!hasShadowPasses(accepted)) continue;
       const passes = accepted.programs?.shadow ?? accepted.passes;
       if (
@@ -2997,12 +2889,12 @@ function recordShadowCasterDrawsBody(
         prepareMeshDraw(c, entry);
         // Shadow and Forward consume the same resident projection, dirty ranges,
         // temporal history and binding limits. A new revision uploads in place.
-        shadowInstanceDraws = identityInstanceDraws;
-        if (entry.source.instances !== undefined) {
-          const draws = resolveGeometryInstanceBuffer(c, entry, [], false);
-          if (draws === null || draws.length === 0) break;
-          shadowInstanceDraws = draws;
-        }
+        const draws =
+          entry.source.instances === undefined
+            ? instanceBindings.identity()
+            : resolveGeometryInstanceBuffer(c, entry, [], false);
+        if (draws === null || draws.length === 0) break;
+        shadowInstanceDraws = draws;
       }
 
       // Resolve the ShadowCaster PSO for the material bound to this submesh.
@@ -3030,7 +2922,7 @@ function recordShadowCasterDrawsBody(
             c,
             entry,
             submesh.topology,
-            submeshMaterial,
+            accepted,
             authoredPass,
             reflected,
             receiver,
@@ -3041,7 +2933,7 @@ function recordShadowCasterDrawsBody(
             c,
             entry,
             submesh.topology,
-            submeshMaterial,
+            accepted,
             authoredPass,
             reflected,
             receiver,
@@ -3104,7 +2996,7 @@ function recordShadowCasterDrawsBody(
             materialGroup,
             materialOffset,
             meshBinding,
-            resolveGeometryInstancesBindGroup(c, instanceDraw.instanceBuffer),
+            instanceDraw.instanceBindGroup,
             selected,
             instanceDraw.instanceCount,
             instanceDraw.firstInstance ?? 0,
@@ -3112,7 +3004,7 @@ function recordShadowCasterDrawsBody(
         }
       }
     }
-  }
+  });
 }
 
 function requireShadowMeshGroup(shadowMeshBindGroup: BindGroup | null): BindGroup {
@@ -3140,29 +3032,37 @@ function shadowCasterMaterialSlot(
   return materialSlot;
 }
 
+interface ShadowMeshBinding {
+  group: BindGroup;
+  offsets: number[];
+  address?: ReturnType<typeof meshSsboBufferBinding>;
+}
+
 function shadowCasterMeshBinding(
   c: _InternalRenderPipelineContext,
   entry: ValidatedRenderable,
   entryShadowPipeline: MaterialShaderPipelineEntry,
   shadowMeshBindGroup: BindGroup,
-  rigid: { group: BindGroup; offsets: number[] },
+  rigid: ShadowMeshBinding,
 ): { readonly group: BindGroup; readonly offsets: readonly number[] } | undefined {
   const { runtime, pipelineState } = c;
   const meshOffset = meshDrawSlot(entry) * MESH_PER_ENTITY_STRIDE;
   const contract = entryShadowPipeline.group2Contract;
   if (contract === 'skin' || contract === 'skin-cluster') {
-    const checkShadowSkinBinding = () => {
-      if (entry.source.skinBinding === undefined)
-        throw new RhiError({
-          code: 'rhi-descriptor-invalid',
-          expected: 'a Skin Binding for the selected ShadowCaster contract',
-          hint: 'bind a complete Skin source before recording a Skin-input material',
-        });
-    };
-    checkShadowSkinBinding();
+    if (entry.source.skinBinding === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a Skin Binding for the selected ShadowCaster contract',
+        hint: 'bind a complete Skin source before recording a Skin-input material',
+      });
     const task = runtime.skinTask?.(entry.source, 'shadow');
     if (task === undefined) return undefined;
-    const meshBinding = meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshOffset);
+    rigid.address = meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      meshOffset,
+      rigid.address,
+    );
+    const meshBinding = rigid.address;
     const group = geometrySkinBindGroup(c, task, meshBinding, contract);
     if (group === null)
       throw new RhiError({
@@ -3170,14 +3070,14 @@ function shadowCasterMeshBinding(
         expected: 'the selected ShadowCaster Skin task binding',
         hint: 'prepare the exact material group2 contract before recording',
       });
-    return {
-      group,
-      offsets: pbrSkinMeshDynamicOffsets(
-        meshBinding.byteOffset,
-        task,
-        runtime.device.caps.storageBuffer,
-      ),
-    };
+    rigid.group = group;
+    pbrSkinMeshDynamicOffsets(
+      meshBinding.byteOffset,
+      task,
+      runtime.device.caps.storageBuffer,
+      rigid.offsets,
+    );
+    return rigid;
   } else if (entryShadowPipeline.waterGroup2Layout !== undefined) {
     const layout = entryShadowPipeline.waterGroup2Layout;
     const inputs = entryShadowPipeline.inputs;
@@ -3187,36 +3087,37 @@ function shadowCasterMeshBinding(
         expected: 'the admitted Water shadow pipeline compiled entry-point resource reads',
         hint: 'retain the selected compiled program with its ShadowCaster pipeline before recording Water bindings',
       });
+    rigid.address = meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      meshOffset,
+      rigid.address,
+    );
     const water = waterGeometryGroup2(
       c,
       entry.source,
-      meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshOffset),
+      rigid.address,
       layout,
       inputs,
       waterGpuMeshDrawBuffers(c, entry.source),
     );
     return water;
   } else {
-    const group =
-      contract === 'cluster'
-        ? clusteredMeshSlotBindGroup(c, meshOffset)
-        : pipelineState.meshStorageBuffer.pages === undefined
-          ? shadowMeshBindGroup
-          : meshSlotBindGroup(
-              runtime.device,
-              c.frameState,
-              pipelineState,
-              c.bindGroupCounts,
-              meshOffset,
-            );
-    if (group === null)
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'the selected ShadowCaster mesh binding',
-        hint: 'prepare the exact material group2 contract before recording',
-      });
-    rigid.group = group;
-    rigid.offsets[0] = meshSsboByteOffset(pipelineState.meshStorageBuffer, meshOffset);
+    const storage = pipelineState.meshStorageBuffer;
+    rigid.offsets.length = 1;
+    if (storage.pages === undefined && contract !== 'cluster') {
+      rigid.group = shadowMeshBindGroup;
+      rigid.offsets[0] = meshOffset;
+    } else {
+      rigid.address = meshSsboBufferBinding(storage, meshOffset, rigid.address);
+      rigid.group = meshBufferBindGroup(
+        runtime.device,
+        c.frameState,
+        pipelineState,
+        c.bindGroupCounts,
+        rigid.address.buffer,
+      );
+      rigid.offsets[0] = rigid.address.byteOffset;
+    }
     return rigid;
   }
 }

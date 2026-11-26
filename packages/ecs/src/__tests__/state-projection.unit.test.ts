@@ -1,7 +1,8 @@
 import { expect, test, vi } from 'vitest';
 import { componentId, defineComponent } from '../component';
+import { Disabled } from '../entity';
 import { type EntityHandle, entityIndex } from '../entity-handle';
-import { createArchetypeReader } from '../projection';
+import { createArchetypeReader, createComponentPresenceReader } from '../projection';
 import { createStateProjection, observeStateChanges } from '../projection/state-projection';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -32,6 +33,24 @@ test('shares component-presence facts by archetype and resolves sparse migration
   expect(layout(first)).toBeUndefined();
   expect(layout(replacement)).toBe(ordinary);
   expect(compile).toHaveBeenCalledTimes(2);
+});
+
+test('component occupancy follows sparse membership and counts disabled rows in shared tables', () => {
+  const world = new World();
+  const hasSelected = createComponentPresenceReader(world, Selected);
+  const a = world.spawn({ component: Position, data: {} }).unwrap();
+  const b = world.spawn({ component: Position, data: {} }).unwrap();
+  expect(hasSelected()).toBe(false);
+  world.addComponent(a, { component: Disabled, data: {} }).unwrap();
+  world.addComponent(a, { component: Selected, data: {} }).unwrap();
+  expect(hasSelected()).toBe(true);
+  world.addComponent(b, { component: Selected, data: {} }).unwrap();
+  world.despawn(a).unwrap();
+  expect(hasSelected()).toBe(true);
+  world.removeComponent(b, Selected).unwrap();
+  expect(hasSelected()).toBe(false);
+  world.addComponent(b, { component: Selected, data: {} }).unwrap();
+  expect(hasSelected()).toBe(true);
 });
 
 test('owned rows stay unique when component writes overlap each other and structural edits', () => {

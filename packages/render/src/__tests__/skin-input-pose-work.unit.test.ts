@@ -50,7 +50,6 @@ function expectPose(frame: SkinInputFrame, binding: number, positions: readonly 
 
 interface JointColumns {
   readonly cells: Map<number, number>;
-  stamps: Float64Array;
   matrices: Float32Array;
 }
 
@@ -60,32 +59,40 @@ function jointStores(skin: SkinInputs) {
 
 function observePoseWork(f: Fixture, jointCount: number) {
   const stores = jointStores(f.skin);
-  let stampReads = 0;
   let matrixReads = 0;
+  let paletteReads = 0;
+  const poses = Reflect.get(Reflect.get(f.skin, 'poses'), 'slots') as Map<
+    number,
+    { joints: unknown[] }
+  >;
+  const palettes = Array.from(new Set(poses.values()), (pose) => ({ pose, joints: pose.joints }));
+  for (const { pose, joints } of palettes) {
+    pose.joints = new Proxy(joints, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) paletteReads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+  }
   const originals = Array.from(stores.values(), (store) => ({
     store,
-    stamps: store.stamps,
     matrices: store.matrices,
   }));
   const numericRead = {
-    get(target: Float64Array | Float32Array, key: PropertyKey) {
-      if (typeof key === 'string' && /^\d+$/.test(key)) {
-        if (target instanceof Float64Array) stampReads++;
-        else matrixReads++;
-      }
+    get(target: Float32Array, key: PropertyKey) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) matrixReads++;
       return Reflect.get(target, key, target);
     },
   };
   // Per-fixture instrumentation keeps the actual joint columns and publisher.
-  for (const { store, stamps, matrices } of originals) {
-    store.stamps = new Proxy<Float64Array>(stamps, numericRead);
+  for (const { store, matrices } of originals) {
     store.matrices = new Proxy<Float32Array>(matrices, numericRead);
   }
   const visit = vi.spyOn(stores, 'get');
   const write = vi.spyOn(f.arena, 'writeDescriptor');
   return {
     capture() {
-      stampReads = matrixReads = 0;
+      matrixReads = paletteReads = 0;
       visit.mockClear();
       write.mockClear();
       const frame = f.capture();
@@ -93,7 +100,7 @@ function observePoseWork(f: Fixture, jointCount: number) {
       const poseRows = write.mock.calls.filter(([, , words]) => words === poseWords).length;
       const work = {
         rosterVisits: visit.mock.calls.length,
-        stampReads,
+        paletteReads,
         matrixReads,
         poseRows,
         poseBytes: poseRows * poseWords * 4,
@@ -101,10 +108,10 @@ function observePoseWork(f: Fixture, jointCount: number) {
       return { frame, work };
     },
     restore() {
+      for (const { pose, joints } of palettes) pose.joints = joints;
       visit.mockRestore();
       write.mockRestore();
-      for (const { store, stamps, matrices } of originals) {
-        store.stamps = stamps;
+      for (const { store, matrices } of originals) {
         store.matrices = matrices;
       }
     },
@@ -133,14 +140,14 @@ it('reads and publishes one affected roster among 256 disjoint admitted rosters'
       expectPose(frame, 128, [385, 386, 387]);
       expect(work).toEqual({
         rosterVisits: 1,
-        stampReads: 3,
+        paletteReads: 3,
         matrixReads: 48,
         poseRows: 1,
         poseBytes: 196,
       });
       expect(observe.capture().work).toEqual({
         rosterVisits: 0,
-        stampReads: 0,
+        paletteReads: 0,
         matrixReads: 0,
         poseRows: 0,
         poseBytes: 0,
@@ -185,7 +192,7 @@ it('coalesces repeated joint changes for shared, reordered and repeated rosters 
       expectPose(initial.frame, 1, [1, 9]);
       expect(work).toEqual({
         rosterVisits: 3,
-        stampReads: 6,
+        paletteReads: 6,
         matrixReads: 96,
         poseRows: 3,
         poseBytes: 396,
@@ -193,6 +200,32 @@ it('coalesces repeated joint changes for shared, reordered and repeated rosters 
     } finally {
       observe.restore();
     }
+  } finally {
+    f.dispose();
+  }
+});
+
+it('restores repeated absent dependencies exactly once for each palette', () => {
+  const f = fixture(),
+    skeleton = f.skeleton(2);
+  try {
+    f.skin.bind(1, f.source, skeleton, [7, 7]);
+    f.skin.bind(2, f.source, skeleton, [7, 8]);
+    expect(f.capture().available(1)).toBe(false);
+    f.skin.setJoint(f.source, 7, translated(3));
+    const first = f.capture();
+    expectPose(first, 1, [3, 3]);
+    expect(first.available(2)).toBe(false);
+    f.skin.setJoint(f.source, 8, translated(4));
+    f.skin.removeJoint(f.source, 7);
+    const missing = f.capture();
+    expect(missing.available(1)).toBe(false);
+    expect(missing.available(2)).toBe(false);
+    f.skin.setJoint(f.source, 7, translated(5));
+    const restored = f.capture();
+    expectPose(restored, 1, [5, 5]);
+    expectPose(restored, 2, [5, 4]);
+    expectPose(first, 1, [3, 3]);
   } finally {
     f.dispose();
   }

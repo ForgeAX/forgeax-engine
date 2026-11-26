@@ -145,6 +145,7 @@ class ResourcePage {
   constructor(
     readonly address: number,
     readonly children: Map<number, ResourcePage>,
+    public occupied: number,
     public prepared?: {
       readonly descriptor: GpuInputDescriptorReservation;
       readonly pages: PrivateResourcePages;
@@ -717,8 +718,30 @@ export class GpuSceneInputs {
   }
 
   private publishResource(slot: number, descriptor: number): void {
-    const current = this.readResource(this.resources, slot);
-    if (current === descriptor || (current === undefined && descriptor === ABSENT_RESOURCE)) return;
+    let leaf = this.resources;
+    let exclusive = true;
+    for (let shift = 24; leaf !== undefined && shift > 0; shift -= 8) {
+      exclusive &&= leaf.holders === 1 && leaf.prepared === undefined;
+      leaf = leaf.children.get((slot >>> shift) & 255);
+    }
+    if (leaf !== undefined) {
+      const key = slot & 255;
+      const previous = this.resourceWord(leaf, key);
+      if (previous === descriptor) return;
+      // Readers retain the root. Sibling roots may still share a deeper page,
+      // so a live edit needs exclusive ownership along the entire path.
+      if (
+        exclusive &&
+        leaf.holders === 1 &&
+        leaf.prepared === undefined &&
+        (descriptor !== ABSENT_RESOURCE || leaf.occupied > 1)
+      ) {
+        this.arena.writeDescriptorWord(leaf.address, RESOURCE_PAGE_WORDS, key, descriptor);
+        if (previous === ABSENT_RESOURCE) leaf.occupied++;
+        else if (descriptor === ABSENT_RESOURCE) leaf.occupied--;
+        return;
+      }
+    } else if (descriptor === ABSENT_RESOURCE) return;
     const next = this.copyResourcePath(this.resources, slot, descriptor, 24);
     const previous = this.resources;
     this.resources = next;
@@ -737,12 +760,6 @@ export class GpuSceneInputs {
     return page.prepared === undefined
       ? this.arena.readWord(page.address + index)
       : page.prepared.descriptor.readWord(index);
-  }
-
-  private hasOtherResource(page: ResourcePage, key: number): boolean {
-    for (let index = 0; index < RESOURCE_PAGE_WORDS; index++)
-      if (index !== key && this.resourceWord(page, index) !== ABSENT_RESOURCE) return true;
-    return false;
   }
 
   private copyResourcePath(
@@ -779,17 +796,19 @@ export class GpuSceneInputs {
         }
         this.releasePage(old);
       }
-      if (shift > 0 && children.size === 0) return undefined;
-      if (
-        shift === 0 &&
-        descriptor === ABSENT_RESOURCE &&
-        previous !== undefined &&
-        !this.hasOtherResource(previous, key)
-      )
-        return undefined;
+      let occupied = children.size;
+      if (shift === 0) {
+        const old = previous === undefined ? ABSENT_RESOURCE : this.resourceWord(previous, key);
+        occupied =
+          (previous?.occupied ?? 0) +
+          Number(descriptor !== ABSENT_RESOURCE) -
+          Number(old !== ABSENT_RESOURCE);
+      }
+      if (occupied === 0) return undefined;
       return this.writeResourcePage(
         previous,
         children,
+        occupied,
         key,
         shift === 0 ? descriptor : (children.get(key)?.address ?? ABSENT_RESOURCE),
         pages,
@@ -815,6 +834,7 @@ export class GpuSceneInputs {
   private writeResourcePage(
     previous: ResourcePage | undefined,
     children: Map<number, ResourcePage>,
+    occupied: number,
     key: number,
     value: number,
     pages: PrivateResourcePages | undefined,
@@ -834,7 +854,7 @@ export class GpuSceneInputs {
         (captured) => pages.set(captured, undefined),
       );
       this.resourcePagesWritten++;
-      const page = new ResourcePage(descriptor.address, children, { descriptor, pages });
+      const page = new ResourcePage(descriptor.address, children, occupied, { descriptor, pages });
       pages.set(descriptor, page);
       return page;
     }
@@ -845,7 +865,7 @@ export class GpuSceneInputs {
       else this.arena.copyDescriptor(address, previous.address, RESOURCE_PAGE_WORDS);
       this.arena.writeDescriptorWord(address, RESOURCE_PAGE_WORDS, key, value);
       this.resourcePagesWritten++;
-      return new ResourcePage(address, children);
+      return new ResourcePage(address, children, occupied);
     } catch (cause) {
       try {
         this.arena.releaseDescriptor(address, RESOURCE_PAGE_WORDS);
@@ -1783,24 +1803,36 @@ export class GpuSceneInputs {
     const resourceRoot = resources?.address ?? ABSENT_RESOURCE;
     const resourceRevision = this.resourceRevision;
     if (resources !== undefined) resources.holders++;
-    const roots = new Set<number>();
+    let roots: Set<number> | undefined;
     let state: 'reading' | 'sealed' | 'released' = 'reading';
-    const buffers = new Set<Buffer>();
+    let firstBuffer: Buffer | undefined;
+    let otherBuffers: Set<Buffer> | undefined;
     const isCurrent = () => state !== 'released' && current();
     const holdsBuffer = (buffer: Buffer, expectedRoot = resourceRoot) =>
-      state !== 'released' && buffers.has(buffer) && expectedRoot === resourceRoot;
+      state !== 'released' &&
+      expectedRoot === resourceRoot &&
+      (buffer === firstBuffer || otherBuffers?.has(buffer) === true);
     const readBuffer = () => {
       this.assertLive();
       if (state !== 'reading' || this.disposed)
         return err(invalid('an open GPU input read domain'));
       const result = this.flush();
       if (!result.ok) return result;
+      // Native upload callbacks can retire this reader before returning the physical buffer.
+      if (state !== 'reading' || this.disposed)
+        return err(invalid('an open GPU input read domain'));
       const buffer = result.value.buffer;
-      if (!buffers.has(buffer)) {
-        buffers.add(buffer);
+      if (buffer !== firstBuffer && !otherBuffers?.has(buffer)) {
+        if (firstBuffer === undefined) firstBuffer = buffer;
+        else {
+          otherBuffers ??= new Set();
+          otherBuffers.add(buffer);
+        }
         this.bufferHolders.set(buffer, (this.bufferHolders.get(buffer) ?? 0) + 1);
       }
-      return ok({ ...result.value, resourceRoot: resources?.address ?? ABSENT_RESOURCE });
+      return result.value.resourceRoot === resourceRoot
+        ? result
+        : ok({ ...result.value, resourceRoot });
     };
     const frame: GpuInputReadFrame = {
       isCurrent,
@@ -1819,13 +1851,14 @@ export class GpuSceneInputs {
           !canonical || candidates.root === undefined
             ? 0
             : this.nodes.resolve(this.memberMemo.get(candidates.root));
-        if (known !== 0 && roots.has(known)) return this.address(known);
+        if (known !== 0 && roots?.has(known)) return this.address(known);
         const root = canonical ? this.encodeMember(candidates.root) : this.encodeRaw(candidates);
         if (root === 0) return 0;
         try {
+          roots ??= new Set();
           roots.add(root);
         } catch (cause) {
-          roots.delete(root);
+          roots?.delete(root);
           this.release(root);
           throw cause;
         }
@@ -1835,6 +1868,7 @@ export class GpuSceneInputs {
         this.assertLive();
         if (state !== 'reading' || this.disposed || !this.arena.live)
           throw invalid('an open live task-header read domain');
+        roots ??= new Set();
         return this.readHeader(input, roots);
       },
       reuseHeader: (header, batch) => {
@@ -1842,6 +1876,7 @@ export class GpuSceneInputs {
         if (state !== 'reading') throw invalid('an open task-header read domain');
         const root = this.headerNode(header, batch);
         if (root === 0) return false;
+        roots ??= new Set();
         this.retainReadRoot(root, roots);
         return true;
       },
@@ -1849,7 +1884,7 @@ export class GpuSceneInputs {
       seal: () => {
         if (state !== 'reading' || !isCurrent())
           return err(invalid('current complete GPU input demands before sealing'));
-        if (buffers.size > 0) {
+        if (firstBuffer !== undefined) {
           const result = readBuffer();
           if (!result.ok) return result;
         }
@@ -1862,28 +1897,44 @@ export class GpuSceneInputs {
         const held = resources;
         resources = undefined;
         let failure: AggregateError | undefined;
-        const attempt = (operation: () => void) => {
-          try {
-            operation();
-          } catch (cause) {
-            if (failure === undefined)
-              failure = new AggregateError([cause], 'GPU read retirement failed', { cause });
-            else failure.errors.push(cause);
-          }
+        const failed = (cause: unknown) => {
+          if (failure === undefined)
+            failure = new AggregateError([cause], 'GPU read retirement failed', { cause });
+          else failure.errors.push(cause);
         };
-        attempt(() => this.releasePage(held));
-        for (const root of roots) attempt(() => this.release(root));
-        roots.clear();
-        for (const buffer of buffers)
-          attempt(() => {
+        try {
+          this.releasePage(held);
+        } catch (cause) {
+          failed(cause);
+        }
+        if (roots !== undefined) {
+          for (const root of roots) {
+            try {
+              this.release(root);
+            } catch (cause) {
+              failed(cause);
+            }
+          }
+          roots = undefined;
+        }
+        const releaseBuffer = (buffer: Buffer) => {
+          try {
             const holders = (this.bufferHolders.get(buffer) ?? 1) - 1;
             if (holders > 0) this.bufferHolders.set(buffer, holders);
             else {
               this.bufferHolders.delete(buffer);
               if (this.retiredBuffers.has(buffer)) this.retireBuffer(buffer);
             }
-          });
-        buffers.clear();
+          } catch (cause) {
+            failed(cause);
+          }
+        };
+        if (firstBuffer !== undefined) releaseBuffer(firstBuffer);
+        firstBuffer = undefined;
+        if (otherBuffers !== undefined) {
+          for (const buffer of otherBuffers) releaseBuffer(buffer);
+          otherBuffers = undefined;
+        }
         if (failure !== undefined) throw failure;
       },
     };

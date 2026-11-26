@@ -71,7 +71,9 @@ it('emits last-reference retirement once and first-reference restoration once', 
     f.publish();
     f.world.removeComponent(f.first, Skin).unwrap();
     f.world.removeComponent(f.second, Skin).unwrap();
+    f.world.set(f.firstJoint, Transform, { pos: [7, 0, 0] }).unwrap();
     const retired = f.publish();
+    expect([...retired.transformEntities]).not.toContain(Number(f.firstJoint));
     expect([...retired.retiredJoints]).toEqual([Number(f.firstJoint)]);
     f.world.set(f.firstJoint, Transform, { pos: [8, 0, 0] }).unwrap();
     expect([...f.publish().transformEntities]).toEqual([]);
@@ -103,7 +105,7 @@ it.each([
     let candidate: ReturnType<typeof f.prepare>;
     try {
       candidate = f.publisher.prepare(0).unwrap();
-      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).not.toHaveBeenCalled();
     } finally {
       read.mockRestore();
     }

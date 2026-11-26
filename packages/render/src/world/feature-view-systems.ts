@@ -21,6 +21,7 @@ import type { MotionBlurFeatureInput } from '../features/motion-blur/motion-blur
 import { planMotionBlurFrame } from '../features/motion-blur/motion-blur-runtime';
 import { createPreparedResolver } from '../features/prepared-resolver';
 import { featureUsesSurfaceData } from '../features/surface-data-usage';
+import { withStandardPresentationTarget } from '../features/targets';
 import { renderFeatureViewIdentity } from '../features/view';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import type { StandardProfile } from '../pipeline/standard-profile';
@@ -43,6 +44,7 @@ import {
   type DispatchList,
   dispatchPassWork,
   isCapturedDispatch,
+  visitCulledPassRanks,
 } from '../scene/material-dispatch';
 import { sceneSurfaceRowsOf } from '../scene/render-scene-view';
 import {
@@ -284,7 +286,11 @@ function prepareFeatureFrameInput(
         owner,
         view,
         camera,
-        targets,
+        camera !== undefined &&
+          pipelineState !== null &&
+          frameState.activePipeline === recordContext(internals).standardPipeline
+          ? withStandardPresentationTarget(targets, pipelineState.format)
+          : targets,
         featureView,
         identity,
         lights?.directional,
@@ -352,23 +358,28 @@ export function walkSceneDataContributors(
     shared !== undefined &&
     walk.roster !== undefined &&
     capturedDispatchAddresses(dispatch, walk.roster);
-  if (shared === undefined) dispatch.forEach(consume);
-  else
+  const selectPass = (
+    pass: NonNullable<typeof entry>,
+    resource: Parameters<typeof selectSceneDataDispatchPass>[0],
+  ) => {
+    if (
+      !matchPass(pass.tags, FORWARD_PASS_SELECTOR) &&
+      !(lane === 'deferred' && matchPass(pass.tags, DEFERRED_PASS_SELECTOR))
+    )
+      return false;
+    group = selectSceneDataDispatchPass(resource, pass, lane);
+    entry = pass;
+    return true;
+  };
+  if (shared === undefined) {
+    if (!visitCulledPassRanks(dispatch, selectPass, walk.readRank)) dispatch.forEach(consume);
+  } else {
     for (const work of shared.work) {
-      // Pass tags select the surface lane before expanding any members. A
-      // ShadowCaster cannot contribute camera normals. Deferred still judges
-      // Forward-only surfaces through the ordinary per-row material predicate.
-      if (
-        !matchPass(work.pass.tags, FORWARD_PASS_SELECTOR) &&
-        !(lane === 'deferred' && matchPass(work.pass.tags, DEFERRED_PASS_SELECTOR))
-      )
-        continue;
-      group = selectSceneDataDispatchPass(work.resource, work.pass, lane);
-      if (sharedAddresses && work.visitSlots !== undefined) {
-        entry = work.pass;
-        work.visitSlots(walk.readSlot);
-      } else for (const value of work.entries()) consume(value);
+      if (!selectPass(work.pass, work.resource)) continue;
+      if (sharedAddresses && work.visitSlots !== undefined) work.visitSlots(walk.readSlot);
+      else for (const value of work.entries()) consume(value);
     }
+  }
   return createStandardSceneSurfaceAdmission(admission, previous);
 }
 

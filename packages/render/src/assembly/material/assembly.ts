@@ -152,14 +152,14 @@ function materialReceiptForGeometry(
   if (options.tangentFrame32) {
     const packed = receipt.tangentFrame32;
     if (packed === undefined) return undefined;
-    receipt = {
+    receipt = Object.freeze({
       ...receipt,
       directEntry: packed.directEntry,
       ...(packed.sceneIndexEntry === undefined ? {} : { sceneIndexEntry: packed.sceneIndexEntry }),
       vertexInputs: packed.vertexInputs,
       receiptIdentity: `${receipt.receiptIdentity}/tangent-frame32`,
-      reflection: { ...receipt.reflection, vertexInputs: packed.vertexInputs },
-    };
+      reflection: Object.freeze({ ...receipt.reflection, vertexInputs: packed.vertexInputs }),
+    });
   }
   if (options.vertexColorAvailable === false && receiptHasVertexColor(receipt)) {
     return undefined;
@@ -349,8 +349,8 @@ export function resolveMaterialShaderArtifact(
       preparedId = sourceArtifactIdentifier(lookupId, sourceVariant, shader);
       if (prepare?.(preparedId) === false) continue;
     }
-    const lookup = shader.findMaterialArtifact(preparedId);
-    if (!lookup.ok) continue;
+    const lookup = shader.findMaterialArtifact(preparedId, 'optional');
+    if (!lookup?.ok) continue;
     let cache = publishedArtifacts.get(lookup.value);
     if (cache === undefined || cache.manifest !== manifestEntry) {
       cache = { manifest: manifestEntry, requests: new Map() };

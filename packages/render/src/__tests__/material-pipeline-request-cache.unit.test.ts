@@ -4,10 +4,80 @@ import {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
 } from '../assembly/material/pipeline-request-cache';
+import { runGetMaterialShaderPipelineFor } from '../assembly/material-pipeline-requests';
 import { materialPipelineAttachments } from '../assembly/material-shader-policy';
 import type { RendererPipelineCacheState } from '../assembly/recovery/renderer-recover';
 
 describe('material pipeline requests', () => {
+  it('keeps an outer device request intact when an attachment getter issues a second one', () => {
+    type Inputs = Parameters<typeof runGetMaterialShaderPipelineFor>;
+    const owner = {} as ReturnType<Inputs[4]>;
+    const device = { caps: { backendKind: 'webgpu' } } as ReturnType<Inputs[9]>;
+    const artifact = { ok: true, value: {} };
+    const registry = {
+      isSourceBackedMaterialArtifact: () => false,
+      findMaterialArtifact: () => artifact,
+      materialShaderManifestEntry: () => undefined,
+    } as unknown as ReturnType<Inputs[1]>;
+    const assets = { getMaterialArtifact: () => undefined } as unknown as Inputs[2];
+    const requests: Inputs[5] = new WeakMap();
+    const scratch: Inputs[6] = { idle: [] };
+    const counts = new Map<string, number>();
+    const prepared: Inputs[10] = new WeakMap();
+    const builds: string[] = [];
+    const build: Inputs[0] = (shader) => {
+      builds.push(shader);
+      return {} as NonNullable<ReturnType<Inputs[0]>>;
+    };
+    const request = (args: Inputs[11]) =>
+      runGetMaterialShaderPipelineFor(
+        build,
+        () => registry,
+        assets,
+        { device } as Inputs[3],
+        () => owner,
+        requests,
+        scratch,
+        () => counts,
+        () => null,
+        () => device,
+        prepared,
+        args,
+        false,
+        () => undefined,
+      );
+    const inner: Inputs[11] = ['inner', false];
+    const outer: Inputs[11] = ['outer', true];
+    const attachments: GPUTextureFormat[] = ['rgba16float'];
+    let nested = false;
+    Object.defineProperty(attachments, 0, {
+      get() {
+        if (!nested) {
+          nested = true;
+          request(inner);
+        }
+        return 'rgba16float';
+      },
+    });
+    outer[17] = attachments;
+    const result = request(outer);
+    outer[17] = ['rgba16float'];
+    expect(request(outer)).toBe(result);
+    expect(request(inner)).not.toBe(result);
+    expect(builds).toEqual(['inner', 'outer']);
+    const idle = scratch.idle;
+    Object.defineProperty(attachments, 1, {
+      get() {
+        throw new Error('attachment read');
+      },
+    });
+    outer[17] = attachments;
+    expect(() => request(outer)).toThrow('attachment read');
+    expect(scratch.idle).toBe(idle);
+    expect(scratch.idle?.every((field) => field === undefined)).toBe(true);
+    outer[17] = ['rgba16float'];
+    expect(request(outer)).toBe(result);
+  });
   it('compares complete facts when request types and lengths differ', () => {
     const cache = new MaterialPipelineRequestCache<object>();
     const a = {},
@@ -129,6 +199,24 @@ describe('material pipeline requests', () => {
     args[11] = null;
     expect(cache.get(materialPipelineRequestFacts(args))).toBeUndefined();
   });
+  it('keeps attachment order and arbitrary constant names distinct in reused storage', () => {
+    const args = ['shader', false] as Parameters<typeof materialPipelineRequestFacts>[0];
+    const scratch: ReturnType<typeof materialPipelineRequestFacts> = [];
+    const cache = new MaterialPipelineRequestCache<number>();
+    args[17] = ['rgba8unorm', 'rgba16float'];
+    args[21] = { zebra: 3, alpha: 2, '1': 7, '10': 8, '2': 9 };
+    const pipeline = 5;
+    cache.set(materialPipelineRequestFacts(args, scratch).slice(), pipeline);
+    args[21] = { '2': 9, '10': 8, '1': 7, alpha: 2, zebra: 3 };
+    expect(cache.get(materialPipelineRequestFacts(args, scratch))).toBe(pipeline);
+    args[17] = ['rgba16float', 'rgba8unorm'];
+    expect(cache.get(materialPipelineRequestFacts(args, scratch))).toBeUndefined();
+    args[17] = [];
+    cache.set(materialPipelineRequestFacts(args, scratch).slice(), 7);
+    args[17] = undefined;
+    expect(cache.get(materialPipelineRequestFacts(args, scratch))).toBeUndefined();
+  });
+
   it('distinguishes default color, explicit no color and explicit no depth requests', () => {
     const cache = new MaterialPipelineRequestCache<object>();
     const args = ['shader', false] as Parameters<typeof materialPipelineRequestFacts>[0];

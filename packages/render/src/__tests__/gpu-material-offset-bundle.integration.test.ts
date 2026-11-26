@@ -2,7 +2,7 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { BindGroup, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
-import { assert, expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { createMaterialShaderProgram } from '../../../shader/src/material/program';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
@@ -15,7 +15,6 @@ import { GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import { buildMaterialSlotPlan } from '../record/fold-buckets';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
-import { RenderBundleCache } from '../record/render-bundle-cache';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { RenderScene } from '../scene/render-scene';
@@ -131,13 +130,13 @@ it.each([
     .unwrap();
   if (!prepared) throw new Error('expected production');
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const gpu = prepared.project(graph, 'rgba8unorm', 1).unwrap();
+  const gpu = prepared.project(graph, 'rgba8unorm', 1, undefined, undefined, false, true).unwrap();
   const texture = graph
     .createTexture('material-order', { format: 'rgba8unorm', size: { width: 1, height: 1 } })
     .unwrap();
   const view = graph.view(texture).unwrap();
-  const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
-  const counters = { hits: 0, misses: 0 };
+  const builds = vi.spyOn(device, 'createRenderBundleEncoder');
+  let executions = 0;
   let frame = -1;
   graph
     .addRasterPass('material-order', {
@@ -197,8 +196,16 @@ it.each([
           gpu.encode(viewGroup, observed, resources, frameResources);
           expect(draws).toBe(rows.length);
         };
-        if (frame < 0) encode(pass);
-        else cache.encode(device, pass, encode, counters);
+        encode(pass);
+        const execute = vi.spyOn(pass, 'executeBundles');
+        gpu.encode(viewGroup, pass, resources, {
+          ...frameResources,
+          bundleDescriptor: { colorFormats: ['rgba8unorm'] },
+        });
+        executions += execute.mock.calls.reduce(
+          (sum, [bundles]) => sum + Array.from(bundles).length,
+          0,
+        );
       },
     })
     .unwrap();
@@ -213,14 +220,18 @@ it.each([
   };
   try {
     render();
-    for (frame = 0; frame < 6; frame++) render();
-    expect(counters).toEqual(required ? { hits: 32, misses: 160 } : { hits: 128, misses: 64 });
-    if (!required) {
-      // A changed texture/probe binding is still a physical command dependency.
-      materialGroup = group();
-      render();
-      expect(counters).toEqual({ hits: 128, misses: 96 });
-    }
+    const initial = builds.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    for (frame = 0; frame < 3; frame++) render();
+    expect(builds.mock.calls.length).toBe(initial);
+    for (; frame < 6; frame++) render();
+    if (required) expect(builds.mock.calls.length).toBeGreaterThan(initial);
+    else expect(builds.mock.calls.length).toBe(initial);
+    expect(executions).toBeGreaterThanOrEqual(7);
+    const beforeReplacement = builds.mock.calls.length;
+    materialGroup = group();
+    render();
+    expect(builds.mock.calls.length).toBeGreaterThan(beforeReplacement);
   } finally {
     compiled.retire();
     production.dispose();

@@ -237,7 +237,7 @@ export function resolveTargetBindings(
   featurePostProcessEntries?: ReadonlyMap<string, PostProcessShaderEntry>,
   atmosphere?: GraphAtmosphere,
   waterInfoTargets?: WaterInfoGraphTargets,
-  postProcessView?: 'unjittered',
+  unjitteredDepth?: GraphTextureView,
 ): RenderFeatureGraphBindingsResolution | undefined {
   const frame = input.frame as _InternalRenderPipelineContext;
   const atmosphereViews = atmosphereVolumeViews(input.resources, atmosphere);
@@ -400,7 +400,7 @@ export function resolveTargetBindings(
                 kind: 'buffer',
                 value: {
                   buffer: frame.pipelineState.viewUniformBuffer,
-                  offset: postProcessView === 'unjittered' ? POST_PROCESS_VIEW_UNIFORM_OFFSET : 0,
+                  offset: depth.view === unjitteredDepth ? POST_PROCESS_VIEW_UNIFORM_OFFSET : 0,
                   size: VIEW_UNIFORM_BYTES,
                 },
               },
@@ -803,8 +803,8 @@ function resolveFullscreenBindings(
   }
   const additionalViews = fullscreenSourceViews(frame, input, values, fullscreen);
   if (additionalViews === undefined) return undefined;
-  const layout = pipeline.getBindGroupLayout?.(1);
-  if (layout === undefined) return undefined;
+  // The explicit fullscreen layout also owns bindings on handles that cannot reflect it.
+  const layout = pipeline.getBindGroupLayout?.(1) ?? fullscreen.bindGroupLayout;
   const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
     shader,
     entry.params === undefined ? undefined : 'write',

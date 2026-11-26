@@ -114,16 +114,31 @@ describe('render current-frame observation producer contract', () => {
   it('rejects empty fallback bytes unless the selected rows are neutral', () => {
     const bytes = new Uint8Array(256);
     expect(
-      validateGraphTargetCaptureReadback({ bytes, expectedByteLength: bytes.byteLength }),
+      validateGraphTargetCaptureReadback({
+        format: 'rgba16float',
+        bytes,
+        expectedByteLength: bytes.byteLength,
+      }),
     ).toEqual({ ok: false, code: 'capture-readback-empty' });
     expect(
       validateGraphTargetCaptureReadback({
+        format: 'rgba16float',
         bytes,
         expectedByteLength: bytes.byteLength,
         allowZero: true,
       }),
     ).toEqual({ ok: true });
   });
+  it('accepts bright UNORM8 codes and still rejects untouched bytes', () => {
+    const bytes = new Uint8Array([255, 255, 250, 255]);
+    const capture = { format: 'rgba8unorm', bytes, expectedByteLength: 4 } as const;
+    expect(validateGraphTargetCaptureReadback(capture)).toEqual({ ok: true });
+    expect(validateGraphTargetCaptureReadback({ ...capture, sentinel: bytes.slice() })).toEqual({
+      ok: false,
+      code: 'capture-readback-untouched-sentinel',
+    });
+  });
+
   it('validates every half-float encoding in both word lanes and an unaligned tail', () => {
     const storage = new Uint8Array(8);
     const bytes = storage.subarray(1, 7);
@@ -133,6 +148,7 @@ describe('render current-frame observation producer contract', () => {
         bytes.fill(0);
         view.setUint16(offset, bits, true);
         const result = validateGraphTargetCaptureReadback({
+          format: 'rgba16float',
           bytes,
           expectedByteLength: bytes.byteLength,
           allowZero: true,

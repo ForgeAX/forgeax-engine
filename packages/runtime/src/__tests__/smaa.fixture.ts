@@ -3,6 +3,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_SMAA,
+  BarrelDistortion,
   Camera,
   DEFAULT_STANDARD_PROFILE,
   Materials,
@@ -18,6 +19,8 @@ import {
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
+  type V7Tape,
+  type WorkEntry,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -49,12 +52,171 @@ function floats(bytes: Uint8Array, width: number, height: number, stride: number
 const mse = (a: readonly number[], b: readonly number[]) =>
   a.reduce((sum, p, i) => sum + (p - (b[i] ?? NaN)) ** 2, 0) / a.length;
 
+function displayRgba(observation: {
+  metadata: { width: number; height: number; bytesPerRow: number; format: string };
+  bytes: Uint8Array;
+}): Uint8Array {
+  const {
+    bytes,
+    metadata: { width, height, bytesPerRow, format },
+  } = observation;
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const src = y * bytesPerRow + x * 4;
+      const dst = (y * width + x) * 4;
+      rgba.set(bytes.subarray(src, src + 4), dst);
+      if (format.startsWith('bgra')) {
+        rgba[dst] = bytes[src + 2] ?? 0;
+        rgba[dst + 2] = bytes[src] ?? 0;
+      }
+    }
+  return rgba;
+}
+
+type DrawSmaa = (
+  observation?: readonly ('linear-ldr' | 'final-display')[],
+) => ReturnType<typeof drawReadyFrame>;
+
+async function verifyEncodedSmaa(
+  renderer: Renderer,
+  recorder: RecorderAttachment,
+  draw: DrawSmaa,
+  linearRouteDisplay: Uint8Array,
+  save: Save,
+) {
+  await draw();
+  const pending = recorder.captureFrame();
+  (await recorder.frameBoundary()).unwrap();
+  await draw();
+  (await recorder.frameBoundary()).unwrap();
+  const tape = (await pending).unwrap();
+  await save('smaa-direct.rhitape', compactTape(tape).bytes);
+  const decoded = decodeTape(tape.bytes).unwrap();
+  const model = buildFrameModel(decoded);
+  const blend = model.works.find((work) =>
+    work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_smaa_encode'),
+  );
+  if (blend === undefined) throw new Error('missing fused SMAA encode draw');
+  const attachment = model.resources.find(
+    (resource) => resource.resourceId === blend.attachments.colorViewHandleIds[0],
+  )?.descriptor;
+  if (attachment === null || typeof attachment !== 'object' || !('sourceHandleId' in attachment))
+    throw new Error('missing SMAA output view');
+  const swapchain = decoded.bootstrap.find(
+    (resource) => resource.kind === 'texture' && resource.handleId === attachment.sourceHandleId,
+  );
+  expect(swapchain).toMatchObject({ create: { origin: 'swapchain' } });
+
+  const directPasses = renderer.inspect().perFramePassNames;
+  expect(directPasses).toContain('smaa-blend');
+  expect(directPasses).not.toContain('standard-encode');
+  expect(directPasses).not.toContain('standard-output-encoding');
+
+  const receipt = await draw(['final-display']);
+  const observed = value(await renderer.observe(receipt, { include: ['final-display'] }));
+  const final = observed.observations?.find((o) => o.domain === 'final-display');
+  if (final === undefined) throw new Error('missing direct display observation');
+  const pixels = displayRgba(final);
+  await save('smaa-direct.rgba', pixels);
+  expect(pixels.length).toBe(linearRouteDisplay.length);
+  const maxEncodingDifference = pixels.reduce(
+    (max, pixel, i) => Math.max(max, Math.abs(pixel - (linearRouteDisplay[i] ?? NaN))),
+    0,
+  );
+  expect(maxEncodingDifference).toBeLessThanOrEqual(1);
+  await save(
+    'smaa-direct.json',
+    json({
+      directPasses,
+      maxEncodingDifference,
+      bindings: blend.bindings,
+      attachments: blend.attachments,
+    }),
+  );
+}
+
+async function replaySmaa(
+  tape: V7Tape,
+  stages: readonly [WorkEntry, WorkEntry, WorkEntry],
+  live: readonly number[],
+  none: readonly number[],
+  save: Save,
+): Promise<unknown[]> {
+  const [edges, weights, blend] = stages;
+  const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+  const device = (
+    await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
+  ).unwrap();
+  const replay = (
+    await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
+  ).unwrap();
+  const reports: unknown[] = [];
+  try {
+    for (const inspection of await inspectReplayWorks(replay, [edges, weights, blend])) {
+      const attachment = inspection.attachment;
+      if (attachment === undefined) throw new Error('missing SMAA stage readback');
+      expect(attachment.bytes.some((b) => b > 0)).toBe(true);
+      await save(`work-${inspection.workIndex}.${attachment.format}`, attachment.bytes);
+      reports.push({
+        workIndex: inspection.workIndex,
+        eventIndex: inspection.eventIndex,
+        format: attachment.format,
+        bindings: inspection.bindings,
+      });
+      if (inspection.workIndex === blend.workIndex) {
+        const replayPixels = floats(attachment.bytes, 128, 128, 128 * 8);
+        const maxError = Math.max(...replayPixels.map((p, i) => Math.abs(p - (live[i] ?? NaN))));
+        expect(maxError).toBeLessThanOrEqual(0.002);
+        reports.push({ maxLiveReplayError: maxError });
+      }
+    }
+  } finally {
+    (await replay.dispose()).unwrap();
+  }
+  // Leave both draws live. Writing stencil zero while preserving the edge texture
+  // must reject the weight draw's fragments and restore the unfiltered image.
+  const edgePass = tape.events
+    .slice(0, edges.eventIndex)
+    .reverse()
+    .find((event) => event.kind === 'beginRenderPass');
+  if (edgePass?.kind !== 'beginRenderPass') throw new Error('missing edge raster pass');
+  const missing = encodeTape(
+    {
+      ...tape,
+      events: tape.events.map((event) =>
+        event.kind === 'setStencilReference' && event.passHandleId === edgePass.passHandleId
+          ? { ...event, reference: 0 }
+          : event,
+      ),
+    },
+    { compression: 'gzip' },
+  ).unwrap();
+  const falsifier = (
+    await openReplay(decodeTape(missing).unwrap(), {
+      device,
+      createShaderModule: webgpu.createShaderModule,
+    })
+  ).unwrap();
+  try {
+    const result = (await falsifier.inspectWork(blend.workIndex, ['pixels'])).unwrap();
+    if (result.attachment === undefined) throw new Error('missing falsifier readback');
+    expect(mse(floats(result.attachment.bytes, 128, 128, 128 * 8), none)).toBe(0);
+    reports.push({ clearedStencilRestoresNoAa: true });
+  } finally {
+    (await falsifier.dispose()).unwrap();
+  }
+  webgpu._internal_getRawDevice(device)?.destroy();
+  return reports;
+}
+
 export async function verifySmaa(
   renderer: Renderer,
   recorder: RecorderAttachment,
   canvas: { width: number; height: number },
   save: Save,
   settleFrames = 60,
+  verifyReplay = true,
 ) {
   const world = new World();
   const errors: unknown[] = [];
@@ -108,11 +270,12 @@ export async function verifySmaa(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async (observation?: readonly ['linear-ldr', 'final-display']) => {
+  const draw: DrawSmaa = async (observation) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
     return drawReadyFrame(renderer, { source: lease }, observation);
   };
+  let lastDisplay = new Uint8Array(0);
   const observe = async (name: string) => {
     const receipt = await draw(['linear-ldr', 'final-display']);
     const result = value(
@@ -122,18 +285,8 @@ export async function verifySmaa(
     const final = result.observations?.find((o) => o.domain === 'final-display');
     if (linear === undefined || final === undefined) throw new Error('missing SMAA observation');
     const { width, height, bytesPerRow } = linear.metadata;
-    const rgba = new Uint8Array(width * height * 4);
-    for (let y = 0; y < height; y++)
-      for (let x = 0; x < width; x++) {
-        const src = y * final.metadata.bytesPerRow + x * 4;
-        const dst = (y * width + x) * 4;
-        rgba.set(final.bytes.subarray(src, src + 4), dst);
-        if (final.metadata.format.startsWith('bgra')) {
-          rgba[dst] = final.bytes[src + 2] ?? 0;
-          rgba[dst + 2] = final.bytes[src] ?? 0;
-        }
-      }
-    await save(`${name}-${width}x${height}.rgba`, rgba);
+    lastDisplay = displayRgba(final);
+    await save(`${name}-${width}x${height}.rgba`, lastDisplay);
     return floats(linear.bytes, width, height, bytesPerRow);
   };
   try {
@@ -150,6 +303,13 @@ export async function verifySmaa(
     expect(renderer.inspect().perFramePassNames.filter((name) => name.startsWith('smaa-'))).toEqual(
       ['smaa-area-upload', 'smaa-search-upload', 'smaa-edges', 'smaa-weights', 'smaa-blend'],
     );
+    await verifyEncodedSmaa(renderer, recorder, draw, lastDisplay, save);
+    world.addComponent(camera, { component: BarrelDistortion, data: { strength: 0.2 } }).unwrap();
+    expect(mse(await observe('smaa-barrel'), smaa)).toBeGreaterThan(0.00001);
+    const distorted = renderer.inspect().perFramePassNames;
+    expect(distorted.indexOf('smaa-blend')).toBeGreaterThanOrEqual(0);
+    expect(distorted.indexOf('barrel-distortion')).toBeGreaterThan(distorted.indexOf('smaa-blend'));
+    world.removeComponent(camera, BarrelDistortion).unwrap();
     // Flat interiors/background stay exact; only a one-pixel neighborhood of discontinuities blends.
     let flat = 0;
     for (let y = 2; y < 126; y++)
@@ -231,63 +391,17 @@ export async function verifySmaa(
     );
     if (blend === undefined || weights === undefined || edges === undefined)
       throw new Error('missing SMAA work');
-    const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-    const device = (
-      await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
-    ).unwrap();
-    const replay = (
-      await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
-    ).unwrap();
-    const reports: unknown[] = [];
-    try {
-      for (const inspection of await inspectReplayWorks(replay, [edges, weights, blend])) {
-        const attachment = inspection.attachment;
-        if (attachment === undefined) throw new Error('missing SMAA stage readback');
-        expect(attachment.bytes.some((b) => b > 0)).toBe(true);
-        await save(`work-${inspection.workIndex}.${attachment.format}`, attachment.bytes);
-        reports.push({
-          workIndex: inspection.workIndex,
-          eventIndex: inspection.eventIndex,
-          format: attachment.format,
-          bindings: inspection.bindings,
-        });
-        if (inspection.workIndex === blend.workIndex) {
-          const replayPixels = floats(attachment.bytes, 128, 128, 128 * 8);
-          const maxError = Math.max(...replayPixels.map((p, i) => Math.abs(p - (live[i] ?? NaN))));
-          expect(maxError).toBeLessThanOrEqual(0.002);
-          reports.push({ maxLiveReplayError: maxError });
-        }
-      }
-    } finally {
-      (await replay.dispose()).unwrap();
+    expect(edges.attachments.depthStencilViewHandleId).not.toBeNull();
+    expect(weights.attachments.depthStencilViewHandleId).toBe(
+      edges.attachments.depthStencilViewHandleId,
+    );
+    const stencilCommands = tape.events.filter((event) => event.kind === 'setStencilReference');
+    expect(stencilCommands.filter((event) => event.reference === 1)).toHaveLength(2);
+    if (!verifyReplay) {
+      expect(errors).toEqual([]);
+      return;
     }
-    // Remove the actual weight producer. The cleared weight buffer must restore the unfiltered image.
-    const missing = encodeTape(
-      {
-        ...tape,
-        events: tape.events.map((event, index) =>
-          index === weights.eventIndex && event.kind === 'draw'
-            ? { ...event, vertexCount: 0 }
-            : event,
-        ),
-      },
-      { compression: 'gzip' },
-    ).unwrap();
-    const falsifier = (
-      await openReplay(decodeTape(missing).unwrap(), {
-        device,
-        createShaderModule: webgpu.createShaderModule,
-      })
-    ).unwrap();
-    try {
-      const result = (await falsifier.inspectWork(blend.workIndex, ['pixels'])).unwrap();
-      if (result.attachment === undefined) throw new Error('missing falsifier readback');
-      expect(mse(floats(result.attachment.bytes, 128, 128, 128 * 8), none)).toBe(0);
-      reports.push({ missingWeightsRestoresNoAa: true });
-    } finally {
-      (await falsifier.dispose()).unwrap();
-    }
-    webgpu._internal_getRawDevice(device)?.destroy();
+    const reports = await replaySmaa(tape, [edges, weights, blend], live, none, save);
     for (const renderPath of ['forward', 'deferred'] as const) {
       value(renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath }));
       world.set(camera, Camera, { tonemap: TONEMAP_ACES_FILMIC, antialias: 0 }).unwrap();
@@ -298,6 +412,16 @@ export async function verifySmaa(
       expect(renderer.inspect().perFramePassNames).toContain('smaa-blend');
       reports.push({ renderPath, tone: 'aces-filmic', difference: mse(baseline, antialiased) });
     }
+    value(
+      renderer.setProfile({
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath: 'forward',
+        outputContract: 'standard-output-v1',
+      }),
+    );
+    await observe('portable-linear');
+    const portableSave: Save = (name, bytes) => save(`portable-${name}`, bytes);
+    await verifyEncodedSmaa(renderer, recorder, draw, lastDisplay, portableSave);
     canvas.width = canvas.height = 1;
     expect((await observe('one-pixel')).every(Number.isFinite)).toBe(true);
     canvas.width = canvas.height = 128;

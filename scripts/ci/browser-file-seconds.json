@@ -2,7 +2,7 @@
   "sourceRuns": [
     38320931831, 38325569733, 39444004385, 39450499871, 39565639578, 39566289907, 39553651697,
     41725978104, 42298226755, 42300870201, 43810781689, 43830647933, 44634135861, 44652430186,
-    44905218358, 44935148512, 45032304339, 45065791584, 45493037437
+    44905218358, 44935148512, 45032304339, 45065791584, 45493037437, 45611019864
   ],
   "files": {
     "apps/game-capability-lab/__tests__/hud-ui.browser.test.ts": 6.599,
@@ -387,6 +387,8 @@
     "packages/three/src/__tests__/texture.browser.test.ts": 174.922,
     "packages/three/src/__tests__/transmission-output.browser.test.ts": 74.278,
     "packages/three/src/__tests__/transparent-order.browser.test.ts": 21.165,
+    "packages/three/src/__tests__/xml-scene-addons.browser.test.ts": 24.086,
+    "packages/ui-blitz/src/__tests__/accent-color.browser.test.ts": 1.821,
     "packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts": 3.308,
     "packages/ui-blitz/src/__tests__/composed-images.browser.test.ts": 5.358,
     "packages/ui-blitz/src/__tests__/control-layout.browser.test.ts": 3.791,
@@ -412,6 +414,7 @@
     "packages/ui-blitz/src/__tests__/textarea-validation.browser.test.ts": 3.634,
     "packages/ui-blitz/src/__tests__/trailing-scroll-margin.browser.test.ts": 3.683,
     "packages/ui-blitz/src/__tests__/transformed-form-scroll.browser.test.ts": 8.628,
+    "packages/ui/src/__tests__/mount-input.browser.test.ts": 1.097,
     "packages/ui/src/localization/__tests__/localization.browser.test.ts": 0.583,
     "packages/ui/src/preview/__tests__/capture-determinism.browser.test.ts": 2.946,
     "packages/ui/src/preview/__tests__/host-guard.browser.test.ts": 0.569,

@@ -1,7 +1,7 @@
 import type { BindGroup, Buffer, RenderPipeline, RhiRenderCommands } from '@forgeax/engine-rhi';
 import type { MeshGpuHandles, MeshGpuRange } from '../device/gpu-residency';
 import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
-import { bindGeometryOffsets, sameGeometryOffsets } from './geometry-bind-offsets';
+import { PassMeshBindGroup } from './geometry-bind-offsets';
 
 /** A pass owns only the physical state needed for its next command. */
 export class ShadowDirectCommands {
@@ -11,8 +11,7 @@ export class ShadowDirectCommands {
   private material: BindGroup | undefined;
   private materialOffset: number | undefined;
   private readonly bindOffsetWord = new Uint32Array(1);
-  private meshGroup: BindGroup | undefined;
-  private readonly meshOffsets: number[] = [];
+  private readonly meshGroups: PassMeshBindGroup;
   private instances: BindGroup | undefined;
   count = 0;
 
@@ -21,6 +20,7 @@ export class ShadowDirectCommands {
     private pipeline: RenderPipeline | null,
   ) {
     this.vertices = new PassMeshVertexBindings(pass);
+    this.meshGroups = new PassMeshBindGroup(pass, this.bindOffsetWord);
   }
 
   draw(
@@ -59,17 +59,7 @@ export class ShadowDirectCommands {
         pass.setBindGroup(1, material, this.bindOffsetWord, 0, 1);
       }
     }
-    const offsets = meshBinding.offsets;
-    if (
-      changedPipeline ||
-      this.meshGroup !== meshBinding.group ||
-      !sameGeometryOffsets(this.meshOffsets, offsets)
-    ) {
-      this.meshGroup = meshBinding.group;
-      this.meshOffsets.length = offsets.length;
-      for (let i = 0; i < offsets.length; i++) this.meshOffsets[i] = offsets[i] as number;
-      bindGeometryOffsets(pass, 2, meshBinding.group, offsets, this.bindOffsetWord);
-    }
+    this.meshGroups.bind(meshBinding.group, meshBinding.offsets, changedPipeline);
     if (changedPipeline || this.instances !== instances) {
       this.instances = instances;
       pass.setBindGroup(3, instances);

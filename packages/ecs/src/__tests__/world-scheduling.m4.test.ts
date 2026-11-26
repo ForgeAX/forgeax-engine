@@ -8,11 +8,12 @@ import { Time } from '../time';
 describe('M4 world scheduling failure boundary', () => {
   it('stops the frame and poisons the World when a system throws', () => {
     const world = new World();
+    const failure = new Error('system');
     const systemToken1 = defineSystem({
       name: 'thrower',
       queries: [],
       fn: () => {
-        throw new Error('system');
+        throw failure;
       },
     });
     world.addSystem(Update, systemToken1);
@@ -21,6 +22,14 @@ describe('M4 world scheduling failure boundary', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(isEcsFault(result.error, 'system-failed')).toBe(true);
     expect(world.execution.health).toBe('poisoned');
+    expect(world.execution.fault).toEqual({
+      code: 'system-failed',
+      systemName: 'thrower',
+      schedule: 'Update',
+      cause: failure,
+      partialWrite: true,
+      retryable: false,
+    });
     expect(world.update(1 / 60).ok).toBe(false);
   });
 

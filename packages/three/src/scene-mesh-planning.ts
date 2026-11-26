@@ -1,3 +1,4 @@
+import type { MeshRange } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { type CanvasTextureSource, PointSizeUnitsValue } from '@forgeax/engine-render';
@@ -41,12 +42,7 @@ import {
 import { invalid, unsupported } from './errors';
 import { isExternalTexture } from './external-textures';
 import { projectFlatNormals } from './flat-normals';
-import {
-  type GeometryMaterial,
-  geometryValues,
-  type pointContentEdit,
-  projectGeometry,
-} from './geometry';
+import { type GeometryMaterial, geometryValues, projectGeometry } from './geometry';
 import { isCollapsedInstance, projectInstanceGeometry } from './instance-geometry';
 import { lineStyle } from './lines';
 import {
@@ -71,6 +67,7 @@ import { hasSurfaceBinding, type SurfaceInputObservation } from './node-surface'
 import type { SceneBuffers, ScenePreparation } from './scene-state';
 import { sameValues } from './shared-assets';
 import type { CpuSkinGeometry, projectJoints } from './skinning';
+import type { SceneChanges } from './source-changes';
 import { observedData, ownSourceValue } from './source-fields';
 import { textureCoordinates } from './texture';
 import type { UvProjection } from './uv-projection';
@@ -200,18 +197,20 @@ export interface MeshGeometryAsset {
   readonly acceptedValues: readonly unknown[] | undefined;
   readonly payload: MeshAsset | undefined;
   readonly sourceData: GeometrySourceData | undefined;
-  readonly pointEdit: PointGeometryEdit | undefined;
+  readonly edit: MeshGeometryEdit | undefined;
   handle: AssetHandle<'mesh'> | undefined;
 }
 
-type PointGeometryEdit = ReturnType<typeof pointContentEdit> & {
+interface MeshGeometryEdit {
+  readonly ranges: readonly MeshRange[];
+  recover(payload: MeshAsset): MeshAsset | undefined;
   readonly base: readonly unknown[];
-};
+}
 
 export interface MeshGeometryProjection {
   readonly payload: MeshAsset | undefined;
   readonly sourceData?: GeometrySourceData | undefined;
-  readonly pointEdit?: PointGeometryEdit | undefined;
+  readonly edit?: MeshGeometryEdit | undefined;
 }
 
 type NativeInstanceWrite =
@@ -294,6 +293,38 @@ export function trackableViewDraw(
           !Array.isArray(node.material))) &&
       plan.materials.some((use) => use.source === source),
   );
+}
+
+export function watchDrawMaterials(
+  changes: SceneChanges,
+  node: Renderable,
+  plan: MeshPlan,
+  native: boolean,
+  nativeSkin: boolean,
+): boolean {
+  for (const use of plan.materials) {
+    const direct =
+      !native &&
+      (use.effective === use.source || hasSurfaceBinding(use.source)) &&
+      !use.skinProgram &&
+      ((Object.getPrototypeOf(node) === Mesh.prototype && !Array.isArray(node.material)) ||
+        (node instanceof Sprite && plan.uv?.values.length === 0) ||
+        (use.coordinates.size === 0 && useTextures(use).length === 0));
+    if (
+      !changes.watchUse(
+        node,
+        use.source,
+        use.variant,
+        use.shading,
+        !native,
+        direct,
+        direct || nativeSkin ? use.coordinates : undefined,
+        use.skinProgram,
+      )
+    )
+      return false;
+  }
+  return true;
 }
 
 export function ordinaryMeshMaterial(
@@ -953,7 +984,7 @@ export function projectSourceMesh(
   object: Renderable,
   geometry: BufferGeometry,
   shape: GeometryShape,
-  packVertices: boolean,
+  packVertices: boolean | 'static-streams',
 ): MeshAsset | undefined {
   return projectGeometry(
     geometry,

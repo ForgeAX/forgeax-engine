@@ -41,11 +41,14 @@ export function shadowMeshReadsForQuery(
   sourceScope: RenderResourceScope,
   casters: PersistentShadowCasterProjection,
   changes: MeshChanges,
+  directMeshDomain?: object | null,
 ): ShadowMeshInput {
   const old = cached?.meshReads;
   if (
     old?.fixed &&
     old.changes === changes &&
+    directMeshDomain !== null &&
+    old.directMeshDomain === directMeshDomain &&
     cached?.casterContent?.owner === casters.content.owner &&
     cached.casterContent.dispatchRevision === casters.content.dispatchRevision &&
     cached.casterContent.publicationSource?.resources ===
@@ -55,7 +58,11 @@ export function shadowMeshReadsForQuery(
     const change = changes.query(cached.meshEpoch, old.generation, old.tokens);
     if (change !== 'invalidated') return { reads: old.retain(), epoch: changes.epoch, change };
   }
-  return { reads: new ShadowMeshReads(changes), epoch: changes.epoch, change: 'invalidated' };
+  return {
+    reads: new ShadowMeshReads(changes, directMeshDomain),
+    epoch: changes.epoch,
+    change: 'invalidated',
+  };
 }
 
 export interface DirectionalShadowCacheDecision {

@@ -5,6 +5,7 @@ import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
 import type { ExtractedFrame } from '../../render-system-extract';
 import { acceptedViewInspectionFrame, findMaterialSlotDrawReceipt } from '../../view-inspection';
+import type { MaterialSlotDrawReceiptFact } from '../material-draw-receipt';
 import {
   RenderView,
   RenderViewFrameSource,
@@ -42,6 +43,20 @@ import {
 } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
+function captureMaterial(receipt: ViewDrawReceipt, draw: MaterialSlotDrawReceiptFact): void {
+  receipt.materials.record(
+    draw.frameId,
+    draw.worldIdentity,
+    draw.entityKey,
+    draw.submeshIndex,
+    draw.materialSlot,
+    draw.materialHandle,
+    draw.sourceRevision,
+    draw.deviceGeneration,
+    draw.graphGeneration,
+  );
+}
+
 it('retains the source revision consumed by an accepted material draw', () => {
   const receipt = new ViewDrawReceipt(),
     draw = {
@@ -55,13 +70,13 @@ it('retains the source revision consumed by an accepted material draw', () => {
       deviceGeneration: 2,
       graphGeneration: 5,
     } as const;
-  receipt.stageMaterialDraw(7, draw);
-  receipt.commitMaterialDraws(7);
-  expect(receipt.materialDraws).toEqual([draw]);
+  captureMaterial(receipt, draw);
+  receipt.materials.commit(7);
+  expect(receipt.materials.draws).toEqual([draw]);
 
-  receipt.stageMaterialDraw(8, { ...draw, frameId: 8, sourceRevision: 20 });
-  receipt.discardMaterialDraws();
-  expect(receipt.materialDraws).toEqual([]);
+  captureMaterial(receipt, { ...draw, frameId: 8, sourceRevision: 20 });
+  receipt.materials.discard();
+  expect(receipt.materials.draws).toEqual([]);
 });
 
 it('charges each distinct material draw once at the exact UTF-8 array boundary', () => {
@@ -83,11 +98,53 @@ it('charges each distinct material draw once at the exact UTF-8 array boundary',
   extra.worldIdentity += 'a'.repeat(limit - used);
   for (const tail of ['', 'x']) {
     const row = { ...extra, worldIdentity: extra.worldIdentity + tail };
-    receipt.stageMaterialDraw(7, first);
-    receipt.stageMaterialDraw(7, { ...first });
-    receipt.stageMaterialDraw(7, row);
-    receipt.commitMaterialDraws(7);
-    expect(receipt.materialDraws).toEqual(tail === '' ? [first, row] : []);
+    captureMaterial(receipt, first);
+    captureMaterial(receipt, { ...first });
+    captureMaterial(receipt, row);
+    receipt.materials.commit(7);
+    expect(receipt.materials.draws).toEqual(tail === '' ? [first, row] : []);
+  }
+});
+
+it('materializes inspection only on read and preserves published rows across attempts', () => {
+  const receipt = new ViewDrawReceipt().materials;
+  const entity = 17 * 2 ** 32 + 3;
+  const stringify = vi.spyOn(JSON, 'stringify');
+  let callsBeforeRead: number;
+  try {
+    receipt.record(1, 'first', entity, 2, 1, 8, 5, 0, 1);
+    receipt.commit(1);
+    receipt.record(2, 'second', entity, 2, 1, 8, 6, 0, 1);
+    callsBeforeRead = stringify.mock.calls.length;
+  } finally {
+    stringify.mockRestore();
+  }
+  expect(callsBeforeRead).toBe(0);
+  const first = receipt.draws;
+  expect(first[0]).toMatchObject({ frameId: 1, entityKey: entity, worldIdentity: 'first' });
+  receipt.commit(2);
+  const second = receipt.draws;
+  receipt.record(3, 'third', entity, 0, 0, 9, 7, 2, 1);
+  receipt.discard();
+  expect(receipt.draws).toEqual([]);
+  expect(first[0]?.sourceRevision).toBe(5);
+  expect(second[0]?.sourceRevision).toBe(6);
+  expect(Object.isFrozen(first[0])).toBe(true);
+  receipt.record(4, 'fourth', entity, 0, 0, 9, 7, 2, 1);
+  receipt.commit(5);
+  expect(receipt.draws).toEqual([]);
+});
+
+it('charges distinct submeshes and keeps the first draw of each repeated closure', () => {
+  const receipt = new ViewDrawReceipt().materials;
+  for (const frame of [1, 2]) {
+    for (let index = 0; index < 64; index++) receipt.record(frame, 'w', 7, index, 0, 1, 1, 0, 0);
+    for (let index = 63; index >= 0; index--) receipt.record(frame, 'w', 7, index, 0, 1, 1, 1, 1);
+    if (frame === 2) receipt.record(frame, 'w', 7, 0, 0, 1, 2, 1, 1);
+    receipt.commit(frame);
+    expect(receipt.draws.length).toBe(frame === 1 ? 64 : 0);
+    if (frame === 1)
+      expect(receipt.draws[63]).toMatchObject({ submeshIndex: 63, deviceGeneration: 0 });
   }
 });
 

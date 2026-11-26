@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { parse } from 'yaml';
 import { compatibilityLaunch, compatibilityPhases } from '../webgpu-compatibility-plan.mjs';
 
 test('heavier workloads stay in two of the existing four carriers', () => {
@@ -9,6 +10,20 @@ test('heavier workloads stay in two of the existing four carriers', () => {
   for (const carrier of ['reference', 'legacy'])
     assert.deepEqual(compatibilityPhases(carrier), ['owners']);
   assert.throws(() => compatibilityPhases('latest'), /Unknown/);
+});
+
+test('standalone carriers build the WebGPU RHI dependency closure before running owners', () => {
+  const workflow = new URL('../../../.github/workflows/webgpu-compatibility.yml', import.meta.url);
+  const { steps } = parse(readFileSync(workflow, 'utf8')).jobs.compatibility;
+  const buildIndex = steps.findIndex(
+    (step) => step.name === 'Build WebGPU RHI and its workspace dependencies',
+  );
+  const testIndex = steps.findIndex((step) =>
+    step.name?.startsWith('Run actual GPU compatibility'),
+  );
+  assert.ok(buildIndex >= 0 && buildIndex < testIndex);
+  assert.equal(steps[buildIndex].run, "pnpm --filter '@forgeax/engine-rhi-webgpu...' build");
+  assert.equal(steps[buildIndex].if, "steps.ci-repair.outputs.reused != 'true'");
 });
 
 test('policy execution removes diagnostic overrides and preserves the sandbox', () => {

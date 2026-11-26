@@ -487,7 +487,7 @@ it('uploads numeric patches from byte offsets without changing adjacent rows', a
     const patched = next.buffer().unwrap();
     next.seal().unwrap();
     expect(patched.buffer).toBe(physical.buffer);
-    expect(inputs.uploadBytes - before).toBe(16);
+    expect(inputs.uploadBytes - before).toBe(4);
     const bytes = await readBuffer(device, patched.buffer, patched.byteLength);
     expect(Array.from(bytes.slice(first, first + 4))).toEqual([101, 102, 103, 104]);
     expect(Array.from(bytes.slice(second, second + 4))).toEqual([201, 202, 12345, 204]);

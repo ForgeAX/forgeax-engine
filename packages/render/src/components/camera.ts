@@ -491,6 +491,30 @@ export const BLOOM_DISABLED = 0;
 /** Numeric encoding of bloom enabled (schema value for `bloom`). */
 export const BLOOM_ENABLED = 1;
 
+export const BLOOM_QUALITY_LOW = 3;
+export const BLOOM_QUALITY_MEDIUM = 4;
+export const BLOOM_QUALITY_HIGH = 5;
+export type BloomQuality =
+  | typeof BLOOM_QUALITY_LOW
+  | typeof BLOOM_QUALITY_MEDIUM
+  | typeof BLOOM_QUALITY_HIGH;
+
+export function bloomQualityFromF32(quality: number): BloomQuality {
+  if (
+    quality === BLOOM_QUALITY_LOW ||
+    quality === BLOOM_QUALITY_MEDIUM ||
+    quality === BLOOM_QUALITY_HIGH
+  )
+    return quality;
+  throw cameraError(
+    'camera-bloom-invalid',
+    'bloomQuality',
+    quality,
+    '3, 4 or 5',
+    'select Camera Bloom quality low, medium or high',
+  );
+}
+
 /** Bloom intensity is a linear HDR add-back multiplier. */
 export const CAMERA_BLOOM_INTENSITY_MIN = 0;
 export const CAMERA_BLOOM_INTENSITY_MAX = 8;
@@ -686,6 +710,7 @@ export const Camera = defineComponent('Camera', {
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
+  bloomQuality: { type: 'f32', default: BLOOM_QUALITY_HIGH },
   // Negative (default, as in Unreal) blooms the whole frame; 1 blooms only above-white HDR luminance.
   bloomThreshold: { type: 'f32', default: -1 },
   bloomIntensity: { type: 'f32', default: 0.5 },

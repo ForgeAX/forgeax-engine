@@ -1686,7 +1686,10 @@ describe('forgeax::standard graph', () => {
       DEFAULT_STANDARD_PROFILE,
       {
         camera: { tonemap: 'none', antialias, bloom: 'off' },
-        config: { postEffects: ['test-effect'], ambientOcclusion: { enabled: false } },
+        config: {
+          postEffects: ['test-effect', 'test-second-effect'],
+          ambientOcclusion: { enabled: false },
+        },
         lane: { compute: storageBuffer, storageBuffer, multisample: false, maxColorAttachments: 8 },
         surface: {
           width: 1,
@@ -1708,29 +1711,33 @@ describe('forgeax::standard graph', () => {
     const resources = info.resources;
     const input = resources.find((resource) => resource.label === 'standard-post-effects-input');
     expect(input).toMatchObject({
-      derivedUsage: 0x10 | 0x01,
+      derivedUsage: 0x10 | 0x04,
+      format: 'rgba8unorm',
     });
     expect(names.indexOf('debug-overlay')).toBeLessThan(names.indexOf('output-transform'));
     const fxaaIndex = names.indexOf('fxaa');
-    expect(names.indexOf('output-transform')).toBeLessThan(
-      fxaaIndex === -1 ? names.indexOf('post-effect-copy-0') : fxaaIndex,
-    );
-    if (fxaaIndex !== -1) expect(fxaaIndex).toBeLessThan(names.indexOf('post-effect-copy-0'));
-    expect(names.indexOf('post-effect-copy-0')).toBeLessThan(names.indexOf('post-effect-0'));
-    expect(info.passes.find((pass) => pass.name === 'post-effect-copy-0')?.accesses).toContainEqual(
-      { resource: 'standard-post-effects-input', usage: 'copy-src' },
-    );
-    expect(info.passes.find((pass) => pass.name === 'post-effect-0')?.accesses).toContainEqual({
+    const encodedProducer = fxaaIndex === -1 ? 'output-transform' : 'fxaa';
+    expect(names.indexOf(encodedProducer)).toBeLessThan(names.indexOf('post-effect-0'));
+    expect(names.some((name) => name.startsWith('post-effect-copy-'))).toBe(false);
+    expect(resources.some(({ label }) => label.startsWith('post-effect-scratch-'))).toBe(false);
+    expect(info.passes.find(({ name }) => name === 'post-effect-0')?.accesses).toContainEqual({
+      resource: 'standard-post-effects-input',
+      usage: 'sampled-read',
+    });
+    expect(info.passes.find(({ name }) => name === 'post-effect-1')?.accesses).toContainEqual({
+      resource: 'post-effect-output-0',
+      usage: 'sampled-read',
+    });
+    expect(info.passes.find(({ name }) => name === 'post-effect-1')?.accesses).toContainEqual({
       resource: 'surface',
       usage: 'color-attachment',
     });
+    expect(
+      resources.find(({ label }) => label === 'post-effect-output-0')?.descriptor,
+    ).toMatchObject({ format: 'rgba8unorm', domain: 'display-encoded' });
     expect(resources.map((resource) => resource.label)).not.toContain('surface.display');
     expect(resources.map((resource) => resource.label)).not.toContain('ldr-color');
     expect(resources.map((resource) => resource.label)).toContain('standard-post-effects-input');
-    expect(resources.map((resource) => resource.label)).toContain('post-effect-scratch-0');
-    expect(resources.find((resource) => resource.label === 'post-effect-scratch-0')?.format).toBe(
-      input?.format,
-    );
   });
 
   it('presents a resolved no-tone MSAA scene through the shared output boundary', async () => {

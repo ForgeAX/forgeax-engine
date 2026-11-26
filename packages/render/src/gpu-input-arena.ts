@@ -318,7 +318,7 @@ export class GpuInputArena {
       throw invalid('one word within a complete owned numeric descriptor');
     if (this.words[address + index] === value) return;
     this.words[address + index] = value;
-    this.changed(address, wordCount);
+    this.changed(address, index + 1, index);
   }
   readWord(address: number): number {
     this.assertLive();

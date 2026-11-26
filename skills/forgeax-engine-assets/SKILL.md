@@ -55,12 +55,11 @@ Choose the owner by when the content is known, not by how it is computed:
   seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), in place of
   `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
   playthroughs and tests reproduce.
-- Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
+- For independent indexed triangle batches, pass `createMeshBuilder({ materialSlots, sections })`. Each section carries its own `attributes`, local `indices` and destination `materialSlot`; the builder rebases indices and creates draw ranges. For an already assembled stream or vertices shared across submeshes, pass mesh-global buffers. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
 - Mesh authoring inputs carry complete matching channels; runtime admission and decoding keep only `vertices` with `attributeStorage: 'interleaved'` and empty typed layout declarations. Use `meshAttributeWindow` for zero-copy CPU reads; take cardinality from its count or the canonical stride. `copyMeshAttribute` and uncached `meshAttributeChannels` are explicit temporary conversions, not retained mirrors. Producers with validated packed rows can use `interleavedMesh` or construct the marked form; never unpack merely to discard channels again. See the geometry README for validation and mixed integer skin lanes.
 - For compact Standard terrain, `packMeshTangentFrame32(validatedMesh)` replaces normal/tangent with one `uint32` and retains UV bits. Raster reads packed rows directly. `meshAttributeWindow(mesh, 'tangentFrame')` exposes physical words; `copyMeshAttribute(mesh, 'normal' | 'tangent')` explicitly decodes temporary CPU channels. See the geometry README for the versioned format and custom-entry requirement.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
 - For runtime GPU textures, declare `texture-generator` and independent `gpu-texture` outputs (`GpuTextureAsset`) with `gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`. Build prepares programs; Renderer generates pixels and mips. Reuse prepared `programs` in a Runtime Pack; do not cook raw WGSL or read pixels back implicitly. Open either kind in View's native texture preview. See the [Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
-- Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
 
 When authorized to adapt a copied author source to a different SDK, retain immutable originals and work outside active asset roots. Update real dependencies and APIs, regenerate locks with the package manager, compile and cook against the target SDK, then export/import the verified source closure with its identities and provenance. A locked-version rejection is not proof that adaptation is unsupported; changing only version labels or cloning GUIDs is not a migration.
 
@@ -126,6 +125,11 @@ Use the App/Engine `assets` owner. `assets.create(content)` and
 `await assets.load(guid, kind)` return caller-owned `AssetHandle` references;
 bind those directly to ECS `asset(kind)` fields. A standalone World uses
 `new World({ assets })`. `assets.read(handle)` returns detached content.
+Use `assets.read(handle, ['field'])` to copy selected top-level fields. For a
+Mesh loaded with `{ usage: 'render' }`, read `['materialSlots']` to bind materials
+without restoring CPU geometry. The same form reads texture `['shape', 'format']`
+and other asset fields from their original types. A request for transferred Mesh
+geometry reports `asset-cpu-data-unavailable` with `detail.fields`.
 Commit changes through `update`, `replace`, or `writeRange`; treat a read as immutable
 and leave revisions to the runtime. Release the caller reference after a successful
 binding; ECS retains its own reference.

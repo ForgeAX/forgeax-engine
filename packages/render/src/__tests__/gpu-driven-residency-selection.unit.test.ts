@@ -1,10 +1,14 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { expect, it, vi } from 'vitest';
+import type { MeshGpuHandles } from '../device/gpu-residency';
 import { BatchSources, MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, type SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { materialBindingLayout } from '../gpu-driven/fixed-task-plan';
 import { MeshBatchProjection } from '../gpu-driven/mesh-batches';
+import type { RenderResourceScope } from '../publication/resource-scope';
+import type { RenderSystemInternals } from '../record/render-context';
+import { gpuDrivenMeshesForFrame } from '../record/resident-meshes';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { TreeFrame } from '../scene/frame-tree-list';
 import { MeshFrame } from '../scene/mesh-frame';
@@ -79,6 +83,19 @@ it('separates member publications from ordered material bindings in resident and
     const layout = materialBindingLayout(first[kind].batches);
     expect(layout).toBeDefined();
     expect(materialBindingLayout(next[kind].batches)).toBe(layout);
+  }
+  const getMeshGpuHandles = vi.fn(() => ({ contentEpoch: 1 }) as MeshGpuHandles);
+  const internals = { gpuStore: { getMeshGpuHandles } } as unknown as RenderSystemInternals;
+  const scope = {} as RenderResourceScope;
+  gpuDrivenMeshesForFrame(internals, scope, { plan: first.active }, 'resident-only');
+  const walk = vi.spyOn(TreeFrame.prototype, Symbol.iterator);
+  getMeshGpuHandles.mockClear();
+  try {
+    gpuDrivenMeshesForFrame(internals, scope, { plan: next.active }, 'resident-only');
+    expect(walk).not.toHaveBeenCalled();
+    expect(getMeshGpuHandles).toHaveBeenCalled();
+  } finally {
+    walk.mockRestore();
   }
   f.topology.setResidencyGroupActive(f.secondGroup, true);
   const all = projection.query(f.topology.sourcePlan(), undefined);

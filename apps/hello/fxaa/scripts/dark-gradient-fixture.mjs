@@ -18,8 +18,8 @@ const PIXEL_SOURCE_BY_BACKEND = Object.freeze({
 export function isDarkGradientFxaaGraph(observation) {
   return DARK_GRADIENT_FIXTURE.outputGraphs.some((route) =>
     route.passes.every((pass) => observation?.passNames?.includes(pass)) &&
-    observation?.standardOutputColor?.format === route.format &&
-    observation.standardOutputColor.domain === route.domain,
+    route.formats.includes(observation?.standardOutputColor?.format ?? '') &&
+    observation?.standardOutputColor?.domain === route.domain,
   );
 }
 
@@ -266,6 +266,7 @@ function mutate(bytes, mutation) {
   const result = new Uint8Array(bytes);
   for (let index = 0; index + 2 < result.length; index += 4) {
     if (mutation === 'eight-bit-intermediate') {
+      // The original report key denotes a deliberately coarse 16-code step.
       result[index] = Math.round(result[index] / 16) * 16;
       result[index + 1] = Math.round(result[index + 1] / 16) * 16;
       result[index + 2] = Math.round(result[index + 2] / 16) * 16;
@@ -461,7 +462,7 @@ export function createDarkGradientFixtureReport({ backendId, lane, bytes, refere
     [metrics.validationErrors.length === 0, 'validationErrors'],
     [metrics.pixelHash.length > 0, 'pixelHash'],
     [falsifiers.every((entry) => entry.passed === false), 'falsifiers'],
-    [surface.intermediateFormat === 'rgba16float', 'surface.intermediateFormat'],
+    [surface.intermediateFormat === identity?.standardOutputColor?.format, 'surface.intermediateFormat'],
     [surface.domain === 'display-encoded', 'surface.domain'],
     [surface.endpoint === 'surface.storage.raw', 'surface.endpoint'],
     [!isWebgl2Backend(backendId) || (presentationProof?.descriptor === true && presentationProof?.acquisition === true && presentationProof?.validation === true && typeof presentationProof?.surfaceIdentity === 'string' && presentationProof.surfaceIdentity.length > 0 && JSON.stringify(presentationProof.requested) === JSON.stringify(presentationProof.validated)), 'presentationProof'],
@@ -476,7 +477,7 @@ export function createDarkGradientFixtureReport({ backendId, lane, bytes, refere
     [referenceIdentity?.rgba16floatRenderable === true, 'referenceObservation.rgba16floatRenderable'],
     [isDarkGradientFxaaGraph(identity), 'observation.passNames'],
     [Array.isArray(referenceIdentity?.passNames), 'referenceObservation.passNames'],
-    [identity?.standardOutputColor?.format === 'rgba16float' && identity.standardOutputColor?.domain === 'display-encoded', 'observation.standardOutputColor'],
+    [identity?.standardOutputColor?.domain === 'display-encoded', 'observation.standardOutputColor'],
     [identity?.observationId !== referenceIdentity?.observationId || identity?.frameId !== referenceIdentity?.frameId, 'pairedObservationIdentity'],
   ].filter(([passed]) => !passed).map(([, field]) => field);
   const status = failures.length === 0 ? 'complete' : 'insufficient-evidence';

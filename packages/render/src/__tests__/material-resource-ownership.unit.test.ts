@@ -76,7 +76,6 @@ it('retains the detached programs already built by material preparation', () => 
       material,
       world: scope,
       assets,
-      programSelections: undefined,
     });
     const accepted = storeMaterialSnapshot(new Map(), 1, prepared, scope);
     expect(accepted.retry).toBeUndefined();
@@ -343,7 +342,7 @@ it('issues reusable program, key and context tables during actual material prepa
       material,
       assets,
       world: worldRenderResources(new World({ assets })),
-      programSelections: [{ pass: 'forward', specializationKey, context: testRasterContext }],
+      programs: { keys: { forward: specializationKey } },
     });
     const pass = { name: 'custom', program: { module: 'test::new' } };
     const detached = captureMaterialSnapshot({ ...prepared, passes: [pass] });

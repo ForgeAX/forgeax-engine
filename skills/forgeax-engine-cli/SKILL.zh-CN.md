@@ -55,7 +55,7 @@ View 编辑器 Play 借用当前项目资源服务器。它在 World 就绪前�
 
 原生 Codex View 实例归客户端所有：最后一个 App/业务 MCP 进程退出（包括异常退出）后三秒宽限期触发 Engine 清理。绑定与项目选择保留；重开目标和 token 更新。仅关闭页面不会停止其他 MCP 用户仍保留的实例。手动启动 backend 保留显式 backend stop 生命周期；切换手动/客户端所有权前先停 daemon。
 
-Linux 无显示器批处理遵循无人值守验证。Linux root 下 Engine 可启动非特权、可写私有 profile、启用 sandbox 的 Chromium 子进程；无显示默认 headless。借用现有页面无需本地浏览器或显示。仍出现 browser-sandbox-root 时读取此次启动原因，将受影响的游玩与视觉检查标记未验证；构建和资产检查只覆盖各自阶段。
+Linux 无显示器批处理遵循无人值守验证。DevKit 默认启用 Chromium 沙箱。在 Linux root 下，拿到可执行文件路径时会准备非特权身份和独立用户资料目录，无显示时实时会话默认 headless。若沙箱准备或 Chromium 启动明确报沙箱错误，DevKit 记录一次降级，用原浏览器关闭沙箱重试。成功后仍继续检查渲染帧和输入。若启动仍失败，读取报错并把相关验收标记为未验证。借用现有页面无需本地启动浏览器。
 
 ## 持续实时控制
 

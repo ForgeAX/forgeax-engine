@@ -41,6 +41,31 @@ it('reserves real logical resources without changing the accepted root or accept
   }
 });
 
+it('retires an input reader during a native upload without acquiring the returned buffer', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const inputs = new GpuSceneInputs(device, (slot) => slot);
+  inputs.allocateResource(7);
+  const frame = inputs.capture();
+  const write = device.queue.writeBuffer.bind(device.queue);
+  const upload = vi.spyOn(device.queue, 'writeBuffer').mockImplementation((...args) => {
+    frame.release();
+    return write(...args);
+  });
+  try {
+    expect(frame.buffer().ok).toBe(false);
+    expect(upload).toHaveBeenCalled();
+    const buffer = upload.mock.calls[0]?.[0];
+    if (!buffer) throw Error('missing uploaded buffer');
+    expect(frame.holdsBuffer(buffer)).toBe(false);
+    expect(frame.seal().ok).toBe(false);
+    expect(Reflect.get(inputs, 'bufferHolders').has(buffer)).toBe(false);
+  } finally {
+    upload.mockRestore();
+    frame.release();
+    inputs.dispose();
+  }
+});
+
 it('path-copies resource mappings, preserves descriptor zero and reclaims empty pages', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const inputs = new GpuSceneInputs(device, (slot) => slot);
@@ -75,8 +100,13 @@ it('path-copies resource mappings, preserves descriptor zero and reclaims empty 
     const before = inputs.resourcePagesWritten;
     inputs.updateResource(slots[256] as number, 10000);
     expect(inputs.resourcePagesWritten - before).toBe(4);
+    // The new leaf is exclusive. Its sibling leaf still belongs to the held root.
+    inputs.updateResource(slots[256] as number, 10001);
+    expect(inputs.resourcePagesWritten - before).toBe(4);
+    inputs.updateResource(slots[0] as number, 17);
+    expect(inputs.resourcePagesWritten - before).toBe(8);
     const current = inputs.capture();
-    expect(current.resource(slots[256] as number)).toBe(10000);
+    expect(current.resource(slots[256] as number)).toBe(10001);
     const next = current.buffer().unwrap();
     current.seal().unwrap();
     const lookup = (buffer: Buffer, root: number, slot: number) => {
@@ -87,7 +117,9 @@ it('path-copies resource mappings, preserves descriptor zero and reclaims empty 
       return page;
     };
     expect(lookup(old.buffer, old.resourceRoot, slots[256] as number)).toBe(256);
-    expect(lookup(next.buffer, next.resourceRoot, slots[256] as number)).toBe(10000);
+    expect(lookup(next.buffer, next.resourceRoot, slots[256] as number)).toBe(10001);
+    expect(lookup(old.buffer, old.resourceRoot, slots[0] as number)).toBe(0);
+    expect(lookup(next.buffer, next.resourceRoot, slots[0] as number)).toBe(17);
     // A sealed frame may outlive current publication and current slot reuse.
     for (const slot of slots) inputs.releaseResource(slot);
     const empty = inputs.capture();
@@ -128,7 +160,9 @@ it('bounds unflushed mapping history by live paths rather than edit count', asyn
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const inputs = new GpuSceneInputs(device, (slot) => slot);
   const slot = inputs.allocateResource(0);
+  const originalPages = inputs.resourcePagesWritten;
   for (let edit = 1; edit <= 1000; edit++) inputs.updateResource(slot, edit);
+  expect(inputs.resourcePagesWritten).toBe(originalPages);
   expect(inputs.resourcePagesWritten - inputs.resourcePagesReleased).toBe(4);
   const frame = inputs.capture();
   try {

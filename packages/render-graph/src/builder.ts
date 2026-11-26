@@ -36,7 +36,6 @@ import {
   accessMode,
   accessModeForPass,
   mayLoadAttachment,
-  rangesOverlap,
   viewAccessRange,
 } from './pass-access.js';
 import { planRasterBatches } from './raster-batching.js';
@@ -68,6 +67,7 @@ import type {
   RenderGraphFrame,
   SubgraphPass,
 } from './types.js';
+import { firstScopeConflict, type ScopeAccess, type ScopeWorkspace } from './usage-scope.js';
 
 const BUFFER_USAGE = {
   copySrc: 0x0004,
@@ -159,18 +159,14 @@ interface PassLocalSlot {
   allocation?: GraphTextureAllocation;
 }
 
-interface NormalizedAccess {
-  nextOfResource?: number;
+interface NormalizedAccess extends ScopeAccess {
   repeatedColorAccess?: true;
   precedingResolve?: number;
   readonly resourceId: number;
   readonly viewId?: number | undefined;
-  readonly usage: GraphAccessUsage;
   read: boolean;
   /** A bound color source stores or discards. A resolve destination always stores. */
   colorStore?: boolean;
-  readonly write: boolean;
-  readonly range?: GraphTextureContentRange | undefined;
 }
 
 /** Builder-owned until the pass is emitted to its physical program. */
@@ -863,7 +859,10 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         if (prior.lastUse === id && prior.lastAccess !== undefined) {
           if (normalized.usage === 'color-attachment') normalized.repeatedColorAccess = true;
           const sibling = accesses[prior.lastAccess];
-          if (sibling !== undefined) sibling.nextOfResource = index;
+          if (sibling !== undefined) {
+            sibling.nextOfResource = index;
+            normalized.resourceFollower = true;
+          }
         }
         prior.lastUse = id;
         prior.lastAccess = index;
@@ -970,6 +969,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     const preparationIds: number[] = [];
     let hasSubgraph = false;
     let accessIds = new Uint32Array(this.addressWordCount);
+    const scope: ScopeWorkspace = {};
     const colorBindings = new Map<GraphTextureView, number>();
     let accessEnd = 0;
     const initializedBuffers: number[] = [];
@@ -1078,7 +1078,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       }
       if (accessEnd - accessStart > LINEAR_PASS_ACCESS_LIMIT)
         accessIds.subarray(accessStart, accessEnd).sort();
-      const conflict = this.validatePassAccesses(pass, normalized);
+      const conflict = this.validatePassAccesses(pass, normalized, scope);
       if (conflict !== undefined) return conflict;
       const attachments = this.bindRasterAttachments(pass, normalized, colorBindings);
       if (attachments !== undefined) return attachments;
@@ -1348,44 +1348,24 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
   private validatePassAccesses(
     pass: PassRecord<FrameCtx>,
     accesses: readonly NormalizedAccess[],
+    scope: ScopeWorkspace,
   ): RenderGraphError | undefined {
     // A child has separately validated, ordered scopes rather than one GPU pass.
     if (pass.pass.kind === 'subgraph') return undefined;
-    // Admission linked siblings in declaration order while recording physical lifetimes.
-    for (let leftIndex = 0; leftIndex < accesses.length; leftIndex++) {
-      const left = accesses[leftIndex];
-      if (left === undefined) continue;
-      for (
-        let rightIndex = left.nextOfResource;
-        rightIndex !== undefined;
-        rightIndex = accesses[rightIndex]?.nextOfResource
-      ) {
-        const right = accesses[rightIndex];
-        if (
-          right === undefined ||
-          left.resourceId !== right.resourceId ||
-          !rangesOverlap(left.range, right.range)
-        ) {
-          continue;
-        }
-        if (!left.write && !right.write) continue;
-        if (
-          left.usage === right.usage &&
-          (left.usage === 'storage-read-write' || left.usage === 'sampled-storage-read-write')
-        )
-          continue;
-        const label = this.resourceAt(left.resourceId)?.label;
-        return new RenderGraphError({
-          code: 'access-conflict',
-          expected: `pass '${pass.name}' uses resource '${label}' in one compatible WebGPU usage scope`,
-          hint: 'split conflicting read/write roles into ordered passes or use storage-read-write once',
-          detail: {
-            passName: pass.name,
-            resourceLabel: label,
-            accesses: [left.usage, right.usage],
-          },
-        });
-      }
+    const conflict = firstScopeConflict(accesses, scope);
+    if (conflict !== undefined) {
+      const [left, right] = conflict;
+      const label = this.resourceAt(left.resourceId)?.label;
+      return new RenderGraphError({
+        code: 'access-conflict',
+        expected: `pass '${pass.name}' uses resource '${label}' in one compatible WebGPU usage scope`,
+        hint: 'split conflicting read/write roles into ordered passes or use storage-read-write once',
+        detail: {
+          passName: pass.name,
+          resourceLabel: label,
+          accesses: [left.usage, right.usage],
+        },
+      });
     }
     if (pass.pass.kind !== 'compute') {
       const invalid = accesses.find((access) => access.usage === 'sampled-storage-write');

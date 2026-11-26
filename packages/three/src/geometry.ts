@@ -2,7 +2,10 @@ import type { MeshRange } from '@forgeax/engine-assets-runtime';
 import {
   computeTangentVec4,
   deriveVertexLayoutProjection,
-  packInterleavedVertexAttributes,
+  isStandaloneStaticMesh,
+  meshAttributeLayout,
+  meshAttributeWindow,
+  packVertexAttributes,
   writeNormalPlaneTangent,
 } from '@forgeax/engine-geometry';
 import { box3 } from '@forgeax/engine-math';
@@ -11,7 +14,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Float32BufferAttribute,
-  type InterleavedBufferAttribute,
+  InterleavedBufferAttribute,
   Uint16BufferAttribute,
   Uint32BufferAttribute,
 } from 'three/src/Three.Core.js';
@@ -59,15 +62,17 @@ export function geometryValues(geometry: BufferGeometry, grouped: boolean): unkn
     if (!Object.hasOwn(WIDTHS, key)) continue;
     const buffer = 'data' in attribute ? attribute.data : attribute;
     values.push(
-      key,
-      attribute,
       buffer.array,
-      buffer.version,
       attribute.count,
       attribute.itemSize,
       attribute.normalized,
       'offset' in attribute ? attribute.offset : 0,
       'stride' in buffer ? buffer.stride : 0,
+      // Keep the version between its source attribute and name. Range publication
+      // can distinguish a content edit from every structural signature change.
+      attribute,
+      buffer.version,
+      key,
     );
   }
   values.push(geometry.morphTargetsRelative);
@@ -87,6 +92,244 @@ export function geometryValues(geometry: BufferGeometry, grouped: boolean): unkn
   }
   for (const group of geometry.groups) values.push(group.start, group.count, group.materialIndex);
   return values;
+}
+
+type SourceAttribute = BufferGeometry['attributes'][string];
+type SourceBuffer = BufferAttribute | InterleavedBufferAttribute['data'];
+type VertexEdit = Extract<MeshRange, { readonly values: Float32Array }>;
+type FloatChannel = VertexEdit['attribute'];
+
+function versionAttribute(geometry: BufferGeometry, values: readonly unknown[], index: number) {
+  const name = values[index + 1];
+  if (typeof name !== 'string' || !Object.hasOwn(WIDTHS, name)) return;
+  const key = name as keyof typeof WIDTHS;
+  const attribute = geometry.attributes[key];
+  return attribute && attribute === values[index - 1] ? { key, attribute } : undefined;
+}
+
+/** Only buffers whose content revision was observed can acknowledge the author's ranges. */
+export function recordGeometryRanges(
+  geometry: BufferGeometry,
+  previous: readonly unknown[],
+  current: readonly unknown[],
+  receipts: Map<object, () => void> | undefined,
+) {
+  for (let i = 0; i < current.length; i++) {
+    if (Object.is(current[i], previous[i]) || typeof current[i] !== 'number') continue;
+    const entry = versionAttribute(geometry, current, i);
+    if (!entry) continue;
+    const buffer = 'data' in entry.attribute ? entry.attribute.data : entry.attribute;
+    if (buffer.updateRanges?.length && !receipts?.has(buffer)) {
+      receipts ??= new Map();
+      receipts.set(buffer, geometryRangeReceipt(buffer));
+    }
+  }
+  return receipts;
+}
+
+/** Consume an observed Three range list only after all variants commit. A later author edit wins. */
+function geometryRangeReceipt(buffer: SourceBuffer) {
+  const list = buffer.updateRanges,
+    version = buffer.version;
+  const observed = list.map(({ start, count }) => ({ start, count }));
+  return () => {
+    if (
+      buffer.version === version &&
+      buffer.updateRanges === list &&
+      list.length === observed.length &&
+      observed.every((range, i) => range.start === list[i]?.start && range.count === list[i]?.count)
+    )
+      buffer.clearUpdateRanges();
+  };
+}
+
+/** Number of this attribute's scalar lanes before an offset in the source buffer. */
+function channelPrefix(offset: number, stride: number, column: number, width: number): number {
+  return (
+    Math.floor(offset / stride) * width + Math.min(width, Math.max(0, (offset % stride) - column))
+  );
+}
+
+function changedLanes(attribute: SourceAttribute) {
+  const interleaved = 'data' in attribute;
+  const source = interleaved ? attribute.data : attribute;
+  const width = attribute.itemSize,
+    stride = interleaved ? attribute.data.stride : width;
+  const column = interleaved ? attribute.offset : 0;
+  if (
+    !source.updateRanges.length ||
+    !Number.isSafeInteger(stride) ||
+    stride < width ||
+    !Number.isSafeInteger(column) ||
+    column < 0 ||
+    column + width > stride
+  )
+    return;
+  const lanes: { first: number; end: number }[] = [];
+  for (const { start, count } of source.updateRanges) {
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(count) ||
+      start < 0 ||
+      count < 1 ||
+      start + count > source.array.length
+    )
+      return;
+    const first = channelPrefix(start, stride, column, width);
+    const end = channelPrefix(start + count, stride, column, width);
+    if (first < end) lanes.push({ first, end });
+  }
+  return lanes.sort((a, b) => a.first - b.first);
+}
+
+function captureVertexChannel(
+  payload: MeshAsset,
+  key: FloatChannel,
+  attribute: SourceAttribute,
+  lanes: { first: number; end: number }[],
+  edits: VertexEdit[],
+  maxRanges: number,
+  uuid: string,
+): boolean {
+  const prior = meshAttributeWindow(payload, key);
+  const width = attribute.itemSize,
+    nativeWidth = WIDTHS[key];
+  if (!prior || prior.count !== attribute.count || prior.components !== nativeWidth) return false;
+  // Fold ranges that touch the same or adjacent vertices into one native write.
+  // A partly written vertex borrows its other lanes from the last admitted version.
+  let i = 0,
+    next = lanes[0];
+  while (next !== undefined) {
+    let cursor = i;
+    let active: (typeof lanes)[number] | undefined = next;
+    const first = Math.floor(next.first / width);
+    let end = Math.ceil(next.end / width);
+    next = lanes[++i];
+    while (next && Math.floor(next.first / width) <= end) {
+      end = Math.max(end, Math.ceil(next.end / width));
+      next = lanes[++i];
+    }
+    if (edits.length >= maxRanges) return false;
+    const values = new Float32Array((end - first) * nativeWidth);
+    for (let v = first, dst = 0; v < end; v++)
+      for (let lane = 0; lane < nativeWidth; lane++) {
+        const scalar = v * width + lane;
+        while (cursor < i && active && active.end <= scalar && lane < width)
+          active = lanes[++cursor];
+        const changed =
+          lane < width && cursor < i && active !== undefined && active.first <= scalar;
+        const value = changed
+          ? readComponent(attribute, v, lane)
+          : (prior.data[prior.offset + v * prior.stride + lane] as number);
+        if (!Number.isFinite(value)) invalid(`BufferGeometry.attributes.${key}`, uuid).unwrap();
+        values[dst++] = value;
+      }
+    edits.push({ attribute: key, first, values });
+  }
+  return true;
+}
+
+/** Compare actual source revisions and project declared component edits at fixed vertex ordinals. */
+export function rigidVertexEdits(
+  geometry: BufferGeometry,
+  previous: readonly unknown[],
+  current: readonly unknown[],
+  materials: readonly GeometryMaterial[],
+  payload: MeshAsset,
+  maxRanges: number,
+): VertexEdit[] | undefined {
+  if (
+    previous.length !== current.length ||
+    payload.attributeStorage === undefined ||
+    payload.morphTargets !== undefined ||
+    geometry.getAttribute !== stockGetAttribute ||
+    Object.keys(geometry.morphAttributes).length ||
+    (geometry.hasAttribute('color') &&
+      materials.some((m) => m.vertexColors) &&
+      materials.some((m) => !m.vertexColors))
+  )
+    return;
+  const derivedTangent = !geometry.hasAttribute('tangent');
+  const derivedFromTriangles =
+    derivedTangent &&
+    geometry.hasAttribute('uv') &&
+    !materials.every((m) => m.tangentBasis === 'normal');
+  const edits: VertexEdit[] = [];
+  for (let i = 0; i < current.length; i++) {
+    if (Object.is(current[i], previous[i])) continue;
+    const version = previous[i];
+    if (typeof version !== 'number' || current[i] !== version + 1) return;
+    const source = versionAttribute(geometry, current, i);
+    if (!source) return;
+    const { key, attribute } = source;
+    const lanes = changedLanes(attribute);
+    if (!lanes) return;
+    if (!lanes.length || (key === 'color' && !materials.some((m) => m.vertexColors))) continue;
+    // Normal repair and UV-derived tangent generation can affect other vertex lanes.
+    if (
+      key === 'skinIndex' ||
+      key === 'skinWeight' ||
+      (derivedFromTriangles && (key === 'uv' || key === 'position' || key === 'normal')) ||
+      (key === 'normal' && lanes.some((range) => range.first % 3 !== 0 || range.end % 3 !== 0))
+    )
+      return;
+    const start = edits.length;
+    const readers =
+      'data' in attribute ? InterleavedBufferAttribute.prototype : BufferAttribute.prototype;
+    if (
+      attribute.getX !== readers.getX ||
+      attribute.getY !== readers.getY ||
+      attribute.getZ !== readers.getZ ||
+      attribute.getW !== readers.getW ||
+      !captureVertexChannel(payload, key, attribute, lanes, edits, maxRanges, geometry.uuid)
+    )
+      return;
+    if (key === 'normal') {
+      const end = edits.length;
+      for (let n = start; n < end; n++) {
+        const normal = edits[n] as VertexEdit;
+        const values = normal.values;
+        // Replacing an unreferenced zero normal depends on the index buffer.
+        for (let j = 0; j < values.length; j += 3)
+          if (values[j] === 0 && values[j + 1] === 0 && values[j + 2] === 0) return;
+        if (derivedTangent) {
+          if (edits.length >= maxRanges) return;
+          const tangents = normalPlaneTangents(values, values.length / 3);
+          if (!tangents) return;
+          edits.push({ attribute: 'tangent', first: normal.first, values: tangents });
+        }
+      }
+    }
+  }
+  return edits;
+}
+
+/** A dispose between preparation and publication requires a new lease with the captured edit. */
+export function restoreRigidVertexEdits(base: MeshAsset, ranges: readonly VertexEdit[]): MeshAsset {
+  const mesh = {
+    ...base,
+    vertices: base.vertices.slice(),
+    ...(base.aabb === undefined ? {} : { aabb: base.aabb.slice() }),
+  };
+  for (const range of ranges) {
+    const view = meshAttributeWindow(base, range.attribute);
+    if (!view) throw new Error('missing captured vertex attribute');
+    const width = view.components;
+    for (
+      let src = 0, at = view.offset + range.first * view.stride;
+      src < range.values.length;
+      at += view.stride
+    )
+      for (let axis = 0; axis < width; axis++) {
+        const value = range.values[src++] as number;
+        mesh.vertices[at + axis] = value;
+        if (range.attribute === 'position' && mesh.aabb) {
+          mesh.aabb[axis] = Math.min(mesh.aabb[axis] as number, value);
+          mesh.aabb[axis + 3] = Math.max(mesh.aabb[axis + 3] as number, value);
+        }
+      }
+  }
+  return mesh;
 }
 
 type Topology = 'triangle-list' | 'point-list' | 'line-list' | 'line-strip';
@@ -112,7 +355,7 @@ export function projectGeometry(
   projectedUvs: Readonly<Record<string, Float32Array>> = {},
   wireframe = false,
   morphColorWeights?: readonly number[],
-  packVertices = true,
+  packVertices: boolean | 'static-streams' = true,
 ): Result<MeshAsset | undefined, Error> {
   const position = geometry.getAttribute('position');
   if (position === undefined || position.count === 0) return ok(undefined);
@@ -147,12 +390,9 @@ export function projectGeometry(
   if (!tangents.ok) return tangents;
   const morphTargets = projectMorphTargets(geometry, layout);
   if (!morphTargets.ok) return morphTargets;
-  const packed = packVertices ? packInterleavedVertexAttributes(attributes, count) : undefined;
-  if (packed !== undefined && !packed.ok) return packed;
-  return ok({
-    kind: 'mesh',
+  const mesh = {
+    kind: 'mesh' as const,
     ...(morphTargets.value.length === 0 ? {} : { morphTargets: morphTargets.value }),
-    vertices: packed?.value.vertices ?? new Float32Array(),
     attributes,
     indices,
     aabb: box3.fromPositions(box3.create(), attributes.position as Float32Array),
@@ -160,6 +400,23 @@ export function projectGeometry(
     materialSlots: Array.from({ length: slotCount }, (_, slot) => ({
       slotName: `material-${slot}`,
     })),
+  };
+  if (!packVertices) return ok({ ...mesh, vertices: new Float32Array() });
+  const storage =
+    packVertices === 'static-streams' && isStandaloneStaticMesh(mesh)
+      ? 'static-streams'
+      : 'interleaved';
+  const packed = packVertexAttributes(attributes, count, storage);
+  if (!packed.ok) return packed;
+  return ok({
+    ...mesh,
+    vertices: packed.value.vertices,
+    ...(packed.value.projection.streams === undefined
+      ? {}
+      : {
+          attributeStorage: 'static-streams' as const,
+          attributes: meshAttributeLayout(attributes),
+        }),
   });
 }
 

@@ -87,7 +87,6 @@ const handler = {
 
 // Dense matrix inputs can be read by stock kernels. Retire that privilege when a caller
 // installs accessors, creates holes, or changes the prototype. The public proxy stays live.
-const stockMatrixStorage = new WeakSet<object>();
 const customReads = new WeakSet<object>();
 const matrixHandler: ProxyHandler<object> = {
   defineProperty(raw, key, desc) {
@@ -116,7 +115,6 @@ export function ownedCollection<T extends object>(
 }
 
 export function ownedMatrixElements(elements: number[]): number[] {
-  if (users > 0) stockMatrixStorage.add(elements);
   return ownedCollection(elements, matrixHandler);
 }
 
@@ -219,19 +217,6 @@ export function sourceCollectionStorage<T extends object>(value: T): T {
   return (collections.get(value) as T | undefined) ?? value;
 }
 
-/** Only owned data slots can establish a primitive local input after composition. */
-export function primitiveMatrixValues(elements: number[], storage: number[]): boolean {
-  if (
-    !stockMatrixStorage.has(storage) ||
-    collections.get(elements) !== storage ||
-    customReads.has(storage) ||
-    storage.length !== 16
-  )
-    return false;
-  for (let i = 0; i < 16; i++) if (typeof storage[i] !== 'number') return false;
-  return true;
-}
-
 /** Bulk input kernels may unwrap dense matrix data. Custom reads retain the public receiver. */
 export function matrixReadStorage<T extends object>(value: T): T {
   const raw = collections.get(value);
@@ -240,10 +225,72 @@ export function matrixReadStorage<T extends object>(value: T): T {
 
 /** Select one operand exactly when its scalar reads begin. Another operand may
  * have installed accessors since the Matrix4 operation read the elements fields. */
-export function worldMatrixInput(elements: number[]): number[] | Float64Array {
+export function worldMatrixInput(elements: number[]): number[] {
   const source = matrixReadStorage(elements);
   const row = worldMatrixRow(source);
   return row?.dense ?? row?.elements ?? source;
+}
+
+/** Capture operands in Three's multiplyMatrices order. A coercion can change the
+ * destination during a product, so each completed scalar goes to its current backing. */
+export function multiplyWorldMatrix(
+  left: number[],
+  right: number[],
+  out: WorldMatrixRow,
+  parent?: WorldMatrixRow,
+): void {
+  const ae = parent ? (parent.dense ?? parent.elements) : worldMatrixInput(left);
+  const a11 = ae[0] as number,
+    a12 = ae[4] as number,
+    a13 = ae[8] as number,
+    a14 = ae[12] as number;
+  const a21 = ae[1] as number,
+    a22 = ae[5] as number,
+    a23 = ae[9] as number,
+    a24 = ae[13] as number;
+  const a31 = ae[2] as number,
+    a32 = ae[6] as number,
+    a33 = ae[10] as number,
+    a34 = ae[14] as number;
+  const a41 = ae[3] as number,
+    a42 = ae[7] as number,
+    a43 = ae[11] as number,
+    a44 = ae[15] as number;
+
+  const be = worldMatrixInput(right);
+  const b11 = be[0] as number,
+    b12 = be[4] as number,
+    b13 = be[8] as number,
+    b14 = be[12] as number;
+  const b21 = be[1] as number,
+    b22 = be[5] as number,
+    b23 = be[9] as number,
+    b24 = be[13] as number;
+  const b31 = be[2] as number,
+    b32 = be[6] as number,
+    b33 = be[10] as number,
+    b34 = be[14] as number;
+  const b41 = be[3] as number,
+    b42 = be[7] as number,
+    b43 = be[11] as number,
+    b44 = be[15] as number;
+
+  out.writeLane(0, a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41);
+  out.writeLane(4, a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42);
+  out.writeLane(8, a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43);
+  out.writeLane(12, a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44);
+  out.writeLane(1, a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41);
+  out.writeLane(5, a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42);
+  out.writeLane(9, a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43);
+  out.writeLane(13, a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44);
+  out.writeLane(2, a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41);
+  out.writeLane(6, a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42);
+  out.writeLane(10, a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43);
+  out.writeLane(14, a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44);
+  out.writeLane(3, a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41);
+  out.writeLane(7, a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42);
+  out.writeLane(11, a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43);
+  out.writeLane(15, a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44);
 }
 
 /** Stock Matrix4 kernels notify the same subscribers as a direct element edit. */

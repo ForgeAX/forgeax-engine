@@ -1,10 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import {
-  deriveInstancesUnionBounds,
-  fingerprintNumericArray,
-  InstanceBoundsCache,
-} from '../instances-derived-bounds';
+import { deriveInstancesUnionBounds } from '../instances-derived-bounds';
+import { MaterialResource } from '../material-resource';
+import { defaultMaterialSnapshot } from '../render-system-extract';
+import { SceneRows } from '../scene/scene-rows';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -18,6 +17,30 @@ function translated(x: number, y = 0, z = 0): Float32Array {
 
 const meshAabb = new Float32Array([-1, -1, -1, 1, 1, 1]);
 const entityWorld = new Float32Array(IDENTITY);
+
+function instanceScene() {
+  const rows = new SceneRows();
+  const material = MaterialResource.from(defaultMaterialSnapshot());
+  const publish = (localAabb = meshAabb, world = entityWorld, transforms = IDENTITY) => {
+    const source = {
+      entityKey: 7,
+      material,
+      materials: [material],
+      materialBindingSources: [],
+      transform: { world },
+      localAabb,
+      instances: { transforms, instanceCount: transforms.length / 16, cacheKey: 7, archVersion: 1 },
+    };
+    rows.apply([{ kind: 'update', entityKey: 7, snapshot: source }], [], true);
+  };
+  const bounds = () => {
+    const slot = rows.lookup(7);
+    if (slot === undefined) throw new Error('expected instance row');
+    const box = rows.cullingWorldBoundsAt(slot);
+    return box === undefined ? undefined : Float32Array.of(...box.min, ...box.max);
+  };
+  return { rows, publish, bounds };
+}
 
 describe('Instances renderer-derived union bounds', () => {
   it('unions every transformed mesh corner in entity world space', () => {
@@ -40,9 +63,6 @@ describe('Instances renderer-derived union bounds', () => {
       transforms: translated(5),
     };
     expect(deriveInstancesUnionBounds(input)).toEqual(new Float32Array([7, 6, -3, 9, 8, -1]));
-    expect(fingerprintNumericArray(poses, 16, 16)).toBe(
-      fingerprintNumericArray(translated(3, 7, -2)),
-    );
     poses[28] = -4;
     expect(deriveInstancesUnionBounds(input)).toEqual(new Float32Array([0, 6, -3, 2, 8, -1]));
     expect(deriveInstancesUnionBounds({ ...input, entityWorldOffset: 40 })).toBeUndefined();
@@ -68,67 +88,30 @@ describe('Instances renderer-derived union bounds', () => {
     ).toBeUndefined();
   });
 
-  it('invalidates one cached projection when mesh, entity, or matrix generation changes', () => {
-    const cache = new InstanceBoundsCache();
-    const input = {
-      entityKey: 7,
-      meshGeneration: 1,
-      transformGeneration: 1,
-      matrixGeneration: 1,
-      meshAabb,
-      entityWorld,
-      transforms: new Float32Array(IDENTITY),
-    };
-    const first = cache.get(input);
-    expect(first).toEqual(meshAabb);
-    expect(cache.get(input)).toBe(first);
-
-    const matrixChanged = cache.get({ ...input, matrixGeneration: 2, transforms: translated(9) });
-    expect(matrixChanged).not.toBe(first);
-    expect(matrixChanged?.[0]).toBe(8);
-
-    const entityChanged = cache.get({
-      ...input,
-      transformGeneration: 2,
-      entityWorld: translated(10),
-    });
-    expect(entityChanged).not.toBe(first);
-    expect(entityChanged?.[0]).toBe(9);
-
-    const meshChanged = cache.get({
-      ...input,
-      meshGeneration: 2,
-      meshAabb: new Float32Array([-2, -1, -1, 2, 1, 1]),
-    });
-    expect(meshChanged).not.toBe(first);
-    expect(meshChanged).toEqual(new Float32Array([-2, -1, -1, 2, 1, 1]));
-
-    const reused = cache.get({ ...input, meshGeneration: 3 });
-    expect(reused).not.toBe(first);
+  it('reads the accepted mesh, entity pose and instance collection after each change', () => {
+    const scene = instanceScene();
+    scene.publish();
+    expect(scene.bounds()).toEqual(meshAabb);
+    expect(scene.bounds()).toEqual(meshAabb);
+    expect(scene.rows.instanceBoundsStatistics().derives).toBe(1);
+    scene.publish(meshAabb, entityWorld, translated(9));
+    expect(scene.bounds()?.[0]).toBe(8);
+    scene.publish(meshAabb, translated(10));
+    expect(scene.bounds()?.[0]).toBe(9);
+    const widened = Float32Array.of(-2, -1, -1, 2, 1, 1);
+    scene.publish(widened);
+    expect(scene.bounds()).toEqual(widened);
+    scene.publish();
+    expect(scene.bounds()).toEqual(meshAabb);
   });
 
-  it('keeps identical entity handles isolated between independent Renderer caches', () => {
-    const cache = new InstanceBoundsCache();
-    const first = cache.get({
-      entityKey: 7,
-      meshGeneration: 1,
-      transformGeneration: 1,
-      matrixGeneration: 1,
-      meshAabb,
-      entityWorld,
-      transforms: new Float32Array(IDENTITY),
-    });
-    const second = new InstanceBoundsCache().get({
-      entityKey: 7,
-      meshGeneration: 1,
-      transformGeneration: 1,
-      matrixGeneration: 1,
-      meshAabb,
-      entityWorld: translated(20),
-      transforms: new Float32Array(IDENTITY),
-    });
-    expect(second).not.toBe(first);
-    expect(second?.[0]).toBe(19);
+  it('isolates the same entity and producer revision in independent Scenes', () => {
+    const first = instanceScene();
+    const second = instanceScene();
+    first.publish();
+    second.publish(meshAabb, translated(20));
+    expect(second.bounds()?.[0]).toBe(19);
+    expect(first.bounds()?.[0]).toBe(-1);
   });
 
   it('keeps affine negative-scale and shear bounds conservative without per-corner allocations', () => {
@@ -168,21 +151,14 @@ describe('Instances renderer-derived union bounds', () => {
   });
 
   it('exposes cache hit/miss evidence for the renderer-owned projection', () => {
-    const cache = new InstanceBoundsCache();
-    const input = {
-      entityKey: 9,
-      meshGeneration: 1,
-      transformGeneration: 1,
-      matrixGeneration: 1,
-      meshAabb,
-      entityWorld,
-      transforms: new Float32Array(IDENTITY),
-    };
-    cache.get(input);
-    cache.get(input);
-    cache.get({ ...input, matrixGeneration: 2, transforms: translated(1) });
-    cache.invalidate(9);
-    expect(cache.inspect()).toEqual({
+    const scene = instanceScene();
+    scene.publish();
+    scene.bounds();
+    scene.bounds();
+    scene.publish(meshAabb, entityWorld, translated(1));
+    scene.bounds();
+    scene.rows.apply([{ kind: 'remove', entityKey: 7 }], [], true);
+    expect(scene.rows.instanceBoundsStatistics()).toEqual({
       hits: 1,
       misses: 2,
       derives: 2,
@@ -197,7 +173,7 @@ describe('Instances renderer-derived union bounds', () => {
 });
 
 it('re-derives exact bounds under mixed negative scale and shear on every mesh edit', () => {
-  const cache = new InstanceBoundsCache();
+  const scene = instanceScene();
   const transforms = new Float32Array(64 * 16);
   for (let row = 0; row < 64; row++) {
     const matrix = translated((row % 5) * 3, row % 11, row % 7);
@@ -210,18 +186,11 @@ it('re-derives exact bounds under mixed negative scale and shear on every mesh e
   const world = new Float32Array([-2, 0, 0, 0, 0.5, 1, 0, 0, 0, 0, 3, 0, 3, -5, 2, 1]);
   for (let revision = 1; revision <= 10; revision++) {
     const mesh = new Float32Array([-revision, -2, -3, 2, revision, 3]);
-    const actual = cache.get({
-      entityKey: 1,
-      meshGeneration: revision,
-      transformGeneration: 1,
-      matrixGeneration: 1,
-      meshAabb: mesh,
-      entityWorld: world,
-      transforms,
-    });
+    scene.publish(mesh, world, transforms);
+    const actual = scene.bounds();
     const exact = deriveInstancesUnionBounds({ meshAabb: mesh, entityWorld: world, transforms });
     expect(exact).toBeDefined();
     expect(actual).toEqual(exact);
   }
-  expect(cache.inspect().derives).toBe(10);
+  expect(scene.rows.instanceBoundsStatistics().derives).toBe(10);
 });

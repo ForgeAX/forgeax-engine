@@ -3,7 +3,7 @@ import { err, ok, type Result, type TerrainError } from '@forgeax/engine-types';
 import type { RenderResourceScope } from '../publication/resource-scope.js';
 import type { FrameReceipt } from '../render-contract.js';
 import type { RenderableSnapshot } from '../render-system-extract.js';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import { terrainDrawSection } from './source';
 
 export interface SubmittedTerrainSection {
@@ -22,7 +22,7 @@ export function captureSubmittedTerrain(
   sourceScope: RenderResourceScope,
 ): readonly SubmittedTerrainSection[] {
   const sections: SubmittedTerrainSection[] = [];
-  for (const source of sources) {
+  for (const source of sparseRowsOf(sources, 'terrain')) {
     const terrain = source.terrain,
       section = source.terrainSection;
     if (terrain === undefined || section === undefined || source.authorVisible === false) continue;

@@ -239,8 +239,9 @@ export type GraphTargetCaptureReadbackValidation =
         | 'capture-readback-non-finite';
     };
 
-/** Validate a mapped rgba16float capture before a consumer decodes its values. */
+/** Validate a mapped color capture in its storage format before decoding. */
 export function validateGraphTargetCaptureReadback(input: {
+  readonly format: 'rgba8unorm' | 'rgba16float';
   readonly bytes: Uint8Array;
   readonly expectedByteLength: number;
   readonly sentinel?: Uint8Array;
@@ -255,6 +256,7 @@ export function validateGraphTargetCaptureReadback(input: {
   if (!allowZero && bytes.every((value) => value === 0)) {
     return { ok: false, code: 'capture-readback-empty' };
   }
+  if (input.format === 'rgba8unorm') return { ok: true };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let index = 0;
   // Inspect both half-float exponents per word. DataView also preserves
@@ -561,7 +563,7 @@ export interface RenderFrameState {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];
   };
   /** Renderer-lifetime render-bundle segment reuse tally across scene passes. */
-  renderBundleCounters?: import('./render-bundle-cache').RenderBundleCounters;
+  renderBundleCounters?: import('./geometry-recording').RenderBundleCounters;
   dynamicResolution?: import('../pipeline/dynamic-resolution').DynamicResolutionController;
   rayDiffuse?: import('../raytracing/renderer-diffuse').RendererRayDiffuse | undefined;
   irradianceField?:

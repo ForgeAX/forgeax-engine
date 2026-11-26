@@ -189,9 +189,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       });
     });
 
-    it('Camera has 38 fields including target, targetLayer, exposure, and color grading columns', () => {
+    it('Camera has 39 fields including target, targetLayer, exposure, and color grading columns', () => {
       expect(Camera.name).toBe('Camera');
-      expect(Object.keys(componentSchema(Camera)).length).toBe(38);
+      expect(Object.keys(componentSchema(Camera)).length).toBe(39);
       expect(componentSchema(Camera).targetLayer).toBe('u32');
       expect(componentSchema(Camera).fov).toBe('f32');
       expect(componentSchema(Camera).aspect).toBe('f32');
@@ -212,6 +212,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Camera).bloom).toBe('f32');
       expect(componentSchema(Camera).bloomThreshold).toBe('f32');
       expect(componentSchema(Camera).bloomIntensity).toBe('f32');
+      expect(componentSchema(Camera).bloomQuality).toBe('f32');
       expect(componentSchema(Camera).bloomSmoothWidth).toBe('f32');
       expect(componentSchema(Camera).bloomRadius).toBe('f32');
       // feat-20260709 M3: clear-color quartet collapsed into one inline
@@ -1410,16 +1411,18 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.tonemap).toBe(TONEMAP_NONE);
     });
 
-    it('perspective and orthographic return 37 Camera values with the generated LUT unset', () => {
+    it('perspective and orthographic return 38 Camera values with the generated LUT unset', () => {
       const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
-      // Both return exactly 37 values (including targetLayer 0): Camera.fields also
+      // Both return exactly 38 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
       // The returned values include exposure and color grading columns +
       // autoAspect bool column; feat-20260709 M3 collapsed the 4-scalar
       // clear-color quartet into one inline array<f32,4>).
-      expect(Object.keys(p).length).toBe(37);
-      expect(Object.keys(o).length).toBe(37);
+      expect(Object.keys(p).length).toBe(38);
+      expect(Object.keys(o).length).toBe(38);
+      expect(p.bloomQuality).toBe(5);
+      expect(o.bloomQuality).toBe(5);
       expect(p.generatedColorLut).toBe(0);
       expect(o.generatedColorLut).toBe(0);
       expect(p.orderOpaqueByLayer).toBe(false);
@@ -1432,7 +1435,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // ────────────────────────────────────────────────────────────────────────────
 
   describe('Camera.fields reflection (w14 AC-07 SSOT)', () => {
-    it('Camera.fields has exactly 38 keys matching the Camera column set', () => {
+    it('Camera.fields has exactly 39 keys matching the Camera column set', () => {
       const keys = Object.keys(Camera.fields).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1440,6 +1443,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'autoAspect',
         'bloom',
         'bloomIntensity',
+        'bloomQuality',
         'bloomRadius',
         'bloomSmoothWidth',
         'bloomThreshold',
@@ -1523,6 +1527,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.historyVersion.default).toBe(0);
       expect(d.targetLayer.default).toBe(0);
       expect(d.bloom.default).toBe(0);
+      expect(d.bloomQuality.default).toBe(5);
       expect(d.bloomThreshold.default).toBeCloseTo(-1, 6);
       expect(d.bloomIntensity.default).toBeCloseTo(0.5, 6);
       expect(d.bloomSmoothWidth.default).toBeCloseTo(0.01, 6);
@@ -1571,6 +1576,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         targetLayer: 0,
         cullMask: 0xffffffff,
         bloom: 0,
+        bloomQuality: 5,
         bloomThreshold: -1,
         bloomIntensity: 0.5,
         bloomSmoothWidth: 0.01,
@@ -1799,7 +1805,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.exposure).toBeCloseTo(1.0, 6);
     });
 
-    it('perspective return value has all 37 factory Camera fields', () => {
+    it('perspective return value has all 38 factory Camera fields', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
@@ -1808,6 +1814,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'autoAspect',
         'bloom',
         'bloomIntensity',
+        'bloomQuality',
         'bloomRadius',
         'bloomSmoothWidth',
         'bloomThreshold',

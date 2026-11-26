@@ -59,7 +59,10 @@ export type {
   RenderPublication,
   RenderPublicationRows,
 } from './publication/contract';
-export { publicationDependencies } from './publication/dependencies';
+export {
+  collectPublicationDependencies,
+  publicationDependencies,
+} from './publication/dependencies';
 export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
 export {
   isPackedRowsMesh,

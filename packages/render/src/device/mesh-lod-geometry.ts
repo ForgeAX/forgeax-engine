@@ -1,6 +1,7 @@
 import {
   deriveVertexCount,
   interleavedMesh,
+  interleaveStaticMeshVertexStreams,
   prepareStaticMeshVertexStreams,
   projectStaticMeshVertexStreams,
 } from '@forgeax/engine-geometry';
@@ -108,14 +109,15 @@ function writeMeshLodVertices(
         mesh.vertices.byteOffset,
         mesh.vertices.length,
       );
-      const sourcePlan =
+      const transpose =
         mesh.attributeStorage === 'static-streams'
-          ? projectStaticMeshVertexStreams(data.layoutProjection, count)
+          ? undefined
           : prepareStaticMeshVertexStreams(mesh.vertices, data.layoutProjection);
+      const sourcePlan = transpose ?? projectStaticMeshVertexStreams(data.layoutProjection, count);
       for (const [slot, stream] of staticStreams.layout.streams.entries()) {
         const destination = staticStreams.ranges[slot];
         const range = sourcePlan?.ranges[slot];
-        if (sourcePlan === undefined || range === undefined || destination === undefined)
+        if (range === undefined || destination === undefined)
           return err(
             new RhiError({
               code: 'asset-not-registered',
@@ -123,20 +125,31 @@ function writeMeshLodVertices(
               hint: 're-cook the static mesh LOD chain',
             }),
           );
-        const payload =
-          'pack' in sourcePlan && typeof sourcePlan.pack === 'function'
-            ? sourcePlan.pack(slot)
-            : source.subarray(range.offset / 4, (range.offset + range.size) / 4);
-        vertexWords.set(
-          payload,
-          (destination.offset + ((vertexCursor * 4) / rootStride) * stream.arrayStride) / 4,
-        );
+        const offset =
+          (destination.offset + ((vertexCursor * 4) / rootStride) * stream.arrayStride) / 4;
+        if (transpose === undefined)
+          vertexWords.set(
+            source.subarray(range.offset / 4, (range.offset + range.size) / 4),
+            offset,
+          );
+        else transpose.pack(slot, vertexWords.subarray(offset, offset + range.size / 4));
       }
     }
   } else {
-    const source =
-      mesh.attributeStorage === 'static-streams' ? interleavedMesh(mesh).vertices : mesh.vertices;
-    vertexWords.set(new Uint32Array(source.buffer, source.byteOffset, source.length), vertexCursor);
+    const source = mesh.vertices;
+    if (mesh.attributeStorage === 'static-streams') {
+      const rows = new Float32Array(
+        vertexWords.buffer,
+        vertexWords.byteOffset + vertexCursor * 4,
+        source.length,
+      );
+      interleaveStaticMeshVertexStreams(source, data.layoutProjection, rows);
+    } else {
+      vertexWords.set(
+        new Uint32Array(source.buffer, source.byteOffset, source.length),
+        vertexCursor,
+      );
+    }
   }
   return ok(undefined);
 }
@@ -188,10 +201,9 @@ export function packMeshLodGeometry(
   if (lowerMeshes.length === 0) return ok(singleMeshLodGeometry(root, rootData, split));
   const allMeshes = [root, ...lowerMeshes];
   const words = allMeshes.reduce((sum, mesh) => sum + (mesh?.vertices.length ?? 0), 0);
-  const staticStreams =
-    split && allMeshes.some((mesh) => mesh?.attributeStorage === 'static-streams')
-      ? projectStaticMeshVertexStreams(rootData.layoutProjection, (words * 4) / rootStride)
-      : undefined;
+  const staticStreams = split
+    ? projectStaticMeshVertexStreams(rootData.layoutProjection, (words * 4) / rootStride)
+    : undefined;
   const layouts = projectMeshLodLayouts(root, rootData, lowerMeshes);
   if (!layouts.ok) return layouts;
   const lowerData = layouts.value;
@@ -214,8 +226,7 @@ export function packMeshLodGeometry(
   let vertexCursor = 0;
   let indexCursor = 0;
   const indexed = root.indices !== undefined;
-  const sourceIndices: number[] = [];
-  let requiresUint32 = root.indices instanceof Uint32Array;
+  const indices = allocateLodIndices(allMeshes, rootStride);
   for (let level = 0; level < allMeshes.length; level += 1) {
     const mesh = allMeshes[level];
     const data = level === 0 ? rootData : lowerData[level - 1];
@@ -242,29 +253,46 @@ export function packMeshLodGeometry(
     );
     if (!levelRanges.ok) return levelRanges;
     ranges.push(levelRanges.value);
-    if (indexed) {
-      const indices = mesh.indices;
-      if (indices === undefined) continue;
+    const source = mesh.indices;
+    if (indices !== undefined && source !== undefined) {
       // Rebase into the packed vertex buffer here instead of through draw
       // baseVertex: WebGL2 has no base-vertex draw, and CPU-lane LOD draws
       // each level through the ordinary drawIndexed(firstIndex) path.
       const levelBase = vertexCursor / (rootStride / 4);
-      if (indices instanceof Uint32Array) requiresUint32 = true;
-      for (const value of indices) {
-        const absolute = value + levelBase;
-        sourceIndices.push(absolute);
-        if (absolute > 0xffff) requiresUint32 = true;
-      }
-      indexCursor += indices.length;
+      for (let i = 0; i < source.length; i++)
+        indices[indexCursor + i] = (source[i] as number) + levelBase;
+      indexCursor += source.length;
     }
     vertexCursor += mesh.vertices.length;
   }
-  const indices = indexed
-    ? requiresUint32
-      ? Uint32Array.from(sourceIndices)
-      : Uint16Array.from(sourceIndices)
-    : undefined;
   return ok({ vertices, indices, lodRanges: ranges, staticStreams });
+}
+
+/** Choose the final width from the referenced indices. A large vertex allocation alone
+ * does not require wide indices when a level only draws its first vertices. */
+function allocateLodIndices(meshes: readonly (TypesMeshAsset | undefined)[], stride: number) {
+  if (meshes[0]?.indices === undefined) return undefined;
+  let length = 0;
+  let base = 0;
+  let wide = false;
+  for (const mesh of meshes) {
+    if (mesh?.indices === undefined) continue;
+    const count = mesh.vertices.byteLength / stride;
+    const source = mesh.indices;
+    length += source.length;
+    if (source instanceof Uint32Array) wide = true;
+    // Input vertices and indices have been admitted by their asset owner.
+    if (!wide && base > 0 && base + count > 0x10000) {
+      for (let i = 0; i < source.length; i++) {
+        if (base + (source[i] as number) > 0xffff) {
+          wide = true;
+          break;
+        }
+      }
+    }
+    base += count;
+  }
+  return wide ? new Uint32Array(length) : new Uint16Array(length);
 }
 
 function singleMeshLodGeometry(

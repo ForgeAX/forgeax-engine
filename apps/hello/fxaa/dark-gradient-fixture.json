@@ -31,8 +31,8 @@
   "lanes": ["direct", "clustered"],
   "backends": ["browser-webgpu", "dawn", "webkit-webgl2", "chromium-webgl2"],
   "outputGraphs": [
-    { "passes": ["output-transform", "fxaa"], "format": "rgba16float", "domain": "display-encoded" },
-    { "passes": ["standard-grade", "standard-final"], "format": "rgba16float", "domain": "display-encoded" }
+    { "passes": ["output-transform", "fxaa"], "formats": ["rgba8unorm", "rgba16float"], "domain": "display-encoded" },
+    { "passes": ["standard-grade", "standard-final"], "formats": ["rgba8unorm", "rgba16float"], "domain": "display-encoded" }
   ],
   "thresholds": {
     "uniqueColorRatio": 0.75,

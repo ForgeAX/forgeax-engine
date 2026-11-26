@@ -110,7 +110,7 @@ export class SharedAssets<Source extends object, Payload extends Asset, SourceDa
       values: entry.values,
       sourceData: entry.sourceData,
       handle: entry.handle,
-      payload: runtimeAssets(this.assets).borrow<Payload>(entry.handle).unwrap(),
+      payload: runtimeAssets(this.assets).resolveStoredAsset<Payload>(entry.handle).unwrap(),
     };
   }
 
@@ -176,7 +176,7 @@ export class SharedAssets<Source extends object, Payload extends Asset, SourceDa
     } else if (current === undefined) {
       handle = createdHandle ?? this.assets.create(payload).unwrap();
     } else {
-      const accepted = runtimeAssets(this.assets).borrow<Payload>(current).unwrap();
+      const accepted = runtimeAssets(this.assets).resolveStoredAsset<Payload>(current).unwrap();
       if (accepted === payload || this.storage?.canReplace(accepted) !== false) {
         handle = current;
         if (accepted !== payload)

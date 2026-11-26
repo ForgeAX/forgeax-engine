@@ -257,8 +257,15 @@ export interface RenderPipelineTopology {
   readonly extent?: RenderExtent;
   readonly camera: Pick<
     RenderPipelineContext['camera'],
-    'postProcessing' | 'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity' | 'dynamicResolution'
+    | 'postProcessing'
+    | 'tonemap'
+    | 'antialias'
+    | 'bloom'
+    | 'bloomQuality'
+    | 'bloomIntensity'
+    | 'dynamicResolution'
   > & {
+    readonly bloomPrefilter?: true;
     /** Shape-only DoF admission; optical values remain per-frame UBO data. */
     readonly depthOfField?:
       | {
@@ -285,6 +292,8 @@ export interface RenderPipelineTopology {
   /** Frame-stable Standard output policy; no raw RHI handles enter topology. */
   readonly output?: {
     readonly autoExposure: boolean;
+    /** The UE histogram consumes the half-resolution scene color lattice. */
+    readonly autoExposureHalfRes?: boolean;
     /** Camera-owned Bradford white balance is part of the same output pass. */
     readonly whiteBalance?: boolean;
     readonly temperature?: number;
@@ -759,11 +768,10 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
    */
   readonly standardLighting?: StandardTopologyInputValue;
   /**
-   * Renderer-owned capability facts needed for admission decisions. The
-   * Standard temporal producer must use the live device probe rather than
-   * inferring rgba16float support from the selected surface format.
+   * Renderer-owned render attachment support comes from live device probes.
    */
-  readonly capabilities?: Pick<RhiCaps, 'rgba16floatRenderable'>;
+  readonly capabilities?: Pick<RhiCaps, 'rgba16floatRenderable' | 'rg16floatRenderable'> &
+    Partial<Pick<RhiCaps, 'rg11b10ufloatRenderable'>>;
   /** Renderer-derived cloud shadow size shared by graph allocation and projection. */
   readonly cloudShadowResolution?: number;
   /** Prepared typed graph resources owned by RenderSystem/RenderFrameState. */
@@ -852,8 +860,8 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly namedTargets?: Readonly<Record<string, RenderPipelineTarget>> | undefined;
     readonly standardSurfaceAccesses?: readonly GraphAccess[] | undefined;
     readonly placement?: RenderFeaturePlacement | undefined;
-    /** Paired with same-draw TAA depth; absent contributions use the raster View. */
-    readonly postProcessView?: 'unjittered' | undefined;
+    /** Only this depth view requires the output-lattice camera matrices. */
+    readonly unjitteredDepth?: GraphTextureView | undefined;
     /** Project only these identities at this ordered stage. */
     readonly include?: readonly string[] | undefined;
     /** Keep these identities for a later ordered stage. */
@@ -879,12 +887,17 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   ): Result<GraphTextureView | undefined, RenderPipelineBuildError>;
   /** Whether a producer-owned feature is installed for this graph build. */
   hasFeature?(identity: string): boolean;
+  /** Attachment requirements of the selected after-tonemap work. */
+  readonly afterTonemapOutput?:
+    | {
+        readonly needsIntermediate: boolean;
+        readonly needsOutputDepth: boolean;
+        readonly endpointFeatures: readonly string[];
+      }
+    | null
+    | undefined;
   /** Whether a producer-owned feature has executable work at this graph build. */
-  hasFeatureWork?(
-    identity?: string,
-    placement?: RenderFeaturePlacement,
-    sceneInput?: 'depth',
-  ): boolean;
+  hasFeatureWork?(identity?: string, placement?: RenderFeaturePlacement): boolean;
   /** Whether a producer-owned feature has a resolved raster pass this frame. */
   hasFeatureRasterWork?(
     identity: string,

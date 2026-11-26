@@ -79,7 +79,7 @@ it('preserves distinct native view exposures in one submission through Grade and
       })
       .unwrap();
     const parameters = addNativeOutputParameters(graph, {
-      bloom: false,
+      bloomIntensity: 0,
       sharpen: 0,
       dither,
       finishInGrade: false,

@@ -32,9 +32,34 @@ type MotionBlurProbe = {
   readonly expectedRowEnergy?: number;
   readonly expectedTotalEnergy?: number;
   readonly energyTolerance?: number;
+  readonly reset?: boolean;
+  readonly expectPassthrough?: boolean;
 };
 
 const PROBES: readonly MotionBlurProbe[] = [
+  {
+    name: 'stationary tiles preserve all channels at odd extents',
+    motionHalf: 0,
+    maxRadius: 32,
+    receiverX: 32,
+    width: 65,
+    height: 17,
+    moverStart: 32,
+    moverEnd: 35,
+    expectPassthrough: true,
+  },
+  {
+    name: 'reset tiles preserve all channels even with large input motion',
+    motionHalf: 0x3c00,
+    maxRadius: 32,
+    receiverX: 32,
+    width: 65,
+    height: 17,
+    moverStart: 32,
+    moverEnd: 35,
+    reset: true,
+    expectPassthrough: true,
+  },
   {
     name: 'short vector reaches a static receiver beside the mover',
     motionHalf: 0x3400,
@@ -384,6 +409,20 @@ const PROBES: readonly MotionBlurProbe[] = [
 
 const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
 
+function expectPassthroughPixels(
+  result: Uint16Array,
+  resultStride: number,
+  source: Uint16Array,
+  sourceStride: number,
+): void {
+  for (let offset = 0, row = 0; offset < source.length; offset += sourceStride, row += 1) {
+    const resultOffset = row * resultStride;
+    expect(result.subarray(resultOffset, resultOffset + sourceStride)).toEqual(
+      source.subarray(offset, offset + sourceStride),
+    );
+  }
+}
+
 it.each(PROBES)('production compute lane: $name', async ({
   name,
   motionHalf,
@@ -402,6 +441,8 @@ it.each(PROBES)('production compute lane: $name', async ({
   expectedRowEnergy,
   expectedTotalEnergy,
   energyTolerance = 0.03,
+  reset = false,
+  expectPassthrough = false,
 }) => {
   const adapter = await globalThis.navigator.gpu.requestAdapter();
   if (adapter === null)
@@ -454,7 +495,7 @@ it.each(PROBES)('production compute lane: $name', async ({
       colorData[index] = mover ? 0x3c00 : 0;
       colorData[index + 1] = mover ? 0x3c00 : 0;
       colorData[index + 2] = mover ? 0x3c00 : 0;
-      colorData[index + 3] = 0x3c00;
+      colorData[index + 3] = expectPassthrough && !mover ? 0x3800 : 0x3c00;
       temporalData[index] = mover ? motionHalf : 0;
       temporalData[index + 1] = mover ? motionHalfY : 0;
       temporalData[index + 2] = mover ? 0x4000 : 0x4400;
@@ -485,6 +526,7 @@ it.each(PROBES)('production compute lane: $name', async ({
   paramsView.setFloat32(0, 180, true);
   paramsView.setFloat32(4, maxRadius, true);
   paramsView.setUint32(8, sampleCount, true);
+  paramsView.setUint32(12, reset ? 1 : 0, true);
   paramsView.setFloat32(16, 60, true);
   paramsView.setFloat32(20, 1, true);
   paramsView.setFloat32(24, 1 / 60, true);
@@ -529,6 +571,14 @@ it.each(PROBES)('production compute lane: $name', async ({
     expect(validationError, `${name} emitted a Dawn validation error`).toBeNull();
     await readback.mapAsync(BUFFER_MAP_READ);
     const result = new Uint16Array(readback.getMappedRange());
+    if (expectPassthrough) {
+      expectPassthroughPixels(
+        result,
+        readbackBytesPerRow / Uint16Array.BYTES_PER_ELEMENT,
+        colorData,
+        width * 4,
+      );
+    }
     const receiver = result[receiverY * (readbackBytesPerRow / 2) + receiverX * 4];
     if (expectNonZero) {
       expect(

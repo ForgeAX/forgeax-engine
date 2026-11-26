@@ -4,8 +4,9 @@ import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
 import { viewForPipeline } from '../environment/bindings';
 import type { MaterialResource } from '../material-resource';
 import type { FrameList } from '../scene/frame-list';
-import { meshSlotBindGroup } from './frame-lighting';
+import { meshBufferBindGroup } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
+import { bindRasterOffset } from './geometry-bind-offsets';
 import {
   detectNineSliceScaleTooSmall,
   type MainPassMaterialBindingResolver,
@@ -295,20 +296,6 @@ function recordSpriteTransparentPbrDraws(
  *
  * @internal
  */
-/** Match the mesh resource to the same topology used by the sprite artifact. */
-function spriteMeshGroup(c: _InternalRenderPipelineContext, meshSlot: number): BindGroup | null {
-  const { runtime, pipelineState, meshBindGroup } = c;
-  return pipelineState.meshStorageBuffer.pages === undefined
-    ? meshBindGroup
-    : meshSlotBindGroup(
-        runtime.device,
-        c.frameState,
-        pipelineState,
-        c.bindGroupCounts,
-        meshSlot * MESH_PER_ENTITY_STRIDE,
-      );
-}
-
 function bindSpriteView(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
@@ -340,7 +327,8 @@ function recordSpriteEntityDraws(
   const { runtime, world, pipelineState, validatedOrdered, foldDispatchPlan, materialSlotIndices } =
     c;
   const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
-  const materialOffset = new Uint32Array(1);
+  const offsetWord = new Uint32Array(1);
+  let meshAddress: ReturnType<typeof meshSsboBufferBinding> | undefined;
   const recordPresented = createFoldedDrawRecorder(c);
   let lastSpritePipelineHandle: RenderPipeline | null = null;
   const vertices = new PassMeshVertexBindings(pass);
@@ -452,12 +440,22 @@ function recordSpriteEntityDraws(
     if (instanceDraws === null || instanceDraws.length === 0) continue;
 
     const meshSlot = prepareMeshDraw(c, spriteEntry, foldDispatchPlan?.headBuckets.has(i) === true);
-    const spriteGroup2 = spriteMeshGroup(c, meshSlot);
-
-    pass.setBindGroup(2, spriteGroup2 as BindGroup, [
-      meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshSlot * MESH_PER_ENTITY_STRIDE)
-        .byteOffset,
-    ]);
+    meshAddress = meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      meshSlot * MESH_PER_ENTITY_STRIDE,
+      meshAddress,
+    );
+    const spriteGroup2 =
+      pipelineState.meshStorageBuffer.pages === undefined
+        ? c.meshBindGroup
+        : meshBufferBindGroup(
+            runtime.device,
+            c.frameState,
+            pipelineState,
+            c.bindGroupCounts,
+            meshAddress.buffer,
+          );
+    bindRasterOffset(pass, 2, spriteGroup2 as BindGroup, meshAddress.byteOffset, offsetWord);
 
     const materialSlot = slots?.[0] ?? 0;
 
@@ -471,8 +469,8 @@ function recordSpriteEntityDraws(
       materialAddress,
     );
 
-    materialOffset[0] = materialAddress.byteOffset;
-    pass.setBindGroup(1, spriteBinding, materialOffset, 0, materialAddress.dynamicOffsetCount);
+    offsetWord[0] = materialAddress.byteOffset;
+    pass.setBindGroup(1, spriteBinding, offsetWord, 0, materialAddress.dynamicOffsetCount);
     for (const draw of instanceDraws) {
       pass.setBindGroup(3, draw.instanceBindGroup);
       pass.drawIndexed(

@@ -3,6 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
+import { createRenderFeatureTarget } from '../features/targets';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { importAutoExposureGraphResources } from '../pipeline/standard-output/auto-exposure/gpu';
 import { createStandardLutState } from '../pipeline/standard-output/lut-state';
@@ -18,6 +19,7 @@ import {
 import { addStandardPost, inspectStandardBloomGraph } from '../pipeline/standard-post';
 import { currentOutputDither } from '../record/display-ports';
 import type { RenderFrameState } from '../record/frame-snapshot';
+import { standardAfterTonemapOutput } from '../record/standard-feature-contribution';
 import {
   createRenderPipelineTarget,
   type OutputDither,
@@ -52,7 +54,7 @@ async function fixture() {
       })
       .unwrap();
     const parameters = addNativeOutputParameters(graph, {
-      bloom: false,
+      bloomIntensity: 0,
       sharpen: 0,
       dither,
       finishInGrade: false,
@@ -182,7 +184,7 @@ it('rejects unresolved MSAA inputs and incomplete Bloom at graph declaration', a
     addNativeOutputPass(graph, 'invalid-msaa', a, b, parameters, { kind: 'grade' }),
   ).toMatchObject({ ok: false, error: { code: 'resource-descriptor-invalid' } });
   expect(
-    addNativeOutputPass(graph, 'invalid-bloom', b, b, parameters, { kind: 'grade', bloom: [a] }),
+    addNativeOutputPass(graph, 'invalid-bloom', b, b, parameters, { kind: 'grade', bloom: a }),
   ).toMatchObject({ ok: false, error: { code: 'resource-descriptor-invalid' } });
   f.scope.dispose();
 });
@@ -192,11 +194,21 @@ async function standardGraph(
     native?: boolean;
     fxaa?: boolean;
     bloom?: boolean;
+    packedBloom?: boolean;
+    computeBloom?: boolean;
+    bloomQuality?: 3 | 4 | 5;
+    prefilter?: boolean;
     outline?: boolean;
+    chromaticAberration?: boolean;
     smaa?: boolean;
     observation?: boolean;
     lensFlare?: boolean;
+    lensEffects?: boolean;
+    highPrecision?: boolean;
     afterTonemap?: boolean;
+    directOverlay?: boolean;
+    postEffects?: readonly string[];
+    hdrOutputEffects?: readonly string[];
   } = {},
 ) {
   const f = await fixture(),
@@ -212,7 +224,7 @@ async function standardGraph(
   }).unwrap();
   const output = createRenderPipelineTarget(graph, 'output', {
     size: 'surface',
-    format: 'bgra8unorm',
+    format: options.highPrecision ? 'rgba16float' : 'bgra8unorm',
     domain: 'display-encoded',
   }).unwrap();
   graph
@@ -235,8 +247,20 @@ async function standardGraph(
   const result = addStandardPost(
     {
       graph,
-      capabilities: { rgba16floatRenderable: true },
+      capabilities: {
+        rgba16floatRenderable: true,
+        rg11b10ufloatRenderable: options.packedBloom === true,
+      },
       observationCaptureDomains: options.observation ? ['linear-ldr'] : undefined,
+      ...(options.directOverlay
+        ? {
+            afterTonemapOutput: {
+              needsIntermediate: options.afterTonemap === true,
+              needsOutputDepth: false,
+              endpointFeatures: ['test.overlay'],
+            },
+          }
+        : {}),
       hasFeatureWork: (_name: unknown, placement: string) =>
         options.afterTonemap === true && placement === 'after-tonemap',
       contributeFeatures: (
@@ -245,26 +269,43 @@ async function standardGraph(
         >[0],
       ) => {
         if (request.placement !== undefined) placements.push(request.placement);
+        if (request.include?.includes('test.overlay')) {
+          const endpoint = request.targets.find(({ name }) => name === 'swapchain');
+          if (endpoint === undefined) throw new Error('Missing final attachment');
+          return graph.addRasterPass('test-overlay', {
+            accesses: [{ resource: endpoint.view, usage: 'color-attachment' }],
+            colorAttachments: [{ view: endpoint.view, loadOp: 'load', storeOp: 'store' }],
+            encode() {},
+          });
+        }
         return ok(undefined);
       },
     } as unknown as RenderPipelineBuildContext<RenderPipelineFrame>,
     {
-      config: options.native === false ? {} : { outputContract: 'standard-output-v2' },
+      config: {
+        ...(options.native === false ? {} : { outputContract: 'standard-output-v2' }),
+        postEffects: options.postEffects,
+      },
+      hdrOutputEffects: options.hdrOutputEffects,
       camera: {
         tonemap: 'aces-filmic',
         antialias: options.smaa ? 'smaa' : options.fxaa === false ? 'none' : 'msaa-fxaa',
         bloom: options.bloom ? 'on' : 'off',
         bloomIntensity: 1,
+        bloomQuality: options.bloomQuality,
+        ...(options.prefilter ? { bloomPrefilter: true } : {}),
         outline: options.outline === true,
+        chromaticAberration: options.chromaticAberration === true,
         lensFlare: options.lensFlare === true,
+        lensEffects: options.lensEffects === true,
       },
       surface: {
         width: 1280,
         height: 720,
-        storageFormat: 'bgra8unorm',
-        viewFormat: 'bgra8unorm-srgb',
+        storageFormat: options.highPrecision ? 'rgba16float' : 'bgra8unorm',
+        viewFormat: options.highPrecision ? 'rgba16float' : 'bgra8unorm-srgb',
       },
-      lane: { compute: true, storageBuffer: true },
+      lane: { compute: true, storageBuffer: true, storageTexture: options.computeBloom === true },
     } as unknown as RenderPipelineTopology,
     scene,
     depth,
@@ -291,7 +332,7 @@ it('declares two physical output draws with FXAA and one draw without spatial fi
       if (fxaa)
         expect(info.resources.find((r) => r.label === 'standard-grade-output')).toMatchObject({
           descriptor: {
-            format: 'rgba16float',
+            format: 'rgba8unorm',
             domain: 'display-encoded',
           },
         });
@@ -321,7 +362,7 @@ it('declares two physical output draws with FXAA and one draw without spatial fi
   }
 });
 
-it('feeds native Grade from the actual five Bloom filters without a full-resolution composite', async () => {
+it('feeds native Grade from the accumulated Bloom image without a full-resolution composite', async () => {
   const cases = [];
   for (const native of [false, true]) {
     const f = await standardGraph({ native, bloom: true });
@@ -333,15 +374,15 @@ it('feeds native Grade from the actual five Bloom filters without a full-resolut
       const info = compiled.inspect(),
         bloom = inspectStandardBloomGraph(info);
       expect(bloom.status).toBe('valid');
-      expect(bloom.passCount).toBe(native ? 10 : 11);
-      expect(bloom.targetCount).toBe(native ? 10 : 11);
+      expect(bloom.passCount).toBe(native ? 14 : 15);
+      expect(bloom.targetCount).toBe(native ? 14 : 15);
       expect(info.resources.some((r) => r.label === 'bloom-composited')).toBe(!native);
       cases.push(bloom);
       if (native) {
         const grade = info.passes.find((p) => p.name === 'standard-grade');
         expect(
           grade?.accesses.filter((a) => a.usage === 'sampled-read').map((a) => a.resource),
-        ).toEqual(['scene', ...Array.from({ length: 5 }, (_, i) => `bloom-vertical-${i}`)]);
+        ).toEqual(['scene', 'bloom-vertical-0']);
       } else expect(info.passes.some((p) => p.name === 'standard-grade')).toBe(false);
     } finally {
       (await compiled.retire()).unwrap();
@@ -349,6 +390,81 @@ it('feeds native Grade from the actual five Bloom filters without a full-resolut
     }
   }
   expect((cases[0]?.targetBytes ?? 0) - (cases[1]?.targetBytes ?? 0)).toBe(1280 * 720 * 8);
+});
+
+it.each([
+  false,
+  true,
+])('packs only RGB Bloom raster filters (compute reduction=%s)', async (computeBloom) => {
+  const extents = { width: 1280, height: 720 };
+  const measuredBytes = [];
+  for (const packedBloom of [false, true]) {
+    const f = await standardGraph({ bloom: true, prefilter: true, packedBloom, computeBloom });
+    f.result.unwrap();
+    const compiled = f.graph.compile({ device: f.device, surfaceSize: extents }).unwrap();
+    try {
+      const info = compiled.inspect();
+      const bloom = inspectStandardBloomGraph(info);
+      expect(bloom.status).toBe('valid');
+      measuredBytes.push(bloom.targetBytes);
+      for (const resource of info.resources.filter(({ label }) => label.startsWith('bloom-'))) {
+        const filter = /^bloom-(horizontal|vertical)-/.test(resource.label);
+        expect(resource.descriptor).toMatchObject({
+          format: packedBloom && filter ? 'rg11b10ufloat' : 'rgba16float',
+        });
+        if (filter) {
+          expect(resource.derivedUsage).toBe(0x10 | 0x04);
+        }
+      }
+      expect(info.resources.find(({ label }) => label === 'scene')?.descriptor).toMatchObject({
+        format: 'rgba16float',
+      });
+      expect(info.resources.find(({ label }) => label === 'output')?.descriptor).toMatchObject({
+        format: 'bgra8unorm',
+      });
+    } finally {
+      (await compiled.retire()).unwrap();
+      f.scope.dispose();
+    }
+  }
+  // Four fewer physical bytes per texel across two filter levels at each scale.
+  const texels = [1, 2, 3, 4, 5].reduce(
+    (sum, lod) => sum + Math.ceil(extents.width / 2 ** lod) * Math.ceil(extents.height / 2 ** lod),
+    0,
+  );
+  expect((measuredBytes[0] ?? 0) - (measuredBytes[1] ?? 0)).toBe(texels * 8);
+});
+
+it.each([
+  3, 4, 5,
+] as const)('builds %s Bloom levels and thresholds before the reduction chain', async (quality) => {
+  const f = await standardGraph({ bloom: true, bloomQuality: quality, prefilter: true });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const info = compiled.inspect();
+    expect(inspectStandardBloomGraph(info)).toMatchObject({
+      status: 'valid',
+      levelCount: quality,
+      passCount: 3 * quality,
+    });
+    for (const name of ['bloom-horizontal-0', 'bloom-downsample-1'])
+      expect(info.passes.find((pass) => pass.name === name)?.accesses[0]).toEqual({
+        resource: 'bloom-prefilter',
+        usage: 'sampled-read',
+      });
+    const accumulated = info.passes.find((pass) => pass.name === 'bloom-vertical-0');
+    expect(accumulated?.accesses).toContainEqual({
+      resource: 'bloom-vertical-1',
+      usage: 'sampled-read',
+    });
+    expect(info.passes.some((pass) => pass.name === `bloom-vertical-${quality}`)).toBe(false);
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
 });
 
 it('keeps native Grade and a linear-LDR outline seam before encoded FXAA', async () => {
@@ -369,7 +485,7 @@ it('keeps native Grade and a linear-LDR outline seam before encoded FXAA', async
     descriptor: { format: 'rgba16float' },
   });
   expect(info.resources.find((r) => r.label === 'standard-grade-output')).toMatchObject({
-    descriptor: { format: 'rgba16float' },
+    descriptor: { format: 'rgba8unorm' },
   });
   const descriptor = f.textures.mock.calls.find(
     ([value]) => value.label === 'standard-grade-output',
@@ -377,6 +493,26 @@ it('keeps native Grade and a linear-LDR outline seam before encoded FXAA', async
   expect((descriptor?.usage ?? 0) & GPU_TEXTURE_USAGE_COPY_SRC).toBe(GPU_TEXTURE_USAGE_COPY_SRC);
   (await compiled.retire()).unwrap();
   f.scope.dispose();
+});
+
+it.each([
+  { lensEffects: true },
+  { highPrecision: true },
+  { afterTonemap: true },
+])('preserves encoded float precision before FXAA for %j', async (options) => {
+  const f = await standardGraph(options);
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    expect(
+      compiled.inspect().resources.find((r) => r.label === 'standard-grade-output'),
+    ).toMatchObject({ descriptor: { format: 'rgba16float', domain: 'display-encoded' } });
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
 });
 
 it.each([
@@ -393,11 +529,147 @@ it.each([
     const names = compiled.inspect().passes.map((p) => p.name);
     expect(names).toContain('standard-grade');
     expect(names).not.toContain('standard-tone');
-    if (feature !== 'lensFlare') expect(names).toContain('standard-encode');
+    if (feature === 'observation') expect(names).toContain('standard-encode');
     if (feature === 'observation') expect(names).toContain('linear-ldr-observation');
-    if (feature === 'smaa') expect(names.some((name) => name.startsWith('smaa-'))).toBe(true);
+    if (feature === 'smaa') {
+      expect(names).toContain('smaa-blend');
+      expect(names).not.toContain('standard-encode');
+      expect(compiled.inspect().resources.some((item) => item.label === 'smaa-color')).toBe(false);
+    }
     if (feature === 'lensFlare')
       expect(names.some((name) => name.includes('lens-flare'))).toBe(true);
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
+});
+
+it.each([
+  { native: false, observation: false },
+  { native: false, observation: true },
+  { native: true, observation: false },
+  { native: true, observation: true },
+])('binds both SMAA color domains and retains only observed linear output (%j)', async (options) => {
+  const f = await standardGraph({ ...options, smaa: true });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const info = compiled.inspect();
+    const pass = (name: string) => info.passes.find((item) => item.name === name);
+    expect(pass('smaa-edges')?.accesses).toContainEqual({
+      resource: 'scene',
+      usage: 'sampled-read',
+    });
+    expect(pass('smaa-edges')?.accesses).toContainEqual({
+      resource: 'smaa-stencil',
+      usage: 'depth-stencil-write',
+    });
+    expect(pass('smaa-weights')?.accesses).toContainEqual({
+      resource: 'smaa-stencil',
+      usage: 'depth-stencil-read',
+    });
+    expect(pass('smaa-blend')?.accesses).toContainEqual({
+      resource: options.native ? 'standard-grade-linear' : 'standard-tone-output',
+      usage: 'sampled-read',
+    });
+    expect(pass('smaa-blend')?.accesses).toContainEqual({
+      resource: options.observation ? 'smaa-color' : 'output',
+      usage: 'color-attachment',
+    });
+    expect(info.resources.some(({ label }) => label === 'smaa-color')).toBe(options.observation);
+    expect(
+      pass(options.native ? 'standard-encode' : 'standard-output-encoding') !== undefined,
+    ).toBe(options.observation);
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('downsamples the HDR effect output for Bloom and Flare (native=%s)', async (native) => {
+  const effects = ['test.hdr'];
+  const f = await standardGraph({
+    native,
+    bloom: true,
+    prefilter: true,
+    lensFlare: true,
+    postEffects: effects,
+    hdrOutputEffects: effects,
+  });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const info = compiled.inspect();
+    const sampled = (name: string) =>
+      info.passes
+        .find((pass) => pass.name === name)
+        ?.accesses.filter(({ usage }) => usage === 'sampled-read')
+        .map(({ resource }) => resource);
+    expect(sampled('hdr-output-effect-0')).toEqual(['scene']);
+    expect(sampled('post-scene-color-half-lens')).toEqual(['hdr-output-effect-0-color']);
+    expect(sampled('bloom-prefilter')).toEqual(['post-scene-color-half-lens']);
+    expect(sampled('standard-lens-flare-prefilter')).toEqual(['post-scene-color-half-lens']);
+    expect(info.passes.some(({ name }) => name === 'post-scene-color-half')).toBe(false);
+    expect(info.passes.some(({ name }) => name.startsWith('post-effect-'))).toBe(false);
+    expect(inspectStandardBloomGraph(info)).toMatchObject({ status: 'valid', levelCount: 5 });
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('shares the half scene and combines Bloom with Flare at half resolution (native=%s)', async (native) => {
+  const f = await standardGraph({
+    native,
+    bloom: true,
+    prefilter: true,
+    lensFlare: true,
+    chromaticAberration: true,
+  });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const info = compiled.inspect();
+    const pass = (name: string) => info.passes.find((item) => item.name === name);
+    const sampled = (name: string) =>
+      pass(name)
+        ?.accesses.filter((access) => access.usage === 'sampled-read')
+        .map((access) => access.resource);
+    expect(sampled('standard-lens-flare-prefilter')).toEqual(['post-scene-color-half']);
+    expect(sampled('bloom-prefilter')).toEqual(['post-scene-color-half']);
+    expect(sampled('standard-lens-flare')).toEqual([
+      'standard-lens-flare-bokeh',
+      'bloom-vertical-0',
+    ]);
+    expect(info.resources.find((item) => item.label === 'standard-lens-flare')).toMatchObject({
+      descriptor: { width: 640, height: 360, format: 'rgba16float' },
+    });
+    expect(pass('bloom-composite')).toBeUndefined();
+    expect(inspectStandardBloomGraph(info)).toMatchObject({ status: 'valid', levelCount: 5 });
+    if (native) {
+      expect(sampled('standard-grade')).toEqual(['scene', 'standard-lens-flare']);
+      expect(pass('standard-lens-flare-apply')).toBeUndefined();
+      expect(pass('chromatic-aberration')).toBeUndefined();
+    } else {
+      expect(sampled('chromatic-aberration')).toEqual(['scene']);
+      expect(pass('standard-lens-flare-apply')).toBeUndefined();
+      expect(sampled('output-transform')).toEqual([
+        'standard-chromatic-aberration',
+        'standard-lens-flare',
+      ]);
+    }
   } finally {
     (await compiled.retire()).unwrap();
     f.scope.dispose();
@@ -438,6 +710,141 @@ it.each([
     (await compiled.retire()).unwrap();
     f.scope.dispose();
   }
+});
+
+it.each([
+  { producer: 'standard-grade', fxaa: false, smaa: false },
+  { producer: 'standard-final', fxaa: true, smaa: false },
+  { producer: 'smaa-blend', fxaa: false, smaa: true },
+])('chains effects from $producer through after-tonemap work', async ({ producer, fxaa, smaa }) => {
+  const f = await standardGraph({
+    fxaa,
+    smaa,
+    afterTonemap: true,
+    postEffects: ['test.first', 'test.second'],
+  });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const info = compiled.inspect();
+    const pass = (name: string) => info.passes.find((item) => item.name === name);
+    expect(pass(producer)?.accesses).toContainEqual({
+      resource: 'standard-post-effects-input',
+      usage: 'color-attachment',
+    });
+    expect(
+      info.resources.find(({ label }) => label === 'standard-post-effects-input')?.descriptor,
+    ).toMatchObject({ format: 'rgba16float', domain: 'display-encoded' });
+    expect(pass('post-effect-0')?.accesses).toContainEqual({
+      resource: 'standard-post-effects-input',
+      usage: 'sampled-read',
+    });
+    expect(pass('post-effect-1')?.accesses).toContainEqual({
+      resource: 'standard-current-output',
+      usage: 'color-attachment',
+    });
+    expect(pass('standard-current-output-present')?.dependencies).toContain('post-effect-1');
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
+});
+
+it.each([
+  { fxaa: false, producer: 'standard-grade', custom: false },
+  { fxaa: true, producer: 'standard-final', custom: false },
+  { fxaa: false, producer: 'post-effect-1', custom: true },
+])('routes $producer and the terminal overlay to one output attachment', async ({
+  fxaa,
+  producer,
+  custom,
+}) => {
+  const f = await standardGraph({
+    fxaa,
+    directOverlay: true,
+    postEffects: custom ? ['test.first', 'test.second'] : undefined,
+  });
+  f.result.unwrap();
+  const compiled = f.graph
+    .compile({ device: f.device, surfaceSize: { width: 1280, height: 720 } })
+    .unwrap();
+  try {
+    const { passes, resources } = compiled.inspect();
+    const pass = (name: string) => passes.find((item) => item.name === name);
+    expect(pass('standard-current-output-present')).toBeUndefined();
+    expect(resources.some(({ label }) => label === 'standard-current-output')).toBe(false);
+    expect(pass(producer)?.accesses).toContainEqual({
+      resource: 'output',
+      usage: 'color-attachment',
+    });
+    expect(pass('test-overlay')?.dependencies).toContain(producer);
+    expect(pass('test-overlay')?.accesses).toEqual([
+      { resource: 'output', usage: 'color-attachment' },
+    ]);
+  } finally {
+    (await compiled.retire()).unwrap();
+    f.scope.dispose();
+  }
+});
+
+it.each([
+  {
+    kind: 'scene-depth',
+    format: 'depth32float',
+    name: 'depth',
+    needsIntermediate: false,
+    needsOutputDepth: false,
+  },
+  {
+    kind: 'scene-depth',
+    format: 'depth32float',
+    name: 'output-depth',
+    needsIntermediate: false,
+    needsOutputDepth: true,
+  },
+  {
+    kind: 'scene-color',
+    format: 'rgba16float',
+    name: undefined,
+    needsIntermediate: true,
+    needsOutputDepth: false,
+  },
+] as const)('allocates output according to a typed $kind/$name read', (input) => {
+  const resource = createRenderFeatureTarget({
+    kind: input.kind,
+    format: input.format,
+    sampleCount: 1,
+    ...(input.name === undefined ? {} : { name: input.name }),
+  });
+  const result = standardAfterTonemapOutput(
+    [
+      {
+        placement: 'after-tonemap',
+        featureIdentity: 'test.reader',
+        order: 0,
+        passes: [
+          {
+            name: 'reader',
+            featureIdentity: 'test.reader',
+            order: 0,
+            graphics: {
+              attachments: { colors: [] },
+              sampledTargets: [resource],
+              draws: [],
+            },
+          },
+        ],
+      },
+    ],
+    new Set(),
+    'bgra8unorm',
+  );
+  expect(result).toMatchObject({
+    needsIntermediate: input.needsIntermediate,
+    needsOutputDepth: input.needsOutputDepth,
+  });
 });
 
 it('retains one output parameter allocation when a view replaces its graph', async () => {

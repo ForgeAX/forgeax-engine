@@ -15,11 +15,11 @@ function fixture(captureReadback = true) {
     captureReflectionFallbackReadback: captureReadback,
   } as unknown as RenderSystemInternals;
   const owner = new ReflectionProbeRecordOwner(internals);
-  const stage = (frame: number, source = 1) =>
+  const stage = (frame: number, source = 1, key = 'receiver') =>
     // biome-ignore lint/complexity/useLiteralKeys: Exercise the private owner seam without exposing a test-only public API.
     owner['stageFallbackProjections'](
       [],
-      new Map([['receiver', { kind: 'skylight' as const }]]),
+      new Map([[key, { kind: 'skylight' as const }]]),
       new Map(),
       frame,
       {
@@ -30,7 +30,7 @@ function fixture(captureReadback = true) {
         rotation: [0, 0, 0, 1],
       } satisfies SkylightSnapshot,
       undefined,
-    );
+    ).tickets;
   const complete = (tickets: ReturnType<typeof stage>, frameId: number) =>
     // biome-ignore lint/complexity/useLiteralKeys: Invoke the real asynchronous completion boundary.
     owner['completeSubmission'](true, tickets, Promise.resolve(), {
@@ -104,7 +104,7 @@ describe('fallback asynchronous publication', () => {
         frame,
         sky,
         undefined,
-      ).get('receiver');
+      ).tickets.get('receiver');
     const first = stage(1);
     color[0] = 0.5;
     const changed = stage(2);
@@ -130,7 +130,7 @@ describe('fallback asynchronous publication', () => {
           rotation: [0, 0, 0, 1],
         },
         undefined,
-      ).get('__frame__');
+      ).tickets.get('__frame__');
     const first = stage(1);
     const second = stage(2);
     expect(getCubemapIbl).not.toHaveBeenCalled();
@@ -183,6 +183,28 @@ describe('fallback asynchronous publication', () => {
     stage(3);
     await complete(first, 1);
     expect(owner.inspect().reflectionFallback.state).not.toBe('active');
+  });
+
+  it('releases expired consumer keys and rejects their tickets even within one frame', async () => {
+    const { owner, stage, complete } = fixture();
+    const old = stage(7);
+    for (let i = 0; i < 128; i++) {
+      const current = stage(7, 1, `transient-${i}`);
+      await complete(current, 7);
+    }
+    const returned = stage(7);
+    // Inspect every owner-held index so retaining old keys in another table fails as well.
+    for (const value of Object.values(owner)) {
+      if (value instanceof Map) {
+        for (const key of value.keys()) expect(String(key)).not.toMatch(/^transient-/);
+      }
+    }
+    await complete(old, 7);
+    expect(owner.inspect().reflectionFallbackInspection.failureCode).toBe(
+      'reflection-fallback-stale-ticket',
+    );
+    await complete(returned, 7);
+    expect(owner.inspect().reflectionFallback).toMatchObject({ frameId: 7, state: 'active' });
   });
 
   it('keeps source and projection generations stable for compatible completions', async () => {

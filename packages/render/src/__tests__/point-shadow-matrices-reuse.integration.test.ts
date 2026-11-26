@@ -34,6 +34,12 @@ it('reuses packed point shadow matrices until position, near or far change', () 
   expect(c).not.toBe(a);
   expect(Array.from(c ?? [])).not.toEqual(Array.from(a ?? []));
   expect(pull()).toBe(c);
+  world.removeComponent(entity, PointLightShadow).unwrap();
+  expect(pull()).toBeUndefined();
+  world.addComponent(entity, { component: PointLightShadow, data: {} }).unwrap();
+  const restored = pull();
+  expect(restored).toEqual(c);
+  expect(restored).not.toBe(c);
 });
 
 it('shares local light preparation across distinct cameras and unrelated asset revisions', () => {

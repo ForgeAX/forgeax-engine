@@ -291,6 +291,12 @@ Use the representative required lanes in the
 A narrowed native plan still needs qualified same-base evidence and current
 execution of its affected owner. Report the actual lanes and test workloads.
 
+For missing workspace imports in the WebGPU compatibility owner tests, check a
+clean checkout of the WebGPU RHI dependency closure. Reference and Legacy build
+that closure without the Engine scene packages. Stable and WebKit also use the
+qualified Core compiler receipt for their scene phases. Keep every native carrier
+and its original time bounds.
+
 If a new Browser owner crosses the core work budget, keep the new acceptance
 and look for duplicate tests before changing the roster. The tutorial
 CubeCamera case duplicates the Hello SSR six-face orientation test verbatim.
@@ -514,6 +520,16 @@ For run 44681831426, use the completed GI-4 and GI-6 receipts to redistribute
 the native load from lane two to lanes one and four. Retain the previous
 ordinary-2 forecast and the original forty-minute step. Replay every retained
 cohort locally and qualify all four Dawn lanes fresh.
+
+For run 45660863359, exchange the complete Transmission and Renderer groups
+between Dawn lanes two and four. Keep the existing ordinary forecasts and
+the forty-minute step. Replay the retained cohorts and qualify all four Dawn
+lanes fresh.
+
+For run 45672761560, keep the completed S6c Modeling case in Core with its
+native render assertions and original deadline. Run it in an exclusive Dawn
+process on lane three and move Screen Probe Support to lane one. Replay the
+retained cohorts and qualify all four Dawn lanes fresh.
 
 For run 44681831426's Browser process timeout, retain the complete Level case
 receipts and the interrupted Editor and bootstrap URL evidence. Isolate Level
@@ -3415,11 +3431,12 @@ historical file cost for placement and retain failed child logs separately.
 Require local red/green placement replay and relevant final-candidate `ci:focus`
 checks before publication. Required Linux native owners execute in final-head PR CI.
 
-If World Card Bounds reaches its case deadline in ordinary Dawn, run
-`pnpm ci:focus --kind dawn --select world-card-bounds` for both of its
-unchanged GPU cases. Use the finite-ray pipeline and readback timings to
-diagnose cold Mesa execution. Keep the dedicated serial owner, the original
-90-second case deadline and the four final-head Linux lanes.
+If World Card Bounds or World Bounds Index reaches its case deadline in
+ordinary Dawn, run `pnpm ci:focus --kind dawn --select world-card-bounds`
+for the complete GPU group. Diagnose cold Mesa execution from the finite-ray
+and strict index pipelines, the guard mutant and readbacks. Keep the
+dedicated serial group, the original case deadlines and four final-head
+Linux lanes.
 
 If a Standard nonreceiver stalls in its first native GPU completion, retain the
 actual failing tape and inspect its declared shadow reception before changing

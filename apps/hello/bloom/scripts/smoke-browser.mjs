@@ -347,7 +347,7 @@ try {
   if (recordedOnStage === undefined || offStage === undefined || resizeStage === undefined || reenabledStage === undefined || recoveryStageEvidence === undefined) {
     throw new Error('Bloom lifecycle stages are incomplete');
   }
-  const validBloomStage = (stage) => stage.inspection.bloom.enabled === true && stage.inspection.bloom.graphStatus === 'valid' && stage.inspection.bloom.passCount === 10 && stage.inspection.passes.includes('standard-grade');
+  const validBloomStage = (stage) => stage.inspection.bloom.enabled === true && stage.inspection.bloom.graphStatus === 'valid' && stage.inspection.bloom.passCount === 12 && stage.inspection.passes.includes('standard-grade');
   const assertContribution = (label, diff) => {
     if (diff.diffPixelCount < ROI_MIN_DIFF_PIXELS || diff.maxDelta < ROI_MIN_MAX_DELTA || diff.meanDelta < ROI_MIN_MEAN_DELTA) {
       throw new Error(`Bloom ${label} scene ROI did not meet predeclared RGB thresholds: ${JSON.stringify(diff)}`);

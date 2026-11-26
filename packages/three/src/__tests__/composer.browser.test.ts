@@ -96,7 +96,8 @@ it.each([
     expect(lighting()?.methodFallback).toBe(
       renderPath === 'forward' ? 'forward-only-ssao' : undefined,
     );
-    expect(bloomState()).toMatchObject({ state: 'active', passCount: 11, encodeCount: 11 });
+    // The graph count also includes the Bloom prefilter and mip reduction.
+    expect(bloomState()).toMatchObject({ state: 'active', passCount: 13, encodeCount: 11 });
 
     if (renderPath === 'forward') {
       scene.fog = new Fog(0x204060, 2, 9);

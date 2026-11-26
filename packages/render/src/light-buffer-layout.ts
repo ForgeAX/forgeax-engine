@@ -369,145 +369,140 @@ export function packSpotDecay(decay: number | undefined): number {
   return exponent === 0 ? -0 : exponent;
 }
 
-function writeSpotReceiverControls(
-  snapshot: Extract<DirectLightSnapshot, { kind: 'spot' }>,
-  layout: ReflectedDirectLightSlotLayout,
-  writeFloat: (offset: number, value: number) => void,
-): void {
-  // Row 3 is the Rect auxiliary axis for RectArea lights. Spot uses x/y/z
-  // for its receiver controls and w for roll; the surface direct-light
-  // owner only consumes w, while the volume owner consumes the full row.
-  writeFloat(layout.auxiliaryAxisOffset, snapshot.depthBias ?? 0.00001);
-  writeFloat(layout.auxiliaryAxisOffset + 4, snapshot.normalBias ?? 0.05);
-  writeFloat(layout.auxiliaryAxisOffset + 8, snapshot.shadowIntensity ?? 1);
-  writeFloat(layout.rollDegByteOffset, snapshot.rollDeg ?? 0);
+const DEFAULT_AXIS_X = [1, 0, 0] as const;
+const DEFAULT_AXIS_Y = [0, 1, 0] as const;
+
+function writeSlotVec3(out: Float32Array, byteOffset: number, value: ArrayLike<number>): void {
+  const index = byteOffset / 4;
+  out[index] = value[0] ?? 0;
+  out[index + 1] = value[1] ?? 0;
+  out[index + 2] = value[2] ?? 0;
 }
 
-/**
- * Pack a direct-light snapshot into its reflected unified six-row slot.
- *
- * Row 0 is position plus inverse range. Row 1 is color plus the first
- * angular/size fact. Row 2 is the primary axis plus the second angular/size
- * fact. Row 3 is the auxiliary Rect axis or Spot controls. Row 4 is four
- * u32 identities. Row 5 starts with receiver channels and Spot decay bits.
- */
+/** One transport-owned staging record for the reflected six-row direct light ABI. */
+export class DirectLightSlotWriter {
+  readonly floats: Float32Array;
+  private readonly words: Uint32Array;
+
+  constructor(private readonly layout: ReflectedDirectLightSlotLayout) {
+    this.floats = new Float32Array(layout.floatCount);
+    this.words = new Uint32Array(this.floats.buffer);
+  }
+
+  write(
+    snapshot: DirectLightSnapshot,
+    projectorSelected?: boolean,
+    channelMapping = 0,
+    projectedChannel = 0,
+  ): void {
+    const layout = this.layout;
+    const out = this.floats;
+    const metadata = this.words;
+    // Kinds share physical rows. Clear unused lanes and reflected padding on every replacement.
+    metadata.fill(0);
+    const rawChannels = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+    metadata[layout.lightingChannelsByteOffset / 4] = rawChannels;
+    if (channelMapping !== 0)
+      metadata[layout.lightingChannelsByteOffset / 4 + 2] = projectDeferredLightingMask(
+        rawChannels,
+        channelMapping,
+      );
+    metadata[layout.lightingChannelsByteOffset / 4 + 3] = projectedChannel;
+    if (snapshot.kind === 'directional') {
+      writeSlotVec3(out, layout.colorOffset, snapshot.color);
+      const axis = layout.primaryAxisOffset / 4;
+      out[axis] = snapshot.direction[0] ?? 0;
+      out[axis + 1] = snapshot.direction[1] ?? -1;
+      out[axis + 2] = snapshot.direction[2] ?? 0;
+      metadata[layout.kindByteOffset / 4] = DirectLightSlotKind.DIRECTIONAL;
+      metadata[layout.shadowByteOffset / 4] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
+      metadata[layout.iesProfileByteOffset / 4] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
+      metadata[layout.cookieByteOffset / 4] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
+      return;
+    }
+    writeSlotVec3(out, layout.positionOffset, snapshot.position);
+    out[layout.rangeOffset / 4] = snapshot.invRangeSquared;
+    writeSlotVec3(out, layout.colorOffset, snapshot.color);
+
+    if (snapshot.kind === 'point') {
+      out[layout.firstAngleOffset / 4] = snapshot.decay ?? 2;
+      if (snapshot.iesProfileSlice !== undefined) {
+        writeSlotVec3(out, layout.primaryAxisOffset, snapshot.axisY ?? DEFAULT_AXIS_Y);
+        writeSlotVec3(out, layout.auxiliaryAxisOffset, snapshot.axisX ?? DEFAULT_AXIS_X);
+      }
+    } else if (snapshot.kind === 'spot') {
+      out[layout.firstAngleOffset / 4] = snapshot.cosInner;
+      out[layout.lightingChannelsByteOffset / 4 + 1] = packSpotDecay(snapshot.decay);
+      writeSlotVec3(out, layout.primaryAxisOffset, snapshot.direction);
+      out[layout.secondAngleOffset / 4] = snapshot.cosOuter;
+      out[layout.auxiliaryAxisOffset / 4] = snapshot.depthBias ?? 0.00001;
+      out[layout.auxiliaryAxisOffset / 4 + 1] = snapshot.normalBias ?? 0.05;
+      out[layout.auxiliaryAxisOffset / 4 + 2] = snapshot.shadowIntensity ?? 1;
+      out[layout.rollDegByteOffset / 4] = snapshot.rollDeg ?? 0;
+    } else {
+      out[layout.firstAngleOffset / 4] = snapshot.halfWidth;
+      writeSlotVec3(out, layout.primaryAxisOffset, snapshot.axisY);
+      out[layout.secondAngleOffset / 4] = snapshot.halfHeight;
+      writeSlotVec3(out, layout.auxiliaryAxisOffset, snapshot.axisX);
+    }
+
+    metadata[layout.kindByteOffset / 4] =
+      snapshot.kind === 'point'
+        ? DirectLightSlotKind.POINT |
+          (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
+        : snapshot.kind === 'spot'
+          ? DirectLightSlotKind.SPOT |
+            (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
+          : DirectLightSlotKind.RECT_AREA;
+    const spotProjectorSelected =
+      snapshot.kind === 'spot' &&
+      (projectorSelected ??
+        (snapshot.projectorAsset !== undefined && snapshot.lightViewProj !== undefined));
+    const spotShadowMetadata =
+      snapshot.kind === 'spot'
+        ? spotProjectorSelected
+          ? DIRECT_LIGHT_SLOT_PROJECTOR_FLAG |
+            ((snapshot.shadowAtlasTile >= 0 ? snapshot.shadowAtlasTile : 0) &
+              DIRECT_LIGHT_SLOT_TILE_MASK)
+          : directLightMetadata(snapshot.shadowAtlasTile)
+        : undefined;
+    metadata[layout.shadowByteOffset / 4] = directLightMetadata(
+      snapshot.kind === 'point'
+        ? snapshot.shadowAtlasLayer
+        : snapshot.kind === 'spot'
+          ? spotShadowMetadata
+          : undefined,
+    );
+    metadata[layout.iesProfileByteOffset / 4] = directLightMetadata(snapshot.iesProfileSlice);
+    metadata[layout.cookieByteOffset / 4] = directLightMetadata(
+      spotProjectorSelected && snapshot.kind === 'spot'
+        ? snapshot.projectorSlice
+        : snapshot.kind === 'point'
+          ? undefined
+          : snapshot.cookieSlice,
+    );
+  }
+
+  copyChanged(target: Uint32Array, offset: number): boolean {
+    for (let index = 0; index < this.words.length; index++) {
+      if (target[offset + index] === this.words[index]) continue;
+      target.set(this.words, offset);
+      return true;
+    }
+    return false;
+  }
+}
+
+/** Return an independently owned slot for callers that retain packed bytes. */
 export function packDirectLightSlot(
   snapshot: DirectLightSnapshot,
   layout: ReflectedDirectLightSlotLayout,
   projectorSelected?: boolean,
   channelMapping = 0,
 ): Float32Array {
-  if (snapshot.kind === 'directional')
-    return packDirectionalLightSlot(snapshot, layout, channelMapping);
-  const out = new Float32Array(layout.floatCount);
-  const view = new DataView(out.buffer);
-  const writeFloat = (offset: number, value: number) => view.setFloat32(offset, value, true);
-  const writeVec3 = (offset: number, value: ArrayLike<number>) => {
-    writeFloat(offset, value[0] ?? 0);
-    writeFloat(offset + 4, value[1] ?? 0);
-    writeFloat(offset + 8, value[2] ?? 0);
-  };
-  writeVec3(layout.positionOffset, snapshot.position);
-  writeFloat(layout.rangeOffset, snapshot.invRangeSquared);
-  writeVec3(layout.colorOffset, snapshot.color);
-
-  if (snapshot.kind === 'point') {
-    writeFloat(layout.firstAngleOffset, snapshot.decay ?? 2);
-    if (snapshot.iesProfileSlice !== undefined) {
-      writeVec3(layout.primaryAxisOffset, snapshot.axisY ?? [0, 1, 0]);
-      writeVec3(layout.auxiliaryAxisOffset, snapshot.axisX ?? [1, 0, 0]);
-    }
-  } else if (snapshot.kind === 'spot') {
-    writeFloat(layout.firstAngleOffset, snapshot.cosInner);
-    writeFloat(layout.lightingChannelsByteOffset + 4, packSpotDecay(snapshot.decay));
-    writeVec3(layout.primaryAxisOffset, snapshot.direction);
-    writeFloat(layout.secondAngleOffset, snapshot.cosOuter);
-    writeSpotReceiverControls(snapshot, layout, writeFloat);
-  } else {
-    writeFloat(layout.firstAngleOffset, snapshot.halfWidth);
-    writeVec3(layout.primaryAxisOffset, snapshot.axisY);
-    writeFloat(layout.secondAngleOffset, snapshot.halfHeight);
-    writeVec3(layout.auxiliaryAxisOffset, snapshot.axisX);
-  }
-
-  const metadata = new Uint32Array(out.buffer);
-  metadata[layout.kindByteOffset / 4] =
-    snapshot.kind === 'point'
-      ? DirectLightSlotKind.POINT |
-        (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
-      : snapshot.kind === 'spot'
-        ? DirectLightSlotKind.SPOT |
-          (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
-        : DirectLightSlotKind.RECT_AREA;
-  const spotProjectorSelected =
-    snapshot.kind === 'spot' &&
-    (projectorSelected ??
-      (snapshot.projectorAsset !== undefined && snapshot.lightViewProj !== undefined));
-  const spotShadowMetadata =
-    snapshot.kind === 'spot'
-      ? spotProjectorSelected
-        ? DIRECT_LIGHT_SLOT_PROJECTOR_FLAG |
-          ((snapshot.shadowAtlasTile >= 0 ? snapshot.shadowAtlasTile : 0) &
-            DIRECT_LIGHT_SLOT_TILE_MASK)
-        : directLightMetadata(snapshot.shadowAtlasTile)
-      : undefined;
-  metadata[layout.shadowByteOffset / 4] = directLightMetadata(
-    snapshot.kind === 'point'
-      ? snapshot.shadowAtlasLayer
-      : snapshot.kind === 'spot'
-        ? spotShadowMetadata
-        : undefined,
-  );
-  metadata[layout.iesProfileByteOffset / 4] = directLightMetadata(snapshot.iesProfileSlice);
-  metadata[layout.cookieByteOffset / 4] = directLightMetadata(
-    spotProjectorSelected && snapshot.kind === 'spot'
-      ? snapshot.projectorSlice
-      : snapshot.kind === 'point'
-        ? undefined
-        : snapshot.cookieSlice,
-  );
-  const rawChannels = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-  metadata[layout.lightingChannelsByteOffset / 4] = rawChannels;
-  if (channelMapping !== 0)
-    metadata[layout.lightingChannelsByteOffset / 4 + 2] = projectDeferredLightingMask(
-      rawChannels,
-      channelMapping,
-    );
-  return out;
-}
-
-/** Additional directional members have neutral range and resource identities. */
-function packDirectionalLightSlot(
-  snapshot: DirectionalLightSnapshot,
-  layout: ReflectedDirectLightSlotLayout,
-  channelMapping: number,
-): Float32Array {
-  const out = new Float32Array(layout.floatCount);
-  const view = new DataView(out.buffer);
-  for (let component = 0; component < 3; component++) {
-    view.setFloat32(layout.colorOffset + component * 4, snapshot.color[component] ?? 0, true);
-    view.setFloat32(
-      layout.primaryAxisOffset + component * 4,
-      snapshot.direction[component] ?? (component === 1 ? -1 : 0),
-      true,
-    );
-  }
-  view.setUint32(layout.kindByteOffset, DirectLightSlotKind.DIRECTIONAL, true);
-  for (const offset of [
-    layout.shadowByteOffset,
-    layout.iesProfileByteOffset,
-    layout.cookieByteOffset,
-  ])
-    view.setUint32(offset, DIRECT_LIGHT_SLOT_METADATA_SENTINEL, true);
-  const rawChannels = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-  view.setUint32(layout.lightingChannelsByteOffset, rawChannels, true);
-  if (channelMapping !== 0)
-    view.setUint32(
-      layout.lightingChannelsByteOffset + 8,
-      projectDeferredLightingMask(rawChannels, channelMapping),
-      true,
-    );
-  return out;
+  const writer = new DirectLightSlotWriter(layout);
+  writer.write(snapshot, projectorSelected, channelMapping);
+  return writer.floats;
 }
 
 export function assertStorageBufferCap(cap: number): Result<boolean, RhiError> {

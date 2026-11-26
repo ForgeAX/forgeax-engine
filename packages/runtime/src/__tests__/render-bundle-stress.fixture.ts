@@ -1,7 +1,6 @@
-import type { Result, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import type { RenderBundle, Result, RhiRenderCommands } from '@forgeax/engine-rhi';
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import { expect, vi } from 'vitest';
-import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { buildFrameModel } from '../../../rhi-debug/src/frame-model';
 import { decodeTape } from '../../../rhi-debug/src/protocol/codec';
 import { readbackTexturePixels } from '../../../rhi-debug/src/readback';
@@ -121,9 +120,10 @@ export async function runRenderBundleStressCase(
     scenario === 'pass-state'
       ? value(device.createQuerySet({ type: 'occlusion', count: 1 }))
       : undefined;
-  let caches = Array.from(
+  // The fixture authors the command ranges and knows exactly which inputs it changes.
+  const passes = Array.from(
     { length: passCount },
-    () => new RenderBundleCache({ colorFormats: ['rgba8unorm'] }),
+    () => new Map<number, { revision: number; end: number; bundle: RenderBundle }>(),
   );
   // Nonzero byte offset, large shared arena, and an interior one-element slice.
   const offsets = new Uint32Array(new ArrayBuffer(262_160), 16, 65_536);
@@ -143,7 +143,7 @@ export async function runRenderBundleStressCase(
         vertices = makeVertex();
         group = makeGroup();
         value(device.destroyBuffer(old));
-        if (frame % 12 === 0) caches = [new RenderBundleCache({ colorFormats: ['rgba8unorm'] })];
+        for (const ranges of passes) ranges.clear();
       }
       if (scenario === 'live-data') {
         indirectData[0] = indirectData[4] = frame % 2 === 0 ? 3 : 0;
@@ -180,17 +180,16 @@ export async function runRenderBundleStressCase(
           });
           const executionSpy =
             scenario === 'pass-state' && cached ? vi.spyOn(pass, 'executeBundles') : undefined;
-          const record = (p: RhiRenderPassEncoder) => {
-            const x = passCount > 1 ? (passIndex % 4) * 8 : 0;
-            const y = passCount > 1 ? Math.floor(passIndex / 4) * 8 : 0;
-            p.setViewport(x, y, passCount > 1 ? 8 : width, passCount > 1 ? 8 : height, 0, 1);
+          const x = passCount > 1 ? (passIndex % 4) * 8 : 0;
+          const y = passCount > 1 ? Math.floor(passIndex / 4) * 8 : 0;
+          pass.setViewport(x, y, passCount > 1 ? 8 : width, passCount > 1 ? 8 : height, 0, 1);
+          const record = (p: RhiRenderCommands, start: number, end: number) => {
             const pipeline = pipelines[scenario === 'resource-lifecycle' ? revision % 2 : 0];
             if (!pipeline) throw new Error('Missing pipeline');
             p.setPipeline(pipeline);
             p.setVertexBuffer(0, vertices, 0, 24);
             p.setIndexBuffer(indices, 'uint16', 0, 6);
-            if (queryActive) value(p.beginOcclusionQuery(0));
-            for (let draw = 0; draw < count; draw++) {
+            for (let draw = start; draw < end; draw++) {
               const order =
                 scenario === 'dynamic-lists' && revision % 2 === 1 ? count - draw - 1 : draw;
               const delta =
@@ -201,12 +200,6 @@ export async function runRenderBundleStressCase(
                 scenario === 'live-data' ? 0 : ((order + delta + passIndex) % 4) * 256;
               p.setBindGroup(0, group, offsets, 32_768, 1);
               offsets[32_768] = 123; // Changes to the caller's arena must not alter prior bindings.
-              if (scenario === 'pass-state' && draw === 4) {
-                p.insertDebugMarker('mid-draw state transition');
-                p.setScissorRect(frame % 2 === 0 ? 0 : 16, 0, 16, height);
-                p.setBlendConstant([0.5, 0.5, 0.5, 1]);
-                p.setStencilReference(frame % 256);
-              }
               switch (order % 4) {
                 case 0:
                   p.draw(3, 1, 0, 0);
@@ -222,17 +215,43 @@ export async function runRenderBundleStressCase(
                   break;
               }
             }
-            if (queryActive) value(p.endOcclusionQuery());
-            // Queue writes before submission affect even draws already encoded.
-            // Exercise first-frame streaming as well as a warmed bundle here.
-            if (scenario === 'live-data') {
-              value(device.queue.writeBuffer(uniform, 0, color((frame + 1) % colors.length)));
-            }
           };
-          const cache = caches[passIndex];
-          if (!cache) throw new Error('Missing cache');
-          if (cached) cache.encode(device, pass, record);
-          else record(pass);
+          const emit = (start: number, end: number) => {
+            if (start === end) return;
+            if (!cached || queryActive) {
+              record(pass, start, end);
+              return;
+            }
+            const ranges = passes[passIndex];
+            if (!ranges) throw new Error('Missing pass');
+            const version =
+              scenario === 'live-data' || (scenario === 'many-passes' && passIndex % 2 === 0)
+                ? 0
+                : revision;
+            let range = ranges.get(start);
+            if (range?.revision !== version || range.end !== end) {
+              const encoder = value(
+                device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] }),
+              );
+              record(encoder, start, end);
+              range = { revision: version, end, bundle: value(encoder.finish()) };
+              ranges.set(start, range);
+            }
+            value(pass.executeBundles([range.bundle]));
+          };
+          if (queryActive) value(pass.beginOcclusionQuery(0));
+          if (scenario === 'pass-state') {
+            emit(0, 4);
+            pass.insertDebugMarker('mid-draw state transition');
+            pass.setScissorRect(frame % 2 === 0 ? 0 : 16, 0, 16, height);
+            pass.setBlendConstant([0.5, 0.5, 0.5, 1]);
+            pass.setStencilReference(frame % 256);
+            emit(4, count);
+          } else emit(0, count);
+          if (queryActive) value(pass.endOcclusionQuery());
+          if (scenario === 'live-data') {
+            value(device.queue.writeBuffer(uniform, 0, color((frame + 1) % colors.length)));
+          }
           if (executionSpy !== undefined) {
             bundleExecutions += executionSpy.mock.calls.length;
             executionSpy.mockRestore();

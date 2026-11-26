@@ -1,5 +1,9 @@
 import { type Component, type EntityHandle, World } from '@forgeax/engine-ecs';
-import { isStandaloneStaticMesh, meshAssetDecoder } from '@forgeax/engine-geometry';
+import {
+  interleavedMesh,
+  isStandaloneStaticMesh,
+  meshAssetDecoder,
+} from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import { copyPackData } from '@forgeax/engine-pack/runtime';
@@ -48,7 +52,7 @@ import {
   validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { defineAssetKind, isBuiltinAssetKind } from './asset-kind';
-import { assetDataBytes, copyAssetData } from './internal/asset-data';
+import { assetDataBytes } from './internal/asset-data';
 import {
   type AssetAdoption,
   type AssetAdoptionReader,
@@ -569,7 +573,6 @@ export class AssetRegistry implements AssetReferenceOwner {
     component?: (name: string) => Component | undefined,
     checkSource?: () => Result<void, AssetError>,
     sceneRefs?: readonly string[],
-    meshStorage?: 'render-transfer',
   ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
     const kind =
       input !== null && typeof input === 'object'
@@ -606,7 +609,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     const prepare = (owned: T) => {
       if (requiresOwnerPreparation(owned.kind))
         return this.prepareWithDecoder(owned.kind, owned, sources, reader, checkSource);
-      const prepared = prepareRuntimeAsset(owned, sourceContent, meshStorage);
+      const prepared = prepareRuntimeAsset(owned, sourceContent);
       if (!prepared.ok) return prepared;
       if (prepared.value.kind === 'tileset') {
         const linked = linkRuntimeTileset(
@@ -892,8 +895,19 @@ export class AssetRegistry implements AssetReferenceOwner {
   }
 
   /** Detached public content. Mutating this value never modifies the asset. */
-  read<K extends string, P>(handle: AssetHandle<K, P>): Result<P, AssetError> {
-    return this.#runtime.read<P>(handle);
+  read<K extends string, P>(handle: AssetHandle<K, P>): Result<P, AssetError>;
+  /** Read only the selected top-level fields, without changing asset residency. */
+  read<K extends string, P, F extends Extract<keyof P, string>>(
+    handle: AssetHandle<K, P>,
+    fields: readonly F[],
+  ): Result<Pick<P, F>, AssetError>;
+  read<K extends string, P, F extends Extract<keyof P, string>>(
+    handle: AssetHandle<K, P>,
+    fields?: readonly F[],
+  ): Result<P | Pick<P, F>, AssetError> {
+    return fields === undefined
+      ? this.#runtime.read<P>(handle)
+      : this.#runtime.readFields<P, F>(handle, fields);
   }
 
   /** Provenance of the adopted content, independent of later Catalog publications. */
@@ -934,7 +948,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   }
 
   copy<K extends string, P>(handle: AssetHandle<K, P>): Result<AssetHandle<K, P>, AssetError> {
-    const current = this.#runtime.borrow<unknown>(handle);
+    const current = this.#runtime.resolveStoredAsset<unknown>(handle);
     if (!current.ok) return current;
     if (
       current.value !== null &&
@@ -1020,17 +1034,13 @@ export class AssetRegistry implements AssetReferenceOwner {
       !Array.isArray(values.value)
     ) {
       const contract = this.materialValueContracts.get(current);
-      const kind =
-        contract === undefined
-          ? undefined
-          : materialValuePatchKind(
-              Object.getOwnPropertyDescriptors(values.value),
-              current.values,
-              contract.textures,
-            );
-      if (contract !== undefined && kind !== undefined) {
+      if (contract === undefined) return undefined;
+      const observedFields = Object.getOwnPropertyDescriptors(values.value);
+      const kind = materialValuePatchKind(observedFields, current.values, contract.textures);
+      if (kind !== undefined) {
         const result = this.#runtime.update<AssetError | MaterialError>(handle, values.value, {
           field: 'values',
+          observedFields,
           prepare: (_current, owned) => {
             const valid = validateMaterialValues(
               '<runtime-material>',
@@ -1291,7 +1301,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     handle: AssetHandle<'mesh'> | AssetHandle<'texture'> | AssetHandle<'terrain'>,
     range: MeshRange | readonly MeshRange[] | TextureRegion | TerrainHeightRange,
   ): Result<void, AssetError> {
-    const current = this.#runtime.borrow<Asset>(handle);
+    const current = this.#runtime.resolveStoredAsset<Asset>(handle);
     if (!current.ok) return current;
     const derived = this.terrainDerivedWrite(current.value);
     if (derived !== undefined) return err(derived);
@@ -1372,7 +1382,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   ): Result<void, AssetError | MaterialError> {
     const kind = this.#runtime.kind(handle);
     if (!kind.ok) return kind;
-    const current = this.#runtime.borrow<Asset>(handle);
+    const current = this.#runtime.resolveStoredAsset<Asset>(handle);
     if (!current.ok) return current;
     const derived = this.terrainDerivedWrite(current.value);
     if (derived !== undefined) return err(derived);
@@ -1882,14 +1892,14 @@ export class AssetRegistry implements AssetReferenceOwner {
     meshStorage?: 'render-transfer',
   ): Promise<Result<TypesMeshAsset, RuntimeAssetError>> {
     try {
-      const restored = prepareRuntimeAsset(
-        await presentation.read(),
-        (guid) => this.runtimeSource(guid),
-        meshStorage,
+      const restored = prepareRuntimeAsset(await presentation.read(), (guid) =>
+        this.runtimeSource(guid),
       );
       if (!restored.ok) return restored;
       if (restored.value.kind !== 'mesh') throw new TypeError('expected restored Mesh');
-      return ok(restored.value);
+      return ok(
+        meshStorage === 'render-transfer' ? restored.value : interleavedMesh(restored.value),
+      );
     } catch (cause) {
       return err(
         new AssetError({
@@ -2730,7 +2740,6 @@ export class AssetRegistry implements AssetReferenceOwner {
       (name) => inputs.schemas.get(name),
       () => this.ingestionGuard(operation),
       entry.refs,
-      ownedMesh ? 'render-transfer' : undefined,
     );
   }
 
@@ -3404,9 +3413,10 @@ export class AssetRegistry implements AssetReferenceOwner {
         ? {}
         : { maxConcurrentReads: options.maxConcurrentReads }),
     };
-    this.#runtime = new AssetRecords(options.limits, (content) =>
-      this.copySnapshotContent(content),
-    );
+    this.#runtime = new AssetRecords(options.limits, (source, copy) => {
+      const projection = this.materialPayloadProjections.get(source);
+      if (projection !== undefined) this.materialPayloadProjections.set(copy, projection);
+    });
     this.#decoders = new DecoderRegistry(options);
     installRuntimeAssets(this, {
       records: this.#runtime,
@@ -3518,21 +3528,6 @@ export class AssetRegistry implements AssetReferenceOwner {
     return ok(
       this.getMaterialProjectionForPayload(this.#runtime.borrow<MaterialAsset>(handle).unwrap()),
     );
-  }
-
-  private copySnapshotContent<T>(content: T): T {
-    const copied = copyAssetData(content);
-    if (
-      content !== null &&
-      typeof content === 'object' &&
-      copied !== null &&
-      typeof copied === 'object'
-    ) {
-      const projection = this.materialPayloadProjections.get(content);
-      // A fixed copy retains the accepted program facts from this exact content.
-      if (projection !== undefined) this.materialPayloadProjections.set(copied, projection);
-    }
-    return copied;
   }
 
   private prepareMaterialProgramProjection(

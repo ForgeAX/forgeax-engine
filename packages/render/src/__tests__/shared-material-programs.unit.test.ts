@@ -4,9 +4,11 @@ import {
   createStandardPbrArtifactReceipt,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
-import { ok, sha256 } from '@forgeax/engine-types';
+import { freezeJson, ok, sha256 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { BatchExecutionTable } from '../gpu-driven/batch-execution-table';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { captureTaskMembership } from '../gpu-driven/fixed-task-plan';
 import {
   collectGpuDrivenMaterialArtifacts,
   GpuDrivenMaterialExecutionRetention,
@@ -820,6 +822,32 @@ it('deduplicates unavailable artifacts locally and retries with current collecti
   }
 });
 
+it('uses the observed shader replacement in this join and samples each address only once', () => {
+  const f = fixture(4);
+  const old = f.artifact;
+  const replacement = { ...old, deps: [...old.deps] };
+  let replace = false;
+  let replacements = 0;
+  const resolve = vi.fn((shader: string) => {
+    if (replace && shader === 'game::shadow-scene' && replacements++ === 0) return replacement;
+    return old;
+  });
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const collect = () => collectGpuDrivenMaterialArtifacts({ ...f.input, resolve, retention });
+  const first = collect();
+  resolve.mockClear();
+  replace = true;
+  const second = collect();
+  expect(resolve.mock.calls.map(([name]) => name)).toEqual([
+    'game::surface-scene',
+    'game::shadow-scene',
+  ]);
+  expect([...second.shadowMaterialArtifacts.values()][0]?.deps).toBe(replacement.deps);
+  expect([...first.shadowMaterialArtifacts.values()][0]?.deps).toBe(old.deps);
+  const third = collect();
+  expect([...third.shadowMaterialArtifacts.values()][0]?.deps).toBe(old.deps);
+});
+
 it('keeps a direct ShadowCaster on its declared route when no scene program pair is published', () => {
   const f = fixture();
   f.material.adopt({
@@ -916,6 +944,43 @@ it('retains executions across frames while programs, geometry and artifacts are 
   const execution = adopted.batchExecutions.values().next().value?.forward;
   expect(retention.prepared).toBe(prepared * 3);
   expect(execution?.route !== 'none' && execution?.material.roughness).toBe(0.25);
+});
+
+it('updates material values and readiness independently of captured draw geometry', () => {
+  const f = fixture();
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const fixed = freezeJson(structuredClone(f.artifact.receipt));
+  let receipt = fixed;
+  const resolve = vi.fn((id: string) => ({ ...f.artifact, material: id, receipt }));
+  const collect = (snapshot: MaterialSnapshot) => {
+    f.material.adopt(snapshot);
+    f.owner.adopt(f.material);
+    const result = collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      resolve,
+      retention,
+      programs: f.projection.project(f.guarded, f.owner.materials()),
+    });
+    return result.batchExecutions.values().next().value?.forward;
+  };
+  const first = collect(f.snapshot);
+  const updated = collect({ ...f.snapshot, roughness: 0.75 });
+  if (first?.route !== 'gpu' || updated?.route !== 'gpu') throw Error('Expected GPU draws');
+  expect(updated.prepared).toBe(first.prepared);
+  expect(updated.material.roughness).toBe(0.75);
+  expect(first.material.roughness).toBe(0.5);
+  const required = fixed.resourceSlots.find((slot) => slot.kind === 'texture');
+  if (required === undefined) throw Error('Expected a texture binding');
+  expect(() =>
+    collect({ ...f.snapshot, authoredTextureFields: new Set([required.parameter]) }),
+  ).toThrow();
+  receipt = structuredClone(fixed);
+  const reissued = collect({ ...f.snapshot, roughness: 0.25 });
+  if (reissued?.route !== 'gpu') throw Error('Expected reissued draw');
+  expect(reissued.prepared).not.toBe(first.prepared);
+  const borrowed = collect({ ...f.snapshot, roughness: 0.8 });
+  if (borrowed?.route !== 'gpu') throw Error('Expected borrowed receipt draw');
+  expect(borrowed.prepared).not.toBe(reissued.prepared);
 });
 
 it('keeps the collected frame identity when every retained execution is unchanged', () => {
@@ -1038,6 +1103,24 @@ it('reconciles an issued layout with Scene edits and retains its live shader obs
   const second = collect();
   expect(second.firstArtifact).not.toBe(first.firstArtifact);
   expect(retention.prepared).toBe(prepared + 1);
+  const roster = vi.spyOn(BatchExecutionTable.prototype, 'forEach');
+  try {
+    for (let edit = 1; edit <= 12; edit++) {
+      const roughness = edit / 16;
+      frame = frame.with(f.material, 4, captureMaterialSnapshot({ ...f.snapshot, roughness }));
+      const updated = collect();
+      const execution = updated.batchExecutions.values().next().value;
+      if (execution?.forward.route !== 'gpu' || execution.shadow.route !== 'gpu')
+        throw Error('Expected updated GPU batches');
+      expect(execution.forward.material.roughness).toBe(roughness);
+      expect(updated.materialArtifacts.values().next().value).toBe(execution.forward.artifact);
+      expect(updated.shadowMaterialArtifacts.values().next().value).toBe(execution.shadow.artifact);
+      expect(updated.firstArtifact).toBe(execution.forward.artifact);
+    }
+    expect(roster).not.toHaveBeenCalled();
+  } finally {
+    roster.mockRestore();
+  }
   f.material.adopt(captureMaterialSnapshot({ ...f.snapshot, materialSceneIndexProgramKeys: {} }));
   frame = frame.with(f.material);
   resolve.mockClear();
@@ -1047,6 +1130,174 @@ it('reconciles an issued layout with Scene edits and retains its live shader obs
   expect(direct.batchExecutions.values().next().value?.forward.route).toBe('direct');
   expect(first.batchExecutions.values().next().value?.forward.route).toBe('gpu');
   expect(resolve).not.toHaveBeenCalled();
+});
+
+it('visits precisely the bindings of changed materials and shader addresses on an issued layout', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw Error('Expected a batch');
+  const base = batch.binding;
+  const resources = Array.from(
+    { length: 64 },
+    (_, index) =>
+      new MaterialResource(
+        captureMaterialSnapshot({
+          ...f.snapshot,
+          materialHandle: index + 1,
+          materialSceneIndexProgramKeys: {
+            ...f.snapshot.materialSceneIndexProgramKeys,
+            forward: {
+              pass: 'forward',
+              specializationKey: index % 8 === 0 ? 'game::rare' : 'game::common',
+            },
+          },
+        }),
+      ),
+  );
+  const { batches } = captureTaskMembership(
+    {
+      ...f.topology.sourcePlan(),
+      batches: resources.map((material) => ({ ...batch, binding: { ...base, material } })),
+    },
+    Symbol(),
+  );
+  let frame = new MaterialFrame(undefined);
+  for (const resource of resources) frame = frame.with(resource);
+  let rare = f.artifact;
+  const resolve = vi.fn((id: string) => (id === 'game::rare' ? rare : f.artifact));
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      batches,
+      resolve,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const first = collect();
+  let visited = 0;
+  const reconcile = BatchExecutionTable.prototype.reconcile;
+  const probe = vi.spyOn(BatchExecutionTable.prototype, 'reconcile').mockImplementation(function (
+    this: BatchExecutionTable,
+    visit,
+    ...args
+  ) {
+    return reconcile.call(
+      this,
+      (...inputs) => {
+        visited++;
+        return visit(...inputs);
+      },
+      ...args,
+    );
+  });
+  const edit = (resource: MaterialResource) => {
+    frame = frame.with(
+      resource,
+      1,
+      captureMaterialSnapshot({ ...resource.snapshot, roughness: 0.25 }),
+    );
+  };
+  try {
+    const independent = resources[1],
+      overlapping = resources[0];
+    if (!independent || !overlapping) throw Error('Expected two materials');
+    edit(independent);
+    resolve.mockClear();
+    collect();
+    expect(visited).toBe(1);
+    expect(resolve).toHaveBeenCalledTimes(3);
+    visited = 0;
+    edit(overlapping);
+    rare = { ...rare };
+    resolve.mockClear();
+    collect();
+    expect(visited).toBe(8);
+    expect(resolve).toHaveBeenCalledTimes(3);
+    visited = 0;
+    for (const resource of resources) edit(resource);
+    collect();
+    expect(visited).toBe(64);
+    const old = first.batchExecutions.values().next().value?.forward;
+    if (old?.route !== 'gpu') throw Error('Expected an issued GPU draw');
+    expect(old.material.roughness).toBe(f.snapshot.roughness);
+  } finally {
+    probe.mockRestore();
+  }
+});
+
+it('publishes the last binding for a shared shader key while earlier draws change', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw Error('Expected a batch');
+  const make = (id: number) =>
+    new MaterialResource(captureMaterialSnapshot({ ...f.snapshot, materialHandle: id }));
+  const a = make(51),
+    b = make(52);
+  const first = { ...batch.binding, material: a },
+    last = { ...batch.binding, material: b };
+  const { batches } = captureTaskMembership(
+    {
+      ...f.topology.sourcePlan(),
+      batches: [
+        { ...batch, binding: first },
+        { ...batch, binding: last },
+      ],
+    },
+    Symbol(),
+  );
+  let frame = new MaterialFrame(undefined).with(a).with(b);
+  const resolve = () => f.artifact;
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      batches,
+      resolve,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const original = collect();
+  expect(original.materialArtifacts.size).toBe(1);
+  frame = frame.with(a, 1, captureMaterialSnapshot({ ...a.snapshot, roughness: 0.75 }));
+  const edited = collect();
+  expect(edited.batchExecutions.get(first)).not.toBe(original.batchExecutions.get(first));
+  expect(edited.materialArtifacts).toBe(original.materialArtifacts);
+  frame = frame.with(b, 1, captureMaterialSnapshot({ ...b.snapshot, roughness: 0.25 }));
+  const replaced = collect();
+  const winner = replaced.batchExecutions.get(last)?.forward;
+  if (winner?.route !== 'gpu') throw Error('Expected a GPU shader');
+  expect(replaced.firstArtifact).toBe(winner.artifact);
+  expect(replaced.firstArtifact).not.toBe(original.firstArtifact);
+});
+
+it('reconciles changed direct materials without probing unaffected pass bindings and admits the first GPU route', () => {
+  const f = fixture(4);
+  const direct = captureMaterialSnapshot({ ...f.snapshot, materialSceneIndexProgramKeys: {} });
+  f.material.adopt(direct);
+  f.owner.adopt(f.material);
+  const other = new MaterialResource(captureMaterialSnapshot({ ...direct, materialHandle: 8 }));
+  let frame = f.owner.materials().with(other);
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const get = vi.spyOn(retention, 'get');
+  const resolve = vi.fn(() => f.artifact);
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      programs: f.projection.project(f.guarded, frame),
+      retention,
+      resolve,
+    });
+  const original = collect();
+  const binding = original.batchExecutions.keys().next().value;
+  if (binding === undefined) throw Error('Expected a batch binding');
+  expect(original.batchExecutions.get(binding)?.forward.route).toBe('direct');
+  get.mockClear();
+  frame = frame.with(other, 2, captureMaterialSnapshot({ ...direct, roughness: 0.2 }));
+  expect(collect()).toBe(original);
+  expect(get).not.toHaveBeenCalled();
+  expect(resolve).not.toHaveBeenCalled();
+  frame = frame.with(f.material, 3, captureMaterialSnapshot(f.snapshot));
+  const next = collect();
+  expect(next.batchExecutions.get(binding)?.forward.route).toBe('gpu');
+  expect(original.batchExecutions.get(binding)?.forward.route).toBe('direct');
+  expect(resolve).toHaveBeenCalledTimes(2);
 });
 
 it('keeps overwritten native program getters on the original observed path', () => {

@@ -126,6 +126,7 @@ describe('auto exposure GPU pass contract', () => {
 
     const manual = createAutoExposureApplyWgsl(false);
     expect(manual).not.toContain('var<storage, read> candidate');
-    expect(manual).toContain('let exposed = color.rgb * 1.0');
+    expect(manual).toContain('let radiance = color.rgb');
+    expect(manual).toContain('let exposed = radiance * 1.0');
   });
 });

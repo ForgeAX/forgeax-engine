@@ -45,6 +45,11 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(-1);
     });
 
+    it('Camera defaults to high Bloom quality with five levels', () => {
+      expect(componentFieldType(Camera, 'bloomQuality')).toBe('f32');
+      expect(componentFieldDefault(Camera, 'bloomQuality')).toBe(5);
+    });
+
     it('Camera defaults bloomIntensity to 0.5', () => {
       expect(componentFieldDefault(Camera, 'bloomIntensity')).toBe(0.5);
     });

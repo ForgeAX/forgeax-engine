@@ -304,31 +304,50 @@ export function variantSetFromVertexLayoutProjection(
   authoredVariantSet: string | undefined,
 ): Result<string, VertexColorVariantConflictError> {
   const projected = vertexLayoutHasColor(projection);
-  const axis = `VERTEX_COLOR_AVAILABLE=${projected ? 'true' : 'false'}`;
-  if (authoredVariantSet === undefined) return ok(axis);
-  if (projected && authoredVariantSet === '') return ok(authoredVariantSet);
+  const axis = projected ? 'VERTEX_COLOR_AVAILABLE=true' : 'VERTEX_COLOR_AVAILABLE=false';
+  if (!authoredVariantSet) return ok(projected && authoredVariantSet === '' ? '' : axis);
 
-  const authoredParts = authoredVariantSet.split('+');
-  const authoredColorPart = authoredParts.find((part) =>
-    part.startsWith('VERTEX_COLOR_AVAILABLE='),
-  );
-  if (authoredColorPart === undefined) {
-    const parts = authoredParts.filter((part) => part.length > 0);
-    parts.push(axis);
-    return ok(parts.join('+'));
+  // Keep other axes in their published order. Copy a run of the original key only
+  // where removing an empty field or a geometry axis actually separates that run.
+  const key = authoredVariantSet;
+  let retained = '';
+  let runStart = 0;
+  let hasColor = false;
+  for (let start = 0; start <= key.length; ) {
+    const separator = key.indexOf('+', start);
+    const end = separator < 0 ? key.length : separator;
+    const color = key.startsWith('VERTEX_COLOR_AVAILABLE=', start);
+    if (color && !hasColor) {
+      if (end - start !== axis.length || !key.startsWith(axis, start)) {
+        const value = key.slice(start + 'VERTEX_COLOR_AVAILABLE='.length, end);
+        return err(new VertexColorVariantConflictError(value, projected));
+      }
+      if (end === key.length && runStart === 0) return ok(key);
+      hasColor = true;
+    }
+    if (color || start === end) {
+      if (start > runStart) {
+        const run = key.slice(runStart, start - 1);
+        retained = retained ? `${retained}+${run}` : run;
+      }
+      runStart = end + 1;
+    }
+    if (separator < 0) break;
+    start = separator + 1;
   }
-
-  const authoredValue = authoredColorPart.slice('VERTEX_COLOR_AVAILABLE='.length);
-  const authored = authoredValue === 'true';
-  if ((authoredValue !== 'true' && authoredValue !== 'false') || authored !== projected) {
-    return err(new VertexColorVariantConflictError(authoredValue, projected));
+  if (runStart < key.length) {
+    const tail = key.slice(runStart);
+    retained = retained ? `${retained}+${tail}` : tail;
   }
-  const parts = authoredParts.filter(
-    (part) => part.length > 0 && !part.startsWith('VERTEX_COLOR_AVAILABLE='),
-  );
-  parts.push(axis);
-  return ok(parts.join('+'));
+  return ok(retained ? `${retained}+${axis}` : axis);
 }
+
+// The complete Standard capability domain is fixed by these three independent booleans.
+const standardCapabilities = Array.from(
+  { length: 8 },
+  (_, flags) =>
+    `CLUSTER_FORWARD_AVAILABLE=${(flags & 4) !== 0}+STORAGE_BUFFER_AVAILABLE=${(flags & 2) !== 0}+VERTEX_COLOR_AVAILABLE=${(flags & 1) !== 0}`,
+);
 
 /** Explicit geometry and lighting facts survive composition before manifest key canonicalization. */
 export function standardCapabilityVariantSet(
@@ -336,7 +355,9 @@ export function standardCapabilityVariantSet(
   storageBuffer: boolean,
   vertexColorAvailable: boolean,
 ): string {
-  return `CLUSTER_FORWARD_AVAILABLE=${clustered}+STORAGE_BUFFER_AVAILABLE=${storageBuffer}+VERTEX_COLOR_AVAILABLE=${vertexColorAvailable}`;
+  const flags =
+    (Number(clustered) << 2) | (Number(storageBuffer) << 1) | Number(vertexColorAvailable);
+  return standardCapabilities[flags] as string;
 }
 
 /**

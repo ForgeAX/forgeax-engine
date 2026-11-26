@@ -15,7 +15,7 @@ import {
   type createPresentationDraws,
   projectDisplayRenderables,
 } from '../render-system-presentation';
-import { RetainedFrameProjection } from '../scene/frame-list';
+import { EMPTY_FRAME_ROWS, sparseRowsOf } from '../scene/frame-list';
 import {
   DynamicGeometryCommitOrder,
   DynamicGeometryResetOrder,
@@ -26,6 +26,7 @@ import {
   ViewTerrainCandidateOrder,
 } from '../system-order';
 import { captureSubmittedTerrain, type SubmittedTerrainSection } from '../terrain/submitted.js';
+import { MaterialDrawReceipt } from './material-draw-receipt';
 import { ViewRecorder, ViewSubmission, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
 
@@ -110,19 +111,6 @@ export interface WaterBakedDrawReceiptFact {
         status: 'unavailable';
         reason: WaterBakedDrawUnavailableReason;
       }>;
-}
-
-/** Exact material source revision consumed by one actual submitted mesh draw. */
-export interface MaterialSlotDrawReceiptFact {
-  readonly worldIdentity: string;
-  readonly entityKey: number;
-  readonly submeshIndex: number;
-  readonly materialSlot: number;
-  readonly materialHandle: number;
-  readonly sourceRevision: number;
-  readonly frameId: number;
-  readonly deviceGeneration: number;
-  readonly graphGeneration: number;
 }
 
 const WATER_BAKED_DRAW_UNAVAILABLE_REASONS = [
@@ -353,14 +341,13 @@ function captureTerrain(world: World, staged: ViewFrameState): TerrainCandidate 
     const noTerrain =
       cameras.length === 0 ||
       frame.gpuOwned !== undefined ||
-      (frame.renderables instanceof RetainedFrameProjection &&
-        frame.renderables.facts?.terrainRowCount === 0);
+      sparseRowsOf(frame.renderables, 'terrain') === EMPTY_FRAME_ROWS;
     return {
       // `commit` keeps only the sections the accepted attempt presented, culled or not.
       sections: noTerrain
         ? []
         : captureSubmittedTerrain(
-            projectDisplayRenderables(frame.renderables, frame.dispatch),
+            projectDisplayRenderables(frame.renderables, frame.dispatch, undefined, 'terrain'),
             resourceWorld,
           ),
     };
@@ -373,7 +360,7 @@ function captureTerrain(world: World, staged: ViewFrameState): TerrainCandidate 
 export class ViewDrawReceipt {
   readonly dynamicGeometry = new DynamicGeometryReceipt();
   /** Material closures consumed by the last accepted attempt's actual draws. */
-  materialDraws: readonly MaterialSlotDrawReceiptFact[] = [];
+  readonly materials = new MaterialDrawReceipt();
   /** The terrain sections the last accepted attempt actually drew. */
   terrain: readonly SubmittedTerrainSection[] = [];
   /** The Water Baked sources used by the last accepted attempt's actual draws. */
@@ -384,15 +371,6 @@ export class ViewDrawReceipt {
         readonly frame: number;
         readonly draws: WaterBakedDrawReceiptFact[];
         readonly keys: Set<string>;
-        bytes: number;
-        overflow: boolean;
-      }
-    | undefined;
-  private materialDrawStage:
-    | {
-        readonly frame: number;
-        readonly draws: MaterialSlotDrawReceiptFact[];
-        readonly entities: Set<number>;
         bytes: number;
         overflow: boolean;
       }
@@ -484,70 +462,6 @@ export class ViewDrawReceipt {
     this.waterBakedDraws = Object.freeze([]);
     this.waterBakedUnavailableReason = undefined;
   }
-
-  /** Capture the accepted material closure from one actual slot draw callback. */
-  stageMaterialDraw(frame: number, draw: MaterialSlotDrawReceiptFact): void {
-    if (this.materialDrawStage?.frame === frame && this.materialDrawStage.overflow) return;
-    if (
-      draw.frameId !== frame ||
-      draw.worldIdentity.length === 0 ||
-      !Number.isSafeInteger(draw.entityKey) ||
-      !Number.isSafeInteger(draw.submeshIndex) ||
-      !Number.isSafeInteger(draw.materialSlot) ||
-      draw.materialSlot < 0 ||
-      !Number.isSafeInteger(draw.materialHandle) ||
-      draw.materialHandle <= 0 ||
-      !Number.isSafeInteger(draw.sourceRevision) ||
-      draw.sourceRevision < 0 ||
-      !Number.isSafeInteger(draw.deviceGeneration) ||
-      draw.deviceGeneration < 0 ||
-      !Number.isSafeInteger(draw.graphGeneration) ||
-      draw.graphGeneration < 0
-    )
-      return;
-    if (this.materialDrawStage?.frame !== frame)
-      this.materialDrawStage = { frame, draws: [], entities: new Set(), bytes: 2, overflow: false };
-    const stage = this.materialDrawStage;
-    if (stage.entities.has(draw.entityKey)) {
-      for (const previous of stage.draws)
-        if (
-          previous.entityKey === draw.entityKey &&
-          previous.submeshIndex === draw.submeshIndex &&
-          previous.materialSlot === draw.materialSlot &&
-          previous.materialHandle === draw.materialHandle &&
-          previous.sourceRevision === draw.sourceRevision &&
-          previous.worldIdentity === draw.worldIdentity
-        )
-          return;
-    }
-    const frozen = Object.freeze({ ...draw });
-    if (stage.draws.length < MAX_INSPECTION_SAMPLES)
-      stage.bytes = appendedObservationBytes(stage.bytes, frozen);
-    if (
-      stage.draws.length >= MAX_INSPECTION_SAMPLES ||
-      stage.bytes > MAX_RECEIPT_OBSERVATION_BYTES
-    ) {
-      stage.draws.length = 0;
-      stage.entities.clear();
-      stage.overflow = true;
-      return;
-    }
-    stage.entities.add(frozen.entityKey);
-    stage.draws.push(frozen);
-  }
-
-  /** Promote only this accepted attempt's material draws; accepted-empty clears stale facts. */
-  commitMaterialDraws(frame: number): void {
-    const stage = this.materialDrawStage;
-    this.materialDrawStage = undefined;
-    this.materialDraws = Object.freeze(stage?.frame === frame ? stage.draws : []);
-  }
-
-  /** Rejected attempts publish no material draws and clear stale attempt state. */
-  discardMaterialDraws(): void {
-    this.materialDrawStage = undefined;
-    this.materialDraws = Object.freeze([]);
-  }
 }
 
 /** The view's submitted-draw receipt; it lives and dies with the view entity. */
@@ -599,16 +513,10 @@ export function registerViewDrawSystems(world: World): void {
               requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
             )
               return;
-            draws(
-              world,
-              requireViewField(world, entity, ViewDraws, 'state'),
-            ).dynamicGeometry.commit();
-            draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitWaterBakedDraws(
-              frame,
-            );
-            draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitMaterialDraws(
-              frame,
-            );
+            const receipt = draws(world, requireViewField(world, entity, ViewDraws, 'state'));
+            receipt.dynamicGeometry.commit();
+            receipt.commitWaterBakedDraws(frame);
+            receipt.materials.commit(frame);
           });
         },
       }),
@@ -710,18 +618,10 @@ export function registerViewDrawSystems(world: World): void {
               requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
             )
               return;
-            draws(
-              world,
-              requireViewField(world, entity, ViewDraws, 'state'),
-            ).dynamicGeometry.clear();
-            draws(
-              world,
-              requireViewField(world, entity, ViewDraws, 'state'),
-            ).discardWaterBakedDraws();
-            draws(
-              world,
-              requireViewField(world, entity, ViewDraws, 'state'),
-            ).discardMaterialDraws();
+            const receipt = draws(world, requireViewField(world, entity, ViewDraws, 'state'));
+            receipt.dynamicGeometry.clear();
+            receipt.discardWaterBakedDraws();
+            receipt.materials.discard();
           });
         },
       }),

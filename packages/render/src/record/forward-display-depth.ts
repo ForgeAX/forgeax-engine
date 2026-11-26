@@ -22,8 +22,7 @@ export function forwardColorCanWriteDepth(
     return !colorReplacesDepth(pass, registry);
   });
   if (needsPrepass !== undefined) return !needsPrepass;
-  // Culling can publish a flat selection even for stock Scene rows. These pass
-  // records carry their current program and state but omit their owning material.
+  // A flat selection without capture provenance carries only the per-draw program and state.
   // Prove each Forward draw directly, including transparent draws when present.
   if (!Array.isArray(dispatch) || dispatch[Symbol.iterator] !== Array.prototype[Symbol.iterator])
     return false;

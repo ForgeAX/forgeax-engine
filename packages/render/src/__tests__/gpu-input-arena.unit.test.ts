@@ -524,6 +524,12 @@ it('writes a checked suffix under its full allocation owner and rejects partial 
     expect(writes.mock.calls[0]?.[1]).toBe((address + 2) * 4);
     expect(writes.mock.calls[0]?.[4]).toBe(8);
     writes.mockClear();
+    arena.writeDescriptorWord(address, 4, 1, 97);
+    upload.flush(gpu.queue, created, false).unwrap();
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0]?.[1]).toBe((address + 1) * 4);
+    expect(writes.mock.calls[0]?.[4]).toBe(4);
+    writes.mockClear();
     data.setUint32(0, 17, true);
     arena.writeDescriptor(address, data, 4, 2);
     arena.releaseDescriptor(address, 4);
@@ -558,8 +564,8 @@ it('coalesces nearby known changes into address-ordered queue writes of current 
     frame.buffer().unwrap();
     frame.seal().unwrap();
     expect(write.mock.calls.map((call) => [call[1], call[4]])).toEqual([
-      [(rows[0] as number) * 4, ((rows[5] as number) + 17 - (rows[0] as number)) * 4],
-      [far * 4, 17 * 4],
+      [((rows[0] as number) + 4) * 4, ((rows[5] as number) - (rows[0] as number) + 1) * 4],
+      [(far + 4) * 4, 4],
     ]);
   } finally {
     write.mockRestore();

@@ -105,7 +105,7 @@ function stageOn(
     frame,
     state.skylight.value,
     state.environment.value,
-  ) as Tickets;
+  ).tickets as Tickets;
 }
 
 function completeOn(owner: ReflectionProbeRecordOwner, tickets: Tickets, frameId: number) {

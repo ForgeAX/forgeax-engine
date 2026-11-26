@@ -37,27 +37,54 @@ function assertRange(near: number, far: number): void {
   }
 }
 
+function cubeView(
+  out: Mat4,
+  position: Vec3Like,
+  orientation: (typeof FACE_ORIENTATION)[number],
+  target: number[],
+): Mat4 {
+  for (let axis = 0; axis < 3; axis++)
+    target[axis] = (position[axis] ?? 0) + (orientation.direction[axis] as number);
+  return mat4.lookAt(out, position, target, orientation.up);
+}
+
+function cubeProjection(near: number, far: number): Mat4 {
+  assertRange(near, far);
+  return mat4.perspectiveReverseZ(mat4.create(), Math.PI / 2, 1, near, far);
+}
+
+/** Produce the six reflected shadow faces in their upload layout. */
+export function packedPointShadowMatrices(
+  position: Vec3Like,
+  near: number,
+  far: number,
+): Float32Array {
+  const projection = cubeProjection(near, far);
+  const matrix = mat4.create();
+  const target = [0, 0, 0];
+  const packed = new Float32Array(CUBE_CAMERA_FACE_ORDER.length * 16);
+  let offset = 0;
+  for (const orientation of FACE_ORIENTATION) {
+    cubeView(matrix, position, orientation, target);
+    mat4.multiply(matrix, projection, matrix);
+    for (let column = 0; column < 16; column += 4) matrix[column] = -(matrix[column] as number);
+    packed.set(matrix, offset);
+    offset += 16;
+  }
+  return packed;
+}
+
 /** Build the only supported +X,-X,+Y,-Y,+Z,-Z cube orientation. */
 export function buildCubeCameraFaceViews(input: CubeCameraFaceViewInput): CubeCameraFaceView[] {
-  assertRange(input.near, input.far);
+  const projectionTemplate = cubeProjection(input.near, input.far);
   const views: CubeCameraFaceView[] = [];
+  const target = [0, 0, 0];
   for (const [index, face] of CUBE_CAMERA_FACE_ORDER.entries()) {
     const orientation = FACE_ORIENTATION[index];
     if (orientation === undefined)
       throw new Error(`CubeCamera face orientation missing at ${index}`);
-    const target: Vec3Like = [
-      (input.position[0] ?? 0) + orientation.direction[0],
-      (input.position[1] ?? 0) + orientation.direction[1],
-      (input.position[2] ?? 0) + orientation.direction[2],
-    ];
-    const view = mat4.lookAt(mat4.create(), input.position, target, orientation.up);
-    const projection = mat4.perspectiveReverseZ(
-      mat4.create(),
-      Math.PI / 2,
-      1,
-      input.near,
-      input.far,
-    );
+    const view = cubeView(mat4.create(), input.position, orientation, target);
+    const projection = index === 0 ? projectionTemplate : mat4.clone(projectionTemplate);
     const viewProjection = mat4.multiply(mat4.create(), projection, view);
     views.push({
       position: input.position,

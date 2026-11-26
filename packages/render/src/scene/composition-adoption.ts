@@ -15,7 +15,7 @@ export type SkinWork<Entry> =
   | {
       readonly kind: 'joints';
       readonly entry: Entry;
-      readonly entities: ArrayLike<number>;
+      readonly entities: Iterable<number>;
     }
   | { readonly kind: 'initialize'; readonly entry: Entry }
   | {

@@ -94,16 +94,14 @@ describe('persistent material reader membership', () => {
     const rows = [row(81, ab), row(82, cc)];
     const main = capture(new MaterialRelations(), rows);
     const index = new MaterialBindingIndex();
-    const old = index.build([main], [], accepted, rows).accepted;
-    expect(old?.frame).toBe(accepted);
-    expect(old?.slots[1]).toBe(accepted.get(b));
+    const old = index.build([main], [], accepted, rows);
+    expect(old.slots[1]).toBe(accepted.get(b)?.snapshot);
     const replacement = accepted.with(b, 1, { ...b.snapshot, roughness: 0.7 });
-    const current = index.build([main], [], replacement, rows).accepted;
-    expect(current?.frame).toBe(replacement);
-    expect(current?.slots[1]).toBe(replacement.get(b));
-    expect(old?.slots[1]?.snapshot).toBe(b.snapshot);
+    const current = index.build([main], [], replacement, rows);
+    expect(current.slots[1]).toBe(replacement.get(b)?.snapshot);
+    expect(old.slots[1]).toBe(b.snapshot);
     const borrowed = new Proxy(replacement, {});
-    expect(index.build([main], [], borrowed, rows).accepted).toBeUndefined();
+    expect(index.build([main], [], borrowed, rows).slots).toEqual(current.slots);
   });
 
   it('consumes issued caster relations once and re-reads projected fallback rows', () => {

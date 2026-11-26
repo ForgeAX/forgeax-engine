@@ -70,6 +70,8 @@ async function fixture() {
       format?: 'bgra8unorm' | 'rgba16float';
       scope?: DeviceScope;
       layout?: typeof layout;
+      lensFlare?: boolean;
+      glare?: boolean;
     } = {},
   ) {
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -85,6 +87,21 @@ async function fixture() {
       size: 'surface',
       format: options.format ?? 'bgra8unorm',
     }).unwrap();
+    const glare = options.glare
+      ? createRenderPipelineTarget(graph, 'test-glare', {
+          size: { width: 4, height: 4 },
+          format: 'rgba16float',
+          domain: 'linear-hdr',
+        }).unwrap()
+      : undefined;
+    if (glare !== undefined)
+      graph
+        .addRasterPass('test-glare', {
+          accesses: [{ resource: glare.view, usage: 'color-attachment' }],
+          colorAttachments: [{ view: glare.view, loadOp: 'clear', storeOp: 'store' }],
+          encode() {},
+        })
+        .unwrap();
     const temporal =
       options.antialias === 'taa'
         ? createRenderPipelineTarget(graph, 'scene-temporal', {
@@ -186,6 +203,7 @@ async function fixture() {
             tonemap: 'aces-filmic',
             antialias: options.antialias ?? 'none',
             bloom: 'off',
+            lensFlare: options.lensFlare === true,
             outline: options.outline ?? false,
           },
           surface: {
@@ -204,7 +222,7 @@ async function fixture() {
         { storage: output },
         { sceneTemporal: temporal },
       ).unwrap();
-    } else addStandardToneLutPass(graph, input, output, lut, false).unwrap();
+    } else addStandardToneLutPass(graph, input, output, lut, false, glare).unwrap();
     const compiled = graph
       .compile({ device, surfaceSize: { width: options.width ?? 8, height: 8 } })
       .unwrap();
@@ -327,6 +345,42 @@ it.each([
       (await compiled.retire()).unwrap();
     }
   }
+  f.scope.retire();
+});
+
+it('reads the half-resolution glare in the existing portable tone/LUT draw', async () => {
+  const f = await fixture();
+  const { compiled } = await f.build({ topology: true, lensFlare: true });
+  try {
+    const info = compiled.inspect();
+    expect(
+      info.passes.find((pass) => pass.name === 'standard-tone-lut-output')?.accesses,
+    ).toContainEqual({ resource: 'standard-lens-flare', usage: 'sampled-read' });
+    expect(
+      info.resources.find((resource) => resource.label === 'standard-lens-flare'),
+    ).toMatchObject({ descriptor: { width: 4, height: 4 } });
+    expect(
+      info.passes.some((pass) =>
+        ['bloom-composite', 'standard-lens-flare-apply'].includes(pass.name),
+      ),
+    ).toBe(false);
+  } finally {
+    (await compiled.retire()).unwrap();
+  }
+
+  const pipelines = vi.spyOn(f.device, 'createRenderPipeline');
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  await f.draw();
+  await f.draw({ glare: true });
+  await f.draw({ glare: true });
+  expect(pipelines.mock.calls.map(([recipe]) => recipe.fragment?.entryPoint)).toEqual([
+    'fs_tone_lut_encode',
+    'fs_tone_lut_glare_encode',
+  ]);
+  expect(groups.mock.calls.at(-1)?.[0].entries).toContainEqual({
+    binding: 3,
+    resource: { kind: 'textureView', value: expect.anything() },
+  });
   f.scope.retire();
 });
 

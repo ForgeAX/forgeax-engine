@@ -4,7 +4,8 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { createEntityLookup, type EntityLookup } from '@forgeax/engine-ecs/internal';
+import { createEntityLookup } from '@forgeax/engine-ecs/internal';
+import { createComponentPresenceReader } from '@forgeax/engine-ecs/projection';
 import { ChildOf } from './child-of';
 
 /**
@@ -40,7 +41,21 @@ export const Mobility = defineComponent('Mobility', {
   kind: { type: 'enum', default: MobilityKindValue.movable, labels: MobilityKindValue },
 });
 
-const hierarchyReaders = new WeakMap<World, EntityLookup>();
+function createHierarchyReader(world: World) {
+  return {
+    declared: createComponentPresenceReader(world, Mobility),
+    lookup: createEntityLookup(
+      world,
+      [Mobility, ChildOf],
+      [
+        [0, 'kind'],
+        [1, 'parent'],
+      ],
+    ),
+  };
+}
+
+const hierarchyReaders = new WeakMap<World, ReturnType<typeof createHierarchyReader>>();
 const MAX_MOBILITY_ANCESTORS = 64;
 
 /** Nearest current declaration, including the entity itself and up to 64 ancestors. */
@@ -61,18 +76,13 @@ export function mobilityFromRow(
 }
 
 function readDeclarations(world: World, entity: EntityHandle, start: number): MobilityKind {
-  let lookup = hierarchyReaders.get(world);
-  if (lookup === undefined) {
-    lookup = createEntityLookup(
-      world,
-      [Mobility, ChildOf],
-      [
-        [0, 'kind'],
-        [1, 'parent'],
-      ],
-    );
-    hierarchyReaders.set(world, lookup);
+  let reader = hierarchyReaders.get(world);
+  if (reader === undefined) {
+    reader = createHierarchyReader(world);
+    hierarchyReaders.set(world, reader);
   }
+  if (!reader.declared()) return 'movable';
+  const lookup = reader.lookup;
   let current = entity;
   for (let depth = start; depth <= MAX_MOBILITY_ANCESTORS && lookup.get(current); depth++) {
     const { fields } = lookup.columns;

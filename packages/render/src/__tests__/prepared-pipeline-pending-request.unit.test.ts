@@ -92,8 +92,9 @@ describe('pending prepared material requests', () => {
       if (answer === 'pending') owner.pendingAnswers++;
       return answer === 'ready' ? pipeline : null;
     };
+    const owners = new WeakMap([[owner, owner]]);
     const request = (facts: Parameters<typeof requestMaterialPipeline>[1], lookupOnly = false) =>
-      requestMaterialPipeline(requests, facts, lookupOnly, build, () => owner);
+      requestMaterialPipeline(requests, facts, lookupOnly, build, [], owners, owner);
     expect(request(['a'])).toBeNull();
     expect(request(['a'])).toBeNull();
     expect(builds).toBe(1);
@@ -117,6 +118,7 @@ describe('pending prepared material requests', () => {
     const requests = new MaterialPipelineRequestCache<
       RenderPipeline | PendingMaterialPipelineRequest
     >();
+    const owners = new WeakMap([[owner, owner]]);
     let completion: ReturnType<typeof owner.pendingCompletion>;
     const request = (observePending = false) =>
       requestMaterialPipeline(
@@ -128,7 +130,9 @@ describe('pending prepared material requests', () => {
           if (observePending) completion = owner.pendingCompletion('shared');
           return result.ok ? result.value : null;
         },
-        () => owner,
+        [],
+        owners,
+        owner,
         observePending,
       );
     expect(request()).toBeNull();

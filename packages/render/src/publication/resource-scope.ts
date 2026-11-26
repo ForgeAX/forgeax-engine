@@ -71,7 +71,7 @@ export function worldRenderResources(world: World): RenderResourceScope {
               hint: 'create the World with the asset owner before binding asset fields',
             }),
           )
-        : records.resolveAsset(handle, revision),
+        : records.resolveStoredAsset(handle, revision),
     assetRevision: (handle) => records?.revisionOf(handle),
     get time() {
       return world.getResource(Time);
@@ -88,7 +88,7 @@ export function worldRenderResources(world: World): RenderResourceScope {
     },
     lookupAsset: <T extends Asset>(guid: string) => {
       const handle = owner === undefined ? undefined : runtimeAssetReference(owner, guid);
-      const value = handle === undefined ? undefined : records?.resolveAsset<T>(handle);
+      const value = handle === undefined ? undefined : records?.resolveStoredAsset<T>(handle);
       return value?.ok ? value.value : undefined;
     },
     videoFrame: (entity, clip) =>

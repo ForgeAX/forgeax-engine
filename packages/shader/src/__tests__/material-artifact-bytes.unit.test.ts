@@ -277,6 +277,11 @@ it('prepares one selected source owner without reading other variants or repeati
     target.findMaterialArtifact(clipped).unwrap().program,
   );
   expect(compilePlain).not.toHaveBeenCalled();
+  target.prepareMaterialArtifact(plain).unwrap();
+  (await target.pendingMaterialPreparations())?.unwrap();
+  target.findMaterialArtifact(plain).unwrap();
+  expect(target.materialVariantArtifactIdentifier(plain, '')).toBe(clipped);
+  expect(target.materialVariantArtifactIdentifier(plain, 'UNKNOWN=true')).toBe(plain);
 });
 
 it('reports a digest mismatch without publishing program source or retrying a rejected artifact', async () => {

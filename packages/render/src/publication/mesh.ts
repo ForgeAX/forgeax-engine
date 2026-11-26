@@ -1,12 +1,11 @@
-import { interleavedMesh } from '@forgeax/engine-geometry';
+import {
+  deriveVertexLayoutProjection,
+  invalidMeshAttributeDeclaration,
+  prepareMeshData,
+  staticMeshVertexStreamsMatchRows,
+} from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ownPublishedMeshBuffers } from './mesh-buffer-ownership';
-import {
-  isPackedRowsMesh,
-  type PackedRowsMesh,
-  packedRowsMeshError,
-  unpackPackedRows,
-} from './packed-rows-mesh';
 
 function sameMeshByteRange(
   left: ArrayBufferLike,
@@ -78,82 +77,84 @@ export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
     : copyPublishedMesh(mesh);
 }
 
-/**
- * Compare a structured-cloned Mesh POD without replacing its resource identity.
- * A packed-rows mesh is compared with a full mesh by `samePackedAndFullMesh`.
- */
-export function samePublishedMesh(left: MeshAsset, right: MeshAsset): boolean {
-  if (
-    left.attributeStorage !== right.attributeStorage &&
-    (left.attributeStorage === 'static-streams' || right.attributeStorage === 'static-streams')
-  )
-    return samePublishedMesh(interleavedMesh(left), interleavedMesh(right));
-  if (isPackedRowsMesh(left) !== isPackedRowsMesh(right)) return samePackedAndFullMesh(left, right);
-  const same = (a: unknown, b: unknown): boolean => {
-    if (Object.is(a, b)) return true;
-    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
-    if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
-      if (
-        !ArrayBuffer.isView(a) ||
-        !ArrayBuffer.isView(b) ||
-        a.constructor !== b.constructor ||
-        a.byteLength !== b.byteLength
-      )
-        return false;
-      return sameMeshByteRange(a.buffer, a.byteOffset, b.buffer, b.byteOffset, a.byteLength);
-    }
-    if (Array.isArray(a) !== Array.isArray(b)) return false;
-    if (a instanceof ArrayBuffer || b instanceof ArrayBuffer) {
-      if (
-        !(a instanceof ArrayBuffer) ||
-        !(b instanceof ArrayBuffer) ||
-        a.byteLength !== b.byteLength
-      )
-        return false;
-      return sameMeshByteRange(a, 0, b, 0, a.byteLength);
-    }
-    const keys = Object.keys(a);
-    if (keys.length !== Object.keys(b).length) return false;
-    for (const key of keys) {
-      if (!Object.hasOwn(b, key)) return false;
-      const left = (a as Record<string, unknown>)[key];
-      const right = (b as Record<string, unknown>)[key];
-      // Mesh number arrays contain many equal leaves. Do not recursively call
-      // the structural comparator for each vertex/index or allocate a callback.
-      if (!Object.is(left, right) && !same(left, right)) return false;
-    }
-    return true;
-  };
-  return same(left, right);
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+    if (
+      !ArrayBuffer.isView(a) ||
+      !ArrayBuffer.isView(b) ||
+      a.constructor !== b.constructor ||
+      a.byteLength !== b.byteLength
+    )
+      return false;
+    return sameMeshByteRange(a.buffer, a.byteOffset, b.buffer, b.byteOffset, a.byteLength);
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (a instanceof ArrayBuffer || b instanceof ArrayBuffer) {
+    if (!(a instanceof ArrayBuffer) || !(b instanceof ArrayBuffer) || a.byteLength !== b.byteLength)
+      return false;
+    return sameMeshByteRange(a, 0, b, 0, a.byteLength);
+  }
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (!Object.hasOwn(b, key)) return false;
+    const left = (a as Record<string, unknown>)[key];
+    const right = (b as Record<string, unknown>)[key];
+    // Mesh number arrays contain many equal leaves. Do not recursively call
+    // the structural comparator for each vertex/index or allocate a callback.
+    if (!Object.is(left, right) && !sameValue(left, right)) return false;
+  }
+  return true;
 }
 
-/**
- * A packed-rows mesh equals a full mesh exactly when every non-channel field is
- * byte-identical, the attribute key/type sets match, and the channels rebuilt
- * from its rows equal the full channels byte for byte.
- */
-function samePackedAndFullMesh(left: MeshAsset, right: MeshAsset): boolean {
-  const leftPacked = isPackedRowsMesh(left);
-  const packed = (leftPacked ? left : right) as PackedRowsMesh;
-  const full = leftPacked ? right : left;
+/** Compare one published revision across authored channels, packed rows and static streams. */
+export function samePublishedMesh(left: MeshAsset, right: MeshAsset): boolean {
+  if (left.attributeStorage === right.attributeStorage) return sameValue(left, right);
   const {
-    attributes: packedAttributes,
-    attributeStorage: _attributeStorage,
-    ...packedRest
-  } = packed;
-  const { attributes: fullAttributes, ...fullRest } = full;
-  if (!samePublishedMesh(packedRest as MeshAsset, fullRest as MeshAsset)) return false;
-  const packedChannels = packedAttributes as Record<string, unknown>;
-  const fullChannels = fullAttributes as Record<string, unknown>;
-  const keys = Object.keys(packedChannels);
-  if (keys.length !== Object.keys(fullChannels).length) return false;
-  const sameTypes = keys.every(
-    (key) =>
-      packedChannels[key]?.constructor === (fullChannels[key] as object | undefined)?.constructor,
-  );
-  if (!sameTypes || packedRowsMeshError(packed) !== undefined) return false;
-  return samePublishedMesh(
-    unpackPackedRows(packed) as unknown as MeshAsset,
-    fullAttributes as unknown as MeshAsset,
-  );
+    attributes: leftAttributes,
+    vertices: leftBody,
+    attributeStorage: leftStorage,
+    ...leftFields
+  } = left;
+  const {
+    attributes: rightAttributes,
+    vertices: rightBody,
+    attributeStorage: rightStorage,
+    ...rightFields
+  } = right;
+  if (
+    !(leftBody instanceof Float32Array) ||
+    !(rightBody instanceof Float32Array) ||
+    leftBody.length !== rightBody.length ||
+    left.indices?.length !== right.indices?.length
+  )
+    return false;
+
+  const layout = deriveVertexLayoutProjection(leftAttributes);
+  if (layout !== deriveVertexLayoutProjection(rightAttributes)) return false;
+  const authored =
+    leftStorage === undefined ? left : rightStorage === undefined ? right : undefined;
+  if (authored === undefined) {
+    if (!sameValue(leftAttributes, rightAttributes)) return false;
+  } else {
+    const declarations = leftStorage === undefined ? rightAttributes : leftAttributes;
+    if (
+      Object.keys(declarations).length !== layout.attributes.length ||
+      Object.keys(authored.attributes).length !== layout.attributes.length
+    )
+      return false;
+    if (invalidMeshAttributeDeclaration(declarations, layout) !== undefined) return false;
+  }
+  let bodiesMatch: boolean;
+  if (leftStorage === 'static-streams')
+    bodiesMatch = staticMeshVertexStreamsMatchRows(leftBody, rightBody, layout);
+  else if (rightStorage === 'static-streams')
+    bodiesMatch = staticMeshVertexStreamsMatchRows(rightBody, leftBody, layout);
+  else bodiesMatch = sameValue(leftBody, rightBody);
+  if (!bodiesMatch || !sameValue(leftFields, rightFields)) return false;
+
+  // With matching physical words, the authored channels must also agree with those rows.
+  return authored === undefined || prepareMeshData(authored, '<render-publication>').ok;
 }

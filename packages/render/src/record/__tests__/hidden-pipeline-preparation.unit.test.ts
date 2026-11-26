@@ -14,7 +14,7 @@ import {
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../device/device-scope';
 import { MorphGeometry } from '../../device/morph-geometry';
-import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
+import { captureMaterialSnapshot } from '../../material-resource';
 import { createPointsLinesSnapshot, type PointsLinesStyle } from '../../points-lines/snapshot';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchEntry } from '../../render-system-extract';
@@ -408,7 +408,6 @@ it('prepares occupied caster classes from material publications without reading 
       shadowValidatedOrdered: rows,
       pipelinePreparationEntries: [],
       shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
-      acceptedMaterialSlots: { frame: f.c.materialFrame, slots: [] },
     });
     const addresses = vi.spyOn(f.c.materialSlotIndices, 'at');
     prepareShadowMaterialPipelines(f.c, true);
@@ -416,32 +415,6 @@ it('prepares occupied caster classes from material publications without reading 
     expect(request).toHaveBeenCalledTimes(2);
 
     // Three geometries can share native program families while keeping independent material values.
-    const frame = f.c.materialFrame;
-    if (frame === undefined) throw Error('missing fixture material frame');
-    const versions = rows.map((row) => {
-      const accepted = frame.get(row.source.material);
-      if (accepted === undefined) throw Error('missing fixture material');
-      return accepted;
-    });
-    const bindings = new Map(
-      versions.map((version, slot) => [version.resource, new Map([['', slot]])]),
-    );
-    Object.assign(f.c, { acceptedMaterialSlots: { frame, slots: versions, bindings } });
-    const physicalReads = vi.spyOn(MaterialResource, '_frameAddress');
-    try {
-      request.mockClear();
-      prepareShadowMaterialPipelines(f.c, true);
-      expect(request).toHaveBeenCalledTimes(2);
-      expect(physicalReads).not.toHaveBeenCalled();
-      expect(addresses).not.toHaveBeenCalled();
-      // An unsubmitted or misaddressed binding still resolves its real accepted version.
-      bindings.set(second.source.material, new Map([['', 0]]));
-      prepareShadowMaterialPipelines(f.c, true);
-      expect(physicalReads).toHaveBeenCalledWith(second.source.material);
-    } finally {
-      physicalReads.mockRestore();
-    }
-
     const material = second.source.material;
     const prior = f.c.materialFrame;
     if (prior === undefined) throw Error('missing accepted material frame');
@@ -464,6 +437,15 @@ it('prepares occupied caster classes from material publications without reading 
     expect(request.mock.calls).toContainEqual(
       expect.arrayContaining([{ [STANDARD_TEXTURE_MASK_OVERRIDE]: 3 }]),
     );
+    Object.assign(f.c, { materialFrame: prior });
+    request.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls).not.toContainEqual(
+      expect.arrayContaining([{ [STANDARD_TEXTURE_MASK_OVERRIDE]: 3 }]),
+    );
+    expect(addresses).not.toHaveBeenCalled();
+    Object.assign(f.c, { materialFrame: changed });
     const retry = vi
       .fn()
       .mockReturnValueOnce(null)

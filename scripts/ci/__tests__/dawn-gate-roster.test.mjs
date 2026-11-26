@@ -1265,8 +1265,9 @@ test('run 44113035424 conserves complete workers and excludes interrupted VFX ti
 });
 
 test('actual core discovery uses matching costs and conserves every ordinary file', () => {
-  // Case deadlines plus 30 s process startup reserve are forecasts, never measurements.
+  // Provisional file forecasts include startup allowance.
   const unmeasured = [
+    'packages/render/src/__tests__/raytracing/world-bounds-index.dawn.test.ts',
     'packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts',
     'packages/render/src/__tests__/target-environment.dawn.test.ts',
     'packages/render/src/__tests__/target-subresources.dawn.test.ts',
@@ -1538,7 +1539,8 @@ test('completed cohorts distribute complete native tails before ordinary backfil
       'modeling-s6',
       'path-tracer',
       'surface-pipelines',
-      'gi-3',
+      'heavy-2',
+      'screen-probe-support',
     ],
     [
       'ordinary-2',
@@ -1546,7 +1548,7 @@ test('completed cohorts distribute complete native tails before ordinary backfil
       'gi-2',
       'alpha-hash',
       'feature-depth',
-      'transmission',
+      'renderer',
       'rect-source',
       'three-surface-expression',
       'shadow-fields',
@@ -1555,20 +1557,20 @@ test('completed cohorts distribute complete native tails before ordinary backfil
     ],
     [
       'ordinary-3',
-      'heavy-2',
+      'gi-3',
       'compact-3',
       'gi-4',
       'heavy-1',
       'modeling-show',
+      's6c-capture',
       'screen-probe',
-      'screen-probe-support',
     ],
     [
       'ordinary-4',
       'gi-5',
       'heavy-4',
       'gi-1',
-      'renderer',
+      'transmission',
       'vfx-depth',
       'default-gbuffer-gi',
       'specular-aa',
@@ -1578,6 +1580,7 @@ test('completed cohorts distribute complete native tails before ordinary backfil
 
 test('Heavy standalone Dawn files each reserve a fresh serial fork', () => {
   for (const [id, file, forecast] of [
+    ['s6c-capture', 'packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts', 930],
     ['alpha-hash', 'packages/runtime/src/__tests__/alpha-hash.dawn.test.ts', 186.15],
     ['default-gbuffer-gi', 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts', 750],
     [
@@ -1600,18 +1603,16 @@ test('Heavy standalone Dawn files each reserve a fresh serial fork', () => {
   }
 });
 
-test('measured heavy ordinary files spread without extra owners', (t) => {
+test('measured heavy ordinary files spread across the existing lanes', (t) => {
   const currentPartitions = shippingPartitions;
   const locations = new Map(
     currentPartitions.flatMap((partition, lane) =>
       partition.map(({ moduleId }) => [relative(root, moduleId).replaceAll('\\', '/'), lane + 1]),
     ),
   );
-  // Whole-file swaps must spread the three heavy consumers that previously
-  // accumulated in ordinary-2; destinations derive from measured capacity.
+  // The remaining heavy ordinary consumers retain separate capacity.
   const heavy = [
     'packages/modeling/examples/body-panels/__tests__/panels.case.dawn.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts',
     'packages/devkit/src/tools/__tests__/model-views.dawn.test.ts',
   ];
   for (const file of heavy) assert.ok(locations.has(file), file);

@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
@@ -53,6 +54,42 @@ describe('published asset closure', () => {
         .map(([handle]) => handle)
         .sort(),
     ).toEqual([materialHandle, textureHandle].sort());
+  });
+
+  it('visits a changed exact source once and preserves live dependencies from other materials', () => {
+    const root = 257;
+    const textures = new Map<string, AssetHandle<'texture'>>();
+    let reads = 0;
+    const assets = Array.from({ length: root }, (_, index) => {
+      const value = index + 1;
+      if (value !== root) textures.set(String(value), value as AssetHandle<'texture'>);
+      return {
+        get handle() {
+          reads++;
+          return value;
+        },
+        revision: value,
+      };
+    });
+    const source = {
+      snapshot: {
+        ...defaultMaterialSnapshot(root),
+        textureHandles: textures,
+        sourceAssets: { root, revision: root, assets },
+      },
+    };
+    const row = {
+      assetHandle: 1,
+      materials: [source],
+      materialOverrides: [undefined, { snapshot: defaultMaterialSnapshot(3) }],
+    } as unknown as RenderableSnapshot;
+    expect(
+      publicationDependencies(row, (handle, revision) => handle === revision && handle !== 2),
+    ).toEqual([1, 2, 3]);
+    expect(reads).toBeLessThanOrEqual(root * 4);
+    reads = 0;
+    expect(publicationDependencies(row).length).toBe(root);
+    expect(reads).toBe(0);
   });
 
   it('replaces a shared dependency once, with atomic discard and retirement', () => {

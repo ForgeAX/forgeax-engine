@@ -93,7 +93,10 @@ import { addCurrentReflectionProbeFilters } from './reflection-probe-pmrem';
 import { scenePipelinePreparations } from './scene-pipeline-preparation';
 import { admitStandardAoConfig, standardAoUnavailableForGraph } from './standard-ao-admission';
 
-import { standardFeatureContribution } from './standard-feature-contribution';
+import {
+  standardAfterTonemapOutput,
+  standardFeatureContribution,
+} from './standard-feature-contribution';
 import { addTargetCaptureGraphPasses, type CubeCaptureGraphState } from './target-capture-graph';
 
 export type { CubeCaptureGraphState, CubeCaptureGraphWork } from './target-capture-graph';
@@ -1064,6 +1067,12 @@ function cameraTopologyOf(
     // only its zero/non-zero admission into the closed topology switch so
     // positive intensity changes update the recorder UBO in place.
     bloom: standardBloomAdmitted(camera) ? 'on' : 'off',
+    ...(standardBloomAdmitted(camera) && camera.bloomQuality !== undefined
+      ? { bloomQuality: camera.bloomQuality }
+      : {}),
+    ...(standardBloomAdmitted(camera) && camera.bloomThreshold >= 0
+      ? { bloomPrefilter: true as const }
+      : {}),
     bloomIntensity: camera.bloomIntensity,
     outline:
       !clearOnly &&
@@ -1097,6 +1106,11 @@ function outputTopologyOf(
   return {
     autoExposure:
       postProcessing && output?.exposure.kind === 'auto' && autoExposureResources !== undefined,
+    autoExposureHalfRes:
+      postProcessing &&
+      autoExposureResources !== undefined &&
+      output?.exposure.kind === 'auto' &&
+      output.exposure.adaptation === 'ue-eye-adaptation',
     whiteBalance:
       postProcessing && output !== undefined && (output.temperature !== 6504 || output.tint !== 0),
     temperature: output?.temperature ?? 6504,
@@ -3273,7 +3287,7 @@ function compileViewGraphStagesOwned(
           observationCaptureDomains: recordContext(internals).observationCaptureDomains,
           ...graphInputs.value,
           ...(standardLighting === undefined ? {} : { standardLighting }),
-          capabilities: { rgba16floatRenderable: internals.device.caps.rgba16floatRenderable },
+          capabilities: internals.device.caps,
           ...(cloudShadowResolution === undefined ? {} : { cloudShadowResolution }),
           encodeTransmissionMip: ({ pass, resources, source, format }) => {
             const sourceView = resources.textureView(source);
@@ -3469,13 +3483,16 @@ function compileViewGraphStagesOwned(
           },
           hasFeature: (identity) =>
             projectedFeaturePlans.value.some((execution) => execution.featureIdentity === identity),
-          hasFeatureWork: (identity, placement, sceneInput) =>
+          afterTonemapOutput: standardAfterTonemapOutput(
+            viewExecutions,
+            fullscreenFeatureIds,
+            graphTopology.surface.storageFormat,
+          ),
+          hasFeatureWork: (identity, placement) =>
             projectedFeaturePlans.value.some(
               (execution) =>
                 (identity === undefined || execution.featureIdentity === identity) &&
                 execution.passes.length > 0 &&
-                (sceneInput === undefined ||
-                  execution.passes.some((pass) => pass.graphics?.sceneDepth !== undefined)) &&
                 (placement === undefined || (execution.placement ?? 'post') === placement),
             ),
           hasFeatureRasterWork: (identity, placement, passName) =>

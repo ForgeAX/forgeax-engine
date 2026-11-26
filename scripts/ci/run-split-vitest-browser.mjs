@@ -129,6 +129,8 @@ const pixelParityCaptureBrowserFile =
   'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
 const dynamicGeometryBrowserFile =
   'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
+const standardClusterWebGl2BrowserFile =
+  'packages/runtime/src/__tests__/standard-cluster-webgl2.browser.test.ts';
 const wave1RecoveryBrowserFile =
   'packages/runtime/src/__tests__/wave1-rendering-recovery.browser.test.ts';
 // Reserve each complete case and its browser startup after the mixed child
@@ -245,6 +247,7 @@ const browserProcessIsolatedFiles = new Set([
   ...iesBrowserFiles,
   ...appNativeBrowserFileSeconds.keys(),
   dynamicGeometryBrowserFile,
+  standardClusterWebGl2BrowserFile,
   'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
   // Each independent-view path owns its own 300 s case and process deadline.
   'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
@@ -751,9 +754,13 @@ export function browserGroupRequiresExclusiveRunner(group) {
     browserProducerReadiness(group, undefined) === 'before-consume' ||
     browserGroupRequiresForeground(group) ||
     // Cold Worker and Node input journeys need exclusive admission in their
-    // new singleton processes. Historical mixed groups retain their policy.
+    // singleton processes. The WebGL2 lighting cases also passed in isolation
+    // after a mixed group lost a sprite-lit frame. Historical groups retain
+    // the admission policy of the process that measured them.
     (group.length === 1 &&
-      (group[0] === threeNodeInputsBrowserFile || group[0] === editorAssistanceBrowserFile)) ||
+      (group[0] === threeNodeInputsBrowserFile ||
+        group[0] === editorAssistanceBrowserFile ||
+        group[0] === standardClusterWebGl2BrowserFile)) ||
     group.some(
       (file) =>
         shortRendererBootstrapBrowserFiles.has(file) ||

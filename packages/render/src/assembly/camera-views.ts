@@ -1,6 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
-import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type AssetHandle, err, ok, type RenderPipelineAsset } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
@@ -143,40 +142,39 @@ function declaresComposedViews(world: World): boolean {
   return false;
 }
 
-/** Membership-only probe: does any non-composed Camera name a RenderTarget? */
-function declaresTargetCamera(world: World): boolean {
-  const query = world.query({ with: [Camera], without: [CameraView, StereoCamera] }).unwrap();
-  const reader = world[worldRead];
-  for (const span of query.spans().unwrap()) {
-    const entities = span.entities;
-    for (let index = 0; index < span.length; index++)
-      if (reader.getFieldValue(entities[index] as EntityHandle, Camera, 'target') !== 0)
-        return true;
-  }
-  return false;
-}
+const NO_CAMERAS: readonly CameraSnapshot[] = Object.freeze([]);
 
-/** Selected auxiliary RenderTarget cameras; planar mirrors stay with their display view. */
-function captureCameras(
+/** Resolve display and capture declarations from the same source camera roster. */
+function submissionCameraRoles(
   publication: PreparedRenderPublication | undefined,
   world: World | undefined,
-  cameraEntityKey: number | undefined,
+  opts: DrawOptions,
   source: SubmissionCameras | undefined,
-): readonly CameraSnapshot[] {
-  let auxiliary = publication?.frame.auxiliaryCameras;
-  if (auxiliary === undefined) {
-    if (world === undefined || !declaresTargetCamera(world)) return [];
+  requireDisplay: boolean,
+) {
+  let display: readonly CameraSnapshot[] | undefined = publication?.frame.cameras;
+  let auxiliary: readonly CameraSnapshot[] | undefined = publication?.frame.auxiliaryCameras;
+  if (opts.targetWrite !== undefined) return { display: NO_CAMERAS, captures: NO_CAMERAS };
+  if (auxiliary === undefined && world !== undefined) {
     try {
-      auxiliary = selectCameraRoles(world, cameraEntityKey, undefined, source).auxiliary;
-    } catch {
-      // Invalid camera facts belong to the primary extraction, which reports
-      // the same structured failure for this frame.
-      return [];
+      const roles = selectCameraRoles(world, opts.cameraEntityKey, undefined, source);
+      display ??= roles.display;
+      auxiliary = roles.auxiliary;
+    } catch (error) {
+      // Composed admission validates its inputs before staging. An implicit
+      // primary reports invalid camera facts through its own recording result.
+      if (publication === undefined && (requireDisplay || declaresComposedViews(world)))
+        throw error;
     }
   }
-  return auxiliary.filter(
-    (camera) => camera.planarReflection === undefined && camera.target !== undefined,
-  );
+  return {
+    display: display ?? NO_CAMERAS,
+    captures: auxiliary?.length
+      ? auxiliary.filter(
+          (camera) => camera.planarReflection === undefined && camera.target !== undefined,
+        )
+      : NO_CAMERAS,
+  };
 }
 
 /** A closed aggregate drops its children and the live CameraViews reader. */
@@ -663,26 +661,18 @@ export function createCameraViews(
       try {
         const publication = source?.publication;
         if (publication !== undefined) adoptPublicationAssets(internals, publication);
-        // The primary system owns extraction and diagnostic publication when no
-        // composed view is declared. This admission probe reads membership only.
-        const declaresViews =
-          publication === undefined && world !== undefined && declaresComposedViews(world);
         const cap =
           Math.min(internals.canvas.width, internals.canvas.height) > maxRenderShortSide
             ? maxRenderShortSide
             : 0;
         const qualityScale = internals.standardProfile?.quality?.resolutionScale ?? 1;
-        const cameras =
-          opts.targetWrite !== undefined
-            ? []
-            : (publication?.frame.cameras ??
-              ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
-                ? []
-                : selectCameraRoles(world, opts.cameraEntityKey, undefined, cameraSource).display));
-        const captures =
-          opts.targetWrite !== undefined
-            ? []
-            : captureCameras(publication, world, opts.cameraEntityKey, cameraSource);
+        const { display: cameras, captures } = submissionCameraRoles(
+          publication,
+          world,
+          opts,
+          cameraSource,
+          cap > 0 || qualityScale !== 1,
+        );
         assertViewCameras(cameras, cap > 0);
         const profileSession = activeRenderProfileSession(internals);
         const displayCameras =

@@ -232,6 +232,7 @@ describe('registry load graph', () => {
       const handle = (await registry.load(guid, nodeKind)).unwrap();
       expect(handle).toBe(runtimeAssetReference(registry, guid));
       expect(registry.read(handle).unwrap()).toMatchObject({ name: guid });
+      expect(registry.read(handle, ['name']).unwrap()).toEqual({ name: guid });
     }
     expect(decode).toHaveBeenCalledTimes(4);
   });

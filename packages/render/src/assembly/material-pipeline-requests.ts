@@ -1072,7 +1072,7 @@ export function runBuildMaterialShaderPipeline(
             prepare,
             waterInfoFormat,
             preparedStorageBindings,
-            surfaceProgram !== undefined,
+            surfaceProgram !== undefined && ownEntries,
           );
     inspectRequest?.(
       {
@@ -1337,7 +1337,7 @@ export function runGetMaterialShaderPipelineFor(
       | import('./material/pipeline-request-cache').PendingMaterialPipelineRequest
     >
   >,
-  pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1],
+  workspace: { idle: ReturnType<typeof materialPipelineRequestFacts> | undefined },
   currentMaterialShaderUvSetCounts: () => Map<string, number>,
   currentPipelineState: () => import('../record/render-context').PipelineState | null,
   currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
@@ -1375,9 +1375,9 @@ export function runGetMaterialShaderPipelineFor(
     );
     selectedArtifact = registry.materialVariantArtifactIdentifier(artifactId, key);
   }
-  const artifact = registry.findMaterialArtifact(selectedArtifact);
+  const artifact = registry.findMaterialArtifact(selectedArtifact, 'optional');
   // Missing artifacts and pending pipelines remain retryable.
-  if (!artifact.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
+  if (!artifact?.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
   const owner = currentPipelineCacheState();
   let requests = pipelineRequests.get(owner);
   if (requests === undefined) {
@@ -1385,27 +1385,41 @@ export function runGetMaterialShaderPipelineFor(
     requests = new MaterialPipelineRequestCache();
     pipelineRequests.set(owner, requests);
   }
-  // Lookups reuse one scratch fact list; a miss stores its own copy before
-  // building, since a build may request another pipeline.
-  const facts = materialPipelineRequestFacts(args, pipelineRequestScratch);
-  facts.push(args[24] ?? false);
-  facts.push(
-    currentMaterialShaderUvSetCounts().get(artifactId),
-    registry,
-    artifact.value,
-    registry.materialShaderManifestEntry(artifactId),
-    asset,
-    currentPipelineState(),
-    currentBuildDevice(),
-  );
-  return requestMaterialPipeline(
-    requests,
-    facts,
-    lookupOnly,
-    () => buildMaterialShaderPipeline(...args),
-    () => preparedPipelineOwners.get(owner),
-    observePending,
-  );
+  // A borrowed descriptor or renderer hook may issue another request while the key
+  // is being read. Only the outer lookup borrows the renderer's idle workspace.
+  const borrowed = workspace.idle;
+  const scratch = borrowed ?? [];
+  workspace.idle = undefined;
+  try {
+    const facts = materialPipelineRequestFacts(args, scratch);
+    facts.push(args[24] ?? false);
+    facts.push(
+      currentMaterialShaderUvSetCounts().get(artifactId),
+      registry,
+      artifact.value,
+      registry.materialShaderManifestEntry(artifactId),
+      asset,
+      currentPipelineState(),
+      currentBuildDevice(),
+    );
+    return requestMaterialPipeline(
+      requests,
+      facts,
+      lookupOnly,
+      buildMaterialShaderPipeline,
+      args,
+      preparedPipelineOwners,
+      owner,
+      observePending,
+    );
+  } finally {
+    if (borrowed !== undefined) {
+      // Keep the small array backing, but release the last shader, layout and device references.
+      if (borrowed.length > 64) borrowed.length = 0;
+      else borrowed.fill(undefined);
+      workspace.idle = borrowed;
+    }
+  }
 }
 
 export interface MaterialPipelineSelection {

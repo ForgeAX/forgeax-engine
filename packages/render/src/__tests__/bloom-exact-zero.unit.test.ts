@@ -203,9 +203,9 @@ describe('Standard Bloom exact-zero topology', () => {
       const info = inspect('on');
       expect(inspectStandardBloomGraph(info)).toEqual({
         status: 'valid',
-        targetCount: 11,
-        targetBytes: 3_071_360,
-        passCount: 11,
+        targetCount: 15,
+        targetBytes: 3_224_640,
+        passCount: 15,
         levelCount: 5,
         levelDimensions: [
           { width: 320, height: 180 },
@@ -234,16 +234,20 @@ describe('Standard Bloom exact-zero topology', () => {
       expect(
         info.passes.map((pass) => pass.name).filter((name) => name.startsWith('bloom-')),
       ).toEqual([
-        'bloom-horizontal-0',
-        'bloom-vertical-0',
-        'bloom-horizontal-1',
-        'bloom-vertical-1',
-        'bloom-horizontal-2',
-        'bloom-vertical-2',
-        'bloom-horizontal-3',
-        'bloom-vertical-3',
+        'bloom-downsample-1',
+        'bloom-downsample-2',
+        'bloom-downsample-3',
+        'bloom-downsample-4',
         'bloom-horizontal-4',
         'bloom-vertical-4',
+        'bloom-horizontal-3',
+        'bloom-vertical-3',
+        'bloom-horizontal-2',
+        'bloom-vertical-2',
+        'bloom-horizontal-1',
+        'bloom-vertical-1',
+        'bloom-horizontal-0',
+        'bloom-vertical-0',
         'bloom-composite',
       ]);
     }

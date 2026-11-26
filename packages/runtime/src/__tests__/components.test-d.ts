@@ -103,6 +103,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'transparency'
       | 'historyVersion'
       | 'bloom'
+      | 'bloomQuality'
       | 'bloomThreshold'
       | 'bloomIntensity'
       | 'bloomSmoothWidth'
@@ -114,6 +115,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'postProcessing'
     >();
     expectTypeOf<Data['fov']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['bloomQuality']>().toEqualTypeOf<number>();
     expectTypeOf<Data['cullMask']>().toEqualTypeOf<number>();
     expectTypeOf<Data['orderOpaqueByLayer']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['far']>().toEqualTypeOf<number>();
@@ -267,6 +269,7 @@ describe('w15 AC-04 type constraint — ShapeOf derivation from field-payload', 
     expectTypeOf<T['bloom']>().toEqualTypeOf<number>();
     expectTypeOf<T['bloomThreshold']>().toEqualTypeOf<number>();
     expectTypeOf<T['bloomIntensity']>().toEqualTypeOf<number>();
+    expectTypeOf<T['bloomQuality']>().toEqualTypeOf<number>();
     expectTypeOf<T['bloomSmoothWidth']>().toEqualTypeOf<number>();
     expectTypeOf<T['bloomRadius']>().toEqualTypeOf<number>();
     // feat-20260617 / M3: AC-09 -- the bool column narrows to boolean.

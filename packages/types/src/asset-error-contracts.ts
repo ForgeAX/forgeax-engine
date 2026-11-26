@@ -535,7 +535,7 @@ export interface AssetMeshBinContractViolationDetail {
  *   indexCount, indexBufferLength, meshAssetGuid }`.
  */
 export type AssetErrorDetail =
-  | { readonly handle: number; readonly revision: number }
+  | { readonly handle: number; readonly revision: number; readonly fields?: readonly string[] }
   | {
       readonly guid: string;
       readonly dependencyGuid: string;

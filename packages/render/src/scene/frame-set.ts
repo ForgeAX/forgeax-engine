@@ -1,4 +1,4 @@
-import { changes, type Node, nodes, put, remove } from './frame-tree';
+import { changes, type Node, nodes, OrderedPageTree, put, remove } from './frame-tree';
 
 const PAGE_BITS = 1024;
 const PAGE_WORDS = PAGE_BITS / 32;
@@ -27,11 +27,12 @@ function visitBits(page: number, word: number, bits: number, visit: (key: number
 /**
  * Fixed numeric membership as a persistent tree of 1024-bit pages: one node and
  * one bitmap per occupied page, not per key. A known addition/removal copies
- * one bitmap and its page path; earlier frames keep their own pages.
+ * one bitmap and its page path; earlier frames keep their own pages. Signed
+ * words match JavaScript bitwise results, including a set lane 31.
  */
 export class FrameSet implements ReadonlySet<number> {
   readonly [Symbol.toStringTag] = 'FrameSet';
-  #root: Node<Uint32Array> | undefined;
+  #root: Node<Int32Array> | undefined;
   constructor() {
     Object.freeze(this);
   }
@@ -44,7 +45,7 @@ export class FrameSet implements ReadonlySet<number> {
       Object.getPrototypeOf(value) === FrameSet.prototype
     );
   }
-  static #from(root: Node<Uint32Array> | undefined): FrameSet {
+  static #from(root: Node<Int32Array> | undefined): FrameSet {
     const value = new FrameSet();
     value.#root = root;
     return value;
@@ -58,8 +59,8 @@ export class FrameSet implements ReadonlySet<number> {
 
   /** Build from a synchronous producer without constructing a second array of keys. */
   static collect(visit: (add: (key: number) => void) => void): FrameSet {
-    const pages = new Map<number, Uint32Array>();
-    let writable: Map<number, Uint32Array> | undefined = pages;
+    const pages = new Map<number, Int32Array>();
+    let writable: Map<number, Int32Array> | undefined = pages;
     try {
       visit((key) => {
         if (writable === undefined) throw new TypeError('FrameSet collection has ended');
@@ -68,16 +69,16 @@ export class FrameSet implements ReadonlySet<number> {
         const page = Math.floor(key / PAGE_BITS);
         let bits = writable.get(page);
         if (bits === undefined) {
-          bits = new Uint32Array(PAGE_WORDS);
+          bits = new Int32Array(PAGE_WORDS);
           writable.set(page, bits);
         }
         const lane = key - page * PAGE_BITS;
-        bits[lane >>> 5] = ((bits[lane >>> 5] as number) | (1 << (lane & 31))) >>> 0;
+        bits[lane >>> 5] = (bits[lane >>> 5] as number) | (1 << (lane & 31));
       });
     } finally {
       writable = undefined;
     }
-    let root: Node<Uint32Array> | undefined;
+    let root: Node<Int32Array> | undefined;
     for (const [page, bits] of pages) {
       let weight = 0;
       for (let word = 0; word < PAGE_WORDS; word++) weight += popcount(bits[word] as number);
@@ -85,7 +86,47 @@ export class FrameSet implements ReadonlySet<number> {
     }
     return FrameSet.#from(root);
   }
-  #page(page: number): Node<Uint32Array> | undefined {
+  /** The producer supplies nonempty 32-slot words in ascending physical order. */
+  static fromOrderedWords(visit: (write: (word: number, bits: number) => void) => void): FrameSet {
+    let tree: OrderedPageTree<Int32Array> | undefined;
+    let page = -1;
+    let bits: Int32Array | undefined;
+    let weight = 0;
+    let previous = -1;
+    let open = true;
+    try {
+      visit((word, value) => {
+        if (!open) throw new TypeError('FrameSet collection has ended');
+        if (
+          !Number.isSafeInteger(word) ||
+          word <= previous ||
+          word > Math.floor(Number.MAX_SAFE_INTEGER / 32)
+        )
+          throw new RangeError('FrameSet word addresses must increase');
+        previous = word;
+        if (value >>> 0 === 0) return;
+        const next = Math.floor(word / PAGE_WORDS);
+        if (bits === undefined || next !== page) {
+          if (bits !== undefined) {
+            tree ??= new OrderedPageTree<Int32Array>();
+            tree.append(page, bits, weight);
+          }
+          page = next;
+          bits = new Int32Array(PAGE_WORDS);
+          weight = 0;
+        }
+        bits[word % PAGE_WORDS] = value;
+        weight += popcount(value);
+      });
+    } finally {
+      open = false;
+    }
+    if (bits === undefined) return new FrameSet();
+    if (tree === undefined) return FrameSet.#from(put(undefined, bits, 0, page, weight));
+    tree.append(page, bits, weight);
+    return FrameSet.#from(tree.finish());
+  }
+  #page(page: number): Node<Int32Array> | undefined {
     let node = this.#root;
     while (node !== undefined) {
       if (node.key === page) return node;
@@ -95,6 +136,24 @@ export class FrameSet implements ReadonlySet<number> {
   }
   get size(): number {
     return this.#root?.count ?? 0;
+  }
+  /** Occupied lanes in a physical 32-slot word. */
+  wordAt(word: number): number {
+    return this.#page(Math.floor(word / PAGE_WORDS))?.value[word % PAGE_WORDS] ?? 0;
+  }
+
+  /** Stop at the first result, in physical address order. The bitmap never escapes. */
+  findWord<T>(visit: (word: number, bits: number) => T | undefined): T | undefined {
+    for (const page of nodes(this.#root)) {
+      for (let lane = 0; lane < PAGE_WORDS; lane++) {
+        const bits = page.value[lane] as number;
+        if (bits !== 0) {
+          const result = visit(page.key * PAGE_WORDS + lane, bits);
+          if (result !== undefined) return result;
+        }
+      }
+    }
+    return undefined;
   }
   /** The key at its ascending rank, without materializing a dense key array. */
   at(index: number): number | undefined {
@@ -125,6 +184,33 @@ export class FrameSet implements ReadonlySet<number> {
     }
     return undefined;
   }
+  /** Captured view rank for one physical slot, including holes in earlier pages. */
+  indexOf(key: number): number | undefined {
+    if (!Number.isSafeInteger(key) || key < 0) return undefined;
+    const page = Math.floor(key / PAGE_BITS);
+    let rank = 0;
+    let node = this.#root;
+    while (node !== undefined) {
+      if (page < node.key) {
+        node = node.left;
+        continue;
+      }
+      rank += node.left?.count ?? 0;
+      if (page === node.key) {
+        const lane = key % PAGE_BITS;
+        const word = lane >>> 5;
+        const bit = 1 << (lane & 31);
+        const bits = node.value[word] as number;
+        if ((bits & bit) === 0) return undefined;
+        for (let i = 0; i < word; i++) rank += popcount(node.value[i] as number);
+        return rank + popcount(bits & (bit - 1));
+      }
+      rank += node.weight;
+      node = node.right;
+    }
+    return undefined;
+  }
+
   has(key: number): boolean {
     if (!Number.isSafeInteger(key) || key < 0) return false;
     const page = Math.floor(key / PAGE_BITS);
@@ -137,10 +223,10 @@ export class FrameSet implements ReadonlySet<number> {
     const page = Math.floor(key / PAGE_BITS);
     const node = this.#page(page);
     const lane = key - page * PAGE_BITS;
-    const bits = node === undefined ? new Uint32Array(PAGE_WORDS) : node.value.slice();
+    const bits = node === undefined ? new Int32Array(PAGE_WORDS) : node.value.slice();
     const word = lane >>> 5;
     const mask = 1 << (lane & 31);
-    bits[word] = (present ? (bits[word] as number) | mask : (bits[word] as number) & ~mask) >>> 0;
+    bits[word] = present ? (bits[word] as number) | mask : (bits[word] as number) & ~mask;
     const weight = (node?.weight ?? 0) + (present ? 1 : -1);
     return FrameSet.#from(
       weight === 0 ? remove(this.#root, 0, page) : put(this.#root, bits, 0, page, weight),
@@ -159,7 +245,7 @@ export class FrameSet implements ReadonlySet<number> {
    * bitmap page and its path are copied once, not once per key.
    */
   edit(edits: ReadonlyMap<number, boolean>): FrameSet {
-    const pages = new Map<number, { bits: Uint32Array; weight: number }>();
+    const pages = new Map<number, { bits: Int32Array; weight: number }>();
     edits.forEach((present, key) => {
       if (!Number.isSafeInteger(key) || key < 0)
         throw new RangeError('FrameSet keys are non-negative safe integers');
@@ -168,7 +254,7 @@ export class FrameSet implements ReadonlySet<number> {
       if (edited === undefined) {
         const node = this.#page(page);
         edited = {
-          bits: node === undefined ? new Uint32Array(PAGE_WORDS) : node.value.slice(),
+          bits: node === undefined ? new Int32Array(PAGE_WORDS) : node.value.slice(),
           weight: node?.weight ?? 0,
         };
         pages.set(page, edited);
@@ -177,8 +263,8 @@ export class FrameSet implements ReadonlySet<number> {
       const word = lane >>> 5;
       const mask = 1 << (lane & 31);
       const before = edited.bits[word] as number;
-      const after = (present ? before | mask : before & ~mask) >>> 0;
-      if (after === before >>> 0) return;
+      const after = present ? before | mask : before & ~mask;
+      if (after === before) return;
       edited.bits[word] = after;
       edited.weight += present ? 1 : -1;
     });
@@ -199,23 +285,29 @@ export class FrameSet implements ReadonlySet<number> {
   /** Visit admitted slots in order. Filtering a captured roster copies only
    * bitmap pages that lost members and preserves the other physical addresses. */
   filter(keep: (slot: number) => boolean): FrameSet {
+    return this.filterWords((word, original) => {
+      let kept = original;
+      for (let bits = original; bits !== 0; bits &= bits - 1) {
+        const bit = bits & -bits;
+        if (!keep(word * 32 + 31 - Math.clz32(bit))) kept ^= bit;
+      }
+      return kept;
+    });
+  }
+  /** A subset can retain every unchanged membership page after filtering. */
+  filterWords(keep: (word: number, bits: number) => number): FrameSet {
     let root = this.#root;
     for (const page of nodes(this.#root)) {
-      let changed: Uint32Array | undefined;
+      let changed: Int32Array | undefined;
       let weight = page.weight;
       for (let word = 0; word < PAGE_WORDS; word++) {
         const original = page.value[word] as number;
-        let kept = original;
-        for (let bits = original; bits !== 0; bits &= bits - 1) {
-          const bit = bits & -bits;
-          if (!keep(page.key * PAGE_BITS + word * 32 + 31 - Math.clz32(bit))) {
-            kept ^= bit;
-            weight--;
-          }
-        }
-        if (kept >>> 0 !== original) {
+        if (original === 0) continue;
+        const kept = original & keep(page.key * PAGE_WORDS + word, original);
+        if (kept !== original) {
           changed ??= page.value.slice();
-          changed[word] = kept >>> 0;
+          changed[word] = kept;
+          weight -= popcount(original ^ kept);
         }
       }
       if (changed !== undefined)
@@ -227,7 +319,7 @@ export class FrameSet implements ReadonlySet<number> {
   changesSince(before: FrameSet, visit: (key: number) => void): void {
     changes(before.#root, this.#root, (left, right, page) => {
       for (let word = 0; word < PAGE_WORDS; word++) {
-        const bits = ((left?.[word] ?? 0) ^ (right?.[word] ?? 0)) >>> 0;
+        const bits = (left?.[word] ?? 0) ^ (right?.[word] ?? 0);
         if (bits !== 0) visitBits(page, word, bits, visit);
       }
     });
@@ -259,9 +351,9 @@ export class FrameSet implements ReadonlySet<number> {
 
 /** One bitmap walk; row consumers need no generator result for each key. */
 class FrameSetKeyCursor implements IterableIterator<number> {
-  #root: Node<Uint32Array> | undefined;
-  readonly #pending: Node<Uint32Array>[] = [];
-  #page: Uint32Array | undefined;
+  #root: Node<Int32Array> | undefined;
+  readonly #pending: Node<Int32Array>[] = [];
+  #page: Int32Array | undefined;
   #word = PAGE_WORDS;
   #bits = 0;
   #base = 0;
@@ -269,7 +361,7 @@ class FrameSetKeyCursor implements IterableIterator<number> {
     value: undefined,
     done: false,
   };
-  constructor(root: Node<Uint32Array> | undefined) {
+  constructor(root: Node<Int32Array> | undefined) {
     this.#root = root;
   }
   next(): IteratorResult<number> {
@@ -291,7 +383,7 @@ class FrameSetKeyCursor implements IterableIterator<number> {
     this.#result.value = this.#base + (this.#word - 1) * 32 + 31 - Math.clz32(low);
     return this.#result as IteratorResult<number>;
   }
-  private nextPage(): Node<Uint32Array> | undefined {
+  private nextPage(): Node<Int32Array> | undefined {
     let node = this.#root;
     while (node !== undefined) {
       this.#pending.push(node);

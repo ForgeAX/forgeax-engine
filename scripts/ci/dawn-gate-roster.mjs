@@ -85,6 +85,15 @@ export const DAWN_ISOLATED_GROUPS = [
     files: ['apps/modeling-show/__tests__/show.dawn.test.ts'],
   },
   {
+    id: 's6c-capture',
+    nativeProcessSlots: 2,
+    // Complete case execution took 557 seconds in run 45660863359 and
+    // 981 seconds on the more contended runner in run 45672761560.
+    // Reserve 15m30s for exclusive placement. The test keeps its own deadline.
+    placementReserveSeconds: 930,
+    files: ['packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts'],
+  },
+  {
     id: 'surface-pipelines',
     // The planar fixtures cook a cold authored Pack before native readback.
     // The paired one-compiler allocation exhausted both original case limits.
@@ -251,12 +260,16 @@ export const DAWN_ISOLATED_GROUPS = [
   {
     id: 'world-card-bounds',
     // The finite-ray traversal exhausted its 90-second case bound in
-    // ordinary-4. Admit both cases together before ordinary backfill.
+    // ordinary-4. The index's cold strict and guard-mutant pipelines also
+    // hit the original case limit there in run 45683012521.
     nativeProcessSlots: 2,
     limitSoftwareGpuWorkers: true,
     softwareGpuHeapRasterThreads: 1,
-    placementReserveSeconds: 120,
-    files: ['packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts'],
+    placementReserveSeconds: 300,
+    files: [
+      'packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts',
+      'packages/render/src/__tests__/raytracing/world-bounds-index.dawn.test.ts',
+    ],
     env: { GALLIVM_PERF: 'nopt' },
   },
   {
@@ -326,6 +339,11 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Move Path Tracer and Shadow Fields to lanes one and two. Exchange the
 // Surface owners and move Specular AA to preserve the complete-cohort bounds.
 // Move Rect Source to lane two after retiring the old SSR ordinary files.
+// Run 45660863359 reached ordinary-2 after 26 minutes of native owners.
+// Exchange Transmission and Renderer to use lane four's measured headroom.
+// Run 45672761560 kept one ordinary-1 worker in S6c for over 16 minutes.
+// Give S6c its own process in lane three and move Screen Probe Support to one.
+// Exchange GI-3 and Heavy-2 after the World Bounds Index joins lane two.
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
@@ -337,7 +355,8 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'modeling-s6',
     'path-tracer',
     'surface-pipelines',
-    'gi-3',
+    'heavy-2',
+    'screen-probe-support',
   ]),
   Object.freeze([
     'ordinary-2',
@@ -345,7 +364,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'gi-2',
     'alpha-hash',
     'feature-depth',
-    'transmission',
+    'renderer',
     'rect-source',
     'three-surface-expression',
     'shadow-fields',
@@ -354,20 +373,20 @@ export const DAWN_GATE_SHARDS = Object.freeze([
   ]),
   Object.freeze([
     'ordinary-3',
-    'heavy-2',
+    'gi-3',
     'compact-3',
     'gi-4',
     'heavy-1',
     'modeling-show',
+    's6c-capture',
     'screen-probe',
-    'screen-probe-support',
   ]),
   Object.freeze([
     'ordinary-4',
     'gi-5',
     'heavy-4',
     'gi-1',
-    'renderer',
+    'transmission',
     'vfx-depth',
     'default-gbuffer-gi',
     'specular-aa',

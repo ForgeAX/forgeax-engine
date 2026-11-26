@@ -13,8 +13,9 @@ import { materialRasterSource } from '../pipeline-builder';
 import { pipelineStripIndexFormat, renderStateHash } from '../pipeline-spec';
 import { createPrimitiveBindGroup, primitiveForPipeline } from '../reflection/primitive-bindings';
 import { CapturedSceneTransform } from '../scene/captured-transform';
+import { visitSubmittedDrawRows } from './draw-row-pages';
 import type { DrawRows } from './frame-snapshot';
-import { bindGeometryOffsets, rasterMaterialOffset } from './geometry-bind-offsets';
+import { PassMeshBindGroup, rasterMaterialOffset } from './geometry-bind-offsets';
 import {
   createGeometryPipelineRequests,
   drawVertexLayout,
@@ -126,19 +127,21 @@ import {
 import { renderWorldFor } from '../world/render-world';
 import { cpuInstanceLodDraws } from './cpu-lod';
 import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
-import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
+import { meshBufferBindGroup } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
 
 import { getOpaqueResourceIdentity, instanceCollectionCacheKey } from './frame-snapshot';
+import { countDirectGeometry } from './geometry-recording';
 import { type RenderableDrawReceipt, selectSubmittedMaterialProgram } from './gpu-draw-receipts';
 import {
   type MainPassMaterialBindingResolver,
   type RasterMaterialAddress,
   selectMaterialGroup2,
 } from './main-pass-material';
-
 import { materialFromSubmittedSlots, submittedMaterialRow } from './material-pass-selection';
 import {
+  bindGroupChainLeaf2,
+  bindGroupChainLeaf3,
   type FoldBucket,
   getOrCreateFromChain,
   INSTANCE_STORAGE_STRIDE_FLOATS,
@@ -151,9 +154,9 @@ import {
   meshDrawSlot,
   packInstanceStorageRange,
   prepareMeshDraw,
+  rememberBindGroup,
 } from './mesh-ssbo';
 import { ensureProbeBlendRecordBuffer } from './probe-blend-buffer';
-import { geometryRecordingObserver } from './render-bundle-cache';
 import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from './render-context';
 import type { SkinTaskBinding } from './skin-tasks';
 import { resolveSpriteInstanceDraws } from './sprite-instance-buffer';
@@ -163,7 +166,7 @@ import { POINTS_LINES_VIEW_SLOT_STRIDE, writePointsLinesViewUbo } from './view-u
 
 const EMPTY_MATERIAL_DRAWS: readonly DispatchEntry[] = Object.freeze([]);
 
-type GeometryInstanceDraw = {
+export type GeometryInstanceDraw = {
   readonly instanceBuffer: Buffer;
   readonly instanceBindGroup: BindGroup;
   /** Producer-owned Probe buffer paired with probeOffset, when present. */
@@ -469,21 +472,15 @@ interface DrawPipelineSelection {
   viewGroup: BindGroup | null | undefined;
 }
 
-/** The per-draw facts, beyond the program and layout, that select a draw's pipeline. */
-function drawClassFlags(
-  source: import('./frame-snapshot').ValidatedRenderable['source'],
-  oitAccumulateDraw: boolean,
-  sceneDirect: boolean,
-  hasSelectedPass: boolean,
-): number {
+const REFLECTED_DRAW = 4;
+
+/** These pipeline axes belong to the row and apply to every issued submesh pass. */
+function rowPipelineFlags(source: ValidatedRenderable['source']): number {
   return (
     (source.skinBinding !== undefined ? 1 : 0) |
     (source.probeBlendRecord !== undefined ? 2 : 0) |
-    (CapturedSceneTransform.reflected(source.transform) ? 4 : 0) |
-    (source.spriteInstances !== undefined ? 8 : 0) |
-    (oitAccumulateDraw ? 16 : 0) |
-    (sceneDirect ? 32 : 0) |
-    (hasSelectedPass ? 64 : 0)
+    (CapturedSceneTransform.reflected(source.transform) ? REFLECTED_DRAW : 0) |
+    (source.spriteInstances !== undefined ? 8 : 0)
   );
 }
 
@@ -619,7 +616,7 @@ export function geometrySkinBindGroup(
   return bindGroup;
 }
 
-function observeGeometryRecording(
+function geometryRecordingPass(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder | undefined,
   passKind: PassKind,
@@ -627,18 +624,19 @@ function observeGeometryRecording(
   surfacePass: MaterialSurfacePassKind | undefined,
   oit: 'accumulate' | 'residual' | undefined,
 ) {
-  return pass !== undefined && c.profilePhase !== undefined
-    ? geometryRecordingObserver(
-        c.frameState.renderBundleCounters,
-        `${
-          c.camera?.captureProjection === undefined
-            ? 'display'
-            : c.camera.planarReflection !== undefined
-              ? 'reflection'
-              : 'target'
-        }/${passKind}/${coverageOnly ? 'depth' : (surfacePass ?? oit ?? 'color')}`,
-      )
-    : undefined;
+  if (
+    pass === undefined ||
+    c.profilePhase === undefined ||
+    c.frameState.renderBundleCounters === undefined
+  )
+    return undefined;
+  const view =
+    c.camera?.captureProjection === undefined
+      ? 'display'
+      : c.camera.planarReflection !== undefined
+        ? 'reflection'
+        : 'target';
+  return `${view}/${passKind}/${coverageOnly ? 'depth' : (surfacePass ?? oit ?? 'color')}`;
 }
 
 function supportsViewportHitCoverage(
@@ -718,7 +716,7 @@ export function recordGeometryDraws(
   materialSceneDepth?: TextureView,
   gpuDrivenFilter?: RenderPipelineGpuDrivenFilter,
 ): void {
-  const observe = observeGeometryRecording(c, pass, passKind, coverageOnly, surfacePass, oit);
+  const recordingPass = geometryRecordingPass(c, pass, passKind, coverageOnly, surfacePass, oit);
   let recordedDraws = 0;
   const recordPresented = createFoldedDrawRecorder(c);
   const viewportHit = geometryViewportHit(c, passKind, colorFormats.length, coverageOnly);
@@ -742,8 +740,6 @@ export function recordGeometryDraws(
   let lastViewGroup = viewBindGroup;
   let lastIndexBuffer: Buffer | null = null;
   let lastIndexFormat: GPUIndexFormat | undefined;
-  let lastMeshGroup: BindGroup | undefined;
-  let lastMeshOffset: number | undefined;
   let lastMaterialGroup: BindGroup | undefined;
   let lastMaterialOffset: number | undefined;
   const bindingState: GeometryBindingState = {
@@ -757,11 +753,20 @@ export function recordGeometryDraws(
   // Color/temporal passes may draw instanced slots from their GPU Scene rows
   // (default-unlit GPU_SCENE_DIRECT): storage tables, or texture tables on
   // devices without vertex storage.
-  const sceneDirectPass =
+  const sceneAddress =
     c.gpuDrivenScene !== undefined &&
     pipelineState.sceneDirectPipelineLayout != null &&
     !coverageOnly &&
-    (passKind === 'forward' || passKind === 'temporal');
+    (passKind === 'forward' || passKind === 'temporal') &&
+    pipelineState.sceneDirectInstancesBindGroupLayout != null
+      ? {
+          scene: c.gpuDrivenScene,
+          layout: pipelineState.sceneDirectInstancesBindGroupLayout,
+          slot: 0,
+          firstInstance: 0,
+          instanceCount: 0,
+        }
+      : undefined;
   let pointsLinesDynamicOffsets: Uint32Array | undefined;
   const bindOffsetWord = new Uint32Array(1);
   const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
@@ -802,6 +807,8 @@ export function recordGeometryDraws(
     DrawPipelineSelection | typeof SKIPPED_DRAW
   >(Infinity);
   const drawFacts: MaterialPipelineRequestFacts = [];
+  let rowLayout: ValidatedRenderable['mesh']['layoutProjection'] | undefined;
+  let rowFlags = 0;
   const resolveSharedDrawPipeline = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     smTopology: PrimitiveTopology,
@@ -818,19 +825,19 @@ export function recordGeometryDraws(
     const source = entry.source;
     const materialFlags =
       prepared === undefined ? undefined : ownedMaterialRasterFlags(submeshMaterial);
-    const flags = drawClassFlags(
-      source,
-      oitAccumulateDraw,
-      sceneDirect,
-      selectedPass !== undefined,
-    );
+    if (rowLayout === undefined) {
+      rowLayout = drawVertexLayout(entry);
+      rowFlags = rowPipelineFlags(source);
+    }
+    const flags =
+      rowFlags | (oitAccumulateDraw ? 16 : 0) | (sceneDirect ? 32 : 0) | (selectedPass ? 64 : 0);
     let issued: MaterialPipelineRequestFacts | undefined;
     if (source.waterOwner === undefined) {
       // Captured draws share the selected program and its raster inputs, across material
       // handles and uniform values. Borrowed snapshots retain their own identity.
       drawFacts[0] = materialFlags === undefined ? submeshMaterial : undefined;
       drawFacts[1] = flags;
-      drawFacts[2] = drawVertexLayout(entry);
+      drawFacts[2] = rowLayout;
       drawFacts[3] = pipelineStripIndexFormat(smTopology, entry.mesh.indexFormat);
       drawFacts[4] = smTopology;
       drawFacts[5] = selectedShaderId;
@@ -863,6 +870,8 @@ export function recordGeometryDraws(
       fragmentEntry,
       oitAccumulateDraw,
       authoredVariantSet,
+      rowLayout,
+      (rowFlags & REFLECTED_DRAW) !== 0,
       false,
       sceneDirect,
       materialFlags === undefined ? undefined : (materialFlags & MATERIAL_RASTER_ALPHA_MASK) !== 0,
@@ -926,14 +935,8 @@ export function recordGeometryDraws(
   // Preparation shares the exact resolver but never opens or binds a raster pass.
   if (pass === undefined) return;
   const vertexBindings = new PassMeshVertexBindings(pass);
-  const bindMeshGroup = (group: BindGroup, offsets: readonly number[]): void => {
-    // Ordinary geometry uses one offset in mutable scratch. Snapshot the value at encode.
-    const offset = offsets.length === 1 ? offsets[0] : undefined;
-    if (offset !== undefined && group === lastMeshGroup && offset === lastMeshOffset) return;
-    bindGeometryOffsets(pass, 2, group, offsets, bindOffsetWord);
-    lastMeshGroup = group;
-    lastMeshOffset = offset;
-  };
+  const meshGroups = new PassMeshBindGroup(pass, bindOffsetWord);
+  let skinOffsets: number[] | undefined;
 
   if (resolveMaterialBinding === undefined)
     throw new RhiError({
@@ -970,10 +973,12 @@ export function recordGeometryDraws(
     return submeshDrawIndex(entityDrawIndices, submesh);
   };
   let entityMeshBinding: ReturnType<typeof meshSsboBufferBinding> | undefined;
-  let entityInstanceDraws: readonly GeometryInstanceDraw[] | undefined;
+  let entityPackedDraws: readonly GeometryInstanceDraw[] | undefined;
   // Set when the entity's instances are drawn from its GPU Scene rows.
-  let entitySceneDirect = false;
-  let entityDirectMeshGroup = meshBindGroup;
+  let entitySceneDirect: boolean | undefined;
+  let entityDirectDraws: readonly GeometryInstanceDraw[] | undefined;
+  let entityGeometryBound = false;
+  let entityPageGroup: BindGroup | undefined;
   let entitySkinTask: SkinTaskBinding | undefined;
   let group2DynamicOffsets: readonly number[] = meshGroup2DynamicOffsets;
 
@@ -1066,30 +1071,32 @@ export function recordGeometryDraws(
     bindOffsetWord[0] = materialAddress.byteOffset;
     pass.setBindGroup(1, pointsLinesBinding, bindOffsetWord, 0, materialAddress.dynamicOffsetCount);
     lastMaterialGroup = undefined;
+    entityMeshBinding = meshSsboBufferBinding(
+      pipelineState.meshStorageBuffer,
+      entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+      entityMeshBinding,
+    );
     const pointsLinesMeshGroup =
       pipelineState.meshStorageBuffer.pages === undefined
         ? (meshBindGroup ?? meshGroup2)
-        : meshSlotBindGroup(
+        : meshBufferBindGroup(
             runtime.device,
             c.frameState,
             pipelineState,
             c.bindGroupCounts,
-            entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+            entityMeshBinding.buffer,
           );
-    meshGroup2DynamicOffsets[0] = meshSsboBufferBinding(
-      pipelineState.meshStorageBuffer,
-      entityMeshSlot * MESH_PER_ENTITY_STRIDE,
-    ).byteOffset;
+    meshGroup2DynamicOffsets[0] = entityMeshBinding.byteOffset;
     if (pointsLinesMeshGroup === null) return;
     stageEntityMesh(entry);
-    bindMeshGroup(pointsLinesMeshGroup, meshGroup2DynamicOffsets);
+    meshGroups.bind(pointsLinesMeshGroup, meshGroup2DynamicOffsets);
     const pointsLinesInstancesBg = instanceBindings.identity()[0].instanceBindGroup;
     pass.setBindGroup(3, pointsLinesInstancesBg);
     bindingState.instancesBuffer = identityInstanceBuffer;
     bindingState.instanceBindGroup = pointsLinesInstancesBg;
     bindingState.instanceOffsets.length = 0;
     recordPointsLinesDraw(pass, submission.plan);
-    if (observe !== undefined && submission.plan.drawCount !== 0) recordedDraws++;
+    if (recordingPass !== undefined && submission.plan.drawCount !== 0) recordedDraws++;
     viewportHit?.reject('geometry-coverage');
     c.onRenderableDraw?.(entry);
     pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset]);
@@ -1099,21 +1106,11 @@ export function recordGeometryDraws(
 
   // GPU ownership is per submesh. Prepare CPU buffers only after the exact
   // claim, material-pass and transparency filters leave a draw.
-  /** Bind the entity's vertex/index buffers and prepare its base instance draws. */
+  /** Bind an admitted draw's current vertex and index buffers. */
   const bindEntityGeometry = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     meshBinding: ReturnType<typeof meshSsboBufferBinding>,
   ): boolean => {
-    entityDirectMeshGroup =
-      pipelineState.meshStorageBuffer.pages === undefined
-        ? meshBindGroup
-        : meshSlotBindGroup(
-            runtime.device,
-            c.frameState,
-            pipelineState,
-            c.bindGroupCounts,
-            entityMeshSlot * MESH_PER_ENTITY_STRIDE,
-          );
     meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
     const gpuVertex = entry.source.gpuVertexSource;
     let vertexBuffer = entry.mesh.vertexBuffer.handle;
@@ -1150,18 +1147,6 @@ export function recordGeometryDraws(
       lastIndexBuffer = entry.mesh.indexBuffer.handle;
       lastIndexFormat = entry.mesh.indexFormat;
     }
-    const sceneDirectDraws =
-      entityFold === undefined && sceneDirectPass
-        ? resolveSceneDirectInstanceDraws(c, entry, directInstanceDraw)
-        : undefined;
-    entitySceneDirect = sceneDirectDraws !== undefined;
-    const prepared =
-      sceneDirectDraws ??
-      (entityFold === undefined
-        ? instanceBindings.resolve(entry, false)
-        : foldInstanceDraws(c, entityFold, entry.renderableIndex));
-    if (prepared === null) return false;
-    entityInstanceDraws = prepared;
     return true;
   };
 
@@ -1221,23 +1206,38 @@ export function recordGeometryDraws(
     return binding;
   };
 
-  /**
-   * Standard and authored Surface share the ProbeBlend ABI. Resolve this per
-   * submesh so mixed unlit/lit meshes cannot cross layouts.
-   */
-  const submeshInstanceDraws = (
-    entry: import('./frame-snapshot').ValidatedRenderable,
-    smIdx: number,
-    submeshMaterial: MaterialSnapshot,
+  const resolveIssuedInstances = (
+    entry: ValidatedRenderable,
     probeBlendAvailable: boolean,
     sceneDirect: boolean,
   ): readonly GeometryInstanceDraw[] | null => {
-    // A pending scene-direct build draws this submesh from packed instances.
-    const resolvedInstanceDraws =
-      probeBlendAvailable || (entitySceneDirect && !sceneDirect)
-        ? instanceBindings.resolve(entry, probeBlendAvailable)
-        : entityInstanceDraws;
-    if (resolvedInstanceDraws == null) return null;
+    // Only the selected pipeline consumes instance rows. A mixed mesh can issue
+    // both a scene-direct draw and a packed fallback during the same recording.
+    if (probeBlendAvailable) return instanceBindings.resolve(entry, true);
+    if (sceneDirect && entitySceneDirect && sceneAddress !== undefined) {
+      entityDirectDraws ??= resolveSceneDirectInstanceDraws(
+        c,
+        entry,
+        sceneAddress,
+        directInstanceDraw,
+      );
+      return entityDirectDraws;
+    }
+    if (entityPackedDraws !== undefined) return entityPackedDraws;
+    const draws =
+      entityFold === undefined
+        ? instanceBindings.resolve(entry, false)
+        : foldInstanceDraws(c, entityFold, entry.renderableIndex);
+    if (draws !== null) entityPackedDraws = draws;
+    return draws;
+  };
+
+  const submeshInstanceDraws = (
+    entry: ValidatedRenderable,
+    smIdx: number,
+    submeshMaterial: MaterialSnapshot,
+    resolvedInstanceDraws: readonly GeometryInstanceDraw[],
+  ): readonly GeometryInstanceDraw[] | null => {
     const medium =
       entry.source.waterGpuMesh === undefined &&
       submeshMaterial.surfaceModel === 'single-layer-medium' &&
@@ -1282,12 +1282,18 @@ export function recordGeometryDraws(
     meshBinding: ReturnType<typeof meshSsboBufferBinding>,
   ): BindGroup | null => {
     if (group2Contract !== 'skin' && group2Contract !== 'skin-cluster') {
-      const entryMeshGroup2 =
-        group2Contract === 'cluster' && pipelineState.meshStorageBuffer.pages !== undefined
-          ? clusteredMeshSlotBindGroup(c, entityMeshSlot * MESH_PER_ENTITY_STRIDE)
-          : meshGroup2;
       group2DynamicOffsets = meshGroup2DynamicOffsets;
-      return selectMaterialGroup2(entryMeshGroup2, entityDirectMeshGroup, group2Contract);
+      if (pipelineState.meshStorageBuffer.pages === undefined)
+        return selectMaterialGroup2(meshGroup2, meshBindGroup, group2Contract);
+      if (group2Contract !== 'mesh' && group2Contract !== 'cluster') return null;
+      entityPageGroup ??= meshBufferBindGroup(
+        runtime.device,
+        c.frameState,
+        pipelineState,
+        c.bindGroupCounts,
+        meshBinding.buffer,
+      );
+      return entityPageGroup;
     }
     if (entry.source.skinBinding === undefined)
       throw new RhiError({
@@ -1300,10 +1306,12 @@ export function recordGeometryDraws(
     if (skinTask === undefined) return null;
     const selectedGroup = geometrySkinBindGroup(c, skinTask, meshBinding, group2Contract);
     if (selectedGroup === null) return null;
+    skinOffsets ??= [];
     group2DynamicOffsets = pbrSkinMeshDynamicOffsets(
       meshBinding.byteOffset,
       skinTask,
       runtime.device.caps.storageBuffer,
+      skinOffsets,
     );
     return selectedGroup;
   };
@@ -1448,7 +1456,7 @@ export function recordGeometryDraws(
       presentedFacts = Object.freeze(facts);
       presentedHasPass = hasPass;
     }
-    if (observe !== undefined) recordedDraws++;
+    if (recordingPass !== undefined) recordedDraws++;
     recordPresented(submittedEntry, submittedSubmesh, presentedFacts, submittedFold);
     recordViewportHit(draw, range, firstInstance);
     if (surfacePass !== undefined && draw.surfaceFrameBase !== undefined) {
@@ -1476,7 +1484,7 @@ export function recordGeometryDraws(
   const observeSubmittedDraws =
     c.onRenderableDraw !== undefined ||
     viewportHit !== undefined ||
-    observe !== undefined ||
+    recordingPass !== undefined ||
     (surfacePass !== undefined && c.frameState.surfaceSubmissionObservation !== undefined);
   const submitPreparedSubmesh = (): void => {
     submitSubmeshDraws(
@@ -1573,6 +1581,7 @@ export function recordGeometryDraws(
     smIdx: number,
     submeshMaterial: MaterialSnapshot,
     selectedPass: DispatchEntry | undefined,
+    issuedInstances: readonly GeometryInstanceDraw[],
     perSubmeshBg: BindGroup,
     meshBinding: ReturnType<typeof meshSsboBufferBinding>,
     smPipelineHandle: RenderPipeline,
@@ -1581,10 +1590,8 @@ export function recordGeometryDraws(
   ): void => {
     const {
       material: materialPipelineEntry,
-      probeBlend: probeBlendAvailable,
       viewOffset,
       shader: smMaterialShaderId,
-      sceneDirect,
     } = selection ?? pipelineSelection;
     const drawViewGroup = admittedViewGroup(selection, smPipelineHandle, smMaterialShaderId);
     if (viewOffset !== lastViewOffset || drawViewGroup !== lastViewGroup) {
@@ -1592,13 +1599,7 @@ export function recordGeometryDraws(
       lastViewOffset = viewOffset;
       lastViewGroup = drawViewGroup;
     }
-    const instanceDraws = submeshInstanceDraws(
-      entry,
-      smIdx,
-      submeshMaterial,
-      probeBlendAvailable,
-      sceneDirect,
-    );
+    const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, issuedInstances);
     if (instanceDraws === null) return;
     const materialGroup2Contract = materialPipelineEntry?.group2Contract;
     if (materialGroup2Contract === undefined) return;
@@ -1643,7 +1644,7 @@ export function recordGeometryDraws(
           drawBinding: water.drawBinding,
         });
     }
-    bindMeshGroup(selectedGroup2, selectedGroup2Offsets);
+    meshGroups.bind(selectedGroup2, selectedGroup2Offsets);
     const range = submeshRange(entry.mesh, smIdx, rangeScratch);
 
     submittedEntry = entry;
@@ -1728,9 +1729,6 @@ export function recordGeometryDraws(
           : OIT_FRAGMENT_ENTRY;
       }
     }
-    bindStencilReference(
-      (selectedPass === undefined ? entry.stencilReference : selectedPass.stencilReference) ?? 0,
-    );
     // feat-city-glb Bug 5 (per-submesh transparency): in the LDR split, a
     // transparent submesh is drawn in the blend sub-pass (non-sRGB view),
     // NOT here in the sRGB geometry pass. Opaque submeshes of the same
@@ -1742,14 +1740,10 @@ export function recordGeometryDraws(
         : selectedRenderState?.blend !== undefined)
     )
       return true;
-    if (entityInstanceDraws === undefined || entityMeshBinding === undefined) {
-      entityMeshBinding = meshSsboBufferBinding(
-        pipelineState.meshStorageBuffer,
-        entityMeshSlot * MESH_PER_ENTITY_STRIDE,
-        entityMeshBinding,
-      );
-      if (!bindEntityGeometry(entry, entityMeshBinding)) return false;
-    }
+    entitySceneDirect ??=
+      sceneAddress !== undefined &&
+      entityFold === undefined &&
+      readSceneDirectInstanceAddress(c, entry, sceneAddress);
     const resolvedPipeline = resolveSharedDrawPipeline(
       entry,
       sm.topology,
@@ -1779,6 +1773,27 @@ export function recordGeometryDraws(
     // A general fallback cannot supply the requested material's group contract.
     // The resolver keeps its pending/error classification; it still draws nothing.
     if (selected.material === null) return true;
+    if (!entityGeometryBound || entityMeshBinding === undefined) {
+      entityMeshSlot = meshDrawSlot(entry, entityFold !== undefined);
+      entityMeshBinding = meshSsboBufferBinding(
+        pipelineState.meshStorageBuffer,
+        entityMeshSlot * MESH_PER_ENTITY_STRIDE,
+        entityMeshBinding,
+      );
+      if (!bindEntityGeometry(entry, entityMeshBinding)) return false;
+      entityGeometryBound = true;
+    }
+    const issuedInstances = resolveIssuedInstances(
+      entry,
+      selected.probeBlend,
+      selected.sceneDirect,
+    );
+    // A failed base upload aborts the row. A missing probe input affects only
+    // passes using that layout; another submesh can consume ordinary instances.
+    if (issuedInstances === null) return selected.probeBlend;
+    bindStencilReference(
+      (selectedPass === undefined ? entry.stencilReference : selectedPass.stencilReference) ?? 0,
+    );
     bindSubmeshVertexStreams(entry, smPipelineHandle);
     // A pending PSO needs no material binding. Continue requesting later draws
     // instead of suspending their preparation behind this binding's readiness.
@@ -1797,6 +1812,7 @@ export function recordGeometryDraws(
       smIdx,
       submeshMaterial,
       selectedPass,
+      issuedInstances,
       materialBinding,
       entityMeshBinding,
       smPipelineHandle,
@@ -1842,9 +1858,7 @@ export function recordGeometryDraws(
     return true;
   };
 
-  const recordEntry = (i: number): void => {
-    const entry = validatedOrdered.at(i);
-    if (entry === undefined) return;
+  const recordEntry = (entry: ValidatedRenderable, i: number): void => {
     const fold = c.foldDispatchPlan?.headBuckets.get(i);
     // The typed transparent pass uses this common draw owner. Consume the
     // same fold plan as the legacy sprite pass, including coverage/depth draws.
@@ -1873,14 +1887,17 @@ export function recordGeometryDraws(
       everyMaterialSlotTransparent(c, entityBindingSlots)
     )
       return;
-    entityMeshSlot = meshDrawSlot(entry, fold !== undefined);
+    rowLayout = undefined;
     entityMeshStaged = false;
     entityFold = fold;
-    entityInstanceDraws = undefined;
-    entitySceneDirect = false;
-    entityDirectMeshGroup = meshBindGroup;
+    entityPackedDraws = undefined;
+    entitySceneDirect = undefined;
+    entityDirectDraws = undefined;
+    entityGeometryBound = false;
+    entityPageGroup = undefined;
     entitySkinTask = undefined;
     if (pointsLinesSubmission !== undefined && pointsLines !== undefined) {
+      entityMeshSlot = meshDrawSlot(entry, fold !== undefined);
       recordPointsLines(entry, pointsLinesSubmission, pointsLines.style);
       return;
     }
@@ -1909,9 +1926,16 @@ export function recordGeometryDraws(
     selectedDispatch !== undefined && c.foldDispatchPlan == null && prepared?.ordered !== true
       ? dispatchDrawOrder(validatedOrdered, materialPasses)
       : undefined;
-  for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++)
-    recordEntry(drawOrder?.[ordinal] ?? ordinal);
-  observe?.('direct', recordedDraws);
+  if (drawOrder === undefined) visitSubmittedDrawRows(validatedOrdered, recordEntry);
+  else {
+    for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++) {
+      const index = drawOrder[ordinal] ?? ordinal;
+      const entry = validatedOrdered.at(index);
+      if (entry !== undefined) recordEntry(entry, index);
+    }
+  }
+  if (recordingPass !== undefined)
+    countDirectGeometry(c.frameState.renderBundleCounters, recordingPass, recordedDraws);
 }
 
 /** Overrides keep ordinary selection and order reads unless every actual owner key agrees. */
@@ -2412,40 +2436,53 @@ type SceneDirectDraw = {
   firstInstance: number;
 };
 
-/**
- * One draw over a slot's resident GPU Scene instance rows: the first instance
- * is the slot's first scene row, so no per-frame instance payload is packed.
- * Undefined when the slot is not wholly resident or needs a packed-only path.
- */
-function resolveSceneDirectInstanceDraws(
-  c: InstanceBufferContext &
-    Pick<_InternalRenderPipelineContext, 'gpuDrivenScene' | 'gpuDrivenSceneSlotForEntity'>,
+interface SceneDirectInstanceAddress {
+  readonly scene: NonNullable<_InternalRenderPipelineContext['gpuDrivenScene']>;
+  readonly layout: BindGroupLayout;
+  slot: number;
+  firstInstance: number;
+  instanceCount: number;
+}
+
+/** Inspect residency for pipeline selection without consuming the slot's upload receipt. */
+function readSceneDirectInstanceAddress(
+  c: Pick<_InternalRenderPipelineContext, 'gpuDrivenSceneSlotForEntity'>,
   entry: ValidatedRenderable,
-  output: SceneDirectDraw[],
-): readonly GeometryInstanceDraw[] | undefined {
-  const scene = c.gpuDrivenScene;
+  address: SceneDirectInstanceAddress,
+): boolean {
   const inst = entry.source.instances;
-  if (inst === undefined || scene === undefined) return undefined;
+  if (inst === undefined) return false;
   const slot =
     entry.sceneSlot?.slot ?? c.gpuDrivenSceneSlotForEntity?.(entry.source.entityKey)?.slot;
-  const layout = c.pipelineState.sceneDirectInstancesBindGroupLayout;
   const instanceCount = inst.instanceCount;
   if (
     slot === undefined ||
-    layout == null ||
     instanceCount === 0 ||
     entry.source.spriteInstances !== undefined ||
     entry.source.skinBinding !== undefined ||
     entry.source.probeBlendRecord !== undefined ||
     entry.cpuInstanceLods !== undefined
   )
-    return undefined;
+    return false;
   const lastOrdinal = instanceCount - 1;
-  const lastInstance = scene.instanceIndexForSlot(slot, lastOrdinal);
-  if (lastInstance === undefined) return undefined;
-  const firstInstance = lastInstance - lastOrdinal;
+  const lastInstance = address.scene.instanceIndexForSlot(slot, lastOrdinal);
+  if (lastInstance === undefined) return false;
+  address.slot = slot;
+  address.firstInstance = lastInstance - lastOrdinal;
+  address.instanceCount = instanceCount;
+  return true;
+}
+
+function resolveSceneDirectInstanceDraws(
+  c: InstanceBufferContext,
+  entry: ValidatedRenderable,
+  address: SceneDirectInstanceAddress,
+  output: SceneDirectDraw[],
+): readonly GeometryInstanceDraw[] {
+  const { scene, layout, slot, firstInstance, instanceCount } = address;
+  const inst = entry.source.instances;
   const upload = scene.takeInstanceUpload(slot);
-  if (inst.collectionId !== undefined && c.frameState.instanceCollections !== undefined)
+  if (inst?.collectionId !== undefined && c.frameState.instanceCollections !== undefined)
     reportInstanceResidency(c, inst, {
       lane: 'gpu-scene',
       requestedBytes: instanceCount * GPU_SCENE_LAYOUTS.transform.stride,
@@ -2593,7 +2630,7 @@ export class PassGeometryInstances {
 export function resolveGeometryInstanceBuffer(
   c: InstanceBufferContext,
   entry: ValidatedRenderable,
-  identityInstanceDraws: readonly GeometryInstanceDraw[],
+  identityPackedDraws: readonly GeometryInstanceDraw[],
   useProbeBlend: boolean,
 ): readonly GeometryInstanceDraw[] | null {
   const inst = entry.source.instances;
@@ -2601,8 +2638,8 @@ export function resolveGeometryInstanceBuffer(
   const probeBinding = resolveInstanceProbeBinding(c, entry, useProbeBlend);
   if (inst === undefined) {
     if (probeBinding === undefined)
-      return identityInstanceDraws.length === 0 ? null : identityInstanceDraws;
-    const identity = identityInstanceDraws[0];
+      return identityPackedDraws.length === 0 ? null : identityPackedDraws;
+    const identity = identityPackedDraws[0];
     if (identity === undefined) return null;
     return [
       {
@@ -3246,42 +3283,41 @@ export function resolveGeometryInstancesBindGroup(
   // this resolver total lets those fixtures exercise the same binding path
   // without weakening the production cache contract.
   const instancesBgShared = frameState.instancesBgShared ?? new WeakMap<object, unknown>();
-  return getOrCreateFromChain(
-    instancesBgShared,
-    probeBuffer === undefined ? [layout, instanceBuffer] : [layout, instanceBuffer, probeBuffer],
-    probeBuffer === undefined ? 'instances-no-probe' : 'instances-probe',
-    () => {
-      const result = runtime.device.createBindGroup({
-        label: 'pbr-instances-bg',
-        layout,
-        entries: [
-          {
-            binding: 0,
-            resource: {
-              kind: 'buffer',
-              value: { buffer: instanceBuffer },
-            },
-          },
-          ...(probeBuffer === undefined
-            ? []
-            : [
-                {
-                  binding: 1,
-                  resource: {
-                    kind: 'buffer' as const,
-                    value: {
-                      buffer: probeBuffer,
-                      offset: 0,
-                      size: PROBE_BLEND_RECORD_BYTE_SIZE,
-                    },
-                  },
+  const leaf =
+    probeBuffer === undefined
+      ? bindGroupChainLeaf2(instancesBgShared, layout, instanceBuffer)
+      : bindGroupChainLeaf3(instancesBgShared, layout, instanceBuffer, probeBuffer);
+  const variant = probeBuffer === undefined ? 'instances-no-probe' : 'instances-probe';
+  const bound = leaf.get(variant);
+  if (bound !== undefined) return bound;
+  const result = runtime.device.createBindGroup({
+    label: 'pbr-instances-bg',
+    layout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          kind: 'buffer',
+          value: { buffer: instanceBuffer },
+        },
+      },
+      ...(probeBuffer === undefined
+        ? []
+        : [
+            {
+              binding: 1,
+              resource: {
+                kind: 'buffer' as const,
+                value: {
+                  buffer: probeBuffer,
+                  offset: 0,
+                  size: PROBE_BLEND_RECORD_BYTE_SIZE,
                 },
-              ]),
-        ],
-      });
-      if (!result.ok) throw result.error;
-      return result.value;
-    },
-    bindGroupCounts,
-  );
+              },
+            },
+          ]),
+    ],
+  });
+  if (!result.ok) throw result.error;
+  return rememberBindGroup(leaf, variant, result.value, bindGroupCounts);
 }

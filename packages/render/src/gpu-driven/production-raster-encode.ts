@@ -149,9 +149,15 @@ export class IndirectPassBindings {
 
   private projectedView?: BindGroup;
 
+  /** Raw encodes publish the caller's base binding before selecting any draws. */
+  bindInitialView(): void {
+    this.pass.setBindGroup(0, this.viewBindGroup, [this.viewOffset]);
+    this.projectedView = this.viewBindGroup;
+  }
+
   bindPipeline(pipeline: RenderPipeline, device: RhiDevice): void {
     if (this.boundPipeline === pipeline) return;
-    const previous = this.projectedView ?? this.viewBindGroup;
+    const previous = this.projectedView;
     this.projectedView = viewForPipeline(device, pipeline, this.viewBindGroup);
     if (this.direct) {
       this.pass.setPipeline(pipeline);

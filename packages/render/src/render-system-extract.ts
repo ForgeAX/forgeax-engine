@@ -29,12 +29,12 @@ import type { AssetHandle, MeshAsset, SampledTextureAsset } from '@forgeax/engin
 import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import {
+  captureMaterialRasterPrograms,
   type MaterialProgramSelection,
-  materialProgramSelectionsForMaterial,
-  materialPublicationForMaterial,
-  materialSceneIndexProgramKeysForMaterial,
+  type MaterialRasterPrograms,
+  materialSceneIndexProgramsForProjection,
   materialSurfaceModel,
-  materialSurfaceProgramsForMaterial,
+  materialSurfaceProgramsForProjection,
   skinnedPositionProof,
 } from './material-program-selection';
 import {
@@ -189,7 +189,7 @@ import {
   isDeepFrozenJson,
   toShared,
 } from '@forgeax/engine-types';
-import { buildCubeCameraFaceViews } from './capture/cube-views';
+import { packedPointShadowMatrices } from './capture/cube-views';
 import {
   CubeCamera,
   cubeCameraUpdateIntentFromF32,
@@ -2419,7 +2419,7 @@ export function prepareMaterialSnapshot({
   assets: assetsRef,
   shaderRegistry = assetsRef.shaderRegistry,
   material: programOwner,
-  programSelections,
+  programs,
   materialContext,
   textureSourceStats: materialTextureSourceStats,
   vertexColorAvailable = false,
@@ -2432,7 +2432,7 @@ export function prepareMaterialSnapshot({
   readonly assets: AssetRegistry;
   readonly shaderRegistry?: AssetRegistry['shaderRegistry'];
   readonly material: MaterialAsset;
-  readonly programSelections: readonly MaterialProgramSelection[] | undefined;
+  readonly programs?: MaterialRasterPrograms;
   readonly materialContext?: MaterialCookRasterContext | undefined;
   readonly textureSourceStats?: MaterialTextureSourceStats | undefined;
   readonly vertexColorAvailable?: boolean;
@@ -2447,23 +2447,19 @@ export function prepareMaterialSnapshot({
     colorSpace: programOwner.colorSpace,
     surface: programOwner.surface,
   };
-  const materialProgramKeys =
-    programSelections === undefined
-      ? undefined
-      : Object.freeze(
-          Object.fromEntries(
-            programSelections.map(({ pass, specializationKey }) => [pass, specializationKey]),
-          ),
-        );
-  const materialSceneIndexProgramKeys = materialSceneIndexProgramKeysForMaterial(
+  const raster =
+    programs ??
+    captureMaterialRasterPrograms(programOwner, assetsRef, materialContext, vertexColorAvailable);
+  const materialProgramKeys = raster.keys;
+  const materialSceneIndexProgramKeys = materialSceneIndexProgramsForProjection(
     programOwner,
-    assetsRef,
+    raster.projection,
     materialContext,
     vertexColorAvailable,
   );
-  const materialSurfacePrograms = materialSurfaceProgramsForMaterial(
+  const materialSurfacePrograms = materialSurfaceProgramsForProjection(
     programOwner,
-    assetsRef,
+    raster.projection,
     materialContext,
     resolved,
   );
@@ -2566,12 +2562,7 @@ export function prepareMaterialSnapshot({
     materialShaderId: firstPassShader,
     materialProgramKeys,
     materialProgramInputs: Object.freeze(programInputs),
-    materialPublication: materialPublicationForMaterial(
-      programOwner,
-      assetsRef,
-      programSelections,
-      vertexColorAvailable,
-    ),
+    materialPublication: raster.publication,
     materialSceneIndexProgramKeys,
     materialSurfacePrograms,
     materialHandle: handleRaw,
@@ -2637,11 +2628,10 @@ export function resolveMaterialSnapshot(
   if (!res.ok) return defaultMaterialSnapshot(handleRaw);
   const asset = res.value;
   if (asset.kind !== 'material') return defaultMaterialSnapshot(handleRaw);
-  const programSelections = materialProgramSelectionsForMaterial(
+  const programs = captureMaterialRasterPrograms(
     asset,
     assetsRef,
     materialContext,
-    'direct',
     vertexColorAvailable,
   );
   const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
@@ -2654,7 +2644,7 @@ export function resolveMaterialSnapshot(
     assets: assetsRef,
     shaderRegistry,
     material: asset,
-    programSelections,
+    programs,
     materialContext,
     textureSourceStats: materialTextureSourceStats,
     vertexColorAvailable,
@@ -2669,7 +2659,7 @@ export function resolveMaterialSnapshot(
           handleRaw,
           snapshot,
           world,
-          programSelections,
+          programs.selections,
           declarationLayout,
         );
   if (cacheEntry !== undefined) {
@@ -2756,10 +2746,13 @@ export function pssmSplit(
  * @param far  far plane distance  (PointLightShadow.farPlane)
  */
 export function buildPointShadowMatrices(lightPos: Vec3, near: number, far: number): Mat4[] {
-  return buildCubeCameraFaceViews({ position: lightPos, near, far }).map(({ viewProjection }) => {
-    for (const offset of [0, 4, 8, 12]) viewProjection[offset] = -(viewProjection[offset] ?? 0);
-    return viewProjection;
-  });
+  const packed = packedPointShadowMatrices(lightPos, near, far);
+  const faces: Mat4[] = [];
+  for (let offset = 0; offset < packed.length; offset += 16) {
+    // brand-cast-ok: each caller-owned matrix spans exactly sixteen float elements.
+    faces.push(packed.slice(offset, offset + 16) as Mat4);
+  }
+  return faces;
 }
 /** The camera facts a directional cascade fit reads. */
 export const CSM_CAMERA_KEYS = [
@@ -2862,6 +2855,29 @@ function createCsmScratch() {
 }
 let freeCsmScratch: ReturnType<typeof createCsmScratch> | undefined;
 
+/** All cascade slices share the camera basis captured for this fit. */
+function prepareCsmCameraBasis(
+  camera: CsmCameraData,
+  scratch: ReturnType<typeof createCsmScratch>['slice'],
+): void {
+  // A singular camera transform reads as identity, matching mat4.invert.
+  // Every scratch below is fully overwritten before it is read.
+  const world = mat4.invert(scratch.world, mat4.invert(scratch.inverse, camera.world));
+  vec3.normalize(
+    scratch.forward,
+    vec3.set(scratch.axis, -(world[8] as number), -(world[9] as number), -(world[10] as number)),
+  );
+  vec3.set(scratch.origin, world[12] as number, world[13] as number, world[14] as number);
+  vec3.normalize(
+    scratch.right,
+    vec3.set(scratch.axis, world[0] as number, world[1] as number, world[2] as number),
+  );
+  vec3.normalize(
+    scratch.up,
+    vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
+  );
+}
+
 /** Fill private invocation storage; only numeric facts leave this helper. */
 function computeSliceSphere(
   camera: CsmCameraData,
@@ -2870,19 +2886,7 @@ function computeSliceSphere(
   scratch: ReturnType<typeof createCsmScratch>['slice'],
   sphere: { center: Vec3; radius: number },
 ): { readonly center: Vec3; readonly radius: number } {
-  // A singular camera transform reads as identity, matching mat4.invert.
-  // Every scratch below is fully overwritten before it is read.
-  const world = mat4.invert(scratch.world, mat4.invert(scratch.inverse, camera.world));
-  const forward = vec3.normalize(
-    scratch.forward,
-    vec3.set(scratch.axis, -(world[8] as number), -(world[9] as number), -(world[10] as number)),
-  );
-  const origin = vec3.set(
-    scratch.origin,
-    world[12] as number,
-    world[13] as number,
-    world[14] as number,
-  );
+  const { forward, origin, right, up } = scratch;
   let depth: number;
   let radius: number;
   let offsetX = 0;
@@ -2910,14 +2914,6 @@ function computeSliceSphere(
     offsetY = shearY * depth;
     radius = Math.sqrt((far - depth) ** 2 + far * far * slope) + Math.hypot(shearX, shearY) * far;
   }
-  const right = vec3.normalize(
-    scratch.right,
-    vec3.set(scratch.axis, world[0] as number, world[1] as number, world[2] as number),
-  );
-  const up = vec3.normalize(
-    scratch.up,
-    vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
-  );
   vec3.set(
     sphere.center,
     (origin[0] as number) +
@@ -3010,7 +3006,9 @@ export function computeDirectionalCsm(
   }
 }
 
-function csmShadowQuality(config: DirectionalCsmConfig): DirectionalShadowQuality | undefined {
+export function csmShadowQuality(
+  config: DirectionalCsmConfig,
+): DirectionalShadowQuality | undefined {
   return directionalShadowQualityFromF32(
     config.shadowFilter ?? (DirectionalLight.fields.shadowFilter.default as number),
     config.shadowAngularRadius ?? (DirectionalLight.fields.shadowAngularRadius.default as number),
@@ -3067,6 +3065,7 @@ function computeDirectionalCsmWithScratch(
   if (cameraData === undefined) return null;
   const resultLightViewProjs: Float32Array[] = [];
   const cascadeFits: DirectionalShadowCascadeFit[] = [];
+  prepareCsmCameraBasis(cameraData, scratch.slice);
   const fullRadius = computeSliceSphere(
     cameraData,
     sNear,
@@ -3368,6 +3367,7 @@ export function projectAuxiliaryCamerasForView(
       projection: computeProjectionMatrix(display, mat4.create()),
       plane: [...planar.normal, planar.distance],
       clipBias: planar.clipBias,
+      extraFovDegrees: planar.captureExtraFovDegrees,
     });
     if (reflected === undefined) return [];
     return [
@@ -3388,6 +3388,7 @@ export function projectAuxiliaryCamerasForView(
         world: reflected.world,
         position: reflected.position,
         captureProjection: reflected.projection,
+        cullMask: ((display.cullMask ?? 0xffffffff) & planar.captureCullMask) >>> 0,
         planarReflection: planar,
         clearColor: [0, 0, 0, 0] as const,
       },

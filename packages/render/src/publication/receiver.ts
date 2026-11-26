@@ -70,7 +70,7 @@ import {
   type RenderPublicationTemplate,
 } from './contract';
 import {
-  materialSnapshotDependencies,
+  collectMaterialDependencies,
   publicationDependencies,
   publicationFrameDependencies,
 } from './dependencies';
@@ -2372,16 +2372,18 @@ export class RenderPublicationReceiver {
       if (retired.has(id) || this.materialHoldCount(holds, id) === 0) return true;
       const source = resource.snapshot.sourceAssets;
       if (source === undefined) return true;
-      return (
-        source.root === resource.snapshot.materialHandle &&
-        resolveVersion(source.root, source.revision)?.kind === 'material' &&
-        source.assets.every(
-          (asset) => resolveVersion(asset.handle, asset.revision) !== undefined,
-        ) &&
-        materialSnapshotDependencies(resource.snapshot).every((handle) =>
-          source.assets.some((asset) => asset.handle === handle),
-        )
-      );
+      if (
+        source.root !== resource.snapshot.materialHandle ||
+        resolveVersion(source.root, source.revision)?.kind !== 'material'
+      )
+        return false;
+      const needed = new Set<number>();
+      collectMaterialDependencies(resource.snapshot, needed);
+      for (const asset of source.assets) {
+        if (resolveVersion(asset.handle, asset.revision) === undefined) return false;
+        needed.delete(asset.handle);
+      }
+      return needed.size === 0;
     };
     for (const [id, resource] of staged)
       if (!valid(id, resource)) return shapeError('missing material source version');

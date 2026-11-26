@@ -7,7 +7,7 @@ import { FrameSet } from '../scene/frame-set';
 import { changes, type Node, nodes, put, remove } from '../scene/frame-tree';
 import {
   type AcceptedMaterial,
-  MaterialFrame,
+  type MaterialFrame,
   usesAcceptedSpriteGeometry,
 } from '../scene/material-dispatch';
 import type { MaterialBinding, MaterialBindingSlots, MaterialTable } from './fold-buckets';
@@ -32,12 +32,9 @@ export function acceptedMaterialSnapshot(
   material: MaterialResource,
   frame: MaterialFrame | undefined,
   source?: import('../render-system-extract').RenderableSnapshot,
-  versions?: AcceptedMaterial[],
 ): MaterialSnapshot {
   if (frame === undefined) return material.snapshot;
-  const accepted = requireAcceptedMaterial(material, frame, source);
-  versions?.push(accepted);
-  return accepted.snapshot;
+  return requireAcceptedMaterial(material, frame, source).snapshot;
 }
 
 export function usesSubmittedSpriteGeometry(
@@ -385,8 +382,9 @@ export class MaterialBindingIndex {
       })
     )
       this.adopt(new Relations(segments));
-    const fixed = MaterialFrame.fixedProgramRoot(materials);
-    const versions = this.resources.map((resource) => requireAcceptedMaterial(resource, materials));
+    const slots = this.resources.map(
+      (resource) => requireAcceptedMaterial(resource, materials).snapshot,
+    );
     // This descriptor belongs to this submission: capacity clipping and shared
     // GPU bindings may replace/append its small resource tables independently.
     const bindings = this.resources.map((resource, slot): MaterialBinding => {
@@ -402,11 +400,10 @@ export class MaterialBindingIndex {
     });
     return {
       slotIndices: this.slots,
-      ...(fixed === undefined ? {} : { accepted: { frame: fixed, slots: versions } }),
-      slots: versions.map((value) => value.snapshot),
+      slots,
       bindings,
       bindingSlots: this.bindingSlots,
-      slotCount: versions.length,
+      slotCount: slots.length,
     };
   }
 

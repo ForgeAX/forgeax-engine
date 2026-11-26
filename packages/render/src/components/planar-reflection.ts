@@ -12,6 +12,14 @@ import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ec
  * direction; a flat normal, or zero, keeps the undistorted mirror. Unreal's
  * default radius is 500 cm.
  *
+ * Distance (metres from either side of the plane) and shading-normal angle
+ * (degrees from the plane normal) attenuate the capture between their start and
+ * end. Defaults follow Unreal's 60–100 cm and 20–30 degree intervals.
+ * `captureCullMask` further restricts the display's visible layers for the mirror
+ * view, for example to exclude a displaced receiver from its own capture.
+ * `captureExtraFovDegrees` widens the vertical half-angle of a perspective
+ * capture to preserve samples when distortion reaches beyond the main view.
+ *
  * Without `target` (0) the Renderer owns the capture: a sampled 2D rgba16float
  * texture sized round(display drawing-buffer size * `resolutionScale`), at least
  * 1x1, recreated when either changes and released with this component. A game
@@ -30,6 +38,12 @@ export const PlanarReflection = defineComponent('PlanarReflection', {
   distance: { type: 'f32', default: 0 },
   clipBias: { type: 'f32', default: 0.001 },
   distortion: { type: 'f32', default: 0 },
+  distanceFadeStartM: { type: 'f32', default: 0.6 },
+  distanceFadeEndM: { type: 'f32', default: 1 },
+  angleFadeStartDegrees: { type: 'f32', default: 20 },
+  angleFadeEndDegrees: { type: 'f32', default: 30 },
+  captureCullMask: { type: 'u32', default: 0xffffffff },
+  captureExtraFovDegrees: { type: 'f32', default: 0 },
   resolutionScale: { type: 'f32', default: 1 },
   generateMipmaps: { type: 'bool', default: false },
   updateIntervalFrames: { type: 'u32', default: 1 },
@@ -40,7 +54,7 @@ export type PlanarReflectionData = ShapeOf<SchemaOf<typeof PlanarReflection>>;
 export class PlanarReflectionInvalidError extends Error {
   readonly code = 'planar-reflection-invalid' as const;
   readonly expected =
-    'a finite nonzero plane, nonnegative clip bias, finite nonnegative distortion, finite positive resolution scale, positive update interval, and a distinct sampled 2D reflection target (or none, for an engine-owned one) on a display Camera';
+    'a finite nonzero plane, nonnegative clip bias and distortion, ordered distance and angle fade ranges, finite positive resolution scale, positive update interval, and a distinct sampled 2D reflection target (or none, for an engine-owned one) on a display Camera';
   readonly hint = 'repair the PlanarReflection field and its output target before drawing again';
   readonly detail: { readonly field: string };
   constructor(field: string) {

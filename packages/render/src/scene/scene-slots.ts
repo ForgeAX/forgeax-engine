@@ -65,6 +65,26 @@ interface Page {
   read(slot: number): SceneDrawSlot | undefined;
 }
 
+function findWordContent<T>(
+  page: Page,
+  first: number,
+  half: number,
+  bits: number,
+  visit: (content: RowContent, entity: number, slot: number) => T | undefined,
+): T | undefined {
+  while (bits !== 0) {
+    const lane = half + 31 - Math.clz32(bits & -bits);
+    const result = visit(
+      page.contents[lane] as RowContent,
+      page.entities[lane] as number,
+      first + lane,
+    );
+    if (result !== undefined) return result;
+    bits &= bits - 1;
+  }
+  return undefined;
+}
+
 export class SceneSlotPage implements Page {
   readonly rows: (SceneDrawSlot | undefined)[];
   contents: (RowContent | undefined)[];
@@ -241,11 +261,30 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     );
   }
 
+  /** Custom rank readers have observable order. A dense native roster additionally
+   * admits direct addressing over its full length; a sparse one resolves each slot. */
+  static directRankLimit(frame: SceneSlotFrame): number | undefined {
+    if (
+      !(#nativeLength in frame) ||
+      Object.getPrototypeOf(frame) !== SceneSlotFrame.prototype ||
+      Object.hasOwn(frame, 'indexOfSlot') ||
+      Object.getOwnPropertyDescriptor(SceneSlotFrame.prototype, 'indexOfSlot')?.value !==
+        sceneSlotFrameRank
+    )
+      return undefined;
+    return Object.getOwnPropertyDescriptor(frame, 'capacity')?.value === frame.#nativeLength
+      ? frame.#nativeLength
+      : 0;
+  }
+
   /** Find the first consumer result in the immutable page and occupied-lane order.
    * Returning a result stops before the next row or Mesh is observed. */
   findContent<T>(
     visit: (content: RowContent, entity: number, slot: number) => T | undefined,
+    members?: FrameSet,
   ): T | undefined {
+    if (members !== undefined)
+      return members.findWord((word, bits) => this.findContentWord(word, bits, visit));
     for (const node of nodes(this.root)) {
       const page = node.value;
       const first = node.key * PAGE_SIZE;
@@ -261,20 +300,104 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
         continue;
       }
       for (let half = 0; half < PAGE_SIZE; half += 32) {
-        let word = half === 0 ? page.lowMask : page.highMask;
-        while (word !== 0) {
-          const lane = half + 31 - Math.clz32(word & -word);
-          word &= word - 1;
-          const result = visit(
-            page.contents[lane] as RowContent,
-            page.entities[lane] as number,
-            first + lane,
-          );
-          if (result !== undefined) return result;
-        }
+        const result = findWordContent(
+          page,
+          first,
+          half,
+          half === 0 ? page.lowMask : page.highMask,
+          visit,
+        );
+        if (result !== undefined) return result;
       }
     }
     return undefined;
+  }
+
+  /** Resolve one scene page for every selected lane in a physical word. */
+  private findContentWord<T>(
+    word: number,
+    bits: number,
+    visit: (content: RowContent, entity: number, slot: number) => T | undefined,
+  ): T | undefined {
+    const page = this.pageAt(Math.floor(word / 2));
+    if (page === undefined) return undefined;
+    const half = (word % 2) * 32;
+    return findWordContent(
+      page,
+      word * 32 - half,
+      half,
+      bits & (half === 0 ? page.lowMask : page.highMask),
+      visit,
+    );
+  }
+
+  /** Build a display subset in physical order. Ranks belong to the view being filtered. */
+  selectContent(
+    admits: (row: RowContent, rank: number) => boolean,
+    view?: FrameSet,
+    indexed?: FrameSet,
+  ): FrameSet {
+    if (
+      view === undefined &&
+      indexed !== undefined &&
+      SceneSlotFrame.directRankLimit(this) === undefined
+    ) {
+      // A custom rank reader may remap or omit individual addresses.
+      return indexed.filter((slot) => {
+        const rank = this.indexOfSlot(slot);
+        return (
+          rank !== undefined && this.readContentSlot(slot, (row) => admits(row, rank)) === true
+        );
+      });
+    }
+    let rank = 0;
+    const evaluate = (
+      page: Page,
+      half: number,
+      candidates: number,
+      domain: number,
+      baseRank: number,
+    ) => {
+      let accepted = 0;
+      for (let bits = candidates; bits !== 0; bits &= bits - 1) {
+        const bit = bits & -bits;
+        const row = page.contents[half + 31 - Math.clz32(bit)] as RowContent;
+        if (admits(row, baseRank + popcount(domain & (bit - 1)))) accepted |= bit;
+      }
+      return accepted;
+    };
+    const byFact = indexed !== undefined && (view === undefined || indexed.size < view.size);
+    const roster = byFact ? indexed : view;
+    if (roster !== undefined) {
+      return roster.filterWords((word, bits) => {
+        const page = this.pageAt(Math.floor(word / 2));
+        const half = (word % 2) * 32;
+        const occupied = (half === 0 ? page?.lowMask : page?.highMask) ?? 0;
+        const domain = byFact ? (view?.wordAt(word) ?? occupied) : bits;
+        const candidates = occupied & domain & bits & (byFact ? -1 : (indexed?.wordAt(word) ?? -1));
+        const prior = rank;
+        if (!byFact) rank += popcount(domain);
+        if (page === undefined || candidates === 0) return 0;
+        let baseRank = prior;
+        if (byFact) {
+          const first = word * 32 + 31 - Math.clz32(domain & -domain);
+          baseRank = (view === undefined ? this.indexOfSlot(first) : view.indexOf(first)) as number;
+        }
+        return evaluate(page, half, candidates, domain, baseRank);
+      });
+    }
+    return FrameSet.fromOrderedWords((write) => {
+      for (const node of nodes(this.root)) {
+        const page = node.value;
+        for (let half = 0; half < PAGE_SIZE; half += 32) {
+          const occupied = half === 0 ? page.lowMask : page.highMask;
+          if (occupied === 0) continue;
+          const kept = evaluate(page, half, occupied, occupied, rank);
+          if (kept !== 0) write(node.key * 2 + half / 32, kept);
+          rank += popcount(occupied);
+        }
+      }
+    });
   }
 
   drawMaterials(content: RowContent, meshes: MeshFrame) {
@@ -479,6 +602,7 @@ interface LodBucket {
  * through its shared Mesh reads that Mesh's levels, every other row its own.
  * Maintained from slot writes and Mesh changes, so a frame reads it in O(1).
  */
+const sceneSlotFrameRank = SceneSlotFrame.prototype.indexOfSlot;
 const sceneSlotFrameAt = SceneSlotFrame.prototype.at;
 const sceneSlotIterator = SceneSlotFrame.prototype[Symbol.iterator];
 

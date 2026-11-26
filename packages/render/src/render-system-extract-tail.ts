@@ -93,14 +93,16 @@ import {
 import { createEnvironmentQuery } from './extract/environment-gate';
 import { buildGpuDrivenDraws } from './extract/gpu-driven';
 import { extractWorldEnvironment } from './extract/world-environment';
-import { captureHiddenEntities } from './features/hidden-entity-reports';
+import { captureHiddenEntities, NO_HIDDEN_ENTITY_REPORTS } from './features/hidden-entity-reports';
 import { MotionBlurValidationError } from './features/motion-blur/motion-blur-params';
 import { renderFeatureViewIdentity } from './features/view';
 import { extractGlyphSources } from './glyph-source';
 import { type InstanceProjectionStore, validateInstanceTransforms } from './instances';
 import { deriveInstancesUnionBounds } from './instances-derived-bounds';
 import {
+  captureMaterialRasterPrograms,
   type MaterialProgramSelection,
+  type MaterialRasterPrograms,
   materialProgramSelectionsForMaterial,
 } from './material-program-selection';
 import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
@@ -162,6 +164,7 @@ import {
   tonemapParams,
 } from './render-system-extract';
 import { ScenePoseWriter } from './scene/captured-transform';
+import { EMPTY_FRAME_ROWS } from './scene/frame-list';
 import { captureMaterialOverrides } from './scene/mesh-materials';
 import { renderSourceLayout } from './scene/render-source';
 import { buildShadowFrusta } from './scene/shadow-visibility';
@@ -556,15 +559,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   const cameras = environment.cameras;
   // Planar receivers shade forward only while this source publishes a capture.
   setPlanarCaptureDemand(world, publishesPlanarCapture(environment.auxiliaryCameras));
-  const scope = createWorldExtraction(world, context, worldInternal, environment.lights, cameras);
-  if (context.renderables !== 'none') {
-    extractMeshRenderers(scope);
-    extractDerivedRenderSources(scope);
-  }
-  extractWaterMeshSources(scope);
-  // M3 / w26: sort dispatch entries by queue (ascending, stable sort)
-  // per plan-strategy D-3.
-  const dispatch = sortDispatchByQueue(scope.dispatch);
+  const scope = extractGeometry(world, context, worldInternal, environment.lights, cameras);
   return {
     projectedDecals,
     cameras,
@@ -578,11 +573,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       ? {}
       : { volumetricFog: environment.volumetricFog }),
     ...(environment.cloudLayer === undefined ? {} : { cloudLayer: environment.cloudLayer }),
-    renderables: scope.renderables,
-    ...(scope.waterMeshOwnerRefresh === undefined
+    renderables: scope?.renderables ?? EMPTY_FRAME_ROWS,
+    ...(scope?.waterMeshOwnerRefresh === undefined
       ? {}
       : { waterMeshOwnerRefreshes: [scope.waterMeshOwnerRefresh] }),
-    dispatch,
+    dispatch: scope === undefined ? EMPTY_FRAME_ROWS : sortDispatchByQueue(scope.dispatch),
     skylight: environment.skylight,
     skylightCount: environment.skylightCount,
     lightProbes: environment.lightProbes,
@@ -590,12 +585,18 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     skyboxCount: environment.skyboxCount,
     fog,
     ...(fogFailure === undefined ? {} : { fogFailure }),
-    frustumStats: { culled: scope.frustumCulled, total: scope.frustumTotal },
-    visibilityStats: { explicitlyHidden: scope.explicitlyHidden.size },
-    materialTextureSources: scope.materialTextureSources,
+    frustumStats: { culled: scope?.frustumCulled ?? 0, total: scope?.frustumTotal ?? 0 },
+    visibilityStats: { explicitlyHidden: scope?.explicitlyHidden.size ?? 0 },
+    materialTextureSources: scope?.materialTextureSources ?? {
+      sourceFieldsVisited: 0,
+      producerRoutes: {},
+    },
     postProcessParams,
     visibilitySnapshot: context.visibility,
-    hiddenEntityReports: captureHiddenEntities(scope.explicitlyHidden),
+    hiddenEntityReports:
+      scope === undefined
+        ? NO_HIDDEN_ENTITY_REPORTS
+        : captureHiddenEntities(scope.explicitlyHidden),
   };
 }
 
@@ -607,6 +608,30 @@ interface MaterialLane {
   readonly cache: MaterialSnapshotCache;
   readonly persistent: MaterialSnapshotCache;
   readonly materialContext: MaterialCookRasterContext | undefined;
+}
+
+/** Allocate mesh readers only for a producer that can emit geometry or restore water-owned rows. */
+function extractGeometry(
+  world: World,
+  context: PreparedExtractContext,
+  worldInternal: WorldInternalView,
+  lights: LightRoster,
+  cameras: readonly CameraSnapshot[],
+): WorldExtraction | undefined {
+  let scope: WorldExtraction | undefined;
+  if (context.renderables !== 'none') {
+    scope = createWorldExtraction(world, context, worldInternal, lights, cameras);
+    extractMeshRenderers(scope);
+    extractDerivedRenderSources(scope);
+  }
+  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
+    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
+    : undefined;
+  if (water !== undefined || context.waterMeshSourceState?.system !== undefined) {
+    scope ??= createWorldExtraction(world, context, worldInternal, lights, cameras);
+    extractWaterMeshSources(scope, water);
+  }
+  return scope;
 }
 
 /** Mutable state of one extractFrame call: its outputs, caches and cull counters. */
@@ -1040,11 +1065,8 @@ const EMPTY_WATER_MESH_REFRESH = Object.freeze({
   ownerSources: Object.freeze([]),
 });
 
-function extractWaterMeshSources(scope: WorldExtraction): void {
+function extractWaterMeshSources(scope: WorldExtraction, water: WaterSystem | undefined): void {
   const { world, context } = scope;
-  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
-    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
-    : undefined;
   if (water === undefined) {
     const previous = context.waterMeshSourceState;
     if (previous?.system !== undefined) {
@@ -2021,7 +2043,8 @@ class MeshRendererRowRead {
   shadowCastDisabled = false;
   shadowParticipationAuthored = false;
   shadowReceiveDisabled = false;
-  mobilityStatic = false;
+  mobilityKind: number | undefined;
+  mobilityParent: number | undefined;
   sortKey: number | undefined;
   pointsLinesComponent: 'Points' | 'Lines' | undefined;
   layer = 0;
@@ -2077,12 +2100,8 @@ class MeshRendererRowRead {
     this.shadowCastDisabled = hasParticipation && fields[MeshField.cast]?.view[row] !== 1;
     this.shadowParticipationAuthored = hasParticipation;
     this.shadowReceiveDisabled = hasParticipation && fields[MeshField.receive]?.view[row] !== 1;
-    this.mobilityStatic =
-      mobilityFromRow(
-        scope.world,
-        fields[MeshField.mobility]?.view[row],
-        fields[MeshField.parent]?.view[row],
-      ) === 'static';
+    this.mobilityKind = fields[MeshField.mobility]?.view[row];
+    this.mobilityParent = fields[MeshField.parent]?.view[row];
     this.sortKey = fields[MeshField.sortKey]?.view[row];
     this.pointsLinesComponent = layout?.points ? 'Points' : layout?.lines ? 'Lines' : undefined;
     this.layer = fields[MeshField.layer]?.view[row] ?? 0;
@@ -2404,13 +2423,12 @@ function resolveFreshMaterial(
   }
   const material = resolved.value;
   if (material.kind !== 'material') return { snapshot: defaultMaterialSnapshot(handle) };
-  let programSelections: readonly MaterialProgramSelection[] | undefined;
+  let programs: MaterialRasterPrograms;
   try {
-    programSelections = materialProgramSelectionsForMaterial(
+    programs = captureMaterialRasterPrograms(
       material,
       assets,
       lane.materialContext,
-      'direct',
       lane.vertexColorAvailable,
     );
   } catch (error) {
@@ -2427,21 +2445,21 @@ function resolveFreshMaterial(
     assets,
     shaderRegistry: scope.context.assets?.shaderRegistry ?? assets.shaderRegistry,
     material,
-    programSelections,
+    programs,
     materialContext: lane.materialContext,
     textureSourceStats: scope.materialTextureSources,
     vertexColorAvailable: lane.vertexColorAvailable,
     geometry: lane.geometry,
     previousProgramSnapshot: lane.persistent.get(handle)?.snapshot,
   });
-  if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programSelections))
+  if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programs.selections))
     return undefined;
   const stored = storeMaterialSnapshot(
     lane.persistent,
     handle,
     snapshot,
     world,
-    programSelections,
+    programs.selections,
     declarationLayout,
   );
   lane.cache.set(handle, stored);
@@ -2638,7 +2656,9 @@ function publishRenderable(
   // their display or ShadowCaster passes to either record lane.
   if (!read.authorVisible) pending.length = 0;
   for (const entry of pending) scope.dispatch.push(entry);
-  scope.renderables.push(withMobilityAndPreparation(renderable, read, pipelinePreparation));
+  scope.renderables.push(
+    withMobilityAndPreparation(scope.world, renderable, read, pipelinePreparation),
+  );
 }
 
 /**
@@ -3303,16 +3323,19 @@ function castsVisibleShadow(
 
 /** Pose and capsule shadow admission belong to the selected fixed frame's actual demand. */
 function withMobilityAndPreparation(
+  world: World,
   renderable: RenderableSnapshot,
   read: MeshRendererRowRead,
   pipelinePreparation: RenderableSnapshot['pipelinePreparation'],
 ): RenderableSnapshot {
+  const mobilityStatic =
+    mobilityFromRow(world, read.mobilityKind, read.mobilityParent) === 'static';
   const authored =
-    !read.mobilityStatic && !read.shadowReceiveDisabled
+    !mobilityStatic && !read.shadowReceiveDisabled
       ? renderable
       : {
           ...renderable,
-          ...(read.mobilityStatic ? { mobility: 'static' as const } : {}),
+          ...(mobilityStatic ? { mobility: 'static' as const } : {}),
           ...(read.shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
         };
   return ownWaterMaterialAdmissionSource(

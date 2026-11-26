@@ -346,6 +346,8 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
  */
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
+export { BLOOM_PREFILTER_WGSL, POST_SCENE_COLOR_HALF_WGSL } from './bloom-source';
+export { DEPTH_OF_FIELD_TILES_WGSL } from './depth-of-field-tiles-source';
 export { FIELD_VISIBILITY_BOUNDS_WGSL } from './field-visibility-wgsl';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
@@ -415,6 +417,7 @@ export {
   SDF_SURFACE_TRACE_WGSL,
   SDF_SURFACE_TRACE_WITH_BOUNDS_WGSL,
 } from './sdf-surface-trace-wgsl';
+export { SMAA_BLEND_WGSL } from './smaa-blend-source';
 export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
 export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
@@ -433,6 +436,8 @@ export {
   TSR_OPAQUE_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_HALF_VELOCITY_WGSL,
+  TSR_RECONSTRUCT_HALF_WGSL,
   TSR_RECONSTRUCT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';

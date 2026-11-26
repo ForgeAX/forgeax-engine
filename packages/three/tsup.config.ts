@@ -41,21 +41,10 @@ function extractPoseKernels(contents: string): string {
     if (methodStart < 0 || end < 0 || numericStart < 0 || numericEnd <= numericStart ||
         numeric.includes('this.') || numeric.includes('return '))
       throw new Error(`Unexpected Three r187 Matrix4.${method} arithmetic`);
-    if (method === 'multiplyMatrices') {
-      // Load each operand only after the other object's getters have run. Coercion
-      // on the RHS of a store can change the destination before the actual write.
-      const stores = /te\[ (\d+) \] = ([^;]+);/g;
-      if (numeric.match(stores)?.length !== 16) throw new Error('Unexpected r187 matrix stores');
-      const publicWrite = numeric
-        .replace('const a11 =', 'ae = worldMatrixInput(ae);\n\t\tconst a11 =')
-        .replace('const b11 =', 'be = worldMatrixInput(be);\n\t\tconst b11 =')
-        .replace(stores, 'row.writeLane($1, $2);');
-      kernels.push(`function multiplyWorldElements(ae, be, row) {${publicWrite}\n}`);
-    }
     kernels.push(`function ${kernel}(${parameters}) {${numeric}\n}`);
   }
   return contents + '\n' + kernels.join('\n') +
-    '\ninstallPoseKernels(Matrix4.prototype, composeElements, copyElements, multiplyElements, multiplyWorldElements);\n';
+    '\ninstallPoseKernels(Matrix4.prototype, composeElements, copyElements, multiplyElements);\n';
 }
 
 // Retain the public receiver for numeric accessors, including getters installed during a read.
@@ -98,7 +87,7 @@ function integrateMatrixStorage(contents: string): string {
         .replace('const be = b.elements;', 'const rightElements = b.elements;')
         .replace('const a11 =', `const row = worldMatrixRow(te);
           if (row !== undefined) {
-            multiplyWorldElements(leftElements, rightElements, row);
+            multiplyWorldMatrix(leftElements, rightElements, row);
             publishMatrixWrite(elements, te);
             return this;
           }
@@ -229,7 +218,7 @@ export default defineConfig({
 
             return {
               loader: 'js',
-              contents: `import { ownedCollection, ownedMatrixElements, ownedWorldMatrixElements, ownedChildren, initializeSourceHierarchy, poseConstruction, creatingTrackedPose, sourceCollectionStorage, matrixReadStorage, worldMatrixInput, publishMatrixWrite } from ${JSON.stringify(helper)};\nimport { copyWorldMatrixElements, worldMatrixRow } from ${JSON.stringify(matrixRows)};\n${path.endsWith('Object3D.js') ? `import { installSourcePoseStorage, resolveSourceWorldPose } from ${JSON.stringify(worldPose)};\n` : ''}import { initializePoseLayout } from ${JSON.stringify(fields)};\n${contents}`,
+              contents: `import { ownedCollection, ownedMatrixElements, ownedWorldMatrixElements, ownedChildren, initializeSourceHierarchy, poseConstruction, creatingTrackedPose, sourceCollectionStorage, matrixReadStorage, worldMatrixInput, multiplyWorldMatrix, publishMatrixWrite } from ${JSON.stringify(helper)};\nimport { copyWorldMatrixElements, worldMatrixRow } from ${JSON.stringify(matrixRows)};\n${path.endsWith('Object3D.js') ? `import { installSourcePoseStorage, resolveSourceWorldPose } from ${JSON.stringify(worldPose)};\n` : ''}import { initializePoseLayout } from ${JSON.stringify(fields)};\n${contents}`,
             };
           },
         );

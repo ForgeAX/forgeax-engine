@@ -1,6 +1,5 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
@@ -8,10 +7,16 @@ import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batc
 import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract';
-import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
+import type {
+  ExtractedFrame,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../../render-system-extract';
 import type { DrawEvidence } from '../../scene/draw-evidence';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
+import { SceneDrawSlot } from '../../scene/mesh-draw';
+import { cullPersistentFrame } from '../../scene/persistent-cull';
 import type { ProbeBlendBufferProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
@@ -19,6 +24,7 @@ import { finalizeWaterMaterialAdmissionDraws } from '../../water/mesh-source-adm
 import { type DirectDrawInput, DirectDrawPhase, ViewDrawPhases } from '../direct-draw-phase';
 import { addressDrawRows, issueDrawRows } from '../draw-row-pages';
 import type { ValidatedRenderable } from '../frame-snapshot';
+import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { MaterialRelations } from '../material-binding-index';
 import { MemberMaterialPasses } from '../material-pass-groups';
 
@@ -148,6 +154,66 @@ function fixture(opaqueCount: number, glassCount: number) {
 
 const order = (output: ReturnType<DirectDrawPhase['emit']>) =>
   output.dispatch.map((entry) => entry.entityIndex as number);
+
+it('issues only camera-admitted draw snapshots while moving casters stay available to shadow passes', () => {
+  const f = fixture(12, 0);
+  const phase = new DirectDrawPhase();
+  const draw = vi.spyOn(SceneDrawSlot.prototype, 'draw');
+  onTestFinished(() => draw.mockRestore());
+  const camera = makeZeroCameraFallbackSnapshot();
+  const box = Float32Array.of(-0.1, -0.1, -0.1, 0.1, 0.1, 0.1);
+  f.write(
+    Array.from({ length: 12 }, (_, i) => ({
+      ...source(i, opaque, -8),
+      localAabb: box,
+      renderLayers: i % 2 ? 2 : 1,
+    })),
+  );
+  for (let tick = 0; tick < 6; tick++) {
+    const selected = tick * 2;
+    for (let i = 0; i < 12; i++) {
+      const world = mat4.identity(mat4.create());
+      world[14] = -8;
+      world[12] = i === selected || i === selected + 1 ? 0 : 100 + tick + i;
+      f.scene.apply([{ kind: 'update', entityKey: i, world }]);
+    }
+    const base = f.input();
+    assert(base.materials);
+    const read = f.scene.drawFrame(base.materials);
+    const scene = { ...base.scene, slotAt: read.locate, drawSnapshotAt: read };
+    const frame = cullPersistentFrame(
+      {
+        cameras: [camera],
+        renderables: f.scene.materialize(),
+        dispatch: [],
+      } as unknown as ExtractedFrame,
+      base.materials,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.scene,
+      tick,
+      undefined,
+      (row, out) => f.scene.writeCullingWorldBoundsAt(row, out),
+    ).frame;
+    assert(frame.cameraVisible && frame.cameraAdmission);
+    draw.mockClear();
+    const input = {
+      ...base,
+      scene,
+      cullMask: 1,
+      visible: frame.cameraVisible,
+      admission: frame.cameraAdmission,
+    };
+    expect(drawn(phase, input).rows.map((row) => row.source.entityKey)).toEqual([selected]);
+    expect(draw).toHaveBeenCalledTimes(1);
+    const custom = vi.fn(() => true);
+    expect(drawn(new DirectDrawPhase(), { ...input, visible: custom }).rows.length).toBe(6);
+    expect(custom).toHaveBeenCalledTimes(6);
+    expect(drawn(new DirectDrawPhase(), { ...base, scene, shadow: true }).rows.length).toBe(12);
+  }
+});
 
 it('publishes moving slot poses independently of their geometry and preserves sealed submissions', () => {
   const f = fixture(0, 32);
@@ -977,59 +1043,24 @@ it('re-judges residency only for batches of the current plan', () => {
   expect(order(output)).toEqual(order(drawn(new DirectDrawPhase(), { ...input, meshes: live })));
 });
 
-it('replays unchanged bins as retained bundles while rows enter another bin', async () => {
-  const { rhi } = await import('@forgeax/engine-rhi-null');
-  const { RenderBundleCache } = await import('../render-bundle-cache');
-  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const pipelines = new Map(
-    [opaque, other, glass].map((resource) => [
-      resource.snapshot.materialHandle,
-      device.createRenderPipeline({} as never).unwrap(),
-    ]),
-  );
-  const group = device
-    .createBindGroup({
-      layout: device.createBindGroupLayout({ entries: [] }).unwrap(),
-      entries: [],
-    })
-    .unwrap();
-  // One draw per dispatch entry in phase order, addressed by its stable slot.
-  const record = (output: ReturnType<DirectDrawPhase['emit']>) => (pass: RhiRenderPassEncoder) => {
-    let pipeline: unknown;
-    for (const entry of output.dispatch) {
-      const next = pipelines.get(entry.materialHandle);
-      if (next !== pipeline) {
-        pipeline = next;
-        pass.setPipeline(next as never);
-      }
-      const row = output.rows.at(entry.renderableIndex);
-      pass.setBindGroup(2, group, [(row?.sceneSlot?.slot ?? 0) * 256]);
-      pass.draw(3);
-    }
-  };
+it('keeps surviving material rows in phase order at their Scene slots when another bin grows', () => {
   const f = fixture(600, 0);
   f.write(Array.from({ length: 300 }, (_, index) => source(600 + index, other)));
   const phase = new DirectDrawPhase();
-  const cache = new RenderBundleCache({ colorFormats: [] });
-  const frame = () => {
-    const counters = { hits: 0, misses: 0 };
-    const encoder = device.createCommandEncoder().unwrap();
-    cache.encode(
-      device,
-      encoder.beginRenderPass({ colorAttachments: [] }),
-      record(drawn(phase, f.input())),
-      counters,
-    );
-    return counters;
-  };
-  for (let warm = 0; warm < 3; warm++) frame();
-  expect(frame()).toEqual({ hits: 8, misses: 0 });
-  // 100 rows enter the opaque bin: it grows from five to six segments, moving
-  // every later segment ordinal, while the `other` bin is unchanged.
+  const rowsFor = (output: ReturnType<DirectDrawPhase['emit']>, material: number) =>
+    Array.from(output.dispatch)
+      .filter((entry) => entry.materialHandle === material)
+      .map((entry) => {
+        const row = output.rows.at(entry.renderableIndex);
+        return [row?.source.entityKey, row?.sceneSlot?.slot];
+      });
+  const before = drawn(phase, f.input());
+  const untouched = rowsFor(before, other.snapshot.materialHandle);
+  expect(untouched).toHaveLength(300);
   f.write(Array.from({ length: 100 }, (_, index) => source(1_000 + index, opaque)));
-  const entered = frame();
-  // Four leading opaque segments and all three `other` segments replay.
-  expect(entered.hits).toBe(7);
+  const after = drawn(phase, f.input());
+  expect(rowsFor(after, opaque.snapshot.materialHandle)).toHaveLength(700);
+  expect(rowsFor(after, other.snapshot.materialHandle)).toEqual(untouched);
 });
 
 it('re-resolves retained morph streams every sync and adopts a re-created stream', () => {

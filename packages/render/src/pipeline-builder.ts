@@ -157,6 +157,8 @@ export interface PipelineBuilderContext {
   readonly constants?: Readonly<Record<string, number>> | undefined;
   /** Explicit vertex-stage values; omitted uses the common overrides. */
   readonly vertexConstants?: Readonly<Record<string, number>> | undefined;
+  /** The selected stock Standard WGSL projects its resources from the material mask. */
+  readonly projectSurfaceResources?: boolean | undefined;
   /** Depth attachment format, or `undefined` for a color-only pass. */
   readonly depthFormat: GPUTextureFormat | undefined;
   /**

@@ -26,7 +26,22 @@ it('keeps publication program data with its source instead of copying it into mu
     for (const program of record.programs) {
       expect(shaders.findMaterialArtifact(program.specializationKey)).toMatchObject({ ok: true });
     }
-    owner.update(loaded.handle, { values: { roughness: 0.5 } }).unwrap();
+    let reads = 0;
+    const values = new Proxy(
+      { roughness: 0.5 },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key === 'roughness' && descriptor) descriptor.value = ++reads === 1 ? 0.5 : 0.75;
+          return descriptor;
+        },
+      },
+    );
+    owner.update(loaded.handle, { values }).unwrap();
+    expect(reads).toBe(1);
+    expect(runtimeAssets(owner).borrow(loaded.handle).unwrap()).toMatchObject({
+      values: { roughness: 0.5 },
+    });
     expect(runtimeAssets(owner).borrow(loaded.handle).unwrap()).not.toHaveProperty('cooked');
   } finally {
     publication.mockRestore();

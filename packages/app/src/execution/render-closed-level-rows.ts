@@ -2,8 +2,8 @@ import type { RenderPublicationIdentity } from '@forgeax/engine-render';
 import {
   type ClosedLevelAssetHold,
   type ClosedLevelAssetPublication,
+  collectPublicationDependencies,
   decodeClosedLevelRows,
-  publicationDependencies,
   type RenderPublication,
   type RenderPublicationRows,
   sameClosedLevelRows,
@@ -132,7 +132,7 @@ export class RenderClosedLevelRows {
     for (const [handle, version] of versions) stream.requiredVersions.set(handle, version);
     for (const row of decoded.value) {
       stream.entities.add(row.entityKey);
-      for (const handle of publicationDependencies(row)) stream.requiredAssets.add(handle);
+      collectPublicationDependencies(row, stream.requiredAssets);
       for (const lod of row.lods ?? [])
         if (typeof lod.mesh === 'number') stream.requiredAssets.add(lod.mesh);
     }

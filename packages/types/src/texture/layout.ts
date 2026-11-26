@@ -62,29 +62,7 @@ function projectTextureLayout(
   input: TextureLayoutInput,
   includeLevels: boolean,
 ): Result<TextureLayout, TextureError> {
-  if (
-    input.mips.kind === 'custom' &&
-    (input.shape.viewDimension === '3d' ||
-      !Number.isSafeInteger(input.mips.levelCount) ||
-      input.mips.levelCount < 1 ||
-      input.mips.levelCount > numMipLevels(input.shape.extent))
-  )
-    return err(
-      textureError(
-        'texture-mip-policy-invalid',
-        {
-          code: 'texture-mip-policy-invalid',
-          viewDimension: input.shape.viewDimension,
-          policy: input.mips.kind,
-        },
-        'custom GPU mip count must fit the 2D extent',
-      ),
-    );
-  const physicalPolicy =
-    input.mips.kind === 'custom'
-      ? { kind: 'packed' as const, levelCount: input.mips.levelCount }
-      : input.mips;
-  const shapeResult = validateTextureShape(input.shape, physicalPolicy, input.format);
+  const shapeResult = validateTextureShape(input.shape, input.mips, input.format);
   if (!shapeResult.ok) return shapeResult;
 
   if (input.order !== undefined && input.order !== 'mip-major,image-major,row-major') {

@@ -207,6 +207,7 @@ export interface ScenePreparation {
   /** Camera-layer matches plus admitted shadow casters. */
   readonly visible: MutableWalkMembers;
   readonly meshes: FrameMeshPlans;
+  geometryRangeReceipts?: Map<object, () => void> | undefined;
   pointRevisions?: (Pick<MeshPlan, 'geometry' | 'asset'> & { record: NodeRecord })[];
   meshRanges?: { readonly handle: AssetHandle<'mesh'>; readonly input: readonly MeshRange[] }[];
   spriteFilters?: Map<NodeRecord, AssetHandle<'mesh'>>;

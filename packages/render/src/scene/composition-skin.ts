@@ -1,4 +1,3 @@
-import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createPresentationMatrixReader } from '@forgeax/engine-scene/internal';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
@@ -70,18 +69,13 @@ export class CompositionSkinAdoption {
   }
 
   /** Reads the same presentation matrix as every other render extraction. */
-  joint(entry: SkinCompositionEntry, entity: number): void {
+  joints(entry: SkinCompositionEntry, entities: Iterable<number>): void {
     try {
       const skin = entry.skin,
         world = entry.source?.world;
-      if (skin === undefined || world === undefined || !skin.hasJoint(entity)) return;
+      if (skin === undefined || world === undefined) return;
       entry.jointMatrices ??= createPresentationMatrixReader(world);
-      const read = entry.jointMatrices;
-      if (!read.locate(entity as EntityHandle)) {
-        skin.joint(entity, undefined);
-        return;
-      }
-      skin.joint(entity, read.values, read.offset);
+      entry.jointMatrices.visit(entities, skin.hasJoint, skin.joint);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -120,8 +114,7 @@ export class CompositionSkinAdoption {
   }
 
   initializeJoints(entry: SkinCompositionEntry): void {
-    const skin = entry.skin;
-    if (skin === undefined) return;
-    for (const entity of skin.firstJoints() ?? []) this.joint(entry, entity);
+    const first = entry.skin?.firstJoints();
+    if (first !== undefined && first.size > 0) this.joints(entry, first);
   }
 }

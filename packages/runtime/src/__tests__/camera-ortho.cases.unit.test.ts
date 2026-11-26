@@ -35,9 +35,9 @@ afterEach(() => vi.restoreAllMocks());
     ];
   }
 
-  describe('Camera schema (38 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
-    it('Camera.schema has 38 fields including auto exposure and color grading state', () => {
-      expect(Object.keys(Camera.fields).length).toBe(38);
+  describe('Camera schema (39 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
+    it('Camera.schema has 39 fields including auto exposure and color grading state', () => {
+      expect(Object.keys(Camera.fields).length).toBe(39);
       expect(componentFieldType(Camera, 'cullMask')).toBe('f64');
       expect(componentFieldType(Camera, 'targetLayer')).toBe('u32');
       expect(componentFieldType(Camera, 'postProcessing')).toBe('bool');
@@ -69,6 +69,7 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldType(Camera, 'historyVersion')).toBe('u32');
       // feat-20260531-bloom-first-declarative-render-graph-pass / w2.
       expect(componentFieldType(Camera, 'bloom')).toBe('f32');
+      expect(componentFieldType(Camera, 'bloomQuality')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomThreshold')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomIntensity')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomSmoothWidth')).toBe('f32');

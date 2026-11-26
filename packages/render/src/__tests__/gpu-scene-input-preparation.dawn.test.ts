@@ -216,7 +216,7 @@ it('prepares and publishes actual Inputs while old native reads remain held', as
     changed.release();
     expect(
       writes.mock.calls.filter((call) => call[0] === task.buffer).map((call) => call[4]),
-    ).toEqual([16]);
+    ).toEqual([4]);
     expect(
       new Uint32Array((await readBuffer(f.device, task.buffer, address * 4, 4)).buffer)[0],
     ).toBe(999);

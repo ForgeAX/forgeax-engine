@@ -2,6 +2,7 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { assert, expect, it, vi } from 'vitest';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
+import { MeshChanges } from '../../device/mesh-changes';
 import type { BatchExecution } from '../../gpu-driven/batch-execution';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
 import type { BatchExecutions } from '../../gpu-driven/material-artifacts';
@@ -145,6 +146,56 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   return { scene, topology, executions, meshes, select };
 }
 
+it('joins each fixed shadow candidate once and projects only participating rows', () => {
+  const f = setup([
+    source(10),
+    { ...source(11), shadowCaster: false },
+    { ...source(12), authorVisible: false },
+  ]);
+  const fixed = f.scene.drawFrame(new MaterialFrame(undefined).with(material));
+  const locate = vi.fn(fixed.locate);
+  const project = vi.fn(fixed.project);
+  const indexed = vi.fn(fixed);
+  const hidden = f.scene.slotsSnapshot().lookup(12);
+  assert(hidden);
+  const scene = {
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
+    slotAt: locate,
+    drawSnapshotAt: Object.assign(indexed, { locate, project }),
+    unbatchedSlots: new Set([...f.topology.unbatchedSlots, hidden.slot]),
+  };
+  const input: DirectDrawInput = {
+    scene,
+    selection: [],
+    select: f.select,
+    meshes: f.meshes,
+    sourceScope,
+    shadow: true,
+    materials: undefined,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+  };
+  const ordinary = drawn(new DirectDrawPhase(), input);
+  expect([...ordinary.rows].map((row) => row.source.entityKey)).toEqual([10]);
+  expect(project.mock.calls.map(([row]) => row.entityKey)).toEqual([10]);
+  expect(indexed).not.toHaveBeenCalled();
+  expect(locate).toHaveBeenCalledTimes(3);
+  const seen: number[] = [];
+  drawn(new DirectDrawPhase(), {
+    ...input,
+    visible: (row) => {
+      seen.push(row.entityKey);
+      return true;
+    },
+  });
+  expect(seen.sort()).toEqual([10, 11, 12]);
+  project.mockClear();
+  const borrowed = { ...scene, slotAt: (slot: number) => locate(slot) };
+  drawn(new DirectDrawPhase(), { ...input, scene: borrowed });
+  expect(project).not.toHaveBeenCalled();
+  expect(indexed).toHaveBeenCalledTimes(3);
+});
+
 it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances', (count) => {
   const f = setup([
     ...Array.from({ length: count }, (_, index) => source(index)),
@@ -220,6 +271,7 @@ it('keeps the ordered submesh roster with its live bindings while every pose mov
   const rows = (output: ReturnType<DirectDrawPhase['emit']>) =>
     new Map(Array.from(output.rows, (row) => [row.source.entityKey, row] as const));
   const held = rows(drawn(phase, input()));
+  const firstMeshDomain = phase.issuedMeshDomain();
   expect(held.get(7)?.submeshIndices).toEqual([2, 1]);
   for (let frame = 1; frame <= 18; frame++) {
     const world = mat4.identity(mat4.create());
@@ -234,6 +286,7 @@ it('keeps the ordered submesh roster with its live bindings while every pose mov
       ],
     );
     const current = rows(drawn(phase, input()));
+    expect(phase.issuedMeshDomain()).toBe(firstMeshDomain);
     for (const value of sources) {
       const draw = current.get(value.entityKey);
       expect(draw?.source.transform.world[12]).toBe(frame);
@@ -259,6 +312,14 @@ it('keeps the ordered submesh roster with its live bindings while every pose mov
   const repaired = rows(drawn(phase, input()));
   expect(repaired.get(7)?.submeshIndices).toEqual([1, 2]);
   expect(repaired.get(7)?.mesh).toBe(mesh);
+  const beforeReplacement = phase.issuedMeshDomain();
+  const changeToken = new MeshChanges().create();
+  const updated = new Map(f.meshes);
+  const replacement = { ...mesh, changeToken };
+  for (const binding of updated.keys()) updated.set(binding, replacement);
+  const replaced = drawn(phase, { ...input(), meshes: updated });
+  expect(Array.from(replaced.rows, (row) => row.mesh.changeToken)).toContain(changeToken);
+  expect(phase.issuedMeshDomain()).not.toBe(beforeReplacement);
 });
 
 it('uses fixed executions, preserves source instances and rejects recycled slots', () => {

@@ -6,6 +6,8 @@ import {
   TSR_ANALYZE_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_HALF_VELOCITY_WGSL,
+  TSR_RECONSTRUCT_HALF_WGSL,
   TSR_RECONSTRUCT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from '@forgeax/engine-shader';
@@ -47,19 +49,24 @@ export function createTsrProgram(
   frame: RenderPipelineFrame,
   analyze: boolean,
   velocity = false,
+  writeHalf = false,
 ): TsrProgram {
   const factory = frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
   if (factory === undefined) throw new Error('TSR requires the renderer shader module factory');
   const entry = analyze ? 'tsr_analyze' : 'tsr_reconstruct';
   const shader = factory.createShaderModule({
     label: entry,
-    code: velocity
-      ? analyze
+    code: analyze
+      ? velocity
         ? TSR_ANALYZE_VELOCITY_WGSL
-        : TSR_RECONSTRUCT_VELOCITY_WGSL
-      : analyze
-        ? TSR_ANALYZE_WGSL
-        : TSR_RECONSTRUCT_WGSL,
+        : TSR_ANALYZE_WGSL
+      : writeHalf
+        ? velocity
+          ? TSR_RECONSTRUCT_HALF_VELOCITY_WGSL
+          : TSR_RECONSTRUCT_HALF_WGSL
+        : velocity
+          ? TSR_RECONSTRUCT_VELOCITY_WGSL
+          : TSR_RECONSTRUCT_WGSL,
   });
   if (!shader.ok) throw shader.error;
   const sampledCount = analyze ? 7 : 8;
@@ -68,6 +75,7 @@ export function createTsrProgram(
   const formats: TextureFormat[] = analyze
     ? [TSR_ANALYSIS_FORMATS.guide, TSR_ANALYSIS_FORMATS.moire, TSR_ANALYSIS_FORMATS.decision]
     : ['rgba16float', 'rgba16float', 'rgba8unorm'];
+  if (writeHalf) formats.push('rgba16float');
   const layout = frame.runtime.device.createBindGroupLayout({
     label: `${entry}.bindings`,
     entries: [
